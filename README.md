@@ -1,6 +1,6 @@
 # Tesela 🗿
 
-> A keyboard-first, file-based note-taking system for building lasting knowledge mosaics
+> A keyboard-first, file-based note-taking system for building lasting knowledge mosaics. Think Emacs org-mode meets modern UI/UX, with first-class backlinks and multimodal support.
 
 Tesela transforms your notes into an interconnected knowledge graph while keeping you in control of your data. Built in Rust for performance, designed for longevity.
 
@@ -18,6 +18,8 @@ I'm using this project to learn Rust, a language I'm new to, so expect some rook
 - **Fast**: Sub-100ms search across thousands of notes
 - **Extensible**: Plugin system for custom workflows
 - **Privacy-Respecting**: Your notes never leave your device unless you want them to
+- **Multimodal**: Native attachments - drag & drop PDFs, images, and files just like modern apps
+- **Modern Yet Efficient**: Zed-like balance of contemporary features with keyboard-first speed
 
 ## 🤔 Why Tesela?
 
@@ -28,8 +30,9 @@ In a world of cloud-based, proprietary note apps that lock in your data, Tesela 
 3. **Progressive Enhancement**: Start simple, add features as you need them
 4. **Community-Driven**: Open source from day one, designed for extensibility
 5. **AI-Native Architecture**: Built from the ground up with AI as a first-class feature - not bolted on as an afterthought. Intelligence is woven into the core design, but always optional and privacy-respecting
+6. **Truly Multimodal**: Unlike traditional text editors, attachments are first-class citizens. Drag in PDFs, images, or any file - they're organized automatically and render inline
 
-Think of it as combining the best of Obsidian, Logseq, and Roam, while staying true to simplicity, keyboard-first interaction, and user control.
+Think of it as Emacs org-mode reimagined for the modern era - keeping the power and extensibility while adding native backlinks, multimodal support, and a UI that doesn't require a PhD to navigate. Like how Zed modernized code editing, Tesela modernizes note-taking.
 
 ## 🚀 Quick Start
 
@@ -41,7 +44,7 @@ git clone https://github.com/yourusername/tesela
 cd tesela
 cargo install --path .
 
-# Initialize a vault
+# Initialize a mosaic
 tesela init ~/notes
 
 # Create your first note
@@ -102,7 +105,7 @@ Tesela follows the **Island Core** pattern - a headless core with multiple UI sh
 ### Phase 4: Collaboration
 - [ ] Sync protocol
 - [ ] Mobile apps
-- [ ] Shared vaults
+- [ ] Shared mosaics
 - [ ] Real-time collaboration
 
 See [plan.md](plan.md) for the development roadmap. Note that as a passion project, these are goals rather than deadlines - progress happens when life allows!
@@ -145,7 +148,7 @@ cargo build
 cargo test
 
 # Run locally
-cargo run -- init ~/test-vault
+cargo run -- init ~/test-mosaic
 ```
 
 ### Code Style
@@ -172,8 +175,8 @@ Tesela draws inspiration from many great tools:
 
 - **[NeoVim](https://github.com/neovim/neovim)**: Keyboard-first design and extensibility
 - **[Logseq](https://github.com/logseq/logseq)**: Block references and daily notes
-- **[Emacs Org-mode](https://git.savannah.gnu.org/cgit/emacs/org-mode.git)**: Plain text power and flexibility
-- **[Zed](https://github.com/zed-industries/zed)**: Performance-first design and thoughtful AI integration
+- **[Emacs Org-mode](https://git.savannah.gnu.org/cgit/emacs/org-mode.git)**: Plain text power and flexibility (but with modern UX)
+- **[Zed](https://github.com/zed-industries/zed)**: Performance-first design, thoughtful AI integration, and perfect balance of modern features with efficiency
 - **[Git](https://github.com/git/git)**: Version control concepts
 - **[SQLite](https://github.com/sqlite/sqlite)**: Reliability and performance
 - **[Obsidian](https://obsidian.md)**: The power of local-first files and a powerful plugin ecosystem

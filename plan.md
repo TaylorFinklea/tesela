@@ -14,6 +14,8 @@
 3. **Phase 3**: Custom sync protocol with collaboration
 4. **Phase 4**: AI features and advanced plugins
 
+**Note: All versions before 1.0 are considered alpha releases**
+
 ## Version 0.1 - Core Foundation
 
 ### Phase 1: Project Setup
@@ -27,26 +29,35 @@
 ### Phase 2: Storage Layer
 - [ ] Note structure definition
 - [ ] Markdown parsing with `pulldown-cmark`
-- [ ] Frontmatter handling with `gray_matter`
+- [ ] Frontmatter handling with `matter` or custom parser
 - [ ] File operations module
 - [ ] Path validation and normalization
+- [ ] Attachment storage structure
+- [ ] File type detection (mime types)
+- [ ] Attachment copy/move operations
 - [ ] Unit tests for file operations
 
 ### Phase 3: Database Foundation
 - [ ] SQLite setup with `sqlx`
-- [ ] Schema creation (notes, blocks, links, tags)
+- [ ] Schema creation (notes, blocks, links, tags, attachments)
 - [ ] FTS5 virtual table setup
 - [ ] Basic CRUD operations
+- [ ] Attachment metadata storage
 - [ ] Connection pool configuration
 - [ ] Database tests with fixtures
 
 ### Phase 4: Basic CLI
 - [ ] CLI structure with `clap`
-- [ ] `tesela init` - Initialize vault
+- [ ] `tesela init` - Initialize mosaic with clean folder structure
 - [ ] `tesela new [title]` - Create note
 - [ ] `tesela list` - List recent notes
 - [ ] `tesela cat [id]` - Display note
+- [ ] `tesela attach [note] [file]` - Attach file to note
+- [ ] `tesela export [note] [format]` - Export note (markdown, HTML)
 - [ ] Configuration file support (TOML)
+- [ ] Basic undo/redo system design
+- [ ] Mosaic structure: single folder with notes/ and attachments/ subdirectories
+- [ ] All files in one place - ready for any sync tool (Syncthing, Dropbox, etc.)
 
 ## Version 0.2 - Indexing & Search
 
@@ -55,6 +66,7 @@
 - [ ] Incremental indexing logic
 - [ ] Link extraction from Markdown
 - [ ] Tag parsing from frontmatter
+- [ ] Attachment reference parsing
 - [ ] Checksum-based change detection
 - [ ] Index rebuild command
 
@@ -80,8 +92,11 @@
 - [ ] `tesela link [from] [to]` - Create links
 - [ ] `tesela graph [note]` - Show connections
 - [ ] `tesela daily` - Daily note
+- [ ] `tesela backup` - Create mosaic backup
+- [ ] `tesela import [file/directory]` - Import from other formats
 - [ ] Interactive mode with `dialoguer`
 - [ ] Shell completions
+- [ ] Basic performance benchmarks
 
 ### Phase 2: Core API Layer
 - [ ] Async trait definitions
@@ -97,7 +112,7 @@
 - [ ] Query optimization
 - [ ] Error message improvements
 - [ ] Progress indicators
-- [ ] First beta release
+- [ ] First alpha release
 
 ## Version 0.4 - Desktop UI
 
@@ -107,7 +122,13 @@
 - [ ] Note list component
 - [ ] Editor component with syntax highlighting
 - [ ] Search interface
+- [ ] Drag & drop attachment support
+- [ ] Inline image preview
+- [ ] PDF viewer component
 - [ ] Keyboard navigation
+- [ ] Accessibility foundations (screen reader support)
+- [ ] Undo/redo implementation
+- [ ] Find and replace
 
 ### Phase 2: Desktop Features
 - [ ] Graph visualization
@@ -117,13 +138,17 @@
 - [ ] Theme support (light/dark)
 - [ ] Auto-save and conflict detection
 
-## Version 0.5 - Plugin System
+## Version 0.5 - Plugin System Foundation
 
-### Phase 1: Lua Runtime
+### Phase 1: Lua & Fennel Runtime
+- [ ] Security model design document
+- [ ] Capability-based permissions system
 - [ ] Lua integration with `mlua`
+- [ ] Fennel compiler integration
 - [ ] Plugin manifest format (TOML)
 - [ ] Sandboxed environment setup
-- [ ] Core API bindings
+- [ ] Resource limits (CPU, memory, disk)
+- [ ] Core API bindings for Lua and Fennel
 - [ ] Plugin discovery and loading
 - [ ] Error handling and recovery
 
@@ -135,33 +160,135 @@
 - [ ] UI extension points
 - [ ] Hot reload support
 
-### Phase 3: Example Plugins
-- [ ] Auto-tagger plugin
-- [ ] Daily summary plugin
+### Phase 3: Basic Plugin Infrastructure
+- [ ] Plugin manager UI
+- [ ] Plugin installation/removal
+- [ ] Plugin settings interface
+- [ ] Plugin debugging tools
+- [ ] Plugin documentation system
+
+## Version 0.6 - Example Plugins & Excalidraw
+
+### Phase 1: Core Example Plugins
+- [ ] Auto-tagger plugin (Lua)
+- [ ] Daily summary plugin (Fennel)
 - [ ] TODO extractor
 - [ ] Word count stats
 - [ ] Plugin documentation
-- [ ] Plugin template repository
+- [ ] Plugin template repository (Lua & Fennel examples)
 
-## Version 0.6 - Platform Sync
+### Phase 2: Excalidraw Integration
+- [ ] Embed Excalidraw as web component
+- [ ] Save drawings as .excalidraw files
+- [ ] Inline rendering in notes
+- [ ] Whiteboard features
+- [ ] Create drawing from note
+- [ ] Link drawings to notes
+- [ ] Export to PNG/SVG
 
-### Phase 1: iCloud Integration (macOS/iOS)
-- [ ] CloudKit setup
-- [ ] Sync engine design
+### Phase 3: Advanced Plugin Examples
+- [ ] Citation manager plugin
+- [ ] Calendar integration plugin
+- [ ] Pomodoro timer plugin
+- [ ] Note templates plugin
+
+## Version 0.7 - Code Execution in Notes
+
+### Phase 1: Code Block Infrastructure
+- [ ] Code block detection and parsing
+- [ ] Sandboxed execution environment
+- [ ] Basic language support:
+  - [ ] Shell/Bash (using `std::process::Command`)
+  - [ ] Lua (reuse plugin runtime)
+  - [ ] SQL (for note queries)
+
+### Phase 2: Execution Features
+- [ ] Execution controls:
+  - [ ] Run button in UI
+  - [ ] Keyboard shortcuts (Ctrl+Enter)
+  - [ ] Safety confirmations
+- [ ] Output handling:
+  - [ ] Capture stdout/stderr
+  - [ ] Inline results display
+  - [ ] Error formatting
+- [ ] Variables and state:
+  - [ ] Pass values between code blocks
+  - [ ] Session persistence
+  - [ ] Export results as note content
+
+### Phase 3: Advanced Languages & Security
+- [ ] Additional language support:
+  - [ ] Python (via `pyo3` or subprocess)
+  - [ ] JavaScript (via QuickJS)
+  - [ ] R (for data analysis)
+- [ ] Security hardening:
+  - [ ] Execution timeout limits
+  - [ ] Memory limits
+  - [ ] Network access control
+  - [ ] File system sandboxing
+  - [ ] Per-language permission model
+
+## Version 0.8 - Mobile Apps
+
+### Phase 1: Core Mobile Experience
+- [ ] Slint mobile shell (iOS/Android)
+- [ ] Touch-optimized UI
+- [ ] Note editor with mobile keyboard support
+- [ ] Quick capture
+- [ ] Search and navigation
+- [ ] Attachment support (camera, gallery)
+- [ ] Offline-first architecture
+- [ ] Note: Mosaic folder can be synced with Syncthing/Dropbox from day one
+
+### Phase 2: Platform Integration
+- [ ] iOS specific features
+  - [ ] Share extension
+  - [ ] Widgets
+  - [ ] Handoff support
+- [ ] Android specific features
+  - [ ] Quick settings tile
+  - [ ] Intent filters
+  - [ ] Material You theming
+
+### Phase 3: Mobile Optimization
+- [ ] Performance tuning
+- [ ] Battery optimization
+- [ ] Storage management
+- [ ] Background sync
+- [ ] Push notifications for reminders
+
+## Version 0.9 - Platform Sync
+
+### Phase 1: P2P Sync
+- [ ] Native sync protocol for real-time updates
+- [ ] Device discovery and pairing
+- [ ] End-to-end encryption by default
+- [ ] Selective folder sync
 - [ ] Conflict detection
 - [ ] Merge strategies
-- [ ] iOS app shell (Slint)
-- [ ] Handoff support
+- [ ] Better than file-based sync (instant updates, less conflicts)
 
-### Phase 2: Cross-Platform Sync
-- [ ] File-based sync (Dropbox/Syncthing)
+### Phase 2: Platform-Specific Sync
+- [ ] iCloud Integration (macOS/iOS)
+  - [ ] CloudKit setup
+  - [ ] iOS app shell (Slint)
+  - [ ] Handoff support
+- [ ] Cross-platform options
+  - [ ] Dropbox integration
+  - [ ] OneDrive support
+  - [ ] Google Drive support
+
+### Phase 3: Optional Server Sync
+- [ ] Self-hosted sync server
 - [ ] S3-compatible backend support
 - [ ] WebDAV implementation
-- [ ] End-to-end encryption
+- [ ] Multi-device sync orchestration
 - [ ] Sync status UI
 - [ ] Conflict resolution UI
 
-## Version 0.7 - Intelligence
+## Version 1.0 - Intelligence
+
+**Note: Plugin API becomes stable at v1.0 - backwards compatibility guaranteed from here**
 
 ### Phase 1: Local AI
 - [ ] Ollama integration
@@ -186,26 +313,28 @@
 - [ ] Daily digest generation
 - [ ] Q&A over notes
 - [ ] AI feature toggles
+- [ ] Excalidraw AI features
+  - [ ] Sketch to diagram conversion
+  - [ ] Handwriting recognition
+  - [ ] Smart shape suggestions
 
-## Version 0.8 - Collaboration
+## Version 1.1 - Basic Collaboration
 
-### Phase 1: Sync Protocol
-- [ ] CRDT implementation
-- [ ] WebSocket server
-- [ ] Real-time sync engine
-- [ ] Presence awareness
+### Phase 1: Shared Mosaics
+- [ ] Mosaic sharing mechanism
 - [ ] Permission model
-- [ ] Encryption layer
+- [ ] Basic conflict resolution
+- [ ] Change tracking
+- [ ] User management
 
 ### Phase 2: Collaboration Features
-- [ ] Shared vaults
 - [ ] Comments and annotations
-- [ ] Change tracking
 - [ ] Version history
 - [ ] Public note sharing
 - [ ] Collaboration UI
+- [ ] Basic presence indicators
 
-## Version 0.9 - Advanced Plugins
+## Version 1.2 - JavaScript Plugins
 
 ### Phase 1: JavaScript Runtime
 - [ ] QuickJS integration
@@ -223,23 +352,65 @@
 - [ ] Plugin analytics
 - [ ] Revenue sharing setup
 
-### Phase 3: Power Features
-- [ ] WASM plugin support
-- [ ] Custom note types
+### Phase 3: Advanced JavaScript Features
+- [ ] React component plugins
+- [ ] Custom UI panels
 - [ ] Advanced templates
-- [ ] Workflow automation
-- [ ] External tool integration
-- [ ] Plugin composition
+- [ ] External API integrations
+- [ ] TypeScript type definitions for plugin API
+- [ ] Plugin debugging tools
 
-## Version 1.0 - Production Ready
+## Version 1.3 - WASM & Advanced Extensibility
+
+### Phase 1: WASM Runtime
+- [ ] Wasmtime integration
+- [ ] WASI support
+- [ ] Component model
+- [ ] Language bindings (Rust, Go, C++)
+- [ ] WASM plugin examples
+
+### Phase 2: Cross-Language Plugins
+- [ ] Polyglot plugin support
+- [ ] FFI bridge for native extensions
+- [ ] Performance-critical plugins
+- [ ] Advanced sandboxing
+
+### Phase 3: Power User Features
+- [ ] Custom note types via WASM
+- [ ] Workflow automation engine
+- [ ] External tool integration
+- [ ] Plugin composition and chaining
+
+## Version 1.4 - Real-time Collaboration & Production Polish
+
+### Phase 1: CRDT Implementation
+- [ ] CRDT-based real-time editing
+- [ ] WebSocket server
+- [ ] Real-time sync engine
+- [ ] Cursor presence
+- [ ] Collaborative whiteboards
+  - [ ] Real-time drawing sync
+  - [ ] Multi-user cursors
+  - [ ] Drawing permissions
+
+### Phase 2: Advanced Collaboration
+- [ ] Operational transformation fallback
+- [ ] Branching and merging
+- [ ] Suggested edits
+- [ ] Real-time commenting
+- [ ] Session recording/playback
+
+### Phase 3: Production Ready
 
 ### Phase 1: Polish & Performance
 - [ ] Performance audit
 - [ ] Memory leak fixes
 - [ ] UI responsiveness
-- [ ] Accessibility (a11y)
+- [ ] Complete accessibility audit (WCAG 2.1 AA)
 - [ ] Internationalization (i18n)
 - [ ] Final benchmarks
+- [ ] Security audit
+- [ ] Documentation review
 
 ### Phase 2: Launch Preparation
 - [ ] Documentation website
@@ -266,11 +437,11 @@
 - [ ] All unwrap() calls removed
 
 ### Community Targets (Year 1)
-- [ ] 1,000 GitHub stars
-- [ ] 50 contributors
-- [ ] 25 third-party plugins
-- [ ] 10,000 monthly active users
-- [ ] 5 core team members
+- [ ] 100 GitHub stars
+- [ ] 10 contributors
+- [ ] 5 third-party plugins
+- [ ] 1,000 monthly active users
+- [ ] Regular release cycle established
 
 ## Development Practices
 
@@ -325,13 +496,12 @@
 
 ## Long-term Vision
 
-### Year 2 Goals
+### Year 2+ Goals
 - Mobile apps (iOS/Android)
 - Web version (WASM)
-- Enterprise features
-- Paid cloud sync
 - Plugin marketplace
 - Educational content
+- Sustainable funding model (donations/sponsorship)
 
 ### Year 3+ Ideas
 - Academic features (citations, LaTeX)

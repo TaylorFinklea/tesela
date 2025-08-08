@@ -28,6 +28,7 @@ graph TB
         GRP[Graph Service]
         SYN[Sync Service]
         AI[AI Bridge]
+        ATT[Attachment Service]
         EVT[Event Bus]
         DB[(SQLite Index)]
     end
@@ -59,6 +60,7 @@ graph TB
     API --> GRP
     API --> SYN
     API --> AI
+    API --> ATT
     API --> EVT
     
     DIR --> API
@@ -77,6 +79,7 @@ graph TB
 | Layer | Purpose | Authority |
 |-------|---------|-----------|
 | Markdown files | Primary storage | Authoritative |
+| Attachments folder | Binary files (PDFs, images, etc.) | Authoritative |
 | SQLite index | Query acceleration | Derivative |
 | Config TOML | User preferences | User-controlled |
 
@@ -89,6 +92,7 @@ blocks (id, note_id, content, type, position)
 links (source_id, target_id, type, context)
 tags (id, name, note_id)
 types (id, name, schema_json)
+attachments (id, note_id, filename, path, mime_type, size, checksum)
 
 -- FTS5 virtual table
 notes_fts (title, content)
@@ -116,6 +120,8 @@ pub trait NoteService {
     async fn delete(&self, id: NoteId) -> Result<()>;
     async fn get(&self, id: NoteId) -> Result<Note>;
     async fn link(&self, from: NoteId, to: NoteId, link_type: LinkType) -> Result<()>;
+    async fn attach(&self, note_id: NoteId, file_data: Vec<u8>, filename: &str) -> Result<AttachmentId>;
+    async fn get_attachment(&self, id: AttachmentId) -> Result<Attachment>;
 }
 
 #[async_trait]
@@ -169,13 +175,13 @@ pub enum FileSystemAccess {
 
 ### Language Support Progression
 
-#### Phase 1: Lua (v1.0)
-- **Target**: Power users, Neovim community
-- **Runtime**: `mlua` with custom sandbox
+#### Phase 1: Lua & Fennel (v1.0)
+- **Target**: Power users, Neovim community, Lisp enthusiasts
+- **Runtime**: `mlua` with custom sandbox (Fennel compiles to Lua)
 - **API**: Synchronous, event-driven
 
 ```lua
--- Example plugin: Auto-tagger
+-- Example Lua plugin: Auto-tagger
 local tesela = require("tesela")
 
 tesela.on_note_saved(function(note)
@@ -191,6 +197,22 @@ tesela.on_note_saved(function(note)
         tesela.create_task(todo, note.id)
     end
 end)
+```
+
+```fennel
+;; Example Fennel plugin: Auto-tagger
+(local tesela (require :tesela))
+
+(tesela.on-note-saved
+  (fn [note]
+    (let [content (note:content)]
+      ;; Auto-detect programming languages
+      (when (content:match "```rust")
+        (note:add-tag "rust"))
+      
+      ;; Extract TODOs
+      (each [todo (content:gmatch "TODO:%s*([^\n]+)")]
+        (tesela.create-task todo note.id)))))
 ```
 
 #### Phase 2: JavaScript/TypeScript (v1.5)
@@ -280,6 +302,8 @@ impl PluginApi {
 | Citation manager | WASM | Read/write notes, Network | Manage academic references |
 | Graph visualizer | JS/TS | Read notes | Custom graph layouts |
 | Sync adapter | Rust/WASM | Read/write, Network | Custom sync backends |
+| Org-mode bridge | Elisp | Read/write notes | Import/export org files |
+| Smart templates | Fennel | Read/write notes | Dynamic note templates |
 
 ### Plugin Distribution
 
@@ -297,10 +321,17 @@ impl PluginApi {
 | Network | gRPC + TLS | Remote clients, web UI |
 | Sync | WebDAV/S3 + E2E encryption | Multi-device |
 
-**Sync Strategy:**
-- Conflict-free replicated data types (CRDT) for real-time collaboration
-- Operational transformation for offline edits
+**Sync Strategy (v0.7):**
+- File-based sync with conflict detection
+- Last-write-wins with manual conflict resolution
 - Merkle trees for efficient diff detection
+- **P2P Option**: Any file sync tool (Syncthing, Dropbox, etc.) works from day one
+- **Server Option**: Self-hosted sync server for centralized backup
+
+**Future Sync (v1.2+):**
+- Conflict-free replicated data types (CRDT) for real-time collaboration
+- Operational transformation for concurrent edits
+- Presence awareness and live cursors
 
 ## 7. Open Risks
 
@@ -316,28 +347,73 @@ impl PluginApi {
 
 ### Phase 1: Foundation (v0.1-0.3)
 - Core library with file operations
+- Simple folder structure (notes/, attachments/) - sync-ready from day one
+- Attachment management (drag & drop support)
 - SQLite indexing
 - Basic CLI
 
-### Phase 2: Desktop (v0.4-0.6)
-- Slint desktop UI
-- Plugin system (Lua)
+### Phase 2: Desktop (v0.4)
+- Slint desktop UI with native file drag & drop
 - Local graph visualization
+- PDF and image previews inline
 
-### Phase 3: Intelligence (v0.7-0.9)
+### Phase 3: Plugin System (v0.5)
+- Plugin system foundation (Lua/Fennel)
+- Security model and sandboxing
+- Plugin API and infrastructure
+
+### Phase 4: Plugins & Whiteboarding (v0.6)
+- Example plugins and plugin marketplace
+- Excalidraw integration for whiteboarding
+
+### Phase 5: Code Execution (v0.7)
+- Code execution in notes (like org-babel)
+- Multiple language support
+- Sandboxed execution environment
+
+### Phase 6: Mobile Apps (v0.8)
+- iOS and Android apps with Slint
+- Touch-optimized UI
+- Quick capture and offline sync
+- Platform-specific integrations
+
+### Phase 7: Sync (v0.9)
+- Native sync protocol for real-time updates
+- Platform-specific sync (iCloud, Google Drive)
+- Optional self-hosted sync server
+- Better conflict resolution than file-based sync
+
+### Phase 8: Intelligence (v1.0)
 - AI integration (local LLM, OpenAI bridge)
 - Smart linking suggestions
 - Content summarization
+- Excalidraw AI features (sketch to diagram)
 
-### Phase 4: Collaboration (v1.0+)
-- Self-hosted sync server
-- CRDT-based real-time editing
-- Mobile clients
+### Phase 9: Basic Collaboration (v1.1)
+- Shared mosaics
+- Comments and annotations
+- Version history
+
+### Phase 10: JavaScript Plugins (v1.2)
+- JavaScript/TypeScript plugin support
+- npm ecosystem compatibility
+- React component plugins
+
+### Phase 11: WASM & Advanced (v1.3)
 - WASM plugin runtime
+- Cross-language plugin support
+- Advanced plugin composition
+
+### Phase 12: Real-time Collaboration (v1.4+)
+- CRDT-based real-time editing
+- Collaborative Excalidraw boards
+- Presence awareness
+- Session recording
 
 ### Future Considerations
 - **Performance**: Incremental indexing, parallel query execution
-- **Graph Database**: Consider embedded graph DB (e.g., `indradb`) for complex relationship queries
+- **Graph Visualization**: Advanced graph layouts and 3D visualization (like Obsidian's graph view)
+- **Code Execution**: Babel-like code blocks with sandboxed runtimes
 - **Federation**: ActivityPub for public notes
 - **Export**: Pandoc integration, static site generation
 - **Analytics**: Local knowledge graph metrics
