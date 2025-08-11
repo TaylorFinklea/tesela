@@ -151,6 +151,14 @@ cargo test
 cargo run -- init ~/test-mosaic
 ```
 
+### Developer Documentation
+
+- **[STRUCTURE.md](STRUCTURE.md)**: Complete guide to the project file structure
+- **[architecture.md](architecture.md)**: System design and architectural decisions  
+- **[plan.md](plan.md)**: Development roadmap with task tracking
+
+For new contributors, start by reading `STRUCTURE.md` to understand how the codebase is organized and what each file does.
+
 ### Code Style
 
 - Follow Rust conventions

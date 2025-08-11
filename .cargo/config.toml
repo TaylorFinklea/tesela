@@ -1,0 +1,16 @@
+[target.x86_64-apple-darwin]
+rustflags = [
+    "-L", "/usr/lib",
+    "-L", "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib",
+]
+
+[target.aarch64-apple-darwin]
+rustflags = [
+    "-L", "/usr/lib",
+    "-L", "/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/lib",
+]
+
+# Alternative approach if the above doesn't work:
+# Use system's native linking without explicitly requiring iconv
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-liconv"]

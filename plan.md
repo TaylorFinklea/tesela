@@ -47,17 +47,35 @@
 - [ ] Database tests with fixtures
 
 ### Phase 4: Basic CLI
-- [ ] CLI structure with `clap`
-- [ ] `tesela init` - Initialize mosaic with clean folder structure
-- [ ] `tesela new [title]` - Create note
-- [ ] `tesela list` - List recent notes
+- [x] CLI structure with `clap`
+- [x] `tesela init` - Initialize mosaic with clean folder structure
+- [x] `tesela new [title]` - Create note
+- [x] `tesela list` - List recent notes
 - [ ] `tesela cat [id]` - Display note
 - [ ] `tesela attach [note] [file]` - Attach file to note
 - [ ] `tesela export [note] [format]` - Export note (markdown, HTML)
-- [ ] Configuration file support (TOML)
+- [x] Configuration file support (TOML)
 - [ ] Basic undo/redo system design
-- [ ] Mosaic structure: single folder with notes/ and attachments/ subdirectories
-- [ ] All files in one place - ready for any sync tool (Syncthing, Dropbox, etc.)
+- [x] Mosaic structure: single folder with notes/ and attachments/ subdirectories
+- [x] All files in one place - ready for any sync tool (Syncthing, Dropbox, etc.)
+
+### Phase 4.5: Testing Foundation
+- [x] Unit tests for `init` command
+- [x] Unit tests for `new` command  
+- [x] Unit tests for `list` command
+- [x] Integration tests for CLI workflow (12 tests passing)
+- [x] Test helper utilities for file operations
+- [x] Test fixtures for mock notes/mosaics
+- [x] Fixed macOS linking issues with .cargo/config.toml
+- [ ] CI pipeline for automated testing (GitHub Actions workflow created)
+
+### Phase 4.6: Documentation Foundation
+- [x] Project structure documentation (STRUCTURE.md)
+- [x] Module-level documentation in source files
+- [x] Inline function documentation with examples
+- [x] Developer documentation section in README
+- [x] Architecture documentation maintained
+- [x] Development roadmap tracking (this file)
 
 ## Version 0.2 - Indexing & Search
 
