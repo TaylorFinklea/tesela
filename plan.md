@@ -51,7 +51,7 @@
 - [x] `tesela init` - Initialize mosaic with clean folder structure
 - [x] `tesela new [title]` - Create note
 - [x] `tesela list` - List recent notes
-- [ ] `tesela cat [id]` - Display note
+- [x] `tesela cat [id]` - Display note
 - [ ] `tesela attach [note] [file]` - Attach file to note
 - [ ] `tesela export [note] [format]` - Export note (markdown, HTML)
 - [x] Configuration file support (TOML)

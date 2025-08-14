@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 
-use tesela::{create_note, init_mosaic, list_notes};
+use tesela::{cat_note, create_note, init_mosaic, list_notes};
 
 /// Main CLI structure for Tesela.
 ///
@@ -37,6 +37,11 @@ enum Commands {
     },
     /// List recent notes
     List,
+    /// Display a note's content
+    Cat {
+        /// Note identifier (filename or partial name)
+        note: String,
+    },
     /// Search your notes
     Search {
         /// Search query
@@ -69,6 +74,12 @@ fn main() {
         }
         Some(Commands::List) => {
             if let Err(e) = list_notes() {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Cat { note }) => {
+            if let Err(e) = cat_note(note) {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }

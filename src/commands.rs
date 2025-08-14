@@ -243,6 +243,123 @@ pub fn list_notes() -> Result<()> {
     Ok(())
 }
 
+/// Displays the contents of a note.
+///
+/// The note can be identified by:
+/// - Full filename (e.g., "my-note.md")
+/// - Filename without extension (e.g., "my-note")
+/// - Partial name match (e.g., "note" matches "my-note.md")
+///
+/// If multiple notes match, shows a list of matches and asks the user to be more specific.
+///
+/// # Arguments
+/// * `note_identifier` - Full or partial note name/filename
+///
+/// # Errors
+/// Returns an error if:
+/// - No mosaic exists in the current directory
+/// - No notes match the identifier
+/// - Note file cannot be read
+pub fn cat_note(note_identifier: &str) -> Result<()> {
+    // Check if we're in a mosaic
+    if !Path::new("tesela.toml").exists() {
+        return Err(anyhow!("❌ No mosaic found. Run 'tesela init' first."));
+    }
+
+    // Check if notes directory exists
+    let notes_dir = Path::new("notes");
+    if !notes_dir.exists() {
+        return Err(anyhow!("📁 No notes directory found."));
+    }
+
+    // Find matching notes
+    let entries = fs::read_dir(notes_dir).context("Failed to read notes directory")?;
+
+    let mut matches = Vec::new();
+    let search_term = note_identifier.to_lowercase();
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.extension().and_then(|s| s.to_str()) == Some("md") {
+            let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+
+            let filename_lower = filename.to_lowercase();
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+
+            // Check for exact match (with or without .md)
+            if filename_lower == search_term || stem == search_term {
+                matches.clear();
+                matches.push(path);
+                break;
+            }
+
+            // Check for partial match
+            if filename_lower.contains(&search_term) || stem.contains(&search_term) {
+                matches.push(path);
+            }
+        }
+    }
+
+    // Handle results
+    match matches.len() {
+        0 => {
+            return Err(anyhow!("❌ No notes found matching '{}'", note_identifier));
+        }
+        1 => {
+            // Display the single matching note
+            let path = &matches[0];
+            let content = fs::read_to_string(path)
+                .with_context(|| format!("Failed to read note: {}", path.display()))?;
+
+            // Extract title for display
+            let filename = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown");
+            let title = extract_title_from_content(&content, filename);
+
+            println!("📄 {}", title);
+            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+            println!("{}", content);
+
+            Ok(())
+        }
+        _ => {
+            // Multiple matches - show them and ask for more specific input
+            println!("🔍 Multiple notes match '{}':", note_identifier);
+            println!();
+            for path in matches.iter() {
+                let filename = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("unknown");
+
+                // Try to get title
+                if let Ok(content) = fs::read_to_string(path) {
+                    let stem = path
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("unknown");
+                    let title = extract_title_from_content(&content, stem);
+                    println!("  • {} [{}]", title, filename);
+                } else {
+                    println!("  • {}", filename);
+                }
+            }
+            println!();
+            println!("💡 Please be more specific with your search term.");
+
+            Err(anyhow!("Multiple matches found"))
+        }
+    }
+}
+
 /// Extracts a title from note content using multiple strategies.
 ///
 /// # Priority
@@ -504,5 +621,126 @@ No frontmatter here, just content."#;
 
         let one_week_ago = now - Duration::from_secs(604800);
         assert_eq!(format_time_ago(one_week_ago), "1 week ago");
+    }
+
+    #[test]
+    fn test_cat_note_no_mosaic() {
+        let temp_dir = TempDir::new().unwrap();
+        let original_dir = env::current_dir().unwrap();
+        env::set_current_dir(temp_dir.path()).unwrap();
+
+        let result = cat_note("test");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No mosaic found"));
+
+        env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_cat_note_exact_match() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let original_dir = env::current_dir()?;
+        env::set_current_dir(temp_dir.path())?;
+
+        // Initialize mosaic and create a note
+        init_mosaic(".")?;
+        create_note("Test Note")?;
+
+        // Test exact match without extension
+        let result = cat_note("test-note");
+        assert!(result.is_ok());
+
+        // Test exact match with extension
+        let result = cat_note("test-note.md");
+        assert!(result.is_ok());
+
+        env::set_current_dir(original_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_cat_note_partial_match() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let original_dir = env::current_dir()?;
+        env::set_current_dir(temp_dir.path())?;
+
+        // Initialize mosaic and create a note
+        init_mosaic(".")?;
+        create_note("My Special Note")?;
+
+        // Test partial match
+        let result = cat_note("special");
+        assert!(result.is_ok());
+
+        env::set_current_dir(original_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_cat_note_multiple_matches() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let original_dir = env::current_dir()?;
+        env::set_current_dir(temp_dir.path())?;
+
+        // Initialize mosaic and create multiple notes with similar names
+        init_mosaic(".")?;
+        create_note("Test Note One")?;
+        create_note("Test Note Two")?;
+
+        // Test ambiguous match
+        let result = cat_note("test");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Multiple matches found"));
+
+        env::set_current_dir(original_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_cat_note_no_matches() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let original_dir = env::current_dir()?;
+        env::set_current_dir(temp_dir.path())?;
+
+        // Initialize mosaic with some notes
+        init_mosaic(".")?;
+        create_note("First Note")?;
+        create_note("Second Note")?;
+
+        // Test non-existent note
+        let result = cat_note("nonexistent");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No notes found matching"));
+
+        env::set_current_dir(original_dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_cat_note_no_notes_directory() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let original_dir = env::current_dir()?;
+        env::set_current_dir(temp_dir.path())?;
+
+        // Initialize mosaic and remove notes directory
+        init_mosaic(".")?;
+        fs::remove_dir("notes")?;
+
+        // Test with missing notes directory
+        let result = cat_note("any");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("No notes directory found"));
+
+        env::set_current_dir(original_dir)?;
+        Ok(())
     }
 }

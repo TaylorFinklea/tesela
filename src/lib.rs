@@ -5,7 +5,7 @@
 pub mod commands;
 
 // Re-export commonly used items
-pub use commands::{create_note, init_mosaic, list_notes};
+pub use commands::{cat_note, create_note, init_mosaic, list_notes};
 
 #[cfg(test)]
 mod tests {
