@@ -1,6 +1,10 @@
 use clap::{Parser, Subcommand};
 
-use tesela::{cat_note, create_note, init_mosaic, list_notes};
+use tesela::{
+    attach_file, backup_mosaic, benchmark_performance, cat_note, create_note, daily_note,
+    export_note, generate_completions, import_notes, init_mosaic, interactive_mode, link_notes,
+    list_notes, search_notes, show_graph,
+};
 
 /// Main CLI structure for Tesela.
 ///
@@ -42,13 +46,55 @@ enum Commands {
         /// Note identifier (filename or partial name)
         note: String,
     },
+    /// Attach a file to a note
+    Attach {
+        /// Note identifier (filename or partial name)
+        note: String,
+        /// Path to the file to attach
+        file: String,
+    },
+    /// Export a note to different formats
+    Export {
+        /// Note identifier (filename or partial name)
+        note: String,
+        /// Export format (html, markdown, txt)
+        format: String,
+    },
     /// Search your notes
     Search {
         /// Search query
         query: String,
     },
+    /// Create a link between two notes
+    Link {
+        /// Source note identifier
+        from: String,
+        /// Target note identifier
+        to: String,
+    },
+    /// Show connections for a note
+    Graph {
+        /// Note identifier to show connections for
+        note: String,
+    },
     /// Open today's daily note
     Daily,
+    /// Create a backup of the mosaic
+    Backup,
+    /// Import notes from external sources
+    Import {
+        /// Path to file or directory to import
+        path: String,
+    },
+    /// Start interactive mode
+    Interactive,
+    /// Generate shell completions
+    Completions {
+        /// Shell type (bash, zsh, fish, powershell, elvish)
+        shell: String,
+    },
+    /// Run performance benchmarks
+    Benchmark,
 }
 
 /// Main entry point for the Tesela CLI application.
@@ -84,16 +130,71 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Some(Commands::Attach { note, file }) => {
+            if let Err(e) = attach_file(note, file) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Export { note, format }) => {
+            if let Err(e) = export_note(note, format) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
         Some(Commands::Search { query }) => {
-            println!("🔍 Searching for: '{}'", query);
-            println!("📄 Found 3 notes containing '{}'", query);
+            if let Err(e) = search_notes(query) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Link { from, to }) => {
+            if let Err(e) = link_notes(from, to) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Graph { note }) => {
+            if let Err(e) = show_graph(note) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
         }
         Some(Commands::Daily) => {
-            println!(
-                "📅 Opening daily note for {}",
-                chrono::Local::now().format("%Y-%m-%d")
-            );
-            println!("🌱 Ready to capture today's thoughts!");
+            if let Err(e) = daily_note() {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Backup) => {
+            if let Err(e) = backup_mosaic() {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Import { path }) => {
+            if let Err(e) = import_notes(path) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Interactive) => {
+            if let Err(e) = interactive_mode() {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Completions { shell }) => {
+            if let Err(e) = generate_completions(shell) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Benchmark) => {
+            if let Err(e) = benchmark_performance() {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
         }
         None => {
             println!("🗿 Tesela - Build your knowledge mosaic");

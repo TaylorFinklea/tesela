@@ -1,11 +1,50 @@
 //! Tesela - A keyboard-first, file-based note-taking system
 //!
 //! This library provides the core functionality for the Tesela note-taking application.
+//!
+//! # Architecture
+//!
+//! Tesela is built with a modular architecture:
+//! - **Core**: Fundamental components (storage, database, config, error handling)
+//! - **Commands**: CLI command implementations
+//! - **API**: Async API layer (future)
+//! - **UI**: User interface components (future)
 
 pub mod commands;
+pub mod core;
 
-// Re-export commonly used items
-pub use commands::{cat_note, create_note, init_mosaic, list_notes};
+// Re-export commonly used items from commands
+pub use commands::{
+    attach_file, backup_mosaic, benchmark_performance, cat_note, create_note, daily_note,
+    export_note, generate_completions, import_notes, init_mosaic, interactive_mode, link_notes,
+    list_notes, search_notes, show_graph,
+};
+
+// Re-export core types for convenience
+pub use core::{Config, Database, Note, Result, Storage, TeselaError};
+
+/// Initialize the logging system
+pub fn init_logging(level: &str) -> anyhow::Result<()> {
+    use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(env_filter)
+        .init();
+
+    Ok(())
+}
+
+/// Get the version string for Tesela
+pub fn version() -> String {
+    format!(
+        "{} ({})",
+        env!("CARGO_PKG_VERSION"),
+        option_env!("GIT_HASH").unwrap_or("unknown")
+    )
+}
 
 #[cfg(test)]
 mod tests {
@@ -145,5 +184,11 @@ mod tests {
         list_notes().unwrap();
 
         env::set_current_dir(original_dir).unwrap();
+    }
+
+    #[test]
+    fn test_version() {
+        let version = version();
+        assert!(version.contains(env!("CARGO_PKG_VERSION")));
     }
 }

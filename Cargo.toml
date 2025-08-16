@@ -12,9 +12,61 @@ name = "tesela"
 path = "src/lib.rs"
 
 [dependencies]
+# CLI and configuration
 clap = { version = "4.4", features = ["derive"] }
+clap_complete = "4.4"
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Time handling
 chrono = { version = "0.4", features = ["serde"] }
+
+# Error handling and logging
 anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Markdown and frontmatter parsing
+pulldown-cmark = "0.9"
+gray_matter = "0.2"
+
+# Database
+sqlx = { version = "0.7", features = [
+  "runtime-tokio-native-tls",
+  "sqlite",
+  "chrono",
+] }
+tokio = { version = "1.35", features = ["full"] }
+
+# File operations and watching
+notify = "6.1"
+walkdir = "2.4"
+sha2 = "0.10"
+mime_guess = "2.0"
+
+# Interactive CLI
+dialoguer = "0.11"
+indicatif = "0.17"
+
+# Directory utilities
+dirs = "5.0"
+
+# Testing and benchmarking
+criterion = { version = "0.5", optional = true }
 
 [dev-dependencies]
 tempfile = "3.8"
+tokio-test = "0.4"
+pretty_assertions = "1.4"
+
+[features]
+default = []
+bench = ["criterion"]
+
+# Benchmarks will be added later
+# [[bench]]
+# name = "search"
+# harness = false
+# required-features = ["bench"]
