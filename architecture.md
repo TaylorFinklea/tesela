@@ -2,21 +2,25 @@
 
 ## 1. Overview
 
-Tesela is a keyboard-first, file-based note-taking system built on the **Island Core** pattern. Notes are Markdown files forming a knowledge mosaic through bidirectional links and typed relationships. The architecture prioritizes data ownership, offline-first operation, and extensibility.
+Tesela is a keyboard-first, file-based note-taking system built on the **Island Core** pattern with **outliner architecture**. Notes are Markdown files with block-based structure forming a knowledge mosaic through bidirectional links and hierarchical inheritance. The architecture prioritizes data ownership, offline-first operation, and extensibility.
 
 **Key Principles:**
 - Files are truth, database is cache
 - Core is headless, UIs are thin shells  
 - All communication through async trait API
 - Plugins sandboxed, no direct file/DB access
+- Outliner format with block inheritance
+- Organized directory separation (notes/, dailies/, attachments/)
 
 ## 2. Component Diagram
 
 ```mermaid
 graph TB
     subgraph "User Space"
-        MD[Markdown Files]
-        CFG[Config Files]
+        NOTES[notes/ - Regular Notes]
+        DAILIES[dailies/ - Daily Notes]
+        ATT[attachments/ - File Attachments]
+        CFG[tesela.toml - Config]
     end
     
     subgraph "Core Island"
@@ -45,7 +49,9 @@ graph TB
         PLG[Plugin Runtime]
     end
     
-    MD <--> NE
+    NOTES <--> NE
+    DAILIES <--> NE
+    ATT <--> ATT
     NE <--> DB
     NE --> IDX
     IDX --> DB
@@ -78,30 +84,32 @@ graph TB
 
 | Layer | Purpose | Authority |
 |-------|---------|-----------|
-| Markdown files | Primary storage | Authoritative |
-| Attachments folder | Binary files (PDFs, images, etc.) | Authoritative |
-| SQLite index | Query acceleration | Derivative |
-| Config TOML | User preferences | User-controlled |
+| notes/ directory | Regular notes in outliner format | Authoritative |
+| dailies/ directory | Daily notes with date-based naming | Authoritative |
+| attachments/ directory | Binary files (PDFs, images, etc.) | Authoritative |
+| SQLite index | Cross-directory query acceleration | Derivative |
+| tesela.toml | User preferences and configuration | User-controlled |
 
 ### SQLite Schema (v1)
 
 ```sql
--- Core tables
-notes (id, path, title, created, modified, checksum)
-blocks (id, note_id, content, type, position)
+-- Core tables (v0.3.7)
+notes (id, path, title, created, modified, checksum, directory)
+blocks (id, note_id, content, type, position, parent_id)
 links (source_id, target_id, type, context)
-tags (id, name, note_id)
+tags (id, name, note_id, inherited)
 types (id, name, schema_json)
 attachments (id, note_id, filename, path, mime_type, size, checksum)
 
--- FTS5 virtual table
-notes_fts (title, content)
+-- FTS5 virtual table with cross-directory support
+notes_fts (title, content, directory)
 ```
 
 ### Data Flow
-1. **Write**: API → Note Engine → Markdown file → Indexer → SQLite → Cache invalidation
-2. **Read**: API → Query Engine → Cache (hot path) → SQLite (warm path) → Markdown (fallback)
+1. **Write**: API → Note Engine → Markdown file (notes/ or dailies/) → Indexer → SQLite → Cache invalidation
+2. **Read**: API → Query Engine → Cache (hot path) → SQLite (warm path) → Cross-directory scan (fallback)
 3. **External edit**: File watcher → Indexer → SQLite update → Cache invalidation → Event broadcast
+4. **Cross-directory operations**: API → Scan both notes/ and dailies/ → Merge results → Return unified view
 
 ### Cache Strategy
 - LRU cache for frequently accessed notes and queries
@@ -345,22 +353,27 @@ impl PluginApi {
 
 ## 8. Roadmap / Future Enhancements
 
-### Phase 1: Foundation (v0.1-0.3)
-- Core library with file operations
-- Simple folder structure (notes/, attachments/) - sync-ready from day one
-- Attachment management (drag & drop support)
-- SQLite indexing
-- Basic CLI
+### Phase 1: Foundation (v0.1-0.3) ✅ COMPLETE
+- ✅ Core library with outliner-format file operations
+- ✅ Organized folder structure (notes/, dailies/, attachments/) - sync-ready
+- ✅ Attachment management with file organization
+- ✅ SQLite indexing with cross-directory support
+- ✅ Complete CLI with intelligent autocomplete and cross-directory functionality
+- ✅ Daily notes separation with proper organization
+- ✅ Smart autocomplete with title-to-filename mapping
 
 ### Phase 2: Desktop (v0.4)
 - Slint desktop UI with native file drag & drop
-- Local graph visualization
+- Local graph visualization with outliner block relationships
 - PDF and image previews inline
+- Cross-directory note browsing and editing
+- Block-based editing with inheritance visualization
 
 ### Phase 3: Plugin System (v0.5)
 - Plugin system foundation (Lua/Fennel)
 - Security model and sandboxing
-- Plugin API and infrastructure
+- Plugin API with outliner block access
+- Cross-directory plugin operations
 
 ### Phase 4: Plugins & Whiteboarding (v0.6)
 - Example plugins and plugin marketplace
@@ -373,9 +386,10 @@ impl PluginApi {
 
 ### Phase 6: Mobile Apps (v0.8)
 - iOS and Android apps with Slint
-- Touch-optimized UI
+- Touch-optimized outliner editing
 - Quick capture and offline sync
 - Platform-specific integrations
+- Cross-directory mobile operations
 
 ### Phase 7: Sync (v0.9)
 - Native sync protocol for real-time updates
@@ -385,9 +399,10 @@ impl PluginApi {
 
 ### Phase 8: Intelligence (v1.0)
 - AI integration (local LLM, OpenAI bridge)
-- Smart linking suggestions
-- Content summarization
-- Excalidraw AI features (sketch to diagram)
+- Smart linking suggestions with block inheritance
+- Content summarization across directories
+- Block-aware AI features
+- Outliner structure optimization suggestions
 
 ### Phase 9: Basic Collaboration (v1.1)
 - Shared mosaics

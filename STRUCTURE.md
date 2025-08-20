@@ -9,7 +9,8 @@ tesela/
 ├── src/                        # Source code
 │   ├── main.rs                 # CLI entry point
 │   ├── lib.rs                  # Library entry point
-│   └── commands.rs             # Command implementations
+│   └── commands.rs             # Command implementations with cross-directory support
+├── dailies/                    # Daily notes (when in a mosaic)
 ├── tests/                      # Test files
 │   ├── cli_integration.rs      # Integration tests for CLI
 │   └── fixtures/               # Test data and fixtures
@@ -63,9 +64,13 @@ tesela/
   - Manages note creation, listing, and mosaic initialization
   - Provides error handling with detailed context
 - **Key Functions**:
-  - `init_mosaic(path)`: Creates a new mosaic directory structure
-  - `create_note(title)`: Creates a new markdown note with frontmatter
-  - `list_notes()`: Lists all notes in the current mosaic
+  - `init_mosaic(path)`: Creates a new mosaic directory structure with notes/, dailies/, and attachments/
+  - `create_note(title)`: Creates a new markdown note with outliner format
+  - `daily_note()`: Creates daily notes in dailies/ directory
+  - `open_note_in_editor()`: Opens notes from both notes/ and dailies/ directories
+  - `search_notes()`: Searches content across both directories with labeling
+  - `get_note_names_with_timestamps()`: Scans both directories for autocomplete
+  - `find_matching_notes()`: Finds notes with title-to-filename mapping
   - `extract_title_from_content()`: Extracts title from note content
   - `format_time_ago()`: Formats timestamps as human-readable strings
 - **Internal Tests**: Contains unit tests for all functions
@@ -185,26 +190,42 @@ When a user runs `tesela init`, it creates:
 ```
 <mosaic-directory>/
 ├── tesela.toml                # Mosaic configuration
-├── notes/                      # All markdown notes
-│   └── *.md                    # Individual note files
+├── notes/                      # Regular markdown notes
+│   └── *.md                    # Topic-based note files
+├── dailies/                    # Daily notes
+│   └── daily-*.md             # Date-based note files
 └── attachments/                # File attachments
     └── <files>                 # Images, PDFs, etc.
 ```
 
 ### Note File Structure
 
-Each note in `notes/` follows this format:
+Each note in `notes/` and `dailies/` follows the outliner format:
 
 ```markdown
 ---
 title: "Note Title"
 created: YYYY-MM-DD HH:MM:SS
+last_opened: YYYY-MM-DD HH:MM:SS
 tags: []
 ---
+-
+```
 
-# Note Title
+### Block Inheritance
 
-Note content...
+In the outliner format, child blocks inherit properties from parent blocks:
+
+```markdown
+---
+title: "Project Planning"
+tags: ["work"]
+---
+- Project Alpha #urgent
+  - Task 1 (inherits #urgent and "work" tags)
+  - Task 2 (inherits #urgent and "work" tags)
+- Project Beta
+  - Different task (inherits "work" tag only)
 ```
 
 ## Adding New Features
@@ -212,9 +233,29 @@ Note content...
 When adding new functionality:
 
 1. **New Commands**: Add to `Commands` enum in `src/main.rs` and implement in `src/commands.rs`
-2. **New Modules**: Create new file in `src/` and declare in `src/lib.rs`
-3. **Tests**: Add unit tests in the module, integration tests in `tests/`
-4. **Documentation**: Update this file and relevant sections of `plan.md`
+2. **Cross-Directory Support**: Ensure new commands work with both `notes/` and `dailies/` directories
+3. **New Modules**: Create new file in `src/` and declare in `src/lib.rs`
+4. **Tests**: Add unit tests in the module, integration tests in `tests/`
+5. **Documentation**: Update this file and relevant sections of `plan.md`
+
+## Current Features (v0.3.7)
+
+### Cross-Directory Operations
+- **Edit**: `tesela -e "partial-name"` searches both directories
+- **Search**: `tesela -s "query"` searches all content with directory labels
+- **Autocomplete**: Tab completion spans both directories without duplicates
+- **Interactive Mode**: All operations work seamlessly across directories
+
+### Outliner Format
+- All notes use minimal outliner structure starting with `-`
+- Block inheritance for tags and properties
+- Future-ready for hierarchical operations and UI development
+
+### Smart Features
+- Intelligent autocomplete with title-to-filename mapping
+- Time-based ordering of suggestions
+- Duplicate detection and resolution
+- Cross-directory note discovery
 
 ## Development Workflow
 

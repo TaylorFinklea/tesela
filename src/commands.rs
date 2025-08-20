@@ -9,7 +9,10 @@
 //! where they can be properly displayed to the user.
 
 use anyhow::{anyhow, Context, Result};
+use dialoguer::Completion;
+use std::cell::RefCell;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -20,6 +23,7 @@ use std::time::SystemTime;
 /// path/
 /// ├── tesela.toml      # Configuration file
 /// ├── notes/           # Directory for markdown notes
+/// ├── dailies/         # Directory for daily notes
 /// └── attachments/     # Directory for file attachments
 /// ```
 ///
@@ -39,12 +43,15 @@ pub fn init_mosaic(path: &str) -> Result<()> {
     // Create subdirectories
     let notes_dir = Path::new(path).join("notes");
     let attachments_dir = Path::new(path).join("attachments");
+    let dailies_dir = Path::new(path).join("dailies");
 
-    println!("📁 Creating notes/ and attachments/ directories...");
+    println!("📁 Creating notes/, dailies/, and attachments/ directories...");
 
     fs::create_dir_all(&notes_dir).context("Failed to create notes directory")?;
 
     fs::create_dir_all(&attachments_dir).context("Failed to create attachments directory")?;
+
+    fs::create_dir_all(&dailies_dir).context("Failed to create dailies directory")?;
 
     // Create basic configuration file
     let config_path = Path::new(path).join("tesela.toml");
@@ -73,6 +80,7 @@ daily_notes = true
 
     println!("✨ Your knowledge mosaic is ready!");
     println!("📂 Created: {}", notes_dir.display());
+    println!("📅 Created: {}", dailies_dir.display());
     println!("📎 Created: {}", attachments_dir.display());
     println!("⚙️  Created: {}", config_path.display());
 
@@ -122,27 +130,19 @@ pub fn create_note(title: &str) -> Result<()> {
 
     let note_path = Path::new("notes").join(format!("{}.md", safe_filename));
 
-    // Create note content with frontmatter
+    // Create note content with frontmatter and outliner format
     let note_content = format!(
         r#"---
 title: "{}"
 created: {}
+last_opened: {}
 tags: []
 ---
-
-# {}
-
-Your note content goes here...
-
-## Links
-- Link to other notes with [[Note Name]]
-
-## Tags
-Use #tag to add tags to your note
+-
 "#,
         title,
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-        title
+        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
     );
 
     fs::write(&note_path, note_content)
@@ -929,13 +929,13 @@ pub fn daily_note() -> Result<()> {
         ));
     }
 
-    let notes_dir = Path::new("notes");
-    if !notes_dir.exists() {
-        fs::create_dir_all(notes_dir)?;
+    let dailies_dir = Path::new("dailies");
+    if !dailies_dir.exists() {
+        fs::create_dir_all(dailies_dir)?;
     }
 
     let daily_filename = format!("daily-{}.md", today);
-    let daily_path = notes_dir.join(&daily_filename);
+    let daily_path = dailies_dir.join(&daily_filename);
 
     if daily_path.exists() {
         println!("📖 Daily note already exists: {}", daily_filename);
@@ -945,42 +945,20 @@ pub fn daily_note() -> Result<()> {
         println!("{}", content);
     } else {
         // Create new daily note
-        let weekday = Local::now().format("%A").to_string();
         let formatted_date = Local::now().format("%B %d, %Y").to_string();
 
         let daily_content = format!(
             r#"---
 title: "Daily Note - {}"
 created: {}
+last_opened: {}
 tags: ["daily"]
 ---
-
-# Daily Note - {} ({})
-
-## Today's Focus
 -
-
-## Tasks
-- [ ]
-- [ ]
-- [ ]
-
-## Notes
-
-
-## Reflections
-
-
-## Tomorrow's Prep
--
-
----
-*Created with Tesela*
 "#,
             formatted_date,
             Local::now().format("%Y-%m-%d %H:%M:%S"),
-            formatted_date,
-            weekday
+            Local::now().format("%Y-%m-%d %H:%M:%S")
         );
 
         fs::write(&daily_path, daily_content)?;
@@ -988,6 +966,157 @@ tags: ["daily"]
         println!("📝 Daily notes help track progress and maintain focus");
     }
 
+    Ok(())
+}
+
+/// Update the frontmatter of a note file with the last_opened timestamp
+///
+/// This function reads a markdown file, parses its frontmatter, and adds or updates
+/// the `last_opened` field with the current timestamp. If the file doesn't have
+/// frontmatter, it creates it.
+fn update_last_opened_timestamp(file_path: &Path) -> Result<()> {
+    use chrono::Local;
+
+    if !file_path.exists() {
+        return Ok(()); // File doesn't exist, nothing to update
+    }
+
+    let content = fs::read_to_string(file_path)?;
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    let new_content = if content.starts_with("---\n") {
+        // File has frontmatter
+        let parts: Vec<&str> = content.splitn(3, "---\n").collect();
+        if parts.len() >= 3 {
+            let frontmatter = parts[1];
+            let body = parts[2];
+
+            // Parse frontmatter lines
+            let mut frontmatter_lines: Vec<String> =
+                frontmatter.lines().map(|s| s.to_string()).collect();
+
+            // Check if last_opened already exists
+            let mut found_last_opened = false;
+            for line in &mut frontmatter_lines {
+                if line.starts_with("last_opened:") {
+                    *line = format!("last_opened: {}", now);
+                    found_last_opened = true;
+                    break;
+                }
+            }
+
+            // If not found, add it after created if it exists, otherwise at the end
+            if !found_last_opened {
+                let mut inserted = false;
+                for (i, line) in frontmatter_lines.iter().enumerate() {
+                    if line.starts_with("created:") {
+                        frontmatter_lines.insert(i + 1, format!("last_opened: {}", now));
+                        inserted = true;
+                        break;
+                    }
+                }
+                if !inserted {
+                    frontmatter_lines.push(format!("last_opened: {}", now));
+                }
+            }
+
+            format!("---\n{}\n---\n{}", frontmatter_lines.join("\n"), body)
+        } else {
+            // Malformed frontmatter, just add to beginning
+            format!("---\nlast_opened: {}\n---\n{}", now, content)
+        }
+    } else {
+        // No frontmatter, create it
+        format!("---\nlast_opened: {}\n---\n{}", now, content)
+    };
+
+    fs::write(file_path, new_content)?;
+    Ok(())
+}
+
+/// Create and open today's daily note in the editor
+///
+/// This function creates today's daily note (if it doesn't exist) and then
+/// immediately opens it in the configured editor (vim or $EDITOR).
+///
+/// # Examples
+///
+/// ```no_run
+/// use tesela::daily_note_and_edit;
+/// daily_note_and_edit()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn daily_note_and_edit() -> Result<()> {
+    use chrono::Local;
+    use std::env;
+    use std::process::Command;
+
+    let today = Local::now().format("%Y-%m-%d").to_string();
+    println!("📅 Opening daily note for {} in editor...", today);
+
+    // Check if mosaic exists
+    if !Path::new("tesela.toml").exists() {
+        return Err(anyhow::anyhow!(
+            "No mosaic found. Run 'tesela init' first to create one."
+        ));
+    }
+
+    let dailies_dir = Path::new("dailies");
+    if !dailies_dir.exists() {
+        fs::create_dir_all(dailies_dir)?;
+    }
+
+    let daily_filename = format!("daily-{}.md", today);
+    let daily_path = dailies_dir.join(&daily_filename);
+
+    if !daily_path.exists() {
+        // Create new daily note
+        let formatted_date = Local::now().format("%B %d, %Y").to_string();
+
+        let daily_content = format!(
+            r#"---
+title: "Daily Note - {}"
+created: {}
+last_opened: {}
+tags: ["daily"]
+---
+-
+"#,
+            formatted_date,
+            Local::now().format("%Y-%m-%d %H:%M:%S"),
+            Local::now().format("%Y-%m-%d %H:%M:%S")
+        );
+
+        fs::write(&daily_path, daily_content)?;
+        println!("✅ Created daily note: {}", daily_filename);
+    } else {
+        println!("📖 Daily note already exists: {}", daily_filename);
+    }
+
+    // Update last_opened timestamp before opening in editor
+    if let Err(e) = update_last_opened_timestamp(&daily_path) {
+        eprintln!("⚠️  Warning: Failed to update last_opened timestamp: {}", e);
+    }
+
+    // Get editor from environment or default to vim
+    let editor = env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+
+    println!("📝 Opening '{}' in {}...", daily_path.display(), editor);
+
+    // Execute the editor
+    let status = Command::new(&editor)
+        .arg(&daily_path)
+        .status()
+        .context("Failed to launch editor")?;
+
+    if !status.success() {
+        return Err(anyhow!(
+            "Editor exited with error code: {:?}",
+            status.code()
+        ));
+    }
+
+    println!("✅ Daily note editing completed");
     Ok(())
 }
 
@@ -1010,7 +1139,6 @@ tags: ["daily"]
 /// ```
 pub fn backup_mosaic() -> Result<()> {
     use chrono::Local;
-    use std::process::Command;
 
     println!("💾 Creating mosaic backup...");
 
@@ -1152,45 +1280,613 @@ pub fn import_notes(source_path: &str) -> Result<()> {
 /// interactive_mode()?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub fn interactive_mode() -> Result<()> {
-    use dialoguer::{theme::ColorfulTheme, Input, Select};
 
+/// Open a note in an external editor (vim by default)
+///
+/// This function finds a note by identifier and opens it in the user's
+/// preferred editor. Falls back to vim if no EDITOR environment variable is set.
+///
+/// # Arguments
+/// * `note_identifier` - Note filename or partial name to match
+///
+/// # Errors
+/// Returns an error if:
+/// - Note is not found
+/// - Editor command fails to execute
+///
+/// # Example
+/// ```no_run
+/// use tesela::open_note_in_editor;
+/// open_note_in_editor("my-note")?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn open_note_in_editor(note_identifier: &str) -> Result<()> {
+    use std::env;
+    use std::process::Command;
+
+    // Check if we're in a mosaic
+    if !Path::new("tesela.toml").exists() {
+        return Err(anyhow!("No mosaic found. Run 'tesela init' to create one."));
+    }
+
+    let notes_dir = Path::new("notes");
+    if !notes_dir.exists() {
+        return Err(anyhow!(
+            "Notes directory not found. Your mosaic may be corrupted."
+        ));
+    }
+
+    // Find the note file in both notes and dailies directories
+    let mut matches = Vec::new();
+
+    // Search in notes directory
+    if notes_dir.exists() {
+        matches.extend(find_matching_notes(notes_dir, note_identifier)?);
+    }
+
+    // Search in dailies directory
+    let dailies_dir = Path::new("dailies");
+    if dailies_dir.exists() {
+        matches.extend(find_matching_notes(dailies_dir, note_identifier)?);
+    }
+
+    let note_path = match matches.len() {
+        0 => {
+            return Err(anyhow!("No notes found matching '{}'", note_identifier));
+        }
+        1 => &matches[0],
+        _ => {
+            println!("🔍 Multiple notes match '{}':", note_identifier);
+            println!();
+            for (i, path) in matches.iter().enumerate() {
+                let title = extract_title_from_file(path)?;
+                let filename = path.file_name().unwrap().to_string_lossy();
+                println!("  {}. {} [{}]", i + 1, title, filename);
+            }
+            println!();
+
+            use dialoguer::{theme::ColorfulTheme, Select};
+            let theme = ColorfulTheme::default();
+            let selection = Select::with_theme(&theme)
+                .with_prompt("Which note would you like to open?")
+                .items(
+                    &matches
+                        .iter()
+                        .map(|p| {
+                            extract_title_from_file(p).unwrap_or_else(|_| "Untitled".to_string())
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .interact()?;
+
+            &matches[selection]
+        }
+    };
+
+    // Update last_opened timestamp before opening in editor
+    if let Err(e) = update_last_opened_timestamp(note_path) {
+        eprintln!("⚠️  Warning: Failed to update last_opened timestamp: {}", e);
+    }
+
+    // Get editor from environment or default to vim
+    let editor = env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+
+    println!("📝 Opening '{}' in {}...", note_path.display(), editor);
+
+    // Execute the editor
+    let status = Command::new(&editor)
+        .arg(note_path)
+        .status()
+        .context("Failed to launch editor")?;
+
+    if !status.success() {
+        return Err(anyhow!(
+            "Editor exited with error code: {:?}",
+            status.code()
+        ));
+    }
+
+    println!("✅ Note editing completed");
+    Ok(())
+}
+
+/// Extract title from a note file by reading its content
+fn extract_title_from_file(path: &Path) -> Result<String> {
+    let content = fs::read_to_string(path).context("Failed to read note file")?;
+
+    let filename = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("untitled");
+
+    Ok(extract_title_from_content(&content, filename))
+}
+
+/// Enhanced autocomplete implementation for notes, tags, and search keywords
+struct SmartCompletion {
+    notes: Vec<(String, SystemTime)>, // (name, modified_time) for sorting
+    tags: Vec<String>,
+    search_keywords: Vec<String>,
+    completion_type: CompletionType,
+    // State for cycling through completions
+    cycle_state: RefCell<CycleState>,
+}
+
+#[derive(Debug)]
+struct CycleState {
+    original_input: String, // The partial input that generated the matches
+    current_matches: Vec<String>,
+    current_index: usize,
+}
+
+#[derive(Clone)]
+enum CompletionType {
+    Notes,
+    Search,
+    Mixed,
+}
+
+impl SmartCompletion {
+    fn new_for_notes() -> Result<Self> {
+        let notes = get_note_names_with_timestamps()?;
+        Ok(SmartCompletion {
+            notes,
+            tags: Vec::new(),
+            search_keywords: Vec::new(),
+            completion_type: CompletionType::Notes,
+            cycle_state: RefCell::new(CycleState {
+                original_input: String::new(),
+                current_matches: Vec::new(),
+                current_index: 0,
+            }),
+        })
+    }
+
+    fn new_for_search() -> Result<Self> {
+        let notes = get_note_names_with_timestamps()?;
+        let tags = get_tag_names()?;
+        let search_keywords = get_search_keywords();
+        Ok(SmartCompletion {
+            notes,
+            tags,
+            search_keywords,
+            completion_type: CompletionType::Search,
+            cycle_state: RefCell::new(CycleState {
+                original_input: String::new(),
+                current_matches: Vec::new(),
+                current_index: 0,
+            }),
+        })
+    }
+
+    fn new_mixed() -> Result<Self> {
+        let notes = get_note_names_with_timestamps()?;
+        let tags = get_tag_names()?;
+        let search_keywords = get_search_keywords();
+        Ok(SmartCompletion {
+            notes,
+            tags,
+            search_keywords,
+            completion_type: CompletionType::Mixed,
+            cycle_state: RefCell::new(CycleState {
+                original_input: String::new(),
+                current_matches: Vec::new(),
+                current_index: 0,
+            }),
+        })
+    }
+
+    fn find_matches(&self, input: &str) -> Vec<String> {
+        let input_lower = input.to_lowercase();
+        let mut matches = Vec::new();
+
+        match self.completion_type {
+            CompletionType::Notes => {
+                // Create a vector of (name, modified_time) for sorting
+                let mut note_matches: Vec<(String, SystemTime)> = Vec::new();
+
+                // Priority 1: Exact prefix matches
+                for (note, modified_time) in &self.notes {
+                    if note.to_lowercase().starts_with(&input_lower) {
+                        note_matches.push((note.clone(), *modified_time));
+                    }
+                }
+
+                // Priority 2: Contains matches (only if no prefix matches)
+                if note_matches.is_empty() {
+                    for (note, modified_time) in &self.notes {
+                        if note.to_lowercase().contains(&input_lower) {
+                            note_matches.push((note.clone(), *modified_time));
+                        }
+                    }
+                }
+
+                // Sort by modification time (most recent first)
+                note_matches.sort_by(|a, b| b.1.cmp(&a.1));
+                matches = note_matches.into_iter().map(|(name, _)| name).collect();
+            }
+            CompletionType::Search => {
+                // Search keywords first
+                for keyword in &self.search_keywords {
+                    if keyword.to_lowercase().starts_with(&input_lower) {
+                        matches.push(keyword.clone());
+                    }
+                }
+                // Then tags with tag: prefix
+                for tag in &self.tags {
+                    if tag.to_lowercase().starts_with(&input_lower) {
+                        matches.push(format!("tag:{}", tag));
+                    }
+                }
+                // Then note names (sorted by modification time)
+                let mut note_matches: Vec<(String, SystemTime)> = Vec::new();
+                for (note, modified_time) in &self.notes {
+                    if note.to_lowercase().contains(&input_lower) {
+                        note_matches.push((note.clone(), *modified_time));
+                    }
+                }
+                note_matches.sort_by(|a, b| b.1.cmp(&a.1));
+                matches.extend(note_matches.into_iter().map(|(name, _)| name));
+            }
+            CompletionType::Mixed => {
+                // All completion types with time-sorted notes
+                let mut note_matches: Vec<(String, SystemTime)> = Vec::new();
+                for (note, modified_time) in &self.notes {
+                    if note.to_lowercase().starts_with(&input_lower) {
+                        note_matches.push((note.clone(), *modified_time));
+                    }
+                }
+                note_matches.sort_by(|a, b| b.1.cmp(&a.1));
+                matches.extend(note_matches.into_iter().map(|(name, _)| name));
+
+                for tag in &self.tags {
+                    if tag.to_lowercase().starts_with(&input_lower) {
+                        matches.push(format!("#{}", tag));
+                    }
+                }
+            }
+        }
+
+        // Remove duplicates while preserving order
+        let mut seen = std::collections::HashSet::new();
+        matches.retain(|item| seen.insert(item.clone()));
+
+        matches
+    }
+}
+
+impl Completion for SmartCompletion {
+    fn get(&self, input: &str) -> Option<String> {
+        let mut state = self.cycle_state.borrow_mut();
+
+        // Check if input matches any of our current completions (cycling behavior)
+        if !state.current_matches.is_empty() {
+            if let Some(pos) = state.current_matches.iter().position(|m| m == input) {
+                // We found the current completion - cycle to the next one
+                state.current_index = (pos + 1) % state.current_matches.len();
+                return Some(state.current_matches[state.current_index].clone());
+            }
+        }
+
+        // New search - find all matches
+        let matches = self.find_matches(input);
+        if matches.is_empty() {
+            // Reset state for empty matches
+            state.original_input = String::new();
+            state.current_matches = Vec::new();
+            state.current_index = 0;
+            return None;
+        }
+
+        // Initialize new completion session
+        state.original_input = input.to_string();
+        state.current_matches = matches.clone();
+        state.current_index = 0;
+
+        // Return first match
+        Some(matches[0].clone())
+    }
+}
+
+/// Get all note names with modification timestamps for autocomplete
+fn get_note_names_with_timestamps() -> Result<Vec<(String, SystemTime)>> {
+    let mut all_notes = Vec::new();
+
+    // Scan both notes and dailies directories
+    let directories = ["notes", "dailies"];
+
+    for dir_name in directories {
+        let dir_path = Path::new(dir_name);
+        if dir_path.exists() {
+            let dir_notes = scan_directory_for_notes(dir_path)?;
+            all_notes.extend(dir_notes);
+        }
+    }
+
+    // Remove duplicates while preserving the most recent timestamp
+    let mut seen = std::collections::HashMap::new();
+    for (name, time) in all_notes {
+        seen.entry(name)
+            .and_modify(|existing_time| {
+                if time > *existing_time {
+                    *existing_time = time;
+                }
+            })
+            .or_insert(time);
+    }
+
+    let notes: Vec<(String, SystemTime)> = seen.into_iter().collect();
+    Ok(notes)
+}
+
+/// Helper function to scan a single directory for note files
+fn scan_directory_for_notes(dir_path: &Path) -> Result<Vec<(String, SystemTime)>> {
+    let mut notes = Vec::new();
+
+    for entry in fs::read_dir(dir_path)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path.is_file() && path.extension().map_or(false, |ext| ext == "md") {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                // Get modification time
+                let modified_time = fs::metadata(&path)
+                    .and_then(|metadata| metadata.modified())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+
+                // Convert filename to title-like format for better UX
+                let title = extract_title_from_file(&path).unwrap_or_else(|_| stem.to_string());
+
+                // For daily notes, prefer the user-friendly title over filename
+                // For other notes, use smart deduplication
+                let title_lower = title.to_lowercase();
+                let stem_lower = stem.to_lowercase();
+                let is_daily_note = stem.starts_with("daily-")
+                    || dir_path.file_name().map_or(false, |n| n == "dailies");
+
+                if is_daily_note {
+                    // For daily notes, always prefer the title if it's meaningful
+                    if title.len() > stem.len() && title.contains(" ") {
+                        notes.push((title, modified_time));
+                    } else {
+                        notes.push((stem.to_string(), modified_time));
+                    }
+                } else if title_lower != stem_lower
+                    && title_lower.replace(" ", "-") != stem_lower
+                    && title_lower.replace(" ", "_") != stem_lower
+                {
+                    // Title is meaningfully different, add both
+                    notes.push((title.clone(), modified_time));
+                    notes.push((stem.to_string(), modified_time));
+                } else {
+                    // Title is similar to stem, just add the better one
+                    if title.len() > stem.len() && title.contains(" ") {
+                        notes.push((title, modified_time));
+                    } else {
+                        notes.push((stem.to_string(), modified_time));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(notes)
+}
+
+/// Get all note names (without .md extension) for autocomplete - legacy function
+fn get_note_names() -> Result<Vec<String>> {
+    let notes_with_timestamps = get_note_names_with_timestamps()?;
+    Ok(notes_with_timestamps
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect())
+}
+
+/// Get all tag names for autocomplete
+fn get_tag_names() -> Result<Vec<String>> {
+    // This is a simplified implementation - in a real system you'd query the database
+    // For now, we'll return common tags that users might want to search for
+    let mut tags = std::collections::HashSet::new();
+
+    // Scan both notes and dailies directories
+    let directories = ["notes", "dailies"];
+
+    for dir_name in directories {
+        let dir_path = Path::new(dir_name);
+        if dir_path.exists() {
+            for entry in fs::read_dir(dir_path)? {
+                let entry = entry?;
+                let path = entry.path();
+
+                if path.is_file() && path.extension().map_or(false, |ext| ext == "md") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        // Extract hashtags from content
+                        for word in content.split_whitespace() {
+                            if word.starts_with('#') && word.len() > 1 {
+                                let tag =
+                                    word[1..].trim_end_matches(|c: char| !c.is_alphanumeric());
+                                if !tag.is_empty() {
+                                    tags.insert(tag.to_string());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut tag_vec: Vec<String> = tags.into_iter().collect();
+    tag_vec.sort();
+    Ok(tag_vec)
+}
+
+/// Get search keywords for autocomplete
+fn get_search_keywords() -> Vec<String> {
+    vec![
+        "tag:".to_string(),
+        "title:".to_string(),
+        "content:".to_string(),
+        "created:".to_string(),
+        "modified:".to_string(),
+        "recent".to_string(),
+        "today".to_string(),
+        "yesterday".to_string(),
+        "week".to_string(),
+        "month".to_string(),
+    ]
+}
+
+/// Provide autocomplete suggestions for CLI users
+///
+/// This command helps CLI users discover available notes and get autocomplete
+/// suggestions without entering interactive mode. Shows cycling order and
+/// modification time-based sorting.
+///
+/// # Arguments
+/// * `partial` - Partial text to autocomplete
+/// * `completion_type` - Type of completion: "notes", "search", or "all"
+///
+/// # Errors
+/// Returns an error if:
+/// - Mosaic is not found
+/// - Cannot read notes directory
+///
+/// # Example
+/// ```no_run
+/// use tesela::autocomplete_suggestions;
+/// autocomplete_suggestions("my", "notes")?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn autocomplete_suggestions(partial: &str, completion_type: &str) -> Result<()> {
+    if !Path::new("tesela.toml").exists() {
+        println!("❌ No mosaic found. Run 'tesela init' first.");
+        return Ok(());
+    }
+
+    let completion = match completion_type {
+        "notes" => SmartCompletion::new_for_notes()?,
+        "search" => SmartCompletion::new_for_search()?,
+        _ => SmartCompletion::new_for_notes()?, // Default to notes
+    };
+
+    let matches = completion.find_matches(partial);
+
+    if matches.is_empty() {
+        println!("🔍 No matches found for '{}'", partial);
+        return Ok(());
+    }
+
+    println!("💡 Tab completion for '{}':", partial);
+    println!("📋 Notes are ordered by modification time (most recent first)");
+    println!();
+
+    for (i, suggestion) in matches.iter().take(10).enumerate() {
+        if i == 0 {
+            println!("  TAB 1: {} ← First completion", suggestion);
+        } else {
+            println!("  TAB {}: {}", i + 1, suggestion);
+        }
+    }
+
+    if matches.len() > 10 {
+        println!("  ... and {} more matches", matches.len() - 10);
+    }
+
+    if matches.len() > 1 {
+        println!();
+        println!("🔄 In interactive mode:");
+        println!("   • Type '{}' and press TAB → '{}'", partial, matches[0]);
+        println!(
+            "   • Press TAB again → '{}'",
+            matches.get(1).unwrap_or(&matches[0])
+        );
+        if matches.len() > 2 {
+            println!(
+                "   • Press TAB again → '{}'",
+                matches.get(2).unwrap_or(&matches[0])
+            );
+        }
+        println!("   • Cycles through all {} matches", matches.len());
+    }
+
+    Ok(())
+}
+
+/// Clear the terminal screen
+fn clear_screen() {
+    print!("\x1B[2J\x1B[1;1H");
+    std::io::stdout().flush().unwrap_or_default();
+}
+
+pub fn interactive_mode() -> Result<()> {
+    use dialoguer::{theme::ColorfulTheme, Input};
+    use std::io::{self, Write};
+
+    clear_screen();
     println!("🔮 Welcome to Tesela Interactive Mode");
-    println!("Type 'help' for available commands, 'quit' to exit");
+    println!("✨ Single keystrokes for lightning-fast note management!");
     println!();
 
     let theme = ColorfulTheme::default();
 
     loop {
+        // Clear screen for clean interface
+        clear_screen();
+        println!("🔮 Tesela Interactive Mode");
+        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
         // Show current status
         let status = if Path::new("tesela.toml").exists() {
             "📚 Mosaic Ready"
         } else {
-            "⚠️  No Mosaic"
+            "⚠️  No Mosaic Found"
         };
+        println!("{}", status);
+        println!();
 
-        let action = Select::with_theme(&theme)
-            .with_prompt(format!("{} - What would you like to do?", status))
-            .default(0)
-            .items(&[
-                "📝 Create new note",
-                "📚 List notes",
-                "🔍 Search notes",
-                "📄 View note",
-                "🔗 Link notes",
-                "🕸️  Show graph",
-                "📅 Daily note",
-                "💾 Backup",
-                "📥 Import",
-                "⚙️  Initialize mosaic",
-                "❓ Help",
-                "🚪 Quit",
-            ])
-            .interact()?;
+        // Display menu with keystroke shortcuts
+        println!("🚀 Quick Commands:");
+        println!("╭─────────────────────────────┬─────────────────────────────╮");
+        println!("│ [N] 📝 Create new note      │ [L] 📚 List notes           │");
+        println!("│ [S] 🔍 Search notes         │ [E] 📝 Edit note            │");
+        println!("│ [K] 🔗 Link notes           │ [G] 🕸️  Show graph          │");
+        println!("│ [D] 📅 Daily note           │ [B] 💾 Backup               │");
+        println!("│ [I] 📥 Import               │ [M] ⚙️  Initialize mosaic   │");
+        println!("│ [H] ❓ Help                 │ [Q] 🚪 Quit                 │");
+        println!("╰─────────────────────────────┴─────────────────────────────╯");
+        println!();
+
+        print!("💫 Choose action: ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+        let input = input.trim().to_lowercase();
+
+        let action = match input.as_str() {
+            "n" | "new" | "create" => 0,
+            "l" | "list" => 1,
+            "s" | "search" => 2,
+            "e" | "edit" => 3,
+            "k" | "link" => 4,
+            "g" | "graph" => 5,
+            "d" | "daily" => 6,
+            "b" | "backup" => 7,
+            "i" | "import" => 8,
+            "m" | "mosaic" | "init" => 9,
+            "h" | "help" => 10,
+            "q" | "quit" | "exit" => 11,
+            _ => {
+                println!("❌ Unknown command '{}'. Try 'h' for help.", input);
+                continue;
+            }
+        };
 
         match action {
             0 => {
                 // Create new note
+                println!("\n📝 Creating new note...");
                 let title: String = Input::with_theme(&theme)
                     .with_prompt("Note title")
                     .interact_text()?;
@@ -1200,70 +1896,163 @@ pub fn interactive_mode() -> Result<()> {
                 } else {
                     println!("✅ Note created successfully!");
                 }
+
+                println!("\nPress Enter to continue...");
+                let mut dummy = String::new();
+                io::stdin().read_line(&mut dummy)?;
             }
             1 => {
                 // List notes
+                println!("\n📚 Recent notes:");
                 if let Err(e) = list_notes() {
                     println!("❌ Error: {}", e);
                 }
+
+                println!("\nPress Enter to continue...");
+                let mut dummy = String::new();
+                io::stdin().read_line(&mut dummy)?;
             }
             2 => {
                 // Search notes
+                println!("\n🔍 Searching notes...");
+                let completion =
+                    SmartCompletion::new_for_search().unwrap_or_else(|_| SmartCompletion {
+                        notes: Vec::new(),
+                        tags: Vec::new(),
+                        search_keywords: Vec::new(),
+                        completion_type: CompletionType::Search,
+                        cycle_state: RefCell::new(CycleState {
+                            original_input: String::new(),
+                            current_matches: Vec::new(),
+                            current_index: 0,
+                        }),
+                    });
                 let query: String = Input::with_theme(&theme)
-                    .with_prompt("Search query")
+                    .with_prompt("Search query (tab: notes/tags/keywords)")
+                    .completion_with(&completion)
                     .interact_text()?;
 
                 if let Err(e) = search_notes(&query) {
                     println!("❌ Error: {}", e);
                 }
+
+                println!("\nPress Enter to continue...");
+                let mut dummy = String::new();
+                io::stdin().read_line(&mut dummy)?;
             }
             3 => {
-                // View note
+                // View/Edit note
+                println!("\n📝 Opening note in editor...");
+                let completion =
+                    SmartCompletion::new_for_notes().unwrap_or_else(|_| SmartCompletion {
+                        notes: Vec::new(),
+                        tags: Vec::new(),
+                        search_keywords: Vec::new(),
+                        completion_type: CompletionType::Notes,
+                        cycle_state: RefCell::new(CycleState {
+                            original_input: String::new(),
+                            current_matches: Vec::new(),
+                            current_index: 0,
+                        }),
+                    });
                 let note: String = Input::with_theme(&theme)
-                    .with_prompt("Note identifier")
+                    .with_prompt("Note identifier (tab to autocomplete)")
+                    .completion_with(&completion)
                     .interact_text()?;
 
-                if let Err(e) = cat_note(&note) {
+                if let Err(e) = open_note_in_editor(&note) {
                     println!("❌ Error: {}", e);
                 }
+
+                println!("\nPress Enter to continue...");
+                let mut dummy = String::new();
+                io::stdin().read_line(&mut dummy)?;
             }
             4 => {
                 // Link notes
+                println!("\n🔗 Creating note links...");
+                let completion =
+                    SmartCompletion::new_for_notes().unwrap_or_else(|_| SmartCompletion {
+                        notes: Vec::new(),
+                        tags: Vec::new(),
+                        search_keywords: Vec::new(),
+                        completion_type: CompletionType::Notes,
+                        cycle_state: RefCell::new(CycleState {
+                            original_input: String::new(),
+                            current_matches: Vec::new(),
+                            current_index: 0,
+                        }),
+                    });
                 let from: String = Input::with_theme(&theme)
-                    .with_prompt("From note")
+                    .with_prompt("From note (tab to autocomplete)")
+                    .completion_with(&completion)
                     .interact_text()?;
                 let to: String = Input::with_theme(&theme)
-                    .with_prompt("To note")
+                    .with_prompt("To note (tab to autocomplete)")
+                    .completion_with(&completion)
                     .interact_text()?;
 
                 if let Err(e) = link_notes(&from, &to) {
                     println!("❌ Error: {}", e);
                 }
+
+                println!("\nPress Enter to continue...");
+                let mut dummy = String::new();
+                io::stdin().read_line(&mut dummy)?;
             }
             5 => {
                 // Show graph
+                println!("\n🕸️  Showing note connections...");
+                let completion =
+                    SmartCompletion::new_for_notes().unwrap_or_else(|_| SmartCompletion {
+                        notes: Vec::new(),
+                        tags: Vec::new(),
+                        search_keywords: Vec::new(),
+                        completion_type: CompletionType::Notes,
+                        cycle_state: RefCell::new(CycleState {
+                            original_input: String::new(),
+                            current_matches: Vec::new(),
+                            current_index: 0,
+                        }),
+                    });
                 let note: String = Input::with_theme(&theme)
-                    .with_prompt("Note identifier")
+                    .with_prompt("Note identifier (tab to autocomplete)")
+                    .completion_with(&completion)
                     .interact_text()?;
 
                 if let Err(e) = show_graph(&note) {
                     println!("❌ Error: {}", e);
                 }
+
+                println!("\nPress Enter to continue...");
+                let mut dummy = String::new();
+                io::stdin().read_line(&mut dummy)?;
             }
             6 => {
                 // Daily note
-                if let Err(e) = daily_note() {
+                println!("\n📅 Opening daily note in editor...");
+                if let Err(e) = daily_note_and_edit() {
                     println!("❌ Error: {}", e);
                 }
+
+                println!("\nPress Enter to continue...");
+                let mut dummy = String::new();
+                io::stdin().read_line(&mut dummy)?;
             }
             7 => {
                 // Backup
+                println!("\n💾 Creating backup...");
                 if let Err(e) = backup_mosaic() {
                     println!("❌ Error: {}", e);
                 }
+
+                println!("\nPress Enter to continue...");
+                let mut dummy = String::new();
+                io::stdin().read_line(&mut dummy)?;
             }
             8 => {
                 // Import
+                println!("\n📥 Importing notes...");
                 let path: String = Input::with_theme(&theme)
                     .with_prompt("Import path")
                     .interact_text()?;
@@ -1271,9 +2060,14 @@ pub fn interactive_mode() -> Result<()> {
                 if let Err(e) = import_notes(&path) {
                     println!("❌ Error: {}", e);
                 }
+
+                println!("\nPress Enter to continue...");
+                let mut dummy = String::new();
+                io::stdin().read_line(&mut dummy)?;
             }
             9 => {
                 // Initialize mosaic
+                println!("\n⚙️  Initializing mosaic...");
                 let path: String = Input::with_theme(&theme)
                     .with_prompt("Mosaic path")
                     .default(".".to_string())
@@ -1282,25 +2076,45 @@ pub fn interactive_mode() -> Result<()> {
                 if let Err(e) = init_mosaic(&path) {
                     println!("❌ Error: {}", e);
                 }
+
+                println!("\nPress Enter to continue...");
+                let mut dummy = String::new();
+                io::stdin().read_line(&mut dummy)?;
             }
             10 => {
                 // Help
+                clear_screen();
+                println!("📖 Tesela Interactive Mode Help");
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
                 println!();
-                println!("📖 Tesela Interactive Mode Help:");
-                println!("• Create new note - Start a new markdown note");
-                println!("• List notes - Show all recent notes");
-                println!("• Search notes - Full-text search across notes");
-                println!("• View note - Display note content");
-                println!("• Link notes - Create bidirectional links");
-                println!("• Show graph - Display note connections");
-                println!("• Daily note - Create/open today's daily note");
-                println!("• Backup - Create timestamped backup");
-                println!("• Import - Import notes from files/directories");
-                println!("• Initialize mosaic - Set up new knowledge base");
+                println!("🚀 Single Keystroke Shortcuts:");
+                println!("  N - Create new note (Start a new markdown note)");
+                println!("  L - List notes (Show all recent notes)");
+                println!("  S - Search notes (Full-text search across notes)");
+                println!("  E - Edit note (Open note in external editor)");
+                println!("  K - Link notes (Create bidirectional links)");
+                println!("  G - Show graph (Display note connections)");
+                println!("  D - Daily note (Create/open today's daily note)");
+                println!("  B - Backup (Create timestamped backup)");
+                println!("  I - Import (Import notes from files/directories)");
+                println!("  M - Initialize mosaic (Set up new knowledge base)");
+                println!("  H - Help (Show this help message)");
+                println!("  Q - Quit (Exit interactive mode)");
                 println!();
+                println!("💡 Features:");
+                println!("  • Tab autocomplete with cycling (multiple tabs cycle through matches)");
+                println!("  • Notes ordered by modification time (most recent first)");
+                println!("  • Vim integration for seamless editing");
+                println!("  • Context-aware suggestions for notes vs. search");
+                println!();
+
+                println!("Press Enter to continue...");
+                let mut dummy = String::new();
+                io::stdin().read_line(&mut dummy)?;
             }
             11 => {
                 // Quit
+                clear_screen();
                 println!("👋 Goodbye! Your knowledge mosaic awaits your return.");
                 break;
             }
@@ -1333,7 +2147,7 @@ pub fn interactive_mode() -> Result<()> {
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 pub fn generate_completions(shell: &str) -> Result<()> {
-    use clap::{Command, CommandFactory};
+    use clap::CommandFactory;
     use clap_complete::{generate, shells::*};
     use std::io;
 
@@ -1582,8 +2396,27 @@ fn find_matching_notes(notes_dir: &Path, identifier: &str) -> Result<Vec<PathBuf
                 break;
             }
 
-            // Check for partial match
-            if filename_lower.contains(&search_term) || stem.contains(&search_term) {
+            // Also check title from file content
+            let mut title_match = false;
+            if let Ok(content) = fs::read_to_string(&path) {
+                let title = extract_title_from_content(&content, &stem);
+                let title_lower = title.to_lowercase();
+
+                // Check for exact title match
+                if title_lower == search_term {
+                    matches.clear();
+                    matches.push(path);
+                    break;
+                }
+
+                // Check for partial title match
+                if title_lower.contains(&search_term) {
+                    title_match = true;
+                }
+            }
+
+            // Check for partial match in filename, stem, or title
+            if filename_lower.contains(&search_term) || stem.contains(&search_term) || title_match {
                 matches.push(path);
             }
         }
@@ -1730,43 +2563,64 @@ pub fn search_notes(query: &str) -> Result<()> {
 
     // For now, implement a simple file-based search
     // Later this will be replaced with proper database search
-    let notes_dir = Path::new("notes");
-    if !notes_dir.exists() {
-        println!("📂 No notes directory found");
-        return Ok(());
-    }
-
-    let entries = fs::read_dir(notes_dir).context("Failed to read notes directory")?;
     let mut matches = Vec::new();
     let search_term = query.to_lowercase();
 
-    // Search through all markdown files
-    for entry in entries {
-        let entry = entry?;
-        let path = entry.path();
+    // Search through both notes and dailies directories
+    let directories = ["notes", "dailies"];
 
-        if path.extension().and_then(|s| s.to_str()) == Some("md") {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if content.to_lowercase().contains(&search_term) {
-                    let filename = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("unknown");
-                    let title = extract_title_from_content(&content, filename);
+    for dir_name in directories {
+        let dir_path = Path::new(dir_name);
+        if !dir_path.exists() {
+            continue;
+        }
 
-                    // Find matching lines for context
-                    let matching_lines: Vec<_> = content
-                        .lines()
-                        .enumerate()
-                        .filter(|(_, line)| line.to_lowercase().contains(&search_term))
-                        .take(3) // Limit to first 3 matches per file
-                        .map(|(num, line)| (num, line.to_string()))
-                        .collect();
+        let entries = match fs::read_dir(dir_path) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
 
-                    matches.push((title, filename.to_string(), matching_lines));
+        // Search through all markdown files in this directory
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+
+            if path.extension().and_then(|s| s.to_str()) == Some("md") {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    if content.to_lowercase().contains(&search_term) {
+                        let filename = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown");
+                        let title = extract_title_from_content(&content, filename);
+
+                        // Find matching lines for context
+                        let matching_lines: Vec<_> = content
+                            .lines()
+                            .enumerate()
+                            .filter(|(_, line)| line.to_lowercase().contains(&search_term))
+                            .take(3) // Limit to first 3 matches per file
+                            .map(|(num, line)| (num, line.to_string()))
+                            .collect();
+
+                        // Include directory info for context
+                        let display_filename = if dir_name == "dailies" {
+                            format!("{} (daily)", filename)
+                        } else {
+                            filename.to_string()
+                        };
+
+                        matches.push((title, display_filename, matching_lines));
+                    }
                 }
             }
         }
+    }
+
+    // Check if we found any directories to search
+    if !Path::new("notes").exists() && !Path::new("dailies").exists() {
+        println!("📂 No notes or dailies directories found");
+        return Ok(());
     }
 
     // Display results

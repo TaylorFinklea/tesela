@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 
 use tesela::{
-    attach_file, backup_mosaic, benchmark_performance, cat_note, create_note, daily_note,
-    export_note, generate_completions, import_notes, init_mosaic, interactive_mode, link_notes,
-    list_notes, search_notes, show_graph,
+    attach_file, autocomplete_suggestions, backup_mosaic, benchmark_performance, cat_note,
+    create_note, daily_note_and_edit, export_note, generate_completions, import_notes, init_mosaic,
+    interactive_mode, link_notes, list_notes, open_note_in_editor, search_notes, show_graph,
 };
 
 /// Main CLI structure for Tesela.
@@ -18,6 +18,34 @@ use tesela::{
 )]
 #[command(version = "0.1.0")]
 struct Cli {
+    /// Open today's daily note in editor
+    #[arg(short = 'd', long = "daily")]
+    daily: bool,
+
+    /// List recent notes
+    #[arg(short = 'l', long = "list")]
+    list: bool,
+
+    /// Create a backup of the mosaic
+    #[arg(short = 'b', long = "backup")]
+    backup: bool,
+
+    /// Start interactive mode
+    #[arg(short = 'i', long = "interactive")]
+    interactive: bool,
+
+    /// Create a new note
+    #[arg(short = 'n', long = "new")]
+    new: Option<String>,
+
+    /// Search your notes
+    #[arg(short = 's', long = "search")]
+    search: Option<String>,
+
+    /// Edit a note in external editor
+    #[arg(short = 'e', long = "edit")]
+    edit: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -29,20 +57,29 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Initialize a new mosaic (knowledge base)
+    #[command(alias = "m")]
     Init {
         /// Path where to create the mosaic
         #[arg(default_value = ".")]
         path: String,
     },
     /// Create a new note
+    #[command(alias = "n")]
     New {
         /// Title of the note
         title: String,
     },
     /// List recent notes
+    #[command(alias = "l")]
     List,
     /// Display a note's content
     Cat {
+        /// Note identifier (filename or partial name)
+        note: String,
+    },
+    /// Edit a note in external editor
+    #[command(alias = "e")]
+    Edit {
         /// Note identifier (filename or partial name)
         note: String,
     },
@@ -61,11 +98,13 @@ enum Commands {
         format: String,
     },
     /// Search your notes
+    #[command(alias = "s")]
     Search {
         /// Search query
         query: String,
     },
     /// Create a link between two notes
+    #[command(alias = "k")]
     Link {
         /// Source note identifier
         from: String,
@@ -73,21 +112,33 @@ enum Commands {
         to: String,
     },
     /// Show connections for a note
+    #[command(alias = "g")]
     Graph {
         /// Note identifier to show connections for
         note: String,
     },
-    /// Open today's daily note
+    /// Open today's daily note in editor
+    #[command(alias = "d")]
     Daily,
     /// Create a backup of the mosaic
+    #[command(alias = "b")]
     Backup,
     /// Import notes from external sources
+    #[command(alias = "i")]
     Import {
         /// Path to file or directory to import
         path: String,
     },
     /// Start interactive mode
     Interactive,
+    /// Get autocomplete suggestions
+    Autocomplete {
+        /// Partial text to autocomplete
+        partial: String,
+        /// Completion type (notes, search, all)
+        #[arg(short = 't', long = "type", default_value = "notes")]
+        completion_type: String,
+    },
     /// Generate shell completions
     Completions {
         /// Shell type (bash, zsh, fish, powershell, elvish)
@@ -104,6 +155,63 @@ enum Commands {
 /// displayed to stderr and the program exits with status code 1.
 fn main() {
     let cli = Cli::parse();
+
+    // Handle global flags first
+    if cli.daily {
+        if let Err(e) = daily_note_and_edit() {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if cli.list {
+        if let Err(e) = list_notes() {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if cli.backup {
+        if let Err(e) = backup_mosaic() {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if cli.interactive {
+        if let Err(e) = interactive_mode() {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(title) = cli.new {
+        if let Err(e) = create_note(&title) {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(query) = cli.search {
+        if let Err(e) = search_notes(&query) {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Some(note) = cli.edit {
+        if let Err(e) = open_note_in_editor(&note) {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+        return;
+    }
 
     match &cli.command {
         Some(Commands::Init { path }) => {
@@ -126,6 +234,12 @@ fn main() {
         }
         Some(Commands::Cat { note }) => {
             if let Err(e) = cat_note(note) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Edit { note }) => {
+            if let Err(e) = open_note_in_editor(note) {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }
@@ -161,7 +275,7 @@ fn main() {
             }
         }
         Some(Commands::Daily) => {
-            if let Err(e) = daily_note() {
+            if let Err(e) = daily_note_and_edit() {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }
@@ -180,6 +294,15 @@ fn main() {
         }
         Some(Commands::Interactive) => {
             if let Err(e) = interactive_mode() {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Autocomplete {
+            partial,
+            completion_type,
+        }) => {
+            if let Err(e) = autocomplete_suggestions(partial, completion_type) {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }

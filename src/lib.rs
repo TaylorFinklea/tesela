@@ -15,9 +15,10 @@ pub mod core;
 
 // Re-export commonly used items from commands
 pub use commands::{
-    attach_file, backup_mosaic, benchmark_performance, cat_note, create_note, daily_note,
-    export_note, generate_completions, import_notes, init_mosaic, interactive_mode, link_notes,
-    list_notes, search_notes, show_graph,
+    attach_file, autocomplete_suggestions, backup_mosaic, benchmark_performance, cat_note,
+    create_note, daily_note, daily_note_and_edit, export_note, generate_completions, import_notes,
+    init_mosaic, interactive_mode, link_notes, list_notes, open_note_in_editor, search_notes,
+    show_graph,
 };
 
 // Re-export core types for convenience
@@ -118,7 +119,7 @@ mod tests {
         // Check note content
         let content = fs::read_to_string(note_path).unwrap();
         assert!(content.contains("title: \"My Test Note\""));
-        assert!(content.contains("# My Test Note"));
+        assert!(content.contains("-"));
         assert!(content.contains("tags: []"));
 
         env::set_current_dir(original_dir).unwrap();

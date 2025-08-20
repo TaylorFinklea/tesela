@@ -8,6 +8,36 @@
 - **Progressive enhancement**: Basic features first, advanced features later
 - **Community-driven**: Open source, plugin-friendly
 
+### Outliner Architecture
+- **Block-based Structure**: Tesela is an outliner tool where every note consists of blocks starting with `-`
+- **Hierarchical Inheritance**: Child blocks inherit properties from parent blocks (like tags, metadata)
+- **Minimal Initialization**: New notes are initialized with frontmatter properties and a single `-` block
+- **Content Structure**: All content must be organized as bulleted blocks for proper outliner functionality
+- **Future UI Considerations**: The UI version will need to handle block inheritance logic
+
+**Directory Structure:**
+```
+my-mosaic/
+├── tesela.toml      # Configuration
+├── notes/           # Regular notes
+├── dailies/         # Daily notes (separate from regular notes)
+└── attachments/     # File attachments
+```
+
+**Example Note Structure:**
+```
+---
+title: "Example Note"
+created: 2025-01-15 10:30:00
+last_opened: 2025-01-15 10:30:00
+tags: ["example"]
+---
+- This is a top-level block #important
+  - This child inherits the #important tag
+  - So does this one
+- This is another top-level block
+```
+
 ### Phased Rollout
 1. **Phase 1**: Local-only, cross-platform foundation
 2. **Phase 2**: Platform-native sync (iCloud, then others)
@@ -16,28 +46,97 @@
 
 **Note: All versions before 1.0 are considered alpha releases**
 
-## 🎉 V0.3 ENHANCED CLI & API COMPLETE! 🎉
+## 🎉 V0.3 FOUNDATION COMPLETE! 🎉
 
-**Status: Enhanced CLI and API layer has been successfully implemented and tested!**
+### Current Status (v0.3.7)
 
-### What's Working:
-- ✅ Complete storage layer with markdown parsing and attachments
-- ✅ SQLite database with FTS5 full-text search
-- ✅ **FULL ENHANCED CLI** with ALL commands implemented
-- ✅ File watching and incremental indexing
-- ✅ Advanced search capabilities with ranking and suggestions
-- ✅ Configuration management with TOML
-- ✅ Robust error handling and logging
-- ✅ 48+ unit tests passing with comprehensive test coverage
-- ✅ Cross-platform compatibility (macOS, Linux, Windows ready)
-- ✅ Plugin-ready architecture with async API foundation
-- ✅ **Interactive mode** with beautiful UI
-- ✅ **Shell completions** for all major shells
-- ✅ **Performance benchmarks** and monitoring
-- ✅ **Bidirectional linking** and graph visualization
-- ✅ **Daily notes** with templates
-- ✅ **Backup system** with timestamped archives
+**✅ Outliner Architecture Implemented**
+- All notes use proper outliner format with block-based structure
+- Minimal initialization with frontmatter and single `-` block
+- Future-ready for block inheritance and hierarchical operations
+
+**✅ Organized Directory Structure** 
+- `notes/` for regular topic-based notes
+- `dailies/` for date-based daily notes  
+- `attachments/` for file attachments
+- Clean separation with unified access
+
+**✅ Cross-Directory Functionality**
+- Edit, search, and autocomplete work seamlessly across both directories
+- Smart title-to-filename mapping for reliable note access
+- No duplicate entries in autocomplete suggestions
+- Daily notes properly labeled in search results
+
+**✅ Complete CLI Experience**
+- All core commands implemented and tested
+- Intelligent autocomplete with time-based ordering
+- Interactive mode with beautiful TUI
+- VIM integration for editing
+- Shell completions for all major shells
+
+**✅ Performance & Reliability**
+- SQLite indexing with FTS5 full-text search
+- File watching and incremental indexing
+- Robust error handling and logging
+- 48+ unit tests with comprehensive coverage
+- Cross-platform compatibility (macOS, Linux, Windows)
+
+### Ready for Next Phase
+Foundation is solid and ready for desktop UI development. All core functionality works reliably with the proper outliner architecture in place.
 - ✅ **Import system** for external note formats
+- ✅ **Vim integration** - Edit notes in external editor from CLI and interactive mode
+- ✅ **Intelligent Cycling Autocomplete** - Tab completion with cycling and time-based ordering
+
+### Recent Enhancements (v0.3.1-v0.3.3):
+- ✅ **External Editor Integration**: New `tesela edit <note>` command opens notes in vim or $EDITOR
+- ✅ **Enhanced Interactive Mode**: "Edit note" option now launches external editor instead of just displaying content
+- ✅ **Seamless Workflow**: Exit editor returns to interactive mode for continuous note management
+- ✅ **Smart Note Selection**: Multiple matches show selection menu in interactive mode
+- ✅ **Environment Aware**: Respects $EDITOR environment variable, defaults to vim
+- ✅ **Intelligent Autocomplete**: Tab completion in interactive mode for all note-related inputs
+- ✅ **Context-Aware Suggestions**: Different autocomplete behavior for notes vs search queries
+- ✅ **Tag Autocomplete**: Automatically detects and suggests hashtags from existing notes
+- ✅ **Search Keywords**: Suggests search operators like `tag:`, `title:`, `created:`, etc.
+- ✅ **CLI Autocomplete**: Standalone `tesela autocomplete` command for shell integration
+- ✅ **Cycling Completions**: Multiple tab presses cycle through all matching notes
+- ✅ **Time-Based Ordering**: Most recently modified notes appear first in autocomplete
+- ✅ **Smart Daily Note Navigation**: Easy cycling through daily notes by modification time
+- ✅ **Enhanced UX**: Perfect for managing hundreds of notes with instant access to recent ones
+
+### 🎯 Enhanced Cycling Autocomplete Demonstration:
+
+**Interactive Mode Cycling Autocomplete:**
+```bash
+tesela interactive
+# Select "📝 Edit note" → Type "daily" → Press TAB → "daily-journal-week-3" (most recent)
+# Press TAB again → "Daily Journal - Week 3" (title format)
+# Press TAB again → "daily-journal-week-2" (next most recent)
+# Continues cycling through all matches, ordered by modification time!
+```
+
+**CLI Autocomplete with Cycling Preview:**
+```bash
+tesela autocomplete "daily"
+# Output shows:
+# 💡 Tab completion for 'daily':
+# 📋 Notes are ordered by modification time (most recent first)
+#   TAB 1: daily-journal---week-3 ← First completion
+#   TAB 2: Daily Journal - Week 3  
+#   TAB 3: daily-journal---week-2
+#   TAB 4: Daily Journal - Week 2
+# 🔄 In interactive mode:
+#    • Type 'daily' and press TAB → 'daily-journal---week-3'
+#    • Press TAB again → 'Daily Journal - Week 3'
+#    • Cycles through all 8 matches
+```
+
+**Revolutionary UX Features:**
+- **Time-Based Priority**: Most recently modified notes appear first in tab completion
+- **Cycling Navigation**: Multiple tab presses cycle through ALL matching notes
+- **Perfect for Daily Notes**: Type "daily" + TAB to instantly access your most recent entries
+- **Handles Scale**: Works perfectly with hundreds of notes - recent ones always accessible
+- **Context-Aware**: Different cycling behavior for notes vs search vs linking
+- **Visual Feedback**: Enhanced autocomplete command shows exactly how cycling works
 
 ### ALL CLI Commands Working:
 ```bash
@@ -45,6 +144,8 @@ tesela init                           # Initialize new mosaic
 tesela new "My Note"                  # Create notes
 tesela list                          # List recent notes  
 tesela cat my-note                   # Display note content
+tesela edit my-note                  # 🆕 Open note in vim/EDITOR
+tesela autocomplete "my"              # 🆕 Get cycling autocomplete preview
 tesela search "keyword"              # Full-text search
 tesela attach my-note file.pdf       # Attach files
 tesela export my-note html           # Export to HTML/markdown/txt

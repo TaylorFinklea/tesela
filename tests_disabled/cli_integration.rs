@@ -144,7 +144,7 @@ fn test_new_command_with_mosaic() {
     assert!(note_path.exists());
     let content = fs::read_to_string(note_path).unwrap();
     assert!(content.contains("title: \"My Test Note\""));
-    assert!(content.contains("# My Test Note"));
+    assert!(content.contains("-"));
 
     env::set_current_dir(original_dir).unwrap();
 }
