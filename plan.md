@@ -44,20 +44,44 @@ tags: ["example"]
 3. **Phase 3**: Custom sync protocol with collaboration
 4. **Phase 4**: AI features and advanced plugins
 
-**Note: All versions before 1.0 are considered alpha releases**
+**Note: All releases are dated. Features are developed incrementally with continuous delivery.**
 
-## 🎉 V0.3 FOUNDATION COMPLETE! 🎉
+### Release Strategy
 
-### Current Status (v0.3.7)
+**Automated Continuous Delivery**
+- **Automatic Releases**: Every commit to main triggers a new release
+- **Date-based Versioning**: Format `0.{YYYY}{MM}{DD}[.{build_number}]`
+  - Example: `0.20250115.0` (first release of the day)
+  - Example: `0.20250115.1` (second release of the day)
+- **Multi-platform Binaries**: Automatic builds for Linux, macOS, and Windows
+- **Release Tracking**: RELEASE.md file maintains complete release history
+- **GitHub Actions**: Fully automated CI/CD pipeline
+
+**Benefits of Date-based Versioning**
+- **Predictable**: Users know exactly when a release was made
+- **No Version Debates**: No decisions about major/minor/patch
+- **Frequent Releases**: Encourages small, incremental improvements
+- **Clear Timeline**: Easy to track feature introduction dates
+- **Rollback Friendly**: Easy to identify and revert to specific dates
+
+**Release Artifacts**
+- Pre-built binaries for all major platforms
+- Automatic changelog generation from commit messages
+- Tagged releases for reproducible builds
+- RELEASE.md updated with each release
+
+## 🎉 FOUNDATION PHASE COMPLETE! 🎉
+
+### Current Status (Foundation Complete)
 
 **✅ Outliner Architecture Implemented**
 - All notes use proper outliner format with block-based structure
 - Minimal initialization with frontmatter and single `-` block
 - Future-ready for block inheritance and hierarchical operations
 
-**✅ Organized Directory Structure** 
+**✅ Organized Directory Structure**
 - `notes/` for regular topic-based notes
-- `dailies/` for date-based daily notes  
+- `dailies/` for date-based daily notes
 - `attachments/` for file attachments
 - Clean separation with unified access
 
@@ -87,7 +111,7 @@ Foundation is solid and ready for desktop UI development. All core functionality
 - ✅ **Vim integration** - Edit notes in external editor from CLI and interactive mode
 - ✅ **Intelligent Cycling Autocomplete** - Tab completion with cycling and time-based ordering
 
-### Recent Enhancements (v0.3.1-v0.3.3):
+### Recent Enhancements:
 - ✅ **External Editor Integration**: New `tesela edit <note>` command opens notes in vim or $EDITOR
 - ✅ **Enhanced Interactive Mode**: "Edit note" option now launches external editor instead of just displaying content
 - ✅ **Seamless Workflow**: Exit editor returns to interactive mode for continuous note management
@@ -121,7 +145,7 @@ tesela autocomplete "daily"
 # 💡 Tab completion for 'daily':
 # 📋 Notes are ordered by modification time (most recent first)
 #   TAB 1: daily-journal---week-3 ← First completion
-#   TAB 2: Daily Journal - Week 3  
+#   TAB 2: Daily Journal - Week 3
 #   TAB 3: daily-journal---week-2
 #   TAB 4: Daily Journal - Week 2
 # 🔄 In interactive mode:
@@ -142,7 +166,7 @@ tesela autocomplete "daily"
 ```bash
 tesela init                           # Initialize new mosaic
 tesela new "My Note"                  # Create notes
-tesela list                          # List recent notes  
+tesela list                          # List recent notes
 tesela cat my-note                   # Display note content
 tesela edit my-note                  # 🆕 Open note in vim/EDITOR
 tesela autocomplete "my"              # 🆕 Get cycling autocomplete preview
@@ -161,7 +185,7 @@ tesela benchmark                     # Run performance tests
 
 **Ready for UI development (Version 0.4) - Enhanced CLI foundation is rock solid!**
 
-## Version 0.1 - Core Foundation
+## Phase 1 - Core Foundation ✅
 
 ### Phase 1: Project Setup
 - [x] Workspace structure with Cargo.toml
@@ -206,7 +230,7 @@ tesela benchmark                     # Run performance tests
 
 ### Phase 4.5: Testing Foundation
 - [x] Unit tests for `init` command
-- [x] Unit tests for `new` command  
+- [x] Unit tests for `new` command
 - [x] Unit tests for `list` command
 - [x] Integration tests for CLI workflow (12 tests passing)
 - [x] Test helper utilities for file operations
@@ -222,7 +246,7 @@ tesela benchmark                     # Run performance tests
 - [x] Architecture documentation maintained
 - [x] Development roadmap tracking (this file)
 
-## Version 0.2 - Indexing & Search
+## Phase 2 - Indexing & Search ✅
 
 ### Phase 1: File Watcher & Indexer
 - [x] File watcher with `notify`
@@ -248,7 +272,7 @@ tesela benchmark                     # Run performance tests
 - [x] Hot path optimization
 - [x] Cache metrics/debugging
 
-## Version 0.3 - Enhanced CLI & API ✅ COMPLETE!
+## Phase 3 - Enhanced CLI & API ✅ COMPLETE!
 
 ### Phase 1: Advanced CLI Features
 - [x] `tesela search [query]` - Full-text search
@@ -277,7 +301,7 @@ tesela benchmark                     # Run performance tests
 - [x] Progress indicators
 - [x] First alpha release
 
-## Version 0.4 - Desktop UI
+## Phase 4 - Desktop UI (Next)
 
 ### Phase 1: Slint Foundation
 - [ ] Slint project setup
@@ -301,7 +325,7 @@ tesela benchmark                     # Run performance tests
 - [ ] Theme support (light/dark)
 - [ ] Auto-save and conflict detection
 
-## Version 0.5 - Plugin System Foundation
+## Phase 5 - Plugin System Foundation
 
 ### Phase 1: Lua & Fennel Runtime
 - [ ] Security model design document
@@ -330,7 +354,7 @@ tesela benchmark                     # Run performance tests
 - [ ] Plugin debugging tools
 - [ ] Plugin documentation system
 
-## Version 0.6 - Example Plugins & Excalidraw
+## Phase 6 - Example Plugins & Excalidraw
 
 ### Phase 1: Core Example Plugins
 - [ ] Auto-tagger plugin (Lua)
@@ -355,7 +379,7 @@ tesela benchmark                     # Run performance tests
 - [ ] Pomodoro timer plugin
 - [ ] Note templates plugin
 
-## Version 0.7 - Code Execution in Notes
+## Phase 7 - Code Execution in Notes
 
 ### Phase 1: Code Block Infrastructure
 - [ ] Code block detection and parsing
@@ -391,7 +415,7 @@ tesela benchmark                     # Run performance tests
   - [ ] File system sandboxing
   - [ ] Per-language permission model
 
-## Version 0.8 - Mobile Apps
+## Phase 8 - Mobile Apps
 
 ### Phase 1: Core Mobile Experience
 - [ ] Slint mobile shell (iOS/Android)
@@ -420,7 +444,7 @@ tesela benchmark                     # Run performance tests
 - [ ] Background sync
 - [ ] Push notifications for reminders
 
-## Version 0.9 - Platform Sync
+## Phase 9 - Platform Sync
 
 ### Phase 1: P2P Sync
 - [ ] Native sync protocol for real-time updates
@@ -449,7 +473,7 @@ tesela benchmark                     # Run performance tests
 - [ ] Sync status UI
 - [ ] Conflict resolution UI
 
-## Version 1.0 - Intelligence
+## Phase 10 - Intelligence
 
 **Note: Plugin API becomes stable at v1.0 - backwards compatibility guaranteed from here**
 
@@ -481,7 +505,7 @@ tesela benchmark                     # Run performance tests
   - [ ] Handwriting recognition
   - [ ] Smart shape suggestions
 
-## Version 1.1 - Basic Collaboration
+## Phase 11 - Basic Collaboration
 
 ### Phase 1: Shared Mosaics
 - [ ] Mosaic sharing mechanism
@@ -497,7 +521,7 @@ tesela benchmark                     # Run performance tests
 - [ ] Collaboration UI
 - [ ] Basic presence indicators
 
-## Version 1.2 - JavaScript Plugins
+## Phase 12 - JavaScript Plugins
 
 ### Phase 1: JavaScript Runtime
 - [ ] QuickJS integration
@@ -523,7 +547,7 @@ tesela benchmark                     # Run performance tests
 - [ ] TypeScript type definitions for plugin API
 - [ ] Plugin debugging tools
 
-## Version 1.3 - WASM & Advanced Extensibility
+## Phase 13 - WASM & Advanced Extensibility
 
 ### Phase 1: WASM Runtime
 - [ ] Wasmtime integration
@@ -544,7 +568,7 @@ tesela benchmark                     # Run performance tests
 - [ ] External tool integration
 - [ ] Plugin composition and chaining
 
-## Version 1.4 - Real-time Collaboration & Production Polish
+## Phase 14 - Real-time Collaboration & Production Polish
 
 ### Phase 1: CRDT Implementation
 - [ ] CRDT-based real-time editing
@@ -672,4 +696,244 @@ tesela benchmark                     # Run performance tests
 - Handwriting support
 - VR/AR interfaces
 - Federation protocol
+
+## Comprehensive Testing Plan
+
+### Testing Strategy
+Our testing approach follows a multi-layered strategy to ensure reliability and maintainability of all Tesela features.
+
+### Test Categories
+
+#### Unit Tests
+Small, focused tests for individual functions and methods.
+
+##### Core Commands Tests
+- [x] `test_init_mosaic` - Test mosaic initialization
+- [x] `test_create_note` - Test note creation with various titles
+- [x] `test_list_notes_sorting` - Verify notes are sorted by modification date
+- [x] `test_daily_note_creation` - Test daily note creation and naming
+- [x] `test_search_notes` - Test search functionality with various queries
+- [ ] `test_link_notes` - Test bidirectional linking
+- [ ] `test_export_note` - Test export to different formats
+- [ ] `test_import_notes` - Test importing from markdown files
+- [ ] `test_autocomplete_generation` - Test autocomplete suggestions
+- [x] `test_format_time_ago` - Test time formatting utility  
+- [ ] `test_extract_title_from_content` - Test title extraction logic
+- [x] `test_get_notes_with_paths` - Test note path retrieval
+
+##### Additional Core Commands Tests (Implemented)
+- [x] `test_init_mosaic_already_exists` - Test error when mosaic exists
+- [x] `test_create_note_with_special_characters` - Test special character handling
+- [x] `test_create_note_no_mosaic` - Test error when no mosaic exists
+- [x] `test_create_duplicate_note` - Test duplicate note handling  
+- [x] `test_create_daily_note` - Test daily note creation
+- [x] `test_create_note_with_unicode` - Test Unicode character support
+- [x] `test_create_note_preserves_frontmatter_format` - Test frontmatter format
+- [x] `test_create_multiple_notes_sequential` - Test creating multiple notes
+
+##### Additional List and Search Tests (Implemented)
+- [x] `test_list_notes_empty_mosaic` - Test listing with no notes
+- [x] `test_list_notes_with_modification` - Test list updates after modification
+- [x] `test_search_notes_case_insensitive` - Test case-insensitive search
+- [x] `test_search_notes_no_results` - Test search with no matches
+- [x] `test_get_notes_with_paths_includes_dailies` - Test including daily notes
+- [x] `test_search_notes_special_characters` - Test searching special chars
+- [x] `test_list_notes_performance_with_many_notes` - Test performance with 100 notes
+
+##### Additional TUI Component Tests (Implemented)
+- [x] `test_input_mode_creation` - Test InputMode struct creation
+- [x] `test_search_mode_creation` - Test SearchMode struct creation
+- [x] `test_listing_mode_creation` - Test ListingMode struct creation
+- [x] `test_search_highlighting_indices` - Test match indices calculation
+- [x] `test_list_navigation_bounds` - Test list navigation boundaries
+- [x] `test_empty_list_handling` - Test handling of empty lists
+
+##### Storage Layer Tests
+- [ ] `test_storage_init` - Test storage initialization
+- [ ] `test_note_persistence` - Test saving and loading notes
+- [ ] `test_attachment_handling` - Test file attachment operations
+- [ ] `test_metadata_management` - Test note metadata handling
+- [ ] `test_directory_structure` - Verify proper directory creation
+
+##### TUI Component Tests
+- [x] `test_app_state_transitions` - Test mode transitions in TUI
+- [x] `test_input_handling` - Test keyboard input processing
+- [x] `test_suggestion_cycling` - Test Tab completion cycling
+- [ ] `test_preview_loading` - Test preview pane content loading
+- [x] `test_scroll_management` - Test preview scroll position
+- [x] `test_search_highlighting` - Test search match highlighting
+- [x] `test_list_item_creation` - Test ListItem struct creation
+- [x] `test_error_display` - Test error message handling
+
+##### Search Engine Tests
+- [ ] `test_indexing` - Test note indexing functionality
+- [ ] `test_query_parsing` - Test search query parsing
+- [ ] `test_fuzzy_matching` - Test fuzzy search algorithm
+- [ ] `test_search_ranking` - Test result ranking logic
+- [ ] `test_cache_invalidation` - Test search cache updates
+
+#### Integration Tests
+
+##### TUI Flow Tests
+- [x] `test_tui_create_note_flow` - Full flow: menu → input → create → confirm
+- [x] `test_tui_edit_note_flow` - Full flow: menu → select → edit → save
+- [x] `test_tui_search_flow` - Full flow: menu → search → results → open
+- [x] `test_tui_list_navigation` - Test list navigation with preview updates
+- [x] `test_tui_autocomplete_flow` - Test complete autocomplete interaction
+- [x] `test_tui_error_recovery` - Test error handling and recovery
+
+##### Additional TUI Flow Tests (Implemented)
+- [x] `test_tui_daily_note_flow` - Test daily note creation flow
+- [x] `test_tui_preview_update_on_selection_change` - Test preview updates when selection changes
+
+##### File System Integration Tests
+- [ ] `test_concurrent_file_access` - Test concurrent read/write operations
+- [ ] `test_large_note_handling` - Test with notes >1MB
+- [ ] `test_special_characters_in_paths` - Test Unicode and special chars
+- [ ] `test_permission_errors` - Test handling of permission issues
+- [ ] `test_disk_space_handling` - Test low disk space scenarios
+
+##### Cross-Feature Integration Tests
+- [ ] `test_search_after_edit` - Verify search index updates after edits
+- [ ] `test_link_consistency` - Verify links remain valid after renames
+- [ ] `test_export_import_roundtrip` - Test export then import preserves data
+- [ ] `test_daily_note_in_list` - Verify daily notes appear in listings
+- [ ] `test_attachment_in_export` - Test attachments are handled in exports
+
+#### End-to-End Tests
+
+##### Complete Workflow Tests
+- [ ] `test_new_user_workflow` - Init → Create → Edit → Search → Export
+- [ ] `test_power_user_workflow` - Complex linking, searching, bulk operations
+- [ ] `test_migration_workflow` - Import existing notes → organize → export
+- [ ] `test_collaboration_workflow` - Multiple users, shared mosaic (future)
+
+##### Performance Tests
+- [ ] `test_startup_time` - Measure TUI startup with various note counts
+- [ ] `test_search_performance` - Benchmark search with 1000+ notes
+- [ ] `test_navigation_responsiveness` - Measure UI lag with large lists
+- [ ] `test_memory_usage` - Monitor memory with extended usage
+- [ ] `test_file_watch_efficiency` - Test file watcher with many changes
+
+#### Regression Tests
+
+##### Bug Fix Verification Tests
+- [ ] `test_autocomplete_double_entry_fix` - Verify no duplicate suggestions
+- [ ] `test_search_realtime_update` - Verify search updates as you type
+- [ ] `test_preview_scroll_reset` - Verify scroll resets on selection change
+- [ ] `test_special_char_handling` - Verify Unicode characters work
+- [ ] `test_empty_mosaic_handling` - Verify graceful handling of empty state
+
+### Test Implementation Plan
+
+#### Phase 1: Core Unit Tests (Week 1)
+1. Implement all Core Commands Tests
+2. Implement Storage Layer Tests
+3. Set up test fixtures and helpers
+
+#### Phase 2: TUI Tests (Week 2)
+1. Implement TUI Component Tests
+2. Implement TUI Flow Tests
+3. Create mock terminal for testing
+
+#### Phase 3: Integration Tests (Week 3)
+1. Implement File System Integration Tests
+2. Implement Cross-Feature Integration Tests
+3. Set up integration test environment
+
+#### Phase 4: Performance & E2E Tests (Week 4)
+1. Implement Performance Tests
+2. Implement End-to-End Tests
+3. Set up CI/CD test pipeline
+
+### Test Coverage Goals
+- **Overall Coverage**: >80%
+- **Core Commands**: >90%
+- **TUI Components**: >75%
+- **Storage Layer**: >85%
+- **Search Engine**: >80%
+
+### Testing Tools & Infrastructure
+
+#### Test Frameworks
+- **Unit Tests**: Rust's built-in `#[test]`
+- **Integration Tests**: Custom test harness with `tempfile`
+- **TUI Tests**: Mock terminal with `ratatui` test utilities
+- **Performance Tests**: `criterion` for benchmarking
+
+#### Continuous Integration
+- Run all tests on every commit
+- Generate coverage reports with `tarpaulin`
+- Performance regression detection
+- Automated test result reporting
+
+#### Test Data Management
+- Fixtures for common test scenarios
+- Generated test data for stress testing
+- Snapshot testing for UI components
+- Golden files for export format testing
+
+### Test Documentation
+
+#### Test Naming Convention
+- `test_<component>_<action>_<expected_result>`
+- Example: `test_search_engine_query_empty_returns_no_results`
+
+#### Test Organization
+```
+tests/
+├── unit/
+│   ├── commands/
+│   ├── storage/
+│   └── tui/
+├── integration/
+│   ├── workflows/
+│   └── system/
+├── e2e/
+│   └── scenarios/
+└── fixtures/
+    └── data/
+```
+
+#### Test Maintenance
+- Review and update tests with each feature change
+- Quarterly test suite audit
+- Remove obsolete tests
+- Add tests for reported bugs before fixing
+
+## Success Criteria
+- All tests passing before release
+- No flaky tests in CI
+- Test execution time <5 minutes for unit tests
+- Test execution time <15 minutes for all tests
+- Clear test failure messages that aid debugging
+
+## Test Implementation Status
+
+### Completed Tests (39 total)
+- **Unit Tests**: 31 tests across 3 modules
+  - Core Commands: 10 tests ✅
+  - List and Search: 10 tests ✅
+  - TUI Components: 11 tests ✅
+- **Integration Tests**: 8 tests
+  - TUI Workflows: 8 tests ✅
+
+### Test Files Created
+- `tests/unit/test_init_and_create.rs` - Core command tests
+- `tests/unit/test_list_and_search.rs` - List and search functionality
+- `tests/unit/test_tui_components.rs` - TUI component unit tests
+- `tests/integration/test_tui_flows.rs` - TUI workflow integration tests
+- `tests/unit_tests.rs` - Unit test runner
+- `tests/integration_tests.rs` - Integration test runner
+
+### Known Issues to Resolve
+- Some functions need to return proper types for testing (e.g., search_notes)
+- TUI module exports need to be made public for external testing
+- Minor compilation issues with test imports
+
+### Next Steps
+1. Fix API visibility issues for testing
+2. Add remaining test categories (storage, search engine, etc.)
+3. Set up CI/CD pipeline for automated testing
+4. Add code coverage reporting with tarpaulin
 - Tesela Foundation (governance)

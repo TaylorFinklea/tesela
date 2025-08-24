@@ -92,7 +92,7 @@ Tesela follows the **Island Core** pattern - a headless core with multiple UI sh
 
 ## 🗺️ Roadmap
 
-### Phase 1: Foundation ✅ Complete
+### Foundation ✅ Complete
 - [x] Project structure and planning
 - [x] Core file operations with outliner format
 - [x] SQLite indexing with full-text search
@@ -100,25 +100,25 @@ Tesela follows the **Island Core** pattern - a headless core with multiple UI sh
 - [x] Daily notes in separate folder
 - [x] Intelligent autocomplete and search
 
-### Phase 2: Desktop Experience (In Progress)
+### Desktop Experience (Next)
 - [ ] Slint-based GUI with drag & drop
 - [ ] Graph visualization with outliner blocks
 - [ ] Quick switcher across all directories
 - [ ] Themes and customization
 
-### Phase 3: Intelligence
+### Intelligence (Planned)
 - [ ] Plugin system (Lua/Fennel)
 - [ ] Smart linking with block inheritance
 - [ ] Local AI integration
 - [ ] Content suggestions based on outliner structure
 
-### Phase 4: Collaboration
+### Collaboration (Future)
 - [ ] File-based sync (works with any sync tool)
 - [ ] Mobile apps with outliner editing
 - [ ] Shared mosaics
 - [ ] Real-time collaboration with CRDT
 
-See [plan.md](plan.md) for the development roadmap. Note that as a passion project, these are goals rather than deadlines - progress happens when life allows!
+See [plan.md](plan.md) for the complete development roadmap. With our date-based release strategy, new features are delivered continuously as they're ready. Note that as a passion project, these are goals rather than deadlines - progress happens when life allows!
 
 ## 🧩 Plugin Ideas
 
@@ -178,7 +178,7 @@ For new contributors, start by reading `STRUCTURE.md` to understand how the code
 
 ## 📊 Benchmarks
 
-Performance targets for v1.0:
+Performance targets for production release:
 
 | Operation | Target | Current |
 |-----------|--------|---------|
@@ -266,7 +266,7 @@ Special thanks to the open source projects that make Tesela possible:
 
 ---
 
-## ✨ Current Features (v0.3.7)
+## ✨ Current Features
 
 - **Complete CLI**: All core commands with intelligent autocomplete
 - **Cross-Directory Operations**: Seamless editing/searching across `notes/` and `dailies/`

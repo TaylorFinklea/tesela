@@ -1390,6 +1390,45 @@ pub fn open_note_in_editor(note_identifier: &str) -> Result<()> {
     Ok(())
 }
 
+/// Open a note directly by its file path (used by TUI)
+pub fn open_note_by_path(path: &str) -> Result<()> {
+    use std::env;
+    use std::process::Command;
+
+    let note_path = Path::new(path);
+
+    // Check if the file exists
+    if !note_path.exists() {
+        return Err(anyhow!("Note file not found: {}", path));
+    }
+
+    // Update last_opened timestamp before opening in editor
+    if let Err(e) = update_last_opened_timestamp(note_path) {
+        eprintln!("⚠️  Warning: Failed to update last_opened timestamp: {}", e);
+    }
+
+    // Get editor from environment or default to vim
+    let editor = env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+
+    println!("📝 Opening '{}' in {}...", note_path.display(), editor);
+
+    // Execute the editor
+    let status = Command::new(&editor)
+        .arg(note_path)
+        .status()
+        .context("Failed to launch editor")?;
+
+    if !status.success() {
+        return Err(anyhow!(
+            "Editor exited with error code: {:?}",
+            status.code()
+        ));
+    }
+
+    println!("✅ Note editing completed");
+    Ok(())
+}
+
 /// Extract title from a note file by reading its content
 fn extract_title_from_file(path: &Path) -> Result<String> {
     let content = fs::read_to_string(path).context("Failed to read note file")?;
@@ -1589,7 +1628,7 @@ impl Completion for SmartCompletion {
 }
 
 /// Get all note names with modification timestamps for autocomplete
-fn get_note_names_with_timestamps() -> Result<Vec<(String, SystemTime)>> {
+pub fn get_note_names_with_timestamps() -> Result<Vec<(String, SystemTime)>> {
     let mut all_notes = Vec::new();
 
     // Scan both notes and dailies directories
@@ -1617,6 +1656,57 @@ fn get_note_names_with_timestamps() -> Result<Vec<(String, SystemTime)>> {
 
     let notes: Vec<(String, SystemTime)> = seen.into_iter().collect();
     Ok(notes)
+}
+
+/// Get all notes with their full paths, titles, and timestamps
+/// Returns: Vec<(path, title, timestamp)>
+pub fn get_notes_with_paths() -> Result<Vec<(String, String, SystemTime)>> {
+    let mut all_notes = Vec::new();
+
+    // Scan both notes and dailies directories
+    let directories = ["notes", "dailies"];
+
+    for dir_name in directories {
+        let dir_path = Path::new(dir_name);
+        if dir_path.exists() {
+            for entry in fs::read_dir(dir_path)? {
+                let entry = entry?;
+                let path = entry.path();
+
+                if path.is_file() && path.extension().map_or(false, |ext| ext == "md") {
+                    // Get modification time
+                    let modified_time = fs::metadata(&path)
+                        .and_then(|metadata| metadata.modified())
+                        .unwrap_or(SystemTime::UNIX_EPOCH);
+
+                    // Get the relative path as string
+                    let path_str = path.to_str().unwrap_or("").to_string();
+
+                    // Extract title from file content
+                    let title = if let Ok(content) = fs::read_to_string(&path) {
+                        extract_title_from_content(
+                            &content,
+                            path.file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("unknown"),
+                        )
+                    } else {
+                        path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("unknown")
+                            .to_string()
+                    };
+
+                    all_notes.push((path_str, title, modified_time));
+                }
+            }
+        }
+    }
+
+    // Sort by modification time (newest first)
+    all_notes.sort_by(|a, b| b.2.cmp(&a.2));
+
+    Ok(all_notes)
 }
 
 /// Helper function to scan a single directory for note files
@@ -1683,7 +1773,7 @@ fn get_note_names() -> Result<Vec<String>> {
 }
 
 /// Get all tag names for autocomplete
-fn get_tag_names() -> Result<Vec<String>> {
+pub fn get_tag_names() -> Result<Vec<String>> {
     // This is a simplified implementation - in a real system you'd query the database
     // For now, we'll return common tags that users might want to search for
     let mut tags = std::collections::HashSet::new();
@@ -1722,7 +1812,7 @@ fn get_tag_names() -> Result<Vec<String>> {
 }
 
 /// Get search keywords for autocomplete
-fn get_search_keywords() -> Vec<String> {
+pub fn get_search_keywords() -> Vec<String> {
     vec![
         "tag:".to_string(),
         "title:".to_string(),
@@ -2660,7 +2750,7 @@ pub fn search_notes(query: &str) -> Result<()> {
 /// # Arguments
 /// * `content` - The full markdown content of the note
 /// * `fallback` - Filename to use if no title is found
-fn extract_title_from_content(content: &str, fallback: &str) -> String {
+pub fn extract_title_from_content(content: &str, fallback: &str) -> String {
     // Look for title in frontmatter first
     if content.starts_with("---") {
         let lines: Vec<&str> = content.lines().collect();
@@ -2711,7 +2801,7 @@ fn extract_title_from_content(content: &str, fallback: &str) -> String {
 /// - 1-6 days: "X days ago"
 /// - 1-4 weeks: "X weeks ago"
 /// - 1+ months: "X months ago"
-fn format_time_ago(time: SystemTime) -> String {
+pub fn format_time_ago(time: SystemTime) -> String {
     if let Ok(duration) = time.elapsed() {
         let seconds = duration.as_secs();
 

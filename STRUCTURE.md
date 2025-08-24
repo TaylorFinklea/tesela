@@ -238,7 +238,7 @@ When adding new functionality:
 4. **Tests**: Add unit tests in the module, integration tests in `tests/`
 5. **Documentation**: Update this file and relevant sections of `plan.md`
 
-## Current Features (v0.3.7)
+## Current Features
 
 ### Cross-Directory Operations
 - **Edit**: `tesela -e "partial-name"` searches both directories

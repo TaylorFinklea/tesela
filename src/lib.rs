@@ -12,6 +12,7 @@
 
 pub mod commands;
 pub mod core;
+pub mod tui;
 
 // Re-export commonly used items from commands
 pub use commands::{

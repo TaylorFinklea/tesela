@@ -131,6 +131,8 @@ enum Commands {
     },
     /// Start interactive mode
     Interactive,
+    /// Start TUI (Terminal User Interface) mode
+    Tui,
     /// Get autocomplete suggestions
     Autocomplete {
         /// Partial text to autocomplete
@@ -295,6 +297,12 @@ fn main() {
         Some(Commands::Interactive) => {
             if let Err(e) = interactive_mode() {
                 eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        Some(Commands::Tui) => {
+            if let Err(e) = tesela::tui::run() {
+                eprintln!("TUI error: {}", e);
                 std::process::exit(1);
             }
         }

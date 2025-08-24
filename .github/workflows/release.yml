@@ -1,0 +1,272 @@
+name: Release
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Generate version
+        id: version
+        run: |
+          # Generate date-based version: v{YYYY}.{MM}.{DD}.{build_number}
+          DATE_VERSION="v$(date -u +%Y.%m.%d)"
+
+          # Check if there's already a release today
+          EXISTING_TAGS=$(git tag -l "${DATE_VERSION}*" | sort -V)
+
+          if [ -z "$EXISTING_TAGS" ]; then
+            # First release of the day
+            VERSION="${DATE_VERSION}"
+          else
+            # Get the highest build number for today
+            LAST_BUILD=$(echo "$EXISTING_TAGS" | tail -1 | grep -oE '\.[0-9]+$' | grep -oE '[0-9]+' || echo "0")
+            NEXT_BUILD=$((LAST_BUILD + 1))
+            VERSION="${DATE_VERSION}.${NEXT_BUILD}"
+          fi
+
+          echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          echo "DATE_VERSION=${DATE_VERSION}" >> $GITHUB_OUTPUT
+          echo "Generated version: ${VERSION}"
+
+      - name: Update Cargo.toml version
+        run: |
+          # Extract version number without 'v' prefix
+          VERSION_NUM="${{ steps.version.outputs.VERSION }}"
+          VERSION_NUM="${VERSION_NUM#v}"
+
+          # Update Cargo.toml with the new version
+          sed -i "s/^version = \".*\"/version = \"${VERSION_NUM}\"/" Cargo.toml
+
+          # Commit if there are changes
+          if git diff --quiet; then
+            echo "No version changes needed"
+          else
+            git config --local user.email "action@github.com"
+            git config --local user.name "GitHub Action"
+            git add Cargo.toml
+            git commit -m "chore: bump version to ${VERSION_NUM} [skip ci]"
+          fi
+
+      - name: Build release binary
+        run: |
+          cargo build --release
+
+          # Create release directory
+          mkdir -p release-artifacts
+
+          # Copy binary
+          cp target/release/tesela release-artifacts/tesela-linux-x64
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+
+          # Get commit messages since last tag
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+
+          if [ -z "$LAST_TAG" ]; then
+            # First release
+            COMMITS=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          else
+            COMMITS=$(git log ${LAST_TAG}..HEAD --pretty=format:"- %s (%h)" --no-merges)
+          fi
+
+          # Create release notes
+          cat > RELEASE_NOTES.md << EOF
+          ## What's Changed
+
+          ${COMMITS}
+
+          ---
+
+          ### Installation
+
+          #### Linux x64
+          \`\`\`bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${VERSION}/tesela-linux-x64 -o tesela
+          chmod +x tesela
+          sudo mv tesela /usr/local/bin/
+          \`\`\`
+
+          #### From source
+          \`\`\`bash
+          cargo install --git https://github.com/${{ github.repository }} --tag ${VERSION}
+          \`\`\`
+
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...${VERSION}
+          EOF
+
+          # Save for release body
+          echo "RELEASE_NOTES<<EOF" >> $GITHUB_OUTPUT
+          cat RELEASE_NOTES.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Update RELEASE.md
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+          # Create or update RELEASE.md
+          if [ ! -f RELEASE.md ]; then
+            cat > RELEASE.md << EOF
+          # Release History
+
+          This file tracks all releases of Tesela.
+
+          EOF
+          fi
+
+          # Prepare new entry
+          cat > RELEASE_ENTRY.md << EOF
+
+          ## ${VERSION} - ${DATE}
+
+          $(cat RELEASE_NOTES.md)
+
+          ---
+          EOF
+
+          # Insert new entry after the header
+          if grep -q "^## v" RELEASE.md; then
+            # Insert before the first release entry
+            awk '/^## v/{print; print ""; system("cat RELEASE_ENTRY.md"); next} 1' RELEASE.md > RELEASE.tmp
+            mv RELEASE.tmp RELEASE.md
+          else
+            # Append to the end
+            cat RELEASE_ENTRY.md >> RELEASE.md
+          fi
+
+          # Commit RELEASE.md
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add RELEASE.md
+          git commit -m "docs: update RELEASE.md for ${VERSION} [skip ci]" || echo "No changes to commit"
+
+      - name: Push changes
+        if: success()
+        run: |
+          git push origin main || echo "No changes to push"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.VERSION }}
+          name: ${{ steps.version.outputs.VERSION }}
+          body: ${{ steps.release_notes.outputs.RELEASE_NOTES }}
+          draft: false
+          prerelease: false
+          files: |
+            release-artifacts/*
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos:
+    needs: release
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest tag
+        id: tag
+        run: |
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags --abbrev=0)
+          echo "TAG=${LATEST_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Build for macOS
+        run: |
+          cargo build --release
+          mkdir -p release-artifacts
+          cp target/release/tesela release-artifacts/tesela-macos-x64
+
+          # Build for Apple Silicon if on appropriate runner
+          if [[ "$(uname -m)" == "arm64" ]]; then
+            cp target/release/tesela release-artifacts/tesela-macos-arm64
+          fi
+
+      - name: Upload macOS binary to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG }}
+          files: |
+            release-artifacts/*
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows:
+    needs: release
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get latest tag
+        id: tag
+        shell: bash
+        run: |
+          git fetch --tags
+          LATEST_TAG=$(git describe --tags --abbrev=0)
+          echo "TAG=${LATEST_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Setup Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Build for Windows
+        run: |
+          cargo build --release
+          mkdir release-artifacts
+          copy target\release\tesela.exe release-artifacts\tesela-windows-x64.exe
+
+      - name: Upload Windows binary to release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.tag.outputs.TAG }}
+          files: |
+            release-artifacts/*
+          token: ${{ secrets.GITHUB_TOKEN }}
