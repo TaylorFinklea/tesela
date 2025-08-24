@@ -61,8 +61,8 @@ tesela -e "First"
 # Search your notes
 tesela -s "knowledge"
 
-# Interactive mode for full functionality
-tesela -i
+# TUI mode for full interactive functionality
+tesela tui
 ```
 
 ## 🏗️ Architecture
@@ -274,7 +274,7 @@ Special thanks to the open source projects that make Tesela possible:
 - **Smart Search**: Full-text search with ranking and context
 - **Daily Notes**: Separate organization with date-based structure
 - **File Attachments**: Organized file management with drag & drop support
-- **Interactive Mode**: Beautiful TUI for all operations
+- **TUI Mode**: Beautiful Terminal User Interface for all operations
 - **Shell Integration**: Tab completion for all major shells
 
 **Note**: Tesela (Spanish/Portuguese for "tessellation piece") represents how individual notes form a complete knowledge mosaic. Each note is a tile in your personal knowledge architecture.

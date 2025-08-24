@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use tesela::{
     attach_file, autocomplete_suggestions, backup_mosaic, benchmark_performance, cat_note,
     create_note, daily_note_and_edit, export_note, generate_completions, import_notes, init_mosaic,
-    interactive_mode, link_notes, list_notes, open_note_in_editor, search_notes, show_graph,
+    link_notes, list_notes, open_note_in_editor, search_notes, show_graph,
 };
 
 /// Main CLI structure for Tesela.
@@ -29,10 +29,6 @@ struct Cli {
     /// Create a backup of the mosaic
     #[arg(short = 'b', long = "backup")]
     backup: bool,
-
-    /// Start interactive mode
-    #[arg(short = 'i', long = "interactive")]
-    interactive: bool,
 
     /// Create a new note
     #[arg(short = 'n', long = "new")]
@@ -129,8 +125,6 @@ enum Commands {
         /// Path to file or directory to import
         path: String,
     },
-    /// Start interactive mode
-    Interactive,
     /// Start TUI (Terminal User Interface) mode
     Tui,
     /// Get autocomplete suggestions
@@ -177,14 +171,6 @@ fn main() {
 
     if cli.backup {
         if let Err(e) = backup_mosaic() {
-            eprintln!("{}", e);
-            std::process::exit(1);
-        }
-        return;
-    }
-
-    if cli.interactive {
-        if let Err(e) = interactive_mode() {
             eprintln!("{}", e);
             std::process::exit(1);
         }
@@ -290,12 +276,6 @@ fn main() {
         }
         Some(Commands::Import { path }) => {
             if let Err(e) = import_notes(path) {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
-        }
-        Some(Commands::Interactive) => {
-            if let Err(e) = interactive_mode() {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }

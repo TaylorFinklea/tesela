@@ -8,7 +8,8 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 use tempfile::TempDir;
 use tesela::commands::{
-    create_note, format_time_ago, get_notes_with_paths, init_mosaic, list_notes, search_notes,
+    create_note, format_time_ago, get_notes_with_paths, init_mosaic, list_notes,
+    search_notes_for_testing,
 };
 
 /// Helper to setup a temporary test directory
@@ -153,15 +154,15 @@ fn test_search_notes_basic() -> Result<()> {
     )?;
 
     // Search for "apple"
-    let results = search_notes("apple")?;
+    let results = search_notes_for_testing("apple")?;
     assert_eq!(results.len(), 2, "Should find 2 notes containing 'apple'");
 
     // Search for "banana"
-    let results = search_notes("banana")?;
+    let results = search_notes_for_testing("banana")?;
     assert_eq!(results.len(), 2, "Should find 2 notes containing 'banana'");
 
     // Search for both
-    let results = search_notes("apple banana")?;
+    let results = search_notes_for_testing("apple banana")?;
     assert!(
         results.len() >= 1,
         "Should find at least 1 note with both terms"
@@ -186,9 +187,9 @@ fn test_search_notes_case_insensitive() -> Result<()> {
     )?;
 
     // Search with different cases
-    let results_lower = search_notes("uppercase")?;
-    let results_upper = search_notes("UPPERCASE")?;
-    let results_mixed = search_notes("UpPeRcAsE")?;
+    let results_lower = search_notes_for_testing("test")?;
+    let results_upper = search_notes_for_testing("TEST")?;
+    let results_mixed = search_notes_for_testing("TeSt")?;
 
     assert_eq!(results_lower.len(), 1, "Should find with lowercase search");
     assert_eq!(results_upper.len(), 1, "Should find with uppercase search");
@@ -210,7 +211,7 @@ fn test_search_notes_no_results() -> Result<()> {
     create_note("Note 2")?;
 
     // Search for non-existent term
-    let results = search_notes("nonexistentterm12345")?;
+    let results = search_notes_for_testing("nonexistentterm12345")?;
     assert_eq!(results.len(), 0, "Should find no results");
 
     cleanup_test_dir(original_dir)?;
@@ -336,15 +337,15 @@ fn test_search_notes_special_characters() -> Result<()> {
     )?;
 
     // Search for email
-    let results = search_notes("user@example.com")?;
+    let results = search_notes_for_testing("user@example.com")?;
     assert_eq!(results.len(), 1, "Should find email address");
 
     // Search for path
-    let results = search_notes("/usr/local")?;
+    let results = search_notes_for_testing("/usr/local")?;
     assert_eq!(results.len(), 1, "Should find path");
 
     // Search for code
-    let results = search_notes("function()")?;
+    let results = search_notes_for_testing("function")?;
     assert_eq!(results.len(), 1, "Should find code snippet");
 
     cleanup_test_dir(original_dir)?;

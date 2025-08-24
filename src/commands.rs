@@ -9,10 +9,9 @@
 //! where they can be properly displayed to the user.
 
 use anyhow::{anyhow, Context, Result};
-use dialoguer::Completion;
-use std::cell::RefCell;
+
 use std::fs;
-use std::io::Write;
+
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -1447,22 +1446,14 @@ struct SmartCompletion {
     tags: Vec<String>,
     search_keywords: Vec<String>,
     completion_type: CompletionType,
-    // State for cycling through completions
-    cycle_state: RefCell<CycleState>,
 }
 
 #[derive(Debug)]
-struct CycleState {
-    original_input: String, // The partial input that generated the matches
-    current_matches: Vec<String>,
-    current_index: usize,
-}
-
+// CycleState removed - no longer needed after interactive mode removal
 #[derive(Clone)]
 enum CompletionType {
     Notes,
     Search,
-    Mixed,
 }
 
 impl SmartCompletion {
@@ -1473,11 +1464,6 @@ impl SmartCompletion {
             tags: Vec::new(),
             search_keywords: Vec::new(),
             completion_type: CompletionType::Notes,
-            cycle_state: RefCell::new(CycleState {
-                original_input: String::new(),
-                current_matches: Vec::new(),
-                current_index: 0,
-            }),
         })
     }
 
@@ -1490,28 +1476,6 @@ impl SmartCompletion {
             tags,
             search_keywords,
             completion_type: CompletionType::Search,
-            cycle_state: RefCell::new(CycleState {
-                original_input: String::new(),
-                current_matches: Vec::new(),
-                current_index: 0,
-            }),
-        })
-    }
-
-    fn new_mixed() -> Result<Self> {
-        let notes = get_note_names_with_timestamps()?;
-        let tags = get_tag_names()?;
-        let search_keywords = get_search_keywords();
-        Ok(SmartCompletion {
-            notes,
-            tags,
-            search_keywords,
-            completion_type: CompletionType::Mixed,
-            cycle_state: RefCell::new(CycleState {
-                original_input: String::new(),
-                current_matches: Vec::new(),
-                current_index: 0,
-            }),
         })
     }
 
@@ -1567,23 +1531,6 @@ impl SmartCompletion {
                 note_matches.sort_by(|a, b| b.1.cmp(&a.1));
                 matches.extend(note_matches.into_iter().map(|(name, _)| name));
             }
-            CompletionType::Mixed => {
-                // All completion types with time-sorted notes
-                let mut note_matches: Vec<(String, SystemTime)> = Vec::new();
-                for (note, modified_time) in &self.notes {
-                    if note.to_lowercase().starts_with(&input_lower) {
-                        note_matches.push((note.clone(), *modified_time));
-                    }
-                }
-                note_matches.sort_by(|a, b| b.1.cmp(&a.1));
-                matches.extend(note_matches.into_iter().map(|(name, _)| name));
-
-                for tag in &self.tags {
-                    if tag.to_lowercase().starts_with(&input_lower) {
-                        matches.push(format!("#{}", tag));
-                    }
-                }
-            }
         }
 
         // Remove duplicates while preserving order
@@ -1594,38 +1541,7 @@ impl SmartCompletion {
     }
 }
 
-impl Completion for SmartCompletion {
-    fn get(&self, input: &str) -> Option<String> {
-        let mut state = self.cycle_state.borrow_mut();
-
-        // Check if input matches any of our current completions (cycling behavior)
-        if !state.current_matches.is_empty() {
-            if let Some(pos) = state.current_matches.iter().position(|m| m == input) {
-                // We found the current completion - cycle to the next one
-                state.current_index = (pos + 1) % state.current_matches.len();
-                return Some(state.current_matches[state.current_index].clone());
-            }
-        }
-
-        // New search - find all matches
-        let matches = self.find_matches(input);
-        if matches.is_empty() {
-            // Reset state for empty matches
-            state.original_input = String::new();
-            state.current_matches = Vec::new();
-            state.current_index = 0;
-            return None;
-        }
-
-        // Initialize new completion session
-        state.original_input = input.to_string();
-        state.current_matches = matches.clone();
-        state.current_index = 0;
-
-        // Return first match
-        Some(matches[0].clone())
-    }
-}
+// Note: Completion trait implementation removed as interactive mode has been replaced by TUI
 
 /// Get all note names with modification timestamps for autocomplete
 pub fn get_note_names_with_timestamps() -> Result<Vec<(String, SystemTime)>> {
@@ -1764,13 +1680,7 @@ fn scan_directory_for_notes(dir_path: &Path) -> Result<Vec<(String, SystemTime)>
 }
 
 /// Get all note names (without .md extension) for autocomplete - legacy function
-fn get_note_names() -> Result<Vec<String>> {
-    let notes_with_timestamps = get_note_names_with_timestamps()?;
-    Ok(notes_with_timestamps
-        .into_iter()
-        .map(|(name, _)| name)
-        .collect())
-}
+// get_note_names function removed - no longer needed after interactive mode removal
 
 /// Get all tag names for autocomplete
 pub fn get_tag_names() -> Result<Vec<String>> {
@@ -1903,320 +1813,6 @@ pub fn autocomplete_suggestions(partial: &str, completion_type: &str) -> Result<
     Ok(())
 }
 
-/// Clear the terminal screen
-fn clear_screen() {
-    print!("\x1B[2J\x1B[1;1H");
-    std::io::stdout().flush().unwrap_or_default();
-}
-
-pub fn interactive_mode() -> Result<()> {
-    use dialoguer::{theme::ColorfulTheme, Input};
-    use std::io::{self, Write};
-
-    clear_screen();
-    println!("🔮 Welcome to Tesela Interactive Mode");
-    println!("✨ Single keystrokes for lightning-fast note management!");
-    println!();
-
-    let theme = ColorfulTheme::default();
-
-    loop {
-        // Clear screen for clean interface
-        clear_screen();
-        println!("🔮 Tesela Interactive Mode");
-        println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-
-        // Show current status
-        let status = if Path::new("tesela.toml").exists() {
-            "📚 Mosaic Ready"
-        } else {
-            "⚠️  No Mosaic Found"
-        };
-        println!("{}", status);
-        println!();
-
-        // Display menu with keystroke shortcuts
-        println!("🚀 Quick Commands:");
-        println!("╭─────────────────────────────┬─────────────────────────────╮");
-        println!("│ [N] 📝 Create new note      │ [L] 📚 List notes           │");
-        println!("│ [S] 🔍 Search notes         │ [E] 📝 Edit note            │");
-        println!("│ [K] 🔗 Link notes           │ [G] 🕸️  Show graph          │");
-        println!("│ [D] 📅 Daily note           │ [B] 💾 Backup               │");
-        println!("│ [I] 📥 Import               │ [M] ⚙️  Initialize mosaic   │");
-        println!("│ [H] ❓ Help                 │ [Q] 🚪 Quit                 │");
-        println!("╰─────────────────────────────┴─────────────────────────────╯");
-        println!();
-
-        print!("💫 Choose action: ");
-        io::stdout().flush()?;
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-        let input = input.trim().to_lowercase();
-
-        let action = match input.as_str() {
-            "n" | "new" | "create" => 0,
-            "l" | "list" => 1,
-            "s" | "search" => 2,
-            "e" | "edit" => 3,
-            "k" | "link" => 4,
-            "g" | "graph" => 5,
-            "d" | "daily" => 6,
-            "b" | "backup" => 7,
-            "i" | "import" => 8,
-            "m" | "mosaic" | "init" => 9,
-            "h" | "help" => 10,
-            "q" | "quit" | "exit" => 11,
-            _ => {
-                println!("❌ Unknown command '{}'. Try 'h' for help.", input);
-                continue;
-            }
-        };
-
-        match action {
-            0 => {
-                // Create new note
-                println!("\n📝 Creating new note...");
-                let title: String = Input::with_theme(&theme)
-                    .with_prompt("Note title")
-                    .interact_text()?;
-
-                if let Err(e) = create_note(&title) {
-                    println!("❌ Error: {}", e);
-                } else {
-                    println!("✅ Note created successfully!");
-                }
-
-                println!("\nPress Enter to continue...");
-                let mut dummy = String::new();
-                io::stdin().read_line(&mut dummy)?;
-            }
-            1 => {
-                // List notes
-                println!("\n📚 Recent notes:");
-                if let Err(e) = list_notes() {
-                    println!("❌ Error: {}", e);
-                }
-
-                println!("\nPress Enter to continue...");
-                let mut dummy = String::new();
-                io::stdin().read_line(&mut dummy)?;
-            }
-            2 => {
-                // Search notes
-                println!("\n🔍 Searching notes...");
-                let completion =
-                    SmartCompletion::new_for_search().unwrap_or_else(|_| SmartCompletion {
-                        notes: Vec::new(),
-                        tags: Vec::new(),
-                        search_keywords: Vec::new(),
-                        completion_type: CompletionType::Search,
-                        cycle_state: RefCell::new(CycleState {
-                            original_input: String::new(),
-                            current_matches: Vec::new(),
-                            current_index: 0,
-                        }),
-                    });
-                let query: String = Input::with_theme(&theme)
-                    .with_prompt("Search query (tab: notes/tags/keywords)")
-                    .completion_with(&completion)
-                    .interact_text()?;
-
-                if let Err(e) = search_notes(&query) {
-                    println!("❌ Error: {}", e);
-                }
-
-                println!("\nPress Enter to continue...");
-                let mut dummy = String::new();
-                io::stdin().read_line(&mut dummy)?;
-            }
-            3 => {
-                // View/Edit note
-                println!("\n📝 Opening note in editor...");
-                let completion =
-                    SmartCompletion::new_for_notes().unwrap_or_else(|_| SmartCompletion {
-                        notes: Vec::new(),
-                        tags: Vec::new(),
-                        search_keywords: Vec::new(),
-                        completion_type: CompletionType::Notes,
-                        cycle_state: RefCell::new(CycleState {
-                            original_input: String::new(),
-                            current_matches: Vec::new(),
-                            current_index: 0,
-                        }),
-                    });
-                let note: String = Input::with_theme(&theme)
-                    .with_prompt("Note identifier (tab to autocomplete)")
-                    .completion_with(&completion)
-                    .interact_text()?;
-
-                if let Err(e) = open_note_in_editor(&note) {
-                    println!("❌ Error: {}", e);
-                }
-
-                println!("\nPress Enter to continue...");
-                let mut dummy = String::new();
-                io::stdin().read_line(&mut dummy)?;
-            }
-            4 => {
-                // Link notes
-                println!("\n🔗 Creating note links...");
-                let completion =
-                    SmartCompletion::new_for_notes().unwrap_or_else(|_| SmartCompletion {
-                        notes: Vec::new(),
-                        tags: Vec::new(),
-                        search_keywords: Vec::new(),
-                        completion_type: CompletionType::Notes,
-                        cycle_state: RefCell::new(CycleState {
-                            original_input: String::new(),
-                            current_matches: Vec::new(),
-                            current_index: 0,
-                        }),
-                    });
-                let from: String = Input::with_theme(&theme)
-                    .with_prompt("From note (tab to autocomplete)")
-                    .completion_with(&completion)
-                    .interact_text()?;
-                let to: String = Input::with_theme(&theme)
-                    .with_prompt("To note (tab to autocomplete)")
-                    .completion_with(&completion)
-                    .interact_text()?;
-
-                if let Err(e) = link_notes(&from, &to) {
-                    println!("❌ Error: {}", e);
-                }
-
-                println!("\nPress Enter to continue...");
-                let mut dummy = String::new();
-                io::stdin().read_line(&mut dummy)?;
-            }
-            5 => {
-                // Show graph
-                println!("\n🕸️  Showing note connections...");
-                let completion =
-                    SmartCompletion::new_for_notes().unwrap_or_else(|_| SmartCompletion {
-                        notes: Vec::new(),
-                        tags: Vec::new(),
-                        search_keywords: Vec::new(),
-                        completion_type: CompletionType::Notes,
-                        cycle_state: RefCell::new(CycleState {
-                            original_input: String::new(),
-                            current_matches: Vec::new(),
-                            current_index: 0,
-                        }),
-                    });
-                let note: String = Input::with_theme(&theme)
-                    .with_prompt("Note identifier (tab to autocomplete)")
-                    .completion_with(&completion)
-                    .interact_text()?;
-
-                if let Err(e) = show_graph(&note) {
-                    println!("❌ Error: {}", e);
-                }
-
-                println!("\nPress Enter to continue...");
-                let mut dummy = String::new();
-                io::stdin().read_line(&mut dummy)?;
-            }
-            6 => {
-                // Daily note
-                println!("\n📅 Opening daily note in editor...");
-                if let Err(e) = daily_note_and_edit() {
-                    println!("❌ Error: {}", e);
-                }
-
-                println!("\nPress Enter to continue...");
-                let mut dummy = String::new();
-                io::stdin().read_line(&mut dummy)?;
-            }
-            7 => {
-                // Backup
-                println!("\n💾 Creating backup...");
-                if let Err(e) = backup_mosaic() {
-                    println!("❌ Error: {}", e);
-                }
-
-                println!("\nPress Enter to continue...");
-                let mut dummy = String::new();
-                io::stdin().read_line(&mut dummy)?;
-            }
-            8 => {
-                // Import
-                println!("\n📥 Importing notes...");
-                let path: String = Input::with_theme(&theme)
-                    .with_prompt("Import path")
-                    .interact_text()?;
-
-                if let Err(e) = import_notes(&path) {
-                    println!("❌ Error: {}", e);
-                }
-
-                println!("\nPress Enter to continue...");
-                let mut dummy = String::new();
-                io::stdin().read_line(&mut dummy)?;
-            }
-            9 => {
-                // Initialize mosaic
-                println!("\n⚙️  Initializing mosaic...");
-                let path: String = Input::with_theme(&theme)
-                    .with_prompt("Mosaic path")
-                    .default(".".to_string())
-                    .interact_text()?;
-
-                if let Err(e) = init_mosaic(&path) {
-                    println!("❌ Error: {}", e);
-                }
-
-                println!("\nPress Enter to continue...");
-                let mut dummy = String::new();
-                io::stdin().read_line(&mut dummy)?;
-            }
-            10 => {
-                // Help
-                clear_screen();
-                println!("📖 Tesela Interactive Mode Help");
-                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                println!();
-                println!("🚀 Single Keystroke Shortcuts:");
-                println!("  N - Create new note (Start a new markdown note)");
-                println!("  L - List notes (Show all recent notes)");
-                println!("  S - Search notes (Full-text search across notes)");
-                println!("  E - Edit note (Open note in external editor)");
-                println!("  K - Link notes (Create bidirectional links)");
-                println!("  G - Show graph (Display note connections)");
-                println!("  D - Daily note (Create/open today's daily note)");
-                println!("  B - Backup (Create timestamped backup)");
-                println!("  I - Import (Import notes from files/directories)");
-                println!("  M - Initialize mosaic (Set up new knowledge base)");
-                println!("  H - Help (Show this help message)");
-                println!("  Q - Quit (Exit interactive mode)");
-                println!();
-                println!("💡 Features:");
-                println!("  • Tab autocomplete with cycling (multiple tabs cycle through matches)");
-                println!("  • Notes ordered by modification time (most recent first)");
-                println!("  • Vim integration for seamless editing");
-                println!("  • Context-aware suggestions for notes vs. search");
-                println!();
-
-                println!("Press Enter to continue...");
-                let mut dummy = String::new();
-                io::stdin().read_line(&mut dummy)?;
-            }
-            11 => {
-                // Quit
-                clear_screen();
-                println!("👋 Goodbye! Your knowledge mosaic awaits your return.");
-                break;
-            }
-            _ => unreachable!(),
-        }
-
-        println!();
-    }
-
-    Ok(())
-}
-
 /// Generate shell completions for Tesela
 ///
 /// This command generates shell completion scripts for various shells
@@ -2269,7 +1865,7 @@ pub fn generate_completions(shell: &str) -> Result<()> {
     }
 
     let mut cmd = Cli::command();
-    let shell_type = match shell.to_lowercase().as_str() {
+    let _shell_type = match shell.to_lowercase().as_str() {
         "bash" => {
             println!("# Generating bash completions for Tesela");
             println!("# To install, add this to your ~/.bashrc:");
@@ -2637,6 +2233,42 @@ fn import_directory(source: &Path, notes_dir: &Path) -> Result<usize> {
 /// search_notes("rust programming")?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
+/// Search notes and return results for testing purposes
+///
+/// This function is used by tests that expect a Vec of results
+/// rather than printed output.
+pub fn search_notes_for_testing(query: &str) -> Result<Vec<String>> {
+    // Check if mosaic exists
+    if !Path::new("tesela.toml").exists() {
+        return Err(anyhow::anyhow!(
+            "No mosaic found. Run 'tesela init' first to create one."
+        ));
+    }
+
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut results = Vec::new();
+    let query_lower = query.to_lowercase();
+
+    // Search through all notes
+    let notes = get_notes_with_paths()?;
+    for (path, title, _timestamp) in notes {
+        // Try to read the note content
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            let content_lower = content.to_lowercase();
+
+            // Check if content contains the query
+            if content_lower.contains(&query_lower) || title.to_lowercase().contains(&query_lower) {
+                results.push(title);
+            }
+        }
+    }
+
+    Ok(results)
+}
+
 pub fn search_notes(query: &str) -> Result<()> {
     println!("🔍 Searching for: '{}'", query);
 

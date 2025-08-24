@@ -8,7 +8,9 @@ use ratatui::{
     Frame,
 };
 
-use super::app::{App, InputMode, InputType, ListType, ListingMode, Mode, SearchMode};
+use super::app::{
+    App, BacklinkItem, InputMode, InputType, ListType, ListingMode, Mode, SearchMode, ViewMode,
+};
 use std::path::Path;
 
 /// Main draw function that renders the entire UI
@@ -74,7 +76,9 @@ fn draw_footer(mode: &Mode, frame: &mut Frame, area: Rect) {
     let help_text = match mode {
         Mode::MainMenu => "N: New | E: Edit | S: Search | L: List | D: Daily | Q: Quit",
         Mode::Input(_) => "Tab: Complete | Enter: Confirm | Esc: Cancel",
-        Mode::Listing(_) => "↑↓/jk: Navigate | Enter: Open | PgUp/PgDn: Scroll Preview | Esc: Back",
+        Mode::Listing(_) => {
+            "↑↓/jk: Navigate | Enter: Open | G: Toggle Graph | PgUp/PgDn: Scroll | Esc: Back"
+        }
         Mode::Search(_) => "Type to search | ↑↓/jk: Navigate | Enter: Open | Esc: Cancel",
         Mode::Message(_, _) => "Press any key to continue...",
     };
@@ -411,13 +415,14 @@ fn draw_listing(listing_mode: &ListingMode, frame: &mut Frame, area: Rect) {
         return;
     }
 
-    // Split area into list and preview panes if preview is available
-    let (list_area, preview_area) = if listing_mode.preview_content.is_some() {
+    // Split area into list and preview/graph panes
+    let should_split = listing_mode.preview_content.is_some() || !listing_mode.backlinks.is_empty();
+    let (list_area, right_pane_area) = if should_split {
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Percentage(40), // List takes 40% width
-                Constraint::Percentage(60), // Preview takes 60% width
+                Constraint::Percentage(60), // Preview/Graph takes 60% width
             ])
             .split(area);
         (chunks[0], Some(chunks[1]))
@@ -516,10 +521,17 @@ fn draw_listing(listing_mode: &ListingMode, frame: &mut Frame, area: Rect) {
         })
         .collect();
 
+    // Add view mode indicator to title
+    let list_title = if listing_mode.view_mode == ViewMode::Graph {
+        format!(" {} [Graph View] ", listing_mode.title)
+    } else {
+        format!(" {} ", listing_mode.title)
+    };
+
     let list = List::new(items)
         .block(
             Block::default()
-                .title(format!(" {} ", listing_mode.title))
+                .title(list_title)
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray)),
         )
@@ -532,83 +544,94 @@ fn draw_listing(listing_mode: &ListingMode, frame: &mut Frame, area: Rect) {
 
     frame.render_widget(list, list_area);
 
-    // Draw preview pane if available
-    if let (Some(preview_content), Some(preview_area)) =
-        (&listing_mode.preview_content, preview_area)
-    {
-        let selected_item = &listing_mode.items[listing_mode.selected];
+    // Draw right pane based on view mode
+    if let Some(right_area) = right_pane_area {
+        match listing_mode.view_mode {
+            ViewMode::Graph => {
+                // Draw backlinks/graph view
+                draw_graph_pane(&listing_mode.backlinks, frame, right_area);
+            }
+            ViewMode::Preview => {
+                // Draw preview pane if content is available
+                if let Some(preview_content) = &listing_mode.preview_content {
+                    let selected_item = &listing_mode.items[listing_mode.selected];
 
-        // Format the preview content with syntax highlighting if possible
-        let preview_lines: Vec<Line> = preview_content
-            .lines()
-            .map(|line| {
-                // Simple markdown syntax highlighting
-                if line.starts_with("# ") {
-                    Line::from(vec![Span::styled(
-                        line,
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD),
-                    )])
-                } else if line.starts_with("## ") {
-                    Line::from(vec![Span::styled(
-                        line,
-                        Style::default()
-                            .fg(Color::Blue)
-                            .add_modifier(Modifier::BOLD),
-                    )])
-                } else if line.starts_with("### ") {
-                    Line::from(vec![Span::styled(
-                        line,
-                        Style::default()
-                            .fg(Color::Green)
-                            .add_modifier(Modifier::BOLD),
-                    )])
-                } else if line.starts_with("- ") || line.starts_with("* ") || line.starts_with("+ ")
-                {
-                    Line::from(vec![
-                        Span::styled(&line[..2], Style::default().fg(Color::Yellow)),
-                        Span::raw(&line[2..]),
-                    ])
-                } else if line.starts_with("> ") {
-                    Line::from(vec![Span::styled(
-                        line,
-                        Style::default()
-                            .fg(Color::Gray)
-                            .add_modifier(Modifier::ITALIC),
-                    )])
-                } else if line.contains("```") {
-                    Line::from(vec![Span::styled(
-                        line,
-                        Style::default().fg(Color::Magenta),
-                    )])
-                } else if line.starts_with("[[") && line.ends_with("]]") {
-                    Line::from(vec![Span::styled(
-                        line,
-                        Style::default()
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::UNDERLINED),
-                    )])
-                } else {
-                    Line::raw(line)
+                    // Format the preview content with syntax highlighting if possible
+                    let preview_lines: Vec<Line> = preview_content
+                        .lines()
+                        .map(|line| {
+                            // Simple markdown syntax highlighting
+                            if line.starts_with("# ") {
+                                Line::from(vec![Span::styled(
+                                    line,
+                                    Style::default()
+                                        .fg(Color::Cyan)
+                                        .add_modifier(Modifier::BOLD),
+                                )])
+                            } else if line.starts_with("## ") {
+                                Line::from(vec![Span::styled(
+                                    line,
+                                    Style::default()
+                                        .fg(Color::Blue)
+                                        .add_modifier(Modifier::BOLD),
+                                )])
+                            } else if line.starts_with("### ") {
+                                Line::from(vec![Span::styled(
+                                    line,
+                                    Style::default()
+                                        .fg(Color::Green)
+                                        .add_modifier(Modifier::BOLD),
+                                )])
+                            } else if line.starts_with("- ")
+                                || line.starts_with("* ")
+                                || line.starts_with("+ ")
+                            {
+                                Line::from(vec![
+                                    Span::styled(&line[..2], Style::default().fg(Color::Yellow)),
+                                    Span::raw(&line[2..]),
+                                ])
+                            } else if line.starts_with("> ") {
+                                Line::from(vec![Span::styled(
+                                    line,
+                                    Style::default()
+                                        .fg(Color::Gray)
+                                        .add_modifier(Modifier::ITALIC),
+                                )])
+                            } else if line.contains("```") {
+                                Line::from(vec![Span::styled(
+                                    line,
+                                    Style::default().fg(Color::Magenta),
+                                )])
+                            } else if line.starts_with("[[") && line.ends_with("]]") {
+                                Line::from(vec![Span::styled(
+                                    line,
+                                    Style::default()
+                                        .fg(Color::Cyan)
+                                        .add_modifier(Modifier::UNDERLINED),
+                                )])
+                            } else {
+                                Line::raw(line)
+                            }
+                        })
+                        .collect();
+
+                    let preview = Paragraph::new(preview_lines)
+                        .block(
+                            Block::default()
+                                .title(format!(
+                                    " Preview: {} [PgUp/PgDn to scroll] ",
+                                    selected_item.title
+                                ))
+                                .borders(Borders::ALL)
+                                .border_style(Style::default().fg(Color::DarkGray)),
+                        )
+                        .wrap(Wrap { trim: false })
+                        .scroll((listing_mode.preview_scroll, 0));
+
+                    frame.render_widget(preview, right_area);
                 }
-            })
-            .collect();
-
-        let preview = Paragraph::new(preview_lines)
-            .block(
-                Block::default()
-                    .title(format!(
-                        " Preview: {} [PgUp/PgDn to scroll] ",
-                        selected_item.title
-                    ))
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::DarkGray)),
-            )
-            .wrap(Wrap { trim: false })
-            .scroll((listing_mode.preview_scroll, 0));
-
-        frame.render_widget(preview, preview_area);
+            }
+        }
     }
 }
 
@@ -633,6 +656,89 @@ fn draw_message(message: &str, frame: &mut Frame, area: Rect) {
         .wrap(Wrap { trim: true });
 
     frame.render_widget(msg, area);
+}
+
+/// Draw graph pane showing backlinks
+fn draw_graph_pane(backlinks: &[BacklinkItem], frame: &mut Frame, area: Rect) {
+    if backlinks.is_empty() {
+        let empty_msg = Paragraph::new("No backlinks found for this note")
+            .block(
+                Block::default()
+                    .title(" 🔗 Backlinks ")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            )
+            .style(Style::default().fg(Color::Gray))
+            .alignment(Alignment::Center);
+
+        frame.render_widget(empty_msg, area);
+        return;
+    }
+
+    // Create content for backlinks display
+    let mut lines = vec![];
+
+    for (idx, backlink) in backlinks.iter().enumerate() {
+        if idx > 0 {
+            lines.push(Line::from("")); // Add spacing between backlinks
+        }
+
+        // Source note title
+        lines.push(Line::from(vec![
+            Span::styled("📄 ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                &backlink.source_title,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" (line {})", backlink.line_number),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+
+        // Context with link highlighted
+        for context_line in backlink.context.lines() {
+            if context_line.starts_with("→") {
+                // This is the main line with the link
+                lines.push(Line::from(vec![Span::styled(
+                    context_line,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::ITALIC),
+                )]));
+            } else {
+                // Context lines
+                lines.push(Line::from(vec![Span::styled(
+                    context_line,
+                    Style::default().fg(Color::Gray),
+                )]));
+            }
+        }
+
+        // Source file path
+        lines.push(Line::from(vec![
+            Span::styled("   📁 ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                &backlink.source_path,
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+    }
+
+    let backlinks_widget = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .title(format!(" 🔗 {} Backlinks ", backlinks.len()))
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        )
+        .wrap(Wrap { trim: false });
+
+    frame.render_widget(backlinks_widget, area);
 }
 
 /// Draw a popup message

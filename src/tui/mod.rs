@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 
-mod app;
+pub mod app;
 mod handlers;
 mod ui;
 mod widgets;

@@ -18,8 +18,8 @@ pub mod tui;
 pub use commands::{
     attach_file, autocomplete_suggestions, backup_mosaic, benchmark_performance, cat_note,
     create_note, daily_note, daily_note_and_edit, export_note, generate_completions, import_notes,
-    init_mosaic, interactive_mode, link_notes, list_notes, open_note_in_editor, search_notes,
-    show_graph,
+    init_mosaic, link_notes, list_notes, open_note_in_editor, search_notes,
+    search_notes_for_testing, show_graph,
 };
 
 // Re-export core types for convenience

@@ -13,7 +13,6 @@ use std::{
 };
 
 use crate::commands;
-use std::fs;
 
 /// Application modes
 #[derive(Debug, Clone, PartialEq)]
@@ -62,6 +61,17 @@ pub struct ListingMode {
     pub list_type: ListType,
     pub preview_content: Option<String>,
     pub preview_scroll: u16,
+    pub view_mode: ViewMode,
+    pub backlinks: Vec<BacklinkItem>,
+}
+
+/// Represents a backlink to the current note
+#[derive(Debug, Clone, PartialEq)]
+pub struct BacklinkItem {
+    pub source_title: String,
+    pub source_path: String,
+    pub context: String, // The line(s) containing the link
+    pub line_number: usize,
 }
 
 /// Types of lists we can display
@@ -69,6 +79,13 @@ pub struct ListingMode {
 pub enum ListType {
     Notes,
     SearchResults,
+}
+
+/// View modes for the right pane
+#[derive(Debug, Clone, PartialEq)]
+pub enum ViewMode {
+    Preview, // Show note content preview
+    Graph,   // Show backlinks with context
 }
 
 /// A single item in a list
@@ -237,12 +254,22 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => {
                 if listing_mode.selected > 0 {
                     listing_mode.selected -= 1;
-                    // Load preview for newly selected item
+                    // Load content for newly selected item based on view mode
                     if listing_mode.list_type == ListType::Notes && !listing_mode.items.is_empty() {
-                        listing_mode.preview_content = Self::load_note_preview(
-                            &listing_mode.items[listing_mode.selected].subtitle,
-                        );
-                        listing_mode.preview_scroll = 0; // Reset scroll when changing selection
+                        let selected_item = &listing_mode.items[listing_mode.selected];
+                        match listing_mode.view_mode {
+                            ViewMode::Preview => {
+                                listing_mode.preview_content =
+                                    Self::load_note_preview(&selected_item.subtitle);
+                                listing_mode.preview_scroll = 0;
+                            }
+                            ViewMode::Graph => {
+                                listing_mode.backlinks = self.find_backlinks_with_context(
+                                    &selected_item.subtitle,
+                                    &selected_item.title,
+                                );
+                            }
+                        }
                     }
                 }
                 self.mode = Mode::Listing(listing_mode);
@@ -250,12 +277,22 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => {
                 if listing_mode.selected < listing_mode.items.len().saturating_sub(1) {
                     listing_mode.selected += 1;
-                    // Load preview for newly selected item
+                    // Load content for newly selected item based on view mode
                     if listing_mode.list_type == ListType::Notes && !listing_mode.items.is_empty() {
-                        listing_mode.preview_content = Self::load_note_preview(
-                            &listing_mode.items[listing_mode.selected].subtitle,
-                        );
-                        listing_mode.preview_scroll = 0; // Reset scroll when changing selection
+                        let selected_item = &listing_mode.items[listing_mode.selected];
+                        match listing_mode.view_mode {
+                            ViewMode::Preview => {
+                                listing_mode.preview_content =
+                                    Self::load_note_preview(&selected_item.subtitle);
+                                listing_mode.preview_scroll = 0;
+                            }
+                            ViewMode::Graph => {
+                                listing_mode.backlinks = self.find_backlinks_with_context(
+                                    &selected_item.subtitle,
+                                    &selected_item.title,
+                                );
+                            }
+                        }
                     }
                 }
                 self.mode = Mode::Listing(listing_mode);
@@ -271,6 +308,33 @@ impl App {
                 // Scroll preview up
                 if listing_mode.preview_content.is_some() {
                     listing_mode.preview_scroll = listing_mode.preview_scroll.saturating_sub(5);
+                }
+                self.mode = Mode::Listing(listing_mode);
+            }
+            KeyCode::Char('g') => {
+                // Toggle between preview and graph mode
+                if !listing_mode.items.is_empty() {
+                    match listing_mode.view_mode {
+                        ViewMode::Preview => {
+                            // Switch to graph mode - load backlinks
+                            let selected_item = &listing_mode.items[listing_mode.selected];
+                            listing_mode.backlinks = self.find_backlinks_with_context(
+                                &selected_item.subtitle,
+                                &selected_item.title,
+                            );
+                            listing_mode.view_mode = ViewMode::Graph;
+                            listing_mode.preview_content = None; // Clear preview to save memory
+                        }
+                        ViewMode::Graph => {
+                            // Switch back to preview mode - load preview
+                            listing_mode.preview_content = Self::load_note_preview(
+                                &listing_mode.items[listing_mode.selected].subtitle,
+                            );
+                            listing_mode.view_mode = ViewMode::Preview;
+                            listing_mode.backlinks.clear(); // Clear backlinks to save memory
+                            listing_mode.preview_scroll = 0;
+                        }
+                    }
                 }
                 self.mode = Mode::Listing(listing_mode);
             }
@@ -554,6 +618,8 @@ impl App {
                         list_type: ListType::Notes,
                         preview_content: None,
                         preview_scroll: 0,
+                        view_mode: ViewMode::Preview,
+                        backlinks: Vec::new(),
                     });
                 } else {
                     // Convert notes to ListItems
@@ -582,7 +648,7 @@ impl App {
                     // Notes are already sorted by timestamp (newest first)
 
                     // Load preview for the first note if available
-                    let preview = if !items.is_empty() {
+                    let preview_content = if !items.is_empty() {
                         Self::load_note_preview(&items[0].subtitle)
                     } else {
                         None
@@ -593,8 +659,10 @@ impl App {
                         items,
                         selected: 0,
                         list_type: ListType::Notes,
-                        preview_content: preview,
+                        preview_content,
                         preview_scroll: 0,
+                        view_mode: ViewMode::Preview,
+                        backlinks: Vec::new(),
                     });
                 }
             }
@@ -634,7 +702,7 @@ impl App {
                             let mut match_indices = Vec::new();
                             let mut match_count = 0;
 
-                            for (line_num, line) in lines.iter().enumerate() {
+                            for (_line_num, line) in lines.iter().enumerate() {
                                 if line.to_lowercase().contains(&query_lower) {
                                     found_match = true;
                                     match_count += 1;
@@ -767,6 +835,8 @@ impl App {
                         list_type: ListType::SearchResults,
                         preview_content: None,
                         preview_scroll: 0,
+                        view_mode: ViewMode::Preview,
+                        backlinks: Vec::new(),
                     });
                 }
             }
@@ -872,5 +942,127 @@ impl App {
         } else {
             None
         }
+    }
+
+    /// Find backlinks to a note with context
+    fn find_backlinks_with_context(&self, note_path: &str, note_title: &str) -> Vec<BacklinkItem> {
+        let mut backlinks = Vec::new();
+
+        // Search patterns to look for
+        let search_patterns = vec![
+            format!("[[{}]]", note_title),
+            format!("[[{}]]", note_path.trim_end_matches(".md")),
+        ];
+
+        // Search through all notes
+        let directories = ["notes", "dailies"];
+        for dir_name in directories {
+            let dir_path = std::path::Path::new(dir_name);
+            if dir_path.exists() {
+                if let Ok(entries) = std::fs::read_dir(dir_path) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+
+                        // Skip the current note itself
+                        if path.to_string_lossy().contains(note_path) {
+                            continue;
+                        }
+
+                        if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("md")
+                        {
+                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                // Check if this file contains any of our search patterns
+                                for pattern in &search_patterns {
+                                    if content.contains(pattern) {
+                                        // Extract title from the source file
+                                        let source_title = self
+                                            .extract_title_from_file(&path)
+                                            .unwrap_or_else(|_| {
+                                                path.file_stem()
+                                                    .and_then(|s| s.to_str())
+                                                    .unwrap_or("Unknown")
+                                                    .to_string()
+                                            });
+
+                                        // Find all occurrences with context
+                                        for (line_num, line) in content.lines().enumerate() {
+                                            if line.contains(pattern) {
+                                                // Get context: the line itself plus surrounding lines if needed
+                                                let context = self
+                                                    .get_link_context(&content, line_num, pattern);
+
+                                                backlinks.push(BacklinkItem {
+                                                    source_title: source_title.clone(),
+                                                    source_path: path.to_string_lossy().to_string(),
+                                                    context,
+                                                    line_number: line_num + 1, // Convert to 1-based
+                                                });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        backlinks
+    }
+
+    /// Get context around a link
+    fn get_link_context(&self, content: &str, line_num: usize, _pattern: &str) -> String {
+        let lines: Vec<&str> = content.lines().collect();
+
+        // Get the line with some context before and after if available
+        let start = line_num.saturating_sub(1);
+        let end = (line_num + 2).min(lines.len());
+
+        let context_lines: Vec<String> = (start..end)
+            .map(|i| {
+                if i == line_num {
+                    format!("→ {}", lines[i].trim())
+                } else {
+                    format!("  {}", lines[i].trim())
+                }
+            })
+            .collect();
+
+        context_lines.join("\n")
+    }
+
+    /// Extract title from a file
+    fn extract_title_from_file(&self, path: &std::path::Path) -> Result<String> {
+        let content = std::fs::read_to_string(path)?;
+
+        // Try to extract from frontmatter
+        if content.starts_with("---") {
+            if let Some(end) = content[3..].find("---") {
+                let frontmatter = &content[3..end + 3];
+                for line in frontmatter.lines() {
+                    if line.starts_with("title:") {
+                        let title = line[6..].trim();
+                        // Remove quotes if present
+                        let title = title.trim_matches('"').trim_matches('\'');
+                        return Ok(title.to_string());
+                    }
+                }
+            }
+        }
+
+        // Fall back to first H1 heading
+        for line in content.lines() {
+            if line.starts_with("# ") {
+                return Ok(line[2..].trim().to_string());
+            }
+        }
+
+        // Fall back to filename
+        Ok(path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled")
+            .to_string())
     }
 }

@@ -94,7 +94,7 @@ tags: ["example"]
 **✅ Complete CLI Experience**
 - All core commands implemented and tested
 - Intelligent autocomplete with time-based ordering
-- Interactive mode with beautiful TUI
+- Beautiful TUI with split-pane preview and graph view
 - VIM integration for editing
 - Shell completions for all major shells
 
@@ -126,6 +126,28 @@ Foundation is solid and ready for desktop UI development. All core functionality
 - ✅ **Time-Based Ordering**: Most recently modified notes appear first in autocomplete
 - ✅ **Smart Daily Note Navigation**: Easy cycling through daily notes by modification time
 - ✅ **Enhanced UX**: Perfect for managing hundreds of notes with instant access to recent ones
+
+### 🔄 Interactive Mode Removed (Replaced by TUI):
+- ✅ **Old Interactive Mode Removed**: The dialoguer-based interactive mode (`tesela -i`) has been completely removed
+- ✅ **TUI is Primary Interface**: The modern TUI (`tesela tui`) now provides all interactive functionality with:
+  - Split-pane preview of notes while browsing
+  - Real-time search with match highlighting
+  - Keyboard navigation and shortcuts
+  - Markdown syntax highlighting in preview
+  - Sorted notes by modification date (newest first)
+  - **Graph View**: Press 'g' to toggle between preview and backlinks view
+- ✅ **Cleaner Codebase**: Removed ~300 lines of legacy interactive mode code
+- ✅ **Dialoguer Dependency Retained**: Still used for multi-match selection in `tesela edit` command
+- ✅ **Test Infrastructure Updated**: Created `search_notes_for_testing()` to support existing test suite
+
+### 🕸️ Graph View in TUI (NEW):
+- ✅ **Backlinks Visualization**: Press 'g' in TUI to toggle between preview and graph view
+- ✅ **Context-Aware Display**: Shows surrounding context for each backlink reference
+- ✅ **Bidirectional Navigation**: See which notes link TO the current note
+- ✅ **Line Numbers**: Shows exact line numbers where references appear
+- ✅ **Multiple View Modes**: Seamlessly switch between content preview and graph view
+- ✅ **Memory Efficient**: Loads backlinks on-demand, clears when switching modes
+- ✅ **Works Across Directories**: Finds backlinks in both notes/ and dailies/ directories
 
 ### 🎯 Enhanced Cycling Autocomplete Demonstration:
 
@@ -162,7 +184,7 @@ tesela autocomplete "daily"
 - **Context-Aware**: Different cycling behavior for notes vs search vs linking
 - **Visual Feedback**: Enhanced autocomplete command shows exactly how cycling works
 
-### ALL CLI Commands Working:
+### ALL CLI Commands Working (Interactive Mode Removed):
 ```bash
 tesela init                           # Initialize new mosaic
 tesela new "My Note"                  # Create notes
@@ -178,7 +200,7 @@ tesela graph my-note                 # Show connection graph
 tesela daily                         # Create/open daily note
 tesela backup                        # Create timestamped backup
 tesela import /path/to/notes         # Import external notes
-tesela interactive                   # Start interactive mode
+tesela tui                           # Start TUI (Terminal User Interface) mode
 tesela completions bash              # Generate shell completions
 tesela benchmark                     # Run performance tests
 ```
