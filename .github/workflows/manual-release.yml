@@ -6,9 +6,9 @@ on:
       version_suffix:
         description: 'Optional version suffix (e.g., "beta", "rc1")'
         required: false
-        default: ''
+        default: ""
       prerelease:
-        description: 'Mark as pre-release'
+        description: "Mark as pre-release"
         required: false
         type: boolean
         default: false
@@ -47,20 +47,22 @@ jobs:
       - name: Generate version
         id: version
         run: |
-          # Generate date-based version: v{YYYY}.{MM}.{DD}.{build_number}
-          DATE_VERSION="v$(date -u +%Y.%m.%d)"
+          # Generate date-based version: {major}.{YYYYMMDD}.{build_number}
+          MAJOR_VERSION="0"
+          DATE_PART="$(date -u +%Y%m%d)"
+          BASE_VERSION="${MAJOR_VERSION}.${DATE_PART}"
 
           # Check if there's already a release today
-          EXISTING_TAGS=$(git tag -l "${DATE_VERSION}*" | sort -V)
+          EXISTING_TAGS=$(git tag -l "v${BASE_VERSION}*" | sort -V)
 
           if [ -z "$EXISTING_TAGS" ]; then
             # First release of the day
-            VERSION="${DATE_VERSION}"
+            VERSION="${BASE_VERSION}.0"
           else
             # Get the highest build number for today
             LAST_BUILD=$(echo "$EXISTING_TAGS" | tail -1 | grep -oE '\.[0-9]+$' | grep -oE '[0-9]+' || echo "0")
             NEXT_BUILD=$((LAST_BUILD + 1))
-            VERSION="${DATE_VERSION}.${NEXT_BUILD}"
+            VERSION="${BASE_VERSION}.${NEXT_BUILD}"
           fi
 
           # Add suffix if provided
@@ -68,15 +70,18 @@ jobs:
             VERSION="${VERSION}-${{ github.event.inputs.version_suffix }}"
           fi
 
+          # Add v prefix for git tag
+          VERSION_TAG="v${VERSION}"
+
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
-          echo "DATE_VERSION=${DATE_VERSION}" >> $GITHUB_OUTPUT
-          echo "Generated version: ${VERSION}"
+          echo "VERSION_TAG=${VERSION_TAG}" >> $GITHUB_OUTPUT
+          echo "BASE_VERSION=${BASE_VERSION}" >> $GITHUB_OUTPUT
+          echo "Generated version: ${VERSION} (tag: ${VERSION_TAG})"
 
       - name: Update Cargo.toml version
         run: |
-          # Extract version number without 'v' prefix
+          # Use the version without 'v' prefix (already in correct format)
           VERSION_NUM="${{ steps.version.outputs.VERSION }}"
-          VERSION_NUM="${VERSION_NUM#v}"
 
           # Update Cargo.toml with the new version
           sed -i "s/^version = \".*\"/version = \"${VERSION_NUM}\"/" Cargo.toml
@@ -104,6 +109,7 @@ jobs:
       - name: Generate release notes
         id: release_notes
         run: |
+          VERSION_TAG="${{ steps.version.outputs.VERSION_TAG }}"
           VERSION="${{ steps.version.outputs.VERSION }}"
 
           # Get commit messages since last tag
@@ -132,17 +138,17 @@ jobs:
 
           #### Linux x64
           \`\`\`bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${VERSION}/tesela-linux-x64 -o tesela
+          curl -L https://github.com/${{ github.repository }}/releases/download/${VERSION_TAG}/tesela-linux-x64 -o tesela
           chmod +x tesela
           sudo mv tesela /usr/local/bin/
           \`\`\`
 
           #### From source
           \`\`\`bash
-          cargo install --git https://github.com/${{ github.repository }} --tag ${VERSION}
+          cargo install --git https://github.com/${{ github.repository }} --tag ${VERSION_TAG}
           \`\`\`
 
-          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...${VERSION}
+          **Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...${VERSION_TAG}
           EOF
 
           # Save for release body
@@ -152,6 +158,7 @@ jobs:
 
       - name: Update RELEASE.md
         run: |
+          VERSION_TAG="${{ steps.version.outputs.VERSION_TAG }}"
           VERSION="${{ steps.version.outputs.VERSION }}"
           DATE=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
 
@@ -168,7 +175,7 @@ jobs:
           # Prepare new entry
           cat > RELEASE_ENTRY.md << EOF
 
-          ## ${VERSION} - ${DATE} (Manual Release)
+          ## ${VERSION_TAG} - ${DATE} (Manual Release)
 
           $(cat RELEASE_NOTES.md)
 
@@ -189,7 +196,7 @@ jobs:
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add RELEASE.md
-          git commit -m "docs: update RELEASE.md for ${VERSION} [skip ci]" || echo "No changes to commit"
+          git commit -m "docs: update RELEASE.md for ${VERSION_TAG} [skip ci]" || echo "No changes to commit"
 
       - name: Push changes
         if: success()
@@ -199,8 +206,8 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.version.outputs.VERSION }}
-          name: ${{ steps.version.outputs.VERSION }}
+          tag_name: ${{ steps.version.outputs.VERSION_TAG }}
+          name: ${{ steps.version.outputs.VERSION_TAG }}
           body: ${{ steps.release_notes.outputs.RELEASE_NOTES }}
           draft: false
           prerelease: ${{ github.event.inputs.prerelease }}
