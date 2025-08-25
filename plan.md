@@ -50,7 +50,7 @@ tags: ["example"]
 
 **Automated Continuous Delivery**
 - **Automatic Releases**: Every commit to main triggers a new release
-- **Date-based Versioning**: Format `0.{YYYY}{MM}{DD}[.{build_number}]`
+- **Date-based Versioning**: Format `{major-version}.{YYYY}{MM}{DD}.{build_number}`
   - Example: `0.20250115.0` (first release of the day)
   - Example: `0.20250115.1` (second release of the day)
 - **Multi-platform Binaries**: Automatic builds for Linux, macOS, and Windows
@@ -739,7 +739,7 @@ Small, focused tests for individual functions and methods.
 - [ ] `test_export_note` - Test export to different formats
 - [ ] `test_import_notes` - Test importing from markdown files
 - [ ] `test_autocomplete_generation` - Test autocomplete suggestions
-- [x] `test_format_time_ago` - Test time formatting utility  
+- [x] `test_format_time_ago` - Test time formatting utility
 - [ ] `test_extract_title_from_content` - Test title extraction logic
 - [x] `test_get_notes_with_paths` - Test note path retrieval
 
@@ -747,7 +747,7 @@ Small, focused tests for individual functions and methods.
 - [x] `test_init_mosaic_already_exists` - Test error when mosaic exists
 - [x] `test_create_note_with_special_characters` - Test special character handling
 - [x] `test_create_note_no_mosaic` - Test error when no mosaic exists
-- [x] `test_create_duplicate_note` - Test duplicate note handling  
+- [x] `test_create_duplicate_note` - Test duplicate note handling
 - [x] `test_create_daily_note` - Test daily note creation
 - [x] `test_create_note_with_unicode` - Test Unicode character support
 - [x] `test_create_note_preserves_frontmatter_format` - Test frontmatter format

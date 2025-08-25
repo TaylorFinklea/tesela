@@ -2578,7 +2578,7 @@ dependencies = [
 
 [[package]]
 name = "tesela"
-version = "0.20250823.1"
+version = "0.20250825.0"
 dependencies = [
  "anyhow",
  "chrono",
