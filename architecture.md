@@ -12,7 +12,46 @@ Tesela is a keyboard-first, file-based note-taking system built on the **Island 
 - Outliner format with block inheritance
 - Organized directory separation (notes/, dailies/, attachments/)
 
-## 2. Component Diagram
+## 2. Project Structure
+
+### Source Code Organization
+
+```
+tesela/
+├── src/
+│   ├── main.rs         # CLI entry point with clap integration
+│   ├── lib.rs          # Library API and public exports
+│   ├── commands.rs     # All command implementations
+│   └── tui/           # Terminal User Interface
+│       └── app.rs     # TUI application logic with graph view
+├── tests/
+│   ├── cli_integration.rs  # End-to-end CLI tests
+│   └── fixtures/          # Test data
+├── .cargo/config.toml     # Build configuration (macOS fixes)
+├── Cargo.toml            # Dependencies and project manifest
+├── ARCHITECTURE.md       # This file - system design
+└── README.md            # User documentation
+```
+
+### Key Components
+
+- **`src/main.rs`**: CLI definition with clap, command routing, error handling
+- **`src/lib.rs`**: Public library API, module declarations, unit tests
+- **`src/commands.rs`**: Core business logic - note creation, search, cross-directory operations
+- **`src/tui/app.rs`**: Interactive TUI with listing, search, preview, and graph modes
+- **`tests/`**: Integration tests ensuring CLI functionality works end-to-end
+
+### User Data Structure
+
+```
+<mosaic-directory>/
+├── tesela.toml         # Mosaic configuration
+├── notes/             # Regular topic-based notes
+├── dailies/           # Daily notes with date-based naming
+└── attachments/       # Binary files (PDFs, images, etc.)
+```
+
+## 3. Component Diagram
 
 ```mermaid
 graph TB
@@ -78,7 +117,7 @@ graph TB
     PLG --> API
 ```
 
-## 3. Data Flow & Storage Model
+## 4. Data Flow & Storage Model
 
 ### Storage Layers
 
@@ -111,13 +150,7 @@ notes_fts (title, content, directory)
 3. **External edit**: File watcher → Indexer → SQLite update → Cache invalidation → Event broadcast
 4. **Cross-directory operations**: API → Scan both notes/ and dailies/ → Merge results → Return unified view
 
-### Cache Strategy
-- LRU cache for frequently accessed notes and queries
-- TTL-based expiration for search results
-- Invalidation on write operations
-- Configurable memory limits
-
-## 4. Core API (Rust traits)
+## 5. Core API (Rust traits)
 
 ```rust
 // Primary service traits
@@ -159,7 +192,7 @@ pub trait EventSubscriber {
 }
 ```
 
-## 5. Plugin Architecture
+## 6. Plugin Architecture
 
 ### Security Model
 
@@ -320,7 +353,7 @@ impl PluginApi {
 - **Installation**: Copy to `~/.tesela/plugins/`
 - **Updates**: Semantic versioning with compatibility checks
 
-## 6. Deployment & Sync Options
+## 7. Deployment & Sync Options
 
 | Mode | Transport | Use Case |
 |------|-----------|----------|
@@ -341,7 +374,7 @@ impl PluginApi {
 - Operational transformation for concurrent edits
 - Presence awareness and live cursors
 
-## 7. Open Risks
+## 8. Open Risks
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
@@ -351,86 +384,8 @@ impl PluginApi {
 | Schema evolution | Breaking changes | Versioned migrations, compatibility layer |
 | Cross-platform file watching | Missed updates | Polling fallback, checksums |
 
-## 8. Roadmap / Future Enhancements
+## 9. Development Roadmap
 
-### Phase 1: Foundation (v0.1-0.3) ✅ COMPLETE
-- ✅ Core library with outliner-format file operations
-- ✅ Organized folder structure (notes/, dailies/, attachments/) - sync-ready
-- ✅ Attachment management with file organization
-- ✅ SQLite indexing with cross-directory support
-- ✅ Complete CLI with intelligent autocomplete and cross-directory functionality
-- ✅ Daily notes separation with proper organization
-- ✅ Smart autocomplete with title-to-filename mapping
+See the comprehensive [Development Roadmap in README.md](README.md#🗺️-development-roadmap) for current status, upcoming features, and long-term vision.
 
-### Phase 2: Desktop (v0.4)
-- Slint desktop UI with native file drag & drop
-- Local graph visualization with outliner block relationships
-- PDF and image previews inline
-- Cross-directory note browsing and editing
-- Block-based editing with inheritance visualization
-
-### Phase 3: Plugin System (v0.5)
-- Plugin system foundation (Lua/Fennel)
-- Security model and sandboxing
-- Plugin API with outliner block access
-- Cross-directory plugin operations
-
-### Phase 4: Plugins & Whiteboarding (v0.6)
-- Example plugins and plugin marketplace
-- Excalidraw integration for whiteboarding
-
-### Phase 5: Code Execution (v0.7)
-- Code execution in notes (like org-babel)
-- Multiple language support
-- Sandboxed execution environment
-
-### Phase 6: Mobile Apps (v0.8)
-- iOS and Android apps with Slint
-- Touch-optimized outliner editing
-- Quick capture and offline sync
-- Platform-specific integrations
-- Cross-directory mobile operations
-
-### Phase 7: Sync (v0.9)
-- Native sync protocol for real-time updates
-- Platform-specific sync (iCloud, Google Drive)
-- Optional self-hosted sync server
-- Better conflict resolution than file-based sync
-
-### Phase 8: Intelligence (v1.0)
-- AI integration (local LLM, OpenAI bridge)
-- Smart linking suggestions with block inheritance
-- Content summarization across directories
-- Block-aware AI features
-- Outliner structure optimization suggestions
-
-### Phase 9: Basic Collaboration (v1.1)
-- Shared mosaics
-- Comments and annotations
-- Version history
-
-### Phase 10: JavaScript Plugins (v1.2)
-- JavaScript/TypeScript plugin support
-- npm ecosystem compatibility
-- React component plugins
-
-### Phase 11: WASM & Advanced (v1.3)
-- WASM plugin runtime
-- Cross-language plugin support
-- Advanced plugin composition
-
-### Phase 12: Real-time Collaboration (v1.4+)
-- CRDT-based real-time editing
-- Collaborative Excalidraw boards
-- Presence awareness
-- Session recording
-
-### Future Considerations
-- **Performance**: Incremental indexing, parallel query execution
-- **Graph Visualization**: Advanced graph layouts and 3D visualization (like Obsidian's graph view)
-- **Code Execution**: Babel-like code blocks with sandboxed runtimes
-- **Federation**: ActivityPub for public notes
-- **Export**: Pandoc integration, static site generation
-- **Analytics**: Local knowledge graph metrics
-- **Plugin Security**: Move from Lua to WASM for better sandboxing
-- **Advanced Caching**: Distributed cache for multi-instance deployments
+For detailed task tracking and implementation notes, see [plan.md](plan.md).
