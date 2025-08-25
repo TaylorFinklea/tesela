@@ -35,16 +35,43 @@ In a world of cloud-based, proprietary note apps that lock in your data, Tesela 
 
 Think of it as Emacs org-mode reimagined for the modern era - keeping the power and extensibility while adding native backlinks, multimodal support, and a UI that doesn't require a PhD to navigate. Like how Zed modernized code editing, Tesela modernizes note-taking.
 
+## 📦 Installation
+
+### Release Strategy
+
+Tesela uses a date-based versioning strategy to facilitate frequent and small releases:
+- Format: `v{YYYY}.{MM}.{DD}[.{build_number}]`
+- Example: `v2024.01.15` (first release of the day) or `v2024.01.15.1` (second release of the day)
+- Releases are automatically created on every commit to the main branch
+- Each release includes pre-built binaries for Linux, macOS, and Windows
+
+### Latest Release
+
+You can always get the latest release from the [releases page](https://github.com/your-username/tesela/releases/latest).
+
+### Quick Install (Linux/macOS)
+
+```bash
+# Download latest release (replace VERSION with actual version)
+curl -L https://github.com/your-username/tesela/releases/latest/download/tesela-$(uname -s | tr '[:upper:]' '[:lower:]')-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+### From Source
+
+```bash
+# Clone and install from source (Rust required)
+git clone https://github.com/your-username/tesela
+cd tesela
+cargo install --path .
+```
+
 ## 🚀 Quick Start
 
 > ⚠️ **Early Development**: Tesela is actively being developed! Features are being added as time permits - this is built with love in my free time, so development pace may vary. As I'm learning Rust while building this, the architecture and implementation will evolve as I gain experience.
 
 ```bash
-# Install from source (Rust required)
-git clone https://github.com/yourusername/tesela
-cd tesela
-cargo install --path .
-
 # Initialize a mosaic
 tesela init ~/my-knowledge-base
 cd ~/my-knowledge-base
