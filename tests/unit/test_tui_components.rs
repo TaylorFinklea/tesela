@@ -1,10 +1,10 @@
 //! Unit tests for TUI components
 
 use anyhow::Result;
-use std::path::Path;
+
 use std::time::Instant;
 use tesela::tui::app::{
-    App, InputMode, InputType, ListItem, ListType, ListingMode, Mode, SearchMode,
+    App, InputMode, InputType, ListItem, ListType, ListingMode, Mode, SearchMode, ViewMode,
 };
 
 #[test]
@@ -39,6 +39,8 @@ fn test_app_state_transitions() -> Result<()> {
         list_type: ListType::Notes,
         preview_content: None,
         preview_scroll: 0,
+        view_mode: ViewMode::Preview,
+        backlinks: Vec::new(),
     });
     assert!(
         matches!(app.mode, Mode::Listing(_)),
@@ -206,6 +208,8 @@ fn test_listing_mode_creation() {
         list_type: ListType::Notes,
         preview_content: Some("# Note 1\n\nThis is the content".to_string()),
         preview_scroll: 0,
+        view_mode: ViewMode::Preview,
+        backlinks: Vec::new(),
     };
 
     assert_eq!(notes_listing.title, "📚 All Notes (5)");
@@ -223,6 +227,8 @@ fn test_listing_mode_creation() {
         list_type: ListType::SearchResults,
         preview_content: None,
         preview_scroll: 0,
+        view_mode: ViewMode::Preview,
+        backlinks: Vec::new(),
     };
 
     assert!(matches!(search_listing.list_type, ListType::SearchResults));
@@ -262,8 +268,13 @@ fn test_scroll_management() {
         items: vec![],
         selected: 0,
         list_type: ListType::Notes,
-        preview_content: Some("Long content...".to_string()),
+        preview_content: Some(
+            "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10"
+                .to_string(),
+        ),
         preview_scroll: 0,
+        view_mode: ViewMode::Preview,
+        backlinks: Vec::new(),
     };
 
     // Initial scroll position
@@ -363,26 +374,26 @@ fn test_error_display() {
 #[test]
 fn test_list_navigation_bounds() {
     let mut listing = ListingMode {
-        title: "Test".to_string(),
+        title: "Test List".to_string(),
         items: vec![
             ListItem {
                 title: "Item 1".to_string(),
-                subtitle: "1.md".to_string(),
-                metadata: String::new(),
+                subtitle: "Sub 1".to_string(),
+                metadata: "Meta 1".to_string(),
                 context: None,
                 match_indices: vec![],
             },
             ListItem {
                 title: "Item 2".to_string(),
-                subtitle: "2.md".to_string(),
-                metadata: String::new(),
+                subtitle: "Sub 2".to_string(),
+                metadata: "Meta 2".to_string(),
                 context: None,
                 match_indices: vec![],
             },
             ListItem {
                 title: "Item 3".to_string(),
-                subtitle: "3.md".to_string(),
-                metadata: String::new(),
+                subtitle: "Sub 3".to_string(),
+                metadata: "Meta 3".to_string(),
                 context: None,
                 match_indices: vec![],
             },
@@ -391,6 +402,8 @@ fn test_list_navigation_bounds() {
         list_type: ListType::Notes,
         preview_content: None,
         preview_scroll: 0,
+        view_mode: ViewMode::Preview,
+        backlinks: Vec::new(),
     };
 
     // Initial position
@@ -425,12 +438,14 @@ fn test_list_navigation_bounds() {
 #[test]
 fn test_empty_list_handling() {
     let empty_listing = ListingMode {
-        title: "Empty List".to_string(),
+        title: "Empty".to_string(),
         items: vec![],
         selected: 0,
         list_type: ListType::Notes,
         preview_content: None,
         preview_scroll: 0,
+        view_mode: ViewMode::Preview,
+        backlinks: Vec::new(),
     };
 
     assert!(empty_listing.items.is_empty());

@@ -9,6 +9,8 @@
 //! - Timeline widget for daily notes
 //! - Split pane editor widget
 
+#![allow(dead_code)]
+
 use ratatui::{buffer::Buffer, layout::Rect, style::Style, widgets::Widget};
 
 /// Placeholder for a graph visualization widget
@@ -28,11 +30,12 @@ impl Widget for GraphWidget {
     }
 }
 
-/// Placeholder for an outliner tree widget
+/// Placeholder for an outliner/tree widget
 pub struct OutlinerWidget {
     blocks: Vec<Block>,
 }
 
+/// Represents a block in the outliner
 #[derive(Clone)]
 pub struct Block {
     pub content: String,
@@ -77,7 +80,7 @@ impl Widget for TagCloudWidget {
     }
 }
 
-/// State for stateful widgets
+/// State management for custom widgets
 pub struct WidgetState {
     pub selected: Option<usize>,
     pub offset: usize,

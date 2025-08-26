@@ -514,7 +514,7 @@ pub fn fuzzy_match(pattern: &str, text: &str, threshold: f32) -> Option<f32> {
 mod tests {
     use super::*;
     use crate::core::database::DatabaseConfig;
-    use crate::core::storage::StorageConfig;
+
     use tempfile::TempDir;
 
     async fn create_test_search_engine() -> SearchEngine {

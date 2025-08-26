@@ -28,7 +28,7 @@ fn cleanup_test_dir(original_dir: std::path::PathBuf) -> Result<()> {
 
 #[test]
 fn test_list_notes_sorting() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -76,7 +76,7 @@ fn test_list_notes_sorting() -> Result<()> {
 
 #[test]
 fn test_list_notes_empty_mosaic() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic but don't create any notes
     init_mosaic(".")?;
@@ -94,7 +94,7 @@ fn test_list_notes_empty_mosaic() -> Result<()> {
 
 #[test]
 fn test_list_notes_with_modification() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -129,7 +129,7 @@ fn test_list_notes_with_modification() -> Result<()> {
 
 #[test]
 fn test_search_notes_basic() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -174,7 +174,7 @@ fn test_search_notes_basic() -> Result<()> {
 
 #[test]
 fn test_search_notes_case_insensitive() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -201,7 +201,7 @@ fn test_search_notes_case_insensitive() -> Result<()> {
 
 #[test]
 fn test_search_notes_no_results() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -283,7 +283,7 @@ fn test_format_time_ago() -> Result<()> {
 
 #[test]
 fn test_get_notes_with_paths_includes_dailies() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -324,7 +324,7 @@ fn test_get_notes_with_paths_includes_dailies() -> Result<()> {
 
 #[test]
 fn test_search_notes_special_characters() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -354,7 +354,7 @@ fn test_search_notes_special_characters() -> Result<()> {
 
 #[test]
 fn test_list_notes_performance_with_many_notes() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;

@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tesela::commands::{create_note, get_notes_with_paths, init_mosaic};
 use tesela::tui::app::{
-    App, InputMode, InputType, ListItem, ListType, ListingMode, Mode, SearchMode,
+    App, InputMode, InputType, ListItem, ListType, ListingMode, Mode, SearchMode, ViewMode,
 };
 
 /// Helper to setup a test environment with initialized mosaic
@@ -35,7 +35,7 @@ fn cleanup_test_env(original_dir: std::path::PathBuf) -> Result<()> {
 
 #[test]
 fn test_tui_create_note_flow() -> Result<()> {
-    let (temp_dir, original_dir, mut app) = setup_test_env()?;
+    let (_temp_dir, original_dir, mut app) = setup_test_env()?;
 
     // Simulate: User starts in main menu
     assert!(matches!(app.mode, Mode::MainMenu));
@@ -84,7 +84,7 @@ fn test_tui_create_note_flow() -> Result<()> {
 
 #[test]
 fn test_tui_edit_note_flow() -> Result<()> {
-    let (temp_dir, original_dir, mut app) = setup_test_env()?;
+    let (_temp_dir, original_dir, mut app) = setup_test_env()?;
 
     // Create some notes first
     create_note("Edit Test 1")?;
@@ -125,7 +125,7 @@ fn test_tui_edit_note_flow() -> Result<()> {
 
 #[test]
 fn test_tui_search_flow() -> Result<()> {
-    let (temp_dir, original_dir, mut app) = setup_test_env()?;
+    let (_temp_dir, original_dir, mut app) = setup_test_env()?;
 
     // Create notes with searchable content
     create_note("Search Test 1")?;
@@ -182,7 +182,7 @@ fn test_tui_search_flow() -> Result<()> {
 
 #[test]
 fn test_tui_list_navigation() -> Result<()> {
-    let (temp_dir, original_dir, mut app) = setup_test_env()?;
+    let (_temp_dir, original_dir, mut app) = setup_test_env()?;
 
     // Create multiple notes
     create_note("Nav Test 1")?;
@@ -207,13 +207,16 @@ fn test_tui_list_navigation() -> Result<()> {
         .collect();
 
     // Simulate: User presses 'l' for list
+    // Set the app to listing mode
     app.mode = Mode::Listing(ListingMode {
         title: format!("📚 All Notes ({})", items.len()),
         items: items.clone(),
         selected: 0,
         list_type: ListType::Notes,
-        preview_content: Some("# Nav Test 3\n\nContent of the newest note".to_string()),
+        preview_content: Some("# Test Note 3\n\nContent of the newest note".to_string()),
         preview_scroll: 0,
+        view_mode: ViewMode::Preview,
+        backlinks: Vec::new(),
     });
 
     // Simulate: User navigates down
@@ -248,7 +251,7 @@ fn test_tui_list_navigation() -> Result<()> {
 
 #[test]
 fn test_tui_autocomplete_flow() -> Result<()> {
-    let (temp_dir, original_dir, mut app) = setup_test_env()?;
+    let (_temp_dir, original_dir, mut app) = setup_test_env()?;
 
     // Create notes with similar names
     create_note("Autocomplete Test Alpha")?;
@@ -301,7 +304,7 @@ fn test_tui_autocomplete_flow() -> Result<()> {
 
 #[test]
 fn test_tui_error_recovery() -> Result<()> {
-    let (temp_dir, original_dir, mut app) = setup_test_env()?;
+    let (_temp_dir, original_dir, mut app) = setup_test_env()?;
 
     // Simulate: User tries to create note with invalid name
     app.mode = Mode::Input(InputMode {
@@ -351,7 +354,7 @@ fn test_tui_error_recovery() -> Result<()> {
 
 #[test]
 fn test_tui_daily_note_flow() -> Result<()> {
-    let (temp_dir, original_dir, mut app) = setup_test_env()?;
+    let (_temp_dir, original_dir, _app) = setup_test_env()?;
 
     // Simulate: User presses 'd' for daily note
     // (In real app, this would call daily_note_and_edit)
@@ -378,7 +381,7 @@ fn test_tui_daily_note_flow() -> Result<()> {
 
 #[test]
 fn test_tui_preview_update_on_selection_change() -> Result<()> {
-    let (temp_dir, original_dir, mut app) = setup_test_env()?;
+    let (_temp_dir, original_dir, mut app) = setup_test_env()?;
 
     // Create notes with distinct content
     create_note("Preview Test 1")?;
@@ -413,13 +416,16 @@ fn test_tui_preview_update_on_selection_change() -> Result<()> {
         .collect();
 
     // Start with first note selected
+    let preview_content = "# Preview Test 3\n\nThird note content here.".to_string();
     app.mode = Mode::Listing(ListingMode {
         title: "📚 All Notes".to_string(),
         items: items.clone(),
         selected: 0,
         list_type: ListType::Notes,
-        preview_content: Some("# Preview Test 3\n\nThird note content here.".to_string()),
+        preview_content: Some(preview_content),
         preview_scroll: 0,
+        view_mode: ViewMode::Preview,
+        backlinks: Vec::new(),
     });
 
     // Simulate selection change

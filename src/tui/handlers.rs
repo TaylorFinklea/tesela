@@ -9,6 +9,10 @@
 //! - Async operations handling
 //! - External command integration
 
+// Note: The following code is commented out as it's placeholder for future features.
+// Uncomment and implement when these features are needed.
+
+/*
 use anyhow::Result;
 
 /// Placeholder for future keyboard macro handling
@@ -77,3 +81,4 @@ impl CommandHandler {
         Ok(String::new())
     }
 }
+*/

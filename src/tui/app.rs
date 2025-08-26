@@ -752,15 +752,6 @@ impl App {
         }
     }
 
-    /// Perform real-time search with context display (legacy, keeping for compatibility)
-    fn perform_realtime_search(&mut self, query: &str) -> Result<()> {
-        if query.trim().is_empty() {
-            return Ok(());
-        }
-
-        Ok(())
-    }
-
     /// Perform search
     fn perform_search(&mut self, query: &str) -> Result<()> {
         // Search through all notes and filter by content

@@ -23,7 +23,7 @@ fn cleanup_test_dir(original_dir: std::path::PathBuf) -> Result<()> {
 
 #[test]
 fn test_init_mosaic() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -62,7 +62,7 @@ fn test_init_mosaic() -> Result<()> {
 
 #[test]
 fn test_init_mosaic_already_exists() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic first time
     init_mosaic(".")?;
@@ -81,7 +81,7 @@ fn test_init_mosaic_already_exists() -> Result<()> {
 
 #[test]
 fn test_create_note() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic first
     init_mosaic(".")?;
@@ -117,7 +117,7 @@ fn test_create_note() -> Result<()> {
 
 #[test]
 fn test_create_note_with_special_characters() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -158,7 +158,7 @@ fn test_create_note_with_special_characters() -> Result<()> {
 
 #[test]
 fn test_create_note_no_mosaic() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Try to create note without initializing mosaic
     let result = create_note("Test Note");
@@ -174,7 +174,7 @@ fn test_create_note_no_mosaic() -> Result<()> {
 
 #[test]
 fn test_create_duplicate_note() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -201,7 +201,7 @@ fn test_create_duplicate_note() -> Result<()> {
 
 #[test]
 fn test_create_daily_note() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -228,7 +228,7 @@ fn test_create_daily_note() -> Result<()> {
 
 #[test]
 fn test_create_note_with_unicode() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -243,7 +243,7 @@ fn test_create_note_with_unicode() -> Result<()> {
 
     for (title, expected_filename) in unicode_titles {
         create_note(title)?;
-        let path = format!("notes/{}", expected_filename);
+        let _path = format!("notes/{}", expected_filename);
 
         // Just verify the note was created (exact filename may vary)
         let notes_dir = fs::read_dir("notes")?;
@@ -268,7 +268,7 @@ fn test_create_note_with_unicode() -> Result<()> {
 
 #[test]
 fn test_create_note_preserves_frontmatter_format() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
@@ -301,7 +301,7 @@ fn test_create_note_preserves_frontmatter_format() -> Result<()> {
 
 #[test]
 fn test_create_multiple_notes_sequential() -> Result<()> {
-    let (temp_dir, original_dir) = setup_test_dir()?;
+    let (_temp_dir, original_dir) = setup_test_dir()?;
 
     // Initialize mosaic
     init_mosaic(".")?;
