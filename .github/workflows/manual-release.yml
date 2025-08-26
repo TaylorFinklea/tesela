@@ -19,6 +19,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      version_tag: ${{ steps.version.outputs.VERSION_TAG }}
+      version: ${{ steps.version.outputs.VERSION }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -221,15 +224,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get latest tag
-        id: tag
-        run: |
-          git fetch --tags
-          LATEST_TAG=$(git describe --tags --abbrev=0)
-          echo "TAG=${LATEST_TAG}" >> $GITHUB_OUTPUT
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -252,7 +246,7 @@ jobs:
       - name: Upload macOS binary to release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.tag.outputs.TAG }}
+          tag_name: ${{ needs.release.outputs.version_tag }}
           files: |
             release-artifacts/*
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -263,16 +257,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get latest tag
-        id: tag
-        shell: bash
-        run: |
-          git fetch --tags
-          LATEST_TAG=$(git describe --tags --abbrev=0)
-          echo "TAG=${LATEST_TAG}" >> $GITHUB_OUTPUT
 
       - name: Setup Rust
         uses: actions-rs/toolchain@v1
@@ -290,7 +274,7 @@ jobs:
       - name: Upload Windows binary to release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.tag.outputs.TAG }}
+          tag_name: ${{ needs.release.outputs.version_tag }}
           files: |
             release-artifacts/*
           token: ${{ secrets.GITHUB_TOKEN }}
