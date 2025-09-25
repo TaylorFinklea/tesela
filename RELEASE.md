@@ -5,6 +5,34 @@ This file tracks all releases of Tesela.
 
 ## v0.20250825.0 - 2025-08-25 12:03:02 UTC
 
+
+## v0.20250826.0 - 2025-08-26 00:19:54 UTC
+
+## What's Changed
+
+- chore: bump version to 0.20250826.0 [skip ci] (e9cce35)
+- Pass version tag from release job to binary builds (2168ea1)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20250826.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20250826.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20250825.0...v0.20250826.0
+
+---
+
 ## What's Changed
 
 - Change version format to 0.YYYYMMDD.N (3beed1a)
