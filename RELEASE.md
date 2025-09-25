@@ -6,7 +6,65 @@ This file tracks all releases of Tesela.
 ## v0.20250825.0 - 2025-08-25 12:03:02 UTC
 
 
+## v0.20250925.0 - 2025-09-25 20:33:36 UTC
+
+## What's Changed
+
+- chore: bump version to 0.20250925.0 [skip ci] (b8ba386)
+- init (e0e3c79)
+- Clean up TUI module and test code (90681cf)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20250925.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20250925.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20250826.0...v0.20250925.0
+
+---
+
+
 ## v0.20250826.0 - 2025-08-26 00:19:54 UTC
+
+
+## v0.20250925.0 - 2025-09-25 20:33:36 UTC
+
+## What's Changed
+
+- chore: bump version to 0.20250925.0 [skip ci] (b8ba386)
+- init (e0e3c79)
+- Clean up TUI module and test code (90681cf)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20250925.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20250925.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20250826.0...v0.20250925.0
+
+---
 
 ## What's Changed
 
