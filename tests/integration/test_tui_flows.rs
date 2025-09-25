@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tesela::commands::{create_note, get_notes_with_paths, init_mosaic};
 use tesela::tui::app::{
-    App, InputMode, InputType, ListItem, ListType, ListingMode, Mode, SearchMode, ViewMode,
+    App, InputMode, InputType, ListItem, ListType, ListingMode, Mode, ViewMode,
 };
+use tesela::tui::power_search::PowerSearchMode;
 
 /// Helper to setup a test environment with initialized mosaic
 fn setup_test_env() -> Result<(TempDir, std::path::PathBuf, App)> {
@@ -141,19 +142,17 @@ fn test_tui_search_flow() -> Result<()> {
     )?;
 
     // Simulate: User presses 's' for search
-    app.mode = Mode::Search(SearchMode {
-        query: String::new(),
-        cursor_position: 0,
-        results: vec![],
-        selected_result: 0,
-    });
+    app.mode = Mode::PowerSearch(PowerSearchMode::new());
 
     // Simulate: User types search query
-    if let Mode::Search(ref mut search_mode) = app.mode {
+    if let Mode::PowerSearch(ref mut search_mode) = app.mode {
         search_mode.query = "rust".to_string();
         search_mode.cursor_position = 4;
 
-        // Simulate real-time search results
+        // Simulate real-time search results - PowerSearch uses sections
+        // For now, we'll just test that the mode works
+        // PowerSearchMode uses sections instead of direct results
+        /*
         search_mode.results = vec![ListItem {
             title: "Search Test 1".to_string(),
             subtitle: "notes/search-test-1.md".to_string(),
@@ -161,13 +160,15 @@ fn test_tui_search_flow() -> Result<()> {
             context: Some("This contains the keyword rust programming.".to_string()),
             match_indices: vec![(26, 30)], // "rust"
         }];
+        */
     }
 
-    // Verify search results
-    if let Mode::Search(ref search_mode) = app.mode {
-        assert_eq!(search_mode.results.len(), 1);
-        assert!(search_mode.results[0].title.contains("Search Test 1"));
-        assert!(search_mode.results[0].context.is_some());
+    // Verify search mode is active
+    if let Mode::PowerSearch(ref search_mode) = app.mode {
+        assert_eq!(search_mode.query, "rust");
+        assert_eq!(search_mode.cursor_position, 4);
+        // PowerSearchMode uses sections instead of direct results
+        // Sections would be populated by actual search operations
     }
 
     // Simulate: User navigates results

@@ -10,6 +10,7 @@ pub mod error;
 pub mod indexer;
 pub mod search;
 pub mod storage;
+pub mod watcher;
 
 // Re-export commonly used types
 pub use config::{Config, ConfigBuilder};

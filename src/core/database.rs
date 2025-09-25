@@ -11,6 +11,7 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::{Row, SqliteConnection};
 use std::collections::HashMap;
 use std::str::FromStr;
+use tracing::debug;
 
 /// Database configuration
 #[derive(Debug, Clone)]
@@ -48,12 +49,11 @@ pub struct Database {
 impl Database {
     /// Create a new database instance
     pub async fn new(config: DatabaseConfig) -> Result<Self> {
-        let options =
-            SqliteConnectOptions::from_str(config.db_path.to_str().unwrap_or("tesela.db"))
-                .map_err(|e| {
-                    TeselaError::database_with_source("Failed to create database options", e)
-                })?
-                .create_if_missing(true);
+        let db_path = config.db_path.to_str().unwrap_or("tesela.db");
+        let connection_string = format!("sqlite:{}", db_path);
+        let options = SqliteConnectOptions::from_str(&connection_string)
+            .map_err(|e| TeselaError::database_with_source("Failed to create database options", e))?
+            .create_if_missing(true);
 
         let pool = SqlitePoolOptions::new()
             .max_connections(config.max_connections)
@@ -125,7 +125,7 @@ impl Database {
                 body,
                 content='notes',
                 content_rowid='rowid',
-                tokenize='porter unicode61'
+                tokenize='porter unicode61 remove_diacritics 2'
             )
             "#,
         )
@@ -382,21 +382,26 @@ impl Database {
         Ok(())
     }
 
-    /// Search notes using full-text search
+    /// Search notes using full-text search with enhanced FTS5 features
     pub async fn search_notes(&self, query: &str, limit: i32, offset: i32) -> Result<Vec<Note>> {
+        // Preprocess query for FTS5 - escape special characters if needed
+        let fts_query = self.prepare_fts_query(query);
+
         let rows = sqlx::query(
             r#"
             SELECT n.id, n.title, n.content, n.body, n.metadata, n.path, n.checksum,
                    n.created_at, n.modified_at,
-                   rank
+                   bm25(notes_fts) as rank,
+                   snippet(notes_fts, 1, '<mark>', '</mark>', '...', 32) as title_snippet,
+                   snippet(notes_fts, 2, '<mark>', '</mark>', '...', 10) as body_snippet
             FROM notes n
             JOIN notes_fts ON notes_fts.id = n.id
             WHERE notes_fts MATCH ?
-            ORDER BY rank
+            ORDER BY bm25(notes_fts)
             LIMIT ? OFFSET ?
             "#,
         )
-        .bind(query)
+        .bind(&fts_query)
         .bind(limit)
         .bind(offset)
         .fetch_all(&self.pool)
@@ -477,6 +482,291 @@ impl Database {
         }
 
         Ok(notes)
+    }
+
+    /// Prepare FTS5 query with proper escaping and operator support
+    fn prepare_fts_query(&self, query: &str) -> String {
+        let query = query.trim();
+
+        // Handle special FTS5 operators
+        if query.contains(" AND ") || query.contains(" OR ") || query.contains(" NOT ") {
+            // Query already has boolean operators, use as-is
+            return query.to_string();
+        }
+
+        // Handle phrase search (quoted strings)
+        if query.starts_with('"') && query.ends_with('"') {
+            return query.to_string();
+        }
+
+        // Handle prefix search
+        if query.ends_with('*') {
+            return query.to_string();
+        }
+
+        // For simple queries, wrap each word with quotes for exact matching
+        // but allow prefix matching
+        let words: Vec<String> = query
+            .split_whitespace()
+            .map(|word| {
+                // Escape special FTS5 characters
+                let escaped = word.replace('"', "\"\"").replace('\'', "''");
+
+                // Support prefix matching by default
+                format!("{}*", escaped)
+            })
+            .collect();
+
+        // Join with implicit AND
+        words.join(" ")
+    }
+
+    /// Get all unique tags from the database
+    pub async fn get_all_tags(&self) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT DISTINCT name FROM tags
+            ORDER BY name ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| TeselaError::database_with_source("Failed to fetch tags", e))?;
+
+        let tags = rows.into_iter().map(|row| row.get("name")).collect();
+        Ok(tags)
+    }
+
+    /// Get notes by date range
+    pub async fn get_notes_by_date_range(
+        &self,
+        from: Option<DateTime<Utc>>,
+        to: Option<DateTime<Utc>>,
+    ) -> Result<Vec<Note>> {
+        let mut query = String::from(
+            r#"
+            SELECT id, title, content, body, metadata, path,
+                   checksum, created_at, modified_at
+            FROM notes
+            WHERE 1=1
+            "#,
+        );
+
+        let mut bindings = Vec::new();
+
+        if let Some(from) = from {
+            query.push_str(" AND modified_at >= ?");
+            bindings.push(from.timestamp());
+        }
+
+        if let Some(to) = to {
+            query.push_str(" AND modified_at <= ?");
+            bindings.push(to.timestamp());
+        }
+
+        query.push_str(" ORDER BY modified_at DESC");
+
+        let mut sql_query = sqlx::query(&query);
+        for binding in bindings {
+            sql_query = sql_query.bind(binding);
+        }
+
+        let rows = sql_query.fetch_all(&self.pool).await.map_err(|e| {
+            TeselaError::database_with_source("Failed to fetch notes by date range", e)
+        })?;
+
+        let mut notes = Vec::new();
+        for row in rows {
+            let metadata: NoteMetadata =
+                serde_json::from_str(row.get("metadata")).map_err(|e| TeselaError::Json(e))?;
+
+            let created_at =
+                DateTime::from_timestamp(row.get("created_at"), 0).unwrap_or_else(Utc::now);
+            let modified_at =
+                DateTime::from_timestamp(row.get("modified_at"), 0).unwrap_or_else(Utc::now);
+
+            let attachments = self.get_note_attachments(row.get("id")).await?;
+
+            notes.push(Note {
+                id: row.get("id"),
+                title: row.get("title"),
+                content: row.get("content"),
+                body: row.get("body"),
+                metadata,
+                path: row.get::<String, _>("path").into(),
+                checksum: row.get("checksum"),
+                created_at,
+                modified_at,
+                attachments,
+            });
+        }
+
+        Ok(notes)
+    }
+
+    /// Clear all notes from the database
+    pub async fn clear_all_notes(&self) -> Result<()> {
+        // Start a transaction to ensure consistency
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| TeselaError::database_with_source("Failed to begin transaction", e))?;
+
+        // Delete from all tables in correct order (due to foreign keys)
+        sqlx::query("DELETE FROM note_attachments")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| TeselaError::database_with_source("Failed to delete attachments", e))?;
+
+        sqlx::query("DELETE FROM note_tags")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| TeselaError::database_with_source("Failed to delete note tags", e))?;
+
+        sqlx::query("DELETE FROM tags")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| TeselaError::database_with_source("Failed to delete tags", e))?;
+
+        sqlx::query("DELETE FROM notes")
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| TeselaError::database_with_source("Failed to delete notes", e))?;
+
+        // Commit the transaction
+        tx.commit()
+            .await
+            .map_err(|e| TeselaError::database_with_source("Failed to commit transaction", e))?;
+
+        Ok(())
+    }
+
+    /// Search notes with snippets for highlighting
+    pub async fn search_notes_with_snippets(
+        &self,
+        query: &str,
+        limit: i32,
+        offset: i32,
+    ) -> Result<Vec<(Note, String, String)>> {
+        let fts_query = self.prepare_fts_query(query);
+
+        let rows = sqlx::query(
+            r#"
+            SELECT n.id, n.title, n.content, n.body, n.metadata, n.path, n.checksum,
+                   n.created_at, n.modified_at,
+                   snippet(notes_fts, 1, '<mark>', '</mark>', '...', 32) as title_snippet,
+                   snippet(notes_fts, 2, '<mark>', '</mark>', '...', 10) as body_snippet,
+                   bm25(notes_fts) as rank
+            FROM notes n
+            JOIN notes_fts ON notes_fts.id = n.id
+            WHERE notes_fts MATCH ?
+            ORDER BY bm25(notes_fts)
+            LIMIT ? OFFSET ?
+            "#,
+        )
+        .bind(&fts_query)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| {
+            TeselaError::database_with_source("Failed to search notes with snippets", e)
+        })?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            let metadata: NoteMetadata =
+                serde_json::from_str(row.get("metadata")).map_err(|e| TeselaError::Json(e))?;
+
+            let created_at =
+                DateTime::from_timestamp(row.get("created_at"), 0).unwrap_or_else(Utc::now);
+            let modified_at =
+                DateTime::from_timestamp(row.get("modified_at"), 0).unwrap_or_else(Utc::now);
+
+            let attachments = self.get_note_attachments(row.get("id")).await?;
+
+            let note = Note {
+                id: row.get("id"),
+                title: row.get("title"),
+                content: row.get("content"),
+                body: row.get("body"),
+                metadata,
+                path: std::path::PathBuf::from(row.get::<String, _>("path")),
+                checksum: row.get("checksum"),
+                created_at,
+                modified_at,
+                attachments,
+            };
+
+            let title_snippet: String = row.get("title_snippet");
+            let body_snippet: String = row.get("body_snippet");
+
+            results.push((note, title_snippet, body_snippet));
+        }
+
+        Ok(results)
+    }
+
+    /// Delete a note by its file path
+    pub async fn delete_note_by_path(&self, path: &str) -> Result<()> {
+        // Start a transaction
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| TeselaError::database_with_source("Failed to begin transaction", e))?;
+
+        // Get the note ID first
+        let note_id: Option<String> = sqlx::query_scalar("SELECT id FROM notes WHERE path = ?")
+            .bind(path)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| TeselaError::database_with_source("Failed to find note by path", e))?;
+
+        if let Some(id) = note_id {
+            // Delete note tags
+            sqlx::query("DELETE FROM note_tags WHERE note_id = ?")
+                .bind(&id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| TeselaError::database_with_source("Failed to delete note tags", e))?;
+
+            // Delete note links
+            sqlx::query("DELETE FROM note_links WHERE source_note_id = ? OR target_note_id = ?")
+                .bind(&id)
+                .bind(&id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| TeselaError::database_with_source("Failed to delete note links", e))?;
+
+            // Delete attachments
+            sqlx::query("DELETE FROM attachments WHERE note_id = ?")
+                .bind(&id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    TeselaError::database_with_source("Failed to delete attachments", e)
+                })?;
+
+            // Delete the note itself (FTS will be handled by trigger)
+            sqlx::query("DELETE FROM notes WHERE id = ?")
+                .bind(&id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| TeselaError::database_with_source("Failed to delete note", e))?;
+
+            // Commit the transaction
+            tx.commit().await.map_err(|e| {
+                TeselaError::database_with_source("Failed to commit transaction", e)
+            })?;
+
+            debug!("Deleted note with path: {}", path);
+        } else {
+            debug!("No note found with path: {}", path);
+        }
+
+        Ok(())
     }
 
     /// Get all tags with their usage counts

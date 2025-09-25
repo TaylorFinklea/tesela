@@ -272,6 +272,24 @@ impl Indexer {
         self.event_sender.subscribe()
     }
 
+    /// Index content from a file path
+    pub async fn index_content(&self, path: &Path, content: &str) -> Result<()> {
+        // Parse the note from content
+        let note = self.storage.parse_note(path, content)?;
+
+        // Store in database
+        self.database.upsert_note(&note).await?;
+
+        // Send event
+        let _ = self.event_sender.send(IndexEvent::NoteIndexed {
+            path: path.to_path_buf(),
+            note_id: note.id.clone(),
+        });
+
+        debug!("Indexed note: {:?}", path);
+        Ok(())
+    }
+
     // Private helper methods
 
     async fn handle_fs_event(

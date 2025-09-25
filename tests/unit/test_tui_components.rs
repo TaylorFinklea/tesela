@@ -4,8 +4,9 @@ use anyhow::Result;
 
 use std::time::Instant;
 use tesela::tui::app::{
-    App, InputMode, InputType, ListItem, ListType, ListingMode, Mode, SearchMode, ViewMode,
+    App, InputMode, InputType, ListItem, ListType, ListingMode, Mode, ViewMode,
 };
+use tesela::tui::power_search::PowerSearchMode;
 
 #[test]
 fn test_app_state_transitions() -> Result<()> {
@@ -41,22 +42,18 @@ fn test_app_state_transitions() -> Result<()> {
         preview_scroll: 0,
         view_mode: ViewMode::Preview,
         backlinks: Vec::new(),
+        selected_backlink: 0,
     });
     assert!(
         matches!(app.mode, Mode::Listing(_)),
         "Should transition to Listing mode"
     );
 
-    // Test transition to Search mode
-    app.mode = Mode::Search(SearchMode {
-        query: String::new(),
-        cursor_position: 0,
-        results: vec![],
-        selected_result: 0,
-    });
+    // Test transition to PowerSearch mode
+    app.mode = Mode::PowerSearch(PowerSearchMode::new());
     assert!(
-        matches!(app.mode, Mode::Search(_)),
-        "Should transition to Search mode"
+        matches!(app.mode, Mode::PowerSearch(_)),
+        "Should transition to PowerSearch mode"
     );
 
     // Test transition to Message mode

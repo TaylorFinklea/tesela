@@ -1,0 +1,14 @@
+# Tesela Configuration
+[mosaic]
+name = "My Knowledge Mosaic"
+created = "2025-09-10 08:05:24"
+
+[settings]
+# Default editor for notes
+editor = "default"
+
+# Auto-save interval in seconds
+auto_save = 30
+
+# Enable daily notes
+daily_notes = true

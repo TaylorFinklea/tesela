@@ -53,6 +53,7 @@ indicatif = "0.17"
 # TUI interface
 ratatui = "0.28"
 crossterm = { version = "0.28", features = ["event-stream"] }
+fuzzy-matcher = "0.3"
 
 # Directory utilities
 dirs = "5.0"
@@ -64,10 +65,15 @@ criterion = { version = "0.5", optional = true }
 tempfile = "3.8"
 tokio-test = "0.4"
 pretty_assertions = "1.4"
+md5 = "0.7"
 
 [features]
 default = []
 bench = ["criterion"]
+
+[[example]]
+name = "enhanced_search_demo"
+path = "examples/enhanced_search_demo.rs"
 
 # Benchmarks will be added later
 # [[bench]]

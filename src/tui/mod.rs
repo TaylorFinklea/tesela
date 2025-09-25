@@ -6,7 +6,13 @@
 use anyhow::Result;
 
 pub mod app;
+pub mod async_runtime;
+pub mod fuzzy_search;
 mod handlers;
+pub mod power_search;
+pub mod search_filters;
+pub mod search_history;
+pub mod shortcuts;
 mod ui;
 mod widgets;
 

@@ -13,6 +13,13 @@ use std::{
 };
 
 use crate::commands;
+use crate::core::database::Database;
+use crate::tui::async_runtime::AsyncRuntime;
+use crate::tui::fuzzy_search::FuzzySearch;
+use crate::tui::power_search::{ItemAction, PowerSearchMode};
+use crate::tui::search_filters::SearchFilters;
+use crate::tui::search_history::SearchHistory;
+use std::sync::Arc;
 
 /// Application modes
 #[derive(Debug, Clone, PartialEq)]
@@ -20,8 +27,16 @@ pub enum Mode {
     MainMenu,
     Input(InputMode),
     Listing(ListingMode),
-    Search(SearchMode),
+    PowerSearch(PowerSearchMode),
     Message(String, Instant),
+    Help(HelpMode),
+}
+
+/// Help mode for displaying keyboard shortcuts
+#[derive(Debug, Clone, PartialEq)]
+pub struct HelpMode {
+    pub context: crate::tui::shortcuts::ShortcutContext,
+    pub scroll_offset: u16,
 }
 
 /// Input mode configuration
@@ -33,15 +48,6 @@ pub struct InputMode {
     pub input_type: InputType,
     pub suggestions: Vec<String>,
     pub suggestion_index: Option<usize>,
-}
-
-/// Search mode - combines input with live results
-#[derive(Debug, Clone, PartialEq)]
-pub struct SearchMode {
-    pub query: String,
-    pub cursor_position: usize,
-    pub results: Vec<ListItem>,
-    pub selected_result: usize,
 }
 
 /// Different types of input we can collect
@@ -63,6 +69,7 @@ pub struct ListingMode {
     pub preview_scroll: u16,
     pub view_mode: ViewMode,
     pub backlinks: Vec<BacklinkItem>,
+    pub selected_backlink: usize, // Track which backlink is selected
 }
 
 /// Represents a backlink to the current note
@@ -96,6 +103,8 @@ pub struct ListItem {
     pub metadata: String,
     pub context: Option<String>, // For search results, shows the matching line
     pub match_indices: Vec<(usize, usize)>, // Start and end positions of matches in context
+    pub snippet: Option<String>, // HTML snippet with highlighted matches from FTS5
+    pub rank: Option<f32>,       // Search result relevance score
 }
 
 /// Main application state
@@ -104,21 +113,33 @@ pub struct App {
     pub should_quit: bool,
     pub last_error: Option<String>,
     pub needs_terminal_restore: bool,
+    pub database: Option<Arc<Database>>,
+    pub async_runtime: AsyncRuntime,
+    pub search_history: SearchHistory,
+    pub fuzzy_search: FuzzySearch,
 }
 
 impl App {
     /// Create a new App instance
     pub fn new() -> Result<Self> {
         // Check if we're in a valid mosaic
-        if !Path::new("tesela.toml").exists() {
-            eprintln!("⚠️  No mosaic found. Initialize with: tesela init");
-        }
+        if !Path::new("tesela.toml").exists() {}
+
+        // Try to initialize database
+        let database = None; // Database initialization would require async context
+
+        // Initialize async runtime for database operations
+        let async_runtime = AsyncRuntime::new()?;
 
         Ok(Self {
             mode: Mode::MainMenu,
             should_quit: false,
             last_error: None,
             needs_terminal_restore: false,
+            database,
+            async_runtime,
+            search_history: SearchHistory::new(),
+            fuzzy_search: FuzzySearch::new(),
         })
     }
 
@@ -136,6 +157,57 @@ impl App {
 
             // Draw UI
             terminal.draw(|f| crate::tui::ui::draw(&mut self, f))?;
+
+            // Process pending searches with debouncing (check BEFORE event handling)
+            // This ensures searches trigger even when no keys are pressed
+            if let Mode::PowerSearch(ref mut power_search) = self.mode {
+                if let Some(ref pending) = power_search.pending_query.clone() {
+                    // Wait 250ms after last keystroke before searching
+                    if power_search.last_query_time.elapsed() >= Duration::from_millis(250) {
+                        power_search.is_searching = true;
+                        let query = pending.clone();
+
+                        // Get existing notes
+                        let existing_notes: Vec<(String, String)> =
+                            commands::get_notes_with_paths()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|(path, title, _)| (path, title))
+                                .collect();
+
+                        // Perform content search with filters
+                        let content_results = if power_search.filters.is_active {
+                            let tags: Vec<String> =
+                                power_search.filters.tags.iter().cloned().collect();
+                            self.async_runtime
+                                .search_with_filters(
+                                    Some(&query),
+                                    tags,
+                                    power_search.filters.from_date,
+                                    power_search.filters.to_date,
+                                )
+                                .unwrap_or_default()
+                        } else {
+                            let results =
+                                self.async_runtime.search_notes(&query).unwrap_or_default();
+                            results
+                        };
+
+                        // Update results
+                        if let Mode::PowerSearch(ref mut ps) = self.mode {
+                            ps.update_results(&query, existing_notes, content_results);
+                            ps.pending_query = None;
+                            ps.is_searching = false;
+
+                            // Save to history if we got results
+                            if !ps.sections.is_empty() {
+                                self.search_history
+                                    .add(query, ps.sections.iter().map(|s| s.items.len()).sum());
+                            }
+                        }
+                    }
+                }
+            }
 
             // Handle events with timeout for message clearing
             if event::poll(Duration::from_millis(100))? {
@@ -168,13 +240,14 @@ impl App {
             Mode::MainMenu => self.handle_main_menu(key)?,
             Mode::Input(input_mode) => self.handle_input(key, input_mode)?,
             Mode::Listing(listing_mode) => self.handle_listing(key, listing_mode)?,
-            Mode::Search(search_mode) => self.handle_search(key, search_mode)?,
+            Mode::PowerSearch(power_search) => self.handle_power_search(key, power_search)?,
             Mode::Message(_, _) => {
                 // Any key returns to main menu from message
                 if key != KeyCode::Null {
                     self.mode = Mode::MainMenu;
                 }
             }
+            Mode::Help(help_mode) => self.handle_help(key, help_mode)?,
         }
         Ok(())
     }
@@ -182,8 +255,15 @@ impl App {
     /// Handle main menu navigation
     fn handle_main_menu(&mut self, key: KeyCode) -> Result<()> {
         match key {
+            KeyCode::Char('?') => {
+                self.show_help();
+            }
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
-            KeyCode::Char('n') => self.start_input(InputType::NewNote),
+            KeyCode::Char('n') => {
+                // Redirect to PowerSearch for unified create/search experience
+                self.mode = Mode::PowerSearch(PowerSearchMode::new());
+                self.show_message("💡 Use Power Search to create or find notes. Type a name to create if it doesn't exist.".to_string());
+            }
             KeyCode::Char('e') => self.start_input(InputType::EditNote),
             KeyCode::Char('s') => self.start_search(),
             KeyCode::Char('l') => self.list_notes()?,
@@ -249,25 +329,35 @@ impl App {
                 self.mode = Mode::MainMenu;
             }
             KeyCode::Enter => {
-                self.execute_list_selection(&listing_mode)?;
+                // In graph mode, open the selected backlink
+                if listing_mode.view_mode == ViewMode::Graph && !listing_mode.backlinks.is_empty() {
+                    let backlink = &listing_mode.backlinks[listing_mode.selected_backlink];
+                    // Open the source file that contains the backlink
+                    self.open_note(&backlink.source_path)?;
+                } else {
+                    self.execute_list_selection(&listing_mode)?;
+                }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if listing_mode.selected > 0 {
-                    listing_mode.selected -= 1;
-                    // Load content for newly selected item based on view mode
-                    if listing_mode.list_type == ListType::Notes && !listing_mode.items.is_empty() {
-                        let selected_item = &listing_mode.items[listing_mode.selected];
-                        match listing_mode.view_mode {
-                            ViewMode::Preview => {
+                match listing_mode.view_mode {
+                    ViewMode::Graph => {
+                        // Navigate through backlinks in graph mode
+                        if listing_mode.selected_backlink > 0 {
+                            listing_mode.selected_backlink -= 1;
+                        }
+                    }
+                    ViewMode::Preview => {
+                        // Navigate through main list items in preview mode
+                        if listing_mode.selected > 0 {
+                            listing_mode.selected -= 1;
+                            // Load content for newly selected item
+                            if listing_mode.list_type == ListType::Notes
+                                && !listing_mode.items.is_empty()
+                            {
+                                let selected_item = &listing_mode.items[listing_mode.selected];
                                 listing_mode.preview_content =
                                     Self::load_note_preview(&selected_item.subtitle);
                                 listing_mode.preview_scroll = 0;
-                            }
-                            ViewMode::Graph => {
-                                listing_mode.backlinks = self.find_backlinks_with_context(
-                                    &selected_item.subtitle,
-                                    &selected_item.title,
-                                );
                             }
                         }
                     }
@@ -275,22 +365,27 @@ impl App {
                 self.mode = Mode::Listing(listing_mode);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if listing_mode.selected < listing_mode.items.len().saturating_sub(1) {
-                    listing_mode.selected += 1;
-                    // Load content for newly selected item based on view mode
-                    if listing_mode.list_type == ListType::Notes && !listing_mode.items.is_empty() {
-                        let selected_item = &listing_mode.items[listing_mode.selected];
-                        match listing_mode.view_mode {
-                            ViewMode::Preview => {
+                match listing_mode.view_mode {
+                    ViewMode::Graph => {
+                        // Navigate through backlinks in graph mode
+                        if listing_mode.selected_backlink
+                            < listing_mode.backlinks.len().saturating_sub(1)
+                        {
+                            listing_mode.selected_backlink += 1;
+                        }
+                    }
+                    ViewMode::Preview => {
+                        // Navigate through main list items in preview mode
+                        if listing_mode.selected < listing_mode.items.len().saturating_sub(1) {
+                            listing_mode.selected += 1;
+                            // Load content for newly selected item
+                            if listing_mode.list_type == ListType::Notes
+                                && !listing_mode.items.is_empty()
+                            {
+                                let selected_item = &listing_mode.items[listing_mode.selected];
                                 listing_mode.preview_content =
                                     Self::load_note_preview(&selected_item.subtitle);
                                 listing_mode.preview_scroll = 0;
-                            }
-                            ViewMode::Graph => {
-                                listing_mode.backlinks = self.find_backlinks_with_context(
-                                    &selected_item.subtitle,
-                                    &selected_item.title,
-                                );
                             }
                         }
                     }
@@ -323,6 +418,7 @@ impl App {
                                 &selected_item.title,
                             );
                             listing_mode.view_mode = ViewMode::Graph;
+                            listing_mode.selected_backlink = 0; // Reset backlink selection
                             listing_mode.preview_content = None; // Clear preview to save memory
                         }
                         ViewMode::Graph => {
@@ -345,86 +441,208 @@ impl App {
         Ok(())
     }
 
-    /// Start search mode
+    /// Start power search mode
     fn start_search(&mut self) {
-        self.mode = Mode::Search(SearchMode {
-            query: String::new(),
-            cursor_position: 0,
-            results: Vec::new(),
-            selected_result: 0,
+        self.mode = Mode::PowerSearch(PowerSearchMode::new());
+    }
+
+    /// Show help screen
+    fn show_help(&mut self) {
+        let context = match &self.mode {
+            Mode::MainMenu => crate::tui::shortcuts::ShortcutContext::MainMenu,
+            Mode::PowerSearch(_) => crate::tui::shortcuts::ShortcutContext::Search,
+            Mode::Listing(_) => crate::tui::shortcuts::ShortcutContext::Listing,
+            Mode::Input(_) => crate::tui::shortcuts::ShortcutContext::Input,
+            _ => crate::tui::shortcuts::ShortcutContext::Global,
+        };
+
+        self.mode = Mode::Help(HelpMode {
+            context,
+            scroll_offset: 0,
         });
     }
 
-    /// Handle search mode (combined input and results)
-    fn handle_search(&mut self, key: KeyCode, mut search_mode: SearchMode) -> Result<()> {
+    /// Handle help mode
+    fn handle_help(&mut self, key: KeyCode, mut help_mode: HelpMode) -> Result<()> {
         match key {
-            KeyCode::Esc => {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') => {
                 self.mode = Mode::MainMenu;
             }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if help_mode.scroll_offset > 0 {
+                    help_mode.scroll_offset = help_mode.scroll_offset.saturating_sub(1);
+                    self.mode = Mode::Help(help_mode);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                help_mode.scroll_offset = help_mode.scroll_offset.saturating_add(1);
+                self.mode = Mode::Help(help_mode);
+            }
+            KeyCode::PageUp => {
+                help_mode.scroll_offset = help_mode.scroll_offset.saturating_sub(10);
+                self.mode = Mode::Help(help_mode);
+            }
+            KeyCode::PageDown => {
+                help_mode.scroll_offset = help_mode.scroll_offset.saturating_add(10);
+                self.mode = Mode::Help(help_mode);
+            }
+            _ => {
+                self.mode = Mode::Help(help_mode);
+            }
+        }
+        Ok(())
+    }
+
+    /// Handle power search mode
+    fn handle_power_search(
+        &mut self,
+        key: KeyCode,
+        mut power_search: PowerSearchMode,
+    ) -> Result<()> {
+        match key {
+            KeyCode::Esc => {
+                if power_search.filter_mode {
+                    power_search.filter_mode = false;
+                    self.mode = Mode::PowerSearch(power_search);
+                } else {
+                    self.mode = Mode::MainMenu;
+                }
+            }
+            KeyCode::Char('/') if !power_search.filter_mode => {
+                // Toggle to filter mode
+                power_search.filter_mode = true;
+                self.mode = Mode::PowerSearch(power_search);
+            }
+            KeyCode::Char('?') => {
+                self.show_help();
+            }
             KeyCode::Enter => {
-                // Open the selected result if there are any
-                if !search_mode.results.is_empty() {
-                    let item = &search_mode.results[search_mode.selected_result];
+                // Execute the selected action
+                if let Some(item) = power_search.get_selected_item() {
+                    // Clone the action to avoid borrow issues
+                    let action = item.action.clone();
+
                     // Restore terminal before opening external editor
                     let _ = disable_raw_mode();
                     let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
 
-                    match commands::open_note_by_path(&item.subtitle) {
-                        Ok(_) => {
-                            self.mode = Mode::MainMenu;
-                            self.needs_terminal_restore = true;
+                    match action {
+                        ItemAction::CreateNote(title) => {
+                            match commands::create_note(&title) {
+                                Ok(_) => {
+                                    // Open the newly created note
+                                    let safe_filename = title
+                                        .chars()
+                                        .map(|c| {
+                                            if c.is_alphanumeric() || c == ' ' || c == '-' {
+                                                c
+                                            } else {
+                                                '_'
+                                            }
+                                        })
+                                        .collect::<String>()
+                                        .replace(' ', "-")
+                                        .to_lowercase();
+                                    let _ = commands::open_note_in_editor(&safe_filename);
+                                    self.mode = Mode::MainMenu;
+                                    self.needs_terminal_restore = true;
+                                }
+                                Err(e) => {
+                                    self.show_error(format!("Failed to create note: {}", e));
+                                    self.needs_terminal_restore = true;
+                                }
+                            }
                         }
-                        Err(e) => {
-                            self.show_error(format!("Failed to open note: {}", e));
-                            self.needs_terminal_restore = true;
+                        ItemAction::OpenNote(path) | ItemAction::JumpToBlock(path, _) => {
+                            power_search.add_to_recents(std::path::PathBuf::from(&path));
+                            match commands::open_note_by_path(&path) {
+                                Ok(_) => {
+                                    self.mode = Mode::MainMenu;
+                                    self.needs_terminal_restore = true;
+                                }
+                                Err(e) => {
+                                    self.show_error(format!("Failed to open note: {}", e));
+                                    self.needs_terminal_restore = true;
+                                }
+                            }
                         }
                     }
                 }
             }
             KeyCode::Backspace => {
-                if search_mode.cursor_position > 0 {
-                    search_mode.query.remove(search_mode.cursor_position - 1);
-                    search_mode.cursor_position -= 1;
-                    // Update search results
-                    search_mode.results = self.search_notes(&search_mode.query)?;
-                    search_mode.selected_result = 0;
+                if power_search.filter_mode {
+                    // Handle filter string editing
+                    if !power_search.filters.filter_string.is_empty() {
+                        power_search.filters.filter_string.pop();
+                        // Re-parse the filter string
+                        if let Ok(filters) =
+                            SearchFilters::parse(&power_search.filters.filter_string)
+                        {
+                            power_search.filters = filters;
+                        }
+                        power_search.pending_query = Some(power_search.query.clone());
+                        power_search.last_query_time = Instant::now();
+                    }
+                } else if power_search.cursor_position > 0 {
+                    power_search.query.remove(power_search.cursor_position - 1);
+                    power_search.cursor_position -= 1;
+                    // Mark query as pending for debounced search
+                    power_search.pending_query = Some(power_search.query.clone());
+                    power_search.last_query_time = Instant::now();
                 }
-                self.mode = Mode::Search(search_mode);
+                self.mode = Mode::PowerSearch(power_search);
             }
             KeyCode::Left => {
-                if search_mode.cursor_position > 0 {
-                    search_mode.cursor_position -= 1;
+                if power_search.cursor_position > 0 {
+                    power_search.cursor_position -= 1;
                 }
-                self.mode = Mode::Search(search_mode);
+                self.mode = Mode::PowerSearch(power_search);
             }
             KeyCode::Right => {
-                if search_mode.cursor_position < search_mode.query.len() {
-                    search_mode.cursor_position += 1;
+                if power_search.cursor_position < power_search.query.len() {
+                    power_search.cursor_position += 1;
                 }
-                self.mode = Mode::Search(search_mode);
+                self.mode = Mode::PowerSearch(power_search);
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                if search_mode.selected_result > 0 {
-                    search_mode.selected_result -= 1;
-                }
-                self.mode = Mode::Search(search_mode);
+                power_search.prev_item();
+                self.mode = Mode::PowerSearch(power_search);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if search_mode.selected_result < search_mode.results.len().saturating_sub(1) {
-                    search_mode.selected_result += 1;
-                }
-                self.mode = Mode::Search(search_mode);
+                power_search.next_item();
+                self.mode = Mode::PowerSearch(power_search);
+            }
+            KeyCode::Tab => {
+                // Tab to navigate between sections
+                power_search.next_section();
+                self.mode = Mode::PowerSearch(power_search);
+            }
+            KeyCode::BackTab => {
+                // Shift+Tab to navigate backwards
+                power_search.prev_section();
+                self.mode = Mode::PowerSearch(power_search);
             }
             KeyCode::Char(c) => {
-                search_mode.query.insert(search_mode.cursor_position, c);
-                search_mode.cursor_position += 1;
-                // Update search results
-                search_mode.results = self.search_notes(&search_mode.query)?;
-                search_mode.selected_result = 0;
-                self.mode = Mode::Search(search_mode);
+                if power_search.filter_mode {
+                    // Add to filter string
+                    power_search.filters.filter_string.push(c);
+                    // Re-parse the filter string
+                    if let Ok(filters) = SearchFilters::parse(&power_search.filters.filter_string) {
+                        power_search.filters = filters;
+                    }
+                    power_search.pending_query = Some(power_search.query.clone());
+                    power_search.last_query_time = Instant::now();
+                } else {
+                    power_search.query.insert(power_search.cursor_position, c);
+                    power_search.cursor_position += 1;
+                    // Mark query as pending for debounced search
+                    power_search.pending_query = Some(power_search.query.clone());
+                    power_search.last_query_time = Instant::now();
+                }
+                self.mode = Mode::PowerSearch(power_search);
             }
             _ => {
-                self.mode = Mode::Search(search_mode);
+                self.mode = Mode::PowerSearch(power_search);
             }
         }
         Ok(())
@@ -433,7 +651,7 @@ impl App {
     /// Start input mode with appropriate prompt
     fn start_input(&mut self, input_type: InputType) {
         let prompt = match input_type {
-            InputType::NewNote => "📝 New note title:",
+            InputType::NewNote => "📝 Note name (will open Power Search):",
             InputType::EditNote => "📝 Edit note (name or partial):",
             InputType::SearchQuery => "🔍 Search query:",
         };
@@ -521,14 +739,16 @@ impl App {
         }
 
         match input_mode.input_type {
-            InputType::NewNote => match commands::create_note(&input_mode.input) {
-                Ok(_) => {
-                    self.show_message(format!("✅ Created note: {}", input_mode.input));
+            InputType::NewNote => {
+                // Redirect to PowerSearch instead of direct creation
+                self.mode = Mode::PowerSearch(PowerSearchMode::new());
+                if let Mode::PowerSearch(ref mut ps) = self.mode {
+                    ps.query = input_mode.input.clone();
+                    ps.cursor_position = ps.query.len();
+                    ps.pending_query = Some(ps.query.clone());
+                    ps.last_query_time = std::time::Instant::now();
                 }
-                Err(e) => {
-                    self.show_error(format!("Failed to create note: {}", e));
-                }
-            },
+            }
             InputType::EditNote => {
                 // Restore terminal before opening external editor
                 let _ = disable_raw_mode();
@@ -609,6 +829,8 @@ impl App {
                         metadata: "".to_string(),
                         context: None,
                         match_indices: vec![],
+                        snippet: None,
+                        rank: None,
                     }];
 
                     self.mode = Mode::Listing(ListingMode {
@@ -620,6 +842,7 @@ impl App {
                         preview_scroll: 0,
                         view_mode: ViewMode::Preview,
                         backlinks: Vec::new(),
+                        selected_backlink: 0,
                     });
                 } else {
                     // Convert notes to ListItems
@@ -642,6 +865,8 @@ impl App {
                             metadata: format!("{} • {}", note_type, time_ago),
                             context: None,
                             match_indices: vec![],
+                            snippet: None,
+                            rank: None,
                         });
                     }
 
@@ -663,6 +888,7 @@ impl App {
                         preview_scroll: 0,
                         view_mode: ViewMode::Preview,
                         backlinks: Vec::new(),
+                        selected_backlink: 0,
                     });
                 }
             }
@@ -676,164 +902,117 @@ impl App {
         Ok(())
     }
 
-    /// Search notes and return results
-    fn search_notes(&mut self, query: &str) -> Result<Vec<ListItem>> {
-        if query.trim().is_empty() {
-            return Ok(Vec::new());
-        }
+    /// Extract highlight indices from HTML snippet with <mark> tags
+    pub fn extract_highlight_indices(snippet: &str) -> Vec<(usize, usize)> {
+        let mut indices = Vec::new();
+        let mut clean_text = String::new();
+        let mut chars = snippet.chars().peekable();
+        let mut current_pos = 0;
 
-        let mut search_results = Vec::new();
+        while let Some(ch) = chars.next() {
+            if ch == '<' {
+                // Check if this is a <mark> tag
+                let mut tag = String::new();
+                tag.push(ch);
 
-        // Search through all notes and filter by content
-        match commands::get_notes_with_paths() {
-            Ok(notes) => {
-                let query_lower = query.to_lowercase();
-
-                for (path, title, timestamp) in notes {
-                    // Try to read the note content
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        let content_lower = content.to_lowercase();
-
-                        if content_lower.contains(&query_lower) {
-                            // Find all matching lines with their context
-                            let lines: Vec<&str> = content.lines().collect();
-                            let mut found_match = false;
-                            let mut match_context = String::new();
-                            let mut match_indices = Vec::new();
-                            let mut match_count = 0;
-
-                            for (_line_num, line) in lines.iter().enumerate() {
-                                if line.to_lowercase().contains(&query_lower) {
-                                    found_match = true;
-                                    match_count += 1;
-
-                                    // Get the matching line as context with match positions
-                                    if match_context.is_empty() {
-                                        let (context, indices) =
-                                            Self::extract_context_with_matches(line, query, 100);
-                                        match_context = context;
-                                        match_indices = indices;
-                                    }
-                                }
-                            }
-
-                            if found_match {
-                                // Format time ago
-                                let time_ago = commands::format_time_ago(timestamp);
-
-                                // Determine note type
-                                let note_type = if path.starts_with("dailies/") {
-                                    "📅 Daily"
-                                } else {
-                                    "📝 Note"
-                                };
-
-                                search_results.push(ListItem {
-                                    title: title.clone(),
-                                    subtitle: path,
-                                    metadata: format!(
-                                        "{} • {} • {} match{}",
-                                        note_type,
-                                        time_ago,
-                                        match_count,
-                                        if match_count == 1 { "" } else { "es" }
-                                    ),
-                                    context: Some(match_context),
-                                    match_indices,
-                                });
-                            }
-                        }
+                while let Some(&next_ch) = chars.peek() {
+                    chars.next();
+                    tag.push(next_ch);
+                    if next_ch == '>' {
+                        break;
                     }
                 }
 
-                Ok(search_results)
-            }
-            Err(_) => Ok(Vec::new()),
-        }
-    }
+                if tag == "<mark>" {
+                    // Start of highlight
+                    let start = current_pos;
 
-    /// Perform search
-    fn perform_search(&mut self, query: &str) -> Result<()> {
-        // Search through all notes and filter by content
-        match commands::get_notes_with_paths() {
-            Ok(notes) => {
-                let mut search_results = Vec::new();
+                    // Read until </mark>
+                    while let Some(ch) = chars.next() {
+                        if ch == '<' {
+                            let mut end_tag = String::new();
+                            end_tag.push(ch);
 
-                // Search through each note's content
-                for (path, title, timestamp) in notes {
-                    // Try to read the note content
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        let query_lower = query.to_lowercase();
-                        let content_lower = content.to_lowercase();
-
-                        if content_lower.contains(&query_lower) {
-                            // Count occurrences
-                            let occurrences = content_lower.matches(&query_lower).count();
-
-                            // Format time ago
-                            let time_ago = commands::format_time_ago(timestamp);
-
-                            // Determine note type
-                            let note_type = if path.starts_with("dailies/") {
-                                "📅 Daily"
-                            } else {
-                                "📝 Note"
-                            };
-
-                            // Find the first matching line for context
-                            let lines: Vec<&str> = content.lines().collect();
-                            let mut match_context = String::new();
-                            let mut match_indices = Vec::new();
-
-                            for line in lines {
-                                if line.to_lowercase().contains(&query_lower) {
-                                    let (context, indices) =
-                                        Self::extract_context_with_matches(line, query, 100);
-                                    match_context = context;
-                                    match_indices = indices;
+                            while let Some(&next_ch) = chars.peek() {
+                                chars.next();
+                                end_tag.push(next_ch);
+                                if next_ch == '>' {
                                     break;
                                 }
                             }
 
-                            search_results.push(ListItem {
-                                title: title.clone(),
-                                subtitle: path,
-                                metadata: format!(
-                                    "{} • {} • {} match{}",
-                                    note_type,
-                                    time_ago,
-                                    occurrences,
-                                    if occurrences == 1 { "" } else { "es" }
-                                ),
-                                context: Some(match_context),
-                                match_indices,
-                            });
+                            if end_tag == "</mark>" {
+                                indices.push((start, current_pos));
+                                break;
+                            } else {
+                                // Not the end tag, add to clean text
+                                clean_text.push_str(&end_tag);
+                                current_pos += end_tag.len();
+                            }
+                        } else {
+                            clean_text.push(ch);
+                            current_pos += 1;
                         }
                     }
-                }
-
-                if search_results.is_empty() {
-                    self.show_message(format!("No results found for: {}", query));
                 } else {
-                    self.mode = Mode::Listing(ListingMode {
-                        title: format!(
-                            "🔍 Search Results for '{}' ({} found)",
-                            query,
-                            search_results.len()
-                        ),
-                        items: search_results,
-                        selected: 0,
-                        list_type: ListType::SearchResults,
-                        preview_content: None,
-                        preview_scroll: 0,
-                        view_mode: ViewMode::Preview,
-                        backlinks: Vec::new(),
-                    });
+                    // Not a mark tag, add it to clean text
+                    clean_text.push_str(&tag);
+                    current_pos += tag.len();
                 }
+            } else {
+                clean_text.push(ch);
+                current_pos += 1;
             }
-            Err(e) => {
-                self.show_error(format!("Search failed: {}", e));
-            }
+        }
+
+        indices
+    }
+
+    /// Perform search
+    fn perform_search(&mut self, query: &str) -> Result<()> {
+        let search_results = self.async_runtime.search_notes(query)?;
+
+        // Save to history
+        if !search_results.is_empty() {
+            self.search_history
+                .add(query.to_string(), search_results.len());
+        }
+
+        if search_results.is_empty() {
+            self.show_message(format!("No results found for: {}", query));
+        } else {
+            // Convert AsyncSearchResult to ListItem
+            let items: Vec<ListItem> = search_results
+                .into_iter()
+                .map(|result| ListItem {
+                    title: result.title,
+                    subtitle: result.path,
+                    metadata: format!("Score: {:.0}", result.rank * 100.0),
+                    context: result.snippet,
+                    match_indices: vec![],
+                    snippet: Some(
+                        result
+                            .content
+                            .lines()
+                            .take(3)
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    ),
+                    rank: Some(result.rank),
+                })
+                .collect();
+
+            self.mode = Mode::Listing(ListingMode {
+                title: format!("🔍 Search Results for '{}' ({} found)", query, items.len()),
+                items,
+                selected: 0,
+                list_type: ListType::SearchResults,
+                preview_content: None,
+                preview_scroll: 0,
+                view_mode: ViewMode::Preview,
+                backlinks: Vec::new(),
+                selected_backlink: 0,
+            });
         }
 
         Ok(())
@@ -870,59 +1049,6 @@ impl App {
         self.mode = Mode::Message(format!("❌ {}", error), Instant::now());
     }
 
-    /// Extract context line with match positions for highlighting
-    fn extract_context_with_matches(
-        line: &str,
-        query: &str,
-        max_len: usize,
-    ) -> (String, Vec<(usize, usize)>) {
-        let line_lower = line.to_lowercase();
-        let query_lower = query.to_lowercase();
-        let mut match_positions = Vec::new();
-
-        // Find all match positions in the original line
-        let mut start = 0;
-        while let Some(pos) = line_lower[start..].find(&query_lower) {
-            let absolute_pos = start + pos;
-            match_positions.push((absolute_pos, absolute_pos + query.len()));
-            start = absolute_pos + 1;
-        }
-
-        // If line is too long, try to center around first match
-        let context = if line.len() > max_len && !match_positions.is_empty() {
-            let first_match = match_positions[0].0;
-            let context_start = first_match.saturating_sub(max_len / 3);
-            let context_end = (context_start + max_len).min(line.len());
-
-            // Adjust match positions for the truncated context
-            let adjusted_positions: Vec<(usize, usize)> = match_positions
-                .iter()
-                .filter_map(|(start, end)| {
-                    if *start >= context_start && *end <= context_end {
-                        Some((*start - context_start, *end - context_start))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-
-            let mut context_str = String::new();
-            if context_start > 0 {
-                context_str.push_str("...");
-            }
-            context_str.push_str(&line[context_start..context_end]);
-            if context_end < line.len() {
-                context_str.push_str("...");
-            }
-
-            (context_str, adjusted_positions)
-        } else {
-            (line.to_string(), match_positions)
-        };
-
-        context
-    }
-
     /// Load a preview of a note's content
     fn load_note_preview(path: &str) -> Option<String> {
         use std::fs;
@@ -933,6 +1059,32 @@ impl App {
         } else {
             None
         }
+    }
+
+    /// Open a note in the editor
+    fn open_note(&mut self, path: &str) -> Result<()> {
+        use std::process::Command;
+
+        // Exit alternate screen temporarily
+        let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+
+        // Get the editor from environment or use default
+        let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vim".to_string());
+
+        // Open the file in the editor
+        let status = Command::new(&editor)
+            .arg(path)
+            .status()
+            .map_err(|e| anyhow::anyhow!("Failed to open editor: {}", e))?;
+
+        if !status.success() {
+            return Err(anyhow::anyhow!("Editor exited with non-zero status"));
+        }
+
+        // Mark that we need to restore the terminal
+        self.needs_terminal_restore = true;
+
+        Ok(())
     }
 
     /// Find backlinks to a note with context
@@ -1006,21 +1158,12 @@ impl App {
     fn get_link_context(&self, content: &str, line_num: usize, _pattern: &str) -> String {
         let lines: Vec<&str> = content.lines().collect();
 
-        // Get the line with some context before and after if available
-        let start = line_num.saturating_sub(1);
-        let end = (line_num + 2).min(lines.len());
-
-        let context_lines: Vec<String> = (start..end)
-            .map(|i| {
-                if i == line_num {
-                    format!("→ {}", lines[i].trim())
-                } else {
-                    format!("  {}", lines[i].trim())
-                }
-            })
-            .collect();
-
-        context_lines.join("\n")
+        // Just return the single line containing the link
+        if line_num < lines.len() {
+            lines[line_num].trim().to_string()
+        } else {
+            String::new()
+        }
     }
 
     /// Extract title from a file

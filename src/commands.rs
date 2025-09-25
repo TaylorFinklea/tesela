@@ -129,6 +129,12 @@ pub fn create_note(title: &str) -> Result<()> {
 
     let note_path = Path::new("notes").join(format!("{}.md", safe_filename));
 
+    // Check if note already exists
+    if note_path.exists() {
+        println!("📖 Note '{}' already exists. Opening in editor...", title);
+        return open_note_in_editor(&safe_filename);
+    }
+
     // Create note content with frontmatter and outliner format
     let note_content = format!(
         r#"---

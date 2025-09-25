@@ -306,19 +306,69 @@ impl SearchEngine {
         self.merge_and_rank_results(all_results).await
     }
 
-    /// Perform full-text search using the database
+    /// Perform full-text search using the database with FTS5 snippets
     async fn perform_fulltext_search(&self, query: &str) -> Result<Vec<SearchResult>> {
-        let notes = self
+        let search_results = self
             .database
-            .search_notes(query, self.config.max_results as i32, 0)
+            .search_notes_with_snippets(query, self.config.max_results as i32, 0)
             .await?;
 
         let mut results = Vec::new();
 
-        for note in notes {
-            let matches = self.find_matches_in_note(&note, query);
+        for (note, title_snippet, body_snippet) in search_results {
+            // Use snippets to create matches
+            let mut matches = Vec::new();
+
+            // Add title match if snippet contains highlights
+            if title_snippet.contains("<mark>") {
+                matches.push(SearchMatch {
+                    match_type: MatchType::Title,
+                    content: title_snippet.clone(),
+                    line_number: 0,
+                    start_offset: 0,
+                    end_offset: note.title.len(),
+                    context_before: String::new(),
+                    context_after: String::new(),
+                });
+            }
+
+            // Add body matches from snippet
+            if body_snippet.contains("<mark>") {
+                // Find the actual line in the body for context
+                let snippet_text = body_snippet.replace("<mark>", "").replace("</mark>", "");
+                let lines: Vec<&str> = note.body.lines().collect();
+
+                for (line_number, line) in lines.iter().enumerate() {
+                    if line.contains(&snippet_text) || snippet_text.contains(line) {
+                        let context_before = if line_number > 0 {
+                            lines.get(line_number - 1).unwrap_or(&"").to_string()
+                        } else {
+                            String::new()
+                        };
+
+                        let context_after = if line_number < lines.len() - 1 {
+                            lines.get(line_number + 1).unwrap_or(&"").to_string()
+                        } else {
+                            String::new()
+                        };
+
+                        matches.push(SearchMatch {
+                            match_type: MatchType::Body,
+                            content: body_snippet.clone(),
+                            line_number,
+                            start_offset: 0,
+                            end_offset: line.len(),
+                            context_before,
+                            context_after,
+                        });
+                        break; // Only add one match per snippet
+                    }
+                }
+            }
+
+            // Use the snippet as highlighted content
             let highlighted_content = if self.config.highlight_matches {
-                Some(self.highlight_matches(&note.content, query))
+                Some(format!("{}\n\n{}", title_snippet, body_snippet))
             } else {
                 None
             };
@@ -330,7 +380,7 @@ impl SearchEngine {
             score += self.config.recency_boost * (1.0 / (days_old + 1.0));
 
             // Apply title boost if query matches title
-            if note.title.to_lowercase().contains(&query.to_lowercase()) {
+            if title_snippet.contains("<mark>") {
                 score *= self.config.title_boost;
             }
 
@@ -363,6 +413,7 @@ impl SearchEngine {
     }
 
     /// Find matches within a note
+    #[allow(dead_code)]
     fn find_matches_in_note(&self, note: &Note, query: &str) -> Vec<SearchMatch> {
         let mut matches = Vec::new();
         let query_lower = query.to_lowercase();
@@ -430,6 +481,7 @@ impl SearchEngine {
     }
 
     /// Highlight matches in content
+    #[allow(dead_code)]
     fn highlight_matches(&self, content: &str, query: &str) -> String {
         let query_lower = query.to_lowercase();
         let content_lower = content.to_lowercase();
