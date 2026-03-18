@@ -18,6 +18,9 @@ async-trait.workspace = true
 tokio.workspace = true
 dirs.workspace = true
 regex.workspace = true
+sqlx.workspace = true
+notify.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
