@@ -6,6 +6,7 @@ use ratatui::{
     Frame,
 };
 
+use crate::theme::icons;
 use crate::theme::DEFAULT as T;
 
 pub fn render(f: &mut Frame, area: Rect) {
@@ -18,7 +19,10 @@ pub fn render(f: &mut Frame, area: Rect) {
 
     let lines = vec![
         Line::from(""),
-        Line::from(Span::styled("  Global", section_style)),
+        Line::from(Span::styled(
+            format!("  {} Global", icons::KEYBOARD),
+            section_style,
+        )),
         key_desc("    q / Ctrl+C  ", "Quit", key_style, desc_style),
         key_desc("    ?           ", "Toggle help", key_style, desc_style),
         key_desc("    ^P          ", "Quick switcher", key_style, desc_style),
@@ -28,8 +32,17 @@ pub fn render(f: &mut Frame, area: Rect) {
         key_desc("    k / ↑       ", "Previous item", key_style, desc_style),
         key_desc("    Enter       ", "Select / Open", key_style, desc_style),
         key_desc("    Esc         ", "Back", key_style, desc_style),
+        key_desc(
+            "    [ / ]       ",
+            "Prev / Next note",
+            key_style,
+            desc_style,
+        ),
         Line::from(""),
-        Line::from(Span::styled("  Notes", section_style)),
+        Line::from(Span::styled(
+            format!("  {} Notes", icons::NOTE),
+            section_style,
+        )),
         key_desc("    c           ", "Create note", key_style, desc_style),
         key_desc("    n           ", "Browse notes", key_style, desc_style),
         key_desc("    d           ", "Daily note", key_style, desc_style),
@@ -40,12 +53,17 @@ pub fn render(f: &mut Frame, area: Rect) {
             key_style,
             desc_style,
         ),
-        key_desc("    D           ", "Delete note", key_style, desc_style),
+        key_desc(
+            "    D           ",
+            "Delete note (confirm)",
+            key_style,
+            desc_style,
+        ),
         key_desc("    /           ", "Search", key_style, desc_style),
     ];
 
     let block = Block::default()
-        .title(" Help ")
+        .title(format!(" {} Help ", icons::HELP))
         .title_style(Style::default().fg(T.accent).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

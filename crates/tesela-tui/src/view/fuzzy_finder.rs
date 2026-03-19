@@ -14,7 +14,10 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     f.render_widget(Clear, dialog);
 
     let outer = Block::default()
-        .title(" Find Note (Ctrl+P) ")
+        .title(format!(
+            " {} Find Note (Ctrl+P) ",
+            crate::theme::icons::SEARCH
+        ))
         .title_style(Style::default().fg(T.accent).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

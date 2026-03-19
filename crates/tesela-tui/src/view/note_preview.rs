@@ -20,7 +20,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let lines = outliner::render_lines(&blocks);
 
     let block_widget = Block::default()
-        .title(format!(" {} ", title))
+        .title(format!(" {} {} ", crate::theme::icons::NOTE, title))
         .title_style(Style::default().fg(T.text).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
@@ -49,7 +49,11 @@ pub fn render_graph(f: &mut Frame, area: Rect, state: &AppState) {
     );
 
     let block_widget = Block::default()
-        .title(format!(" {} — Graph ", title))
+        .title(format!(
+            " {} {} — Graph ",
+            crate::theme::icons::GRAPH,
+            title
+        ))
         .title_style(Style::default().fg(T.text).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)

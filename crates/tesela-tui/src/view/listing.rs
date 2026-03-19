@@ -46,7 +46,10 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let list = List::new(items)
         .block(
             Block::default()
-                .title(format!(" Notes ({note_count}) "))
+                .title(format!(
+                    " {} Notes ({note_count}) ",
+                    crate::theme::icons::FOLDER
+                ))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(left_border_color)),
@@ -71,7 +74,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let preview = Paragraph::new(preview_text)
         .block(
             Block::default()
-                .title(" Preview ")
+                .title(format!(" {} Preview ", crate::theme::icons::NOTE))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(T.text_dim)),

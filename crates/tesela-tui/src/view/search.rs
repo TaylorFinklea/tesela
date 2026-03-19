@@ -18,7 +18,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let input = Paragraph::new(state.search.query.as_str())
         .block(
             Block::default()
-                .title(" Search ")
+                .title(format!(" {} Search ", crate::theme::icons::SEARCH))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(T.accent)),
@@ -49,7 +49,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let list = List::new(items)
         .block(
             Block::default()
-                .title(" Results ")
+                .title(format!(" {} Results ", crate::theme::icons::NOTE))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(T.text_dim)),
