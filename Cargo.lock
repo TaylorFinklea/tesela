@@ -2329,6 +2329,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "tesela-mcp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tesela-core",
+ "tokio",
+ "tokio-test",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tesela-tui"
 version = "0.1.0"
 dependencies = [
