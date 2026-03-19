@@ -11,6 +11,7 @@ use tesela_core::{
     storage::filesystem::FsNoteStore,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
 };
+use tesela_core::traits::plugin::PluginRegistry;
 
 #[derive(Parser)]
 #[command(name = "tesela", version, about = "Keyboard-first, file-based note-taking")]
@@ -92,6 +93,8 @@ enum Commands {
     },
     /// Rebuild the search index
     Reindex,
+    /// Launch the TUI interface
+    Tui,
     /// Generate shell completions
     Completions {
         /// Shell (bash, zsh, fish, elvish, powershell)
@@ -102,20 +105,22 @@ enum Commands {
 struct Ctx {
     store: Arc<FsNoteStore>,
     index: Arc<SqliteIndex>,
+    registry: PluginRegistry,
 }
 
 impl Ctx {
     async fn new(mosaic: PathBuf) -> Result<Self> {
         let db_path = mosaic.join(".tesela").join("tesela.db");
 
-        let store = Arc::new(FsNoteStore::open(mosaic).context("Failed to open mosaic")?);
+        let store = Arc::new(FsNoteStore::open(mosaic.clone()).context("Failed to open mosaic")?);
         let index = Arc::new(
             SqliteIndex::open(&db_path)
                 .await
                 .context("Failed to open search index")?,
         );
+        let registry = tesela_plugins::load_all_plugins(&mosaic);
 
-        Ok(Self { store, index })
+        Ok(Self { store, index, registry })
     }
 }
 
@@ -181,6 +186,10 @@ async fn cmd_new(ctx: &Ctx, title: String, tags: Option<String>, content: Option
         .upsert_note(&note)
         .await
         .context("Failed to index note")?;
+
+    if let Err(e) = ctx.registry.dispatch_note_created(&note) {
+        tracing::warn!("Plugin hook on_note_created failed: {}", e);
+    }
 
     println!("Created: {} ({})", note.title, note.id);
     Ok(())
@@ -252,6 +261,9 @@ async fn cmd_edit(ctx: &Ctx, query: String) -> Result<()> {
             .upsert_note(&updated)
             .await
             .context("Failed to reindex note")?;
+        if let Err(e) = ctx.registry.dispatch_note_updated(&updated) {
+            tracing::warn!("Plugin hook on_note_updated failed: {}", e);
+        }
     }
     Ok(())
 }
@@ -383,6 +395,23 @@ async fn main() -> Result<()> {
         Commands::Links { query } => cmd_links(&ctx, query).await?,
         Commands::Export { query, format } => cmd_export(&ctx, query, format).await?,
         Commands::Reindex => cmd_reindex(&ctx).await?,
+        Commands::Tui => {
+            let exe_dir = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()));
+            let tui_name = "tesela-tui";
+            let mut cmd = if let Some(dir) = &exe_dir {
+                let local = dir.join(tui_name);
+                if local.exists() {
+                    std::process::Command::new(local)
+                } else {
+                    std::process::Command::new(tui_name)
+                }
+            } else {
+                std::process::Command::new(tui_name)
+            };
+            cmd.status().context("Failed to launch tesela-tui. Is it installed?")?;
+        }
     }
 
     Ok(())

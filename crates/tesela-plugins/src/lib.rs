@@ -29,3 +29,36 @@
 
 pub mod lua;
 pub mod wasm;
+
+use std::path::Path;
+use tesela_core::traits::plugin::{PluginLoader, PluginRegistry};
+
+/// Load all plugins from the mosaic-local and global config directories.
+///
+/// Plugin directories searched (in order):
+/// - `<mosaic_root>/.tesela/plugins/` — per-mosaic plugins
+/// - `~/.config/tesela/plugins/` (or platform equivalent) — global plugins
+pub fn load_all_plugins(mosaic_root: &Path) -> PluginRegistry {
+    let mut loader = PluginLoader::new();
+    loader.register_runtime(Box::new(lua::LuaRuntime));
+    loader.register_runtime(Box::new(wasm::WasmRuntime));
+
+    let mut registry = PluginRegistry::new();
+
+    let mosaic_plugins = mosaic_root.join(".tesela").join("plugins");
+    let global_plugins = dirs::config_dir().map(|d| d.join("tesela").join("plugins"));
+
+    for dir in [Some(mosaic_plugins), global_plugins].into_iter().flatten() {
+        for result in loader.load_directory(&dir) {
+            match result {
+                Ok(plugin) => {
+                    tracing::info!("Loaded plugin: {}", plugin.name());
+                    registry.register(plugin);
+                }
+                Err(e) => tracing::warn!("Failed to load plugin: {}", e),
+            }
+        }
+    }
+
+    registry
+}

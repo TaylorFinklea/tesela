@@ -8,6 +8,7 @@ tesela-core = { path = "../tesela-core" }
 mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
 tracing = { workspace = true }
 serde_json = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

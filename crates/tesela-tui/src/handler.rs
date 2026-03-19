@@ -151,8 +151,7 @@ mod tests {
 
     #[test]
     fn test_search_updates_query() {
-        let mut state = AppState::default();
-        state.mode = Mode::Search;
+        let state = AppState { mode: Mode::Search, ..AppState::default() };
 
         let actions = handle(&state, &key(KeyCode::Char('r')));
         assert!(actions
@@ -162,8 +161,7 @@ mod tests {
 
     #[test]
     fn test_esc_returns_to_main_menu_from_search() {
-        let mut state = AppState::default();
-        state.mode = Mode::Search;
+        let state = AppState { mode: Mode::Search, ..AppState::default() };
 
         let actions = handle(&state, &key(KeyCode::Esc));
         assert!(actions
@@ -173,8 +171,7 @@ mod tests {
 
     #[test]
     fn test_nav_in_listing() {
-        let mut state = AppState::default();
-        state.mode = Mode::Listing;
+        let state = AppState { mode: Mode::Listing, ..AppState::default() };
 
         let down = handle(&state, &key(KeyCode::Char('j')));
         assert!(down.iter().any(|a| matches!(a, Action::SelectNext)));

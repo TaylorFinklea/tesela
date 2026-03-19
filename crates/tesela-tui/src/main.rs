@@ -14,7 +14,13 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{io, path::PathBuf, sync::Arc};
 
-use tesela_core::{config::Config, db::SqliteIndex, storage::filesystem::FsNoteStore};
+use tesela_core::{
+    config::Config,
+    db::SqliteIndex,
+    indexer::Indexer,
+    storage::filesystem::FsNoteStore,
+    traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -26,6 +32,14 @@ async fn main() -> Result<()> {
 
     let store = Arc::new(FsNoteStore::new(mosaic, config.storage));
     let index = Arc::new(SqliteIndex::open(&db_path).await?);
+
+    // Wire up the Indexer so file changes appear in search results immediately
+    let store_dyn: Arc<dyn NoteStore> = Arc::clone(&store) as Arc<dyn NoteStore>;
+    let index_dyn: Arc<dyn SearchIndex> = Arc::clone(&index) as Arc<dyn SearchIndex>;
+    let graph_dyn: Arc<dyn LinkGraph> = Arc::clone(&index) as Arc<dyn LinkGraph>;
+    let indexer = Indexer::new(store_dyn, index_dyn, graph_dyn);
+    indexer.initial_index().await?;
+    let indexer_handle = indexer.start().await?;
 
     // Set up terminal
     enable_raw_mode()?;
@@ -43,6 +57,7 @@ async fn main() -> Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
+    indexer_handle.stop().await;
     result
 }
 

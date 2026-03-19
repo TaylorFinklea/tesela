@@ -4,7 +4,9 @@ use std::{path::PathBuf, sync::Arc};
 use tesela_core::{
     config::Config,
     db::SqliteIndex,
+    indexer::Indexer,
     storage::filesystem::FsNoteStore,
+    traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
 };
 use tesela_mcp::{
     tools::{list_tools, ToolRegistry},
@@ -26,9 +28,19 @@ async fn main() -> Result<()> {
     let config_path = mosaic.join(".tesela").join("config.toml");
     let config = Config::load_or_default(&config_path);
 
-    let store = Arc::new(FsNoteStore::new(mosaic, config.storage));
+    let store = Arc::new(FsNoteStore::new(mosaic.clone(), config.storage));
     let index = Arc::new(SqliteIndex::open(&db_path).await?);
-    let registry = Arc::new(ToolRegistry::new(store, index));
+
+    // Wire up the Indexer so notes created outside MCP stay visible in search
+    let store_dyn: Arc<dyn NoteStore> = Arc::clone(&store) as Arc<dyn NoteStore>;
+    let index_dyn: Arc<dyn SearchIndex> = Arc::clone(&index) as Arc<dyn SearchIndex>;
+    let graph_dyn: Arc<dyn LinkGraph> = Arc::clone(&index) as Arc<dyn LinkGraph>;
+    let indexer = Indexer::new(store_dyn, index_dyn, graph_dyn);
+    indexer.initial_index().await?;
+    let indexer_handle = indexer.start().await?;
+
+    let plugin_registry = Arc::new(tesela_plugins::load_all_plugins(&mosaic));
+    let registry = Arc::new(ToolRegistry::new(store, index, plugin_registry));
 
     tracing::info!("tesela-mcp server started");
 
@@ -48,6 +60,7 @@ async fn main() -> Result<()> {
     }
 
     tracing::info!("tesela-mcp server shutting down");
+    indexer_handle.stop().await;
     Ok(())
 }
 

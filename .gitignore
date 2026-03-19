@@ -27,3 +27,9 @@ target
 
 # Git worktrees
 .worktrees/
+
+# Tesela runtime artifacts
+*.db
+*.db-shm
+*.db-wal
+.tesela/

@@ -5,6 +5,7 @@ use tesela_core::{
     config::StorageConfig,
     db::SqliteIndex,
     storage::filesystem::FsNoteStore,
+    traits::plugin::PluginRegistry,
 };
 use tesela_mcp::tools::ToolRegistry;
 
@@ -17,8 +18,9 @@ async fn setup_registry(dir: &TempDir) -> ToolRegistry {
 
     let store = Arc::new(FsNoteStore::new(root, StorageConfig::default()));
     let index = Arc::new(SqliteIndex::open(&db_path).await.unwrap());
+    let registry = Arc::new(PluginRegistry::new());
 
-    ToolRegistry::new(store, index)
+    ToolRegistry::new(store, index, registry)
 }
 
 #[tokio::test]

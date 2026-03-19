@@ -8,12 +8,14 @@ use tesela_core::{
     note::NoteId,
     storage::filesystem::FsNoteStore,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
+    traits::plugin::PluginRegistry,
 };
 
 pub struct ToolRegistry {
     pub store: Arc<FsNoteStore>,
     pub index: Arc<SqliteIndex>,
     pub daily_config: DailyNoteConfig,
+    pub registry: Arc<PluginRegistry>,
 }
 
 /// Returns the MCP tools/list response.
@@ -94,11 +96,12 @@ pub fn list_tools() -> Value {
 }
 
 impl ToolRegistry {
-    pub fn new(store: Arc<FsNoteStore>, index: Arc<SqliteIndex>) -> Self {
+    pub fn new(store: Arc<FsNoteStore>, index: Arc<SqliteIndex>, registry: Arc<PluginRegistry>) -> Self {
         Self {
             store,
             index,
             daily_config: DailyNoteConfig::default(),
+            registry,
         }
     }
 
@@ -191,6 +194,10 @@ impl ToolRegistry {
 
         // Index the new note
         let _ = self.index.reindex(&note).await;
+
+        if let Err(e) = self.registry.dispatch_note_created(&note) {
+            tracing::warn!("Plugin hook on_note_created failed: {}", e);
+        }
 
         Ok(json!({
             "content": [{ "type": "text", "text": format!("Created note '{}' with ID: {}", note.title, note.id) }]
