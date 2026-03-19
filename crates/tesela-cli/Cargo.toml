@@ -1,0 +1,25 @@
+[package]
+name = "tesela-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tesela"
+path = "src/main.rs"
+
+[dependencies]
+tesela-core = { path = "../tesela-core" }
+clap = { workspace = true }
+clap_complete = { workspace = true }
+anyhow = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+dialoguer = { workspace = true }
+indicatif = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
