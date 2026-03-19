@@ -112,28 +112,57 @@ impl SqliteIndex {
     }
 
     /// Upsert a note into the index (insert or update).
+    ///
+    /// Uses UPDATE + INSERT instead of INSERT OR REPLACE to preserve the SQLite rowid.
+    /// The content FTS5 table (`content=notes, content_rowid=rowid`) references notes by rowid;
+    /// INSERT OR REPLACE silently changes the rowid (delete + re-insert), causing
+    /// SQLITE_CORRUPT_VTAB (267) on the next search because the FTS5 index holds the old rowid.
     pub async fn upsert_note(&self, note: &Note) -> Result<()> {
         let tags_json = serde_json::to_string(&note.metadata.tags).map_err(TeselaError::Json)?;
 
-        sqlx::query(
+        // Try to UPDATE first — this preserves the rowid so FTS5 triggers stay consistent.
+        let updated = sqlx::query(
             r#"
-            INSERT OR REPLACE INTO notes (
-                id, title, body, content, path, checksum, created_at, modified_at, tags
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            UPDATE notes
+            SET title = ?, body = ?, content = ?, path = ?, checksum = ?,
+                modified_at = ?, tags = ?
+            WHERE id = ?
             "#,
         )
-        .bind(note.id.as_str())
         .bind(&note.title)
         .bind(&note.body)
         .bind(&note.content)
         .bind(note.path.to_str().unwrap_or(""))
         .bind(&note.checksum)
-        .bind(note.created_at.to_rfc3339())
         .bind(note.modified_at.to_rfc3339())
         .bind(&tags_json)
+        .bind(note.id.as_str())
         .execute(&self.pool)
         .await
-        .map_err(|e| db_err("Failed to upsert note", e))?;
+        .map_err(|e| db_err("Failed to update note", e))?;
+
+        // If no row was modified, the note is new — INSERT it.
+        if updated.rows_affected() == 0 {
+            sqlx::query(
+                r#"
+                INSERT INTO notes (
+                    id, title, body, content, path, checksum, created_at, modified_at, tags
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(note.id.as_str())
+            .bind(&note.title)
+            .bind(&note.body)
+            .bind(&note.content)
+            .bind(note.path.to_str().unwrap_or(""))
+            .bind(&note.checksum)
+            .bind(note.created_at.to_rfc3339())
+            .bind(note.modified_at.to_rfc3339())
+            .bind(&tags_json)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to insert note", e))?;
+        }
 
         Ok(())
     }
