@@ -11,6 +11,8 @@ pub struct FuzzyState {
     pub active: bool,
     pub query: String,
     pub matches: Vec<Note>,
+    /// Per-match character indices that were matched by the fuzzy query
+    pub match_indices: Vec<Vec<usize>>,
     pub selected: usize,
 }
 
@@ -18,6 +20,7 @@ impl FuzzyState {
     pub fn activate(&mut self, all_notes: Vec<Note>) {
         self.active = true;
         self.query = String::new();
+        self.match_indices = Vec::new();
         self.matches = all_notes;
         self.selected = 0;
     }
@@ -26,6 +29,7 @@ impl FuzzyState {
         self.active = false;
         self.query = String::new();
         self.matches = Vec::new();
+        self.match_indices = Vec::new();
         self.selected = 0;
     }
 

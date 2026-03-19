@@ -3,6 +3,7 @@ mod app;
 mod event;
 mod handler;
 mod state;
+mod theme;
 mod view;
 mod widgets;
 

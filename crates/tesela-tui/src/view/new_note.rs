@@ -1,19 +1,21 @@
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 
 use crate::state::AppState;
+use crate::theme::DEFAULT as T;
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     // Dim background by rendering a blank
     let block = Block::default()
         .title(" Tesela ")
         .borders(Borders::ALL)
-        .style(Style::default().fg(Color::DarkGray));
+        .border_type(BorderType::Rounded)
+        .style(Style::default().fg(T.text_dim));
     f.render_widget(block, area);
 
     // Center the input dialog
@@ -33,27 +35,27 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
     let outer = Block::default()
         .title(" New Note ")
+        .title_style(Style::default().fg(T.accent).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
-        .style(Style::default().fg(Color::Cyan));
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(T.accent));
     f.render_widget(outer, dialog);
 
-    let prompt = Paragraph::new("Title:").style(Style::default().fg(Color::Gray));
+    let prompt = Paragraph::new("Title:").style(Style::default().fg(T.text_dim));
     f.render_widget(prompt, chunks[1]);
 
     let input_line = Line::from(vec![
         Span::styled(
             state.new_note_input.as_str(),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(T.text).add_modifier(Modifier::BOLD),
         ),
-        Span::styled("█", Style::default().fg(Color::Cyan)),
+        Span::styled("█", Style::default().fg(T.accent)),
     ]);
     let input = Paragraph::new(input_line);
     f.render_widget(input, chunks[2]);
 
     let hint = Paragraph::new("Enter: create  Esc: cancel")
-        .style(Style::default().fg(Color::DarkGray))
+        .style(Style::default().fg(T.text_dim))
         .alignment(Alignment::Center);
     f.render_widget(hint, chunks[3]);
 }

@@ -1,3 +1,10 @@
+use ratatui::{
+    style::Style,
+    text::{Line, Span},
+};
+
+use crate::theme::DEFAULT as T;
+
 /// A parsed block from a note's outliner content.
 #[derive(Debug, Clone)]
 pub struct OutlinerBlock {
@@ -38,14 +45,17 @@ pub fn parse_blocks(body: &str) -> Vec<OutlinerBlock> {
         .collect()
 }
 
-/// Format blocks into display lines with tree-drawing characters.
-pub fn render_lines(blocks: &[OutlinerBlock]) -> Vec<String> {
+/// Format blocks into styled display lines with tree-drawing characters.
+pub fn render_lines(blocks: &[OutlinerBlock]) -> Vec<Line<'static>> {
+    let tree_style = Style::default().fg(T.tree);
+    let tag_style = Style::default().fg(T.tag);
+
     blocks
         .iter()
         .enumerate()
         .map(|(i, block)| {
             if block.indent == 0 {
-                block.content.clone()
+                colorize_tags(&block.content, tag_style)
             } else {
                 let indent_str = "  ".repeat(block.indent.saturating_sub(1));
                 let is_last = blocks
@@ -53,10 +63,43 @@ pub fn render_lines(blocks: &[OutlinerBlock]) -> Vec<String> {
                     .map(|next| next.indent < block.indent)
                     .unwrap_or(true);
                 let tree_char = if is_last { "└─ " } else { "├─ " };
-                format!("{}{}{}", indent_str, tree_char, block.content)
+
+                let mut spans = vec![
+                    Span::raw(indent_str),
+                    Span::styled(tree_char.to_string(), tree_style),
+                ];
+
+                let content_line = colorize_tags(&block.content, tag_style);
+                spans.extend(content_line.spans);
+
+                Line::from(spans)
             }
         })
         .collect()
+}
+
+/// Colorize #tags within a line of text.
+fn colorize_tags(text: &str, tag_style: Style) -> Line<'static> {
+    let parts: Vec<&str> = text.split('#').collect();
+    if parts.len() == 1 {
+        return Line::from(text.to_string());
+    }
+    let mut spans = Vec::new();
+    if !parts[0].is_empty() {
+        spans.push(Span::raw(parts[0].to_string()));
+    }
+    for part in &parts[1..] {
+        let (tag_word, rest) = if let Some(pos) = part.find(|c: char| c.is_whitespace()) {
+            (&part[..pos], &part[pos..])
+        } else {
+            (*part, "")
+        };
+        spans.push(Span::styled(format!("#{tag_word}"), tag_style));
+        if !rest.is_empty() {
+            spans.push(Span::raw(rest.to_string()));
+        }
+    }
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -101,15 +144,15 @@ mod tests {
             },
         ];
         let lines = render_lines(&blocks);
-        assert_eq!(lines[0], "Top");
-        assert!(lines[1].contains("├─"), "expected ├─ in: {}", lines[1]);
-        assert!(lines[2].contains("└─"), "expected └─ in: {}", lines[2]);
+        let line1_str: String = lines[1].spans.iter().map(|s| s.content.as_ref()).collect();
+        let line2_str: String = lines[2].spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(line1_str.contains("├─"), "expected ├─ in: {}", line1_str);
+        assert!(line2_str.contains("└─"), "expected └─ in: {}", line2_str);
     }
 
     #[test]
     fn test_empty_body() {
         let blocks = parse_blocks("");
-        // Empty string produces no lines
         assert!(blocks.is_empty());
     }
 }

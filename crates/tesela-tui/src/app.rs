@@ -332,12 +332,19 @@ impl App {
                 self.state.fuzzy.query = q.clone();
                 self.state.fuzzy.selected = 0;
                 if q.is_empty() {
+                    self.state.fuzzy.match_indices = Vec::new();
                     self.state.fuzzy.matches = all_notes;
                 } else {
-                    self.state.fuzzy.matches = all_notes
-                        .into_iter()
-                        .filter(|n| self.fuzzy_matcher.fuzzy_match(&n.title, &q).is_some())
-                        .collect();
+                    let mut matches = Vec::new();
+                    let mut indices = Vec::new();
+                    for note in all_notes {
+                        if let Some((_, idxs)) = self.fuzzy_matcher.fuzzy_indices(&note.title, &q) {
+                            matches.push(note);
+                            indices.push(idxs);
+                        }
+                    }
+                    self.state.fuzzy.matches = matches;
+                    self.state.fuzzy.match_indices = indices;
                 }
             }
 

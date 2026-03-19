@@ -1,11 +1,7 @@
-use ratatui::{
-    layout::Rect,
-    style::{Color, Style},
-    widgets::Paragraph,
-    Frame,
-};
+use ratatui::{layout::Rect, style::Style, widgets::Paragraph, Frame};
 
 use crate::state::{mode::Mode, AppState};
+use crate::theme::DEFAULT as T;
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let msg = if state.fuzzy.active {
@@ -33,9 +29,9 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let style = if state.error_message.is_some() && !state.fuzzy.active {
-        Style::default().fg(Color::Red)
+        Style::default().fg(T.error).bg(T.status_bg)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(T.text_dim).bg(T.status_bg)
     };
 
     let para = Paragraph::new(msg).style(style);

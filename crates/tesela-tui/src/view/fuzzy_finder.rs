@@ -1,12 +1,13 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph},
     Frame,
 };
 
 use crate::state::AppState;
+use crate::theme::DEFAULT as T;
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let dialog = centered_rect(60, 20, area);
@@ -14,8 +15,10 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
     let outer = Block::default()
         .title(" Find Note (Ctrl+P) ")
+        .title_style(Style::default().fg(T.accent).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
-        .style(Style::default().fg(Color::Yellow));
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(T.accent));
     f.render_widget(outer, dialog);
 
     let inner_chunks = Layout::default()
@@ -26,29 +29,31 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
     // Query input line
     let input_line = Line::from(vec![
-        Span::styled("> ", Style::default().fg(Color::Yellow)),
-        Span::styled(
-            state.fuzzy.query.as_str(),
-            Style::default().fg(Color::White),
-        ),
-        Span::styled("█", Style::default().fg(Color::Yellow)),
+        Span::styled("> ", Style::default().fg(T.accent)),
+        Span::styled(state.fuzzy.query.as_str(), Style::default().fg(T.text)),
+        Span::styled("█", Style::default().fg(T.accent)),
     ]);
     let input = Paragraph::new(input_line);
     f.render_widget(input, inner_chunks[0]);
 
-    // Results list
+    // Results list with per-character fuzzy match highlighting
     let items: Vec<ListItem> = state
         .fuzzy
         .matches
         .iter()
-        .map(|n| ListItem::new(n.title.as_str()))
+        .enumerate()
+        .map(|(i, n)| {
+            let indices = state.fuzzy.match_indices.get(i);
+            let line = highlight_matches(&n.title, indices);
+            ListItem::new(line)
+        })
         .collect();
 
     let list = List::new(items)
         .highlight_style(
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+                .fg(T.selection_fg)
+                .bg(T.selection_bg)
                 .add_modifier(Modifier::BOLD),
         )
         .highlight_symbol("▶ ");
@@ -59,6 +64,44 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     }
 
     f.render_stateful_widget(list, inner_chunks[1], &mut list_state);
+}
+
+/// Highlight matched character positions in the title.
+fn highlight_matches<'a>(title: &str, indices: Option<&Vec<usize>>) -> Line<'a> {
+    let Some(indices) = indices else {
+        return Line::from(title.to_string());
+    };
+    if indices.is_empty() {
+        return Line::from(title.to_string());
+    }
+
+    let match_style = Style::default().fg(T.accent).add_modifier(Modifier::BOLD);
+    let normal_style = Style::default().fg(T.text);
+
+    let mut spans = Vec::new();
+    let mut last_end = 0;
+
+    let chars: Vec<char> = title.chars().collect();
+    for &idx in indices {
+        if idx >= chars.len() {
+            continue;
+        }
+        // Add non-matched chars before this match
+        if idx > last_end {
+            let segment: String = chars[last_end..idx].iter().collect();
+            spans.push(Span::styled(segment, normal_style));
+        }
+        // Add the matched char
+        spans.push(Span::styled(chars[idx].to_string(), match_style));
+        last_end = idx + 1;
+    }
+    // Remaining chars after last match
+    if last_end < chars.len() {
+        let segment: String = chars[last_end..].iter().collect();
+        spans.push(Span::styled(segment, normal_style));
+    }
+
+    Line::from(spans)
 }
 
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
