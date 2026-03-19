@@ -5,6 +5,7 @@
 
 use crate::error::Result;
 use crate::note::{Note, NoteId, SearchHit};
+use std::path::PathBuf;
 
 /// A command that a plugin can register
 pub struct PluginCommand {
@@ -130,6 +131,93 @@ impl PluginRegistry {
                     .into_iter()
                     .map(move |c| (plugin_name.clone(), c.name))
             })
+            .collect()
+    }
+}
+
+/// Source from which a plugin can be loaded
+#[derive(Debug, Clone)]
+pub enum PluginSource {
+    /// A file on disk (.lua, .wasm, etc.)
+    File(PathBuf),
+    /// Raw source code string (for testing / inline plugins)
+    Code { source: String, name: String },
+}
+
+impl PluginSource {
+    /// Detect runtime by file extension
+    pub fn runtime_hint(&self) -> Option<&str> {
+        match self {
+            PluginSource::File(p) => p.extension()?.to_str(),
+            PluginSource::Code { .. } => None,
+        }
+    }
+}
+
+/// A plugin runtime knows how to load plugins from a given source.
+/// Implement this trait to add a new plugin system (Lua, WASM, etc.)
+pub trait PluginRuntime: Send + Sync {
+    /// Identifier for this runtime, e.g. "lua" or "wasm"
+    fn id(&self) -> &str;
+
+    /// File extensions this runtime handles, e.g. ["lua"] or ["wasm"]
+    fn extensions(&self) -> &[&str];
+
+    /// Returns true if this runtime can handle the given source
+    fn can_handle(&self, source: &PluginSource) -> bool {
+        match source.runtime_hint() {
+            Some(ext) => self.extensions().contains(&ext),
+            None => false,
+        }
+    }
+
+    /// Load a plugin from the given source, returning a boxed Plugin
+    fn load(&self, source: &PluginSource) -> crate::error::Result<Box<dyn Plugin>>;
+}
+
+/// Dispatches plugin loading to the correct runtime based on source type.
+/// Add a new runtime with `register_runtime()`.
+#[derive(Default)]
+pub struct PluginLoader {
+    runtimes: Vec<Box<dyn PluginRuntime>>,
+}
+
+impl PluginLoader {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a runtime. Runtimes are tried in registration order.
+    pub fn register_runtime(&mut self, runtime: Box<dyn PluginRuntime>) {
+        self.runtimes.push(runtime);
+    }
+
+    /// Load a plugin from source, using the first matching runtime.
+    pub fn load(&self, source: &PluginSource) -> crate::error::Result<Box<dyn Plugin>> {
+        for runtime in &self.runtimes {
+            if runtime.can_handle(source) {
+                return runtime.load(source);
+            }
+        }
+        Err(crate::error::TeselaError::Other(format!(
+            "No runtime available for {:?}",
+            source.runtime_hint()
+        )))
+    }
+
+    /// Load all plugins from a directory, using registered runtimes
+    pub fn load_directory(
+        &self,
+        dir: &std::path::Path,
+    ) -> Vec<crate::error::Result<Box<dyn Plugin>>> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return vec![];
+        };
+        entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.is_file())
+            .map(|p| self.load(&PluginSource::File(p)))
             .collect()
     }
 }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp"]
+members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -49,6 +49,9 @@ ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 fuzzy-matcher = "0.3"
 tokio-stream = "0.1"
+
+# Plugins
+mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
 
 # Testing
 tempfile = "3"
