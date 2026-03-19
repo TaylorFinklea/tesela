@@ -7,5 +7,4 @@ pub enum Mode {
     NoteView,
     GraphView,
     NewNote,
-    Help,
 }

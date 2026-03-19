@@ -37,6 +37,7 @@ pub enum Action {
     SelectPrev,
     SelectItem(usize),
     ToggleGraphView,
+    ToggleHelp,
 
     // Status
     ShowMessage(String),

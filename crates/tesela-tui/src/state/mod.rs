@@ -58,4 +58,6 @@ pub struct AppState {
     pub graph_backlinks: Vec<Link>,
     /// Forward links for the current note (loaded when entering GraphView mode)
     pub graph_forward_links: Vec<Link>,
+    /// Help overlay is visible (drawn on top of current mode)
+    pub help_active: bool,
 }

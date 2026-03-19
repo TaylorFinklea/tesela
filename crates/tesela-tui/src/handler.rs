@@ -16,6 +16,11 @@ pub fn handle(state: &AppState, event: &Event) -> Vec<Action> {
 }
 
 fn handle_key(state: &AppState, key: &KeyEvent) -> Vec<Action> {
+    // Help overlay captures all input when active
+    if state.help_active {
+        return handle_help(key);
+    }
+
     // Fuzzy finder captures all input when active
     if state.fuzzy.active {
         return handle_fuzzy(state, key);
@@ -30,7 +35,7 @@ fn handle_key(state: &AppState, key: &KeyEvent) -> Vec<Action> {
             return vec![Action::ToggleFuzzy];
         }
         (_, KeyCode::Char('?')) if state.mode != Mode::Search && state.mode != Mode::NewNote => {
-            return vec![Action::EnterMode(Mode::Help)];
+            return vec![Action::ToggleHelp];
         }
         _ => {}
     }
@@ -42,7 +47,6 @@ fn handle_key(state: &AppState, key: &KeyEvent) -> Vec<Action> {
         Mode::Search => handle_search(state, key),
         Mode::NoteView | Mode::GraphView => handle_note_view(state, key),
         Mode::NewNote => handle_new_note(state, key),
-        Mode::Help => handle_help(key),
     }
 }
 
@@ -178,8 +182,8 @@ fn handle_fuzzy(state: &AppState, key: &KeyEvent) -> Vec<Action> {
 
 fn handle_help(key: &KeyEvent) -> Vec<Action> {
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('?') => {
-            vec![Action::EnterMode(Mode::MainMenu)]
+        KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+            vec![Action::ToggleHelp]
         }
         _ => vec![],
     }
@@ -287,9 +291,17 @@ mod tests {
     fn test_help_toggle() {
         let state = AppState::default();
         let actions = handle(&state, &key(KeyCode::Char('?')));
-        assert!(actions
-            .iter()
-            .any(|a| matches!(a, Action::EnterMode(Mode::Help))));
+        assert!(actions.iter().any(|a| matches!(a, Action::ToggleHelp)));
+    }
+
+    #[test]
+    fn test_help_overlay_captures_input() {
+        let mut state = AppState::default();
+        state.help_active = true;
+        // Normal mode shortcuts should not fire; help captures all input
+        let actions = handle(&state, &key(KeyCode::Char('q')));
+        assert!(actions.iter().any(|a| matches!(a, Action::ToggleHelp)));
+        assert!(!actions.iter().any(|a| matches!(a, Action::Quit)));
     }
 
     #[test]

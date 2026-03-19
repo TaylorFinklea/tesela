@@ -4,7 +4,9 @@ use crate::state::{mode::Mode, AppState};
 use crate::theme::DEFAULT as T;
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
-    let msg = if state.fuzzy.active {
+    let msg = if state.help_active {
+        "?: close help  Esc: close help".to_string()
+    } else if state.fuzzy.active {
         "↑↓: navigate  Enter: open  Esc: close".to_string()
     } else if let Some(err) = &state.error_message {
         format!("Error: {}", err)
@@ -24,7 +26,6 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             }
             Mode::GraphView => "g: toggle  e: edit  j/k: scroll  Esc: back".to_string(),
             Mode::NewNote => "type title  Enter: create  Esc: cancel".to_string(),
-            Mode::Help => "?: close help".to_string(),
         }
     };
 

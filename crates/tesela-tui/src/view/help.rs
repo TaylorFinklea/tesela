@@ -2,13 +2,16 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 
 use crate::theme::DEFAULT as T;
 
 pub fn render(f: &mut Frame, area: Rect) {
+    let dialog = centered_rect(60, 22, area);
+    f.render_widget(Clear, dialog);
+
     let key_style = Style::default().fg(T.accent).add_modifier(Modifier::BOLD);
     let desc_style = Style::default().fg(T.text);
     let section_style = Style::default().fg(T.text).add_modifier(Modifier::BOLD);
@@ -49,9 +52,16 @@ pub fn render(f: &mut Frame, area: Rect) {
         .border_style(Style::default().fg(T.accent));
 
     let para = Paragraph::new(lines).block(block);
-    f.render_widget(para, area);
+    f.render_widget(para, dialog);
 }
 
 fn key_desc<'a>(key: &'a str, desc: &'a str, ks: Style, ds: Style) -> Line<'a> {
     Line::from(vec![Span::styled(key, ks), Span::styled(desc, ds)])
+}
+
+fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
+    let width = (area.width * percent_x / 100).max(30).min(area.width);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    Rect::new(x, y, width, height.min(area.height))
 }

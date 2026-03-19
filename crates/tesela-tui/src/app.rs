@@ -37,11 +37,21 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(store: Arc<FsNoteStore>, index: Arc<SqliteIndex>) -> Self {
+    pub async fn new(store: Arc<FsNoteStore>, index: Arc<SqliteIndex>) -> Self {
+        let mut state = AppState::default();
+
+        // Start on today's daily note
+        let today = chrono::Utc::now().date_naive();
+        let config = DailyNoteConfig::default();
+        if let Ok(note) = store.daily_note(Some(today), &config).await {
+            state.current_note = Some(note);
+            state.mode = Mode::NoteView;
+        }
+
         Self {
             store,
             index,
-            state: AppState::default(),
+            state,
             fuzzy_matcher: SkimMatcherV2::default(),
         }
     }
@@ -105,13 +115,15 @@ impl App {
             Mode::NoteView => crate::view::note_preview::render(f, chunks[0], &self.state),
             Mode::GraphView => crate::view::note_preview::render_graph(f, chunks[0], &self.state),
             Mode::NewNote => crate::view::new_note::render(f, chunks[0], &self.state),
-            Mode::Help => crate::view::help::render(f, chunks[0]),
         }
 
         // Status bar
         crate::view::status_bar::render(f, chunks[1], &self.state);
 
-        // Fuzzy finder overlay (drawn on top of everything)
+        // Overlays (drawn on top of everything)
+        if self.state.help_active {
+            crate::view::help::render(f, f.area());
+        }
         if self.state.fuzzy.active {
             crate::view::fuzzy_finder::render(f, f.area(), &self.state);
         }
@@ -367,6 +379,10 @@ impl App {
                     }
                     self.state.mode = Mode::NoteView;
                 }
+            }
+
+            Action::ToggleHelp => {
+                self.state.help_active = !self.state.help_active;
             }
 
             Action::ShowMessage(msg) => self.state.status_message = Some(msg),

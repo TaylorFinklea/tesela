@@ -49,8 +49,8 @@ async fn main() -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // Run app
-    let app = app::App::new(store, index);
+    // Run app (new() loads today's daily note)
+    let app = app::App::new(store, index).await;
     let result = app.run(&mut terminal).await;
 
     // Restore terminal
