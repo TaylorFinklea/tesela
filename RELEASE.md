@@ -6,7 +6,77 @@ This file tracks all releases of Tesela.
 ## v0.20250825.0 - 2025-08-25 12:03:02 UTC
 
 
+## v0.20260319.0 - 2026-03-19 11:14:57 UTC
+
+## What's Changed
+
+- update (d875c49)
+- feat: Phase 7 - Lua plugin runtime with WASM stub (dfb94f6)
+- feat: Phase 6 - plugin API traits and registry (64a0fd8)
+- feat: Phase 5 - tesela-mcp MCP server (6ab0a29)
+- feat: Phase 4 - tesela-tui Elm-style TUI (0632567)
+- feat: Phase 3 - tesela-cli thin dispatcher (67b8915)
+- feat: Phase 2 - SQLite+FTS5 search index and indexer (1deff89)
+- feat: Phase 1 - workspace + tesela-core foundation (9b137ff)
+- chore: add .worktrees to .gitignore (d58cc42)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260319.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260319.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20250925.0...v0.20260319.0
+
+---
+
+
 ## v0.20250925.0 - 2025-09-25 20:33:36 UTC
+
+
+## v0.20260319.0 - 2026-03-19 11:14:57 UTC
+
+## What's Changed
+
+- update (d875c49)
+- feat: Phase 7 - Lua plugin runtime with WASM stub (dfb94f6)
+- feat: Phase 6 - plugin API traits and registry (64a0fd8)
+- feat: Phase 5 - tesela-mcp MCP server (6ab0a29)
+- feat: Phase 4 - tesela-tui Elm-style TUI (0632567)
+- feat: Phase 3 - tesela-cli thin dispatcher (67b8915)
+- feat: Phase 2 - SQLite+FTS5 search index and indexer (1deff89)
+- feat: Phase 1 - workspace + tesela-core foundation (9b137ff)
+- chore: add .worktrees to .gitignore (d58cc42)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260319.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260319.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20250925.0...v0.20260319.0
+
+---
 
 ## What's Changed
 
@@ -38,7 +108,77 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20250925.0
 ## v0.20250826.0 - 2025-08-26 00:19:54 UTC
 
 
+## v0.20260319.0 - 2026-03-19 11:14:57 UTC
+
+## What's Changed
+
+- update (d875c49)
+- feat: Phase 7 - Lua plugin runtime with WASM stub (dfb94f6)
+- feat: Phase 6 - plugin API traits and registry (64a0fd8)
+- feat: Phase 5 - tesela-mcp MCP server (6ab0a29)
+- feat: Phase 4 - tesela-tui Elm-style TUI (0632567)
+- feat: Phase 3 - tesela-cli thin dispatcher (67b8915)
+- feat: Phase 2 - SQLite+FTS5 search index and indexer (1deff89)
+- feat: Phase 1 - workspace + tesela-core foundation (9b137ff)
+- chore: add .worktrees to .gitignore (d58cc42)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260319.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260319.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20250925.0...v0.20260319.0
+
+---
+
+
 ## v0.20250925.0 - 2025-09-25 20:33:36 UTC
+
+
+## v0.20260319.0 - 2026-03-19 11:14:57 UTC
+
+## What's Changed
+
+- update (d875c49)
+- feat: Phase 7 - Lua plugin runtime with WASM stub (dfb94f6)
+- feat: Phase 6 - plugin API traits and registry (64a0fd8)
+- feat: Phase 5 - tesela-mcp MCP server (6ab0a29)
+- feat: Phase 4 - tesela-tui Elm-style TUI (0632567)
+- feat: Phase 3 - tesela-cli thin dispatcher (67b8915)
+- feat: Phase 2 - SQLite+FTS5 search index and indexer (1deff89)
+- feat: Phase 1 - workspace + tesela-core foundation (9b137ff)
+- chore: add .worktrees to .gitignore (d58cc42)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260319.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260319.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20250925.0...v0.20260319.0
+
+---
 
 ## What's Changed
 
