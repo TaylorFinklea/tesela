@@ -60,4 +60,6 @@ pub struct AppState {
     pub graph_forward_links: Vec<Link>,
     /// Help overlay is visible (drawn on top of current mode)
     pub help_active: bool,
+    /// Armed delete confirmation — first D press sets this, second D executes
+    pub confirm_delete: Option<NoteId>,
 }

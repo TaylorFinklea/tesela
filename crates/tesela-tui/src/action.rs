@@ -12,7 +12,11 @@ pub enum Action {
     OpenNote(NoteId),
     EditNote(NoteId),
     DeleteNote(NoteId),
+    ConfirmDelete(NoteId),
+    CancelDelete,
     OpenDailyNote,
+    OpenNextNote,
+    OpenPrevNote,
     RefreshList,
 
     // New note input

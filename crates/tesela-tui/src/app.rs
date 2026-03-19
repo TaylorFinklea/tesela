@@ -243,23 +243,63 @@ impl App {
                 }
             }
 
-            Action::DeleteNote(id) => match self.store.delete(&id).await {
-                Ok(()) => {
-                    let _ = self.index.remove_note(&id).await;
-                    self.state.current_note = None;
-                    self.state.status_message = Some("Note deleted".to_string());
-                    if let Ok(notes) = self
-                        .store
-                        .list(self.state.listing.filter_tag.as_deref(), 100, 0)
-                        .await
-                    {
-                        self.state.listing.notes = notes;
-                        self.state.listing.selected = 0;
+            Action::DeleteNote(id) => {
+                self.state.confirm_delete = None;
+                match self.store.delete(&id).await {
+                    Ok(()) => {
+                        let _ = self.index.remove_note(&id).await;
+                        self.state.current_note = None;
+                        self.state.status_message = Some("Note deleted".to_string());
+                        if let Ok(notes) = self
+                            .store
+                            .list(self.state.listing.filter_tag.as_deref(), 100, 0)
+                            .await
+                        {
+                            self.state.listing.notes = notes;
+                            self.state.listing.selected = 0;
+                        }
+                        self.state.mode = Mode::Listing;
                     }
-                    self.state.mode = Mode::Listing;
+                    Err(e) => self.state.error_message = Some(e.to_string()),
                 }
-                Err(e) => self.state.error_message = Some(e.to_string()),
-            },
+            }
+
+            Action::ConfirmDelete(id) => {
+                self.state.confirm_delete = Some(id);
+                self.state.status_message = Some("Press D again to confirm delete".to_string());
+            }
+
+            Action::CancelDelete => {
+                self.state.confirm_delete = None;
+                self.state.status_message = None;
+            }
+
+            Action::OpenNextNote => {
+                if !self.state.listing.notes.is_empty() {
+                    let next =
+                        (self.state.listing.selected + 1).min(self.state.listing.notes.len() - 1);
+                    self.state.listing.selected = next;
+                    let id = self.state.listing.notes[next].id.clone();
+                    if let Ok(Some(note)) = self.store.get(&id).await {
+                        self.state.current_note = Some(note);
+                        self.state.graph_view_active = false;
+                        self.state.confirm_delete = None;
+                    }
+                }
+            }
+
+            Action::OpenPrevNote => {
+                if !self.state.listing.notes.is_empty() {
+                    let prev = self.state.listing.selected.saturating_sub(1);
+                    self.state.listing.selected = prev;
+                    let id = self.state.listing.notes[prev].id.clone();
+                    if let Ok(Some(note)) = self.store.get(&id).await {
+                        self.state.current_note = Some(note);
+                        self.state.graph_view_active = false;
+                        self.state.confirm_delete = None;
+                    }
+                }
+            }
 
             Action::CreateNote { title } => match self.store.create(&title, "- ", &[]).await {
                 Ok(note) => {

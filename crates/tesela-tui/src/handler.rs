@@ -83,7 +83,11 @@ fn handle_listing(state: &AppState, key: &KeyEvent) -> Vec<Action> {
 }
 
 fn handle_search(state: &AppState, key: &KeyEvent) -> Vec<Action> {
+    let has_results = !state.search.results.is_empty();
     match key.code {
+        // j/k navigate results when populated; otherwise fall through to type into query
+        KeyCode::Char('j') | KeyCode::Down if has_results => vec![Action::SelectNext],
+        KeyCode::Char('k') | KeyCode::Up if has_results => vec![Action::SelectPrev],
         KeyCode::Char(c) => {
             vec![Action::UpdateSearchQuery(format!(
                 "{}{}",
@@ -96,7 +100,14 @@ fn handle_search(state: &AppState, key: &KeyEvent) -> Vec<Action> {
             vec![Action::UpdateSearchQuery(q)]
         }
         KeyCode::Enter => {
-            if !state.search.query.is_empty() {
+            if has_results {
+                // Open the selected search result
+                let hit = &state.search.results[state.search.selected];
+                vec![
+                    Action::OpenNote(hit.note_id.clone()),
+                    Action::EnterMode(Mode::NoteView),
+                ]
+            } else if !state.search.query.is_empty() {
                 vec![Action::ExecuteSearch(state.search.query.clone())]
             } else {
                 vec![]
@@ -110,8 +121,20 @@ fn handle_search(state: &AppState, key: &KeyEvent) -> Vec<Action> {
 }
 
 fn handle_note_view(state: &AppState, key: &KeyEvent) -> Vec<Action> {
+    // Cancel pending delete on any key except D
+    if state.confirm_delete.is_some() && key.code != KeyCode::Char('D') {
+        let mut actions = vec![Action::CancelDelete];
+        actions.extend(handle_note_view_keys(state, key));
+        return actions;
+    }
+    handle_note_view_keys(state, key)
+}
+
+fn handle_note_view_keys(state: &AppState, key: &KeyEvent) -> Vec<Action> {
     match key.code {
-        KeyCode::Char('q') | KeyCode::Esc => vec![Action::EnterMode(Mode::Listing)],
+        KeyCode::Char('q') | KeyCode::Esc => {
+            vec![Action::EnterMode(Mode::Listing), Action::RefreshList]
+        }
         KeyCode::Char('j') | KeyCode::Down => vec![Action::ScrollDown],
         KeyCode::Char('k') | KeyCode::Up => vec![Action::ScrollUp],
         KeyCode::Char('e') => {
@@ -122,9 +145,15 @@ fn handle_note_view(state: &AppState, key: &KeyEvent) -> Vec<Action> {
             }
         }
         KeyCode::Char('g') => vec![Action::ToggleGraphView],
+        KeyCode::Char(']') => vec![Action::OpenNextNote],
+        KeyCode::Char('[') => vec![Action::OpenPrevNote],
         KeyCode::Char('D') => {
-            if let Some(note) = &state.current_note {
-                vec![Action::DeleteNote(note.id.clone())]
+            if let Some(pending_id) = &state.confirm_delete {
+                // Second press: execute delete
+                vec![Action::DeleteNote(pending_id.clone())]
+            } else if let Some(note) = &state.current_note {
+                // First press: arm confirmation
+                vec![Action::ConfirmDelete(note.id.clone())]
             } else {
                 vec![]
             }
@@ -197,6 +226,7 @@ fn handle_tick(_state: &AppState) -> Vec<Action> {
 mod tests {
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tesela_core::note::NoteId;
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
@@ -358,5 +388,118 @@ mod tests {
         };
         let actions = handle(&state, &key(KeyCode::Char('g')));
         assert!(actions.iter().any(|a| matches!(a, Action::ToggleGraphView)));
+    }
+
+    #[test]
+    fn test_delete_first_press_arms_confirmation() {
+        let state = make_note_view_state();
+        let actions = handle(&state, &key(KeyCode::Char('D')));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::ConfirmDelete(_))));
+        assert!(!actions.iter().any(|a| matches!(a, Action::DeleteNote(_))));
+    }
+
+    #[test]
+    fn test_delete_second_press_executes() {
+        let mut state = make_note_view_state();
+        state.confirm_delete = Some(NoteId::new("test-note"));
+        let actions = handle(&state, &key(KeyCode::Char('D')));
+        assert!(actions.iter().any(|a| matches!(a, Action::DeleteNote(_))));
+    }
+
+    #[test]
+    fn test_delete_cancel_on_other_key() {
+        let mut state = make_note_view_state();
+        state.confirm_delete = Some(NoteId::new("test-note"));
+        let actions = handle(&state, &key(KeyCode::Char('j')));
+        assert!(actions.iter().any(|a| matches!(a, Action::CancelDelete)));
+        // Should also process the key normally (scroll down)
+        assert!(actions.iter().any(|a| matches!(a, Action::ScrollDown)));
+    }
+
+    #[test]
+    fn test_search_enter_opens_result() {
+        use std::path::PathBuf;
+        use tesela_core::note::{NoteId, SearchHit};
+        let mut state = AppState {
+            mode: Mode::Search,
+            ..AppState::default()
+        };
+        state.search.query = "test".to_string();
+        state.search.results = vec![SearchHit {
+            note_id: NoteId::new("hit-1"),
+            title: "Hit 1".to_string(),
+            snippet: String::new(),
+            rank: 1.0,
+            tags: vec![],
+            path: PathBuf::from("notes/hit-1.md"),
+        }];
+        let actions = handle(&state, &key(KeyCode::Enter));
+        assert!(actions.iter().any(|a| matches!(a, Action::OpenNote(_))));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::EnterMode(Mode::NoteView))));
+    }
+
+    #[test]
+    fn test_search_enter_executes_when_no_results() {
+        let mut state = AppState {
+            mode: Mode::Search,
+            ..AppState::default()
+        };
+        state.search.query = "test".to_string();
+        let actions = handle(&state, &key(KeyCode::Enter));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::ExecuteSearch(_))));
+    }
+
+    #[test]
+    fn test_esc_from_note_view_refreshes_list() {
+        let state = AppState {
+            mode: Mode::NoteView,
+            ..AppState::default()
+        };
+        let actions = handle(&state, &key(KeyCode::Esc));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::EnterMode(Mode::Listing))));
+        assert!(actions.iter().any(|a| matches!(a, Action::RefreshList)));
+    }
+
+    #[test]
+    fn test_next_prev_note_from_note_view() {
+        let state = AppState {
+            mode: Mode::NoteView,
+            ..AppState::default()
+        };
+        let actions = handle(&state, &key(KeyCode::Char(']')));
+        assert!(actions.iter().any(|a| matches!(a, Action::OpenNextNote)));
+        let actions = handle(&state, &key(KeyCode::Char('[')));
+        assert!(actions.iter().any(|a| matches!(a, Action::OpenPrevNote)));
+    }
+
+    fn make_note_view_state() -> AppState {
+        use chrono::Utc;
+        use std::path::PathBuf;
+        use tesela_core::note::{Note, NoteMetadata};
+        let mut state = AppState {
+            mode: Mode::NoteView,
+            ..AppState::default()
+        };
+        state.current_note = Some(Note {
+            id: NoteId::new("test-note"),
+            title: "Test".to_string(),
+            content: String::new(),
+            body: String::new(),
+            metadata: NoteMetadata::default(),
+            path: PathBuf::from("notes/test-note.md"),
+            checksum: String::new(),
+            created_at: Utc::now(),
+            modified_at: Utc::now(),
+            attachments: vec![],
+        });
+        state
     }
 }
