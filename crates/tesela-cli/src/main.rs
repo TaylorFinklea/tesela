@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
+use tesela_core::traits::plugin::PluginRegistry;
 use tesela_core::{
     config::Config,
     daily::DailyNoteConfig,
@@ -11,10 +12,13 @@ use tesela_core::{
     storage::filesystem::FsNoteStore,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
 };
-use tesela_core::traits::plugin::PluginRegistry;
 
 #[derive(Parser)]
-#[command(name = "tesela", version, about = "Keyboard-first, file-based note-taking")]
+#[command(
+    name = "tesela",
+    version,
+    about = "Keyboard-first, file-based note-taking"
+)]
 struct Cli {
     /// Path to mosaic directory (defaults to config default_mosaic)
     #[arg(short, long, global = true)]
@@ -120,7 +124,11 @@ impl Ctx {
         );
         let registry = tesela_plugins::load_all_plugins(&mosaic);
 
-        Ok(Self { store, index, registry })
+        Ok(Self {
+            store,
+            index,
+            registry,
+        })
     }
 }
 
@@ -174,14 +182,23 @@ async fn cmd_init(path: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_new(ctx: &Ctx, title: String, tags: Option<String>, content: Option<String>) -> Result<()> {
+async fn cmd_new(
+    ctx: &Ctx,
+    title: String,
+    tags: Option<String>,
+    content: Option<String>,
+) -> Result<()> {
     let tag_list: Vec<&str> = tags
         .as_deref()
         .map(|t| t.split(',').map(str::trim).collect())
         .unwrap_or_default();
 
     let body = content.as_deref().unwrap_or("");
-    let note = ctx.store.create(&title, body, &tag_list).await.context("Failed to create note")?;
+    let note = ctx
+        .store
+        .create(&title, body, &tag_list)
+        .await
+        .context("Failed to create note")?;
     ctx.index
         .upsert_note(&note)
         .await
@@ -256,7 +273,12 @@ async fn cmd_edit(ctx: &Ctx, query: String) -> Result<()> {
         .with_context(|| format!("Failed to launch editor: {}", editor))?;
 
     // Re-read and reindex
-    if let Some(updated) = ctx.store.get(&note.id).await.context("Failed to re-read note")? {
+    if let Some(updated) = ctx
+        .store
+        .get(&note.id)
+        .await
+        .context("Failed to re-read note")?
+    {
         ctx.index
             .upsert_note(&updated)
             .await
@@ -344,7 +366,12 @@ async fn cmd_reindex(ctx: &Ctx) -> Result<()> {
 /// Resolve a note by ID or title.
 async fn resolve_note(ctx: &Ctx, query: &str) -> Result<tesela_core::Note> {
     let id = NoteId::new(query);
-    if let Some(note) = ctx.store.get(&id).await.context("Failed to look up note by ID")? {
+    if let Some(note) = ctx
+        .store
+        .get(&id)
+        .await
+        .context("Failed to look up note by ID")?
+    {
         return Ok(note);
     }
     if let Some(note) = ctx
@@ -386,7 +413,11 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Init { .. } | Commands::Completions { .. } => unreachable!(),
-        Commands::New { title, tags, content } => cmd_new(&ctx, title, tags, content).await?,
+        Commands::New {
+            title,
+            tags,
+            content,
+        } => cmd_new(&ctx, title, tags, content).await?,
         Commands::List { tag, limit } => cmd_list(&ctx, tag, limit).await?,
         Commands::Cat { query } => cmd_cat(&ctx, query).await?,
         Commands::Edit { query } => cmd_edit(&ctx, query).await?,
@@ -410,7 +441,8 @@ async fn main() -> Result<()> {
             } else {
                 std::process::Command::new(tui_name)
             };
-            cmd.status().context("Failed to launch tesela-tui. Is it installed?")?;
+            cmd.status()
+                .context("Failed to launch tesela-tui. Is it installed?")?;
         }
     }
 

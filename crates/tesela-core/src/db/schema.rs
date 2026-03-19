@@ -9,8 +9,9 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 )"#;
 
 /// Each migration is a name and a list of SQL statements to execute in order.
-pub const MIGRATIONS: &[(&str, &[&str])] = &[
-    ("001_initial", &[
+pub const MIGRATIONS: &[(&str, &[&str])] = &[(
+    "001_initial",
+    &[
         r#"CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -50,5 +51,5 @@ END"#,
     INSERT INTO notes_fts(notes_fts, rowid, id, title, body, tags) VALUES('delete', old.rowid, old.id, old.title, old.body, old.tags);
     INSERT INTO notes_fts(rowid, id, title, body, tags) VALUES (new.rowid, new.id, new.title, new.body, new.tags);
 END"#,
-    ]),
-];
+    ],
+)];

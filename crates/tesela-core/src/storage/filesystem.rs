@@ -78,15 +78,12 @@ impl FsNoteStore {
     fn parse_note_from_content(&self, path: &Path, content: &str) -> Result<Note> {
         let (metadata, body) = parse_frontmatter(content)?;
 
-        let title = metadata
-            .title
-            .clone()
-            .unwrap_or_else(|| {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("Untitled")
-                    .to_string()
-            });
+        let title = metadata.title.clone().unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Untitled")
+                .to_string()
+        });
 
         let id = NoteId::from_filename(
             path.file_name()
@@ -155,9 +152,7 @@ impl FsNoteStore {
 
     fn is_note_file(&self, path: &Path) -> bool {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            self.config
-                .note_extensions
-                .contains(&ext.to_lowercase())
+            self.config.note_extensions.contains(&ext.to_lowercase())
         } else {
             false
         }
@@ -287,11 +282,7 @@ impl NoteStore for FsNoteStore {
         Ok(notes.into_iter().skip(offset).take(limit).collect())
     }
 
-    async fn daily_note(
-        &self,
-        date: Option<NaiveDate>,
-        config: &DailyNoteConfig,
-    ) -> Result<Note> {
+    async fn daily_note(&self, date: Option<NaiveDate>, config: &DailyNoteConfig) -> Result<Note> {
         self.ensure_notes_dir()?;
 
         let date = date.unwrap_or_else(|| chrono::Local::now().date_naive());
@@ -399,10 +390,7 @@ mod tests {
         let (store, _tmp) = create_test_store();
 
         for i in 0..5 {
-            store
-                .create(&format!("Note {}", i), "", &[])
-                .await
-                .unwrap();
+            store.create(&format!("Note {}", i), "", &[]).await.unwrap();
         }
 
         let page = store.list(None, 2, 1).await.unwrap();

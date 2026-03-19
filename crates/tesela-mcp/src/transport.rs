@@ -65,9 +65,7 @@ impl JsonRpcResponse {
 }
 
 /// Read one JSON-RPC request from stdin line-by-line.
-pub async fn read_request(
-    reader: &mut BufReader<tokio::io::Stdin>,
-) -> Option<JsonRpcRequest> {
+pub async fn read_request(reader: &mut BufReader<tokio::io::Stdin>) -> Option<JsonRpcRequest> {
     let mut line = String::new();
     match reader.read_line(&mut line).await {
         Ok(0) => None, // EOF

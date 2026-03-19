@@ -50,10 +50,12 @@ impl LuaPlugin {
             .map_err(|e| TeselaError::Other(format!("Lua error: {}", e)))?;
 
         let globals = lua.globals();
-        let name: String =
-            globals.get::<String>("name").unwrap_or_else(|_| default_name.to_string());
-        let version: String =
-            globals.get::<String>("version").unwrap_or_else(|_| "0.1.0".to_string());
+        let name: String = globals
+            .get::<String>("name")
+            .unwrap_or_else(|_| default_name.to_string());
+        let version: String = globals
+            .get::<String>("version")
+            .unwrap_or_else(|_| "0.1.0".to_string());
         let description: String = globals.get::<String>("description").unwrap_or_default();
 
         Ok(Self {

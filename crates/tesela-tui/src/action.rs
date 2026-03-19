@@ -10,12 +10,25 @@ pub enum Action {
     // Note operations
     CreateNote { title: String },
     OpenNote(NoteId),
+    EditNote(NoteId),
+    DeleteNote(NoteId),
+    OpenDailyNote,
     RefreshList,
+
+    // New note input
+    NewNoteInput(String),
 
     // Search
     UpdateSearchQuery(String),
     ExecuteSearch(String),
     ClearSearch,
+
+    // Fuzzy finder
+    ToggleFuzzy,
+    FuzzyQuery(String),
+    FuzzySelect,
+    FuzzySelectNext,
+    FuzzySelectPrev,
 
     // UI
     ScrollUp,
@@ -23,6 +36,7 @@ pub enum Action {
     SelectNext,
     SelectPrev,
     SelectItem(usize),
+    ToggleGraphView,
 
     // Status
     ShowMessage(String),

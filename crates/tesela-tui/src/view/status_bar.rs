@@ -8,21 +8,31 @@ use ratatui::{
 use crate::state::{mode::Mode, AppState};
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
-    let msg = if let Some(err) = &state.error_message {
+    let msg = if state.fuzzy.active {
+        "↑↓: navigate  Enter: open  Esc: close".to_string()
+    } else if let Some(err) = &state.error_message {
         format!("Error: {}", err)
     } else if let Some(msg) = &state.status_message {
         msg.clone()
     } else {
         match state.mode {
-            Mode::MainMenu => "n: notes | /: search | q: quit | ?: help".to_string(),
-            Mode::Listing => "j/k: navigate | Enter: open | /: search | Esc: back".to_string(),
-            Mode::Search => "Type to search | Enter: confirm | Esc: cancel".to_string(),
-            Mode::NoteView => "j/k: scroll | Esc: back".to_string(),
+            Mode::MainMenu => {
+                "c: new  n: notes  d: daily  /: search  ^P: find  q: quit  ?: help".to_string()
+            }
+            Mode::Listing => {
+                "j/k: navigate  Enter: open  c: new  /: search  ^P: find  Esc: back".to_string()
+            }
+            Mode::Search => "type to search  Enter: confirm  Esc: cancel".to_string(),
+            Mode::NoteView => {
+                "e: edit  g: graph  D: delete  j/k: scroll  ^P: find  Esc: back".to_string()
+            }
+            Mode::GraphView => "g: toggle  e: edit  j/k: scroll  Esc: back".to_string(),
+            Mode::NewNote => "type title  Enter: create  Esc: cancel".to_string(),
             Mode::Help => "?: close help".to_string(),
         }
     };
 
-    let style = if state.error_message.is_some() {
+    let style = if state.error_message.is_some() && !state.fuzzy.active {
         Style::default().fg(Color::Red)
     } else {
         Style::default().fg(Color::DarkGray)

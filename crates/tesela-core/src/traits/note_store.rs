@@ -21,10 +21,6 @@ pub trait NoteStore: Send + Sync {
         limit: usize,
         offset: usize,
     ) -> Result<Vec<Note>>;
-    async fn daily_note(
-        &self,
-        date: Option<NaiveDate>,
-        config: &DailyNoteConfig,
-    ) -> Result<Note>;
+    async fn daily_note(&self, date: Option<NaiveDate>, config: &DailyNoteConfig) -> Result<Note>;
     async fn mosaic_root(&self) -> &Path;
 }

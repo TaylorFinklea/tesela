@@ -108,8 +108,7 @@ impl Indexer {
                             let _ = fs_tx.blocking_send(event);
                         }
                     },
-                    notify::Config::default()
-                        .with_poll_interval(debounce),
+                    notify::Config::default().with_poll_interval(debounce),
                 )
             };
 
@@ -172,10 +171,7 @@ impl Indexer {
                 Err(_) => continue,
             };
 
-            let note_id_str = rel_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("");
+            let note_id_str = rel_path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
 
             if note_id_str.is_empty() {
                 continue;

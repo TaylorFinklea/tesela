@@ -20,7 +20,6 @@ pub fn render(f: &mut Frame, area: Rect) {
     n           Browse notes\n\
     /           Search\n\
 ";
-    let para = Paragraph::new(text)
-        .block(Block::default().title("Help").borders(Borders::ALL));
+    let para = Paragraph::new(text).block(Block::default().title("Help").borders(Borders::ALL));
     f.render_widget(para, area);
 }

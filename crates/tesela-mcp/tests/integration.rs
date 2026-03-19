@@ -2,9 +2,7 @@ use serde_json::json;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tesela_core::{
-    config::StorageConfig,
-    db::SqliteIndex,
-    storage::filesystem::FsNoteStore,
+    config::StorageConfig, db::SqliteIndex, storage::filesystem::FsNoteStore,
     traits::plugin::PluginRegistry,
 };
 use tesela_mcp::tools::ToolRegistry;
@@ -85,10 +83,7 @@ async fn test_list_notes() {
         .await
         .unwrap();
 
-    let result = registry
-        .call("list_notes", Some(json!({})))
-        .await
-        .unwrap();
+    let result = registry.call("list_notes", Some(json!({}))).await.unwrap();
     let text = result["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("Note A") && text.contains("Note B"));
 }

@@ -115,10 +115,7 @@ pub fn sanitize_filename(name: &str) -> String {
         })
         .collect();
 
-    sanitized
-        .trim_matches('-')
-        .to_lowercase()
-        .replace(' ', "-")
+    sanitized.trim_matches('-').to_lowercase().replace(' ', "-")
 }
 
 /// Generate frontmatter string from metadata
@@ -135,7 +132,10 @@ pub fn generate_frontmatter(
         fm.push_str(&format!("tags: [{}]\n", tag_list.join(", ")));
     }
 
-    fm.push_str(&format!("created: {}\n", created.format("%Y-%m-%dT%H:%M:%SZ")));
+    fm.push_str(&format!(
+        "created: {}\n",
+        created.format("%Y-%m-%dT%H:%M:%SZ")
+    ));
 
     for (key, value) in extra {
         fm.push_str(&format!("{}: {}\n", key, value));

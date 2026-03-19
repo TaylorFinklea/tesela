@@ -113,8 +113,7 @@ impl SqliteIndex {
 
     /// Upsert a note into the index (insert or update).
     pub async fn upsert_note(&self, note: &Note) -> Result<()> {
-        let tags_json =
-            serde_json::to_string(&note.metadata.tags).map_err(TeselaError::Json)?;
+        let tags_json = serde_json::to_string(&note.metadata.tags).map_err(TeselaError::Json)?;
 
         sqlx::query(
             r#"
@@ -178,10 +177,7 @@ impl SqliteIndex {
         let query = query.trim();
 
         // Pass through boolean operators as-is
-        if query.contains(" AND ")
-            || query.contains(" OR ")
-            || query.contains(" NOT ")
-        {
+        if query.contains(" AND ") || query.contains(" OR ") || query.contains(" NOT ") {
             return query.to_string();
         }
 
@@ -398,22 +394,22 @@ fn row_to_link(row: &sqlx::sqlite::SqliteRow) -> Result<Link> {
         message: e.to_string(),
         source: None,
     })?;
-    let link_text: String =
-        row.try_get("link_text")
-            .map_err(|e| TeselaError::Database {
-                message: e.to_string(),
-                source: None,
-            })?;
+    let link_text: String = row
+        .try_get("link_text")
+        .map_err(|e| TeselaError::Database {
+            message: e.to_string(),
+            source: None,
+        })?;
     let position: i64 = row.try_get("position").map_err(|e| TeselaError::Database {
         message: e.to_string(),
         source: None,
     })?;
-    let link_type_str: String =
-        row.try_get("link_type")
-            .map_err(|e| TeselaError::Database {
-                message: e.to_string(),
-                source: None,
-            })?;
+    let link_type_str: String = row
+        .try_get("link_type")
+        .map_err(|e| TeselaError::Database {
+            message: e.to_string(),
+            source: None,
+        })?;
 
     let link_type = match link_type_str.as_str() {
         "external" => LinkType::External,

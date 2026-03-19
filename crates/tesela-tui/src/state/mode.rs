@@ -5,5 +5,7 @@ pub enum Mode {
     Listing,
     Search,
     NoteView,
+    GraphView,
+    NewNote,
     Help,
 }

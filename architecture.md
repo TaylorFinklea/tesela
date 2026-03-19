@@ -2,390 +2,210 @@
 
 ## 1. Overview
 
-Tesela is a keyboard-first, file-based note-taking system built on the **Island Core** pattern with **outliner architecture**. Notes are Markdown files with block-based structure forming a knowledge mosaic through bidirectional links and hierarchical inheritance. The architecture prioritizes data ownership, offline-first operation, and extensibility.
+Tesela is a keyboard-first, file-based note-taking system built on the **Mosaic** model with **outliner architecture**. Notes are Markdown files with block-based structure, forming a knowledge graph through bidirectional links and hierarchical inheritance. The architecture prioritizes data ownership, offline-first operation, and extensibility.
 
 **Key Principles:**
 - Files are truth, database is cache
-- Core is headless, UIs are thin shells  
-- All communication through async trait API
+- Core is headless, UIs are thin shells
+- All communication through async trait APIs
 - Plugins sandboxed, no direct file/DB access
 - Outliner format with block inheritance
-- Organized directory separation (notes/, dailies/, attachments/)
 
-## 2. Project Structure
-
-### Source Code Organization
+## 2. Workspace Structure
 
 ```
 tesela/
-├── src/
-│   ├── main.rs         # CLI entry point with clap integration
-│   ├── lib.rs          # Library API and public exports
-│   ├── commands.rs     # All command implementations
-│   └── tui/           # Terminal User Interface
-│       └── app.rs     # TUI application logic with graph view
-├── tests/
-│   ├── cli_integration.rs  # End-to-end CLI tests
-│   └── fixtures/          # Test data
-├── .cargo/config.toml     # Build configuration (macOS fixes)
-├── Cargo.toml            # Dependencies and project manifest
-├── ARCHITECTURE.md       # This file - system design
-└── README.md            # User documentation
+├── Cargo.toml                  # Workspace root
+├── crates/
+│   ├── tesela-core/            # Foundation: types, traits, storage, DB, indexer
+│   ├── tesela-cli/             # `tesela` binary — thin dispatcher over core
+│   ├── tesela-tui/             # `tesela-tui` binary — Elm-style TUI (ratatui)
+│   ├── tesela-mcp/             # `tesela-mcp` binary — MCP server (JSON-RPC 2.0)
+│   └── tesela-plugins/         # Lua + WASM plugin runtimes
+├── .github/workflows/          # CI and release automation
+└── docs/                       # Documentation
 ```
 
-### Key Components
-
-- **`src/main.rs`**: CLI definition with clap, command routing, error handling
-- **`src/lib.rs`**: Public library API, module declarations, unit tests
-- **`src/commands.rs`**: Core business logic - note creation, search, cross-directory operations
-- **`src/tui/app.rs`**: Interactive TUI with listing, search, preview, and graph modes
-- **`tests/`**: Integration tests ensuring CLI functionality works end-to-end
-
-### User Data Structure
+### Crate Dependency Graph
 
 ```
-<mosaic-directory>/
-├── tesela.toml         # Mosaic configuration
-├── notes/             # Regular topic-based notes
-├── dailies/           # Daily notes with date-based naming
-└── attachments/       # Binary files (PDFs, images, etc.)
+tesela-core  (no internal deps)
+     ↑              ↑
+     |               |
+tesela-cli    tesela-tui    tesela-mcp    tesela-plugins
+     ↑                          ↑              ↑
+     |                          |              |
+tesela-plugins            tesela-core    tesela-core
 ```
 
-## 3. Component Diagram
+- **tesela-core**: depended on by all other crates
+- **tesela-plugins**: depended on by tesela-cli and tesela-mcp
+- **tesela-tui**: depends only on tesela-core
+- **tesela-mcp**: both a library and binary
 
-```mermaid
-graph TB
-    subgraph "User Space"
-        NOTES[notes/ - Regular Notes]
-        DAILIES[dailies/ - Daily Notes]
-        ATT[attachments/ - File Attachments]
-        CFG[tesela.toml - Config]
-    end
-    
-    subgraph "Core Island"
-        API[Core API Layer]
-        NE[Note Engine]
-        IDX[Indexer]
-        QRY[Query Engine]
-        CACHE[Query Cache]
-        GRP[Graph Service]
-        SYN[Sync Service]
-        AI[AI Bridge]
-        ATT[Attachment Service]
-        EVT[Event Bus]
-        DB[(SQLite Index)]
-    end
-    
-    subgraph "Transport Layer"
-        IPC[IPC/gRPC Adapter]
-        DIR[Direct Call Adapter]
-    end
-    
-    subgraph "Clients"
-        DESK[Slint Desktop]
-        MOB[Slint Mobile]
-        CLI[CLI/TUI]
-        PLG[Plugin Runtime]
-    end
-    
-    NOTES <--> NE
-    DAILIES <--> NE
-    ATT <--> ATT
-    NE <--> DB
-    NE --> IDX
-    IDX --> DB
-    QRY --> CACHE
-    CACHE --> DB
-    GRP --> DB
-    
-    API --> NE
-    API --> IDX
-    API --> QRY
-    API --> CACHE
-    API --> GRP
-    API --> SYN
-    API --> AI
-    API --> ATT
-    API --> EVT
-    
-    DIR --> API
-    IPC --> API
-    
-    DESK --> DIR
-    MOB --> IPC
-    CLI --> DIR
-    PLG --> API
-```
+## 3. crate: tesela-core
 
-## 4. Data Flow & Storage Model
+The headless engine. Provides:
 
-### Storage Layers
+| Module | Purpose |
+|--------|---------|
+| `note` | `Note`, `NoteId`, `NoteMetadata`, `SearchHit` types |
+| `error` | `TeselaError` enum, `ResultExt` trait |
+| `link` | `Link`, `LinkType`, wiki-link extraction |
+| `tag` | `Tag` type and parsing |
+| `config` | `Config`, `StorageConfig`, `GeneralConfig` |
+| `daily` | `DailyNoteConfig` |
+| `export` | `ExportFormat`, `export_note()` |
+| `db/sqlite` | `SqliteIndex` — FTS5 search, WAL mode, connection pool |
+| `storage/filesystem` | `FsNoteStore` — CRUD on Markdown files with frontmatter |
+| `storage/markdown` | Frontmatter parsing and generation |
+| `indexer` | `Indexer` / `IndexerHandle` — file watcher with debounced reindex |
+| `traits/*` | `NoteStore`, `SearchIndex`, `LinkGraph`, `Plugin` traits |
 
-| Layer | Purpose | Authority |
-|-------|---------|-----------|
-| notes/ directory | Regular notes in outliner format | Authoritative |
-| dailies/ directory | Daily notes with date-based naming | Authoritative |
-| attachments/ directory | Binary files (PDFs, images, etc.) | Authoritative |
-| SQLite index | Cross-directory query acceleration | Derivative |
-| tesela.toml | User preferences and configuration | User-controlled |
-
-### SQLite Schema (v1)
-
-```sql
--- Core tables (v0.3.7)
-notes (id, path, title, created, modified, checksum, directory)
-blocks (id, note_id, content, type, position, parent_id)
-links (source_id, target_id, type, context)
-tags (id, name, note_id, inherited)
-types (id, name, schema_json)
-attachments (id, note_id, filename, path, mime_type, size, checksum)
-
--- FTS5 virtual table with cross-directory support
-notes_fts (title, content, directory)
-```
-
-### Data Flow
-1. **Write**: API → Note Engine → Markdown file (notes/ or dailies/) → Indexer → SQLite → Cache invalidation
-2. **Read**: API → Query Engine → Cache (hot path) → SQLite (warm path) → Cross-directory scan (fallback)
-3. **External edit**: File watcher → Indexer → SQLite update → Cache invalidation → Event broadcast
-4. **Cross-directory operations**: API → Scan both notes/ and dailies/ → Merge results → Return unified view
-
-## 5. Core API (Rust traits)
+### Key Traits
 
 ```rust
-// Primary service traits
-#[async_trait]
-pub trait NoteService {
-    async fn create(&self, content: &str, metadata: NoteMeta) -> Result<NoteId>;
-    async fn update(&self, id: NoteId, content: &str) -> Result<()>;
-    async fn delete(&self, id: NoteId) -> Result<()>;
-    async fn get(&self, id: NoteId) -> Result<Note>;
-    async fn link(&self, from: NoteId, to: NoteId, link_type: LinkType) -> Result<()>;
-    async fn attach(&self, note_id: NoteId, file_data: Vec<u8>, filename: &str) -> Result<AttachmentId>;
-    async fn get_attachment(&self, id: AttachmentId) -> Result<Attachment>;
+// Storage
+pub trait NoteStore: Send + Sync {
+    async fn get(&self, id: &NoteId) -> Result<Option<Note>>;
+    async fn create(&self, title: &str, content: &str, tags: &[Tag]) -> Result<Note>;
+    async fn update(&self, id: &NoteId, content: &str) -> Result<Note>;
+    async fn delete(&self, id: &NoteId) -> Result<()>;
+    async fn list(&self, tag: Option<&str>, limit: u64, offset: u64) -> Result<Vec<Note>>;
+    async fn daily_note(&self, date: chrono::NaiveDate) -> Result<Option<Note>>;
+    async fn mosaic_root(&self) -> PathBuf;
 }
 
-#[async_trait]
-pub trait QueryService {
-    async fn search(&self, query: &str, filters: SearchFilters) -> Result<Vec<NoteRef>>;
-    async fn graph_neighbors(&self, id: NoteId, depth: u8) -> Result<Graph>;
-    async fn daily_note(&self, date: NaiveDate) -> Result<Option<Note>>;
+// Search
+pub trait SearchIndex: Send + Sync {
+    async fn search(&self, query: &str, limit: u64, offset: u64) -> Result<Vec<SearchHit>>;
+    async fn upsert_note(&self, note: &Note) -> Result<()>;
+    async fn remove_note(&self, id: &NoteId) -> Result<()>;
+    async fn rebuild(&self, notes: Vec<Note>) -> Result<()>;
 }
 
-#[async_trait]
-pub trait PluginHost {
-    async fn register(&self, manifest: PluginManifest) -> Result<PluginId>;
-    async fn call(&self, plugin_id: PluginId, method: &str, args: Value) -> Result<Value>;
-    async fn check_rate_limit(&self, plugin_id: PluginId) -> Result<()>;
+// Links
+pub trait LinkGraph: Send + Sync {
+    async fn get_backlinks(&self, id: &NoteId) -> Result<Vec<Link>>;
+    async fn get_forward_links(&self, id: &NoteId) -> Result<Vec<Link>>;
 }
 
-// Plugin rate limiting
-pub struct RateLimiter {
-    calls_per_minute: u32,
-    burst_size: u32,
-}
-
-// Event system
-pub trait EventSubscriber {
-    fn on_note_changed(&self, event: NoteEvent);
-    fn on_index_rebuilt(&self, stats: IndexStats);
+// Plugins
+pub trait Plugin: Send + Sync {
+    fn id(&self) -> &str;
+    fn on_note_created(&self, note: &Note) -> Result<()>;
+    fn on_note_updated(&self, note: &Note) -> Result<()>;
+    fn on_note_deleted(&self, id: &NoteId) -> Result<()>;
+    fn on_search(&self, query: &str) -> Result<Option<String>>;
 }
 ```
 
-## 6. Plugin Architecture
+## 4. crate: tesela-cli
 
-### Security Model
+The `tesela` binary. Thin command dispatcher using `clap`. Each subcommand calls into `tesela-core` traits directly (in-process). No business logic lives here.
 
-Plugins run in sandboxed environments with capability-based permissions:
+**Subcommands:** `init`, `new`, `list`, `cat`, `edit`, `search`, `daily`, `links`, `export`, `reindex`, `tui`, `completions`
 
-```rust
-pub struct PluginPermissions {
-    read_notes: bool,
-    write_notes: bool,
-    network_access: bool,
-    file_system: FileSystemAccess,
-    rate_limits: RateLimiter,
-}
+## 5. crate: tesela-tui
 
-pub enum FileSystemAccess {
-    None,
-    PluginDataOnly,  // Only plugin's data directory
-    ReadOnly(Vec<PathBuf>),  // Specific allowed paths
-}
+The `tesela-tui` binary. Elm-style architecture: `Event → Action → State → View`, no side effects in the handler.
+
+```
+main.rs         Terminal setup, indexer wiring, App::run()
+app.rs          Event loop, draw dispatch, action processing
+handler.rs      Pure function: (State, Event) → Vec<Action>
+action.rs       Action enum
+event.rs        Event enum (Key, Tick, Resize)
+state/
+  mod.rs        AppState
+  mode.rs       Mode enum (MainMenu, Listing, Search, NoteView, Help)
+  listing.rs    ListingState
+  search.rs     SearchState
+view/           One render fn per mode
+widgets/
+  outliner.rs   Block-tree outliner widget
+  graph.rs      Backlinks/forward-links graph widget
 ```
 
-### Language Support Progression
+## 6. crate: tesela-mcp
 
-#### Phase 1: Lua & Fennel (v1.0)
-- **Target**: Power users, Neovim community, Lisp enthusiasts
-- **Runtime**: `mlua` with custom sandbox (Fennel compiles to Lua)
-- **API**: Synchronous, event-driven
+The `tesela-mcp` binary. MCP server over JSON-RPC 2.0 on stdin/stdout.
 
-```lua
--- Example Lua plugin: Auto-tagger
-local tesela = require("tesela")
+**Exposed tools:**
+1. `search_notes` — full-text search
+2. `get_note` — by ID or title
+3. `create_note` — create with title/content/tags
+4. `list_notes` — with tag filter and pagination
+5. `get_backlinks` — backlinks for a note
+6. `get_daily_note` — get or create today's daily note
 
-tesela.on_note_saved(function(note)
-    local content = note:content()
-    
-    -- Auto-detect programming languages
-    if content:match("```rust") then
-        note:add_tag("rust")
-    end
-    
-    -- Extract TODOs
-    for todo in content:gmatch("TODO:%s*([^\n]+)") do
-        tesela.create_task(todo, note.id)
-    end
-end)
+**Protocol methods:** `initialize`, `tools/list`, `tools/call`, `notifications/initialized`, `ping`
+
+## 7. crate: tesela-plugins
+
+Plugin runtimes. The loader dispatches by file extension:
+
+| Extension | Runtime | Status |
+|-----------|---------|--------|
+| `.lua` | `LuaPlugin` via `mlua` | Fully implemented |
+| `.wasm` | `WasmPlugin` via wasmtime | Stub (no-ops) |
+
+Plugins are loaded from `~/.tesela/plugins/` and `<mosaic>/.tesela/plugins/`.
+
+## 8. Data Flow
+
+### Storage
+| Layer | Authority |
+|-------|-----------|
+| `notes/` and `dailies/` directories | Authoritative — plain Markdown with YAML frontmatter |
+| SQLite (`tesela.db`) | Derivative cache — FTS5 index, link graph |
+| `tesela.toml` | User configuration |
+
+### Write Path
+`NoteStore::create/update` → Markdown file → `Indexer` → SQLite upsert
+
+### Read Path
+`SearchIndex::search` → SQLite FTS5 → `SearchHit` results
+
+### External Edit
+File watcher (notify) → debounced event → `Indexer::reindex_file` → SQLite update
+
+## 9. Outliner Format
+
+All notes use block-based structure:
+
+```markdown
+---
+title: "Example Note"
+created: 2025-01-15T10:30:00Z
+tags: ["example"]
+---
+- Top-level block #important
+  - Child inherits #important
+  - Another child
+- Second top-level block
 ```
 
-```fennel
-;; Example Fennel plugin: Auto-tagger
-(local tesela (require :tesela))
+Blocks start with `- ` at varying indentation levels. Child blocks inherit tags from parents. The TUI outliner widget renders this as a collapsible tree.
 
-(tesela.on-note-saved
-  (fn [note]
-    (let [content (note:content)]
-      ;; Auto-detect programming languages
-      (when (content:match "```rust")
-        (note:add-tag "rust"))
-      
-      ;; Extract TODOs
-      (each [todo (content:gmatch "TODO:%s*([^\n]+)")]
-        (tesela.create-task todo note.id)))))
-```
+## 10. Deployment
 
-#### Phase 2: JavaScript/TypeScript (v1.5)
-- **Target**: Web developers
-- **Runtime**: QuickJS or embedded Deno
-- **API**: Async-first, Promise-based
+| Mode | Use Case |
+|------|---------|
+| CLI (`tesela`) | Script-friendly, shell integration |
+| TUI (`tesela tui`) | Interactive daily-driver interface |
+| MCP server (`tesela-mcp`) | AI assistant integration (Claude Code, etc.) |
+| Slint GUI (planned) | Desktop/mobile native UI |
 
-```typescript
-import { Plugin, Note } from "@tesela/plugin-api";
+## 11. Sync
 
-export default class SmartLinker extends Plugin {
-    async onNoteCreated(note: Note) {
-        const similar = await this.findSimilarNotes(note);
-        
-        for (const match of similar) {
-            if (match.similarity > 0.8) {
-                await note.addLink(match.id, "related");
-            }
-        }
-    }
-}
-```
+Files-as-truth means any file sync tool works from day one (Syncthing, Dropbox, iCloud Drive). Future: native P2P sync with conflict detection, optional CRDT-based real-time collaboration.
 
-#### Phase 3: WebAssembly (v2.0)
-- **Target**: Any language, high-performance plugins
-- **Runtime**: Wasmtime with WASI
-- **API**: Interface types, component model
+## 12. Open Risks
 
-### Plugin API Surface
-
-```rust
-// Core plugin trait
-#[async_trait]
-pub trait Plugin {
-    fn manifest(&self) -> &PluginManifest;
-    async fn activate(&mut self, host: PluginHost) -> Result<()>;
-    async fn deactivate(&mut self) -> Result<()>;
-}
-
-// Available hooks
-pub enum PluginHook {
-    // Lifecycle
-    OnNoteCreated(NoteId),
-    OnNoteUpdated(NoteId, ChangeSet),
-    OnNoteDeleted(NoteId),
-    
-    // User actions
-    OnSearch(Query),
-    OnLinkCreated(LinkId),
-    
-    // System events  
-    OnIndexComplete,
-    OnSyncStart,
-    
-    // UI extension points
-    OnEditorAction(Action),
-    OnRenderNote(NoteId),
-}
-
-// Plugin capabilities
-impl PluginApi {
-    // Read operations
-    async fn get_note(&self, id: NoteId) -> Result<Note>;
-    async fn search(&self, query: &str) -> Result<Vec<NoteRef>>;
-    async fn get_tags(&self) -> Result<Vec<Tag>>;
-    
-    // Write operations (permission gated)
-    async fn update_note(&self, id: NoteId, content: &str) -> Result<()>;
-    async fn add_tag(&self, note: NoteId, tag: &str) -> Result<()>;
-    
-    // Plugin storage
-    async fn get_data(&self, key: &str) -> Result<Option<Value>>;
-    async fn set_data(&self, key: &str, value: Value) -> Result<()>;
-    
-    // UI extensions
-    async fn show_notification(&self, msg: &str) -> Result<()>;
-    async fn register_command(&self, cmd: Command) -> Result<()>;
-}
-```
-
-### Example Plugin Use Cases
-
-| Plugin | Language | Permissions | Purpose |
-|--------|----------|-------------|---------|
-| Auto-tagger | Lua | Read notes | Tag based on content patterns |
-| Daily summary | JS/TS | Read notes, Network | Generate AI summaries |
-| Citation manager | WASM | Read/write notes, Network | Manage academic references |
-| Graph visualizer | JS/TS | Read notes | Custom graph layouts |
-| Sync adapter | Rust/WASM | Read/write, Network | Custom sync backends |
-| Org-mode bridge | Elisp | Read/write notes | Import/export org files |
-| Smart templates | Fennel | Read/write notes | Dynamic note templates |
-
-### Plugin Distribution
-
-- **Registry**: GitHub-based plugin registry (like Obsidian)
-- **Format**: `.tplugin` bundle with manifest + code + assets
-- **Installation**: Copy to `~/.tesela/plugins/`
-- **Updates**: Semantic versioning with compatibility checks
-
-## 7. Deployment & Sync Options
-
-| Mode | Transport | Use Case |
-|------|-----------|----------|
-| Embedded | Direct calls | Desktop app, CLI |
-| IPC | Unix socket/Named pipe | Mobile, sandboxed environments |
-| Network | gRPC + TLS | Remote clients, web UI |
-| Sync | WebDAV/S3 + E2E encryption | Multi-device |
-
-**Sync Strategy (v0.7):**
-- File-based sync with conflict detection
-- Last-write-wins with manual conflict resolution
-- Merkle trees for efficient diff detection
-- **P2P Option**: Any file sync tool (Syncthing, Dropbox, etc.) works from day one
-- **Server Option**: Self-hosted sync server for centralized backup
-
-**Future Sync (v1.2+):**
-- Conflict-free replicated data types (CRDT) for real-time collaboration
-- Operational transformation for concurrent edits
-- Presence awareness and live cursors
-
-## 8. Open Risks
-
-| Risk | Impact | Mitigation |
-|------|--------|------------|
-| SQLite lock contention | Performance degradation | WAL mode, read replicas |
-| Large file handling | Memory pressure | Streaming parser, chunked indexing |
-| Plugin security | Data breach | Capability-based permissions, WASM sandbox |
-| Schema evolution | Breaking changes | Versioned migrations, compatibility layer |
-| Cross-platform file watching | Missed updates | Polling fallback, checksums |
-
-## 9. Development Roadmap
-
-See the comprehensive [Development Roadmap in README.md](README.md#🗺️-development-roadmap) for current status, upcoming features, and long-term vision.
-
-For detailed task tracking and implementation notes, see [plan.md](plan.md).
+| Risk | Mitigation |
+|------|-----------|
+| SQLite lock contention | WAL mode + connection pooling |
+| Plugin security | Capability-based permissions, WASM sandbox |
+| Schema evolution | Versioned migrations |
+| Cross-platform file watching | Polling fallback + checksums |

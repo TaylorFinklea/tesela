@@ -7,8 +7,8 @@ use tesela_core::{
     db::SqliteIndex,
     note::NoteId,
     storage::filesystem::FsNoteStore,
-    traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     traits::plugin::PluginRegistry,
+    traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
 };
 
 pub struct ToolRegistry {
@@ -96,7 +96,11 @@ pub fn list_tools() -> Value {
 }
 
 impl ToolRegistry {
-    pub fn new(store: Arc<FsNoteStore>, index: Arc<SqliteIndex>, registry: Arc<PluginRegistry>) -> Self {
+    pub fn new(
+        store: Arc<FsNoteStore>,
+        index: Arc<SqliteIndex>,
+        registry: Arc<PluginRegistry>,
+    ) -> Self {
         Self {
             store,
             index,
@@ -234,9 +238,7 @@ impl ToolRegistry {
     }
 
     async fn get_backlinks(&self, params: Value) -> Result<Value, String> {
-        let id = params["id"]
-            .as_str()
-            .ok_or("Missing required field: id")?;
+        let id = params["id"].as_str().ok_or("Missing required field: id")?;
 
         let links = self
             .index

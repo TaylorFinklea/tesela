@@ -124,7 +124,6 @@ pub struct SearchConfig {
     pub excluded_dirs: Vec<String>,
 }
 
-
 impl Default for GeneralConfig {
     fn default() -> Self {
         Self {
