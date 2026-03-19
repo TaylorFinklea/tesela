@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tesela-core", "crates/tesela-cli"]
+members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -43,6 +43,12 @@ anyhow = "1"
 dialoguer = "0.11"
 indicatif = "0.17"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# TUI
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+fuzzy-matcher = "0.3"
+tokio-stream = "0.1"
 
 # Testing
 tempfile = "3"
