@@ -26,6 +26,16 @@ fn handle_key(state: &AppState, key: &KeyEvent) -> Vec<Action> {
         return handle_fuzzy(state, key);
     }
 
+    // Tag picker captures all input when active
+    if state.tag_picker.active {
+        return handle_tag_picker(state, key);
+    }
+
+    // Editing mode captures all input
+    if state.mode == Mode::Editing {
+        return handle_editing(key);
+    }
+
     // Global shortcuts (work in any mode)
     match (key.modifiers, key.code) {
         (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
@@ -47,6 +57,7 @@ fn handle_key(state: &AppState, key: &KeyEvent) -> Vec<Action> {
         Mode::Search => handle_search(state, key),
         Mode::NoteView | Mode::GraphView => handle_note_view(state, key),
         Mode::NewNote => handle_new_note(state, key),
+        Mode::Editing => handle_editing(key), // already handled above, but needed for exhaustiveness
     }
 }
 
@@ -75,6 +86,7 @@ fn handle_listing(state: &AppState, key: &KeyEvent) -> Vec<Action> {
                 vec![]
             }
         }
+        KeyCode::Char('t') => vec![Action::ToggleTagPicker],
         KeyCode::Char('c') => vec![Action::EnterMode(Mode::NewNote)],
         KeyCode::Char('/') => vec![Action::EnterMode(Mode::Search)],
         KeyCode::Esc | KeyCode::Char('q') => vec![Action::EnterMode(Mode::MainMenu)],
@@ -82,12 +94,33 @@ fn handle_listing(state: &AppState, key: &KeyEvent) -> Vec<Action> {
     }
 }
 
-fn handle_search(state: &AppState, key: &KeyEvent) -> Vec<Action> {
-    let has_results = !state.search.results.is_empty();
+fn handle_tag_picker(state: &AppState, key: &KeyEvent) -> Vec<Action> {
     match key.code {
-        // j/k navigate results when populated; otherwise fall through to type into query
-        KeyCode::Char('j') | KeyCode::Down if has_results => vec![Action::SelectNext],
-        KeyCode::Char('k') | KeyCode::Up if has_results => vec![Action::SelectPrev],
+        KeyCode::Esc => vec![Action::ToggleTagPicker],
+        KeyCode::Enter => vec![Action::TagPickerSelect],
+        KeyCode::Down => vec![Action::TagPickerNext],
+        KeyCode::Up => vec![Action::TagPickerPrev],
+        KeyCode::Backspace => {
+            let mut q = state.tag_picker.query.clone();
+            q.pop();
+            vec![Action::TagPickerQuery(q)]
+        }
+        KeyCode::Char(c) => {
+            vec![Action::TagPickerQuery(format!(
+                "{}{}",
+                state.tag_picker.query, c
+            ))]
+        }
+        _ => vec![],
+    }
+}
+
+fn handle_search(state: &AppState, key: &KeyEvent) -> Vec<Action> {
+    match key.code {
+        // Arrow keys navigate results
+        KeyCode::Down => vec![Action::SelectNext],
+        KeyCode::Up => vec![Action::SelectPrev],
+        // All chars (including j/k) type into the query
         KeyCode::Char(c) => {
             vec![Action::UpdateSearchQuery(format!(
                 "{}{}",
@@ -100,22 +133,17 @@ fn handle_search(state: &AppState, key: &KeyEvent) -> Vec<Action> {
             vec![Action::UpdateSearchQuery(q)]
         }
         KeyCode::Enter => {
-            if has_results {
-                // Open the selected search result
+            if !state.search.results.is_empty() {
                 let hit = &state.search.results[state.search.selected];
                 vec![
                     Action::OpenNote(hit.note_id.clone()),
                     Action::EnterMode(Mode::NoteView),
                 ]
-            } else if !state.search.query.is_empty() {
-                vec![Action::ExecuteSearch(state.search.query.clone())]
             } else {
                 vec![]
             }
         }
         KeyCode::Esc => vec![Action::ClearSearch, Action::EnterMode(Mode::MainMenu)],
-        KeyCode::Down => vec![Action::SelectNext],
-        KeyCode::Up => vec![Action::SelectPrev],
         _ => vec![],
     }
 }
@@ -144,6 +172,7 @@ fn handle_note_view_keys(state: &AppState, key: &KeyEvent) -> Vec<Action> {
                 vec![]
             }
         }
+        KeyCode::Char('i') => vec![Action::EnterEditMode],
         KeyCode::Char('g') => vec![Action::ToggleGraphView],
         KeyCode::Char(']') => vec![Action::OpenNextNote],
         KeyCode::Char('[') => vec![Action::OpenPrevNote],
@@ -159,6 +188,14 @@ fn handle_note_view_keys(state: &AppState, key: &KeyEvent) -> Vec<Action> {
             }
         }
         _ => vec![],
+    }
+}
+
+fn handle_editing(key: &KeyEvent) -> Vec<Action> {
+    match (key.modifiers, key.code) {
+        (_, KeyCode::Esc) => vec![Action::ExitEditMode { save: true }],
+        (KeyModifiers::CONTROL, KeyCode::Char('c')) => vec![Action::ExitEditMode { save: false }],
+        _ => vec![Action::EditInput(*key)],
     }
 }
 
@@ -443,16 +480,27 @@ mod tests {
     }
 
     #[test]
-    fn test_search_enter_executes_when_no_results() {
+    fn test_search_enter_noop_when_no_results() {
         let mut state = AppState {
             mode: Mode::Search,
             ..AppState::default()
         };
         state.search.query = "test".to_string();
         let actions = handle(&state, &key(KeyCode::Enter));
+        // With live search, Enter does nothing when there are no results
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn test_search_j_types_into_query() {
+        let state = AppState {
+            mode: Mode::Search,
+            ..AppState::default()
+        };
+        let actions = handle(&state, &key(KeyCode::Char('j')));
         assert!(actions
             .iter()
-            .any(|a| matches!(a, Action::ExecuteSearch(_))));
+            .any(|a| matches!(a, Action::UpdateSearchQuery(q) if q.contains('j'))));
     }
 
     #[test]
@@ -478,6 +526,78 @@ mod tests {
         assert!(actions.iter().any(|a| matches!(a, Action::OpenNextNote)));
         let actions = handle(&state, &key(KeyCode::Char('[')));
         assert!(actions.iter().any(|a| matches!(a, Action::OpenPrevNote)));
+    }
+
+    #[test]
+    fn test_tag_picker_toggle_from_listing() {
+        let state = AppState {
+            mode: Mode::Listing,
+            ..AppState::default()
+        };
+        let actions = handle(&state, &key(KeyCode::Char('t')));
+        assert!(actions.iter().any(|a| matches!(a, Action::ToggleTagPicker)));
+    }
+
+    #[test]
+    fn test_tag_picker_captures_input_when_active() {
+        let mut state = AppState {
+            mode: Mode::Listing,
+            ..AppState::default()
+        };
+        state.tag_picker.active = true;
+        let actions = handle(&state, &key(KeyCode::Char('q')));
+        // Should type into query, not quit
+        assert!(!actions.iter().any(|a| matches!(a, Action::Quit)));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::TagPickerQuery(_))));
+    }
+
+    #[test]
+    fn test_note_view_inline_edit() {
+        let state = AppState {
+            mode: Mode::NoteView,
+            ..AppState::default()
+        };
+        let actions = handle(&state, &key(KeyCode::Char('i')));
+        assert!(actions.iter().any(|a| matches!(a, Action::EnterEditMode)));
+    }
+
+    #[test]
+    fn test_editing_esc_saves() {
+        let state = AppState {
+            mode: Mode::Editing,
+            ..AppState::default()
+        };
+        let actions = handle(&state, &key(KeyCode::Esc));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::ExitEditMode { save: true })));
+    }
+
+    #[test]
+    fn test_editing_ctrl_c_discards() {
+        let state = AppState {
+            mode: Mode::Editing,
+            ..AppState::default()
+        };
+        let actions = handle(&state, &ctrl(KeyCode::Char('c')));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::ExitEditMode { save: false })));
+        // Should NOT quit
+        assert!(!actions.iter().any(|a| matches!(a, Action::Quit)));
+    }
+
+    #[test]
+    fn test_editing_captures_all_input() {
+        let state = AppState {
+            mode: Mode::Editing,
+            ..AppState::default()
+        };
+        let actions = handle(&state, &key(KeyCode::Char('a')));
+        assert!(actions.iter().any(|a| matches!(a, Action::EditInput(_))));
+        assert!(!actions.iter().any(|a| matches!(a, Action::Quit)));
     }
 
     fn make_note_view_state() -> AppState {

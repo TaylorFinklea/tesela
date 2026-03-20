@@ -39,6 +39,56 @@ impl FuzzyState {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct TagPickerState {
+    pub active: bool,
+    pub query: String,
+    pub all_tags: Vec<String>,
+    pub filtered: Vec<String>,
+    pub selected: usize,
+}
+
+impl TagPickerState {
+    pub fn activate(&mut self, tags: Vec<String>) {
+        self.active = true;
+        self.query = String::new();
+        self.all_tags = tags;
+        self.filtered = Vec::new(); // populated by filter()
+        self.selected = 0;
+        self.filter();
+    }
+
+    pub fn deactivate(&mut self) {
+        self.active = false;
+        self.query = String::new();
+        self.all_tags = Vec::new();
+        self.filtered = Vec::new();
+        self.selected = 0;
+    }
+
+    pub fn filter(&mut self) {
+        // First item is always "(all)" to clear filter
+        let mut result = vec!["(all)".to_string()];
+        if self.query.is_empty() {
+            result.extend(self.all_tags.iter().cloned());
+        } else {
+            let q = self.query.to_lowercase();
+            result.extend(
+                self.all_tags
+                    .iter()
+                    .filter(|t| t.to_lowercase().contains(&q))
+                    .cloned(),
+            );
+        }
+        self.filtered = result;
+        self.selected = self.selected.min(self.filtered.len().saturating_sub(1));
+    }
+
+    pub fn selected_tag(&self) -> Option<&str> {
+        self.filtered.get(self.selected).map(|s| s.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct AppState {
     pub mode: mode::Mode,
     pub listing: listing::ListingState,
@@ -50,6 +100,8 @@ pub struct AppState {
     pub new_note_input: String,
     /// Fuzzy finder overlay state
     pub fuzzy: FuzzyState,
+    /// Tag picker overlay state
+    pub tag_picker: TagPickerState,
     /// Set by process_action; consumed by run() to spawn an external editor
     pub pending_editor: Option<(PathBuf, NoteId)>,
     /// Whether the NoteView is showing the graph (backlinks) instead of content

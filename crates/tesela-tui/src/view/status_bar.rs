@@ -8,6 +8,8 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         "?: close help  Esc: close help".to_string()
     } else if state.fuzzy.active {
         "↑↓: navigate  Enter: open  Esc: close".to_string()
+    } else if state.tag_picker.active {
+        "↑↓: navigate  Enter: select  type to filter  Esc: close".to_string()
     } else if state.confirm_delete.is_some() {
         "Press D again to confirm delete, any other key to cancel".to_string()
     } else if let Some(err) = &state.error_message {
@@ -20,18 +22,15 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                 "c: new  n: notes  d: daily  /: search  ^P: find  q: quit  ?: help".to_string()
             }
             Mode::Listing => {
-                "j/k: navigate  Enter: open  c: new  /: search  ^P: find  Esc: back".to_string()
+                "j/k: navigate  Enter: open  t: filter  c: new  /: search  ^P: find  Esc: back"
+                    .to_string()
             }
-            Mode::Search => {
-                if !state.search.results.is_empty() {
-                    "j/k/↑↓: navigate  Enter: open  Esc: cancel".to_string()
-                } else {
-                    "type to search  Enter: search  Esc: cancel".to_string()
-                }
-            }
+            Mode::Search => "type to search  ↑↓: navigate  Enter: open  Esc: cancel".to_string(),
             Mode::NoteView => {
-                "e: edit  g: graph  D: delete  [/]: prev/next  j/k: scroll  Esc: back".to_string()
+                "i: edit  e: $EDITOR  g: graph  D: delete  [/]: prev/next  j/k: scroll  Esc: back"
+                    .to_string()
             }
+            Mode::Editing => "Esc: save & exit  Ctrl+C: discard".to_string(),
             Mode::GraphView => "g: toggle  e: edit  j/k: scroll  Esc: back".to_string(),
             Mode::NewNote => "type title  Enter: create  Esc: cancel".to_string(),
         }

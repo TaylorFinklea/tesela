@@ -49,6 +49,7 @@ ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream"] }
 fuzzy-matcher = "0.3"
 tokio-stream = "0.1"
+tui-textarea = { version = "0.7", features = ["crossterm"] }
 
 # Plugins
 mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }

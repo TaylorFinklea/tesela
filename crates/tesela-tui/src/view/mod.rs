@@ -1,3 +1,4 @@
+pub mod editing;
 pub mod fuzzy_finder;
 pub mod help;
 pub mod listing;
@@ -6,3 +7,4 @@ pub mod new_note;
 pub mod note_preview;
 pub mod search;
 pub mod status_bar;
+pub mod tag_picker;

@@ -201,6 +201,26 @@ impl SqliteIndex {
         Ok(notes.len())
     }
 
+    /// Return all distinct tags across all indexed notes, sorted alphabetically.
+    pub async fn list_tags(&self) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT DISTINCT value
+            FROM notes, json_each(notes.tags)
+            ORDER BY value
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| db_err("Failed to list tags", e))?;
+
+        let tags: Vec<String> = rows
+            .iter()
+            .map(|row| row.get::<String, _>("value"))
+            .collect();
+        Ok(tags)
+    }
+
     /// Prepare an FTS5 query string with proper escaping and prefix matching.
     fn prepare_fts_query(query: &str) -> String {
         let query = query.trim();
@@ -725,6 +745,22 @@ mod tests {
 
         let results = index.search("Note", 10, 0).await.unwrap();
         assert_eq!(results.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_list_tags() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+
+        let note1 = make_test_note("t1", "Note One", "body", &["rust", "programming"]);
+        let note2 = make_test_note("t2", "Note Two", "body", &["rust", "tui"]);
+        let note3 = make_test_note("t3", "Note Three", "body", &[]);
+
+        index.upsert_note(&note1).await.unwrap();
+        index.upsert_note(&note2).await.unwrap();
+        index.upsert_note(&note3).await.unwrap();
+
+        let tags = index.list_tags().await.unwrap();
+        assert_eq!(tags, vec!["programming", "rust", "tui"]);
     }
 
     #[tokio::test]

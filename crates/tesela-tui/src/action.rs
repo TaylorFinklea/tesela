@@ -1,3 +1,4 @@
+use crossterm::event::KeyEvent;
 use tesela_core::note::NoteId;
 
 #[derive(Debug, Clone)]
@@ -34,6 +35,13 @@ pub enum Action {
     FuzzySelectNext,
     FuzzySelectPrev,
 
+    // Tag picker
+    ToggleTagPicker,
+    TagPickerQuery(String),
+    TagPickerSelect,
+    TagPickerNext,
+    TagPickerPrev,
+
     // UI
     ScrollUp,
     ScrollDown,
@@ -42,6 +50,11 @@ pub enum Action {
     SelectItem(usize),
     ToggleGraphView,
     ToggleHelp,
+
+    // Inline editing
+    EnterEditMode,
+    ExitEditMode { save: bool },
+    EditInput(KeyEvent),
 
     // Status
     ShowMessage(String),

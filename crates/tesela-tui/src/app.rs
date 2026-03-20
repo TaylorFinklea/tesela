@@ -13,11 +13,13 @@ use ratatui::{
     Terminal,
 };
 use tokio_stream::StreamExt;
+use tui_textarea::TextArea;
 
 use tesela_core::daily::DailyNoteConfig;
 use tesela_core::db::SqliteIndex;
 use tesela_core::note::NoteId;
 use tesela_core::storage::filesystem::FsNoteStore;
+use tesela_core::storage::markdown::generate_frontmatter;
 use tesela_core::traits::link_graph::LinkGraph;
 use tesela_core::traits::note_store::NoteStore;
 use tesela_core::traits::search_index::SearchIndex;
@@ -34,6 +36,7 @@ pub struct App {
     index: Arc<SqliteIndex>,
     state: AppState,
     fuzzy_matcher: SkimMatcherV2,
+    editor_textarea: Option<TextArea<'static>>,
 }
 
 impl App {
@@ -53,6 +56,7 @@ impl App {
             index,
             state,
             fuzzy_matcher: SkimMatcherV2::default(),
+            editor_textarea: None,
         }
     }
 
@@ -115,6 +119,9 @@ impl App {
             Mode::NoteView => crate::view::note_preview::render(f, chunks[0], &self.state),
             Mode::GraphView => crate::view::note_preview::render_graph(f, chunks[0], &self.state),
             Mode::NewNote => crate::view::new_note::render(f, chunks[0], &self.state),
+            Mode::Editing => {
+                crate::view::editing::render(f, chunks[0], &self.state, &self.editor_textarea)
+            }
         }
 
         // Status bar
@@ -126,6 +133,9 @@ impl App {
         }
         if self.state.fuzzy.active {
             crate::view::fuzzy_finder::render(f, f.area(), &self.state);
+        }
+        if self.state.tag_picker.active {
+            crate::view::tag_picker::render(f, f.area(), &self.state);
         }
     }
 
@@ -321,8 +331,22 @@ impl App {
             }
 
             Action::UpdateSearchQuery(q) => {
-                self.state.search.query = q;
+                self.state.search.query = q.clone();
                 self.state.search.selected = 0;
+                // Live search: auto-search when query has 2+ chars
+                if q.len() >= 2 {
+                    match self.index.search(&q, 20, 0).await {
+                        Ok(hits) => {
+                            self.state.search.results = hits;
+                            self.state.search.selected = 0;
+                        }
+                        Err(_) => {
+                            self.state.search.results.clear();
+                        }
+                    }
+                } else {
+                    self.state.search.results.clear();
+                }
             }
 
             Action::ExecuteSearch(q) => {
@@ -367,6 +391,52 @@ impl App {
                     self.state.mode = Mode::NoteView;
                     self.state.graph_backlinks = Vec::new();
                     self.state.graph_forward_links = Vec::new();
+                }
+            }
+
+            Action::ToggleTagPicker => {
+                if self.state.tag_picker.active {
+                    self.state.tag_picker.deactivate();
+                } else {
+                    let tags = self.index.list_tags().await.unwrap_or_default();
+                    self.state.tag_picker.activate(tags);
+                }
+            }
+
+            Action::TagPickerQuery(q) => {
+                self.state.tag_picker.query = q;
+                self.state.tag_picker.filter();
+            }
+
+            Action::TagPickerNext => {
+                let max = self.state.tag_picker.filtered.len().saturating_sub(1);
+                self.state.tag_picker.selected = (self.state.tag_picker.selected + 1).min(max);
+            }
+
+            Action::TagPickerPrev => {
+                self.state.tag_picker.selected = self.state.tag_picker.selected.saturating_sub(1);
+            }
+
+            Action::TagPickerSelect => {
+                if let Some(tag) = self.state.tag_picker.selected_tag().map(|s| s.to_string()) {
+                    self.state.tag_picker.deactivate();
+                    if tag == "(all)" {
+                        self.state.listing.filter_tag = None;
+                    } else {
+                        self.state.listing.filter_tag = Some(tag);
+                    }
+                    // Refresh the list with the new filter
+                    match self
+                        .store
+                        .list(self.state.listing.filter_tag.as_deref(), 100, 0)
+                        .await
+                    {
+                        Ok(notes) => {
+                            self.state.listing.notes = notes;
+                            self.state.listing.selected = 0;
+                        }
+                        Err(e) => self.state.error_message = Some(e.to_string()),
+                    }
                 }
             }
 
@@ -423,6 +493,59 @@ impl App {
 
             Action::ToggleHelp => {
                 self.state.help_active = !self.state.help_active;
+            }
+
+            Action::EnterEditMode => {
+                if let Some(note) = &self.state.current_note {
+                    let lines: Vec<String> = note.body.lines().map(|l| l.to_string()).collect();
+                    let mut textarea = TextArea::from(lines);
+                    textarea.set_cursor_line_style(
+                        ratatui::style::Style::default()
+                            .add_modifier(ratatui::style::Modifier::UNDERLINED),
+                    );
+                    self.editor_textarea = Some(textarea);
+                    self.state.mode = Mode::Editing;
+                }
+            }
+
+            Action::EditInput(key_event) => {
+                if let Some(ref mut textarea) = self.editor_textarea {
+                    textarea.input(key_event);
+                }
+            }
+
+            Action::ExitEditMode { save } => {
+                if save {
+                    if let (Some(ref textarea), Some(note)) =
+                        (&self.editor_textarea, &self.state.current_note)
+                    {
+                        let edited_body = textarea.lines().join("\n");
+                        let tags: Vec<&str> =
+                            note.metadata.tags.iter().map(|s| s.as_str()).collect();
+                        let frontmatter = generate_frontmatter(
+                            &note.title,
+                            &tags,
+                            note.created_at,
+                            &note.metadata.custom,
+                        );
+                        let new_content = format!("{}\n{}", frontmatter, edited_body);
+
+                        let mut updated_note = note.clone();
+                        updated_note.content = new_content;
+                        updated_note.body = edited_body;
+                        updated_note.modified_at = chrono::Utc::now();
+
+                        if let Err(e) = self.store.update(&updated_note).await {
+                            self.state.error_message = Some(e.to_string());
+                        } else {
+                            let _ = self.index.upsert_note(&updated_note).await;
+                            self.state.current_note = Some(updated_note);
+                            self.state.status_message = Some("Note saved".to_string());
+                        }
+                    }
+                }
+                self.editor_textarea = None;
+                self.state.mode = Mode::NoteView;
             }
 
             Action::ShowMessage(msg) => self.state.status_message = Some(msg),

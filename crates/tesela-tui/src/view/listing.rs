@@ -43,13 +43,19 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let left_border_color = if has_selection { T.accent } else { T.text_dim };
     let note_count = state.listing.notes.len();
 
+    let title = if let Some(tag) = &state.listing.filter_tag {
+        format!(
+            " {} Notes ({note_count}) #{tag} ",
+            crate::theme::icons::FOLDER
+        )
+    } else {
+        format!(" {} Notes ({note_count}) ", crate::theme::icons::FOLDER)
+    };
+
     let list = List::new(items)
         .block(
             Block::default()
-                .title(format!(
-                    " {} Notes ({note_count}) ",
-                    crate::theme::icons::FOLDER
-                ))
+                .title(title)
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(left_border_color)),
