@@ -7,6 +7,12 @@
 2. Create a commit with a descriptive message
 3. Do **not** push unless explicitly asked by the user
 
+**Always produce a QA checklist.** After implementing any user-facing TUI feature, output a step-by-step manual test plan covering:
+- Exact key sequences to trigger each new feature
+- Observable expected outcomes (what the user should see)
+- Cancel/Esc paths and edge cases
+- A regression section for anything adjacent that could have broken
+
 ## Project
 
 Tesela is a keyboard-first, file-based note-taking system in Rust.

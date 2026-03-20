@@ -7,6 +7,12 @@
 2. `git commit` with a descriptive message
 3. Do **not** push unless explicitly asked
 
+**Always produce a QA checklist.** After implementing any user-facing TUI feature, output a step-by-step manual test plan the user can follow to verify the feature works end-to-end. Include:
+- Exact key sequences to trigger each new feature
+- Observable expected outcomes (what the user should see)
+- Edge cases / Esc / cancel paths
+- A short regression section covering anything that could have broken
+
 ## Project Overview
 
 Tesela is a keyboard-first, file-based note-taking system (org-mode successor) written in Rust.
