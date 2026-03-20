@@ -19,6 +19,7 @@ tracing-subscriber = { workspace = true }
 dialoguer = { workspace = true }
 indicatif = { workspace = true }
 chrono = { workspace = true }
+dirs = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

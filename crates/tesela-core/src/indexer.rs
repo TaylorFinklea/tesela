@@ -8,14 +8,26 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::{debug, error, warn};
 
 use crate::error::Result;
 use crate::link::extract_wiki_links;
+use crate::note::{Note, NoteId};
 use crate::traits::link_graph::LinkGraph;
 use crate::traits::note_store::NoteStore;
 use crate::traits::search_index::SearchIndex;
+
+/// Events emitted by the Indexer when notes change on disk.
+///
+/// Consumers (e.g. tesela-server) subscribe to a `broadcast::Receiver<NoteEvent>`
+/// and fan out to WebSocket clients or other interested parties.
+#[derive(Debug, Clone)]
+pub enum NoteEvent {
+    Created(Note),
+    Updated(Note),
+    Deleted(NoteId),
+}
 
 /// Configuration for the Indexer.
 pub struct IndexerConfig {
@@ -36,6 +48,7 @@ pub struct Indexer {
     index: Arc<dyn SearchIndex>,
     graph: Arc<dyn LinkGraph>,
     config: IndexerConfig,
+    notify_tx: Option<broadcast::Sender<NoteEvent>>,
 }
 
 impl Indexer {
@@ -50,6 +63,7 @@ impl Indexer {
             index,
             graph,
             config: IndexerConfig::default(),
+            notify_tx: None,
         }
     }
 
@@ -65,7 +79,16 @@ impl Indexer {
             index,
             graph,
             config,
+            notify_tx: None,
         }
+    }
+
+    /// Attach a broadcast sender so the Indexer emits [`NoteEvent`]s on file changes.
+    ///
+    /// The server subscribes to this channel to push live events to WebSocket clients.
+    pub fn with_notify_tx(mut self, tx: broadcast::Sender<NoteEvent>) -> Self {
+        self.notify_tx = Some(tx);
+        self
     }
 
     /// Do an initial full index of all notes in the store.
@@ -95,6 +118,7 @@ impl Indexer {
         let store = self.store;
         let index = self.index;
         let graph = self.graph;
+        let notify_tx = self.notify_tx;
 
         let handle = tokio::task::spawn(async move {
             let (fs_tx, mut fs_rx) = mpsc::channel::<Event>(256);
@@ -134,7 +158,7 @@ impl Indexer {
                         break;
                     }
                     Some(event) = fs_rx.recv() => {
-                        Self::handle_event(&store, &index, &graph, &root, event).await;
+                        Self::handle_event(&store, &index, &graph, &root, event, &notify_tx).await;
                     }
                 }
             }
@@ -157,6 +181,7 @@ impl Indexer {
         graph: &Arc<dyn LinkGraph>,
         root: &PathBuf,
         event: Event,
+        notify_tx: &Option<broadcast::Sender<NoteEvent>>,
     ) {
         for path in &event.paths {
             // Only process markdown files
@@ -177,11 +202,11 @@ impl Indexer {
                 continue;
             }
 
-            let note_id = crate::note::NoteId::new(note_id_str);
+            let note_id = NoteId::new(note_id_str);
 
             match event.kind {
                 EventKind::Create(_) | EventKind::Modify(_) => {
-                    // Re-read the note from the store and reindex
+                    let is_create = matches!(event.kind, EventKind::Create(_));
                     match store.get(&note_id).await {
                         Ok(Some(note)) => {
                             if let Err(e) = index.reindex(&note).await {
@@ -192,6 +217,14 @@ impl Indexer {
                                 warn!("Failed to update links for {:?}: {}", note_id, e);
                             }
                             debug!("Reindexed {:?}", note_id);
+                            if let Some(tx) = notify_tx {
+                                let ne = if is_create {
+                                    NoteEvent::Created(note)
+                                } else {
+                                    NoteEvent::Updated(note)
+                                };
+                                let _ = tx.send(ne);
+                            }
                         }
                         Ok(None) => {
                             debug!("Note not found in store after fs event: {:?}", note_id);
@@ -209,6 +242,9 @@ impl Indexer {
                         warn!("Failed to remove links for {:?}: {}", note_id, e);
                     }
                     debug!("Removed {:?} from index", note_id);
+                    if let Some(tx) = notify_tx {
+                        let _ = tx.send(NoteEvent::Deleted(note_id));
+                    }
                 }
                 _ => {}
             }

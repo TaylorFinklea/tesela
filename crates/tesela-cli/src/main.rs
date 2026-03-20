@@ -104,6 +104,10 @@ enum Commands {
         /// Shell (bash, zsh, fish, elvish, powershell)
         shell: clap_complete::Shell,
     },
+    /// Install tesela-server as a macOS LaunchAgent (runs on login)
+    Install,
+    /// Uninstall the tesela-server LaunchAgent
+    Uninstall,
 }
 
 struct Ctx {
@@ -363,6 +367,116 @@ async fn cmd_reindex(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
+const LAUNCHD_LABEL: &str = "com.tesela.server";
+const PLIST_TEMPLATE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{LABEL}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{BINARY_PATH}</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{NOTES_DIR}</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>{LOG_PATH}</string>
+    <key>StandardErrorPath</key>
+    <string>{LOG_PATH}</string>
+</dict>
+</plist>"#;
+
+fn plist_path() -> Result<std::path::PathBuf> {
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+    Ok(home
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{}.plist", LAUNCHD_LABEL)))
+}
+
+async fn cmd_install(mosaic: PathBuf) -> Result<()> {
+    // Find tesela-server binary next to the current executable
+    let exe_dir = std::env::current_exe()
+        .context("Cannot determine executable path")?
+        .parent()
+        .map(|p| p.to_path_buf())
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine executable directory"))?;
+
+    let server_bin = exe_dir.join("tesela-server");
+    if !server_bin.exists() {
+        anyhow::bail!(
+            "tesela-server binary not found at {}. Build with `cargo build --workspace`.",
+            server_bin.display()
+        );
+    }
+
+    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;
+    let log_path = home
+        .join("Library")
+        .join("Logs")
+        .join("tesela-server.log")
+        .to_string_lossy()
+        .into_owned();
+
+    let agents_dir = home.join("Library").join("LaunchAgents");
+    std::fs::create_dir_all(&agents_dir)
+        .context("Failed to create ~/Library/LaunchAgents")?;
+
+    let plist = PLIST_TEMPLATE
+        .replace("{LABEL}", LAUNCHD_LABEL)
+        .replace("{BINARY_PATH}", &server_bin.to_string_lossy())
+        .replace("{NOTES_DIR}", &mosaic.to_string_lossy())
+        .replace("{LOG_PATH}", &log_path);
+
+    let plist_file = plist_path()?;
+    std::fs::write(&plist_file, &plist)
+        .with_context(|| format!("Failed to write plist to {}", plist_file.display()))?;
+
+    let status = std::process::Command::new("launchctl")
+        .args(["load", "-w", plist_file.to_str().unwrap()])
+        .status()
+        .context("Failed to run launchctl")?;
+
+    if !status.success() {
+        anyhow::bail!("launchctl load failed with status: {}", status);
+    }
+
+    println!("tesela-server installed as LaunchAgent.");
+    println!("  Binary:  {}", server_bin.display());
+    println!("  Plist:   {}", plist_file.display());
+    println!("  Logs:    {}", log_path);
+    println!("  API:     http://127.0.0.1:7474");
+    Ok(())
+}
+
+async fn cmd_uninstall() -> Result<()> {
+    let plist_file = plist_path()?;
+    if !plist_file.exists() {
+        println!("LaunchAgent plist not found — already uninstalled.");
+        return Ok(());
+    }
+
+    let status = std::process::Command::new("launchctl")
+        .args(["unload", plist_file.to_str().unwrap()])
+        .status()
+        .context("Failed to run launchctl")?;
+
+    if !status.success() {
+        anyhow::bail!("launchctl unload failed with status: {}", status);
+    }
+
+    std::fs::remove_file(&plist_file)
+        .with_context(|| format!("Failed to remove {}", plist_file.display()))?;
+
+    println!("tesela-server LaunchAgent uninstalled.");
+    Ok(())
+}
+
 /// Resolve a note by ID or title.
 async fn resolve_note(ctx: &Ctx, query: &str) -> Result<tesela_core::Note> {
     let id = NoteId::new(query);
@@ -408,11 +522,22 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle uninstall without a mosaic
+    if matches!(cli.command, Commands::Uninstall) {
+        return cmd_uninstall().await;
+    }
+
     let mosaic = resolve_mosaic(cli.mosaic)?;
+
+    // Handle install — needs mosaic path but not a full Ctx
+    if matches!(cli.command, Commands::Install) {
+        return cmd_install(mosaic).await;
+    }
+
     let ctx = Ctx::new(mosaic).await?;
 
     match cli.command {
-        Commands::Init { .. } | Commands::Completions { .. } => unreachable!(),
+        Commands::Init { .. } | Commands::Completions { .. } | Commands::Install | Commands::Uninstall => unreachable!(),
         Commands::New {
             title,
             tags,

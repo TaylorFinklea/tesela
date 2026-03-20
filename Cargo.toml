@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins"]
+members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins", "crates/tesela-server"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -53,6 +53,10 @@ tui-textarea = { version = "0.7", features = ["crossterm"] }
 
 # Plugins
 mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
+
+# HTTP server
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # Testing
 tempfile = "3"
