@@ -7,6 +7,11 @@ struct SidebarView: View {
     @Environment(AppState.self) private var appState
     @State private var isFavoritesExpanded = true
     @State private var isRecentsExpanded = true
+    @State private var sidebarFilter = ""
+
+    private func matchesFilter(_ page: Page) -> Bool {
+        sidebarFilter.isEmpty || page.title.localizedCaseInsensitiveContains(sidebarFilter)
+    }
 
     var body: some View {
         List(selection: Binding(
@@ -24,7 +29,7 @@ struct SidebarView: View {
             // MARK: Favorites
             if !appState.favoritePages.isEmpty {
                 Section(isExpanded: $isFavoritesExpanded) {
-                    ForEach(appState.favoritePages) { page in
+                    ForEach(appState.favoritePages.filter(matchesFilter)) { page in
                         PageRowView(page: page)
                     }
                 } header: {
@@ -35,7 +40,7 @@ struct SidebarView: View {
             // MARK: Recent
             if !appState.recentPages.isEmpty {
                 Section(isExpanded: $isRecentsExpanded) {
-                    ForEach(appState.recentPages) { page in
+                    ForEach(appState.recentPages.filter(matchesFilter)) { page in
                         PageRowView(page: page)
                     }
                 } header: {
@@ -44,6 +49,7 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .searchable(text: $sidebarFilter, placement: .sidebar, prompt: "Filter")
         .frame(minWidth: 200, idealWidth: 220)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
