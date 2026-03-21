@@ -1,0 +1,53 @@
+name: Tesela
+options:
+  deploymentTarget:
+    macOS: "26.0"
+  bundleIdPrefix: com.tesela
+  xcodeVersion: "26.0"
+  defaultConfig: Debug
+  swift: "6.0"
+
+settings:
+  SWIFT_VERSION: "6.0"
+  MACOSX_DEPLOYMENT_TARGET: "26.0"
+  ENABLE_HARDENED_RUNTIME: YES
+
+configs:
+  Debug: debug
+  Release: release
+
+targets:
+  Tesela:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Tesela
+        excludes:
+          - "**/*.md"
+    resources:
+      - path: Tesela/Resources
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.tesela.app
+      INFOPLIST_FILE: Tesela/Resources/Info.plist
+      CODE_SIGN_STYLE: Automatic
+      DEVELOPMENT_TEAM: ""
+      SWIFT_VERSION: "6.0"
+      MACOSX_DEPLOYMENT_TARGET: "26.0"
+      ENABLE_HARDENED_RUNTIME: YES
+      SWIFT_STRICT_CONCURRENCY: complete
+
+  TeselaTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: TeselaTests
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.tesela.tests
+      TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Tesela.app/Contents/MacOS/Tesela"
+      BUNDLE_LOADER: "$(TEST_HOST)"
+      SWIFT_VERSION: "6.0"
+      GENERATE_INFOPLIST_FILE: YES
+    dependencies:
+      - target: Tesela
