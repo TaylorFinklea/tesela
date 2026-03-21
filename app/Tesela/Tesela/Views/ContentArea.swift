@@ -92,6 +92,7 @@ struct PageEditorView: View {
             OutlinerCoordinator(
                 blocks: $blocks,
                 onContentChanged: { updatedBlocks in
+                    blocks = updatedBlocks  // sync SwiftUI state with outliner
                     let markdown = BlockParser.serializeFlat(blocks: updatedBlocks)
                     scheduleAutoSave(markdown: markdown)
                 },

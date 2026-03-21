@@ -19,7 +19,17 @@ class BlockView: NSTextView {
 
     init(block: Block) {
         self.block = block
-        super.init(frame: .zero, textContainer: nil)
+
+        // Build the text system explicitly — NSTextView(frame:, textContainer: nil)
+        // doesn't reliably initialize the layout pipeline when embedded in SwiftUI.
+        let storage = NSTextStorage(string: block.text)
+        let layoutMgr = NSLayoutManager()
+        storage.addLayoutManager(layoutMgr)
+        let container = NSTextContainer(size: NSSize(width: 300, height: 1_000_000))
+        container.widthTracksTextView = true
+        layoutMgr.addTextContainer(container)
+
+        super.init(frame: NSRect(x: 0, y: 0, width: 300, height: 22), textContainer: container)
         setup()
     }
 
@@ -36,14 +46,12 @@ class BlockView: NSTextView {
         textColor = .labelColor
         isVerticallyResizable = true
         isHorizontallyResizable = false
-        textContainer?.widthTracksTextView = true
         textContainer?.lineFragmentPadding = 2
         textContainerInset = NSSize(width: 0, height: 2)
         isAutomaticLinkDetectionEnabled = false
         isAutomaticDataDetectionEnabled = false
         delegate = self
 
-        string = block.text
         textStorage?.delegate = self
         if let ts = textStorage {
             BlockStyler.style(text: block.text, textStorage: ts)
@@ -130,8 +138,6 @@ extension BlockView: NSTextStorageDelegate {
         changeInLength delta: Int
     ) {
         guard editedMask.contains(.editedCharacters) else { return }
-        // Capture the String value (Sendable) before crossing into @MainActor context.
-        // Use self.textStorage inside to stay within actor isolation.
         let text = textStorage.string
         MainActor.assumeIsolated {
             if let ts = self.textStorage {

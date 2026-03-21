@@ -76,7 +76,6 @@ enum BlockParser {
     // Use this for editor round-trips where blocks are stored as a flat array.
     static func serializeFlat(blocks: [Block]) -> String {
         blocks
-            .filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
             .map { block in
                 let indent = String(repeating: "  ", count: block.indentLevel)
                 return "\(indent)- \(block.text)"
