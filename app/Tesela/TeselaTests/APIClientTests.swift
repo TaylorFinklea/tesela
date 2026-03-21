@@ -16,4 +16,5 @@ final class APIClientTests: XCTestCase {
         let isHealthy = try await client.health()
         XCTAssertTrue(isHealthy)
     }
+
 }

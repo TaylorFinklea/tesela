@@ -83,7 +83,7 @@ final class AppState {
             pages = fetchedPages
             tags = fetchedTags
         } catch {
-            // Non-fatal — show empty state
+            print("[AppState] loadInitialData failed: \(error)")
         }
     }
 

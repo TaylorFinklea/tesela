@@ -11,7 +11,14 @@ struct ContentArea: View {
             if let page = appState.currentPage {
                 PageEditorView(page: page)
             } else {
-                EmptyStateView()
+                switch appState.selectedNavItem {
+                case .pages:
+                    PageListView()
+                case .graph:
+                    GraphView()
+                case .journals:
+                    EmptyStateView()
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
