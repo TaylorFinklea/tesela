@@ -33,3 +33,7 @@ target
 *.db-shm
 *.db-wal
 .tesela/
+
+# Test / local note data — use ~/z-temp/tesela-test as the mosaic for dev
+notes/
+attachments/
