@@ -74,12 +74,6 @@ struct PageEditorView: View {
                     .bold()
                     .lineLimit(1)
                 Spacer()
-                Text(vimMode.displayName)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(vimModeColor)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(vimModeColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
                 Text(page.modifiedAt, style: .relative)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -112,9 +106,21 @@ struct PageEditorView: View {
                 },
                 onModeChanged: { mode in
                     vimMode = mode
+                },
+                onCommandPalette: {
+                    appState.isCommandPaletteVisible = true
                 }
             )
             .padding(.horizontal, 8)
+            .overlay(alignment: .bottomTrailing) {
+                Text(vimMode.displayName)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(vimModeColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(vimModeColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                    .padding(12)
+            }
         }
         .onAppear { loadBlocks() }
         .onChange(of: page.id) { _, _ in

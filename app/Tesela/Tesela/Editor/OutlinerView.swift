@@ -7,6 +7,7 @@ protocol OutlinerDelegate: AnyObject {
     func outlinerDidChangeContent(blocks: [Block])
     func outlinerDidClickWikiLink(target: String)
     func outlinerDidChangeMode(mode: VimMode)
+    func outlinerDidRequestCommandPalette()
 }
 
 // MARK: - OutlinerView
@@ -183,6 +184,10 @@ class OutlinerView: NSView {
         view.onWikiLinkClicked = { [weak self] target in
             self?.delegate?.outlinerDidClickWikiLink(target: target)
         }
+
+        view.onCommandPalette = { [weak self] in
+            self?.delegate?.outlinerDidRequestCommandPalette()
+        }
     }
 
     // MARK: - Vim command execution
@@ -350,6 +355,7 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var onContentChanged: (([Block]) -> Void)?
     var onWikiLinkClicked: ((String) -> Void)?
     var onModeChanged: ((VimMode) -> Void)?
+    var onCommandPalette: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -393,6 +399,10 @@ struct OutlinerCoordinator: NSViewRepresentable {
 
         func outlinerDidChangeMode(mode: VimMode) {
             parent.onModeChanged?(mode)
+        }
+
+        func outlinerDidRequestCommandPalette() {
+            parent.onCommandPalette?()
         }
     }
 }

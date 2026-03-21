@@ -11,6 +11,12 @@ class BlockView: NSTextView {
     var vimEngine: VimEngine?
     var onVimCommand: ((EditorCommand) -> Void)?
     var onModeChanged: ((VimMode) -> Void)?
+    var onCommandPalette: (() -> Void)?
+
+    // Block cursor state
+    var isNormalMode = true {
+        didSet { needsDisplay = true }
+    }
 
     // Callbacks wired by OutlinerView
     var onTextChanged: ((String) -> Void)?
@@ -45,6 +51,7 @@ class BlockView: NSTextView {
         isSelectable = true
         drawsBackground = false
         isRichText = true
+        allowsUndo = true
         font = .systemFont(ofSize: NSFont.systemFontSize)
         textColor = .labelColor
         isVerticallyResizable = true
@@ -62,11 +69,38 @@ class BlockView: NSTextView {
         }
     }
 
+    // MARK: - Block cursor (Normal mode)
+
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+        if isNormalMode {
+            // Draw a filled block cursor covering the character at the insertion point
+            var blockRect = rect
+            if let lm = layoutManager, let tc = textContainer {
+                let glyphIndex = lm.glyphIndexForCharacter(at: selectedRange().location)
+                let charRect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIndex, length: 1), in: tc)
+                blockRect = NSRect(
+                    x: charRect.origin.x + textContainerInset.width,
+                    y: charRect.origin.y + textContainerInset.height,
+                    width: max(charRect.width, 8),
+                    height: charRect.height
+                )
+            }
+            color.withAlphaComponent(0.4).setFill()
+            blockRect.fill()
+        } else {
+            super.drawInsertionPoint(in: rect, color: color, turnedOn: flag)
+        }
+    }
+
+    override func setNeedsDisplay(_ rect: NSRect, avoidAdditionalLayout flag: Bool) {
+        // Widen the invalidated rect so block cursor redraws properly
+        super.setNeedsDisplay(bounds, avoidAdditionalLayout: flag)
+    }
+
     // MARK: - Key routing
 
     override func keyDown(with event: NSEvent) {
         guard let vim = vimEngine else {
-            // No Vim — existing structural behavior
             if event.keyCode == 51, selectedRange().location == 0, selectedRange().length == 0 {
                 onBackspaceAtStart?()
                 return
@@ -75,15 +109,22 @@ class BlockView: NSTextView {
             return
         }
 
+        // `:` in Normal mode → open command palette (don't send to VimEngine)
+        if vim.currentMode == .normal && event.characters == ":" {
+            onCommandPalette?()
+            return
+        }
+
         let previousMode = vim.currentMode
         let cmd = vim.handle(event: event)
 
-        // Notify mode changes (including operator-pending transitions)
+        // Notify mode changes
         if vim.currentMode != previousMode {
+            isNormalMode = (vim.currentMode == .normal)
             onModeChanged?(vim.currentMode)
         }
 
-        // Insert mode + no Vim command → let NSTextView handle (typing, Enter, Tab, etc.)
+        // Insert mode + no Vim command → let NSTextView handle
         if previousMode == .insert && cmd == .none {
             if event.keyCode == 51, selectedRange().location == 0, selectedRange().length == 0 {
                 onBackspaceAtStart?()
@@ -93,13 +134,12 @@ class BlockView: NSTextView {
             return
         }
 
-        // Non-none command → route to OutlinerView
         if cmd != .none {
             onVimCommand?(cmd)
         }
     }
 
-    // MARK: - Structural overrides (fire in Insert mode via NSTextView input system)
+    // MARK: - Structural overrides (Insert mode via NSTextView input system)
 
     override func insertNewline(_ sender: Any?) {
         let loc = selectedRange().location
