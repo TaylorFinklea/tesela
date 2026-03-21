@@ -13,6 +13,14 @@
 - Cancel/Esc paths and edge cases
 - A regression section for anything adjacent that could have broken
 
+## Bash Command Rules
+
+**One command per Bash call.** Do not chain with `&&` unless the second command needs the first's stdout via a pipe.
+
+- Wrong: `cd app/Tesela && xcodegen generate`
+- Right: two separate calls, or `git -C /path/to/repo commit ...` to avoid a `cd`
+- Piping is fine: `xcodebuild ... | grep "error:"`
+
 ## Project
 
 Tesela is a keyboard-first, file-based note-taking system in Rust.

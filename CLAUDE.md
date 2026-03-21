@@ -1,5 +1,15 @@
 # Tesela — Claude Code Instructions
 
+## Bash Command Rules
+
+**One command per Bash call.** Do not chain commands with `&&` unless the second command literally requires the piped output of the first.
+
+- Wrong: `cd app/Tesela && xcodegen generate`
+- Right: two separate Bash calls, or use `git -C /path` instead of `cd && git`
+- Piping is fine: `xcodebuild ... | grep "error:"` — the second command needs the first's stdout
+
+This keeps the permission allowlist minimal and each action reviewable.
+
 ## After Any Work Session
 
 **Always commit before stopping.** After completing a working chunk of changes:
