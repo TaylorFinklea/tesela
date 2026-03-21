@@ -31,7 +31,9 @@ class BlockView: NSTextView {
         isEditable = true
         isSelectable = true
         drawsBackground = false
-        isRichText = false
+        isRichText = true
+        font = .systemFont(ofSize: NSFont.systemFontSize)
+        textColor = .labelColor
         isVerticallyResizable = true
         isHorizontallyResizable = false
         textContainer?.widthTracksTextView = true
