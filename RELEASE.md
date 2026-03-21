@@ -6,7 +6,93 @@ This file tracks all releases of Tesela.
 ## v0.20250825.0 - 2025-08-25 12:03:02 UTC
 
 
+## v0.20260321.0 - 2026-03-21 13:20:20 UTC
+
+## What's Changed
+
+- fix: wire PageListView and GraphView into ContentArea (76df988)
+- chore: remove test notes from repo, ignore notes/ and attachments/ (9cf3993)
+- feat: Phase 11.2 — WebSocket fix + block outliner editor (52066df)
+- docs: add single-command-per-Bash rule to CLAUDE.md and AGENTS.md (ae7348f)
+- feat: make Tesela desktop minimally functional for QA (3147aac)
+- fix: update axum route syntax from :id to {id} for axum 0.8 (f171b26)
+- feat: Phase 11 — native macOS SwiftUI app foundation (11.1) (d522717)
+- feat: Phase 10 — tesela-server local REST/WebSocket API (dacb6fe)
+- docs: require QA checklist after every TUI feature implementation (0a500ac)
+- feat: Phase 9 — tag filtering, live search, inline editing (8a0ea22)
+- feat: add Nerd Font icons throughout TUI (4be6865)
+- feat: TUI daily-driver polish — delete confirmation, search nav, timestamps (b43ef30)
+- feat: open daily note on startup, help is now a modal overlay (dfecd82)
+- feat: TUI visual polish — theme, rounded borders, fuzzy highlighting (2ca9506)
+- fix: use UPDATE+INSERT instead of INSERT OR REPLACE in upsert_note (e352b01)
+- feat: Phase 8 - daily driver TUI, CI, legacy cleanup (ec5fd4a)
+- docs: update RELEASE.md for v0.20260319.0 [skip ci] (5a37510)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260321.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260319.0...v0.20260321.0
+
+---
+
+
 ## v0.20260319.0 - 2026-03-19 11:14:57 UTC
+
+
+## v0.20260321.0 - 2026-03-21 13:20:20 UTC
+
+## What's Changed
+
+- fix: wire PageListView and GraphView into ContentArea (76df988)
+- chore: remove test notes from repo, ignore notes/ and attachments/ (9cf3993)
+- feat: Phase 11.2 — WebSocket fix + block outliner editor (52066df)
+- docs: add single-command-per-Bash rule to CLAUDE.md and AGENTS.md (ae7348f)
+- feat: make Tesela desktop minimally functional for QA (3147aac)
+- fix: update axum route syntax from :id to {id} for axum 0.8 (f171b26)
+- feat: Phase 11 — native macOS SwiftUI app foundation (11.1) (d522717)
+- feat: Phase 10 — tesela-server local REST/WebSocket API (dacb6fe)
+- docs: require QA checklist after every TUI feature implementation (0a500ac)
+- feat: Phase 9 — tag filtering, live search, inline editing (8a0ea22)
+- feat: add Nerd Font icons throughout TUI (4be6865)
+- feat: TUI daily-driver polish — delete confirmation, search nav, timestamps (b43ef30)
+- feat: open daily note on startup, help is now a modal overlay (dfecd82)
+- feat: TUI visual polish — theme, rounded borders, fuzzy highlighting (2ca9506)
+- fix: use UPDATE+INSERT instead of INSERT OR REPLACE in upsert_note (e352b01)
+- feat: Phase 8 - daily driver TUI, CI, legacy cleanup (ec5fd4a)
+- docs: update RELEASE.md for v0.20260319.0 [skip ci] (5a37510)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260321.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260319.0...v0.20260321.0
+
+---
 
 ## What's Changed
 
@@ -44,7 +130,93 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260319.0
 ## v0.20250925.0 - 2025-09-25 20:33:36 UTC
 
 
+## v0.20260321.0 - 2026-03-21 13:20:20 UTC
+
+## What's Changed
+
+- fix: wire PageListView and GraphView into ContentArea (76df988)
+- chore: remove test notes from repo, ignore notes/ and attachments/ (9cf3993)
+- feat: Phase 11.2 — WebSocket fix + block outliner editor (52066df)
+- docs: add single-command-per-Bash rule to CLAUDE.md and AGENTS.md (ae7348f)
+- feat: make Tesela desktop minimally functional for QA (3147aac)
+- fix: update axum route syntax from :id to {id} for axum 0.8 (f171b26)
+- feat: Phase 11 — native macOS SwiftUI app foundation (11.1) (d522717)
+- feat: Phase 10 — tesela-server local REST/WebSocket API (dacb6fe)
+- docs: require QA checklist after every TUI feature implementation (0a500ac)
+- feat: Phase 9 — tag filtering, live search, inline editing (8a0ea22)
+- feat: add Nerd Font icons throughout TUI (4be6865)
+- feat: TUI daily-driver polish — delete confirmation, search nav, timestamps (b43ef30)
+- feat: open daily note on startup, help is now a modal overlay (dfecd82)
+- feat: TUI visual polish — theme, rounded borders, fuzzy highlighting (2ca9506)
+- fix: use UPDATE+INSERT instead of INSERT OR REPLACE in upsert_note (e352b01)
+- feat: Phase 8 - daily driver TUI, CI, legacy cleanup (ec5fd4a)
+- docs: update RELEASE.md for v0.20260319.0 [skip ci] (5a37510)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260321.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260319.0...v0.20260321.0
+
+---
+
+
 ## v0.20260319.0 - 2026-03-19 11:14:57 UTC
+
+
+## v0.20260321.0 - 2026-03-21 13:20:20 UTC
+
+## What's Changed
+
+- fix: wire PageListView and GraphView into ContentArea (76df988)
+- chore: remove test notes from repo, ignore notes/ and attachments/ (9cf3993)
+- feat: Phase 11.2 — WebSocket fix + block outliner editor (52066df)
+- docs: add single-command-per-Bash rule to CLAUDE.md and AGENTS.md (ae7348f)
+- feat: make Tesela desktop minimally functional for QA (3147aac)
+- fix: update axum route syntax from :id to {id} for axum 0.8 (f171b26)
+- feat: Phase 11 — native macOS SwiftUI app foundation (11.1) (d522717)
+- feat: Phase 10 — tesela-server local REST/WebSocket API (dacb6fe)
+- docs: require QA checklist after every TUI feature implementation (0a500ac)
+- feat: Phase 9 — tag filtering, live search, inline editing (8a0ea22)
+- feat: add Nerd Font icons throughout TUI (4be6865)
+- feat: TUI daily-driver polish — delete confirmation, search nav, timestamps (b43ef30)
+- feat: open daily note on startup, help is now a modal overlay (dfecd82)
+- feat: TUI visual polish — theme, rounded borders, fuzzy highlighting (2ca9506)
+- fix: use UPDATE+INSERT instead of INSERT OR REPLACE in upsert_note (e352b01)
+- feat: Phase 8 - daily driver TUI, CI, legacy cleanup (ec5fd4a)
+- docs: update RELEASE.md for v0.20260319.0 [skip ci] (5a37510)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260321.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260319.0...v0.20260321.0
+
+---
 
 ## What's Changed
 
@@ -108,7 +280,93 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20250925.0
 ## v0.20250826.0 - 2025-08-26 00:19:54 UTC
 
 
+## v0.20260321.0 - 2026-03-21 13:20:20 UTC
+
+## What's Changed
+
+- fix: wire PageListView and GraphView into ContentArea (76df988)
+- chore: remove test notes from repo, ignore notes/ and attachments/ (9cf3993)
+- feat: Phase 11.2 — WebSocket fix + block outliner editor (52066df)
+- docs: add single-command-per-Bash rule to CLAUDE.md and AGENTS.md (ae7348f)
+- feat: make Tesela desktop minimally functional for QA (3147aac)
+- fix: update axum route syntax from :id to {id} for axum 0.8 (f171b26)
+- feat: Phase 11 — native macOS SwiftUI app foundation (11.1) (d522717)
+- feat: Phase 10 — tesela-server local REST/WebSocket API (dacb6fe)
+- docs: require QA checklist after every TUI feature implementation (0a500ac)
+- feat: Phase 9 — tag filtering, live search, inline editing (8a0ea22)
+- feat: add Nerd Font icons throughout TUI (4be6865)
+- feat: TUI daily-driver polish — delete confirmation, search nav, timestamps (b43ef30)
+- feat: open daily note on startup, help is now a modal overlay (dfecd82)
+- feat: TUI visual polish — theme, rounded borders, fuzzy highlighting (2ca9506)
+- fix: use UPDATE+INSERT instead of INSERT OR REPLACE in upsert_note (e352b01)
+- feat: Phase 8 - daily driver TUI, CI, legacy cleanup (ec5fd4a)
+- docs: update RELEASE.md for v0.20260319.0 [skip ci] (5a37510)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260321.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260319.0...v0.20260321.0
+
+---
+
+
 ## v0.20260319.0 - 2026-03-19 11:14:57 UTC
+
+
+## v0.20260321.0 - 2026-03-21 13:20:20 UTC
+
+## What's Changed
+
+- fix: wire PageListView and GraphView into ContentArea (76df988)
+- chore: remove test notes from repo, ignore notes/ and attachments/ (9cf3993)
+- feat: Phase 11.2 — WebSocket fix + block outliner editor (52066df)
+- docs: add single-command-per-Bash rule to CLAUDE.md and AGENTS.md (ae7348f)
+- feat: make Tesela desktop minimally functional for QA (3147aac)
+- fix: update axum route syntax from :id to {id} for axum 0.8 (f171b26)
+- feat: Phase 11 — native macOS SwiftUI app foundation (11.1) (d522717)
+- feat: Phase 10 — tesela-server local REST/WebSocket API (dacb6fe)
+- docs: require QA checklist after every TUI feature implementation (0a500ac)
+- feat: Phase 9 — tag filtering, live search, inline editing (8a0ea22)
+- feat: add Nerd Font icons throughout TUI (4be6865)
+- feat: TUI daily-driver polish — delete confirmation, search nav, timestamps (b43ef30)
+- feat: open daily note on startup, help is now a modal overlay (dfecd82)
+- feat: TUI visual polish — theme, rounded borders, fuzzy highlighting (2ca9506)
+- fix: use UPDATE+INSERT instead of INSERT OR REPLACE in upsert_note (e352b01)
+- feat: Phase 8 - daily driver TUI, CI, legacy cleanup (ec5fd4a)
+- docs: update RELEASE.md for v0.20260319.0 [skip ci] (5a37510)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260321.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260319.0...v0.20260321.0
+
+---
 
 ## What's Changed
 
@@ -146,7 +404,93 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260319.0
 ## v0.20250925.0 - 2025-09-25 20:33:36 UTC
 
 
+## v0.20260321.0 - 2026-03-21 13:20:20 UTC
+
+## What's Changed
+
+- fix: wire PageListView and GraphView into ContentArea (76df988)
+- chore: remove test notes from repo, ignore notes/ and attachments/ (9cf3993)
+- feat: Phase 11.2 — WebSocket fix + block outliner editor (52066df)
+- docs: add single-command-per-Bash rule to CLAUDE.md and AGENTS.md (ae7348f)
+- feat: make Tesela desktop minimally functional for QA (3147aac)
+- fix: update axum route syntax from :id to {id} for axum 0.8 (f171b26)
+- feat: Phase 11 — native macOS SwiftUI app foundation (11.1) (d522717)
+- feat: Phase 10 — tesela-server local REST/WebSocket API (dacb6fe)
+- docs: require QA checklist after every TUI feature implementation (0a500ac)
+- feat: Phase 9 — tag filtering, live search, inline editing (8a0ea22)
+- feat: add Nerd Font icons throughout TUI (4be6865)
+- feat: TUI daily-driver polish — delete confirmation, search nav, timestamps (b43ef30)
+- feat: open daily note on startup, help is now a modal overlay (dfecd82)
+- feat: TUI visual polish — theme, rounded borders, fuzzy highlighting (2ca9506)
+- fix: use UPDATE+INSERT instead of INSERT OR REPLACE in upsert_note (e352b01)
+- feat: Phase 8 - daily driver TUI, CI, legacy cleanup (ec5fd4a)
+- docs: update RELEASE.md for v0.20260319.0 [skip ci] (5a37510)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260321.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260319.0...v0.20260321.0
+
+---
+
+
 ## v0.20260319.0 - 2026-03-19 11:14:57 UTC
+
+
+## v0.20260321.0 - 2026-03-21 13:20:20 UTC
+
+## What's Changed
+
+- fix: wire PageListView and GraphView into ContentArea (76df988)
+- chore: remove test notes from repo, ignore notes/ and attachments/ (9cf3993)
+- feat: Phase 11.2 — WebSocket fix + block outliner editor (52066df)
+- docs: add single-command-per-Bash rule to CLAUDE.md and AGENTS.md (ae7348f)
+- feat: make Tesela desktop minimally functional for QA (3147aac)
+- fix: update axum route syntax from :id to {id} for axum 0.8 (f171b26)
+- feat: Phase 11 — native macOS SwiftUI app foundation (11.1) (d522717)
+- feat: Phase 10 — tesela-server local REST/WebSocket API (dacb6fe)
+- docs: require QA checklist after every TUI feature implementation (0a500ac)
+- feat: Phase 9 — tag filtering, live search, inline editing (8a0ea22)
+- feat: add Nerd Font icons throughout TUI (4be6865)
+- feat: TUI daily-driver polish — delete confirmation, search nav, timestamps (b43ef30)
+- feat: open daily note on startup, help is now a modal overlay (dfecd82)
+- feat: TUI visual polish — theme, rounded borders, fuzzy highlighting (2ca9506)
+- fix: use UPDATE+INSERT instead of INSERT OR REPLACE in upsert_note (e352b01)
+- feat: Phase 8 - daily driver TUI, CI, legacy cleanup (ec5fd4a)
+- docs: update RELEASE.md for v0.20260319.0 [skip ci] (5a37510)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260321.0/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260319.0...v0.20260321.0
+
+---
 
 ## What's Changed
 
