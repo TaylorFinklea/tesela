@@ -63,6 +63,7 @@ struct PageEditorView: View {
     @State private var blocks: [Block] = []
     @State private var saveTask: Task<Void, Never>?
     @State private var showDeleteConfirm = false
+    @State private var vimMode: VimMode = .normal
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -73,6 +74,12 @@ struct PageEditorView: View {
                     .bold()
                     .lineLimit(1)
                 Spacer()
+                Text(vimMode.displayName)
+                    .font(.system(.caption, design: .monospaced))
+                    .foregroundStyle(vimModeColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(vimModeColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
                 Text(page.modifiedAt, style: .relative)
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -102,6 +109,9 @@ struct PageEditorView: View {
                     }) {
                         appState.open(linked)
                     }
+                },
+                onModeChanged: { mode in
+                    vimMode = mode
                 }
             )
             .padding(.horizontal, 8)
@@ -118,6 +128,15 @@ struct PageEditorView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This permanently deletes the page and its file. This cannot be undone.")
+        }
+    }
+
+    private var vimModeColor: Color {
+        switch vimMode {
+        case .normal: .primary
+        case .insert: .green
+        case .visual, .visualLine: .blue
+        case .operatorPending: .orange
         }
     }
 

@@ -13,4 +13,9 @@ class VimEngine {
     }
 
     var currentMode: VimMode { state.mode }
+
+    var yankRegister: String {
+        get { state.yank }
+        set { state.yank = newValue }
+    }
 }

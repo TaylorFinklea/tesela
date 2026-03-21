@@ -6,12 +6,10 @@ import SwiftUI
 protocol OutlinerDelegate: AnyObject {
     func outlinerDidChangeContent(blocks: [Block])
     func outlinerDidClickWikiLink(target: String)
+    func outlinerDidChangeMode(mode: VimMode)
 }
 
 // MARK: - OutlinerView
-// AppKit NSView that hosts all BlockView (NSTextView) instances.
-// Manages structural editing (Enter/Tab/Shift-Tab/Backspace-at-start/arrows).
-
 class OutlinerView: NSView {
     var blocks: [Block] = [] {
         didSet { rebuildBlockViews() }
@@ -19,6 +17,7 @@ class OutlinerView: NSView {
 
     weak var delegate: OutlinerDelegate?
     private(set) var focusedBlockIndex: Int?
+    private var vimEngine = VimEngine()
 
     private var blockViews: [BlockView] = []
     private var pendingFocusIndex: Int?
@@ -64,7 +63,6 @@ class OutlinerView: NSView {
             let textX    = indentX + 28
             let textWidth = max(bounds.width - textX - 12, 80)
 
-            // Bullet indicator
             let bulletSymbol = block.indentLevel == 0 ? "•" : "◦"
             let bullet = NSTextField(labelWithString: bulletSymbol)
             bullet.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -75,14 +73,12 @@ class OutlinerView: NSView {
             bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
             addSubview(bullet)
 
-            // Block text view
             let view = BlockView(block: block)
             view.frame = NSRect(x: textX, y: yOffset, width: textWidth, height: 22)
             wireCallbacks(for: view, at: index)
             addSubview(view)
             blockViews.append(view)
 
-            // Resize to fit content
             let height = blockHeight(for: view)
             view.frame.size.height = height
             bullet.frame.size.height = height
@@ -114,6 +110,17 @@ class OutlinerView: NSView {
     // MARK: - Callback wiring
 
     private func wireCallbacks(for view: BlockView, at index: Int) {
+        // Vim integration
+        view.vimEngine = vimEngine
+        view.onVimCommand = { [weak self] cmd in
+            guard let self else { return }
+            focusedBlockIndex = index
+            executeVimCommand(cmd, at: index)
+        }
+        view.onModeChanged = { [weak self] mode in
+            self?.delegate?.outlinerDidChangeMode(mode: mode)
+        }
+
         view.onTextChanged = { [weak self] newText in
             guard let self, index < blocks.count else { return }
             blocks[index].text = newText
@@ -177,6 +184,164 @@ class OutlinerView: NSView {
             self?.delegate?.outlinerDidClickWikiLink(target: target)
         }
     }
+
+    // MARK: - Vim command execution
+
+    private func executeVimCommand(_ cmd: EditorCommand, at index: Int) {
+        guard index < blockViews.count, index < blocks.count else { return }
+        let view = blockViews[index]
+
+        switch cmd {
+        // Within-block motions → NSTextView methods
+        case .moveLeft:           view.moveLeft(nil)
+        case .moveRight:          view.moveRight(nil)
+        case .moveWordForward:    view.moveWordForward(nil)
+        case .moveWordBackward:   view.moveWordBackward(nil)
+        case .moveWordEnd:        view.moveWordForward(nil)
+        case .moveLineStart:      view.moveToBeginningOfLine(nil)
+        case .moveLineEnd:        view.moveToEndOfLine(nil)
+
+        // Block navigation
+        case .moveNextBlock:
+            let next = min(index + 1, blockViews.count - 1)
+            focusedBlockIndex = next
+            window?.makeFirstResponder(blockViews[next])
+        case .movePrevBlock:
+            let prev = max(index - 1, 0)
+            focusedBlockIndex = prev
+            window?.makeFirstResponder(blockViews[prev])
+        case .moveFirstBlock:
+            guard !blockViews.isEmpty else { break }
+            focusedBlockIndex = 0
+            window?.makeFirstResponder(blockViews[0])
+        case .moveLastBlock:
+            let last = blockViews.count - 1
+            guard last >= 0 else { break }
+            focusedBlockIndex = last
+            window?.makeFirstResponder(blockViews[last])
+
+        // Insert mode entry
+        case .enterInsert:          break // cursor stays
+        case .enterInsertAfter:     view.moveRight(nil)
+        case .enterInsertLineStart: view.moveToBeginningOfLine(nil)
+        case .enterInsertLineEnd:   view.moveToEndOfLine(nil)
+
+        case .enterInsertNewLineBelow:
+            let newBlock = Block(text: "", indentLevel: blocks[index].indentLevel)
+            blocks.insert(newBlock, at: index + 1)
+            pendingFocusIndex = index + 1
+            rebuildBlockViews()
+            delegate?.outlinerDidChangeContent(blocks: blocks)
+
+        case .enterInsertNewLineAbove:
+            let newBlock = Block(text: "", indentLevel: blocks[index].indentLevel)
+            blocks.insert(newBlock, at: index)
+            pendingFocusIndex = index
+            rebuildBlockViews()
+            delegate?.outlinerDidChangeContent(blocks: blocks)
+
+        case .exitToNormal: break // mode already changed
+
+        // Indent / dedent
+        case .indentBlock:
+            let maxIndent = index > 0 ? blocks[index - 1].indentLevel + 1 : 0
+            blocks[index].indentLevel = min(blocks[index].indentLevel + 1, maxIndent)
+            pendingFocusIndex = index
+            rebuildBlockViews()
+            delegate?.outlinerDidChangeContent(blocks: blocks)
+        case .dedentBlock:
+            blocks[index].indentLevel = max(blocks[index].indentLevel - 1, 0)
+            pendingFocusIndex = index
+            rebuildBlockViews()
+            delegate?.outlinerDidChangeContent(blocks: blocks)
+
+        // Block-level editing
+        case .deleteBlock:
+            guard blocks.count > 1 else { break }
+            vimEngine.yankRegister = blocks[index].text
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(blocks[index].text, forType: .string)
+            blocks.remove(at: index)
+            pendingFocusIndex = min(index, blocks.count - 1)
+            rebuildBlockViews()
+            delegate?.outlinerDidChangeContent(blocks: blocks)
+
+        case .yankBlock:
+            vimEngine.yankRegister = blocks[index].text
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(blocks[index].text, forType: .string)
+
+        case .pasteBelow:
+            let text = vimEngine.yankRegister
+            guard !text.isEmpty else { break }
+            let newBlock = Block(text: text, indentLevel: blocks[index].indentLevel)
+            blocks.insert(newBlock, at: index + 1)
+            pendingFocusIndex = index + 1
+            rebuildBlockViews()
+            delegate?.outlinerDidChangeContent(blocks: blocks)
+
+        case .pasteAbove:
+            let text = vimEngine.yankRegister
+            guard !text.isEmpty else { break }
+            let newBlock = Block(text: text, indentLevel: blocks[index].indentLevel)
+            blocks.insert(newBlock, at: index)
+            pendingFocusIndex = index
+            rebuildBlockViews()
+            delegate?.outlinerDidChangeContent(blocks: blocks)
+
+        case .deleteChar:
+            view.deleteForward(nil)
+
+        // Operator + motion combos
+        case .delete(let motion):
+            applyMotionSelection(motion, on: view)
+            if let range = Range(view.selectedRange(), in: view.string) {
+                vimEngine.yankRegister = String(view.string[range])
+            }
+            view.deleteBackward(nil)
+
+        case .change(let motion):
+            applyMotionSelection(motion, on: view)
+            if let range = Range(view.selectedRange(), in: view.string) {
+                vimEngine.yankRegister = String(view.string[range])
+            }
+            view.deleteBackward(nil)
+            // Mode already changed to insert by VimKeyHandler
+
+        case .yank(let motion):
+            let before = view.selectedRange()
+            applyMotionSelection(motion, on: view)
+            if let range = Range(view.selectedRange(), in: view.string) {
+                vimEngine.yankRegister = String(view.string[range])
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(vimEngine.yankRegister, forType: .string)
+            }
+            view.setSelectedRange(before)
+
+        // Undo / redo
+        case .undo: view.undoManager?.undo()
+        case .redo: view.undoManager?.redo()
+
+        // Deferred to Phase 11.5
+        case .enterVisual, .enterVisualLine, .startSearch,
+             .repeatLastChange, .replaceChar, .moveUp, .moveDown:
+            break
+
+        case .none:
+            break
+        }
+    }
+
+    private func applyMotionSelection(_ motion: Motion, on view: BlockView) {
+        switch motion {
+        case .wordForward:  view.moveWordForwardAndModifySelection(nil)
+        case .wordBackward: view.moveWordBackwardAndModifySelection(nil)
+        case .wordEnd:      view.moveWordForwardAndModifySelection(nil)
+        case .lineStart:    view.moveToBeginningOfLineAndModifySelection(nil)
+        case .lineEnd:      view.moveToEndOfLineAndModifySelection(nil)
+        default: break // innerWord, aroundWord, etc. → Phase 11.5
+        }
+    }
 }
 
 // MARK: - OutlinerCoordinator (NSViewRepresentable)
@@ -184,6 +349,7 @@ struct OutlinerCoordinator: NSViewRepresentable {
     @Binding var blocks: [Block]
     var onContentChanged: (([Block]) -> Void)?
     var onWikiLinkClicked: ((String) -> Void)?
+    var onModeChanged: ((VimMode) -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -197,14 +363,13 @@ struct OutlinerCoordinator: NSViewRepresentable {
         outliner.delegate = context.coordinator
         context.coordinator.outlinerView = outliner
 
-        scrollView.documentView = outliner   // attach first so bounds are valid
-        outliner.blocks = blocks             // triggers rebuildBlockViews()
+        scrollView.documentView = outliner
+        outliner.blocks = blocks
         return scrollView
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let outliner = context.coordinator.outlinerView else { return }
-        // Guard against re-render loops: only reload when block identity changes
         let currentIDs = outliner.blocks.map { $0.id }
         let newIDs = blocks.map { $0.id }
         guard currentIDs != newIDs else { return }
@@ -224,6 +389,10 @@ struct OutlinerCoordinator: NSViewRepresentable {
 
         func outlinerDidClickWikiLink(target: String) {
             parent.onWikiLinkClicked?(target)
+        }
+
+        func outlinerDidChangeMode(mode: VimMode) {
+            parent.onModeChanged?(mode)
         }
     }
 }

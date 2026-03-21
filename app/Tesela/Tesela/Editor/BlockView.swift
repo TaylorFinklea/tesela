@@ -2,14 +2,19 @@ import AppKit
 
 // MARK: - BlockView
 // NSTextView subclass for a single outliner block.
-// Handles inline editing, structural key intercepts, and live syntax styling.
+// Routes keyboard input through VimEngine when available.
 
 class BlockView: NSTextView {
     let block: Block
 
+    // Vim integration — shared engine from OutlinerView
+    var vimEngine: VimEngine?
+    var onVimCommand: ((EditorCommand) -> Void)?
+    var onModeChanged: ((VimMode) -> Void)?
+
     // Callbacks wired by OutlinerView
     var onTextChanged: ((String) -> Void)?
-    var onEnterPressed: ((String, String) -> Void)?   // (textBefore, textAfter)
+    var onEnterPressed: ((String, String) -> Void)?
     var onTabPressed: (() -> Void)?
     var onShiftTabPressed: (() -> Void)?
     var onBackspaceAtStart: (() -> Void)?
@@ -20,8 +25,6 @@ class BlockView: NSTextView {
     init(block: Block) {
         self.block = block
 
-        // Build the text system explicitly — NSTextView(frame:, textContainer: nil)
-        // doesn't reliably initialize the layout pipeline when embedded in SwiftUI.
         let storage = NSTextStorage(string: block.text)
         let layoutMgr = NSLayoutManager()
         storage.addLayoutManager(layoutMgr)
@@ -59,7 +62,44 @@ class BlockView: NSTextView {
         }
     }
 
-    // MARK: - Structural key overrides
+    // MARK: - Key routing
+
+    override func keyDown(with event: NSEvent) {
+        guard let vim = vimEngine else {
+            // No Vim — existing structural behavior
+            if event.keyCode == 51, selectedRange().location == 0, selectedRange().length == 0 {
+                onBackspaceAtStart?()
+                return
+            }
+            super.keyDown(with: event)
+            return
+        }
+
+        let previousMode = vim.currentMode
+        let cmd = vim.handle(event: event)
+
+        // Notify mode changes (including operator-pending transitions)
+        if vim.currentMode != previousMode {
+            onModeChanged?(vim.currentMode)
+        }
+
+        // Insert mode + no Vim command → let NSTextView handle (typing, Enter, Tab, etc.)
+        if previousMode == .insert && cmd == .none {
+            if event.keyCode == 51, selectedRange().location == 0, selectedRange().length == 0 {
+                onBackspaceAtStart?()
+                return
+            }
+            super.keyDown(with: event)
+            return
+        }
+
+        // Non-none command → route to OutlinerView
+        if cmd != .none {
+            onVimCommand?(cmd)
+        }
+    }
+
+    // MARK: - Structural overrides (fire in Insert mode via NSTextView input system)
 
     override func insertNewline(_ sender: Any?) {
         let loc = selectedRange().location
@@ -75,17 +115,6 @@ class BlockView: NSTextView {
 
     override func insertBacktab(_ sender: Any?) {
         onShiftTabPressed?()
-    }
-
-    override func keyDown(with event: NSEvent) {
-        // Backspace at position 0 with no selection → merge with previous block
-        if event.keyCode == 51,
-           selectedRange().location == 0,
-           selectedRange().length == 0 {
-            onBackspaceAtStart?()
-            return
-        }
-        super.keyDown(with: event)
     }
 
     override func moveUp(_ sender: Any?) {
@@ -118,7 +147,7 @@ class BlockView: NSTextView {
     }
 }
 
-// MARK: - NSTextViewDelegate (wiki-link click handling)
+// MARK: - NSTextViewDelegate
 extension BlockView: NSTextViewDelegate {
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
         guard let str = link as? String, str.hasPrefix("wikilink://") else { return false }
@@ -128,8 +157,7 @@ extension BlockView: NSTextViewDelegate {
     }
 }
 
-// MARK: - NSTextStorageDelegate (live syntax re-styling)
-// NSTextStorageDelegate is not @MainActor, but AppKit guarantees main-thread delivery.
+// MARK: - NSTextStorageDelegate
 extension BlockView: NSTextStorageDelegate {
     nonisolated func textStorage(
         _ textStorage: NSTextStorage,
