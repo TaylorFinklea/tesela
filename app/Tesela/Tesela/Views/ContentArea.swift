@@ -12,12 +12,12 @@ struct ContentArea: View {
                 PageEditorView(page: page)
             } else {
                 switch appState.selectedNavItem {
+                case .tiles:
+                    TilesView()
                 case .pages:
                     PageListView()
                 case .graph:
                     GraphView()
-                case .journals:
-                    EmptyStateView()
                 }
             }
         }

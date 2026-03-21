@@ -37,6 +37,7 @@
 		DB4765347B5E0B1D9EEA0431 /* VimEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C9E71BC5AA2F3BD2E8BC1ED /* VimEngine.swift */; };
 		DF59523B9AD6D8ABB9FE1AF2 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 063F17C66B1EE61153E18D83 /* SettingsView.swift */; };
 		E5E9D8DC6C3CDC7F2998430D /* Persistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 178AC931D624108AA71D3F1A /* Persistence.swift */; };
+		ECA1DA299F4978618A5946FC /* TilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C77C769D643532067754AF5D /* TilesView.swift */; };
 		ED29CB960AF5C4E35246D25E /* Page.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2B774E882149C14B4989752 /* Page.swift */; };
 /* End PBXBuildFile section */
 
@@ -75,6 +76,7 @@
 		B516B1FB896984C9A47BA978 /* RightSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RightSidebarView.swift; sourceTree = "<group>"; };
 		BE9364B5F6D22ABA0E636572 /* TeselaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeselaApp.swift; sourceTree = "<group>"; };
 		C3FED602B9C84575964F5FA2 /* PageListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageListView.swift; sourceTree = "<group>"; };
+		C77C769D643532067754AF5D /* TilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TilesView.swift; sourceTree = "<group>"; };
 		C78419676B314818F2A956C2 /* BlockStyler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockStyler.swift; sourceTree = "<group>"; };
 		CAB173D4D76EDF9C10B73B0F /* OutlinerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutlinerView.swift; sourceTree = "<group>"; };
 		CD1E261FDB1256A4C8F5092D /* WsEvent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WsEvent.swift; sourceTree = "<group>"; };
@@ -192,6 +194,7 @@
 				04CE36C6EA97918795CA15F8 /* MainShellView.swift */,
 				8DF308818C876207C0482E7E /* RootView.swift */,
 				063F17C66B1EE61153E18D83 /* SettingsView.swift */,
+				C77C769D643532067754AF5D /* TilesView.swift */,
 				599149A58D5B88FB5972B4E8 /* CommandPalette */,
 				8D3891783A514255EE291245 /* Graph */,
 				20D47A070885FD0E0221D373 /* RightPanel */,
@@ -359,6 +362,7 @@
 				5D4262E3D1311F8F916112A6 /* SidebarView.swift in Sources */,
 				44DC03B9348A53C1FDFC5D96 /* TeselaApp.swift in Sources */,
 				1222FC6597693AC16EBDC84F /* TeselaCommands.swift in Sources */,
+				ECA1DA299F4978618A5946FC /* TilesView.swift in Sources */,
 				DB4765347B5E0B1D9EEA0431 /* VimEngine.swift in Sources */,
 				B9E57229D4D9DC77224B5678 /* VimKeyHandler.swift in Sources */,
 				1FFEEBF47A2810E29AFAB8AD /* VimState.swift in Sources */,

@@ -71,12 +71,8 @@ struct SidebarView: View {
 
     private func handleNavChange(to item: NavItem) {
         switch item {
-        case .journals:
-            Task {
-                if let page = try? await appState.api.getDailyNote() {
-                    appState.open(page)
-                }
-            }
+        case .tiles:
+            appState.currentPage = nil  // Show TilesView in content area
         case .pages:
             appState.currentPage = nil  // Show page list in content area
         case .graph:

@@ -41,12 +41,6 @@ struct TeselaCommands: Commands {
             }
             .keyboardShortcut("k", modifiers: [.command])
 
-            Button("Find in Pages") {
-                appState.selectedNavItem = .pages
-                appState.currentPage = nil
-                appState.isSearchVisible = true
-            }
-            .keyboardShortcut("f", modifiers: [.command])
         }
     }
 }

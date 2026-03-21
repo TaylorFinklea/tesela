@@ -8,7 +8,7 @@ final class AppState {
     var connectionStatus: ConnectionStatus = .disconnected
 
     // MARK: - Navigation
-    var selectedNavItem: NavItem = .journals
+    var selectedNavItem: NavItem = .tiles
     var currentPage: Page?
     var pages: [Page] = []
     var tags: [String] = []
@@ -216,13 +216,13 @@ enum ConnectionStatus: Equatable {
 
 // MARK: - NavItem
 enum NavItem: Hashable, CaseIterable {
-    case journals
+    case tiles
     case pages
     case graph
 
     var label: String {
         switch self {
-        case .journals: "Journals"
+        case .tiles: "Tiles"
         case .pages: "Pages"
         case .graph: "Graph"
         }
@@ -230,7 +230,7 @@ enum NavItem: Hashable, CaseIterable {
 
     var systemImage: String {
         switch self {
-        case .journals: "calendar"
+        case .tiles: "calendar"
         case .pages: "doc.text"
         case .graph: "point.3.connected.trianglepath.dotted"
         }
