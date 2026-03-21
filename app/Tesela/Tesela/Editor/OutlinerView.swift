@@ -100,6 +100,13 @@ class OutlinerView: NSView {
             }
             pendingFocusIndex = nil
         }
+
+        // Start in Insert mode so the user can type immediately
+        if vimEngine.currentMode != .insert {
+            vimEngine.currentMode = .insert
+            for bv in blockViews { bv.isNormalMode = false }
+            delegate?.outlinerDidChangeMode(mode: .insert)
+        }
     }
 
     private func blockHeight(for view: BlockView) -> CGFloat {

@@ -63,7 +63,7 @@ struct PageEditorView: View {
     @State private var blocks: [Block] = []
     @State private var saveTask: Task<Void, Never>?
     @State private var showDeleteConfirm = false
-    @State private var vimMode: VimMode = .normal
+    @State private var vimMode: VimMode = .insert
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {

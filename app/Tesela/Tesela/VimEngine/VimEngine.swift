@@ -12,7 +12,10 @@ class VimEngine {
         return handler.handle(event: keyEvent, state: &state)
     }
 
-    var currentMode: VimMode { state.mode }
+    var currentMode: VimMode {
+        get { state.mode }
+        set { state.mode = newValue }
+    }
 
     var yankRegister: String {
         get { state.yank }

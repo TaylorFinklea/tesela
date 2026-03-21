@@ -14,7 +14,7 @@ class BlockView: NSTextView {
     var onCommandPalette: (() -> Void)?
 
     // Block cursor state
-    var isNormalMode = true {
+    var isNormalMode = false {
         didSet { needsDisplay = true }
     }
 
