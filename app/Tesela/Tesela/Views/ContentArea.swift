@@ -49,12 +49,11 @@ private struct EmptyStateView: View {
 }
 
 // MARK: - PageEditorView
-// Editable text view with 500ms debounced auto-save.
-// Phase 11.3/11.4 will replace the TextEditor with the full block OutlinerView.
+// Block outliner editor with 500ms debounced auto-save.
 struct PageEditorView: View {
     let page: Page
     @Environment(AppState.self) private var appState
-    @State private var editedBody: String = ""
+    @State private var blocks: [Block] = []
     @State private var saveTask: Task<Void, Never>?
     @State private var showDeleteConfirm = false
 
@@ -83,20 +82,26 @@ struct PageEditorView: View {
 
             Divider()
 
-            TextEditor(text: $editedBody)
-                .font(.system(.body, design: .monospaced))
-                .padding(24)
-                .onChange(of: editedBody) { _, _ in
-                    scheduleAutoSave()
+            OutlinerCoordinator(
+                blocks: $blocks,
+                onContentChanged: { updatedBlocks in
+                    let markdown = BlockParser.serializeFlat(blocks: updatedBlocks)
+                    scheduleAutoSave(markdown: markdown)
+                },
+                onWikiLinkClicked: { target in
+                    if let linked = appState.pages.first(where: {
+                        $0.title.lowercased() == target.lowercased()
+                    }) {
+                        appState.open(linked)
+                    }
                 }
+            )
+            .padding(.horizontal, 8)
         }
-        .onAppear {
-            editedBody = page.body
-        }
+        .onAppear { loadBlocks() }
         .onChange(of: page.id) { _, _ in
-            // Navigated to a different page — flush pending save and load new body
             saveTask?.cancel()
-            editedBody = page.body
+            loadBlocks()
         }
         .alert("Delete \"\(page.title)\"?", isPresented: $showDeleteConfirm) {
             Button("Delete", role: .destructive) {
@@ -108,12 +113,16 @@ struct PageEditorView: View {
         }
     }
 
-    private func scheduleAutoSave() {
+    private func loadBlocks() {
+        blocks = BlockParser.flatten(blocks: BlockParser.parse(markdown: page.body))
+    }
+
+    private func scheduleAutoSave(markdown: String) {
         saveTask?.cancel()
         saveTask = Task {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            await appState.updatePage(id: page.id, newBody: editedBody)
+            await appState.updatePage(id: page.id, newBody: markdown)
         }
     }
 }

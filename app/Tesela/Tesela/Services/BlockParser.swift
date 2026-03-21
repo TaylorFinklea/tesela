@@ -43,7 +43,7 @@ enum BlockParser {
         return roots
     }
 
-    // MARK: - Serialize
+    // MARK: - Serialize (tree-based)
     static func serialize(blocks: [Block]) -> String {
         var lines: [String] = []
         serializeBlocks(blocks, into: &lines, depth: 0)
@@ -58,6 +58,30 @@ enum BlockParser {
                 serializeBlocks(block.children, into: &lines, depth: depth + 1)
             }
         }
+    }
+
+    // MARK: - Flatten tree to flat list
+    // Sets indentLevel on each block from its depth in the tree.
+    static func flatten(blocks: [Block], depth: Int = 0) -> [Block] {
+        var result: [Block] = []
+        for block in blocks {
+            block.indentLevel = depth
+            result.append(block)
+            result += flatten(blocks: block.children, depth: depth + 1)
+        }
+        return result
+    }
+
+    // MARK: - Serialize flat block list using indentLevel
+    // Use this for editor round-trips where blocks are stored as a flat array.
+    static func serializeFlat(blocks: [Block]) -> String {
+        blocks
+            .filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map { block in
+                let indent = String(repeating: "  ", count: block.indentLevel)
+                return "\(indent)- \(block.text)"
+            }
+            .joined(separator: "\n")
     }
 
     // MARK: - Helpers
@@ -77,14 +101,10 @@ enum BlockParser {
         let (todoState, cleanText) = extractTodo(from: text)
         let tags = extractTags(from: cleanText)
         let properties = extractProperties(from: cleanText)
-        let displayText = cleanText
-            .components(separatedBy: " ")
-            .filter { !$0.hasPrefix("#") }
-            .joined(separator: " ")
-            .trimmingCharacters(in: .whitespaces)
-
+        // Keep full text intact so tags survive serialize round-trips.
+        // BlockStyler handles the visual coloring of #tags and [[links]].
         return Block(
-            text: displayText.isEmpty ? cleanText : displayText,
+            text: cleanText,
             indentLevel: indentLevel,
             todoState: todoState,
             tags: tags,

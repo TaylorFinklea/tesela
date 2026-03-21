@@ -13,6 +13,7 @@ final class WebSocketClient {
     var onNoteCreated: ((Page) -> Void)?
     var onNoteUpdated: ((Page) -> Void)?
     var onNoteDeleted: ((String) -> Void)?
+    var onConnectionStateChanged: ((Bool) -> Void)?
 
     private var task: URLSessionWebSocketTask?
     private var reconnectTask: Task<Void, Never>?
@@ -46,6 +47,7 @@ final class WebSocketClient {
         task?.resume()
         isConnected = true
         retryDelay = .seconds(1)
+        onConnectionStateChanged?(true)
         await receiveLoop()
     }
 
@@ -59,6 +61,7 @@ final class WebSocketClient {
         } catch {
             isConnected = false
             self.task = nil
+            onConnectionStateChanged?(false)
             scheduleReconnect()
         }
     }
@@ -71,26 +74,12 @@ final class WebSocketClient {
         @unknown default: return
         }
 
-        guard let envelope = try? decoder.decode(WsMessage.self, from: data) else { return }
+        guard let event = try? decoder.decode(WsEvent.self, from: data) else { return }
 
-        switch envelope.event {
-        case "note_created":
-            if let noteData = try? decoder.decode(WsNoteEvent.self, from: data),
-               let note = noteData.note {
-                onNoteCreated?(note)
-            }
-        case "note_updated":
-            if let noteData = try? decoder.decode(WsNoteEvent.self, from: data),
-               let note = noteData.note {
-                onNoteUpdated?(note)
-            }
-        case "note_deleted":
-            if let noteData = try? decoder.decode(WsNoteEvent.self, from: data),
-               let id = noteData.id {
-                onNoteDeleted?(id)
-            }
-        default:
-            break
+        switch event {
+        case .noteCreated(let note): onNoteCreated?(note)
+        case .noteUpdated(let note): onNoteUpdated?(note)
+        case .noteDeleted(let id):   onNoteDeleted?(id)
         }
     }
 

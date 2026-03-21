@@ -115,11 +115,14 @@ final class BlockParserTests: XCTestCase {
         XCTAssertEqual(blocks.count, 2)
     }
 
-    func testTagsNotIncludedInBlockText() {
+    func testTagsPreservedInBlockText() {
+        // Tags are kept in block.text so they survive serialize round-trips.
+        // BlockStyler handles the visual muted-color rendering.
         let md = "- Meeting notes #work #important"
         let blocks = BlockParser.parse(markdown: md)
         XCTAssertEqual(blocks.count, 1)
         XCTAssertEqual(Set(blocks[0].tags), Set(["work", "important"]))
-        XCTAssertFalse(blocks[0].text.contains("#work"))
+        XCTAssertTrue(blocks[0].text.contains("#work"))
+        XCTAssertTrue(blocks[0].text.contains("#important"))
     }
 }

@@ -34,7 +34,35 @@ final class AppState {
         await checkHealth()
         guard connectionStatus == .connected else { return }
         await loadInitialData()
+        wireWebSocketCallbacks()
         await wsClient.connect()
+    }
+
+    private func wireWebSocketCallbacks() {
+        wsClient.onNoteCreated = { [weak self] note in
+            guard let self else { return }
+            if !pages.contains(where: { $0.id == note.id }) {
+                pages.append(note)
+            }
+        }
+        wsClient.onNoteUpdated = { [weak self] note in
+            guard let self else { return }
+            if let idx = pages.firstIndex(where: { $0.id == note.id }) {
+                pages[idx] = note
+            }
+            if currentPage?.id == note.id { currentPage = note }
+        }
+        wsClient.onNoteDeleted = { [weak self] id in
+            guard let self else { return }
+            pages.removeAll { $0.id == id }
+            if currentPage?.id == id { currentPage = nil }
+            recentPageIds.removeAll { $0 == id }
+            favoritePageIds.removeAll { $0 == id }
+        }
+        wsClient.onConnectionStateChanged = { [weak self] connected in
+            guard let self else { return }
+            connectionStatus = connected ? .connected : .error("Server disconnected")
+        }
     }
 
     private func checkHealth() async {

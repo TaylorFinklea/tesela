@@ -33,6 +33,8 @@
 		B9E57229D4D9DC77224B5678 /* VimKeyHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52E040CAD40B4BBB0F7F9A74 /* VimKeyHandler.swift */; };
 		C6B5291FF9D97DE191F0BDD2 /* WebSocketClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = A51389A324844D68C04472B4 /* WebSocketClient.swift */; };
 		CA8282E79C2E6F5F95DA781B /* MainShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04CE36C6EA97918795CA15F8 /* MainShellView.swift */; };
+		D1A5D439F2FDFD95B0DBCF26 /* WsEventTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 874E24328A38A9F099D6A121 /* WsEventTests.swift */; };
+		DB4765347B5E0B1D9EEA0431 /* VimEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C9E71BC5AA2F3BD2E8BC1ED /* VimEngine.swift */; };
 		DF59523B9AD6D8ABB9FE1AF2 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 063F17C66B1EE61153E18D83 /* SettingsView.swift */; };
 		E5E9D8DC6C3CDC7F2998430D /* Persistence.swift in Sources */ = {isa = PBXBuildFile; fileRef = 178AC931D624108AA71D3F1A /* Persistence.swift */; };
 		ED29CB960AF5C4E35246D25E /* Page.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2B774E882149C14B4989752 /* Page.swift */; };
@@ -59,6 +61,8 @@
 		52E040CAD40B4BBB0F7F9A74 /* VimKeyHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VimKeyHandler.swift; sourceTree = "<group>"; };
 		5BD310F1E47B48D2CC65526C /* BlockParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockParser.swift; sourceTree = "<group>"; };
 		6974F402BC0671BB7F6D24AB /* APIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClientTests.swift; sourceTree = "<group>"; };
+		6C9E71BC5AA2F3BD2E8BC1ED /* VimEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VimEngine.swift; sourceTree = "<group>"; };
+		874E24328A38A9F099D6A121 /* WsEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WsEventTests.swift; sourceTree = "<group>"; };
 		8DF308818C876207C0482E7E /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		9C39EB381DB998940EAD68E5 /* BlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockView.swift; sourceTree = "<group>"; };
 		9D993C7569E49CF342A7C34C /* TeselaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TeselaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -87,6 +91,7 @@
 		047BC1B2398E2F4F79F888FF /* VimEngine */ = {
 			isa = PBXGroup;
 			children = (
+				6C9E71BC5AA2F3BD2E8BC1ED /* VimEngine.swift */,
 				52E040CAD40B4BBB0F7F9A74 /* VimKeyHandler.swift */,
 				B0F7109A79EAC99086FE540F /* VimState.swift */,
 			);
@@ -138,6 +143,7 @@
 				6974F402BC0671BB7F6D24AB /* APIClientTests.swift */,
 				E79999F5035C127AFF64918F /* BlockParserTests.swift */,
 				A0FD72C5E276E893CC8DEB64 /* VimEngineTests.swift */,
+				874E24328A38A9F099D6A121 /* WsEventTests.swift */,
 			);
 			path = TeselaTests;
 			sourceTree = "<group>";
@@ -323,6 +329,7 @@
 				3E290FD064E00EAFD8BD0067 /* APIClientTests.swift in Sources */,
 				436C7C139C9B2AFED1C3B9C3 /* BlockParserTests.swift in Sources */,
 				2CEE0FE31C973EBE9463BA6C /* VimEngineTests.swift in Sources */,
+				D1A5D439F2FDFD95B0DBCF26 /* WsEventTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -352,6 +359,7 @@
 				5D4262E3D1311F8F916112A6 /* SidebarView.swift in Sources */,
 				44DC03B9348A53C1FDFC5D96 /* TeselaApp.swift in Sources */,
 				1222FC6597693AC16EBDC84F /* TeselaCommands.swift in Sources */,
+				DB4765347B5E0B1D9EEA0431 /* VimEngine.swift in Sources */,
 				B9E57229D4D9DC77224B5678 /* VimKeyHandler.swift in Sources */,
 				1FFEEBF47A2810E29AFAB8AD /* VimState.swift in Sources */,
 				C6B5291FF9D97DE191F0BDD2 /* WebSocketClient.swift in Sources */,
