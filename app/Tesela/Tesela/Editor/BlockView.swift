@@ -93,8 +93,19 @@ class BlockView: NSTextView {
     }
 
     override func setNeedsDisplay(_ rect: NSRect, avoidAdditionalLayout flag: Bool) {
-        // Widen the invalidated rect so block cursor redraws properly
         super.setNeedsDisplay(bounds, avoidAdditionalLayout: flag)
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        // Force immediate cursor redraw so block cursor appears on focus
+        needsDisplay = true
+        return result
+    }
+
+    // Keep the block cursor always visible (disable blinking in Normal mode)
+    override func updateInsertionPointStateAndRestartTimer(_ restartFlag: Bool) {
+        super.updateInsertionPointStateAndRestartTimer(true)
     }
 
     // MARK: - Key routing
