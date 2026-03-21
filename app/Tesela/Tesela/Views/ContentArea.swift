@@ -121,7 +121,21 @@ struct PageEditorView: View {
     }
 
     private func loadBlocks() {
-        blocks = BlockParser.flatten(blocks: BlockParser.parse(markdown: page.body))
+        let parsed = BlockParser.flatten(blocks: BlockParser.parse(markdown: page.body))
+        if parsed.isEmpty {
+            let text = strippedBody(page.body)
+            blocks = [Block(text: text)]
+        } else {
+            blocks = parsed
+        }
+    }
+
+    private func strippedBody(_ body: String) -> String {
+        var lines = body.components(separatedBy: "\n")
+        if let first = lines.first, first.hasPrefix("# ") {
+            lines.removeFirst()
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func scheduleAutoSave(markdown: String) {
