@@ -1,7 +1,7 @@
 import SwiftUI
 
 // MARK: - RightSidebarView
-// Trailing column: backlinks, forward links, TOC for current page
+// Trailing column: backlinks, forward links for current page
 
 struct RightSidebarView: View {
     @Environment(AppState.self) private var appState
@@ -31,7 +31,6 @@ private struct RightSidebarContent: View {
 
     var body: some View {
         List {
-            // Backlinks
             Section("Linked References (\(backlinks.count))") {
                 if backlinks.isEmpty {
                     Text("No backlinks")
@@ -40,11 +39,11 @@ private struct RightSidebarContent: View {
                 } else {
                     ForEach(backlinks) { link in
                         LinkRowView(link: link)
+                            .onTapGesture { navigateTo(noteId: link.target) }
                     }
                 }
             }
 
-            // Forward links
             Section("Forward Links (\(forwardLinks.count))") {
                 if forwardLinks.isEmpty {
                     Text("No outgoing links")
@@ -53,6 +52,7 @@ private struct RightSidebarContent: View {
                 } else {
                     ForEach(forwardLinks) { link in
                         LinkRowView(link: link)
+                            .onTapGesture { navigateTo(noteId: link.target) }
                     }
                 }
             }
@@ -69,6 +69,14 @@ private struct RightSidebarContent: View {
         backlinks = (try? await backlinksTask) ?? []
         forwardLinks = (try? await forwardLinksTask) ?? []
     }
+
+    private func navigateTo(noteId: String) {
+        Task {
+            if let page = try? await appState.api.getNote(id: noteId) {
+                appState.open(page)
+            }
+        }
+    }
 }
 
 // MARK: - LinkRowView
@@ -76,17 +84,25 @@ private struct LinkRowView: View {
     let link: Link
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(link.target)
-                .font(.caption)
-                .bold()
-            if let text = link.text {
-                Text(text)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+        HStack(spacing: 6) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(link.target)
+                    .font(.caption)
+                    .bold()
+                    .foregroundStyle(Color.accentColor)
+                if let text = link.text {
+                    Text(text)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
             }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 2)
+        .contentShape(Rectangle())
     }
 }
