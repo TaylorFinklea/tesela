@@ -73,17 +73,17 @@ class BlockView: NSTextView {
 
     override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
         if isNormalMode {
-            // Draw a filled block cursor covering the character at the insertion point
+            // Start from rect (always valid from NSTextView) and widen to character width
             var blockRect = rect
-            if let lm = layoutManager, let tc = textContainer {
+            blockRect.size.width = max(rect.size.width, 8)
+            if let lm = layoutManager, let tc = textContainer,
+               lm.numberOfGlyphs > 0,
+               selectedRange().location < lm.numberOfGlyphs {
                 let glyphIndex = lm.glyphIndexForCharacter(at: selectedRange().location)
                 let charRect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIndex, length: 1), in: tc)
-                blockRect = NSRect(
-                    x: charRect.origin.x + textContainerInset.width,
-                    y: charRect.origin.y + textContainerInset.height,
-                    width: max(charRect.width, 8),
-                    height: charRect.height
-                )
+                if charRect.width > 0 {
+                    blockRect.size.width = charRect.width
+                }
             }
             color.withAlphaComponent(0.4).setFill()
             blockRect.fill()
