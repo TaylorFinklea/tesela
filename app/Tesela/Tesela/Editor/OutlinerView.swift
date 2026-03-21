@@ -23,6 +23,7 @@ class OutlinerView: NSView {
     private var blockViews: [BlockView] = []
     private var pendingFocusIndex: Int?
     private var lastBoundsWidth: CGFloat = 0
+    private var hasInitialized = false
 
     override var isFlipped: Bool { true }
 
@@ -101,12 +102,15 @@ class OutlinerView: NSView {
             pendingFocusIndex = nil
         }
 
-        // Start in Insert mode so the user can type immediately
-        if vimEngine.currentMode != .insert {
+        // Start in Insert mode on initial page load only
+        if !hasInitialized {
+            hasInitialized = true
             vimEngine.currentMode = .insert
-            for bv in blockViews { bv.isNormalMode = false }
             delegate?.outlinerDidChangeMode(mode: .insert)
         }
+        // Sync isNormalMode to all block views after every rebuild
+        let isNormal = vimEngine.currentMode == .normal
+        for bv in blockViews { bv.isNormalMode = isNormal }
     }
 
     private func blockHeight(for view: BlockView) -> CGFloat {
@@ -120,6 +124,7 @@ class OutlinerView: NSView {
     private func wireCallbacks(for view: BlockView, at index: Int) {
         // Vim integration
         view.vimEngine = vimEngine
+        view.isNormalMode = (vimEngine.currentMode == .normal)
         view.onVimCommand = { [weak self] cmd in
             guard let self else { return }
             focusedBlockIndex = index
@@ -217,19 +222,23 @@ class OutlinerView: NSView {
         case .moveNextBlock:
             let next = min(index + 1, blockViews.count - 1)
             focusedBlockIndex = next
+            blockViews[next].isNormalMode = true
             window?.makeFirstResponder(blockViews[next])
         case .movePrevBlock:
             let prev = max(index - 1, 0)
             focusedBlockIndex = prev
+            blockViews[prev].isNormalMode = true
             window?.makeFirstResponder(blockViews[prev])
         case .moveFirstBlock:
             guard !blockViews.isEmpty else { break }
             focusedBlockIndex = 0
+            blockViews[0].isNormalMode = true
             window?.makeFirstResponder(blockViews[0])
         case .moveLastBlock:
             let last = blockViews.count - 1
             guard last >= 0 else { break }
             focusedBlockIndex = last
+            blockViews[last].isNormalMode = true
             window?.makeFirstResponder(blockViews[last])
 
         // Insert mode entry
