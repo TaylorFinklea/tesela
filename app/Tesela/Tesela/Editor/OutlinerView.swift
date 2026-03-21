@@ -24,6 +24,8 @@ class OutlinerView: NSView {
     private var pendingFocusIndex: Int?
     private var lastBoundsWidth: CGFloat = 0
 
+    override var isFlipped: Bool { true }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         setup()
@@ -193,10 +195,10 @@ struct OutlinerCoordinator: NSViewRepresentable {
 
         let outliner = OutlinerView()
         outliner.delegate = context.coordinator
-        outliner.blocks = blocks
         context.coordinator.outlinerView = outliner
 
-        scrollView.documentView = outliner
+        scrollView.documentView = outliner   // attach first so bounds are valid
+        outliner.blocks = blocks             // triggers rebuildBlockViews()
         return scrollView
     }
 
