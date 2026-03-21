@@ -37,6 +37,13 @@ struct PageListView: View {
             List(filteredPages) { page in
                 PageListRow(page: page)
                     .onTapGesture { appState.open(page) }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        Button(role: .destructive) {
+                            Task { await appState.deletePage(page) }
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
             }
             .listStyle(.plain)
         }

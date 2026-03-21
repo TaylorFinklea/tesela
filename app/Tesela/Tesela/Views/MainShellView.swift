@@ -27,5 +27,47 @@ struct MainShellView: View {
             }
         }
         .animation(.spring(duration: 0.2), value: state.isCommandPaletteVisible)
+        .sheet(isPresented: $state.isShowingNewPageSheet) {
+            NewPageSheet()
+        }
+    }
+}
+
+// MARK: - NewPageSheet
+private struct NewPageSheet: View {
+    @Environment(AppState.self) private var appState
+    @Environment(\.dismiss) private var dismiss
+    @State private var title = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("New Page")
+                .font(.headline)
+
+            TextField("Page title", text: $title)
+                .textFieldStyle(.roundedBorder)
+                .focused($isFocused)
+                .onSubmit { create() }
+                .frame(width: 300)
+
+            HStack {
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.escape, modifiers: [])
+                Button("Create") { create() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(title.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .keyboardShortcut(.return, modifiers: [])
+            }
+        }
+        .padding(24)
+        .onAppear { isFocused = true }
+    }
+
+    private func create() {
+        let trimmed = title.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        dismiss()
+        Task { await appState.createPage(title: trimmed) }
     }
 }

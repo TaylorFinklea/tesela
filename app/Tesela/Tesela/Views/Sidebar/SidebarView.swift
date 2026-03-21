@@ -45,6 +45,16 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .frame(minWidth: 200, idealWidth: 220)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    appState.isShowingNewPageSheet = true
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                }
+                .help("New page (⌘N)")
+            }
+        }
         .onChange(of: appState.selectedNavItem) { _, newItem in
             handleNavChange(to: newItem)
         }

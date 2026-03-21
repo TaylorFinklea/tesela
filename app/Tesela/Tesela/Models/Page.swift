@@ -11,11 +11,26 @@ struct Page: Identifiable, Codable, Hashable, Sendable {
     let checksum: String
     let createdAt: Date
     let modifiedAt: Date
+    let attachments: [JSONValue]
 
     enum CodingKeys: String, CodingKey {
-        case id, title, content, body, metadata, path, checksum
+        case id, title, content, body, metadata, path, checksum, attachments
         case createdAt = "created_at"
         case modifiedAt = "modified_at"
+    }
+
+    init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        content = try c.decode(String.self, forKey: .content)
+        body = try c.decode(String.self, forKey: .body)
+        metadata = try c.decode(PageMetadata.self, forKey: .metadata)
+        path = try c.decode(String.self, forKey: .path)
+        checksum = try c.decode(String.self, forKey: .checksum)
+        createdAt = try c.decode(Date.self, forKey: .createdAt)
+        modifiedAt = try c.decode(Date.self, forKey: .modifiedAt)
+        attachments = try c.decodeIfPresent([JSONValue].self, forKey: .attachments) ?? []
     }
 }
 

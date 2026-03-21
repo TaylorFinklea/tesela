@@ -123,7 +123,7 @@ struct CommandPaletteView: View {
     private func executeCommand(id: String) {
         switch id {
         case "new-page":
-            break  // Phase 11.4
+            appState.isShowingNewPageSheet = true
         case "open-journal":
             Task {
                 if let page = try? await appState.api.getDailyNote() {

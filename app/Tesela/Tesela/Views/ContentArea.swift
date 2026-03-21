@@ -49,36 +49,71 @@ private struct EmptyStateView: View {
 }
 
 // MARK: - PageEditorView
-// Placeholder — Phase 11.3/11.4 will replace this with the full OutlinerView
+// Editable text view with 500ms debounced auto-save.
+// Phase 11.3/11.4 will replace the TextEditor with the full block OutlinerView.
 struct PageEditorView: View {
     let page: Page
     @Environment(AppState.self) private var appState
+    @State private var editedBody: String = ""
+    @State private var saveTask: Task<Void, Never>?
+    @State private var showDeleteConfirm = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Page title bar
+            // Title + toolbar
             HStack {
                 Text(page.title)
                     .font(.title2)
                     .bold()
+                    .lineLimit(1)
                 Spacer()
                 Text(page.modifiedAt, style: .relative)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.tertiary)
+                Button(role: .destructive) {
+                    showDeleteConfirm = true
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.borderless)
+                .help("Delete page")
             }
             .padding(.horizontal, 24)
             .padding(.vertical, 12)
 
             Divider()
 
-            // Raw body — placeholder until OutlinerView is built
-            ScrollView {
-                Text(page.body)
-                    .font(.system(.body, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(24)
-                    .textSelection(.enabled)
+            TextEditor(text: $editedBody)
+                .font(.system(.body, design: .monospaced))
+                .padding(24)
+                .onChange(of: editedBody) { _, _ in
+                    scheduleAutoSave()
+                }
+        }
+        .onAppear {
+            editedBody = page.body
+        }
+        .onChange(of: page.id) { _, _ in
+            // Navigated to a different page — flush pending save and load new body
+            saveTask?.cancel()
+            editedBody = page.body
+        }
+        .alert("Delete \"\(page.title)\"?", isPresented: $showDeleteConfirm) {
+            Button("Delete", role: .destructive) {
+                Task { await appState.deletePage(page) }
             }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently deletes the page and its file. This cannot be undone.")
+        }
+    }
+
+    private func scheduleAutoSave() {
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await appState.updatePage(id: page.id, newBody: editedBody)
         }
     }
 }
