@@ -99,16 +99,22 @@ enum BlockParser {
     private static func makeBlock(text: String, indentLevel: Int) -> Block {
         let (todoState, cleanText) = extractTodo(from: text)
         let tags = extractTags(from: cleanText)
-        let properties = extractProperties(from: cleanText)
-        // Keep full text intact so tags survive serialize round-trips.
-        // BlockStyler handles the visual coloring of #tags and [[links]].
-        return Block(
+        var properties = extractProperties(from: cleanText)
+
+        // Extract first-class task properties from generic properties
+        let block = Block(
             text: cleanText,
             indentLevel: indentLevel,
             todoState: todoState,
             tags: tags,
             properties: properties
         )
+        block.priority = Priority(rawValue: properties.removeValue(forKey: "priority") ?? "")
+        block.deadline = properties.removeValue(forKey: "deadline")
+        block.scheduled = properties.removeValue(forKey: "scheduled")
+        block.effort = properties.removeValue(forKey: "effort")
+        block.properties = properties  // remaining non-task properties
+        return block
     }
 
     static func extractTodo(from text: String) -> (TodoState?, String) {

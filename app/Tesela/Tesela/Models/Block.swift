@@ -13,6 +13,12 @@ final class Block: Identifiable, @unchecked Sendable {
     var tags: [String]
     var properties: [String: String]
 
+    // First-class task properties (extracted from inline key:: value)
+    var priority: Priority?
+    var deadline: String?      // ISO date "2026-03-30"
+    var scheduled: String?     // ISO date
+    var effort: String?        // Duration "30m", "2h", "1d"
+
     init(
         id: UUID = UUID(),
         text: String,
@@ -53,6 +59,32 @@ enum TodoState: String, Codable, Hashable, Sendable, CaseIterable {
         case .todo: "☐"
         case .doing: "◎"
         case .done: "☑"
+        }
+    }
+}
+
+// MARK: - Priority
+enum Priority: String, Codable, Hashable, Sendable, CaseIterable {
+    case critical = "critical"
+    case high = "high"
+    case medium = "medium"
+    case low = "low"
+
+    var displayChar: String {
+        switch self {
+        case .critical: "🔴"
+        case .high: "🟠"
+        case .medium: "🟡"
+        case .low: "🔵"
+        }
+    }
+
+    var next: Priority {
+        switch self {
+        case .critical: .high
+        case .high: .medium
+        case .medium: .low
+        case .low: .critical
         }
     }
 }

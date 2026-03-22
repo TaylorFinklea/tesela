@@ -65,9 +65,14 @@ class OutlinerView: NSView {
             let bulletX  = indentX + 8
             let textX    = indentX + 28
 
-            // Reserve space for tag pills on the right
-            let tagPillsWidth: CGFloat = block.tags.isEmpty ? 0 : min(CGFloat(block.tags.count) * 80 + 8, 200)
-            let textWidth = max(bounds.width - textX - 12 - tagPillsWidth, 80)
+            // Reserve space for right-side badges (tags + task properties)
+            let badgeCount = block.tags.count
+                + (block.deadline != nil ? 1 : 0)
+                + (block.scheduled != nil ? 1 : 0)
+                + (block.effort != nil ? 1 : 0)
+            let badgeWidth: CGFloat = badgeCount > 0 ? min(CGFloat(badgeCount) * 80 + 8, 280) : 0
+            let priorityWidth: CGFloat = block.priority != nil ? 22 : 0
+            let textWidth = max(bounds.width - textX - 12 - badgeWidth - priorityWidth, 80)
 
             // Todo indicator or bullet
             let (bulletSymbol, bulletColor): (String, NSColor) = {
@@ -89,8 +94,21 @@ class OutlinerView: NSView {
             bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
             addSubview(bullet)
 
+            // Priority indicator between bullet and text
+            var actualTextX = textX
+            if let priority = block.priority {
+                let priLabel = NSTextField(labelWithString: priority.displayChar)
+                priLabel.font = .systemFont(ofSize: 10)
+                priLabel.isEditable = false
+                priLabel.isBordered = false
+                priLabel.drawsBackground = false
+                priLabel.frame = NSRect(x: textX, y: yOffset, width: 18, height: 22)
+                addSubview(priLabel)
+                actualTextX = textX + 18
+            }
+
             let view = BlockView(block: block)
-            view.frame = NSRect(x: textX, y: yOffset, width: textWidth, height: 22)
+            view.frame = NSRect(x: actualTextX, y: yOffset, width: textWidth, height: 22)
             wireCallbacks(for: view, at: index)
             addSubview(view)
             blockViews.append(view)
@@ -99,17 +117,36 @@ class OutlinerView: NSView {
             view.frame.size.height = height
             bullet.frame.size.height = height
 
-            // Tag pills on the right
-            if !block.tags.isEmpty {
-                var tagX = textX + textWidth + 6
-                for tag in block.tags {
-                    let pill = makeTagPill("#\(tag)")
-                    let pillWidth = pill.frame.width
-                    let pillHeight: CGFloat = 18
-                    pill.frame = NSRect(x: tagX, y: yOffset + (height - pillHeight) / 2, width: pillWidth, height: pillHeight)
-                    addSubview(pill)
-                    tagX += pillWidth + 4
-                }
+            // Right-side badges: deadline, scheduled, effort, tags
+            var badgeX = actualTextX + textWidth + 6
+
+            if let deadline = block.deadline {
+                let pill = makeDeadlineBadge(deadline)
+                pill.frame.origin = NSPoint(x: badgeX, y: yOffset + (height - 18) / 2)
+                addSubview(pill)
+                badgeX += pill.frame.width + 4
+            }
+
+            if let scheduled = block.scheduled {
+                let pill = makeDateBadge("📅 \(formatDateShort(scheduled))", color: .secondaryLabelColor)
+                pill.frame.origin = NSPoint(x: badgeX, y: yOffset + (height - 18) / 2)
+                addSubview(pill)
+                badgeX += pill.frame.width + 4
+            }
+
+            if let effort = block.effort {
+                let pill = makeDateBadge("⏱ \(effort)", color: .secondaryLabelColor)
+                pill.frame.origin = NSPoint(x: badgeX, y: yOffset + (height - 18) / 2)
+                addSubview(pill)
+                badgeX += pill.frame.width + 4
+            }
+
+            for tag in block.tags {
+                let pill = makeTagPill("#\(tag)")
+                let pillWidth = pill.frame.width
+                pill.frame = NSRect(x: badgeX, y: yOffset + (height - 18) / 2, width: pillWidth, height: 18)
+                addSubview(pill)
+                badgeX += pillWidth + 4
             }
 
             yOffset += height + 4
@@ -182,6 +219,60 @@ class OutlinerView: NSView {
         container.addSubview(label)
         container.frame.size = NSSize(width: label.frame.width + 12, height: 18)
         return container
+    }
+
+    private func makeDeadlineBadge(_ dateStr: String) -> NSView {
+        let formatted = formatDateShort(dateStr)
+        let isOverdue = isDateOverdue(dateStr)
+        let isUrgent = isDateWithinDays(dateStr, days: 3)
+        let bgColor: NSColor = isOverdue ? .systemRed.withAlphaComponent(0.25)
+            : isUrgent ? .systemOrange.withAlphaComponent(0.25)
+            : .secondaryLabelColor.withAlphaComponent(0.15)
+        let textColor: NSColor = isOverdue ? .systemRed : isUrgent ? .systemOrange : .secondaryLabelColor
+        return makeDateBadge("⚑ \(formatted)", color: textColor, bgColor: bgColor)
+    }
+
+    private func makeDateBadge(_ text: String, color: NSColor, bgColor: NSColor? = nil) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = (bgColor ?? color.withAlphaComponent(0.15)).cgColor
+        container.layer?.cornerRadius = 4
+
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 10)
+        label.textColor = color
+        label.isEditable = false
+        label.isBordered = false
+        label.drawsBackground = false
+        label.sizeToFit()
+        label.frame.origin = NSPoint(x: 4, y: 1)
+        container.addSubview(label)
+        container.frame.size = NSSize(width: label.frame.width + 8, height: 18)
+        return container
+    }
+
+    private func formatDateShort(_ dateStr: String) -> String {
+        let inputFmt = DateFormatter()
+        inputFmt.dateFormat = "yyyy-MM-dd"
+        guard let date = inputFmt.date(from: dateStr) else { return dateStr }
+        let outputFmt = DateFormatter()
+        outputFmt.dateFormat = "MMM d"
+        return outputFmt.string(from: date)
+    }
+
+    private func isDateOverdue(_ dateStr: String) -> Bool {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        guard let date = fmt.date(from: dateStr) else { return false }
+        return date < Calendar.current.startOfDay(for: Date())
+    }
+
+    private func isDateWithinDays(_ dateStr: String, days: Int) -> Bool {
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        guard let date = fmt.date(from: dateStr),
+              let threshold = Calendar.current.date(byAdding: .day, value: days, to: Date()) else { return false }
+        return date <= threshold && date >= Calendar.current.startOfDay(for: Date())
     }
 
     private func makePropertyPill(key: String, value: String) -> NSView {
