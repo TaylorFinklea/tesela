@@ -22,7 +22,7 @@ enum BlockStyler {
         wikiLinkRegex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
             guard let range = match?.range else { return }
             textStorage.addAttribute(.foregroundColor, value: NSColor.systemBlue, range: range)
-            textStorage.addAttribute(.backgroundColor, value: NSColor.systemBlue.withAlphaComponent(0.12), range: range)
+            textStorage.addAttribute(.backgroundColor, value: NSColor.systemBlue.withAlphaComponent(0.25), range: range)
         }
 
         // #tags → faint inline (pills shown on right side by OutlinerView)

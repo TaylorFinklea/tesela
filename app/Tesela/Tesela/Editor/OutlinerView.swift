@@ -139,7 +139,7 @@ class OutlinerView: NSView {
     private func makeTagPill(_ text: String) -> NSView {
         let container = NSView()
         container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.15).cgColor
+        container.layer?.backgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.25).cgColor
         container.layer?.cornerRadius = 4
 
         let label = NSTextField(labelWithString: text)
