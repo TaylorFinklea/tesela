@@ -11,7 +11,7 @@ struct TeselaCommands: Commands {
             Button("New Page") {
                 // Handled via AppState
             }
-            .keyboardShortcut("n", modifiers: [.command, .shift])
+            .keyboardShortcut("n", modifiers: [.command])
 
             Button("Open Today's Journal") {
                 Task { @MainActor in

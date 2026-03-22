@@ -22,6 +22,7 @@ class OutlinerView: NSView {
 
     private var blockViews: [BlockView] = []
     private var pendingFocusIndex: Int?
+    private var pendingCursorPosition: Int?
     private var lastBoundsWidth: CGFloat = 0
     private var hasInitialized = false
 
@@ -125,12 +126,16 @@ class OutlinerView: NSView {
             let target = min(idx, blockViews.count - 1)
             if target >= 0 {
                 let view = blockViews[target]
+                let cursorPos = pendingCursorPosition ?? 0
                 DispatchQueue.main.async { [weak self, weak view] in
                     guard let view else { return }
                     self?.window?.makeFirstResponder(view)
+                    let pos = min(cursorPos, view.string.count)
+                    view.setSelectedRange(NSRange(location: pos, length: 0))
                 }
             }
             pendingFocusIndex = nil
+            pendingCursorPosition = nil
         }
 
         // Start in Insert mode on initial page load only
@@ -234,6 +239,7 @@ class OutlinerView: NSView {
             let newBlock = Block(text: after, indentLevel: blocks[index].indentLevel)
             blocks.insert(newBlock, at: index + 1)
             pendingFocusIndex = index + 1
+            pendingCursorPosition = 0
             rebuildBlockViews()
             delegate?.outlinerDidChangeContent(blocks: blocks)
         }

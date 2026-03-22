@@ -8,7 +8,9 @@ final class AppState {
     var connectionStatus: ConnectionStatus = .disconnected
 
     // MARK: - Navigation
-    var selectedNavItem: NavItem = .tiles
+    var selectedNavItem: NavItem = .tiles {
+        didSet { Persistence.saveSelectedNavItem(selectedNavItem.persistenceKey) }
+    }
     var currentPage: Page?
     var pages: [Page] = []
     var tags: [String] = []
@@ -18,16 +20,29 @@ final class AppState {
     var favoritePageIds: [String] = []
 
     // MARK: - UI State
-    var isLeftSidebarVisible = true
-    var isRightSidebarVisible = false
+    var isLeftSidebarVisible = true {
+        didSet { Persistence.saveLeftSidebarVisible(isLeftSidebarVisible) }
+    }
+    var isRightSidebarVisible = false {
+        didSet { Persistence.saveRightSidebarVisible(isRightSidebarVisible) }
+    }
     var isCommandPaletteVisible = false
     var isShowingNewPageSheet = false
     var isSearchVisible = false
     var searchQuery = ""
 
     // MARK: - Services
-    let api = APIClient()
+    let api: APIClient
     let wsClient = WebSocketClient()
+
+    init() {
+        // Restore persisted state
+        let serverURL = Persistence.loadServerURL()
+        api = APIClient(baseURL: URL(string: serverURL) ?? URL(string: "http://localhost:7474")!)
+        isLeftSidebarVisible = Persistence.loadLeftSidebarVisible()
+        isRightSidebarVisible = Persistence.loadRightSidebarVisible()
+        selectedNavItem = NavItem.from(persistenceKey: Persistence.loadSelectedNavItem())
+    }
 
     // MARK: - Startup
     func launch() async {
@@ -233,6 +248,22 @@ enum NavItem: Hashable, CaseIterable {
         case .tiles: "calendar"
         case .pages: "doc.text"
         case .graph: "point.3.connected.trianglepath.dotted"
+        }
+    }
+
+    var persistenceKey: String {
+        switch self {
+        case .tiles: "tiles"
+        case .pages: "pages"
+        case .graph: "graph"
+        }
+    }
+
+    static func from(persistenceKey: String) -> NavItem {
+        switch persistenceKey {
+        case "pages": .pages
+        case "graph": .graph
+        default: .tiles
         }
     }
 }

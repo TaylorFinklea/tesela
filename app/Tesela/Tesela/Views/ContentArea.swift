@@ -74,6 +74,14 @@ struct PageEditorView: View {
                     .bold()
                     .lineLimit(1)
                 Spacer()
+                Button {
+                    appState.toggleFavorite(page.id)
+                } label: {
+                    Image(systemName: appState.favoritePageIds.contains(page.id) ? "star.fill" : "star")
+                        .foregroundStyle(appState.favoritePageIds.contains(page.id) ? .yellow : .secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Toggle favorite")
                 Text(page.modifiedAt, style: .relative)
                     .font(.caption)
                     .foregroundStyle(.tertiary)

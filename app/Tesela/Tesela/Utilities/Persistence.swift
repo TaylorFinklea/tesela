@@ -1,7 +1,7 @@
 import Foundation
 
 // MARK: - Persistence
-// Lightweight UserDefaults wrappers for favorites and recents
+// Lightweight UserDefaults wrappers for app state
 
 enum Persistence {
     nonisolated(unsafe) private static let defaults = UserDefaults.standard
@@ -11,6 +11,9 @@ enum Persistence {
         static let recents = "tesela.recentPageIds"
         static let favorites = "tesela.favoritePageIds"
         static let serverURL = "tesela.serverURL"
+        static let leftSidebarVisible = "tesela.leftSidebarVisible"
+        static let rightSidebarVisible = "tesela.rightSidebarVisible"
+        static let selectedNavItem = "tesela.selectedNavItem"
     }
 
     // MARK: - Recents
@@ -38,5 +41,31 @@ enum Persistence {
 
     static func saveServerURL(_ url: String) {
         defaults.set(url, forKey: Keys.serverURL)
+    }
+
+    // MARK: - Sidebar State
+    static func loadLeftSidebarVisible() -> Bool {
+        defaults.object(forKey: Keys.leftSidebarVisible) == nil ? true : defaults.bool(forKey: Keys.leftSidebarVisible)
+    }
+
+    static func saveLeftSidebarVisible(_ visible: Bool) {
+        defaults.set(visible, forKey: Keys.leftSidebarVisible)
+    }
+
+    static func loadRightSidebarVisible() -> Bool {
+        defaults.bool(forKey: Keys.rightSidebarVisible)
+    }
+
+    static func saveRightSidebarVisible(_ visible: Bool) {
+        defaults.set(visible, forKey: Keys.rightSidebarVisible)
+    }
+
+    // MARK: - Nav Item
+    static func loadSelectedNavItem() -> String {
+        defaults.string(forKey: Keys.selectedNavItem) ?? "tiles"
+    }
+
+    static func saveSelectedNavItem(_ item: String) {
+        defaults.set(item, forKey: Keys.selectedNavItem)
     }
 }
