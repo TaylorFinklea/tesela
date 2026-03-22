@@ -384,7 +384,7 @@ impl LinkGraph for SqliteIndex {
     async fn get_all_edges(&self) -> Result<Vec<crate::link::GraphEdge>> {
         use sqlx::Row;
         let rows = sqlx::query(
-            "SELECT DISTINCT source_id, target FROM links WHERE link_type = 'Internal'",
+            "SELECT DISTINCT source_id, target FROM links WHERE link_type = 'internal'",
         )
         .fetch_all(&self.pool)
         .await
