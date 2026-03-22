@@ -120,9 +120,15 @@ class BlockView: NSTextView {
             return
         }
 
-        // `:` in Normal mode → open command palette (don't send to VimEngine)
+        // `:` in Normal mode → open command palette
         if vim.currentMode == .normal && event.characters == ":" {
             onCommandPalette?()
+            return
+        }
+
+        // ⌘Enter → toggle todo (works in any mode)
+        if event.modifierFlags.contains(.command) && event.keyCode == 36 {
+            onVimCommand?(.toggleTodo)
             return
         }
 
