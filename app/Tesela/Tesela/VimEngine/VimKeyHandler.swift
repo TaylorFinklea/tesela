@@ -181,14 +181,17 @@ struct VimKeyHandler: Sendable {
         case ">": return .indentBlock
         case "<": return .dedentBlock
 
-        // Operators (arm pending)
+        // Operators (arm pending) — preserve count for the resolved command
         case "d":
+            state.pendingCount = state.effectiveCount
             state.mode = .operatorPending(.delete)
             return .none
         case "c":
+            state.pendingCount = state.effectiveCount
             state.mode = .operatorPending(.change)
             return .none
         case "y":
+            state.pendingCount = state.effectiveCount
             state.mode = .operatorPending(.yank)
             return .none
 

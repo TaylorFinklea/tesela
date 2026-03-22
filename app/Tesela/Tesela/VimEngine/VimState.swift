@@ -6,7 +6,7 @@ enum VimMode: Equatable, Sendable {
     case insert
     case visual
     case visualLine
-    case operatorPending(Operator)  // e.g. after pressing 'd', waiting for motion
+    case operatorPending(Operator)
 
     var displayName: String {
         switch self {
@@ -29,9 +29,10 @@ enum Operator: Equatable, Sendable {
 // MARK: - VimState
 struct VimState: Sendable {
     var mode: VimMode = .normal
-    var count: Int?                    // accumulated digit prefix (nil = no count)
+    var count: Int?                    // accumulated digit prefix
+    var pendingCount: Int = 1          // count preserved through operator-pending
     var yank: String = ""              // last yanked text
-    var lastChange: [KeyEvent] = []    // for dot-repeat
+    var lastEditCommand: EditorCommand? // for dot-repeat
     var searchQuery: String = ""
 
     mutating func appendCount(digit: Int) {
