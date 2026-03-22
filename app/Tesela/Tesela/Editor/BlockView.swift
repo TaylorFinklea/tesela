@@ -12,6 +12,8 @@ class BlockView: NSTextView {
     var onVimCommand: ((EditorCommand) -> Void)?
     var onModeChanged: ((VimMode) -> Void)?
     var onCommandPalette: (() -> Void)?
+    var onSlashMenu: (() -> Void)?
+    var onSpaceMenu: (() -> Void)?
 
     // Block cursor state
     var isNormalMode = false {
@@ -124,6 +126,22 @@ class BlockView: NSTextView {
         if vim.currentMode == .normal && event.characters == ":" {
             onCommandPalette?()
             return
+        }
+
+        // Space in Normal mode → leader menu
+        if vim.currentMode == .normal && event.characters == " " && !event.modifierFlags.contains(.shift) {
+            onSpaceMenu?()
+            return
+        }
+
+        // `/` in Insert mode → slash command menu
+        if vim.currentMode == .insert && event.characters == "/" {
+            // Only trigger at start of block or after whitespace
+            let pos = selectedRange().location
+            if pos == 0 || (pos > 0 && string[string.index(string.startIndex, offsetBy: pos - 1)] == " ") {
+                onSlashMenu?()
+                return
+            }
         }
 
         // ⌘Enter → toggle todo (works in any mode)

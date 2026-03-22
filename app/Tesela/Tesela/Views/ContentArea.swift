@@ -1,5 +1,10 @@
 import SwiftUI
 
+extension Notification.Name {
+    static let teselaSetDeadline = Notification.Name("teselaSetDeadline")
+    static let teselaSetScheduled = Notification.Name("teselaSetScheduled")
+}
+
 // MARK: - ContentArea
 // Center pane: shows the current page in the outliner editor
 
@@ -117,9 +122,31 @@ struct PageEditorView: View {
                 },
                 onCommandPalette: {
                     appState.isCommandPaletteVisible = true
+                },
+                onSlashMenu: {
+                    appState.isSlashMenuVisible = true
+                },
+                onSpaceMenu: {
+                    appState.isSpaceMenuVisible = true
                 }
             )
             .padding(.horizontal, 8)
+            .overlay(alignment: .topLeading) {
+                if appState.isSlashMenuVisible {
+                    SlashMenuView(onCommand: handleMenuCommand)
+                        .padding(.leading, 40)
+                        .padding(.top, 60)
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                }
+            }
+            .overlay(alignment: .center) {
+                if appState.isSpaceMenuVisible {
+                    SpaceMenuView(onCommand: handleMenuCommand)
+                        .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                }
+            }
+            .animation(.spring(duration: 0.15), value: appState.isSlashMenuVisible)
+            .animation(.spring(duration: 0.15), value: appState.isSpaceMenuVisible)
             .overlay(alignment: .bottomTrailing) {
                 Text(vimMode.displayName)
                     .font(.system(.caption, design: .monospaced))
@@ -142,6 +169,40 @@ struct PageEditorView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This permanently deletes the page and its file. This cannot be undone.")
+        }
+    }
+
+    private func handleMenuCommand(_ commandId: String) {
+        // Route menu commands to the appropriate action
+        // These will be handled by notifying the OutlinerView via state changes
+        switch commandId {
+        case "todo", "doing", "done":
+            // Toggle todo — the outliner handles this via Vim command
+            appState.isSlashMenuVisible = false
+            appState.isSpaceMenuVisible = false
+        case "deadline":
+            appState.isSlashMenuVisible = false
+            appState.isSpaceMenuVisible = false
+            // Trigger deadline date picker via a small delay so menus dismiss first
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak appState] in
+                // We'll trigger this by posting a notification that OutlinerView observes
+                NotificationCenter.default.post(name: .teselaSetDeadline, object: nil)
+            }
+        case "scheduled":
+            appState.isSlashMenuVisible = false
+            appState.isSpaceMenuVisible = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak appState] in
+                NotificationCenter.default.post(name: .teselaSetScheduled, object: nil)
+            }
+        case "block-below":
+            appState.isSlashMenuVisible = false
+            appState.isSpaceMenuVisible = false
+        case "block-above":
+            appState.isSlashMenuVisible = false
+            appState.isSpaceMenuVisible = false
+        default:
+            appState.isSlashMenuVisible = false
+            appState.isSpaceMenuVisible = false
         }
     }
 

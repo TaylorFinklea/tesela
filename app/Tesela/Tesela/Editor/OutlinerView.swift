@@ -8,6 +8,8 @@ protocol OutlinerDelegate: AnyObject {
     func outlinerDidClickWikiLink(target: String)
     func outlinerDidChangeMode(mode: VimMode)
     func outlinerDidRequestCommandPalette()
+    func outlinerDidRequestSlashMenu()
+    func outlinerDidRequestSpaceMenu()
 }
 
 // MARK: - OutlinerView
@@ -42,6 +44,15 @@ class OutlinerView: NSView {
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         autoresizingMask = [.width]
+
+        NotificationCenter.default.addObserver(forName: .teselaSetDeadline, object: nil, queue: .main) { [weak self] _ in
+            guard let self, let idx = focusedBlockIndex, idx < blockViews.count else { return }
+            showDatePicker(for: "deadline", at: idx, anchorView: blockViews[idx])
+        }
+        NotificationCenter.default.addObserver(forName: .teselaSetScheduled, object: nil, queue: .main) { [weak self] _ in
+            guard let self, let idx = focusedBlockIndex, idx < blockViews.count else { return }
+            showDatePicker(for: "scheduled", at: idx, anchorView: blockViews[idx])
+        }
     }
 
     override func layout() {
@@ -390,6 +401,14 @@ class OutlinerView: NSView {
         view.onCommandPalette = { [weak self] in
             self?.delegate?.outlinerDidRequestCommandPalette()
         }
+
+        view.onSlashMenu = { [weak self] in
+            self?.delegate?.outlinerDidRequestSlashMenu()
+        }
+
+        view.onSpaceMenu = { [weak self] in
+            self?.delegate?.outlinerDidRequestSpaceMenu()
+        }
     }
 
     // MARK: - Vim command execution
@@ -737,6 +756,8 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var onWikiLinkClicked: ((String) -> Void)?
     var onModeChanged: ((VimMode) -> Void)?
     var onCommandPalette: (() -> Void)?
+    var onSlashMenu: (() -> Void)?
+    var onSpaceMenu: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -784,6 +805,14 @@ struct OutlinerCoordinator: NSViewRepresentable {
 
         func outlinerDidRequestCommandPalette() {
             parent.onCommandPalette?()
+        }
+
+        func outlinerDidRequestSlashMenu() {
+            parent.onSlashMenu?()
+        }
+
+        func outlinerDidRequestSpaceMenu() {
+            parent.onSpaceMenu?()
         }
     }
 }

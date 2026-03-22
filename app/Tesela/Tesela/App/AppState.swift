@@ -27,6 +27,8 @@ final class AppState {
         didSet { Persistence.saveRightSidebarVisible(isRightSidebarVisible) }
     }
     var isCommandPaletteVisible = false
+    var isSlashMenuVisible = false
+    var isSpaceMenuVisible = false
     var isShowingNewPageSheet = false
     var isSearchVisible = false
     var searchQuery = ""
