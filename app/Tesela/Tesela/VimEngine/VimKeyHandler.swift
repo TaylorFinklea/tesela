@@ -80,6 +80,8 @@ enum EditorCommand: Equatable, Sendable {
     // App
     case startSearch
     case toggleTodo
+    case setDeadline
+    case setScheduled
     case none
 }
 

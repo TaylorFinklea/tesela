@@ -132,6 +132,18 @@ class BlockView: NSTextView {
             return
         }
 
+        // ⌘D → set deadline date picker
+        if event.modifierFlags.contains(.command) && !event.modifierFlags.contains(.shift) && event.characters?.lowercased() == "d" {
+            onVimCommand?(.setDeadline)
+            return
+        }
+
+        // ⌘⇧D → set scheduled date picker
+        if event.modifierFlags.contains(.command) && event.modifierFlags.contains(.shift) && event.characters?.lowercased() == "d" {
+            onVimCommand?(.setScheduled)
+            return
+        }
+
         let previousMode = vim.currentMode
         let cmd = vim.handle(event: event)
 

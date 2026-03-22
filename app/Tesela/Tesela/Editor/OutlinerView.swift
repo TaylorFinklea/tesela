@@ -608,12 +608,114 @@ class OutlinerView: NSView {
             rebuildBlockViews()
             delegate?.outlinerDidChangeContent(blocks: blocks)
 
+        // Date pickers
+        case .setDeadline:
+            showDatePicker(for: "deadline", at: index, anchorView: view)
+        case .setScheduled:
+            showDatePicker(for: "scheduled", at: index, anchorView: view)
+
         case .replaceChar, .moveUp, .moveDown:
             break
 
         case .none:
             break
         }
+    }
+
+    // MARK: - Date picker popover
+
+    private var activePopover: NSPopover?
+
+    private func showDatePicker(for propertyKey: String, at index: Int, anchorView: NSView) {
+        activePopover?.close()
+
+        let picker = NSDatePicker()
+        picker.datePickerStyle = .clockAndCalendar
+        picker.datePickerElements = .yearMonthDay
+        picker.dateValue = existingDate(for: propertyKey, at: index) ?? Date()
+        picker.target = self
+        picker.sizeToFit()
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: picker.frame.width + 20, height: picker.frame.height + 20))
+        picker.frame.origin = NSPoint(x: 10, y: 10)
+        container.addSubview(picker)
+
+        let vc = NSViewController()
+        vc.view = container
+
+        let popover = NSPopover()
+        popover.contentViewController = vc
+        popover.behavior = .transient
+        popover.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .maxY)
+        activePopover = popover
+
+        // Use a confirm button approach: observe popover close → apply the date
+        // Since NSDatePicker doesn't have a clean "done" callback, we apply on close
+        let blockIndex = index
+        let key = propertyKey
+        NotificationCenter.default.addObserver(
+            forName: NSPopover.didCloseNotification,
+            object: popover,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyy-MM-dd"
+            let dateStr = fmt.string(from: picker.dateValue)
+            self.applyDateProperty(key: key, value: dateStr, at: blockIndex)
+            self.activePopover = nil
+        }
+    }
+
+    private func existingDate(for key: String, at index: Int) -> Date? {
+        guard index < blocks.count else { return nil }
+        let dateStr: String?
+        switch key {
+        case "deadline":  dateStr = blocks[index].deadline
+        case "scheduled": dateStr = blocks[index].scheduled
+        default: return nil
+        }
+        guard let str = dateStr else { return nil }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        return fmt.date(from: str)
+    }
+
+    private func applyDateProperty(key: String, value: String, at index: Int) {
+        guard index < blocks.count else { return }
+        let block = blocks[index]
+        let pattern = "\(key):: \\S+"
+
+        // Remove existing property if present
+        var text = block.text
+        if let regex = try? NSRegularExpression(pattern: pattern),
+           let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+           let range = Range(match.range, in: text) {
+            text.replaceSubrange(range, with: "")
+            text = text.trimmingCharacters(in: .whitespaces)
+        }
+
+        // Append new property
+        text = "\(text) \(key):: \(value)"
+        block.text = text
+
+        // Re-extract task properties
+        switch key {
+        case "deadline":  block.deadline = value
+        case "scheduled": block.scheduled = value
+        default: break
+        }
+
+        // Update the view
+        if index < blockViews.count {
+            blockViews[index].string = text
+            if let ts = blockViews[index].textStorage {
+                BlockStyler.style(text: text, textStorage: ts)
+            }
+        }
+        pendingFocusIndex = index
+        rebuildBlockViews()
+        delegate?.outlinerDidChangeContent(blocks: blocks)
     }
 
     private func applyMotionSelection(_ motion: Motion, on view: BlockView) {
