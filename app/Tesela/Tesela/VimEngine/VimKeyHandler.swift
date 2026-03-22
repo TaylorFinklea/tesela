@@ -79,6 +79,7 @@ enum EditorCommand: Equatable, Sendable {
 
     // App
     case startSearch
+    case toggleTodo
     case none
 }
 
@@ -176,6 +177,7 @@ struct VimKeyHandler: Sendable {
         case "P": return .pasteAbove
         case ".": return .repeatLastChange
         case "/": return .startSearch
+        case "t": return .toggleTodo
 
         // Indentation
         case ">": return .indentBlock

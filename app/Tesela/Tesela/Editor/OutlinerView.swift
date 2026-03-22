@@ -69,10 +69,20 @@ class OutlinerView: NSView {
             let tagPillsWidth: CGFloat = block.tags.isEmpty ? 0 : min(CGFloat(block.tags.count) * 80 + 8, 200)
             let textWidth = max(bounds.width - textX - 12 - tagPillsWidth, 80)
 
-            let bulletSymbol = block.indentLevel == 0 ? "•" : "◦"
+            // Todo indicator or bullet
+            let (bulletSymbol, bulletColor): (String, NSColor) = {
+                if let state = block.todoState {
+                    switch state {
+                    case .todo:  return (state.displayChar, .secondaryLabelColor)
+                    case .doing: return (state.displayChar, .systemOrange)
+                    case .done:  return (state.displayChar, .systemGreen)
+                    }
+                }
+                return (block.indentLevel == 0 ? "•" : "◦", .tertiaryLabelColor)
+            }()
             let bullet = NSTextField(labelWithString: bulletSymbol)
             bullet.font = .systemFont(ofSize: NSFont.systemFontSize)
-            bullet.textColor = .tertiaryLabelColor
+            bullet.textColor = bulletColor
             bullet.isEditable = false
             bullet.isBordered = false
             bullet.drawsBackground = false
@@ -475,6 +485,37 @@ class OutlinerView: NSView {
         // Undo / redo
         case .undo: view.undoManager?.undo()
         case .redo: view.undoManager?.redo()
+
+        // Todo toggle
+        case .toggleTodo:
+            let block = blocks[index]
+            let nextState: TodoState? = {
+                switch block.todoState {
+                case nil:    return .todo
+                case .todo:  return .doing
+                case .doing: return .done
+                case .done:  return nil
+                }
+            }()
+            // Update block text: remove old prefix, add new one
+            var text = block.text
+            if let current = block.todoState {
+                let prefix = "\(current.rawValue) "
+                if text.hasPrefix(prefix) { text = String(text.dropFirst(prefix.count)) }
+            }
+            if let next = nextState {
+                text = "\(next.rawValue) \(text)"
+            }
+            block.text = text
+            block.todoState = nextState
+            // Update the NSTextView content directly
+            view.string = text
+            if let ts = view.textStorage {
+                BlockStyler.style(text: text, textStorage: ts)
+            }
+            pendingFocusIndex = index
+            rebuildBlockViews()
+            delegate?.outlinerDidChangeContent(blocks: blocks)
 
         case .replaceChar, .moveUp, .moveDown:
             break
