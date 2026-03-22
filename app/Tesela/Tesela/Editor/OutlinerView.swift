@@ -102,6 +102,20 @@ class OutlinerView: NSView {
             }
 
             yOffset += height + 4
+
+            // Property pills below block row
+            if !block.properties.isEmpty {
+                var propX = textX
+                let propY = yOffset - 2
+                for (key, value) in block.properties.sorted(by: { $0.key < $1.key }) {
+                    let pill = makePropertyPill(key: key, value: value)
+                    let pillWidth = pill.frame.width
+                    pill.frame.origin = NSPoint(x: propX, y: propY)
+                    addSubview(pill)
+                    propX += pillWidth + 4
+                }
+                yOffset += 22
+            }
         }
 
         let minHeight = superview?.bounds.height ?? 400
@@ -152,6 +166,39 @@ class OutlinerView: NSView {
         label.frame.origin = NSPoint(x: 6, y: 1)
         container.addSubview(label)
         container.frame.size = NSSize(width: label.frame.width + 12, height: 18)
+        return container
+    }
+
+    private func makePropertyPill(key: String, value: String) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.15).cgColor
+        container.layer?.cornerRadius = 4
+
+        let keyLabel = NSTextField(labelWithString: "\(key):")
+        keyLabel.font = .boldSystemFont(ofSize: 10)
+        keyLabel.textColor = .systemPurple
+        keyLabel.isEditable = false
+        keyLabel.isBordered = false
+        keyLabel.drawsBackground = false
+        keyLabel.sizeToFit()
+        keyLabel.frame.origin = NSPoint(x: 6, y: 1)
+        container.addSubview(keyLabel)
+
+        let valueLabel = NSTextField(labelWithString: " \(value)")
+        valueLabel.font = .systemFont(ofSize: 10)
+        valueLabel.textColor = .labelColor
+        valueLabel.isEditable = false
+        valueLabel.isBordered = false
+        valueLabel.drawsBackground = false
+        valueLabel.sizeToFit()
+        valueLabel.frame.origin = NSPoint(x: 6 + keyLabel.frame.width, y: 1)
+        container.addSubview(valueLabel)
+
+        container.frame.size = NSSize(
+            width: keyLabel.frame.width + valueLabel.frame.width + 12,
+            height: 18
+        )
         return container
     }
 
