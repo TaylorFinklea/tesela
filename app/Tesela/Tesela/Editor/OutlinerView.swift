@@ -63,7 +63,10 @@ class OutlinerView: NSView {
             let indentX = CGFloat(block.indentLevel) * 20
             let bulletX  = indentX + 8
             let textX    = indentX + 28
-            let textWidth = max(bounds.width - textX - 12, 80)
+
+            // Reserve space for tag pills on the right
+            let tagPillsWidth: CGFloat = block.tags.isEmpty ? 0 : min(CGFloat(block.tags.count) * 80 + 8, 200)
+            let textWidth = max(bounds.width - textX - 12 - tagPillsWidth, 80)
 
             let bulletSymbol = block.indentLevel == 0 ? "•" : "◦"
             let bullet = NSTextField(labelWithString: bulletSymbol)
@@ -84,6 +87,20 @@ class OutlinerView: NSView {
             let height = blockHeight(for: view)
             view.frame.size.height = height
             bullet.frame.size.height = height
+
+            // Tag pills on the right
+            if !block.tags.isEmpty {
+                var tagX = textX + textWidth + 6
+                for tag in block.tags {
+                    let pill = makeTagPill("#\(tag)")
+                    let pillWidth = pill.frame.width
+                    let pillHeight: CGFloat = 18
+                    pill.frame = NSRect(x: tagX, y: yOffset + (height - pillHeight) / 2, width: pillWidth, height: pillHeight)
+                    addSubview(pill)
+                    tagX += pillWidth + 4
+                }
+            }
+
             yOffset += height + 4
         }
 
@@ -117,6 +134,25 @@ class OutlinerView: NSView {
         guard let lm = view.layoutManager, let tc = view.textContainer else { return 22 }
         lm.ensureLayout(for: tc)
         return max(lm.usedRect(for: tc).height + 4, 22)
+    }
+
+    private func makeTagPill(_ text: String) -> NSView {
+        let container = NSView()
+        container.wantsLayer = true
+        container.layer?.backgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.15).cgColor
+        container.layer?.cornerRadius = 4
+
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 10)
+        label.textColor = .secondaryLabelColor
+        label.isEditable = false
+        label.isBordered = false
+        label.drawsBackground = false
+        label.sizeToFit()
+        label.frame.origin = NSPoint(x: 6, y: 1)
+        container.addSubview(label)
+        container.frame.size = NSSize(width: label.frame.width + 12, height: 18)
+        return container
     }
 
     // MARK: - Callback wiring

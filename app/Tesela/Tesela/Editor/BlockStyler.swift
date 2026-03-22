@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 
 // MARK: - BlockStyler
-// Applies NSAttributedString styling for [[wiki-links]] and #tags — Phase 11.3
+// Applies NSAttributedString styling for [[wiki-links]] and #tags
 
 enum BlockStyler {
     private static let wikiLinkRegex = try! NSRegularExpression(pattern: #"\[\[([^\]]+)\]\]"#)
@@ -15,18 +15,20 @@ enum BlockStyler {
         textStorage.beginEditing()
         textStorage.addAttribute(.foregroundColor, value: NSColor.labelColor, range: fullRange)
         textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: NSFont.systemFontSize), range: fullRange)
+        textStorage.removeAttribute(.backgroundColor, range: fullRange)
+        textStorage.removeAttribute(.underlineStyle, range: fullRange)
 
-        // [[wiki-links]] → blue with underline
+        // [[wiki-links]] → blue text on tinted blue background (pill style)
         wikiLinkRegex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
             guard let range = match?.range else { return }
             textStorage.addAttribute(.foregroundColor, value: NSColor.systemBlue, range: range)
-            textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: range)
+            textStorage.addAttribute(.backgroundColor, value: NSColor.systemBlue.withAlphaComponent(0.12), range: range)
         }
 
-        // #tags → secondary label color
+        // #tags → faint inline (pills shown on right side by OutlinerView)
         tagRegex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
             guard let range = match?.range else { return }
-            textStorage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: range)
+            textStorage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: range)
         }
 
         textStorage.endEditing()
