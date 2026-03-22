@@ -24,6 +24,13 @@ pub enum LinkType {
     Attachment,
 }
 
+/// Lightweight source→target pair for graph rendering
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GraphEdge {
+    pub source: String,
+    pub target: String,
+}
+
 static WIKI_LINK_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]").unwrap());
 

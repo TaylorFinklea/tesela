@@ -9,7 +9,7 @@ use serde::Deserialize;
 
 use tesela_core::{
     daily::DailyNoteConfig,
-    link::Link,
+    link::{GraphEdge, Link},
     note::NoteId,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     Note,
@@ -137,5 +137,12 @@ pub async fn get_forward_links(
     let note_id = NoteId::new(&id);
     let links = s.index.get_forward_links(&note_id).await?;
     Ok(Json(links))
+}
+
+pub async fn get_all_edges(
+    State(s): State<Arc<AppState>>,
+) -> AppResult<Json<Vec<GraphEdge>>> {
+    let edges = s.index.get_all_edges().await?;
+    Ok(Json(edges))
 }
 

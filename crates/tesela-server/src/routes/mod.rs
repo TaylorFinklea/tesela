@@ -24,6 +24,7 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/notes/{id}/backlinks", get(notes::get_backlinks))
         .route("/notes/{id}/links", get(notes::get_forward_links))
+        .route("/links", get(notes::get_all_edges))
         .route("/search", get(search::search_notes))
         .route("/tags", get(tags::list_tags))
         .route("/ws", get(ws::ws_handler))

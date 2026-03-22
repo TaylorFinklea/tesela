@@ -13,3 +13,8 @@ struct Link: Identifiable, Codable, Hashable, Sendable {
         case target, text, position
     }
 }
+
+struct GraphEdge: Codable, Hashable, Sendable {
+    let source: String
+    let target: String
+}

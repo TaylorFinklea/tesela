@@ -67,6 +67,10 @@ actor APIClient {
         try await getDecoded("/notes/\(id)/links")
     }
 
+    func getAllEdges() async throws -> [GraphEdge] {
+        try await getDecoded("/links")
+    }
+
     // MARK: - Search
     func search(query: String, limit: Int = 20, offset: Int = 0) async throws -> [SearchHit] {
         let params: [URLQueryItem] = [
