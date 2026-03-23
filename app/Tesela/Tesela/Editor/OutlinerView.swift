@@ -767,14 +767,14 @@ class OutlinerView: NSView {
                 textField.window?.makeFirstResponder(textField)
             }
         }
-        let applyRef = Box<(() -> Void)?>(nil) // forward reference for Enter handler
-        let tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak textField] event in
+        let applyRef = Box<(() -> Void)?>(nil)
+        let tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 48 { // Tab
                 tabAction.handler()
                 return nil
             }
-            // Enter key in text field mode → apply date
-            if event.keyCode == 36, let tf = textField, !tf.isHidden {
+            // Enter key → apply date (works in both calendar and text mode)
+            if event.keyCode == 36 {
                 applyRef.value?()
                 return nil
             }

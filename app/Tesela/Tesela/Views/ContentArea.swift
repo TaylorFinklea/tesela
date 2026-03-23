@@ -4,6 +4,7 @@ extension Notification.Name {
     static let teselaSetDeadline = Notification.Name("teselaSetDeadline")
     static let teselaSetScheduled = Notification.Name("teselaSetScheduled")
     static let teselaToggleTodo = Notification.Name("teselaToggleTodo")
+    static let teselaMenuKeyPress = Notification.Name("teselaMenuKeyPress")
 }
 
 // MARK: - ContentArea

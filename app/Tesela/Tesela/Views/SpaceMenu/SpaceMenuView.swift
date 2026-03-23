@@ -3,6 +3,7 @@ import SwiftUI
 // MARK: - SpaceMenuView
 // Neovim which-key-style leader menu. Appears in Normal mode when Space is pressed.
 // Two-level: categories → commands. Press a key at each level.
+// Keys are forwarded from BlockView via .teselaMenuKeyPress notification.
 
 struct SpaceMenuView: View {
     @Environment(AppState.self) private var appState
@@ -11,23 +12,26 @@ struct SpaceMenuView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
             HStack {
                 Text(activeCategory == nil ? "Leader" : categoryLabel)
                     .font(.headline)
                 Spacer()
-                Text("ESC to close")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                if activeCategory != nil {
+                    Text("ESC to go back")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                } else {
+                    Text("ESC to close")
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
 
             Divider()
 
-            // Content: categories or commands
             if let cat = activeCategory {
-                // Show commands for this category
                 let commands = CommandRegistry.commandsForCategory(cat)
                 VStack(spacing: 0) {
                     ForEach(commands, id: \.command.id) { key, cmd in
@@ -36,15 +40,11 @@ struct SpaceMenuView: View {
                 }
                 .padding(.vertical, 4)
             } else {
-                // Show top-level categories
                 VStack(spacing: 0) {
                     ForEach(CommandRegistry.spaceCategories, id: \.key) { cat in
                         SpaceMenuRow(key: cat.key, label: cat.label, icon: cat.icon)
                     }
-
                     Divider().padding(.vertical, 4)
-
-                    // Direct actions
                     SpaceMenuRow(key: ":", label: "Command Palette", icon: "⌘")
                     SpaceMenuRow(key: "/", label: "Search Pages", icon: "🔍")
                 }
@@ -54,17 +54,10 @@ struct SpaceMenuView: View {
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         .shadow(color: .black.opacity(0.3), radius: 16, y: 6)
         .frame(width: 260)
-        .onKeyPress { press in
-            handleKey(press.characters)
-            return .handled
-        }
-        .onKeyPress(.escape) {
-            if activeCategory != nil {
-                activeCategory = nil
-            } else {
-                dismiss()
+        .onReceive(NotificationCenter.default.publisher(for: .teselaMenuKeyPress)) { notification in
+            if let chars = notification.userInfo?["characters"] as? String {
+                handleKey(chars)
             }
-            return .handled
         }
     }
 
@@ -74,14 +67,12 @@ struct SpaceMenuView: View {
 
     private func handleKey(_ chars: String) {
         if let cat = activeCategory {
-            // In a category — look for a command match
             let commands = CommandRegistry.commandsForCategory(cat)
             if let match = commands.first(where: { $0.key == chars }) {
                 dismiss()
                 onCommand?(match.command.id)
             }
         } else {
-            // Top level — look for a category or direct action
             if CommandRegistry.spaceCategories.contains(where: { $0.key == chars }) {
                 activeCategory = chars
             } else if chars == ":" {

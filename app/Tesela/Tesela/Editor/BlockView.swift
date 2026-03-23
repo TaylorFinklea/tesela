@@ -115,12 +115,18 @@ class BlockView: NSTextView {
     // MARK: - Key routing
 
     override func keyDown(with event: NSEvent) {
-        // If a menu is visible, intercept Escape to dismiss it and swallow all other keys
+        // If a menu is visible, forward keys to the menu overlay via notification
         if isMenuVisible?() == true {
             if event.keyCode == 53 { // Escape
                 onDismissMenu?()
+            } else if let chars = event.characters, !chars.isEmpty {
+                NotificationCenter.default.post(
+                    name: .teselaMenuKeyPress,
+                    object: nil,
+                    userInfo: ["characters": chars]
+                )
             }
-            return // swallow all keys while menu is open
+            return // don't let keys reach the editor while menu is open
         }
 
         guard let vim = vimEngine else {
