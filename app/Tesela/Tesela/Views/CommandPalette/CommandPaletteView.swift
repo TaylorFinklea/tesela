@@ -100,8 +100,81 @@ struct CommandPaletteView: View {
         let filteredCommands = staticCommands.filter {
             $0.label.localizedCaseInsensitiveContains(query)
         }
-        results = pageResults + filteredCommands
+
+        // Try to parse the query as a natural date (e.g., "March 23", "Mar 23rd", "3/23")
+        var dateResults: [PaletteResult] = []
+        if let dateId = parseNaturalDate(query) {
+            let fmt = DateFormatter()
+            fmt.dateFormat = "yyyy-MM-dd"
+            if let date = fmt.date(from: dateId) {
+                let displayFmt = DateFormatter()
+                displayFmt.dateFormat = "EEEE, MMMM d, yyyy"
+                let title = displayFmt.string(from: date)
+                // Only add if not already in server results
+                if !pageResults.contains(where: { $0.id == "page:\(dateId)" }) {
+                    dateResults.append(.page(id: dateId, title: title, snippet: "Daily note: \(dateId)"))
+                }
+            }
+        }
+
+        results = dateResults + pageResults + filteredCommands
         selectedIndex = 0
+    }
+
+    // Parse natural date strings into "YYYY-MM-DD" format
+    private func parseNaturalDate(_ query: String) -> String? {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let currentYear = Calendar.current.component(.year, from: Date())
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US")
+
+        // Try various formats
+        let formats = [
+            "MMMM d, yyyy",     // March 23, 2026
+            "MMMM d yyyy",      // March 23 2026
+            "MMMM d",           // March 23 (assumes current year)
+            "MMM d, yyyy",      // Mar 23, 2026
+            "MMM d yyyy",       // Mar 23 2026
+            "MMM d",            // Mar 23
+            "M/d/yyyy",         // 3/23/2026
+            "M/d",              // 3/23
+            "MMMM dSS",         // March 23rd (with suffix)
+        ]
+
+        // Strip ordinal suffixes (1st, 2nd, 3rd, 4th, etc.)
+        let cleaned = q.replacingOccurrences(of: #"(\d+)(st|nd|rd|th)"#, with: "$1", options: .regularExpression)
+
+        for format in formats {
+            fmt.dateFormat = format
+            if var date = fmt.date(from: cleaned) {
+                // If format doesn't include year, set to current year
+                if !format.contains("y") {
+                    var components = Calendar.current.dateComponents([.month, .day], from: date)
+                    components.year = currentYear
+                    if let adjusted = Calendar.current.date(from: components) {
+                        date = adjusted
+                    }
+                }
+                let outputFmt = DateFormatter()
+                outputFmt.dateFormat = "yyyy-MM-dd"
+                return outputFmt.string(from: date)
+            }
+        }
+
+        // Also match "today", "tomorrow", "yesterday"
+        let lower = q.lowercased()
+        let outputFmt = DateFormatter()
+        outputFmt.dateFormat = "yyyy-MM-dd"
+
+        if lower == "today" {
+            return outputFmt.string(from: Date())
+        } else if lower == "tomorrow" {
+            return outputFmt.string(from: Calendar.current.date(byAdding: .day, value: 1, to: Date())!)
+        } else if lower == "yesterday" {
+            return outputFmt.string(from: Calendar.current.date(byAdding: .day, value: -1, to: Date())!)
+        }
+
+        return nil
     }
 
     // MARK: - Execute
