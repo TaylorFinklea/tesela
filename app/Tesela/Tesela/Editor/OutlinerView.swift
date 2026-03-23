@@ -628,8 +628,14 @@ class OutlinerView: NSView {
             delegate?.outlinerDidRequestCommandPalette()
 
         // Undo / redo
-        case .undo: view.undoManager?.undo()
-        case .redo: view.undoManager?.redo()
+        case .undo:
+            if let um = view.undoManager ?? view.window?.undoManager {
+                um.undo()
+            }
+        case .redo:
+            if let um = view.undoManager ?? view.window?.undoManager {
+                um.redo()
+            }
 
         // Todo toggle: cycle #Task tag + status:: property
         case .toggleTodo:
