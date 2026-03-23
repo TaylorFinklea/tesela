@@ -41,8 +41,10 @@ actor APIClient {
         try await getDecoded("/notes/\(id)")
     }
 
-    func getDailyNote() async throws -> Page {
-        try await getDecoded("/notes/daily")
+    func getDailyNote(date: String? = nil) async throws -> Page {
+        var query: [URLQueryItem] = []
+        if let date { query.append(URLQueryItem(name: "date", value: date)) }
+        return try await getDecoded("/notes/daily", query: query)
     }
 
     func createNote(title: String, content: String, tags: [String] = []) async throws -> Page {

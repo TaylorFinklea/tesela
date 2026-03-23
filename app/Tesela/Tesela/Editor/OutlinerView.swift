@@ -138,6 +138,12 @@ class OutlinerView: NSView {
                 pill.frame.origin = NSPoint(x: badgeX, y: yOffset + (height - 18) / 2)
                 addSubview(pill)
                 badgeX += pill.frame.width + 4
+
+                // Edit button (pencil) to reopen date picker
+                let editBtn = makeEditDateButton(propertyKey: "deadline", blockIndex: index)
+                editBtn.frame.origin = NSPoint(x: badgeX - 2, y: yOffset + (height - 14) / 2)
+                addSubview(editBtn)
+                badgeX += editBtn.frame.width + 4
             }
 
             if let scheduled = block.scheduled {
@@ -145,6 +151,11 @@ class OutlinerView: NSView {
                 pill.frame.origin = NSPoint(x: badgeX, y: yOffset + (height - 18) / 2)
                 addSubview(pill)
                 badgeX += pill.frame.width + 4
+
+                let editBtn = makeEditDateButton(propertyKey: "scheduled", blockIndex: index)
+                editBtn.frame.origin = NSPoint(x: badgeX - 2, y: yOffset + (height - 14) / 2)
+                addSubview(editBtn)
+                badgeX += editBtn.frame.width + 4
             }
 
             if let effort = block.effort {
@@ -286,6 +297,21 @@ class OutlinerView: NSView {
         guard let date = fmt.date(from: dateStr),
               let threshold = Calendar.current.date(byAdding: .day, value: days, to: Date()) else { return false }
         return date <= threshold && date >= Calendar.current.startOfDay(for: Date())
+    }
+
+    private func makeEditDateButton(propertyKey: String, blockIndex: Int) -> NSView {
+        let btn = NSButton(title: "✎", target: nil, action: nil)
+        btn.isBordered = false
+        btn.font = .systemFont(ofSize: 10)
+        btn.frame.size = NSSize(width: 16, height: 14)
+        let action = DatePickerAction { [weak self] in
+            guard let self, blockIndex < self.blockViews.count else { return }
+            self.showDatePicker(for: propertyKey, at: blockIndex, anchorView: self.blockViews[blockIndex])
+        }
+        btn.target = action
+        btn.action = #selector(DatePickerAction.execute)
+        objc_setAssociatedObject(btn, "editAction", action, .OBJC_ASSOCIATION_RETAIN)
+        return btn
     }
 
     private func makePropertyPill(key: String, value: String) -> NSView {
@@ -740,9 +766,12 @@ class OutlinerView: NSView {
         guard index < blocks.count else { return }
         let block = blocks[index]
 
+        // Store as wiki-link to the date page: deadline:: [[2026-03-30]]
+        let linkedValue = "[[\(value)]]"
+        let propertyLine = "\(key):: \(linkedValue)"
+
         // Split text into lines and find/replace existing property line
         var lines = block.text.components(separatedBy: "\n")
-        let propertyLine = "\(key):: \(value)"
         var replaced = false
 
         for (i, line) in lines.enumerated() {
@@ -771,11 +800,33 @@ class OutlinerView: NSView {
             blockViews[index].string = text
             if let ts = blockViews[index].textStorage {
                 BlockStyler.style(text: text, textStorage: ts)
+                // Also apply link attributes for the [[date]] link
+                let nsText = text as NSString
+                let fullRange = NSRange(location: 0, length: nsText.length)
+                let linkRegex = try? NSRegularExpression(pattern: #"\[\[([^\]]+)\]\]"#)
+                linkRegex?.enumerateMatches(in: text, range: fullRange) { match, _, _ in
+                    guard let match, let captureRange = Range(match.range(at: 1), in: text) else { return }
+                    let target = String(text[captureRange])
+                    ts.addAttribute(.link, value: "wikilink://\(target)", range: match.range)
+                }
             }
         }
         pendingFocusIndex = index
         rebuildBlockViews()
         delegate?.outlinerDidChangeContent(blocks: blocks)
+
+        // Ensure the daily note page exists for this date
+        Task { @MainActor in
+            // This creates the page if it doesn't exist (server's daily_note is create-on-demand)
+            _ = try? await self.apiClient?.getDailyNote(date: value)
+        }
+    }
+
+    // Weak reference to APIClient for creating daily notes
+    private weak var _apiClient: AnyObject?
+    var apiClient: APIClient? {
+        get { _apiClient as? APIClient }
+        set { _apiClient = newValue as AnyObject? }
     }
 
     private func applyMotionSelection(_ motion: Motion, on view: BlockView) {
@@ -808,6 +859,7 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var onSpaceMenu: (() -> Void)?
     var isMenuVisible: (() -> Bool)?
     var onDismissMenu: (() -> Void)?
+    var apiClient: APIClient?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -821,6 +873,7 @@ struct OutlinerCoordinator: NSViewRepresentable {
         outliner.delegate = context.coordinator
         outliner.menuVisibilityCheck = isMenuVisible
         outliner.onDismissMenuCallback = onDismissMenu
+        outliner.apiClient = apiClient
         context.coordinator.outlinerView = outliner
 
         scrollView.documentView = outliner

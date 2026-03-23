@@ -47,8 +47,8 @@ enum BlockParser {
                 let props = extractProperties(from: block.text)
                 block.properties = props
                 block.priority = Priority(rawValue: block.properties.removeValue(forKey: "priority") ?? "")
-                block.deadline = block.properties.removeValue(forKey: "deadline")
-                block.scheduled = block.properties.removeValue(forKey: "scheduled")
+                block.deadline = stripWikiLink(block.properties.removeValue(forKey: "deadline"))
+                block.scheduled = stripWikiLink(block.properties.removeValue(forKey: "scheduled"))
                 block.effort = block.properties.removeValue(forKey: "effort")
             }
         }
@@ -128,8 +128,8 @@ enum BlockParser {
             properties: properties
         )
         block.priority = Priority(rawValue: properties.removeValue(forKey: "priority") ?? "")
-        block.deadline = properties.removeValue(forKey: "deadline")
-        block.scheduled = properties.removeValue(forKey: "scheduled")
+        block.deadline = stripWikiLink(properties.removeValue(forKey: "deadline"))
+        block.scheduled = stripWikiLink(properties.removeValue(forKey: "scheduled"))
         block.effort = properties.removeValue(forKey: "effort")
         block.properties = properties  // remaining non-task properties
         return block
@@ -157,6 +157,15 @@ enum BlockParser {
             props[String(match.output.1)] = String(match.output.2)
         }
         return props
+    }
+
+    // Strip [[...]] wrapper from a property value (dates stored as wiki-links)
+    private static func stripWikiLink(_ value: String?) -> String? {
+        guard var v = value else { return nil }
+        if v.hasPrefix("[[") && v.hasSuffix("]]") {
+            v = String(v.dropFirst(2).dropLast(2))
+        }
+        return v.isEmpty ? nil : v
     }
 
     // MARK: - Wiki-link extraction

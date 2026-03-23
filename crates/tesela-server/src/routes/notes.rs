@@ -63,9 +63,31 @@ pub async fn get_note(
     Ok(Json(note))
 }
 
-pub async fn get_daily_note(State(s): State<Arc<AppState>>) -> AppResult<Json<Note>> {
+#[derive(Deserialize)]
+pub struct DailyQuery {
+    pub date: Option<String>,  // optional ISO date "2026-03-30"
+}
+
+pub async fn get_daily_note(
+    Query(q): Query<DailyQuery>,
+    State(s): State<Arc<AppState>>,
+) -> AppResult<Json<Note>> {
     let config = DailyNoteConfig::default();
-    let note = s.store.daily_note(None, &config).await?;
+    let date = q.date.and_then(|d| {
+        // Parse "YYYY-MM-DD" without pulling in chrono directly
+        let parts: Vec<&str> = d.split('-').collect();
+        if parts.len() == 3 {
+            if let (Ok(y), Ok(m), Ok(d)) = (
+                parts[0].parse::<i32>(),
+                parts[1].parse::<u32>(),
+                parts[2].parse::<u32>(),
+            ) {
+                return chrono::NaiveDate::from_ymd_opt(y, m, d);
+            }
+        }
+        None
+    });
+    let note = s.store.daily_note(date, &config).await?;
     Ok(Json(note))
 }
 
