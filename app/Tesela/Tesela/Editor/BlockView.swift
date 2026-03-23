@@ -146,9 +146,10 @@ class BlockView: NSTextView {
 
         // `/` in Insert mode → slash command menu
         if vim.currentMode == .insert && event.characters == "/" {
-            // Only trigger at start of block or after whitespace
             let pos = selectedRange().location
-            if pos == 0 || (pos > 0 && string[string.index(string.startIndex, offsetBy: pos - 1)] == " ") {
+            let prevIsSpace = pos > 0 && pos <= string.count &&
+                string[string.index(string.startIndex, offsetBy: pos - 1)] == " "
+            if pos == 0 || prevIsSpace {
                 onSlashMenu?()
                 return
             }

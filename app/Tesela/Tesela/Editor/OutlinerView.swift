@@ -176,19 +176,6 @@ class OutlinerView: NSView {
 
             yOffset += height + 4
 
-            // Property pills removed — properties are now visible text on their own lines
-            if false {  // dead code — keeping makePropertyPill for potential future use
-                var propX = textX
-                let propY = yOffset - 2
-                for (key, value) in block.properties.sorted(by: { $0.key < $1.key }) {
-                    let pill = makePropertyPill(key: key, value: value)
-                    let pillWidth = pill.frame.width
-                    pill.frame.origin = NSPoint(x: propX, y: propY)
-                    addSubview(pill)
-                    propX += pillWidth + 4
-                }
-                yOffset += 22
-            }
         }
 
         let minHeight = superview?.bounds.height ?? 400
@@ -315,39 +302,6 @@ class OutlinerView: NSView {
         return btn
     }
 
-    private func makePropertyPill(key: String, value: String) -> NSView {
-        let container = NSView()
-        container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.systemPurple.withAlphaComponent(0.15).cgColor
-        container.layer?.cornerRadius = 4
-
-        let keyLabel = NSTextField(labelWithString: "\(key):")
-        keyLabel.font = .boldSystemFont(ofSize: 10)
-        keyLabel.textColor = .systemPurple
-        keyLabel.isEditable = false
-        keyLabel.isBordered = false
-        keyLabel.drawsBackground = false
-        keyLabel.sizeToFit()
-        keyLabel.frame.origin = NSPoint(x: 6, y: 1)
-        container.addSubview(keyLabel)
-
-        let valueLabel = NSTextField(labelWithString: " \(value)")
-        valueLabel.font = .systemFont(ofSize: 10)
-        valueLabel.textColor = .labelColor
-        valueLabel.isEditable = false
-        valueLabel.isBordered = false
-        valueLabel.drawsBackground = false
-        valueLabel.sizeToFit()
-        valueLabel.frame.origin = NSPoint(x: 6 + keyLabel.frame.width, y: 1)
-        container.addSubview(valueLabel)
-
-        container.frame.size = NSSize(
-            width: keyLabel.frame.width + valueLabel.frame.width + 12,
-            height: 18
-        )
-        return container
-    }
-
     // MARK: - Callback wiring
 
     private func wireCallbacks(for view: BlockView, at index: Int) {
@@ -404,8 +358,13 @@ class OutlinerView: NSView {
 
         view.onBackspaceAtStart = { [weak self] in
             guard let self, index > 0, index < blocks.count else { return }
-            blocks[index - 1].text += blocks[index].text
+            let cursorPos = blocks[index - 1].text.count
+            let mergeText = blocks[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !mergeText.isEmpty {
+                blocks[index - 1].text += " " + mergeText
+            }
             blocks.remove(at: index)
+            pendingCursorPosition = cursorPos
             pendingFocusIndex = index - 1
             rebuildBlockViews()
             delegate?.outlinerDidChangeContent(blocks: blocks)
@@ -786,13 +745,20 @@ class OutlinerView: NSView {
             previewLabel.isHidden = showingText
             hintLabel.stringValue = showingText ? "Tab: switch to text input" : "Tab: switch to calendar"
             if !showingText {
+                // Text just became visible — focus it
                 textField.window?.makeFirstResponder(textField)
             }
         }
-        let tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        let applyRef = Box<(() -> Void)?>(nil) // forward reference for Enter handler
+        let tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak textField] event in
             if event.keyCode == 48 { // Tab
                 tabAction.handler()
-                return nil // consume the Tab
+                return nil
+            }
+            // Enter key in text field mode → apply date
+            if event.keyCode == 36, let tf = textField, !tf.isHidden {
+                applyRef.value?()
+                return nil
             }
             return event
         }
@@ -823,6 +789,8 @@ class OutlinerView: NSView {
             popover?.close()
             self.activePopover = nil
         }
+
+        applyRef.value = applyAndClose
 
         let clickAction = DatePickerAction(handler: applyAndClose)
         setButton.target = clickAction
@@ -959,9 +927,15 @@ class OutlinerView: NSView {
 
 // MARK: - DatePickerAction (target-action helper for NSButton closure)
 class DatePickerAction: NSObject {
-    let handler: () -> Void
+    var handler: () -> Void
     init(handler: @escaping () -> Void) { self.handler = handler }
     @objc func execute() { handler() }
+}
+
+// MARK: - Box (mutable reference wrapper for forward references in closures)
+class Box<T> {
+    var value: T
+    init(_ value: T) { self.value = value }
 }
 
 // MARK: - OutlinerCoordinator (NSViewRepresentable)

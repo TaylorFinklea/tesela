@@ -30,6 +30,14 @@ struct MainShellView: View {
         .sheet(isPresented: $state.isShowingNewPageSheet) {
             NewPageSheet()
         }
+        .alert("Error", isPresented: Binding(
+            get: { state.lastError != nil },
+            set: { if !$0 { state.lastError = nil } }
+        )) {
+            Button("OK") { state.lastError = nil }
+        } message: {
+            Text(state.lastError ?? "")
+        }
     }
 }
 

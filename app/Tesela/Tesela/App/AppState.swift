@@ -31,6 +31,7 @@ final class AppState {
     var isSpaceMenuVisible = false
     var isShowingNewPageSheet = false
     var isSearchVisible = false
+    var lastError: String?
     var searchQuery = ""
 
     // MARK: - Services
@@ -137,7 +138,7 @@ final class AppState {
             open(page)
             await refreshPages()  // pick up server-generated frontmatter
         } catch {
-            // TODO: surface error to user
+            lastError = "Failed to create page: \(error.localizedDescription)"
         }
     }
 
@@ -146,13 +147,12 @@ final class AppState {
         let fullContent = rebuildContent(from: page, newBody: newBody)
         do {
             let updated = try await api.updateNote(id: id, content: fullContent)
-            // Update currentPage and the page in the list
             currentPage = updated
             if let idx = pages.firstIndex(where: { $0.id == id }) {
                 pages[idx] = updated
             }
         } catch {
-            // TODO: surface error to user
+            lastError = "Failed to save: \(error.localizedDescription)"
         }
     }
 
@@ -166,7 +166,7 @@ final class AppState {
             recentPageIds.removeAll { $0 == page.id }
             favoritePageIds.removeAll { $0 == page.id }
         } catch {
-            // TODO: surface error to user
+            lastError = "Failed to delete: \(error.localizedDescription)"
         }
     }
 
