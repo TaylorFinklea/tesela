@@ -8,7 +8,6 @@ enum BlockStyler {
     private static let wikiLinkRegex = try! NSRegularExpression(pattern: #"\[\[([^\]]+)\]\]"#)
     private static let tagRegex = try! NSRegularExpression(pattern: #"#([A-Za-z0-9_\-]+)"#)
     private static let propertyRegex = try! NSRegularExpression(pattern: #"([A-Za-z_][A-Za-z0-9_]*):: (.+)"#)
-    private static let todoPrefix = try! NSRegularExpression(pattern: #"^(TODO|DOING|DONE) "#)
 
     static func style(text: String, textStorage: NSTextStorage) {
         let nsText = text as NSString
@@ -33,7 +32,7 @@ enum BlockStyler {
             textStorage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: range)
         }
 
-        // key:: value properties → styled visibly (secondary color, smaller font)
+        // key:: value properties → styled visibly (purple key, secondary value)
         propertyRegex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
             guard let match else { return }
             let keyRange = match.range(at: 1)
@@ -42,7 +41,6 @@ enum BlockStyler {
             let valueRange = match.range(at: 2)
             textStorage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: valueRange)
             textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: NSFont.systemFontSize - 1), range: valueRange)
-            // Style the `:: ` separator
             let sepStart = keyRange.location + keyRange.length
             let sepLen = valueRange.location - sepStart
             if sepLen > 0 {
@@ -50,13 +48,6 @@ enum BlockStyler {
                 textStorage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: sepRange)
                 textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: NSFont.systemFontSize - 1), range: sepRange)
             }
-        }
-
-        // TODO/DOING/DONE prefix → hidden (icon shown in bullet area by OutlinerView)
-        todoPrefix.enumerateMatches(in: text, range: fullRange) { match, _, _ in
-            guard let range = match?.range else { return }
-            textStorage.addAttribute(.foregroundColor, value: NSColor.clear, range: range)
-            textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: 1), range: range)
         }
 
         textStorage.endEditing()

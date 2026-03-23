@@ -45,13 +45,13 @@ final class BlockParserTests: XCTestCase {
 
     func testExtractsTodoState() {
         let (state, text) = BlockParser.extractTodo(from: "TODO Buy groceries")
-        XCTAssertEqual(state, .todo)
+        XCTAssertEqual(state, "TODO")
         XCTAssertEqual(text, "Buy groceries")
     }
 
     func testExtractsDoneState() {
         let (state, _) = BlockParser.extractTodo(from: "DONE Finished task")
-        XCTAssertEqual(state, .done)
+        XCTAssertEqual(state, "DONE")
     }
 
     func testNoTodoState() {

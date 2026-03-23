@@ -87,13 +87,14 @@ class OutlinerView: NSView {
             let priorityWidth: CGFloat = block.priority != nil ? 22 : 0
             let textWidth = max(bounds.width - textX - 12 - badgeWidth - priorityWidth, 80)
 
-            // Todo indicator or bullet
+            // Task indicator or bullet (based on #Task tag + status:: property)
             let (bulletSymbol, bulletColor): (String, NSColor) = {
-                if let state = block.todoState {
-                    switch state {
-                    case .todo:  return (state.displayChar, .secondaryLabelColor)
-                    case .doing: return (state.displayChar, .systemOrange)
-                    case .done:  return (state.displayChar, .systemGreen)
+                if block.isTask {
+                    switch block.status {
+                    case "todo":  return ("☐", .secondaryLabelColor)
+                    case "doing": return ("◎", .systemOrange)
+                    case "done":  return ("☑", .systemGreen)
+                    default:      return ("☐", .secondaryLabelColor)
                     }
                 }
                 return (block.indentLevel == 0 ? "•" : "◦", .tertiaryLabelColor)
@@ -634,29 +635,50 @@ class OutlinerView: NSView {
         case .undo: view.undoManager?.undo()
         case .redo: view.undoManager?.redo()
 
-        // Todo toggle
+        // Todo toggle: cycle #Task tag + status:: property
         case .toggleTodo:
             let block = blocks[index]
-            let nextState: TodoState? = {
-                switch block.todoState {
-                case nil:    return .todo
-                case .todo:  return .doing
-                case .doing: return .done
-                case .done:  return nil
+            var lines = block.text.components(separatedBy: "\n")
+            let firstLine = lines[0]
+
+            if !block.isTask {
+                // Not a task → add #Task tag + status:: todo
+                if !firstLine.contains("#Task") {
+                    lines[0] = firstLine + " #Task"
                 }
-            }()
-            // Update block text: remove old prefix, add new one
-            var text = block.text
-            if let current = block.todoState {
-                let prefix = "\(current.rawValue) "
-                if text.hasPrefix(prefix) { text = String(text.dropFirst(prefix.count)) }
+                lines.append("status:: todo")
+            } else {
+                // Already a task → cycle status
+                let nextStatus: String? = switch block.status {
+                case "todo":  "doing"
+                case "doing": "done"
+                default: nil  // done or unknown → remove task
+                }
+
+                if let next = nextStatus {
+                    // Update existing status line
+                    var found = false
+                    for (i, line) in lines.enumerated() {
+                        if line.trimmingCharacters(in: .whitespaces).hasPrefix("status:: ") {
+                            lines[i] = "status:: \(next)"
+                            found = true
+                            break
+                        }
+                    }
+                    if !found { lines.append("status:: \(next)") }
+                } else {
+                    // Remove #Task tag and status line
+                    lines[0] = lines[0].replacingOccurrences(of: " #Task", with: "")
+                        .replacingOccurrences(of: "#Task ", with: "")
+                        .replacingOccurrences(of: "#Task", with: "")
+                    lines.removeAll { $0.trimmingCharacters(in: .whitespaces).hasPrefix("status:: ") }
+                }
             }
-            if let next = nextState {
-                text = "\(next.rawValue) \(text)"
-            }
+
+            let text = lines.joined(separator: "\n")
             block.text = text
-            block.todoState = nextState
-            // Update the NSTextView content directly
+            block.tags = BlockParser.extractTags(from: text)
+            block.properties = BlockParser.extractProperties(from: text)
             view.string = text
             if let ts = view.textStorage {
                 BlockStyler.style(text: text, textStorage: ts)
@@ -805,6 +827,12 @@ class OutlinerView: NSView {
         let clickAction = DatePickerAction(handler: applyAndClose)
         setButton.target = clickAction
         setButton.action = #selector(DatePickerAction.execute)
+
+        // Text field Enter key also triggers apply
+        let textFieldAction = DatePickerAction(handler: applyAndClose)
+        textField.target = textFieldAction
+        textField.action = #selector(DatePickerAction.execute)
+        objc_setAssociatedObject(popover, "textFieldAction", textFieldAction, .OBJC_ASSOCIATION_RETAIN)
         objc_setAssociatedObject(popover, "clickAction", clickAction, .OBJC_ASSOCIATION_RETAIN)
         objc_setAssociatedObject(popover, "tabAction", tabAction, .OBJC_ASSOCIATION_RETAIN)
 

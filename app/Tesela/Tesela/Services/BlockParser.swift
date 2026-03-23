@@ -43,13 +43,14 @@ enum BlockParser {
             } else if let block = lastBlock {
                 // Continuation line (property or multi-line text) — belongs to last block
                 block.text += "\n" + text.trimmingCharacters(in: .whitespaces)
-                // Re-extract properties from the updated text
-                let props = extractProperties(from: block.text)
+                // Re-extract tags and properties from the updated full text
+                block.tags = extractTags(from: block.text)
+                var props = extractProperties(from: block.text)
+                block.priority = Priority(rawValue: props.removeValue(forKey: "priority") ?? "")
+                block.deadline = stripWikiLink(props.removeValue(forKey: "deadline"))
+                block.scheduled = stripWikiLink(props.removeValue(forKey: "scheduled"))
+                block.effort = props.removeValue(forKey: "effort")
                 block.properties = props
-                block.priority = Priority(rawValue: block.properties.removeValue(forKey: "priority") ?? "")
-                block.deadline = stripWikiLink(block.properties.removeValue(forKey: "deadline"))
-                block.scheduled = stripWikiLink(block.properties.removeValue(forKey: "scheduled"))
-                block.effort = block.properties.removeValue(forKey: "effort")
             }
         }
 
@@ -115,15 +116,12 @@ enum BlockParser {
     }
 
     private static func makeBlock(text: String, indentLevel: Int) -> Block {
-        let (todoState, cleanText) = extractTodo(from: text)
-        let tags = extractTags(from: cleanText)
-        var properties = extractProperties(from: cleanText)
+        let tags = extractTags(from: text)
+        var properties = extractProperties(from: text)
 
-        // Extract first-class task properties from generic properties
         let block = Block(
-            text: cleanText,
+            text: text,
             indentLevel: indentLevel,
-            todoState: todoState,
             tags: tags,
             properties: properties
         )
@@ -131,15 +129,15 @@ enum BlockParser {
         block.deadline = stripWikiLink(properties.removeValue(forKey: "deadline"))
         block.scheduled = stripWikiLink(properties.removeValue(forKey: "scheduled"))
         block.effort = properties.removeValue(forKey: "effort")
-        block.properties = properties  // remaining non-task properties
+        block.properties = properties
         return block
     }
 
-    static func extractTodo(from text: String) -> (TodoState?, String) {
-        for state in TodoState.allCases {
-            let prefix = "\(state.rawValue) "
+    // Legacy: keep for backward compat with old TODO-prefix notes
+    static func extractTodo(from text: String) -> (String?, String) {
+        for prefix in ["TODO ", "DOING ", "DONE "] {
             if text.hasPrefix(prefix) {
-                return (state, String(text.dropFirst(prefix.count)))
+                return (String(prefix.dropLast(1)), String(text.dropFirst(prefix.count)))
             }
         }
         return (nil, text)

@@ -9,7 +9,6 @@ final class Block: Identifiable, @unchecked Sendable {
     var children: [Block]
     var indentLevel: Int
     var isCollapsed: Bool
-    var todoState: TodoState?
     var tags: [String]
     var properties: [String: String]
 
@@ -25,7 +24,6 @@ final class Block: Identifiable, @unchecked Sendable {
         children: [Block] = [],
         indentLevel: Int = 0,
         isCollapsed: Bool = false,
-        todoState: TodoState? = nil,
         tags: [String] = [],
         properties: [String: String] = [:]
     ) {
@@ -34,31 +32,31 @@ final class Block: Identifiable, @unchecked Sendable {
         self.children = children
         self.indentLevel = indentLevel
         self.isCollapsed = isCollapsed
-        self.todoState = todoState
         self.tags = tags
         self.properties = properties
     }
-}
 
-// MARK: - TodoState
-enum TodoState: String, Codable, Hashable, Sendable, CaseIterable {
-    case todo = "TODO"
-    case doing = "DOING"
-    case done = "DONE"
+    // MARK: - Task computed properties
 
-    var next: TodoState {
-        switch self {
-        case .todo: .doing
-        case .doing: .done
-        case .done: .todo
+    var isTask: Bool { tags.contains("Task") }
+
+    var status: String? {
+        get { properties["status"] }
+        set {
+            if let v = newValue {
+                properties["status"] = v
+            } else {
+                properties.removeValue(forKey: "status")
+            }
         }
     }
 
-    var displayChar: String {
-        switch self {
-        case .todo: "☐"
-        case .doing: "◎"
-        case .done: "☑"
+    var statusDisplayChar: String {
+        switch status {
+        case "todo":  return "☐"
+        case "doing": return "◎"
+        case "done":  return "☑"
+        default:      return "•"
         }
     }
 }
