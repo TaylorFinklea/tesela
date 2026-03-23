@@ -36,6 +36,22 @@ final class Block: Identifiable, @unchecked Sendable {
         self.properties = properties
     }
 
+    func deepCopy() -> Block {
+        let copy = Block(
+            text: text,
+            children: children.map { $0.deepCopy() },
+            indentLevel: indentLevel,
+            isCollapsed: isCollapsed,
+            tags: tags,
+            properties: properties
+        )
+        copy.priority = priority
+        copy.deadline = deadline
+        copy.scheduled = scheduled
+        copy.effort = effort
+        return copy
+    }
+
     // MARK: - Task computed properties
 
     var isTask: Bool { tags.contains("Task") }

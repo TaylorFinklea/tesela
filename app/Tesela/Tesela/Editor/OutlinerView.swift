@@ -30,6 +30,17 @@ class OutlinerView: NSView {
     private var lastBoundsWidth: CGFloat = 0
     private var hasInitialized = false
 
+    // Structural undo/redo stacks (for block-level operations)
+    private var undoStack: [([Block], Int?)] = []  // (blocks snapshot, focused index)
+    private var redoStack: [([Block], Int?)] = []
+    private let maxUndoDepth = 50
+
+    private func saveUndoState() {
+        undoStack.append((blocks.map { $0.deepCopy() }, focusedBlockIndex))
+        if undoStack.count > maxUndoDepth { undoStack.removeFirst() }
+        redoStack.removeAll()  // new action invalidates redo
+    }
+
     override var isFlipped: Bool { true }
 
     override init(frame: NSRect) {
@@ -367,6 +378,7 @@ class OutlinerView: NSView {
 
         view.onEnterPressed = { [weak self] before, after in
             guard let self, index < blocks.count else { return }
+            saveUndoState()
             blocks[index].text = before
             let newBlock = Block(text: after, indentLevel: blocks[index].indentLevel)
             blocks.insert(newBlock, at: index + 1)
@@ -378,6 +390,7 @@ class OutlinerView: NSView {
 
         view.onTabPressed = { [weak self] in
             guard let self, index < blocks.count else { return }
+            saveUndoState()
             let maxIndent = index > 0 ? blocks[index - 1].indentLevel + 1 : 0
             blocks[index].indentLevel = min(blocks[index].indentLevel + 1, maxIndent)
             pendingFocusIndex = index
@@ -387,6 +400,7 @@ class OutlinerView: NSView {
 
         view.onShiftTabPressed = { [weak self] in
             guard let self, index < blocks.count else { return }
+            saveUndoState()
             blocks[index].indentLevel = max(blocks[index].indentLevel - 1, 0)
             pendingFocusIndex = index
             rebuildBlockViews()
@@ -395,6 +409,7 @@ class OutlinerView: NSView {
 
         view.onBackspaceAtStart = { [weak self] in
             guard let self, index > 0, index < blocks.count else { return }
+            saveUndoState()
             let cursorPos = blocks[index - 1].text.count
             let mergeText = blocks[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !mergeText.isEmpty {
@@ -452,6 +467,15 @@ class OutlinerView: NSView {
         guard index < blockViews.count, index < blocks.count else { return }
         let view = blockViews[index]
         let count = vimEngine.lastCount
+
+        // Save undo state before structural mutations
+        switch cmd {
+        case .deleteBlock, .indentBlock, .dedentBlock, .joinBlock,
+             .pasteBelow, .pasteAbove, .toggleTodo,
+             .enterInsertNewLineBelow, .enterInsertNewLineAbove:
+            saveUndoState()
+        default: break
+        }
 
         // Track edits for dot-repeat
         switch cmd {
@@ -627,13 +651,27 @@ class OutlinerView: NSView {
         case .startSearch:
             delegate?.outlinerDidRequestCommandPalette()
 
-        // Undo / redo
+        // Undo / redo — structural stack first, then NSTextView
         case .undo:
-            if let um = view.undoManager ?? view.window?.undoManager {
+            if !undoStack.isEmpty {
+                redoStack.append((blocks.map { $0.deepCopy() }, focusedBlockIndex))
+                let (saved, savedFocus) = undoStack.removeLast()
+                blocks = saved
+                pendingFocusIndex = savedFocus ?? 0
+                rebuildBlockViews()
+                delegate?.outlinerDidChangeContent(blocks: blocks)
+            } else if let um = view.undoManager ?? view.window?.undoManager {
                 um.undo()
             }
         case .redo:
-            if let um = view.undoManager ?? view.window?.undoManager {
+            if !redoStack.isEmpty {
+                undoStack.append((blocks.map { $0.deepCopy() }, focusedBlockIndex))
+                let (saved, savedFocus) = redoStack.removeLast()
+                blocks = saved
+                pendingFocusIndex = savedFocus ?? 0
+                rebuildBlockViews()
+                delegate?.outlinerDidChangeContent(blocks: blocks)
+            } else if let um = view.undoManager ?? view.window?.undoManager {
                 um.redo()
             }
 
