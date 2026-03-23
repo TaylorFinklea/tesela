@@ -55,6 +55,10 @@ class OutlinerView: NSView {
             guard let self, let idx = focusedBlockIndex, idx < blockViews.count else { return }
             showDatePicker(for: "scheduled", at: idx, anchorView: blockViews[idx])
         }
+        NotificationCenter.default.addObserver(forName: .teselaToggleTodo, object: nil, queue: .main) { [weak self] _ in
+            guard let self, let idx = focusedBlockIndex, idx < blockViews.count else { return }
+            executeVimCommand(.toggleTodo, at: idx)
+        }
     }
 
     override func layout() {
@@ -651,6 +655,20 @@ class OutlinerView: NSView {
             showDatePicker(for: "deadline", at: index, anchorView: view)
         case .setScheduled:
             showDatePicker(for: "scheduled", at: index, anchorView: view)
+
+        // Join: merge next block into current (Vim J)
+        case .joinBlock:
+            guard index + 1 < blocks.count else { break }
+            let cursorPos = blocks[index].text.count
+            let nextText = blocks[index + 1].text.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !nextText.isEmpty {
+                blocks[index].text += " " + nextText
+            }
+            blocks.remove(at: index + 1)
+            pendingFocusIndex = index
+            pendingCursorPosition = cursorPos
+            rebuildBlockViews()
+            delegate?.outlinerDidChangeContent(blocks: blocks)
 
         case .replaceChar, .moveUp, .moveDown:
             break

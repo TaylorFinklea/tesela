@@ -67,6 +67,7 @@ enum EditorCommand: Equatable, Sendable {
     case pasteAbove
     case indentBlock
     case dedentBlock
+    case joinBlock
     case replaceChar(Character)
     case undo
     case redo
@@ -165,6 +166,7 @@ struct VimKeyHandler: Sendable {
         case "O":
             state.mode = .insert
             return .enterInsertNewLineAbove
+        case "J": return .joinBlock
         case "v":
             state.mode = .visual
             return .enterVisual

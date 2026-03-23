@@ -3,6 +3,7 @@ import SwiftUI
 extension Notification.Name {
     static let teselaSetDeadline = Notification.Name("teselaSetDeadline")
     static let teselaSetScheduled = Notification.Name("teselaSetScheduled")
+    static let teselaToggleTodo = Notification.Name("teselaToggleTodo")
 }
 
 // MARK: - ContentArea
@@ -185,9 +186,11 @@ struct PageEditorView: View {
         // These will be handled by notifying the OutlinerView via state changes
         switch commandId {
         case "todo", "doing", "done":
-            // Toggle todo — the outliner handles this via Vim command
             appState.isSlashMenuVisible = false
             appState.isSpaceMenuVisible = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                NotificationCenter.default.post(name: .teselaToggleTodo, object: nil)
+            }
         case "deadline":
             appState.isSlashMenuVisible = false
             appState.isSpaceMenuVisible = false
