@@ -79,6 +79,14 @@ enum CommandRegistry {
             (">", all.first { $0.id == "indent" }!),
             ("<", all.first { $0.id == "dedent" }!),
         ]
+        case "f": return [
+            ("f", MenuCommand(id: "search", label: "Search Pages", icon: "🔍", category: "find")),
+        ]
+        case "n": return [
+            ("g", MenuCommand(id: "nav-graph", label: "Graph View", icon: "◎", category: "nav")),
+            ("t", MenuCommand(id: "nav-tiles", label: "Tiles View", icon: "📅", category: "nav")),
+            ("p", MenuCommand(id: "nav-pages", label: "Pages View", icon: "📄", category: "nav")),
+        ]
         default: return []
         }
     }

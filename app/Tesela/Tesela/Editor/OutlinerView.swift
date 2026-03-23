@@ -47,6 +47,43 @@ class OutlinerView: NSView {
         layer?.backgroundColor = NSColor.clear.cgColor
         autoresizingMask = [.width]
 
+        // Generic command execution from slash/space menus
+        NotificationCenter.default.addObserver(forName: .teselaExecuteCommand, object: nil, queue: .main) { [weak self] notification in
+            guard let self,
+                  let idx = focusedBlockIndex, idx < blockViews.count,
+                  let commandId = notification.userInfo?["commandId"] as? String else { return }
+
+            switch commandId {
+            case "todo", "doing", "done":
+                executeVimCommand(.toggleTodo, at: idx)
+            case "deadline":
+                showDatePicker(for: "deadline", at: idx, anchorView: blockViews[idx])
+            case "scheduled":
+                showDatePicker(for: "scheduled", at: idx, anchorView: blockViews[idx])
+            case "block-below":
+                executeVimCommand(.enterInsertNewLineBelow, at: idx)
+            case "block-above":
+                executeVimCommand(.enterInsertNewLineAbove, at: idx)
+            case "delete-block":
+                executeVimCommand(.deleteBlock, at: idx)
+            case "indent":
+                executeVimCommand(.indentBlock, at: idx)
+            case "dedent":
+                executeVimCommand(.dedentBlock, at: idx)
+            case "priority":
+                // TODO: priority picker UI
+                break
+            case "effort":
+                // TODO: effort input UI
+                break
+            case "search":
+                delegate?.outlinerDidRequestCommandPalette()
+            default:
+                break
+            }
+        }
+
+        // Legacy individual notifications (for ⌘D/⌘⇧D shortcuts)
         NotificationCenter.default.addObserver(forName: .teselaSetDeadline, object: nil, queue: .main) { [weak self] _ in
             guard let self, let idx = focusedBlockIndex, idx < blockViews.count else { return }
             showDatePicker(for: "deadline", at: idx, anchorView: blockViews[idx])
@@ -54,10 +91,6 @@ class OutlinerView: NSView {
         NotificationCenter.default.addObserver(forName: .teselaSetScheduled, object: nil, queue: .main) { [weak self] _ in
             guard let self, let idx = focusedBlockIndex, idx < blockViews.count else { return }
             showDatePicker(for: "scheduled", at: idx, anchorView: blockViews[idx])
-        }
-        NotificationCenter.default.addObserver(forName: .teselaToggleTodo, object: nil, queue: .main) { [weak self] _ in
-            guard let self, let idx = focusedBlockIndex, idx < blockViews.count else { return }
-            executeVimCommand(.toggleTodo, at: idx)
         }
     }
 

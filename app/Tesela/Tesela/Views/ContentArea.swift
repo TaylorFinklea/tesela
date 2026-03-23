@@ -5,6 +5,7 @@ extension Notification.Name {
     static let teselaSetScheduled = Notification.Name("teselaSetScheduled")
     static let teselaToggleTodo = Notification.Name("teselaToggleTodo")
     static let teselaMenuKeyPress = Notification.Name("teselaMenuKeyPress")
+    static let teselaExecuteCommand = Notification.Name("teselaExecuteCommand")
 }
 
 // MARK: - ContentArea
@@ -183,38 +184,14 @@ struct PageEditorView: View {
     }
 
     private func handleMenuCommand(_ commandId: String) {
-        // Route menu commands to the appropriate action
-        // These will be handled by notifying the OutlinerView via state changes
-        switch commandId {
-        case "todo", "doing", "done":
-            appState.isSlashMenuVisible = false
-            appState.isSpaceMenuVisible = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                NotificationCenter.default.post(name: .teselaToggleTodo, object: nil)
-            }
-        case "deadline":
-            appState.isSlashMenuVisible = false
-            appState.isSpaceMenuVisible = false
-            // Trigger deadline date picker via a small delay so menus dismiss first
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak appState] in
-                // We'll trigger this by posting a notification that OutlinerView observes
-                NotificationCenter.default.post(name: .teselaSetDeadline, object: nil)
-            }
-        case "scheduled":
-            appState.isSlashMenuVisible = false
-            appState.isSpaceMenuVisible = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak appState] in
-                NotificationCenter.default.post(name: .teselaSetScheduled, object: nil)
-            }
-        case "block-below":
-            appState.isSlashMenuVisible = false
-            appState.isSpaceMenuVisible = false
-        case "block-above":
-            appState.isSlashMenuVisible = false
-            appState.isSpaceMenuVisible = false
-        default:
-            appState.isSlashMenuVisible = false
-            appState.isSpaceMenuVisible = false
+        appState.isSlashMenuVisible = false
+        appState.isSpaceMenuVisible = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            NotificationCenter.default.post(
+                name: .teselaExecuteCommand,
+                object: nil,
+                userInfo: ["commandId": commandId]
+            )
         }
     }
 
