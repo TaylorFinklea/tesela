@@ -21,6 +21,8 @@ class OutlinerView: NSView {
     weak var delegate: OutlinerDelegate?
     private(set) var focusedBlockIndex: Int?
     private var vimEngine = VimEngine()
+    var menuVisibilityCheck: (() -> Bool)?
+    var onDismissMenuCallback: (() -> Void)?
 
     private var blockViews: [BlockView] = []
     private var pendingFocusIndex: Int?
@@ -162,8 +164,8 @@ class OutlinerView: NSView {
 
             yOffset += height + 4
 
-            // Property pills below block row
-            if !block.properties.isEmpty {
+            // Property pills removed — properties are now visible text on their own lines
+            if false {  // dead code — keeping makePropertyPill for potential future use
                 var propX = textX
                 let propY = yOffset - 2
                 for (key, value) in block.properties.sorted(by: { $0.key < $1.key }) {
@@ -408,6 +410,16 @@ class OutlinerView: NSView {
 
         view.onSpaceMenu = { [weak self] in
             self?.delegate?.outlinerDidRequestSpaceMenu()
+        }
+
+        view.isMenuVisible = { [weak self] in
+            guard let self else { return false }
+            // Check via delegate (OutlinerView doesn't know about AppState directly)
+            return menuVisibilityCheck?() ?? false
+        }
+
+        view.onDismissMenu = { [weak self] in
+            self?.onDismissMenuCallback?()
         }
     }
 
@@ -703,29 +715,34 @@ class OutlinerView: NSView {
     private func applyDateProperty(key: String, value: String, at index: Int) {
         guard index < blocks.count else { return }
         let block = blocks[index]
-        let pattern = "\(key):: \\S+"
 
-        // Remove existing property if present
-        var text = block.text
-        if let regex = try? NSRegularExpression(pattern: pattern),
-           let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-           let range = Range(match.range, in: text) {
-            text.replaceSubrange(range, with: "")
-            text = text.trimmingCharacters(in: .whitespaces)
+        // Split text into lines and find/replace existing property line
+        var lines = block.text.components(separatedBy: "\n")
+        let propertyLine = "\(key):: \(value)"
+        var replaced = false
+
+        for (i, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("\(key):: ") {
+                lines[i] = propertyLine
+                replaced = true
+                break
+            }
         }
 
-        // Append new property
-        text = "\(text) \(key):: \(value)"
+        if !replaced {
+            lines.append(propertyLine)
+        }
+
+        let text = lines.joined(separator: "\n")
         block.text = text
 
-        // Re-extract task properties
         switch key {
         case "deadline":  block.deadline = value
         case "scheduled": block.scheduled = value
         default: break
         }
 
-        // Update the view
         if index < blockViews.count {
             blockViews[index].string = text
             if let ts = blockViews[index].textStorage {
@@ -758,6 +775,8 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var onCommandPalette: (() -> Void)?
     var onSlashMenu: (() -> Void)?
     var onSpaceMenu: (() -> Void)?
+    var isMenuVisible: (() -> Bool)?
+    var onDismissMenu: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -769,6 +788,8 @@ struct OutlinerCoordinator: NSViewRepresentable {
 
         let outliner = OutlinerView()
         outliner.delegate = context.coordinator
+        outliner.menuVisibilityCheck = isMenuVisible
+        outliner.onDismissMenuCallback = onDismissMenu
         context.coordinator.outlinerView = outliner
 
         scrollView.documentView = outliner

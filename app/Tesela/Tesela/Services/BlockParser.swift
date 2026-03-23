@@ -15,29 +15,42 @@ enum BlockParser {
     static func parse(markdown: String) -> [Block] {
         let lines = markdown.components(separatedBy: "\n")
         var roots: [Block] = []
-        var stack: [(block: Block, indent: Int)] = []  // (block, indent level)
+        var stack: [(block: Block, indent: Int)] = []
+        var lastBlock: Block?
 
         for line in lines {
             guard !line.trimmingCharacters(in: .whitespaces).isEmpty else { continue }
 
             let (indent, text) = indentAndText(from: line)
-            guard text.hasPrefix("- ") else { continue }
 
-            let rawText = String(text.dropFirst(2))
-            let block = makeBlock(text: rawText, indentLevel: indent)
+            if text.hasPrefix("- ") {
+                // New block
+                let rawText = String(text.dropFirst(2))
+                let block = makeBlock(text: rawText, indentLevel: indent)
 
-            // Find parent: last stack entry with indent < current
-            while let top = stack.last, top.indent >= indent {
-                stack.removeLast()
+                while let top = stack.last, top.indent >= indent {
+                    stack.removeLast()
+                }
+
+                if let parent = stack.last {
+                    parent.block.children.append(block)
+                } else {
+                    roots.append(block)
+                }
+
+                stack.append((block, indent))
+                lastBlock = block
+            } else if let block = lastBlock {
+                // Continuation line (property or multi-line text) — belongs to last block
+                block.text += "\n" + text.trimmingCharacters(in: .whitespaces)
+                // Re-extract properties from the updated text
+                let props = extractProperties(from: block.text)
+                block.properties = props
+                block.priority = Priority(rawValue: block.properties.removeValue(forKey: "priority") ?? "")
+                block.deadline = block.properties.removeValue(forKey: "deadline")
+                block.scheduled = block.properties.removeValue(forKey: "scheduled")
+                block.effort = block.properties.removeValue(forKey: "effort")
             }
-
-            if let parent = stack.last {
-                parent.block.children.append(block)
-            } else {
-                roots.append(block)
-            }
-
-            stack.append((block, indent))
         }
 
         return roots
@@ -78,7 +91,12 @@ enum BlockParser {
         blocks
             .map { block in
                 let indent = String(repeating: "  ", count: block.indentLevel)
-                return "\(indent)- \(block.text)"
+                let contIndent = indent + "  "
+                let lines = block.text.components(separatedBy: "\n")
+                let first = "\(indent)- \(lines[0])"
+                if lines.count <= 1 { return first }
+                let rest = lines.dropFirst().map { "\(contIndent)\($0)" }
+                return ([first] + rest).joined(separator: "\n")
             }
             .joined(separator: "\n")
     }

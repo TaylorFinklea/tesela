@@ -14,6 +14,8 @@ class BlockView: NSTextView {
     var onCommandPalette: (() -> Void)?
     var onSlashMenu: (() -> Void)?
     var onSpaceMenu: (() -> Void)?
+    var onDismissMenu: (() -> Void)?
+    var isMenuVisible: (() -> Bool)?
 
     // Block cursor state
     var isNormalMode = false {
@@ -113,6 +115,14 @@ class BlockView: NSTextView {
     // MARK: - Key routing
 
     override func keyDown(with event: NSEvent) {
+        // If a menu is visible, intercept Escape to dismiss it and swallow all other keys
+        if isMenuVisible?() == true {
+            if event.keyCode == 53 { // Escape
+                onDismissMenu?()
+            }
+            return // swallow all keys while menu is open
+        }
+
         guard let vim = vimEngine else {
             if event.keyCode == 51, selectedRange().location == 0, selectedRange().length == 0 {
                 onBackspaceAtStart?()
@@ -189,6 +199,12 @@ class BlockView: NSTextView {
     // MARK: - Structural overrides (Insert mode via NSTextView input system)
 
     override func insertNewline(_ sender: Any?) {
+        // Shift+Enter → newline within block (multi-line)
+        if NSEvent.modifierFlags.contains(.shift) {
+            super.insertNewline(sender)
+            return
+        }
+        // Enter → split into new block
         let loc = selectedRange().location
         let s = string
         let before = String(s.prefix(loc))

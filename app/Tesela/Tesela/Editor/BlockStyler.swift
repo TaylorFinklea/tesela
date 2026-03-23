@@ -2,16 +2,13 @@ import AppKit
 import Foundation
 
 // MARK: - BlockStyler
-// Applies NSAttributedString styling for [[wiki-links]] and #tags
+// Applies NSAttributedString styling for [[wiki-links]], #tags, and properties
 
 enum BlockStyler {
     private static let wikiLinkRegex = try! NSRegularExpression(pattern: #"\[\[([^\]]+)\]\]"#)
     private static let tagRegex = try! NSRegularExpression(pattern: #"#([A-Za-z0-9_\-]+)"#)
     private static let propertyRegex = try! NSRegularExpression(pattern: #"([A-Za-z_][A-Za-z0-9_]*):: (.+)"#)
     private static let todoPrefix = try! NSRegularExpression(pattern: #"^(TODO|DOING|DONE) "#)
-    private static let taskPropertyRegex = try! NSRegularExpression(
-        pattern: #"(priority|deadline|scheduled|effort):: \S+"#
-    )
 
     static func style(text: String, textStorage: NSTextStorage) {
         let nsText = text as NSString
@@ -36,22 +33,27 @@ enum BlockStyler {
             textStorage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: range)
         }
 
-        // key:: value → faint inline (pills shown below block by OutlinerView)
+        // key:: value properties → styled visibly (secondary color, smaller font)
         propertyRegex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
-            guard let range = match?.range else { return }
-            textStorage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: range)
+            guard let match else { return }
+            let keyRange = match.range(at: 1)
+            textStorage.addAttribute(.foregroundColor, value: NSColor.systemPurple, range: keyRange)
+            textStorage.addAttribute(.font, value: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize - 1), range: keyRange)
+            let valueRange = match.range(at: 2)
+            textStorage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: valueRange)
+            textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: NSFont.systemFontSize - 1), range: valueRange)
+            // Style the `:: ` separator
+            let sepStart = keyRange.location + keyRange.length
+            let sepLen = valueRange.location - sepStart
+            if sepLen > 0 {
+                let sepRange = NSRange(location: sepStart, length: sepLen)
+                textStorage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: sepRange)
+                textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: NSFont.systemFontSize - 1), range: sepRange)
+            }
         }
 
         // TODO/DOING/DONE prefix → hidden (icon shown in bullet area by OutlinerView)
         todoPrefix.enumerateMatches(in: text, range: fullRange) { match, _, _ in
-            guard let range = match?.range else { return }
-            textStorage.addAttribute(.foregroundColor, value: NSColor.clear, range: range)
-            textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: 1), range: range)
-        }
-
-        // Task properties (priority/deadline/scheduled/effort) → hidden
-        // (visual badges shown by OutlinerView)
-        taskPropertyRegex.enumerateMatches(in: text, range: fullRange) { match, _, _ in
             guard let range = match?.range else { return }
             textStorage.addAttribute(.foregroundColor, value: NSColor.clear, range: range)
             textStorage.addAttribute(.font, value: NSFont.systemFont(ofSize: 1), range: range)

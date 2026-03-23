@@ -128,6 +128,13 @@ struct PageEditorView: View {
                 },
                 onSpaceMenu: {
                     appState.isSpaceMenuVisible = true
+                },
+                isMenuVisible: {
+                    appState.isSlashMenuVisible || appState.isSpaceMenuVisible
+                },
+                onDismissMenu: {
+                    appState.isSlashMenuVisible = false
+                    appState.isSpaceMenuVisible = false
                 }
             )
             .padding(.horizontal, 8)
