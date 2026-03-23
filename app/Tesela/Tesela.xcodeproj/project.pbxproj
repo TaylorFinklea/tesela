@@ -26,6 +26,7 @@
 		8F52792C0E76B589EDAFF02E /* BlockStyler.swift in Sources */ = {isa = PBXBuildFile; fileRef = C78419676B314818F2A956C2 /* BlockStyler.swift */; };
 		917F4CC1F262674344155EAD /* Link.swift in Sources */ = {isa = PBXBuildFile; fileRef = D79AED0A99986E3B4D1F3107 /* Link.swift */; };
 		979122D02B4AB4B5EE08F169 /* WsEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD1E261FDB1256A4C8F5092D /* WsEvent.swift */; };
+		97EB950FAF03909286701F3A /* DateParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B071B8CFD98598AECCD3F2C0 /* DateParser.swift */; };
 		9BB3FC008F13F33A9D429D94 /* CommandPaletteView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EDBB32E94FAF0850E28D5641 /* CommandPaletteView.swift */; };
 		9E033267B235BFAF57B54869 /* MenuCommand.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82D7AD3CCEA6697594652E84 /* MenuCommand.swift */; };
 		A522DAF696C8B8DE67161619 /* BlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C39EB381DB998940EAD68E5 /* BlockView.swift */; };
@@ -77,6 +78,7 @@
 		A558BEB394EBFAE4CBE4842E /* TeselaCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeselaCommands.swift; sourceTree = "<group>"; };
 		AB143CA5F026C576F42D7294 /* SearchHit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchHit.swift; sourceTree = "<group>"; };
 		B05C044B8030091D728EA655 /* AppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppState.swift; sourceTree = "<group>"; };
+		B071B8CFD98598AECCD3F2C0 /* DateParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DateParser.swift; sourceTree = "<group>"; };
 		B0F7109A79EAC99086FE540F /* VimState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VimState.swift; sourceTree = "<group>"; };
 		B516B1FB896984C9A47BA978 /* RightSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RightSidebarView.swift; sourceTree = "<group>"; };
 		BE9364B5F6D22ABA0E636572 /* TeselaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeselaApp.swift; sourceTree = "<group>"; };
@@ -271,6 +273,7 @@
 		F0687CC5F12965035C90E3C6 /* Utilities */ = {
 			isa = PBXGroup;
 			children = (
+				B071B8CFD98598AECCD3F2C0 /* DateParser.swift */,
 				178AC931D624108AA71D3F1A /* Persistence.swift */,
 			);
 			path = Utilities;
@@ -373,6 +376,7 @@
 				A522DAF696C8B8DE67161619 /* BlockView.swift in Sources */,
 				9BB3FC008F13F33A9D429D94 /* CommandPaletteView.swift in Sources */,
 				816EB5B12DE916E4A372699F /* ContentArea.swift in Sources */,
+				97EB950FAF03909286701F3A /* DateParser.swift in Sources */,
 				4A840C42D73B06AE6DA84313 /* GraphView.swift in Sources */,
 				917F4CC1F262674344155EAD /* Link.swift in Sources */,
 				CA8282E79C2E6F5F95DA781B /* MainShellView.swift in Sources */,

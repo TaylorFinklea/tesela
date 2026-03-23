@@ -686,27 +686,62 @@ class OutlinerView: NSView {
     private func showDatePicker(for propertyKey: String, at index: Int, anchorView: NSView) {
         activePopover?.close()
 
+        let existingDateVal = existingDate(for: propertyKey, at: index) ?? Date()
+
+        // Calendar picker
         let picker = NSDatePicker()
         picker.datePickerStyle = .clockAndCalendar
         picker.datePickerElements = .yearMonthDay
-        picker.dateValue = existingDate(for: propertyKey, at: index) ?? Date()
+        picker.dateValue = existingDateVal
         picker.sizeToFit()
 
-        let buttonHeight: CGFloat = 32
+        // Text input field (natural language)
+        let textField = NSTextField()
+        textField.placeholderString = "tomorrow, +3d, fri, Mar 25…"
+        textField.font = .systemFont(ofSize: NSFont.systemFontSize)
+        textField.isHidden = true  // starts hidden, Tab reveals it
+
+        // Preview label for text input
+        let previewLabel = NSTextField(labelWithString: "")
+        previewLabel.font = .systemFont(ofSize: 11)
+        previewLabel.textColor = .secondaryLabelColor
+        previewLabel.isHidden = true
+
+        // Mode toggle hint
+        let hintLabel = NSTextField(labelWithString: "Tab: switch to text input")
+        hintLabel.font = .systemFont(ofSize: 10)
+        hintLabel.textColor = .tertiaryLabelColor
+        hintLabel.isEditable = false
+        hintLabel.isBordered = false
+        hintLabel.drawsBackground = false
+
         let padding: CGFloat = 10
+        let buttonHeight: CGFloat = 32
+        let hintHeight: CGFloat = 16
         let containerWidth = picker.frame.width + padding * 2
-        let containerHeight = picker.frame.height + buttonHeight + padding * 2 + 4
+        let containerHeight = picker.frame.height + buttonHeight + hintHeight + padding * 2 + 8
 
         let container = NSView(frame: NSRect(x: 0, y: 0, width: containerWidth, height: containerHeight))
-        picker.frame.origin = NSPoint(x: padding, y: buttonHeight + padding + 4)
-        container.addSubview(picker)
 
-        // "Set" button at the bottom
+        // Layout from bottom: button → hint → picker/textfield
         let setButton = NSButton(title: "Set \(propertyKey.capitalized)", target: nil, action: nil)
         setButton.bezelStyle = .rounded
-        setButton.keyEquivalent = "\r"  // Enter key
+        setButton.keyEquivalent = "\r"
         setButton.frame = NSRect(x: padding, y: padding, width: containerWidth - padding * 2, height: buttonHeight)
         container.addSubview(setButton)
+
+        hintLabel.frame = NSRect(x: padding, y: padding + buttonHeight + 2, width: containerWidth - padding * 2, height: hintHeight)
+        container.addSubview(hintLabel)
+
+        let contentY = padding + buttonHeight + hintHeight + 6
+        picker.frame.origin = NSPoint(x: padding, y: contentY)
+        container.addSubview(picker)
+
+        textField.frame = NSRect(x: padding, y: contentY + picker.frame.height / 2 - 12, width: containerWidth - padding * 2, height: 24)
+        container.addSubview(textField)
+
+        previewLabel.frame = NSRect(x: padding, y: contentY + picker.frame.height / 2 + 16, width: containerWidth - padding * 2, height: 20)
+        container.addSubview(previewLabel)
 
         let vc = NSViewController()
         vc.view = container
@@ -720,30 +755,83 @@ class OutlinerView: NSView {
         let blockIndex = index
         let key = propertyKey
 
-        // Apply date and close on button click or popover close
-        let applyAndClose: () -> Void = { [weak self, weak popover] in
+        // Tab toggles between calendar and text input
+        let tabAction = DatePickerAction { [weak picker, weak textField, weak hintLabel, weak previewLabel] in
+            guard let picker, let textField, let hintLabel, let previewLabel else { return }
+            let showingText = !textField.isHidden
+            picker.isHidden = !showingText
+            textField.isHidden = showingText
+            previewLabel.isHidden = showingText
+            hintLabel.stringValue = showingText ? "Tab: switch to text input" : "Tab: switch to calendar"
+            if !showingText {
+                textField.window?.makeFirstResponder(textField)
+            }
+        }
+        let tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            if event.keyCode == 48 { // Tab
+                tabAction.handler()
+                return nil // consume the Tab
+            }
+            return event
+        }
+
+        // Apply date
+        let applyAndClose: () -> Void = { [weak self, weak popover, weak picker, weak textField] in
             guard let self else { return }
+            if let tabMonitor { NSEvent.removeMonitor(tabMonitor) }
             let fmt = DateFormatter()
             fmt.dateFormat = "yyyy-MM-dd"
-            let dateStr = fmt.string(from: picker.dateValue)
+
+            let dateStr: String
+            if let textField, !textField.isHidden, !textField.stringValue.isEmpty {
+                // Text input mode — parse natural language
+                if let parsed = DateParser.parse(textField.stringValue) {
+                    dateStr = parsed
+                } else {
+                    NSSound.beep()
+                    return // invalid date, don't close
+                }
+            } else if let picker {
+                dateStr = fmt.string(from: picker.dateValue)
+            } else {
+                return
+            }
+
             self.applyDateProperty(key: key, value: dateStr, at: blockIndex)
             popover?.close()
             self.activePopover = nil
         }
 
-        setButton.target = self
-        setButton.action = nil
-        // Use NSButton action via block wrapper
         let clickAction = DatePickerAction(handler: applyAndClose)
         setButton.target = clickAction
         setButton.action = #selector(DatePickerAction.execute)
         objc_setAssociatedObject(popover, "clickAction", clickAction, .OBJC_ASSOCIATION_RETAIN)
+        objc_setAssociatedObject(popover, "tabAction", tabAction, .OBJC_ASSOCIATION_RETAIN)
+
+        // Live preview for text input
+        NotificationCenter.default.addObserver(
+            forName: NSControl.textDidChangeNotification,
+            object: textField,
+            queue: .main
+        ) { [weak previewLabel, weak textField] _ in
+            guard let previewLabel, let textField else { return }
+            if let preview = DateParser.preview(textField.stringValue) {
+                previewLabel.stringValue = "→ \(preview)"
+                previewLabel.textColor = .secondaryLabelColor
+            } else if !textField.stringValue.isEmpty {
+                previewLabel.stringValue = "? unrecognized date"
+                previewLabel.textColor = .systemRed
+            } else {
+                previewLabel.stringValue = ""
+            }
+        }
 
         NotificationCenter.default.addObserver(
             forName: NSPopover.didCloseNotification,
             object: popover,
             queue: .main
         ) { [weak self] _ in
+            if let tabMonitor { NSEvent.removeMonitor(tabMonitor) }
             self?.activePopover = nil
         }
     }
