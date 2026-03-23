@@ -664,12 +664,23 @@ class OutlinerView: NSView {
         picker.datePickerStyle = .clockAndCalendar
         picker.datePickerElements = .yearMonthDay
         picker.dateValue = existingDate(for: propertyKey, at: index) ?? Date()
-        picker.target = self
         picker.sizeToFit()
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: picker.frame.width + 20, height: picker.frame.height + 20))
-        picker.frame.origin = NSPoint(x: 10, y: 10)
+        let buttonHeight: CGFloat = 32
+        let padding: CGFloat = 10
+        let containerWidth = picker.frame.width + padding * 2
+        let containerHeight = picker.frame.height + buttonHeight + padding * 2 + 4
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: containerWidth, height: containerHeight))
+        picker.frame.origin = NSPoint(x: padding, y: buttonHeight + padding + 4)
         container.addSubview(picker)
+
+        // "Set" button at the bottom
+        let setButton = NSButton(title: "Set \(propertyKey.capitalized)", target: nil, action: nil)
+        setButton.bezelStyle = .rounded
+        setButton.keyEquivalent = "\r"  // Enter key
+        setButton.frame = NSRect(x: padding, y: padding, width: containerWidth - padding * 2, height: buttonHeight)
+        container.addSubview(setButton)
 
         let vc = NSViewController()
         vc.view = container
@@ -680,21 +691,34 @@ class OutlinerView: NSView {
         popover.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .maxY)
         activePopover = popover
 
-        // Use a confirm button approach: observe popover close → apply the date
-        // Since NSDatePicker doesn't have a clean "done" callback, we apply on close
         let blockIndex = index
         let key = propertyKey
-        NotificationCenter.default.addObserver(
-            forName: NSPopover.didCloseNotification,
-            object: popover,
-            queue: .main
-        ) { [weak self] _ in
+
+        // Apply date and close on button click or popover close
+        let applyAndClose: () -> Void = { [weak self, weak popover] in
             guard let self else { return }
             let fmt = DateFormatter()
             fmt.dateFormat = "yyyy-MM-dd"
             let dateStr = fmt.string(from: picker.dateValue)
             self.applyDateProperty(key: key, value: dateStr, at: blockIndex)
+            popover?.close()
             self.activePopover = nil
+        }
+
+        setButton.target = self
+        setButton.action = nil
+        // Use NSButton action via block wrapper
+        let clickAction = DatePickerAction(handler: applyAndClose)
+        setButton.target = clickAction
+        setButton.action = #selector(DatePickerAction.execute)
+        objc_setAssociatedObject(popover, "clickAction", clickAction, .OBJC_ASSOCIATION_RETAIN)
+
+        NotificationCenter.default.addObserver(
+            forName: NSPopover.didCloseNotification,
+            object: popover,
+            queue: .main
+        ) { [weak self] _ in
+            self?.activePopover = nil
         }
     }
 
@@ -764,6 +788,13 @@ class OutlinerView: NSView {
         default: break
         }
     }
+}
+
+// MARK: - DatePickerAction (target-action helper for NSButton closure)
+class DatePickerAction: NSObject {
+    let handler: () -> Void
+    init(handler: @escaping () -> Void) { self.handler = handler }
+    @objc func execute() { handler() }
 }
 
 // MARK: - OutlinerCoordinator (NSViewRepresentable)
