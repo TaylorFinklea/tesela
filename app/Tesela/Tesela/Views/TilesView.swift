@@ -1,26 +1,22 @@
 import SwiftUI
 
 // MARK: - TilesView
-// Scrollable timeline of daily notes — like Logseq's journal page.
-// Each "tile" is a day with its note content shown inline.
+// Scrollable timeline of daily notes with inline editing.
+// Each tile is a fully editable OutlinerCoordinator — like Logseq's journal page.
 
 struct TilesView: View {
     @Environment(AppState.self) private var appState
     @State private var dailyNotes: [Page] = []
-    @State private var isLoading = false
 
     var body: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                // Today tile — always present
-                TodayHeader(dailyNotes: dailyNotes)
+                TodayHeader(dailyNotes: dailyNotes, onCreated: { await loadDailyNotes() })
                     .padding(.horizontal, 24)
                     .padding(.top, 16)
 
-                // Past daily notes
                 ForEach(dailyNotes) { page in
-                    TileCard(page: page)
-                        .onTapGesture { appState.open(page) }
+                    EditableTileCard(page: page)
                 }
             }
             .padding(.bottom, 24)
@@ -30,10 +26,7 @@ struct TilesView: View {
     }
 
     private func loadDailyNotes() async {
-        isLoading = true
-        defer { isLoading = false }
         let notes = (try? await appState.api.listNotes(tag: "daily", limit: 100)) ?? []
-        // Sort by ID descending — IDs are "2026-03-21" format so lexicographic = reverse chronological
         dailyNotes = notes.sorted { $0.id > $1.id }
     }
 }
@@ -41,6 +34,7 @@ struct TilesView: View {
 // MARK: - TodayHeader
 private struct TodayHeader: View {
     let dailyNotes: [Page]
+    var onCreated: () async -> Void
     @Environment(AppState.self) private var appState
 
     private var todayID: String {
@@ -49,16 +43,12 @@ private struct TodayHeader: View {
         return fmt.string(from: Date())
     }
 
-    private var hasTodayTile: Bool {
-        dailyNotes.contains { $0.id == todayID }
-    }
-
     var body: some View {
-        if !hasTodayTile {
+        if !dailyNotes.contains(where: { $0.id == todayID }) {
             Button {
                 Task {
-                    if let page = try? await appState.api.getDailyNote() {
-                        appState.open(page)
+                    if let _ = try? await appState.api.getDailyNote() {
+                        await onCreated()
                     }
                 }
             } label: {
@@ -75,52 +65,89 @@ private struct TodayHeader: View {
     }
 }
 
-// MARK: - TileCard
-private struct TileCard: View {
+// MARK: - EditableTileCard
+// Each tile has its own OutlinerCoordinator with independent editing + auto-save.
+private struct EditableTileCard: View {
     let page: Page
+    @Environment(AppState.self) private var appState
+    @State private var blocks: [Block] = []
+    @State private var saveTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Divider()
                 .padding(.horizontal, 24)
 
-            VStack(alignment: .leading, spacing: 8) {
-                // Date header
+            // Date header — click to open full page editor
+            Button {
+                appState.open(page)
+            } label: {
                 Text(formattedDate)
                     .font(.title3)
                     .bold()
                     .foregroundStyle(.primary)
-
-                // Block content preview
-                let blocks = BlockParser.flatten(blocks: BlockParser.parse(markdown: page.body))
-                if blocks.isEmpty {
-                    Text("Empty tile")
-                        .font(.body)
-                        .foregroundStyle(.tertiary)
-                        .italic()
-                } else {
-                    VStack(alignment: .leading, spacing: 4) {
-                        ForEach(Array(blocks.prefix(10).enumerated()), id: \.offset) { _, block in
-                            HStack(alignment: .top, spacing: 6) {
-                                Text("•")
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.leading, CGFloat(block.indentLevel) * 16)
-                                Text(block.text)
-                                    .font(.body)
-                                    .foregroundStyle(.primary)
-                            }
-                        }
-                        if blocks.count > 10 {
-                            Text("…\(blocks.count - 10) more")
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
-                }
             }
+            .buttonStyle(.plain)
             .padding(.horizontal, 24)
-            .padding(.vertical, 16)
-            .contentShape(Rectangle())
+            .padding(.top, 16)
+            .padding(.bottom, 4)
+
+            // Inline editor
+            OutlinerCoordinator(
+                blocks: $blocks,
+                onContentChanged: { updatedBlocks in
+                    blocks = updatedBlocks
+                    let markdown = BlockParser.serializeFlat(blocks: updatedBlocks)
+                    scheduleAutoSave(markdown: markdown)
+                },
+                onWikiLinkClicked: { target in
+                    if let linked = appState.pages.first(where: {
+                        $0.title.lowercased() == target.lowercased()
+                    }) {
+                        appState.open(linked)
+                    }
+                },
+                onModeChanged: { _ in },
+                onCommandPalette: {
+                    appState.isCommandPaletteVisible = true
+                },
+                onSlashMenu: {
+                    appState.isSlashMenuVisible = true
+                },
+                onSpaceMenu: {
+                    appState.isSpaceMenuVisible = true
+                },
+                isMenuVisible: {
+                    appState.isSlashMenuVisible || appState.isSpaceMenuVisible
+                },
+                onDismissMenu: {
+                    appState.isSlashMenuVisible = false
+                    appState.isSpaceMenuVisible = false
+                },
+                apiClient: appState.api
+            )
+            .frame(minHeight: 30, maxHeight: 300)
+            .padding(.horizontal, 8)
+            .padding(.bottom, 16)
+        }
+        .onAppear { loadBlocks() }
+    }
+
+    private func loadBlocks() {
+        let parsed = BlockParser.flatten(blocks: BlockParser.parse(markdown: page.body))
+        if parsed.isEmpty {
+            blocks = [Block(text: "")]
+        } else {
+            blocks = parsed
+        }
+    }
+
+    private func scheduleAutoSave(markdown: String) {
+        saveTask?.cancel()
+        saveTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await appState.updatePage(id: page.id, newBody: markdown)
         }
     }
 
@@ -128,7 +155,6 @@ private struct TileCard: View {
         let inputFmt = DateFormatter()
         inputFmt.dateFormat = "yyyy-MM-dd"
         guard let date = inputFmt.date(from: page.id) else { return page.title }
-
         let outputFmt = DateFormatter()
         outputFmt.dateFormat = "EEEE, MMMM d, yyyy"
         return outputFmt.string(from: date)
