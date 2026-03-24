@@ -6,6 +6,7 @@ extension Notification.Name {
     static let teselaToggleTodo = Notification.Name("teselaToggleTodo")
     static let teselaMenuKeyPress = Notification.Name("teselaMenuKeyPress")
     static let teselaExecuteCommand = Notification.Name("teselaExecuteCommand")
+    static let teselaTileFocus = Notification.Name("teselaTileFocus")
 }
 
 // MARK: - ContentArea

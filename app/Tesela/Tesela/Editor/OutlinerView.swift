@@ -25,6 +25,7 @@ class OutlinerView: NSView {
     private var vimEngine = VimEngine()
     var menuVisibilityCheck: (() -> Bool)?
     var onDismissMenuCallback: (() -> Void)?
+    var tileID: String?
 
     private var blockViews: [BlockView] = []
     private var pendingFocusIndex: Int?
@@ -104,6 +105,25 @@ class OutlinerView: NSView {
         NotificationCenter.default.addObserver(forName: .teselaSetScheduled, object: nil, queue: .main) { [weak self] _ in
             guard let self, let idx = focusedBlockIndex, idx < blockViews.count else { return }
             showDatePicker(for: "scheduled", at: idx, anchorView: blockViews[idx])
+        }
+
+        // Tile focus — another tile is requesting this one to focus
+        NotificationCenter.default.addObserver(forName: .teselaTileFocus, object: nil, queue: .main) { [weak self] notification in
+            guard let self,
+                  let targetID = notification.userInfo?["tileID"] as? String,
+                  targetID == tileID else { return }
+            focusFirstBlock()
+        }
+    }
+
+    /// Focus the first block in this outliner (used for tile navigation)
+    func focusFirstBlock() {
+        guard !blockViews.isEmpty else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.blockViews.isEmpty else { return }
+            self.window?.makeFirstResponder(self.blockViews[0])
+            self.focusedBlockIndex = 0
+            self.blockViews[0].isNormalMode = (self.vimEngine.currentMode == .normal)
         }
     }
 
@@ -1055,6 +1075,7 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var onDismissMenu: (() -> Void)?
     var onPrevTile: (() -> Void)?
     var onNextTile: (() -> Void)?
+    var tileID: String?
     var apiClient: APIClient?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -1070,6 +1091,7 @@ struct OutlinerCoordinator: NSViewRepresentable {
         outliner.menuVisibilityCheck = isMenuVisible
         outliner.onDismissMenuCallback = onDismissMenu
         outliner.apiClient = apiClient
+        outliner.tileID = tileID
         context.coordinator.outlinerView = outliner
 
         scrollView.documentView = outliner

@@ -23,12 +23,27 @@ struct TilesView: View {
                                 if index > 0 {
                                     let target = dailyNotes[index - 1].id
                                     withAnimation { proxy.scrollTo(target, anchor: .top) }
+                                    // Focus the target tile after scroll
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                        NotificationCenter.default.post(
+                                            name: .teselaTileFocus,
+                                            object: nil,
+                                            userInfo: ["tileID": target]
+                                        )
+                                    }
                                 }
                             },
                             onNextTile: {
                                 if index < dailyNotes.count - 1 {
                                     let target = dailyNotes[index + 1].id
                                     withAnimation { proxy.scrollTo(target, anchor: .top) }
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                        NotificationCenter.default.post(
+                                            name: .teselaTileFocus,
+                                            object: nil,
+                                            userInfo: ["tileID": target]
+                                        )
+                                    }
                                 }
                             }
                         )
@@ -151,6 +166,7 @@ private struct EditableTileCard: View {
                 },
                 onPrevTile: onPrevTile,
                 onNextTile: onNextTile,
+                tileID: page.id,
                 apiClient: appState.api
             )
             // Height expands to fit content — each block ~26px + generous buffer
