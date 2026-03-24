@@ -23,6 +23,10 @@ struct SidebarView: View {
                 ForEach(NavItem.allCases, id: \.self) { item in
                     Label(item.label, systemImage: item.systemImage)
                         .tag(item)
+                        .onTapGesture {
+                            appState.selectedNavItem = item
+                            appState.currentPage = nil
+                        }
                 }
             }
 
