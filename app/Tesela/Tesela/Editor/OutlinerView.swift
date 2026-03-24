@@ -116,14 +116,17 @@ class OutlinerView: NSView {
         }
     }
 
-    /// Focus the first block in this outliner (used for tile navigation)
+    /// Focus the first block in this outliner (used for tile navigation).
+    /// Preserves Normal mode since navigation is a Normal-mode action.
     func focusFirstBlock() {
         guard !blockViews.isEmpty else { return }
+        vimEngine.currentMode = .normal
+        for bv in blockViews { bv.isNormalMode = true }
+        delegate?.outlinerDidChangeMode(mode: .normal)
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.blockViews.isEmpty else { return }
             self.window?.makeFirstResponder(self.blockViews[0])
             self.focusedBlockIndex = 0
-            self.blockViews[0].isNormalMode = (self.vimEngine.currentMode == .normal)
         }
     }
 
