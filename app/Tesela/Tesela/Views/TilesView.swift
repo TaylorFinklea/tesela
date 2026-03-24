@@ -27,7 +27,13 @@ struct TilesView: View {
 
     private func loadDailyNotes() async {
         let notes = (try? await appState.api.listNotes(tag: "daily", limit: 100)) ?? []
-        dailyNotes = notes.sorted { $0.id > $1.id }
+        let fmt = DateFormatter()
+        fmt.dateFormat = "yyyy-MM-dd"
+        let today = fmt.string(from: Date())
+        // Only show present and past dates — future dates belong in Pages
+        dailyNotes = notes
+            .filter { $0.id <= today }
+            .sorted { $0.id > $1.id }
     }
 }
 
