@@ -35,7 +35,7 @@ class BlockView: NSTextView {
     init(block: Block) {
         self.block = block
 
-        let storage = NSTextStorage(string: block.text)
+        let storage = NSTextStorage(string: block.displayText)
         let layoutMgr = NSLayoutManager()
         storage.addLayoutManager(layoutMgr)
         let container = NSTextContainer(size: NSSize(width: 300, height: 1_000_000))
@@ -68,8 +68,9 @@ class BlockView: NSTextView {
 
         textStorage?.delegate = self
         if let ts = textStorage {
-            BlockStyler.style(text: block.text, textStorage: ts)
-            applyLinkAttributes(to: ts, text: block.text)
+            let display = block.displayText
+            BlockStyler.style(text: display, textStorage: ts)
+            applyLinkAttributes(to: ts, text: display)
         }
     }
 

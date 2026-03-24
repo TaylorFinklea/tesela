@@ -367,7 +367,7 @@ class OutlinerView: NSView {
 
         view.onTextChanged = { [weak self] newText in
             guard let self, index < blocks.count else { return }
-            blocks[index].text = newText
+            blocks[index].updateDisplayText(newText)
             let newH = blockHeight(for: view)
             if abs(view.frame.size.height - newH) > 2 {
                 pendingFocusIndex = index
@@ -719,9 +719,9 @@ class OutlinerView: NSView {
             block.text = text
             block.tags = BlockParser.extractTags(from: text)
             block.properties = BlockParser.extractProperties(from: text)
-            view.string = text
+            view.string = block.displayText
             if let ts = view.textStorage {
-                BlockStyler.style(text: text, textStorage: ts)
+                BlockStyler.style(text: block.displayText, textStorage: ts)
             }
             pendingFocusIndex = index
             rebuildBlockViews()
@@ -976,18 +976,10 @@ class OutlinerView: NSView {
         }
 
         if index < blockViews.count {
-            blockViews[index].string = text
+            let display = blocks[index].displayText
+            blockViews[index].string = display
             if let ts = blockViews[index].textStorage {
-                BlockStyler.style(text: text, textStorage: ts)
-                // Also apply link attributes for the [[date]] link
-                let nsText = text as NSString
-                let fullRange = NSRange(location: 0, length: nsText.length)
-                let linkRegex = try? NSRegularExpression(pattern: #"\[\[([^\]]+)\]\]"#)
-                linkRegex?.enumerateMatches(in: text, range: fullRange) { match, _, _ in
-                    guard let match, let captureRange = Range(match.range(at: 1), in: text) else { return }
-                    let target = String(text[captureRange])
-                    ts.addAttribute(.link, value: "wikilink://\(target)", range: match.range)
-                }
+                BlockStyler.style(text: display, textStorage: ts)
             }
         }
         pendingFocusIndex = index

@@ -53,6 +53,38 @@ final class Block: Identifiable, @unchecked Sendable {
         return copy
     }
 
+    // MARK: - Display text (clean text without tags or properties)
+
+    /// First line of text with #tags stripped — what the user sees in the editor.
+    var displayText: String {
+        let firstLine = text.components(separatedBy: "\n").first ?? text
+        return firstLine.replacingOccurrences(
+            of: #" ?#[A-Za-z0-9_\-]+"#, with: "", options: .regularExpression
+        ).trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Update storage text from edited display text, preserving tags and property lines.
+    func updateDisplayText(_ newDisplay: String) {
+        let lines = text.components(separatedBy: "\n")
+        let firstLine = lines.first ?? ""
+
+        // Extract inline tags from original first line
+        let tagPattern = try! NSRegularExpression(pattern: #"#[A-Za-z0-9_\-]+"#)
+        let range = NSRange(firstLine.startIndex..., in: firstLine)
+        let inlineTags = tagPattern.matches(in: firstLine, range: range)
+            .compactMap { Range($0.range, in: firstLine).map { String(firstLine[$0]) } }
+
+        // Rebuild: new display text + original tags + original property lines
+        var result = newDisplay
+        if !inlineTags.isEmpty {
+            result += " " + inlineTags.joined(separator: " ")
+        }
+        if lines.count > 1 {
+            result += "\n" + lines.dropFirst().joined(separator: "\n")
+        }
+        text = result
+    }
+
     // MARK: - Task computed properties
 
     var isTask: Bool { tags.contains("Task") }
