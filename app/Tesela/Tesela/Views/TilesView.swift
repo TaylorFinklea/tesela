@@ -9,17 +9,34 @@ struct TilesView: View {
     @State private var dailyNotes: [Page] = []
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                TodayHeader(dailyNotes: dailyNotes, onCreated: { await loadDailyNotes() })
-                    .padding(.horizontal, 24)
-                    .padding(.top, 16)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    TodayHeader(dailyNotes: dailyNotes, onCreated: { await loadDailyNotes() })
+                        .padding(.horizontal, 24)
+                        .padding(.top, 16)
 
-                ForEach(dailyNotes) { page in
-                    EditableTileCard(page: page)
+                    ForEach(Array(dailyNotes.enumerated()), id: \.element.id) { index, page in
+                        EditableTileCard(
+                            page: page,
+                            onPrevTile: {
+                                if index > 0 {
+                                    let target = dailyNotes[index - 1].id
+                                    withAnimation { proxy.scrollTo(target, anchor: .top) }
+                                }
+                            },
+                            onNextTile: {
+                                if index < dailyNotes.count - 1 {
+                                    let target = dailyNotes[index + 1].id
+                                    withAnimation { proxy.scrollTo(target, anchor: .top) }
+                                }
+                            }
+                        )
+                        .id(page.id)
+                    }
                 }
+                .padding(.bottom, 24)
             }
-            .padding(.bottom, 24)
         }
         .task { await loadDailyNotes() }
         .refreshable { await loadDailyNotes() }
@@ -75,6 +92,8 @@ private struct TodayHeader: View {
 // Each tile has its own OutlinerCoordinator with independent editing + auto-save.
 private struct EditableTileCard: View {
     let page: Page
+    var onPrevTile: (() -> Void)?
+    var onNextTile: (() -> Void)?
     @Environment(AppState.self) private var appState
     @State private var blocks: [Block] = []
     @State private var saveTask: Task<Void, Never>?
@@ -130,6 +149,8 @@ private struct EditableTileCard: View {
                     appState.isSlashMenuVisible = false
                     appState.isSpaceMenuVisible = false
                 },
+                onPrevTile: onPrevTile,
+                onNextTile: onNextTile,
                 apiClient: appState.api
             )
             // Height expands to fit content — each block ~26px + generous buffer

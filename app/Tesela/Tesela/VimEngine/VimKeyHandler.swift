@@ -85,6 +85,8 @@ enum EditorCommand: Equatable, Sendable {
     // App
     case startSearch
     case toggleTodo
+    case prevSection   // { — jump to previous tile/section
+    case nextSection   // } — jump to next tile/section
     case setDeadline
     case setScheduled
     case none
@@ -186,6 +188,10 @@ struct VimKeyHandler: Sendable {
         case ".": return .repeatLastChange
         case "/": return .startSearch
         case "t": return .toggleTodo
+
+        // Section navigation (tile jumping)
+        case "{": return .prevSection
+        case "}": return .nextSection
 
         // Indentation
         case ">": return .indentBlock

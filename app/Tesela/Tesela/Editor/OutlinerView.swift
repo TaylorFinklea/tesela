@@ -10,6 +10,8 @@ protocol OutlinerDelegate: AnyObject {
     func outlinerDidRequestCommandPalette()
     func outlinerDidRequestSlashMenu()
     func outlinerDidRequestSpaceMenu()
+    func outlinerDidRequestPrevTile()
+    func outlinerDidRequestNextTile()
 }
 
 // MARK: - OutlinerView
@@ -756,6 +758,12 @@ class OutlinerView: NSView {
             rebuildBlockViews()
             delegate?.outlinerDidChangeContent(blocks: blocks)
 
+        // Section navigation (tile jumping)
+        case .prevSection:
+            delegate?.outlinerDidRequestPrevTile()
+        case .nextSection:
+            delegate?.outlinerDidRequestNextTile()
+
         case .replaceChar, .moveUp, .moveDown:
             break
 
@@ -1045,6 +1053,8 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var onSpaceMenu: (() -> Void)?
     var isMenuVisible: (() -> Bool)?
     var onDismissMenu: (() -> Void)?
+    var onPrevTile: (() -> Void)?
+    var onNextTile: (() -> Void)?
     var apiClient: APIClient?
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -1104,6 +1114,14 @@ struct OutlinerCoordinator: NSViewRepresentable {
 
         func outlinerDidRequestSpaceMenu() {
             parent.onSpaceMenu?()
+        }
+
+        func outlinerDidRequestPrevTile() {
+            parent.onPrevTile?()
+        }
+
+        func outlinerDidRequestNextTile() {
+            parent.onNextTile?()
         }
     }
 }
