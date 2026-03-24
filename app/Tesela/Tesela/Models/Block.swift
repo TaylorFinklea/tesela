@@ -38,6 +38,7 @@ final class Block: Identifiable, @unchecked Sendable {
 
     func deepCopy() -> Block {
         let copy = Block(
+            id: id,  // preserve identity for SwiftUI diffing
             text: text,
             children: children.map { $0.deepCopy() },
             indentLevel: indentLevel,

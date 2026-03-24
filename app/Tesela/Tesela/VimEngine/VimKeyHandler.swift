@@ -22,8 +22,12 @@ struct KeyEvent: Equatable, Sendable {
         if nsEvent.modifierFlags.contains(.shift) { flags.insert(.shift) }
         if nsEvent.modifierFlags.contains(.control) { flags.insert(.control) }
         if nsEvent.modifierFlags.contains(.option) { flags.insert(.option) }
+        // Use charactersIgnoringModifiers for Ctrl combos so Ctrl+R gives "r" not "\u{12}"
+        let chars = flags.contains(.control)
+            ? (nsEvent.charactersIgnoringModifiers ?? "")
+            : (nsEvent.characters ?? "")
         return KeyEvent(
-            characters: nsEvent.characters ?? "",
+            characters: chars,
             modifiers: flags,
             keyCode: nsEvent.keyCode
         )
