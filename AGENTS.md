@@ -1,5 +1,9 @@
 # Tesela — Agent Instructions
 
+## Progress Tracking
+
+**Always use todo lists.** When working on any task, create and maintain a todo list using TaskCreate/TaskUpdate so the user can see progress and what you're working on. Mark tasks `in_progress` when starting and `completed` when done. Break work into discrete steps.
+
 ## After Any Work Session
 
 **Always commit before stopping.** After completing a working chunk of changes:

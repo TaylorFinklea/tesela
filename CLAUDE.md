@@ -12,6 +12,8 @@ This keeps the permission allowlist minimal and each action reviewable.
 
 ## After Any Work Session
 
+**Always use todo lists.** When working on any task, create and maintain a todo list using TaskCreate/TaskUpdate so the user can see progress and what you're working on. Mark tasks in_progress when starting and completed when done.
+
 **Always commit before stopping.** After completing a working chunk of changes:
 1. `git add` the relevant files
 2. `git commit` with a descriptive message
