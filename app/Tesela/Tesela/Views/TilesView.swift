@@ -126,9 +126,10 @@ private struct EditableTileCard: View {
                 },
                 apiClient: appState.api
             )
-            .frame(minHeight: 30, maxHeight: 300)
+            // Height expands to fit content — each block ~26px + generous buffer
+            .frame(minHeight: max(CGFloat(blocks.count) * 26 + 60, 120))
             .padding(.horizontal, 8)
-            .padding(.bottom, 16)
+            .padding(.bottom, 32)
         }
         .onAppear { loadBlocks() }
     }
