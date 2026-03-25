@@ -74,17 +74,18 @@ final class Block: Identifiable, @unchecked Sendable {
         let lines = text.components(separatedBy: "\n")
         let firstLine = lines.first ?? ""
 
-        // Extract inline tags from original first line
-        let tagPattern = try! NSRegularExpression(pattern: #"#[A-Za-z0-9_\-]+"#)
-        let range = NSRange(firstLine.startIndex..., in: firstLine)
-        let inlineTags = tagPattern.matches(in: firstLine, range: range)
-            .compactMap { Range($0.range, in: firstLine).map { String(firstLine[$0]) } }
+        // Extract COMPLETE tags from original text (not partial mid-typing ones)
+        let originalTags = BlockParser.extractTagsLive(from: firstLine)
+            .map { "#\($0)" }
 
-        // Rebuild: new display text + original tags + original property lines
+        // Only re-append tags that aren't already in the new display text
         var result = newDisplay
-        if !inlineTags.isEmpty {
-            result += " " + inlineTags.joined(separator: " ")
+        let tagsToAppend = originalTags.filter { !newDisplay.contains($0) }
+        if !tagsToAppend.isEmpty {
+            result += " " + tagsToAppend.joined(separator: " ")
         }
+
+        // Append property continuation lines
         if lines.count > 1 {
             result += "\n" + lines.dropFirst().joined(separator: "\n")
         }
