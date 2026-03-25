@@ -422,6 +422,9 @@ class OutlinerView: NSView {
             let tagsChanged = oldTags != newTags
             if abs(view.frame.size.height - newH) > 2 || tagsChanged {
                 pendingFocusIndex = index
+                // Preserve cursor position across rebuild (display text may be shorter after tag stripping)
+                let cursorPos = min(view.selectedRange().location, blocks[index].displayText.count)
+                pendingCursorPosition = cursorPos
                 rebuildBlockViews()
             }
             delegate?.outlinerDidChangeContent(blocks: blocks)
