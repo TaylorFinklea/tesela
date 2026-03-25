@@ -44,6 +44,7 @@ pub fn row_to_note(row: &SqliteRow) -> Result<Note> {
             title: None,
             tags,
             aliases: vec![],
+            note_type: None,
             custom: Default::default(),
             created: Some(created_at),
             modified: Some(modified_at),

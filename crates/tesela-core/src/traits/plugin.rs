@@ -241,6 +241,7 @@ mod tests {
                 title: Some(title.to_string()),
                 tags: vec![],
                 aliases: vec![],
+                note_type: None,
                 custom: Default::default(),
                 created: Some(Utc::now()),
                 modified: Some(Utc::now()),

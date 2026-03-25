@@ -39,12 +39,14 @@ struct PageMetadata: Codable, Hashable, Sendable {
     let title: String
     let tags: [String]
     let aliases: [String]
+    let noteType: String?
     let custom: [String: JSONValue]
     let created: Date?
     let modified: Date?
 
     enum CodingKeys: String, CodingKey {
         case title, tags, aliases, custom, created, modified
+        case noteType = "note_type"
     }
 
     init(from decoder: any Decoder) throws {
@@ -52,6 +54,7 @@ struct PageMetadata: Codable, Hashable, Sendable {
         title = try container.decodeIfPresent(String.self, forKey: .title) ?? ""
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
         aliases = try container.decodeIfPresent([String].self, forKey: .aliases) ?? []
+        noteType = try container.decodeIfPresent(String.self, forKey: .noteType)
         custom = try container.decodeIfPresent([String: JSONValue].self, forKey: .custom) ?? [:]
         created = try container.decodeIfPresent(Date.self, forKey: .created)
         modified = try container.decodeIfPresent(Date.self, forKey: .modified)

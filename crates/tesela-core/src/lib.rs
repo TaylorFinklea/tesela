@@ -9,6 +9,7 @@ pub mod note;
 pub mod storage;
 pub mod tag;
 pub mod traits;
+pub mod types;
 
 // Re-export key types at crate root
 pub use config::Config;

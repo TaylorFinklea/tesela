@@ -79,6 +79,8 @@ pub struct NoteMetadata {
     pub tags: Vec<String>,
     /// Note aliases for easier searching
     pub aliases: Vec<String>,
+    /// Page type (e.g., "Task", "Project", "Person")
+    pub note_type: Option<String>,
     /// Custom key-value pairs
     pub custom: HashMap<String, serde_json::Value>,
     /// Creation date from frontmatter

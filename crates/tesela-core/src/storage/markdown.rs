@@ -69,8 +69,13 @@ fn extract_metadata(data: &Option<gray_matter::Pod>) -> Result<NoteMetadata> {
             metadata.modified = modified.parse::<DateTime<Utc>>().ok();
         }
 
+        // Extract page type
+        if let Some(gray_matter::Pod::String(note_type)) = map.get("type") {
+            metadata.note_type = Some(note_type.clone());
+        }
+
         // Collect remaining keys as custom
-        let known_keys = ["title", "tags", "aliases", "created", "modified"];
+        let known_keys = ["title", "tags", "aliases", "created", "modified", "type"];
         for (key, value) in map {
             if !known_keys.contains(&key.as_str()) {
                 if let Ok(json_val) = pod_to_json(value) {

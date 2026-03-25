@@ -13,6 +13,7 @@ use tesela_core::{
     indexer::{Indexer, NoteEvent},
     storage::filesystem::FsNoteStore,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
+    types::TypeRegistry,
 };
 
 use state::{AppState, WsEvent};
@@ -26,6 +27,8 @@ async fn main() -> Result<()> {
     let mosaic = find_mosaic()?;
     let config = Config::default();
     let db_path = mosaic.join(".tesela").join("tesela.db");
+    let type_registry = TypeRegistry::load(&mosaic);
+    info!("Loaded {} type definitions", type_registry.types.len());
 
     let store = Arc::new(FsNoteStore::new(mosaic, config.storage));
     let index = Arc::new(SqliteIndex::open(&db_path).await?);
@@ -64,6 +67,7 @@ async fn main() -> Result<()> {
         store,
         index,
         ws_tx,
+        type_registry,
     };
     let router = routes::build(app_state);
 

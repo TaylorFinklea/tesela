@@ -510,6 +510,7 @@ mod tests {
                 title: None,
                 tags,
                 aliases: vec![],
+                note_type: None,
                 custom: Default::default(),
                 created: None,
                 modified: None,

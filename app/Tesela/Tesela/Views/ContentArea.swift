@@ -82,6 +82,14 @@ struct PageEditorView: View {
                     .font(.title2)
                     .bold()
                     .lineLimit(1)
+                if let noteType = page.metadata.noteType,
+                   let typeDef = appState.typeRegistry.first(where: { $0.name == noteType }) {
+                    Text("\(typeDef.icon) \(typeDef.name)")
+                        .font(.caption)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Color.accentColor.opacity(0.15), in: Capsule())
+                }
                 Spacer()
                 Button {
                     appState.toggleFavorite(page.id)

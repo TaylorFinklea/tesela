@@ -14,6 +14,7 @@ final class AppState {
     var currentPage: Page?
     var pages: [Page] = []
     var tags: [String] = []
+    var typeRegistry: [TypeDefinition] = []
 
     // MARK: - Recent & Favorites
     var recentPageIds: [String] = []
@@ -96,6 +97,7 @@ final class AppState {
     private func loadInitialData() async {
         async let pagesTask = api.listNotes()
         async let tagsTask = api.listTags()
+        async let typesTask = api.getTypes()
         do {
             let (fetchedPages, fetchedTags) = try await (pagesTask, tagsTask)
             pages = fetchedPages
@@ -103,6 +105,8 @@ final class AppState {
         } catch {
             print("[AppState] loadInitialData failed: \(error)")
         }
+        // Types loaded separately (non-fatal if missing)
+        typeRegistry = (try? await typesTask) ?? []
     }
 
     // MARK: - Navigation helpers

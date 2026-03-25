@@ -1,6 +1,7 @@
 mod notes;
 mod search;
 mod tags;
+mod types;
 mod ws;
 
 use std::sync::Arc;
@@ -27,6 +28,7 @@ pub fn build(state: AppState) -> Router {
         .route("/links", get(notes::get_all_edges))
         .route("/search", get(search::search_notes))
         .route("/tags", get(tags::list_tags))
+        .route("/types", get(types::list_types))
         .route("/ws", get(ws::ws_handler))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
