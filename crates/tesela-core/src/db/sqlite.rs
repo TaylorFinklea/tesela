@@ -180,6 +180,75 @@ impl SqliteIndex {
         Ok(())
     }
 
+    /// Index type system info: if note is a Tag or Property page, cache its definition.
+    async fn index_type_info(&self, note: &Note) -> Result<()> {
+        match note.metadata.note_type.as_deref() {
+            Some("Tag") => {
+                // Extract tag_properties from frontmatter custom fields
+                let props_json = note.metadata.custom.get("tag_properties")
+                    .and_then(|v| serde_json::to_string(v).ok())
+                    .unwrap_or_else(|| "[]".to_string());
+                let extends = note.metadata.custom.get("extends")
+                    .and_then(|v| v.as_str().map(String::from));
+                let icon = note.metadata.custom.get("icon")
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_else(|| "📄".to_string());
+                let color = note.metadata.custom.get("color")
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_else(|| "#808080".to_string());
+
+                sqlx::query(
+                    "INSERT OR REPLACE INTO tag_defs (id, name, extends, icon, color, properties_json, note_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                )
+                .bind(note.id.as_str())
+                .bind(&note.title)
+                .bind(&extends)
+                .bind(&icon)
+                .bind(&color)
+                .bind(&props_json)
+                .bind(note.id.as_str())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| db_err("Failed to index tag def", e))?;
+            }
+            Some("Property") => {
+                let value_type = note.metadata.custom.get("value_type")
+                    .and_then(|v| v.as_str().map(String::from))
+                    .unwrap_or_else(|| "text".to_string());
+                let choices_json = note.metadata.custom.get("choices")
+                    .and_then(|v| serde_json::to_string(v).ok());
+                let default_value = note.metadata.custom.get("default")
+                    .and_then(|v| v.as_str().map(String::from));
+                let multiple = note.metadata.custom.get("multiple_values")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let hide_empty = note.metadata.custom.get("hide_empty")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let description = note.metadata.custom.get("description")
+                    .and_then(|v| v.as_str().map(String::from));
+
+                sqlx::query(
+                    "INSERT OR REPLACE INTO property_defs (id, name, value_type, choices_json, default_value, multiple_values, hide_empty, description, note_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                )
+                .bind(note.id.as_str())
+                .bind(&note.title)
+                .bind(&value_type)
+                .bind(&choices_json)
+                .bind(&default_value)
+                .bind(multiple)
+                .bind(hide_empty)
+                .bind(&description)
+                .bind(note.id.as_str())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| db_err("Failed to index property def", e))?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Rebuild the entire index from a slice of notes.
     ///
     /// This is used when the database is lost or out of sync with the filesystem.
@@ -261,6 +330,55 @@ impl SqliteIndex {
 
         parts.join(" ")
     }
+
+    /// Get all property definitions from the cache.
+    pub async fn get_all_property_defs(&self) -> Result<Vec<crate::types::PropertyDef>> {
+        use sqlx::Row;
+        let rows = sqlx::query("SELECT name, value_type, choices_json, default_value, multiple_values, hide_empty, description FROM property_defs ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to get property defs", e))?;
+
+        Ok(rows.iter().map(|row| {
+            let choices_str: Option<String> = row.get("choices_json");
+            let choices: Option<Vec<String>> = choices_str
+                .and_then(|s| serde_json::from_str(&s).ok());
+            crate::types::PropertyDef {
+                name: row.get("name"),
+                value_type: row.get("value_type"),
+                values: choices,
+                default: row.get("default_value"),
+                required: false,
+            }
+        }).collect())
+    }
+
+    /// Get all tag definitions from the cache.
+    pub async fn get_all_tag_defs(&self) -> Result<Vec<crate::types::TypeDefinition>> {
+        use sqlx::Row;
+        let rows = sqlx::query("SELECT name, extends, icon, color, properties_json FROM tag_defs ORDER BY name")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to get tag defs", e))?;
+
+        Ok(rows.iter().map(|row| {
+            let props_str: String = row.get("properties_json");
+            let props: Vec<String> = serde_json::from_str(&props_str).unwrap_or_default();
+            crate::types::TypeDefinition {
+                name: row.get("name"),
+                description: String::new(),
+                icon: row.get("icon"),
+                color: row.get("color"),
+                properties: props.iter().map(|p| crate::types::PropertyDef {
+                    name: p.clone(),
+                    value_type: "text".to_string(),
+                    values: None,
+                    default: None,
+                    required: false,
+                }).collect(),
+            }
+        }).collect())
+    }
 }
 
 #[async_trait]
@@ -320,7 +438,9 @@ impl SearchIndex for SqliteIndex {
     }
 
     async fn reindex(&self, note: &Note) -> Result<()> {
-        self.upsert_note(note).await
+        self.upsert_note(note).await?;
+        self.index_type_info(note).await?;
+        Ok(())
     }
 
     async fn remove(&self, id: &NoteId) -> Result<()> {

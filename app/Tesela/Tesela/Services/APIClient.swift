@@ -83,9 +83,13 @@ actor APIClient {
         return try await getDecoded("/search", query: params)
     }
 
-    // MARK: - Types
+    // MARK: - Types & Properties
     func getTypes() async throws -> [TypeDefinition] {
         try await getDecoded("/types")
+    }
+
+    func getProperties() async throws -> [PropertyDef] {
+        try await getDecoded("/properties")
     }
 
     // MARK: - Tags

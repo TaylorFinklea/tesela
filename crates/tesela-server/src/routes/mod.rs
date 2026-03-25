@@ -29,6 +29,7 @@ pub fn build(state: AppState) -> Router {
         .route("/search", get(search::search_notes))
         .route("/tags", get(tags::list_tags))
         .route("/types", get(types::list_types))
+        .route("/properties", get(types::list_properties))
         .route("/ws", get(ws::ws_handler))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))

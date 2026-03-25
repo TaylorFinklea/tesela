@@ -18,7 +18,11 @@ struct ContentArea: View {
     var body: some View {
         Group {
             if let page = appState.currentPage {
-                PageEditorView(page: page)
+                if page.metadata.noteType == "Tag" {
+                    TagPageView(page: page)
+                } else {
+                    PageEditorView(page: page)
+                }
             } else {
                 switch appState.selectedNavItem {
                 case .tiles:

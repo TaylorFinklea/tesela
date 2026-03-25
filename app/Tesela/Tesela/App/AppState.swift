@@ -15,6 +15,7 @@ final class AppState {
     var pages: [Page] = []
     var tags: [String] = []
     var typeRegistry: [TypeDefinition] = []
+    var propertyRegistry: [PropertyDef] = []
 
     // MARK: - Recent & Favorites
     var recentPageIds: [String] = []
@@ -105,8 +106,9 @@ final class AppState {
         } catch {
             print("[AppState] loadInitialData failed: \(error)")
         }
-        // Types loaded separately (non-fatal if missing)
+        // Types and properties loaded separately (non-fatal if missing)
         typeRegistry = (try? await typesTask) ?? []
+        propertyRegistry = (try? await api.getProperties()) ?? []
     }
 
     // MARK: - Navigation helpers

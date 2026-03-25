@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		066B25AA6572B71018CD340C /* TagPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A307563F2BC1FA272D9D732 /* TagPageView.swift */; };
 		09479A25AAB4EA40CC8FEDA0 /* OutlinerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAB173D4D76EDF9C10B73B0F /* OutlinerView.swift */; };
 		1222FC6597693AC16EBDC84F /* TeselaCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = A558BEB394EBFAE4CBE4842E /* TeselaCommands.swift */; };
 		198408BA5387E8F55FBE4B3F /* PageListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3FED602B9C84575964F5FA2 /* PageListView.swift */; };
@@ -67,6 +68,7 @@
 		52E040CAD40B4BBB0F7F9A74 /* VimKeyHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VimKeyHandler.swift; sourceTree = "<group>"; };
 		5BD310F1E47B48D2CC65526C /* BlockParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockParser.swift; sourceTree = "<group>"; };
 		6974F402BC0671BB7F6D24AB /* APIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClientTests.swift; sourceTree = "<group>"; };
+		6A307563F2BC1FA272D9D732 /* TagPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagPageView.swift; sourceTree = "<group>"; };
 		6C9E71BC5AA2F3BD2E8BC1ED /* VimEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VimEngine.swift; sourceTree = "<group>"; };
 		82D7AD3CCEA6697594652E84 /* MenuCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuCommand.swift; sourceTree = "<group>"; };
 		874E24328A38A9F099D6A121 /* WsEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WsEventTests.swift; sourceTree = "<group>"; };
@@ -206,6 +208,7 @@
 				04CE36C6EA97918795CA15F8 /* MainShellView.swift */,
 				8DF308818C876207C0482E7E /* RootView.swift */,
 				063F17C66B1EE61153E18D83 /* SettingsView.swift */,
+				6A307563F2BC1FA272D9D732 /* TagPageView.swift */,
 				C77C769D643532067754AF5D /* TilesView.swift */,
 				599149A58D5B88FB5972B4E8 /* CommandPalette */,
 				8D3891783A514255EE291245 /* Graph */,
@@ -395,6 +398,7 @@
 				5D4262E3D1311F8F916112A6 /* SidebarView.swift in Sources */,
 				3395D017C7380FB1EF56EFB3 /* SlashMenuView.swift in Sources */,
 				F2CB3C6D24E9524EDB2E7EFF /* SpaceMenuView.swift in Sources */,
+				066B25AA6572B71018CD340C /* TagPageView.swift in Sources */,
 				44DC03B9348A53C1FDFC5D96 /* TeselaApp.swift in Sources */,
 				1222FC6597693AC16EBDC84F /* TeselaCommands.swift in Sources */,
 				ECA1DA299F4978618A5946FC /* TilesView.swift in Sources */,
