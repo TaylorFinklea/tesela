@@ -353,6 +353,100 @@ impl SqliteIndex {
         }).collect())
     }
 
+    /// Get a single tag definition with resolved property schemas (walks extends chain).
+    pub async fn get_resolved_tag_def(&self, name: &str) -> Result<Option<crate::types::TypeDefinition>> {
+        use sqlx::Row;
+
+        // Collect properties by walking the extends chain (child → parent → root)
+        let mut all_property_names: Vec<String> = Vec::new();
+        let mut current_name = name.to_string();
+        let mut icon = "📄".to_string();
+        let mut color = "#808080".to_string();
+        let mut depth = 0;
+
+        loop {
+            if depth > 10 { break; } // prevent infinite loops
+            depth += 1;
+
+            let row = sqlx::query(
+                "SELECT name, extends, icon, color, properties_json FROM tag_defs WHERE LOWER(name) = LOWER(?)"
+            )
+            .bind(&current_name)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to get tag def", e))?;
+
+            match row {
+                Some(row) => {
+                    if depth == 1 {
+                        icon = row.get("icon");
+                        color = row.get("color");
+                    }
+                    let props_str: String = row.get("properties_json");
+                    let props: Vec<String> = serde_json::from_str(&props_str).unwrap_or_default();
+                    // Prepend parent properties (parent first, child overrides)
+                    all_property_names.extend(props);
+
+                    let extends: Option<String> = row.get("extends");
+                    match extends {
+                        Some(parent) if !parent.is_empty() => current_name = parent,
+                        _ => break,
+                    }
+                }
+                None => break,
+            }
+        }
+
+        if depth == 0 { return Ok(None); }
+
+        // Deduplicate (child properties take precedence)
+        let mut seen = std::collections::HashSet::new();
+        all_property_names.retain(|p| seen.insert(p.clone()));
+
+        // Resolve property definitions from property_defs table
+        let mut resolved_props = Vec::new();
+        for prop_name in &all_property_names {
+            let prop_row = sqlx::query(
+                "SELECT name, value_type, choices_json, default_value, multiple_values, hide_empty, description FROM property_defs WHERE LOWER(name) = LOWER(?)"
+            )
+            .bind(prop_name)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to resolve property", e))?;
+
+            match prop_row {
+                Some(row) => {
+                    let choices_str: Option<String> = row.get("choices_json");
+                    resolved_props.push(crate::types::PropertyDef {
+                        name: row.get("name"),
+                        value_type: row.get("value_type"),
+                        values: choices_str.and_then(|s| serde_json::from_str(&s).ok()),
+                        default: row.get("default_value"),
+                        required: false,
+                    });
+                }
+                None => {
+                    // Property page doesn't exist yet — show as text
+                    resolved_props.push(crate::types::PropertyDef {
+                        name: prop_name.clone(),
+                        value_type: "text".to_string(),
+                        values: None,
+                        default: None,
+                        required: false,
+                    });
+                }
+            }
+        }
+
+        Ok(Some(crate::types::TypeDefinition {
+            name: name.to_string(),
+            description: String::new(),
+            icon,
+            color,
+            properties: resolved_props,
+        }))
+    }
+
     /// Get all tag definitions from the cache.
     pub async fn get_all_tag_defs(&self) -> Result<Vec<crate::types::TypeDefinition>> {
         use sqlx::Row;

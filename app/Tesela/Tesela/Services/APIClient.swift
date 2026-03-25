@@ -92,6 +92,14 @@ actor APIClient {
         try await getDecoded("/properties")
     }
 
+    func getResolvedType(name: String) async throws -> TypeDefinition {
+        try await getDecoded("/types/\(name)")
+    }
+
+    func getTypedNodes(typeName: String) async throws -> [Page] {
+        try await getDecoded("/types/\(typeName)/nodes")
+    }
+
     // MARK: - Tags
     func listTags() async throws -> [String] {
         try await getDecoded("/tags")

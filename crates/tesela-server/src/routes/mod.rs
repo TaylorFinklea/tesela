@@ -29,6 +29,8 @@ pub fn build(state: AppState) -> Router {
         .route("/search", get(search::search_notes))
         .route("/tags", get(tags::list_tags))
         .route("/types", get(types::list_types))
+        .route("/types/{name}", get(types::get_type))
+        .route("/types/{name}/nodes", get(types::list_typed_nodes))
         .route("/properties", get(types::list_properties))
         .route("/ws", get(ws::ws_handler))
         .layer(CorsLayer::permissive())
