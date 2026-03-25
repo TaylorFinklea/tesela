@@ -149,11 +149,18 @@ final class AppState {
     }
 
     func updatePage(id: String, newBody: String) async {
-        guard let page = currentPage, page.id == id else { return }
+        // Find the page from currentPage OR the pages array (tiles edit without setting currentPage)
+        let page: Page? = if currentPage?.id == id {
+            currentPage
+        } else {
+            pages.first { $0.id == id }
+        }
+        guard let page else { return }
+
         let fullContent = rebuildContent(from: page, newBody: newBody)
         do {
             let updated = try await api.updateNote(id: id, content: fullContent)
-            currentPage = updated
+            if currentPage?.id == id { currentPage = updated }
             if let idx = pages.firstIndex(where: { $0.id == id }) {
                 pages[idx] = updated
             }
