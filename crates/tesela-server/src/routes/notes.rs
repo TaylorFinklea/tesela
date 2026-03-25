@@ -104,6 +104,7 @@ pub async fn create_note(
         .collect();
     let note = s.store.create(&req.title, &req.content, &tags).await?;
     s.index.reindex(&note).await?;
+    ensure_tag_pages(&s, &note).await;
     let _ = s.ws_tx.send(WsEvent::NoteCreated { note: note.clone() });
     Ok(Json(note))
 }
@@ -128,6 +129,7 @@ pub async fn update_note(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Note not found after update: {}", id)))?;
     s.index.reindex(&updated).await?;
+    ensure_tag_pages(&s, &updated).await;
     let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated.clone() });
     Ok(Json(updated))
 }
@@ -166,5 +168,39 @@ pub async fn get_all_edges(
 ) -> AppResult<Json<Vec<GraphEdge>>> {
     let edges = s.index.get_all_edges().await?;
     Ok(Json(edges))
+}
+
+/// Auto-create tag pages for any tags in the note that don't have a corresponding page.
+/// Tags like #Task create a page with `type: "Tag"` frontmatter.
+async fn ensure_tag_pages(s: &Arc<AppState>, note: &Note) {
+    for tag in &note.metadata.tags {
+        // Skip built-in tags that aren't type-like
+        if tag == "daily" { continue; }
+
+        let tag_id = NoteId::new(tag.to_lowercase());
+        match s.store.get(&tag_id).await {
+            Ok(Some(_)) => {} // Page already exists
+            Ok(None) => {
+                // Auto-create tag page
+                let content = format!(
+                    "---\ntitle: \"{}\"\ntype: \"Tag\"\nextends: \"Root Tag\"\ntag_properties: []\ntags: []\n---\n- Tag properties are inherited by all nodes using the tag.\n",
+                    tag
+                );
+                match s.store.create(tag, &content, &[]).await {
+                    Ok(tag_note) => {
+                        let _ = s.index.reindex(&tag_note).await;
+                        let _ = s.ws_tx.send(WsEvent::NoteCreated { note: tag_note });
+                        tracing::info!("Auto-created tag page: {}", tag);
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to auto-create tag page '{}': {}", tag, e);
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to check tag page '{}': {}", tag, e);
+            }
+        }
+    }
 }
 

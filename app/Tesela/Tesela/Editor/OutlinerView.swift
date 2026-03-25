@@ -252,6 +252,14 @@ class OutlinerView: NSView {
                 let pill = makeTagPill("#\(tag)")
                 let pillWidth = pill.frame.width
                 pill.frame = NSRect(x: badgeX, y: yOffset + (height - 18) / 2, width: pillWidth, height: 18)
+                // Make tag pill clickable — navigates to the tag's page
+                let tagName = tag
+                let clickAction = DatePickerAction { [weak self] in
+                    self?.delegate?.outlinerDidClickWikiLink(target: tagName.lowercased())
+                }
+                let clickRecognizer = NSClickGestureRecognizer(target: clickAction, action: #selector(DatePickerAction.execute))
+                pill.addGestureRecognizer(clickRecognizer)
+                objc_setAssociatedObject(pill, "tagClickAction", clickAction, .OBJC_ASSOCIATION_RETAIN)
                 addSubview(pill)
                 badgeX += pillWidth + 4
             }

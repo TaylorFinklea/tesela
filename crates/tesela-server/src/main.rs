@@ -5,7 +5,7 @@ mod state;
 use anyhow::Result;
 use std::{path::PathBuf, sync::Arc};
 use tokio::sync::broadcast;
-use tracing::info;
+use tracing::{info, warn};
 
 use tesela_core::{
     config::Config,
@@ -14,6 +14,7 @@ use tesela_core::{
     storage::filesystem::FsNoteStore,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     types::TypeRegistry,
+    NoteId,
 };
 
 use state::{AppState, WsEvent};
@@ -47,6 +48,70 @@ async fn main() -> Result<()> {
     let indexer = Indexer::new(store_dyn, index_dyn, graph_dyn)
         .with_notify_tx(note_event_tx.clone());
     indexer.initial_index().await?;
+
+    // Auto-create tag pages for any tags that don't have a corresponding page
+    {
+        let all_notes = store.list(None, usize::MAX, 0).await?;
+        let existing_ids: std::collections::HashSet<String> =
+            all_notes.iter().map(|n| n.id.as_str().to_lowercase()).collect();
+        for note in &all_notes {
+            for tag in &note.metadata.tags {
+                if tag == "daily" { continue; }
+                let tag_lower = tag.to_lowercase();
+                if !existing_ids.contains(&tag_lower) {
+                    let content = format!(
+                        "---\ntitle: \"{}\"\ntype: \"Tag\"\nextends: \"Root Tag\"\ntag_properties: []\ntags: []\n---\n- Tag properties are inherited by all nodes using the tag.\n",
+                        tag
+                    );
+                    match store.create(tag, &content, &[]).await {
+                        Ok(tag_note) => {
+                            let _ = index.reindex(&tag_note).await;
+                            info!("Auto-created tag page: {}", tag);
+                        }
+                        Err(e) => warn!("Failed to auto-create tag page '{}': {}", tag, e),
+                    }
+                }
+            }
+        }
+    }
+
+    // Create built-in property pages if they don't exist
+    {
+        let builtin_properties = vec![
+            ("Status", "select", r#"["backlog", "todo", "doing", "in-review", "done", "canceled"]"#, "todo"),
+            ("Priority", "select", r#"["critical", "high", "medium", "low"]"#, "medium"),
+            ("Deadline", "date", "[]", ""),
+            ("Scheduled", "date", "[]", ""),
+        ];
+        for (name, vtype, choices, default_val) in builtin_properties {
+            let prop_id = NoteId::new(name.to_lowercase());
+            if store.get(&prop_id).await?.is_none() {
+                let content = format!(
+                    "---\ntitle: \"{name}\"\ntype: \"Property\"\nvalue_type: \"{vtype}\"\nchoices: {choices}\ndefault: \"{default_val}\"\ntags: []\n---\n- {name} property.\n"
+                );
+                match store.create(name, &content, &[]).await {
+                    Ok(prop_note) => {
+                        let _ = index.reindex(&prop_note).await;
+                        info!("Auto-created property page: {}", name);
+                    }
+                    Err(e) => warn!("Failed to auto-create property page '{}': {}", name, e),
+                }
+            }
+        }
+        // Create Root Tag if it doesn't exist
+        let root_tag_id = NoteId::new("root-tag");
+        if store.get(&root_tag_id).await?.is_none() {
+            let content = "---\ntitle: \"Root Tag\"\ntype: \"Tag\"\ntag_properties: []\ntags: []\n---\n- The base tag that all other tags extend.\n";
+            match store.create("Root Tag", content, &[]).await {
+                Ok(note) => {
+                    let _ = index.reindex(&note).await;
+                    info!("Auto-created Root Tag page");
+                }
+                Err(e) => warn!("Failed to auto-create Root Tag: {}", e),
+            }
+        }
+    }
+
     let indexer_handle = indexer.start().await?;
 
     // Bridge NoteEvents from the Indexer to WsEvents for WebSocket clients
