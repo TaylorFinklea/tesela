@@ -58,8 +58,9 @@ final class Block: Identifiable, @unchecked Sendable {
     /// First line of text with #tags stripped — what the user sees in the editor.
     var displayText: String {
         let firstLine = text.components(separatedBy: "\n").first ?? text
+        // Only strip complete tags (followed by space/end), not mid-typing partials
         return firstLine.replacingOccurrences(
-            of: #" ?#[A-Za-z0-9_\-]+"#, with: "", options: .regularExpression
+            of: #" ?#[A-Za-z0-9_\-]+(?=\s|$)"#, with: "", options: .regularExpression
         ).trimmingCharacters(in: .whitespaces)
     }
 

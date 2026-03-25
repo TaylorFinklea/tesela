@@ -144,7 +144,9 @@ enum BlockParser {
     }
 
     static func extractTags(from text: String) -> [String] {
-        let pattern = /#([A-Za-z0-9_\-]+)/
+        // Tag must be followed by whitespace, end of string, or punctuation
+        // This prevents matching mid-typing (#mee while typing #meeting)
+        let pattern = /#([A-Za-z0-9_\-]+)(?=[\s,.\!\?\)\]\}]|$)/
         return text.matches(of: pattern).map { String($0.output.1) }
     }
 
