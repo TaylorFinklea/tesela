@@ -77,11 +77,13 @@ impl SqliteIndex {
             .await
             .map_err(|e| db_err("Failed to create migrations table", e))?;
 
-        for (name, statements) in schema::MIGRATIONS {
+        for (idx, (name, statements)) in schema::MIGRATIONS.iter().enumerate() {
+            let version = (idx + 1) as i64;
+
             // Check if migration was already applied
             let applied: Option<i64> =
                 sqlx::query_scalar("SELECT version FROM schema_migrations WHERE version = ?")
-                    .bind(schema::SCHEMA_VERSION)
+                    .bind(version)
                     .fetch_optional(pool)
                     .await
                     .map_err(|e| db_err("Failed to check migration status", e))?;
@@ -97,12 +99,12 @@ impl SqliteIndex {
                 sqlx::query(statement)
                     .execute(pool)
                     .await
-                    .map_err(|e| db_err(&format!("Failed to apply migration {}", name), e))?;
+                    .map_err(|e| db_err(&format!("Failed to apply migration {}: {}", name, statement), e))?;
             }
 
             // Record migration
             sqlx::query("INSERT INTO schema_migrations (version) VALUES (?)")
-                .bind(schema::SCHEMA_VERSION)
+                .bind(version)
                 .execute(pool)
                 .await
                 .map_err(|e| db_err("Failed to record migration", e))?;

@@ -1,6 +1,6 @@
 //! SQLite schema definitions and migrations for Tesela
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub const CREATE_MIGRATIONS_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -51,5 +51,48 @@ END"#,
     INSERT INTO notes_fts(notes_fts, rowid, id, title, body, tags) VALUES('delete', old.rowid, old.id, old.title, old.body, old.tags);
     INSERT INTO notes_fts(rowid, id, title, body, tags) VALUES (new.rowid, new.id, new.title, new.body, new.tags);
 END"#,
+    ],
+), (
+    "002_type_system",
+    &[
+        // Tag definitions — cached from Tag pages
+        r#"CREATE TABLE IF NOT EXISTS tag_defs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    extends TEXT,
+    icon TEXT DEFAULT '📄',
+    color TEXT DEFAULT '#808080',
+    properties_json TEXT NOT NULL DEFAULT '[]',
+    note_id TEXT,
+    FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE SET NULL
+)"#,
+        // Property definitions — cached from Property pages
+        r#"CREATE TABLE IF NOT EXISTS property_defs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    value_type TEXT NOT NULL DEFAULT 'text',
+    choices_json TEXT,
+    default_value TEXT,
+    multiple_values BOOLEAN NOT NULL DEFAULT 0,
+    hide_empty BOOLEAN NOT NULL DEFAULT 0,
+    description TEXT,
+    note_id TEXT,
+    FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE SET NULL
+)"#,
+        // Block-level property values — for cross-page queries
+        r#"CREATE TABLE IF NOT EXISTS block_properties (
+    block_id TEXT NOT NULL,
+    note_id TEXT NOT NULL,
+    property_id TEXT NOT NULL,
+    property_name TEXT NOT NULL,
+    value TEXT,
+    PRIMARY KEY (block_id, property_id),
+    FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+)"#,
+        "CREATE INDEX IF NOT EXISTS idx_block_props_note ON block_properties(note_id)",
+        "CREATE INDEX IF NOT EXISTS idx_block_props_property ON block_properties(property_name)",
+        "CREATE INDEX IF NOT EXISTS idx_block_props_value ON block_properties(property_name, value)",
+        // Add note_type column to notes table
+        "ALTER TABLE notes ADD COLUMN note_type TEXT",
     ],
 )];
