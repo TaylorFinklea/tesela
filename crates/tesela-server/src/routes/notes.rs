@@ -171,10 +171,20 @@ pub async fn get_all_edges(
 }
 
 /// Auto-create tag pages for any tags in the note that don't have a corresponding page.
-/// Tags like #Task create a page with `type: "Tag"` frontmatter.
+/// Scans both frontmatter tags AND inline #tags in the body.
 async fn ensure_tag_pages(s: &Arc<AppState>, note: &Note) {
-    for tag in &note.metadata.tags {
-        // Skip built-in tags that aren't type-like
+    // Collect tags from frontmatter AND inline body text
+    let mut all_tags: Vec<String> = note.metadata.tags.clone();
+    // Extract inline #tags from body
+    let tag_re = regex::Regex::new(r"#([A-Za-z][A-Za-z0-9_-]*)").unwrap();
+    for cap in tag_re.captures_iter(&note.body) {
+        let tag = cap[1].to_string();
+        if !all_tags.iter().any(|t| t.eq_ignore_ascii_case(&tag)) {
+            all_tags.push(tag);
+        }
+    }
+
+    for tag in &all_tags {
         if tag == "daily" { continue; }
 
         let tag_id = NoteId::new(tag.to_lowercase());

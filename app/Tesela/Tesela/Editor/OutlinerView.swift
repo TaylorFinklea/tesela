@@ -409,9 +409,18 @@ class OutlinerView: NSView {
 
         view.onTextChanged = { [weak self] newText in
             guard let self, index < blocks.count else { return }
+            let oldTags = Set(blocks[index].tags)
             blocks[index].updateDisplayText(newText)
+            // Re-extract tags and properties from updated text
+            blocks[index].tags = BlockParser.extractTags(from: blocks[index].text)
+            let newProps = BlockParser.extractProperties(from: blocks[index].text)
+            blocks[index].priority = Priority(rawValue: newProps["priority"] ?? "")
+            blocks[index].properties = newProps
+            let newTags = Set(blocks[index].tags)
+
             let newH = blockHeight(for: view)
-            if abs(view.frame.size.height - newH) > 2 {
+            let tagsChanged = oldTags != newTags
+            if abs(view.frame.size.height - newH) > 2 || tagsChanged {
                 pendingFocusIndex = index
                 rebuildBlockViews()
             }
