@@ -58,10 +58,15 @@ final class Block: Identifiable, @unchecked Sendable {
     /// First line of text with #tags stripped — what the user sees in the editor.
     var displayText: String {
         let firstLine = text.components(separatedBy: "\n").first ?? text
-        // Only strip complete tags (followed by space/end), not mid-typing partials
-        return firstLine.replacingOccurrences(
-            of: #" ?#[A-Za-z0-9_\-]+(?=\s|$)"#, with: "", options: .regularExpression
-        ).trimmingCharacters(in: .whitespaces)
+        // Strip only complete tags (that have a trailing space/punctuation).
+        // Tags at end of line stay visible so user can see what they're typing.
+        var result = firstLine
+        for tag in BlockParser.extractTagsLive(from: firstLine) {
+            result = result.replacingOccurrences(of: " #\(tag)", with: "")
+            result = result.replacingOccurrences(of: "#\(tag) ", with: "")
+            result = result.replacingOccurrences(of: "#\(tag)", with: "")
+        }
+        return result.trimmingCharacters(in: .whitespaces)
     }
 
     /// Update storage text from edited display text, preserving tags and property lines.

@@ -144,10 +144,33 @@ enum BlockParser {
     }
 
     static func extractTags(from text: String) -> [String] {
-        // Tag must be followed by whitespace, end of string, or punctuation
-        // This prevents matching mid-typing (#mee while typing #meeting)
-        let pattern = /#([A-Za-z0-9_\-]+)(?=[\s,.\!\?\)\]\}]|$)/
-        return text.matches(of: pattern).map { String($0.output.1) }
+        extractTagsComplete(from: text, requireTrailingSpace: false)
+    }
+
+    /// Extract tags that are "complete" — followed by whitespace or punctuation.
+    /// When requireTrailingSpace is true, tags at end of string are NOT extracted
+    /// (prevents partial tags mid-typing like #mee while typing #meeting).
+    static func extractTagsLive(from text: String) -> [String] {
+        extractTagsComplete(from: text, requireTrailingSpace: true)
+    }
+
+    private static func extractTagsComplete(from text: String, requireTrailingSpace: Bool) -> [String] {
+        let pattern = /#([A-Za-z0-9_\-]+)/
+        return text.matches(of: pattern).compactMap { match in
+            let tag = String(match.output.1)
+            let fullMatch = String(match.output.0)
+            guard let range = text.range(of: fullMatch) else { return nil }
+            let endIndex = range.upperBound
+            if endIndex == text.endIndex {
+                // At end of text: only extract if not in live-typing mode
+                return requireTrailingSpace ? nil : tag
+            }
+            let nextChar = text[endIndex]
+            if nextChar.isWhitespace || ",.:;!?)]}>".contains(nextChar) {
+                return tag
+            }
+            return nil
+        }
     }
 
     static func extractProperties(from text: String) -> [String: String] {
