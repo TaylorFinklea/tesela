@@ -98,16 +98,31 @@ async fn main() -> Result<()> {
                 }
             }
         }
-        // Create Root Tag if it doesn't exist
-        let root_tag_id = NoteId::new("root-tag");
-        if store.get(&root_tag_id).await?.is_none() {
-            let content = "---\ntitle: \"Root Tag\"\ntype: \"Tag\"\ntag_properties: []\ntags: []\n---\n- The base tag that all other tags extend.\n";
-            match store.create("Root Tag", content, &[]).await {
-                Ok(note) => {
-                    let _ = index.reindex(&note).await;
-                    info!("Auto-created Root Tag page");
+        // Create built-in tag pages if they don't exist
+        let builtin_tags: Vec<(&str, &str, &str)> = vec![
+            ("Root Tag", "", "[]"),
+            ("Task", "Root Tag", r#"["Status", "Priority", "Deadline", "Scheduled"]"#),
+            ("Project", "Root Tag", r#"["Status", "Deadline"]"#),
+            ("Person", "Root Tag", r#"["Email", "Team"]"#),
+        ];
+        for (name, extends, props) in builtin_tags {
+            let tag_id = NoteId::new(name.to_lowercase().replace(' ', "-"));
+            if store.get(&tag_id).await?.is_none() {
+                let extends_line = if extends.is_empty() {
+                    String::new()
+                } else {
+                    format!("extends: \"{}\"\n", extends)
+                };
+                let content = format!(
+                    "---\ntitle: \"{name}\"\ntype: \"Tag\"\n{extends_line}tag_properties: {props}\ntags: []\n---\n- {name} tag page.\n"
+                );
+                match store.create(name, &content, &[]).await {
+                    Ok(note) => {
+                        let _ = index.reindex(&note).await;
+                        info!("Auto-created tag page: {}", name);
+                    }
+                    Err(e) => warn!("Failed to auto-create tag page '{}': {}", name, e),
                 }
-                Err(e) => warn!("Failed to auto-create Root Tag: {}", e),
             }
         }
     }
