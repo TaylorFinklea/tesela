@@ -14,7 +14,6 @@ use tesela_core::{
     storage::filesystem::FsNoteStore,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     types::TypeRegistry,
-    NoteId,
 };
 
 use state::{AppState, WsEvent};
@@ -28,6 +27,7 @@ async fn main() -> Result<()> {
     let mosaic = find_mosaic()?;
     let config = Config::default();
     let db_path = mosaic.join(".tesela").join("tesela.db");
+    let notes_dir = mosaic.join("notes");
     let type_registry = TypeRegistry::load(&mosaic);
     info!("Loaded {} type definitions", type_registry.types.len());
 
@@ -75,53 +75,28 @@ async fn main() -> Result<()> {
         }
     }
 
-    // Create built-in property pages if they don't exist
+    // Create built-in pages by writing files directly (store.create() overwrites frontmatter)
     {
-        let builtin_properties = vec![
-            ("Status", "select", r#"["backlog", "todo", "doing", "in-review", "done", "canceled"]"#, "todo"),
-            ("Priority", "select", r#"["critical", "high", "medium", "low"]"#, "medium"),
-            ("Deadline", "date", "[]", ""),
-            ("Scheduled", "date", "[]", ""),
+        let _ = std::fs::create_dir_all(&notes_dir);
+
+        let builtin_pages: Vec<(&str, &str)> = vec![
+            ("root-tag.md", "---\ntitle: \"Root Tag\"\ntype: \"Tag\"\ntag_properties: []\ntags: []\n---\n- The base tag that all other tags extend.\n"),
+            ("task.md", "---\ntitle: \"Task\"\ntype: \"Tag\"\nextends: \"Root Tag\"\ntag_properties: [\"Status\", \"Priority\", \"Deadline\", \"Scheduled\"]\ntags: []\n---\n- Task tag page.\n"),
+            ("project.md", "---\ntitle: \"Project\"\ntype: \"Tag\"\nextends: \"Root Tag\"\ntag_properties: [\"Status\", \"Deadline\"]\ntags: []\n---\n- Project tag page.\n"),
+            ("person.md", "---\ntitle: \"Person\"\ntype: \"Tag\"\nextends: \"Root Tag\"\ntag_properties: [\"Email\", \"Team\"]\ntags: []\n---\n- Person tag page.\n"),
+            ("status.md", "---\ntitle: \"Status\"\ntype: \"Property\"\nvalue_type: \"select\"\nchoices: [\"backlog\", \"todo\", \"doing\", \"in-review\", \"done\", \"canceled\"]\ndefault: \"todo\"\ntags: []\n---\n- Status property.\n"),
+            ("priority.md", "---\ntitle: \"Priority\"\ntype: \"Property\"\nvalue_type: \"select\"\nchoices: [\"critical\", \"high\", \"medium\", \"low\"]\ndefault: \"medium\"\ntags: []\n---\n- Priority property.\n"),
+            ("deadline.md", "---\ntitle: \"Deadline\"\ntype: \"Property\"\nvalue_type: \"date\"\ntags: []\n---\n- Deadline property.\n"),
+            ("scheduled.md", "---\ntitle: \"Scheduled\"\ntype: \"Property\"\nvalue_type: \"date\"\ntags: []\n---\n- Scheduled property.\n"),
         ];
-        for (name, vtype, choices, default_val) in builtin_properties {
-            let prop_id = NoteId::new(name.to_lowercase());
-            if store.get(&prop_id).await?.is_none() {
-                let content = format!(
-                    "---\ntitle: \"{name}\"\ntype: \"Property\"\nvalue_type: \"{vtype}\"\nchoices: {choices}\ndefault: \"{default_val}\"\ntags: []\n---\n- {name} property.\n"
-                );
-                match store.create(name, &content, &[]).await {
-                    Ok(prop_note) => {
-                        let _ = index.reindex(&prop_note).await;
-                        info!("Auto-created property page: {}", name);
-                    }
-                    Err(e) => warn!("Failed to auto-create property page '{}': {}", name, e),
-                }
-            }
-        }
-        // Create built-in tag pages if they don't exist
-        let builtin_tags: Vec<(&str, &str, &str)> = vec![
-            ("Root Tag", "", "[]"),
-            ("Task", "Root Tag", r#"["Status", "Priority", "Deadline", "Scheduled"]"#),
-            ("Project", "Root Tag", r#"["Status", "Deadline"]"#),
-            ("Person", "Root Tag", r#"["Email", "Team"]"#),
-        ];
-        for (name, extends, props) in builtin_tags {
-            let tag_id = NoteId::new(name.to_lowercase().replace(' ', "-"));
-            if store.get(&tag_id).await?.is_none() {
-                let extends_line = if extends.is_empty() {
-                    String::new()
+
+        for (filename, content) in builtin_pages {
+            let path = notes_dir.join(filename);
+            if !path.exists() {
+                if let Err(e) = std::fs::write(&path, content) {
+                    warn!("Failed to create built-in page {}: {}", filename, e);
                 } else {
-                    format!("extends: \"{}\"\n", extends)
-                };
-                let content = format!(
-                    "---\ntitle: \"{name}\"\ntype: \"Tag\"\n{extends_line}tag_properties: {props}\ntags: []\n---\n- {name} tag page.\n"
-                );
-                match store.create(name, &content, &[]).await {
-                    Ok(note) => {
-                        let _ = index.reindex(&note).await;
-                        info!("Auto-created tag page: {}", name);
-                    }
-                    Err(e) => warn!("Failed to auto-create tag page '{}': {}", name, e),
+                    info!("Auto-created built-in page: {}", filename);
                 }
             }
         }
