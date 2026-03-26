@@ -514,12 +514,12 @@ impl SqliteIndex {
     pub async fn get_typed_blocks(&self, tag_name: &str) -> Result<Vec<crate::block::ParsedBlock>> {
         use sqlx::Row;
 
-        // Find all blocks that have a tag matching the type name
-        // We need to parse blocks from notes that have this tag
-        // For now, query notes with the tag and re-parse their blocks
+        // Find notes containing #TagName in body text (inline tags)
+        // OR in frontmatter tags array
         let notes = sqlx::query(
-            "SELECT id, title, body FROM notes WHERE tags LIKE ?"
+            "SELECT id, title, body FROM notes WHERE body LIKE ? OR tags LIKE ?"
         )
+        .bind(format!("%#{}%", tag_name))
         .bind(format!("%\"{}%", tag_name))
         .fetch_all(&self.pool)
         .await
