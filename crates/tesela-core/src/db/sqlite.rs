@@ -246,6 +246,42 @@ impl SqliteIndex {
             }
             _ => {}
         }
+
+        // Index block-level properties into block_properties table
+        self.index_block_properties(note).await?;
+
+        Ok(())
+    }
+
+    /// Parse blocks from note body and index their properties.
+    async fn index_block_properties(&self, note: &Note) -> Result<()> {
+        use crate::block::parse_blocks;
+
+        // Delete existing block properties for this note
+        sqlx::query("DELETE FROM block_properties WHERE note_id = ?")
+            .bind(note.id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to delete old block properties", e))?;
+
+        // Parse blocks and insert properties
+        let blocks = parse_blocks(note.id.as_str(), &note.body);
+        for block in &blocks {
+            for (key, value) in &block.properties {
+                sqlx::query(
+                    "INSERT OR REPLACE INTO block_properties (block_id, note_id, property_id, property_name, value) VALUES (?, ?, ?, ?, ?)"
+                )
+                .bind(&block.id)
+                .bind(note.id.as_str())
+                .bind(&format!("{}:{}", key.to_lowercase(), block.id)) // property_id = key:block_id
+                .bind(key)
+                .bind(value)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| db_err("Failed to index block property", e))?;
+            }
+        }
+
         Ok(())
     }
 
@@ -472,6 +508,53 @@ impl SqliteIndex {
                 }).collect(),
             }
         }).collect())
+    }
+
+    /// Get all blocks tagged with a specific type, with their properties from the DB index.
+    pub async fn get_typed_blocks(&self, tag_name: &str) -> Result<Vec<crate::block::ParsedBlock>> {
+        use sqlx::Row;
+
+        // Find all blocks that have a tag matching the type name
+        // We need to parse blocks from notes that have this tag
+        // For now, query notes with the tag and re-parse their blocks
+        let notes = sqlx::query(
+            "SELECT id, title, body FROM notes WHERE tags LIKE ?"
+        )
+        .bind(format!("%\"{}%", tag_name))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| db_err("Failed to get typed notes", e))?;
+
+        let mut result = Vec::new();
+        for row in &notes {
+            let note_id: String = row.get("id");
+            let body: String = row.get("body");
+            let blocks = crate::block::parse_blocks(&note_id, &body);
+            for mut block in blocks {
+                if block.tags.iter().any(|t| t.eq_ignore_ascii_case(tag_name)) {
+                    // Enrich with property values from DB index (more reliable than re-parsing)
+                    let prop_rows = sqlx::query(
+                        "SELECT property_name, value FROM block_properties WHERE block_id = ?"
+                    )
+                    .bind(&block.id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|e| db_err("Failed to get block properties", e))?;
+
+                    block.properties.clear();
+                    for pr in &prop_rows {
+                        let key: String = pr.get("property_name");
+                        let value: Option<String> = pr.get("value");
+                        if let Some(v) = value {
+                            block.properties.insert(key, v);
+                        }
+                    }
+                    result.push(block);
+                }
+            }
+        }
+
+        Ok(result)
     }
 }
 

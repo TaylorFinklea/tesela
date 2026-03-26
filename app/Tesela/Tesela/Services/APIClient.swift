@@ -100,6 +100,10 @@ actor APIClient {
         try await getDecoded("/types/\(typeName)/nodes")
     }
 
+    func getTypedBlocks(typeName: String) async throws -> [TypedBlock] {
+        try await getDecoded("/types/\(typeName)/blocks")
+    }
+
     // MARK: - Tags
     func listTags() async throws -> [String] {
         try await getDecoded("/tags")

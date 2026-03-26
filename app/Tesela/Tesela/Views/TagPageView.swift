@@ -8,7 +8,7 @@ struct TagPageView: View {
     let page: Page
     @Environment(AppState.self) private var appState
     @State private var resolvedType: TypeDefinition?
-    @State private var taggedNodes: [Page] = []
+    @State private var taggedBlocks: [TypedBlock] = []
 
     private var extendsTag: String? {
         if let ext = page.metadata.custom["extends"] {
@@ -106,7 +106,7 @@ struct TagPageView: View {
                             Image(systemName: "tablecells")
                             Text("All")
                                 .font(.headline)
-                            Text("\(taggedNodes.count)")
+                            Text("\(taggedBlocks.count)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -115,8 +115,8 @@ struct TagPageView: View {
                     .padding(.horizontal, 24)
                     .padding(.top, 16)
 
-                    if taggedNodes.isEmpty {
-                        Text("No \(page.title) nodes yet")
+                    if taggedBlocks.isEmpty {
+                        Text("No \(page.title) blocks yet")
                             .font(.caption).foregroundStyle(.tertiary)
                             .padding(.horizontal, 24)
                     } else {
@@ -139,11 +139,14 @@ struct TagPageView: View {
                         .padding(.vertical, 6)
                         .background(Color.secondary.opacity(0.08))
 
-                        // Table rows
-                        ForEach(taggedNodes) { node in
+                        // Table rows — blocks with DB-indexed properties
+                        ForEach(taggedBlocks) { block in
                             HStack(spacing: 0) {
-                                Button(node.title) {
-                                    appState.open(node)
+                                Button(block.text.isEmpty ? "(empty)" : block.text) {
+                                    // Navigate to the note containing this block
+                                    if let note = appState.pages.first(where: { $0.id == block.noteId }) {
+                                        appState.open(note)
+                                    }
                                 }
                                 .buttonStyle(.plain)
                                 .foregroundStyle(.primary)
@@ -155,7 +158,7 @@ struct TagPageView: View {
                                     .frame(width: 80, alignment: .leading)
 
                                 ForEach(columns, id: \.self) { col in
-                                    let value = extractProperty(from: node, key: col)
+                                    let value = block.properties[col] ?? block.properties[col.lowercased()] ?? "Empty"
                                     Text(value)
                                         .font(.caption)
                                         .foregroundStyle(value == "Empty" ? .tertiary : .primary)
@@ -181,24 +184,7 @@ struct TagPageView: View {
 
     private func loadData() async {
         resolvedType = try? await appState.api.getResolvedType(name: page.title)
-        taggedNodes = (try? await appState.api.getTypedNodes(typeName: page.title)) ?? []
-    }
-
-    private func extractProperty(from note: Page, key: String) -> String {
-        // Search the note body for `key:: value` patterns
-        let pattern = "\(key.lowercased()):: "
-        for line in note.body.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces).lowercased()
-            if trimmed.hasPrefix(pattern) {
-                let value = String(line.trimmingCharacters(in: .whitespaces).dropFirst(pattern.count))
-                // Strip wiki-link brackets
-                if value.hasPrefix("[[") && value.hasSuffix("]]") {
-                    return String(value.dropFirst(2).dropLast(2))
-                }
-                return value
-            }
-        }
-        return "Empty"
+        taggedBlocks = (try? await appState.api.getTypedBlocks(typeName: page.title)) ?? []
     }
 
     private func propertyTypeIcon(_ valueType: String) -> String {

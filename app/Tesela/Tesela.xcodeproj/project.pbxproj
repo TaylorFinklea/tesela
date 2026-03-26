@@ -18,6 +18,7 @@
 		436C7C139C9B2AFED1C3B9C3 /* BlockParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E79999F5035C127AFF64918F /* BlockParserTests.swift */; };
 		44DC03B9348A53C1FDFC5D96 /* TeselaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE9364B5F6D22ABA0E636572 /* TeselaApp.swift */; };
 		4A840C42D73B06AE6DA84313 /* GraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABC497C59C6C6EA5CC1DBD2 /* GraphView.swift */; };
+		4DB52A1E1ACC75446C4D651A /* TypedBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3717F7B2FFCF0D807E27EB0 /* TypedBlock.swift */; };
 		4F320A24A8AE48A7B8F5271E /* BlockParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BD310F1E47B48D2CC65526C /* BlockParser.swift */; };
 		518AFD83D31911B5D8682C2F /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06974E4D9B0B4C5405569767 /* APIClient.swift */; };
 		5D4262E3D1311F8F916112A6 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08DE7FEBB5035D6C7F7D9DF1 /* SidebarView.swift */; };
@@ -78,6 +79,7 @@
 		9D993C7569E49CF342A7C34C /* TeselaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TeselaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9E52D7EA7150FE7556F30E81 /* SpaceMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceMenuView.swift; sourceTree = "<group>"; };
 		A0FD72C5E276E893CC8DEB64 /* VimEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VimEngineTests.swift; sourceTree = "<group>"; };
+		A3717F7B2FFCF0D807E27EB0 /* TypedBlock.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypedBlock.swift; sourceTree = "<group>"; };
 		A51389A324844D68C04472B4 /* WebSocketClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSocketClient.swift; sourceTree = "<group>"; };
 		A558BEB394EBFAE4CBE4842E /* TeselaCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeselaCommands.swift; sourceTree = "<group>"; };
 		AB143CA5F026C576F42D7294 /* SearchHit.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchHit.swift; sourceTree = "<group>"; };
@@ -147,6 +149,7 @@
 				82D7AD3CCEA6697594652E84 /* MenuCommand.swift */,
 				D2B774E882149C14B4989752 /* Page.swift */,
 				AB143CA5F026C576F42D7294 /* SearchHit.swift */,
+				A3717F7B2FFCF0D807E27EB0 /* TypedBlock.swift */,
 				8D2450A34E3D293628B09ADD /* TypeDefinition.swift */,
 				CD1E261FDB1256A4C8F5092D /* WsEvent.swift */,
 			);
@@ -403,6 +406,7 @@
 				1222FC6597693AC16EBDC84F /* TeselaCommands.swift in Sources */,
 				ECA1DA299F4978618A5946FC /* TilesView.swift in Sources */,
 				B939C3D3049B1637BD750C54 /* TypeDefinition.swift in Sources */,
+				4DB52A1E1ACC75446C4D651A /* TypedBlock.swift in Sources */,
 				DB4765347B5E0B1D9EEA0431 /* VimEngine.swift in Sources */,
 				B9E57229D4D9DC77224B5678 /* VimKeyHandler.swift in Sources */,
 				1FFEEBF47A2810E29AFAB8AD /* VimState.swift in Sources */,

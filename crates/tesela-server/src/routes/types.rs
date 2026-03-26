@@ -43,9 +43,17 @@ pub async fn list_typed_nodes(
     Path(name): Path<String>,
     State(s): State<Arc<AppState>>,
 ) -> AppResult<Json<Vec<tesela_core::Note>>> {
-    // Fetch all notes with this tag
     let notes = s.store.list(Some(&name), usize::MAX, 0).await?;
     Ok(Json(notes))
+}
+
+/// List all blocks tagged with a specific type, with DB-indexed properties
+pub async fn list_typed_blocks(
+    Path(name): Path<String>,
+    State(s): State<Arc<AppState>>,
+) -> AppResult<Json<Vec<tesela_core::block::ParsedBlock>>> {
+    let blocks = s.index.get_typed_blocks(&name).await?;
+    Ok(Json(blocks))
 }
 
 /// List all property definitions (from DB cache, populated by indexing Property pages)
