@@ -187,13 +187,29 @@ class OutlinerView: NSView {
             addSubview(bullet)
 
             // Task status icon to the right of bullet (if task)
+            // Color reflects priority: critical=red, high=orange, medium=default, low=blue
             var actualTextX = textX
             if block.isTask {
-                let (statusChar, statusColor): (String, NSColor) = switch block.status {
-                case "todo":  ("☐", .secondaryLabelColor)
-                case "doing": ("◎", .systemOrange)
-                case "done":  ("☑", .systemGreen)
-                default:      ("☐", .secondaryLabelColor)
+                let statusChar: String = switch block.status {
+                case "todo":  "☐"
+                case "doing": "◎"
+                case "done":  "☑"
+                default:      "☐"
+                }
+                // Priority determines the color of the status icon
+                let statusColor: NSColor = if let priority = block.priority {
+                    switch priority {
+                    case .critical: .systemRed
+                    case .high:     .systemOrange
+                    case .medium:   .secondaryLabelColor
+                    case .low:      .systemBlue
+                    }
+                } else {
+                    switch block.status {
+                    case "done":  .systemGreen
+                    case "doing": .systemOrange
+                    default:      .secondaryLabelColor
+                    }
                 }
                 let statusLabel = NSTextField(labelWithString: statusChar)
                 statusLabel.font = .systemFont(ofSize: NSFont.systemFontSize - 1)
@@ -203,18 +219,6 @@ class OutlinerView: NSView {
                 statusLabel.drawsBackground = false
                 statusLabel.frame = NSRect(x: textX, y: yOffset, width: 18, height: 22)
                 addSubview(statusLabel)
-                actualTextX = textX + 18
-            }
-
-            // Priority indicator after status icon
-            if let priority = block.priority {
-                let priLabel = NSTextField(labelWithString: priority.displayChar)
-                priLabel.font = .systemFont(ofSize: 10)
-                priLabel.isEditable = false
-                priLabel.isBordered = false
-                priLabel.drawsBackground = false
-                priLabel.frame = NSRect(x: actualTextX, y: yOffset, width: 18, height: 22)
-                addSubview(priLabel)
                 actualTextX = textX + 18
             }
 
