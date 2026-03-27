@@ -26,6 +26,9 @@ class OutlinerView: NSView {
     var menuVisibilityCheck: (() -> Bool)?
     var onDismissMenuCallback: (() -> Void)?
     var tileID: String?
+    var typeRegistry: [TypeDefinition] = []
+    var propertyRegistry: [PropertyDef] = []
+    private var expandedBlockIndex: Int?
 
     private var blockViews: [BlockView] = []
     private var pendingFocusIndex: Int?
@@ -160,7 +163,7 @@ class OutlinerView: NSView {
             let priorityWidth: CGFloat = block.priority != nil ? 22 : 0
             let textWidth = max(bounds.width - textX - 12 - badgeWidth - priorityWidth, 80)
 
-            // Bullet always shows
+            // Bullet always shows — click to expand/collapse properties
             let bulletSymbol = block.indentLevel == 0 ? "•" : "◦"
             let bullet = NSTextField(labelWithString: bulletSymbol)
             bullet.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -169,6 +172,18 @@ class OutlinerView: NSView {
             bullet.isBordered = false
             bullet.drawsBackground = false
             bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
+            let bulletClickAction = DatePickerAction { [weak self] in
+                guard let self else { return }
+                if expandedBlockIndex == index {
+                    expandedBlockIndex = nil
+                } else {
+                    expandedBlockIndex = index
+                }
+                rebuildBlockViews()
+            }
+            let bulletClick = NSClickGestureRecognizer(target: bulletClickAction, action: #selector(DatePickerAction.execute))
+            bullet.addGestureRecognizer(bulletClick)
+            objc_setAssociatedObject(bullet, "bulletClick", bulletClickAction, .OBJC_ASSOCIATION_RETAIN)
             addSubview(bullet)
 
             // Task status icon to the right of bullet (if task)
@@ -266,6 +281,69 @@ class OutlinerView: NSView {
 
             yOffset += height + 4
 
+            // Expanded block: show inherited properties
+            if expandedBlockIndex == index && !block.tags.isEmpty {
+                let inheritedProps = resolveInheritedProperties(for: block)
+                if !inheritedProps.isEmpty {
+                    // "Properties" header
+                    let headerLabel = NSTextField(labelWithString: "▼ Properties")
+                    headerLabel.font = .systemFont(ofSize: 11)
+                    headerLabel.textColor = .secondaryLabelColor
+                    headerLabel.isEditable = false
+                    headerLabel.isBordered = false
+                    headerLabel.drawsBackground = false
+                    headerLabel.frame = NSRect(x: textX + 8, y: yOffset, width: 200, height: 18)
+                    addSubview(headerLabel)
+                    yOffset += 20
+
+                    for (propDef, currentValue) in inheritedProps {
+                        let icon = propertyTypeIcon(propDef.valueType)
+                        let iconLabel = NSTextField(labelWithString: icon)
+                        iconLabel.font = .systemFont(ofSize: 10)
+                        iconLabel.textColor = .secondaryLabelColor
+                        iconLabel.isEditable = false
+                        iconLabel.isBordered = false
+                        iconLabel.drawsBackground = false
+                        iconLabel.frame = NSRect(x: textX + 8, y: yOffset, width: 20, height: 18)
+                        addSubview(iconLabel)
+
+                        let nameLabel = NSTextField(labelWithString: propDef.name)
+                        nameLabel.font = .boldSystemFont(ofSize: 11)
+                        nameLabel.textColor = .labelColor
+                        nameLabel.isEditable = false
+                        nameLabel.isBordered = false
+                        nameLabel.drawsBackground = false
+                        nameLabel.frame = NSRect(x: textX + 30, y: yOffset, width: 100, height: 18)
+                        addSubview(nameLabel)
+
+                        let valueText = currentValue ?? "Empty"
+                        let valueLabel = NSTextField(labelWithString: valueText)
+                        valueLabel.font = .systemFont(ofSize: 11)
+                        valueLabel.textColor = currentValue != nil ? .labelColor : .tertiaryLabelColor
+                        valueLabel.isEditable = false
+                        valueLabel.isBordered = false
+                        valueLabel.drawsBackground = false
+                        valueLabel.frame = NSRect(x: textX + 140, y: yOffset, width: 200, height: 18)
+
+                        // Make value clickable for editing
+                        let propName = propDef.name
+                        let propType = propDef.valueType
+                        let propChoices = propDef.values
+                        let blockIdx = index
+                        let editAction = DatePickerAction { [weak self] in
+                            self?.editProperty(name: propName, valueType: propType, choices: propChoices, at: blockIdx)
+                        }
+                        let editClick = NSClickGestureRecognizer(target: editAction, action: #selector(DatePickerAction.execute))
+                        valueLabel.addGestureRecognizer(editClick)
+                        objc_setAssociatedObject(valueLabel, "editAction", editAction, .OBJC_ASSOCIATION_RETAIN)
+
+                        addSubview(valueLabel)
+                        yOffset += 20
+                    }
+                    yOffset += 8
+                }
+            }
+
         }
 
         let minHeight = superview?.bounds.height ?? 400
@@ -302,6 +380,95 @@ class OutlinerView: NSView {
         guard let lm = view.layoutManager, let tc = view.textContainer else { return 22 }
         lm.ensureLayout(for: tc)
         return max(lm.usedRect(for: tc).height + 4, 22)
+    }
+
+    // MARK: - Block property expansion helpers
+
+    private func resolveInheritedProperties(for block: Block) -> [(PropertyDef, String?)] {
+        var result: [(PropertyDef, String?)] = []
+        for tagName in block.tags {
+            if let typeDef = typeRegistry.first(where: { $0.name.lowercased() == tagName.lowercased() }) {
+                for prop in typeDef.properties {
+                    // Check if block has a value for this property
+                    let value = block.properties[prop.name] ?? block.properties[prop.name.lowercased()]
+                    result.append((prop, value))
+                }
+            }
+        }
+        return result
+    }
+
+    private func propertyTypeIcon(_ valueType: String) -> String {
+        switch valueType {
+        case "text", "select": return "T"
+        case "number": return "N°"
+        case "date", "datetime": return "📅"
+        case "checkbox": return "☑"
+        case "url": return "🔗"
+        case "node": return "→"
+        default: return "T"
+        }
+    }
+
+    private func editProperty(name: String, valueType: String, choices: [String]?, at index: Int) {
+        guard index < blocks.count, index < blockViews.count else { return }
+        let block = blocks[index]
+
+        if valueType == "date" {
+            showDatePicker(for: name.lowercased(), at: index, anchorView: blockViews[index])
+        } else if valueType == "select", let choices, !choices.isEmpty {
+            // Show a popup menu for select properties
+            let menu = NSMenu()
+            for choice in choices {
+                let action = DatePickerAction { [weak self] in
+                    self?.applyBlockProperty(name: name, value: choice, at: index)
+                }
+                let item = NSMenuItem(title: choice, action: #selector(DatePickerAction.execute), keyEquivalent: "")
+                item.target = action
+                item.representedObject = action // retain
+                menu.addItem(item)
+            }
+            let view = blockViews[index]
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.frame.height), in: view)
+        } else {
+            // For text/number: use a simple input alert
+            let alert = NSAlert()
+            alert.messageText = "Set \(name)"
+            alert.addButton(withTitle: "OK")
+            alert.addButton(withTitle: "Cancel")
+            let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+            input.stringValue = block.properties[name] ?? block.properties[name.lowercased()] ?? ""
+            alert.accessoryView = input
+            if alert.runModal() == .alertFirstButtonReturn {
+                applyBlockProperty(name: name, value: input.stringValue, at: index)
+            }
+        }
+    }
+
+    private func applyBlockProperty(name: String, value: String, at index: Int) {
+        guard index < blocks.count else { return }
+        let block = blocks[index]
+        let key = name.lowercased()
+
+        var lines = block.text.components(separatedBy: "\n")
+        var replaced = false
+        for (i, line) in lines.enumerated() {
+            if line.trimmingCharacters(in: .whitespaces).lowercased().hasPrefix("\(key):: ") {
+                lines[i] = "\(key):: \(value)"
+                replaced = true
+                break
+            }
+        }
+        if !replaced {
+            lines.append("\(key):: \(value)")
+        }
+        block.text = lines.joined(separator: "\n")
+        block.tags = BlockParser.extractTags(from: block.text)
+        block.properties = BlockParser.extractProperties(from: block.text)
+
+        pendingFocusIndex = index
+        rebuildBlockViews()
+        delegate?.outlinerDidChangeContent(blocks: blocks)
     }
 
     private func makeTagPill(_ text: String) -> NSView {
@@ -1100,6 +1267,8 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var onNextTile: (() -> Void)?
     var tileID: String?
     var apiClient: APIClient?
+    var typeRegistry: [TypeDefinition] = []
+    var propertyRegistry: [PropertyDef] = []
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -1115,6 +1284,8 @@ struct OutlinerCoordinator: NSViewRepresentable {
         outliner.onDismissMenuCallback = onDismissMenu
         outliner.apiClient = apiClient
         outliner.tileID = tileID
+        outliner.typeRegistry = typeRegistry
+        outliner.propertyRegistry = propertyRegistry
         context.coordinator.outlinerView = outliner
 
         scrollView.documentView = outliner

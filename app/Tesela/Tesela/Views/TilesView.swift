@@ -167,7 +167,9 @@ private struct EditableTileCard: View {
                 onPrevTile: onPrevTile,
                 onNextTile: onNextTile,
                 tileID: page.id,
-                apiClient: appState.api
+                apiClient: appState.api,
+                typeRegistry: appState.typeRegistry,
+                propertyRegistry: appState.propertyRegistry
             )
             // Height expands to fit content — each block ~26px + generous buffer
             .frame(minHeight: max(CGFloat(blocks.count) * 26 + 60, 120))

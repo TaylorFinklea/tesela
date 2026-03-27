@@ -152,7 +152,9 @@ struct PageEditorView: View {
                     appState.isSlashMenuVisible = false
                     appState.isSpaceMenuVisible = false
                 },
-                apiClient: appState.api
+                apiClient: appState.api,
+                typeRegistry: appState.typeRegistry,
+                propertyRegistry: appState.propertyRegistry
             )
             .padding(.horizontal, 8)
             .overlay(alignment: .topLeading) {
