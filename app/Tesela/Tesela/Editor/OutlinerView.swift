@@ -88,11 +88,10 @@ class OutlinerView: NSView {
             case "dedent":
                 executeVimCommand(.dedentBlock, at: idx)
             case "priority":
-                // TODO: priority picker UI
-                break
+                let choices = propertyRegistry.first(where: { $0.name == "Priority" })?.values ?? ["critical", "high", "medium", "low"]
+                showSelectPopover(propertyName: "Priority", choices: choices, at: idx, anchorView: blockViews[idx])
             case "effort":
-                // TODO: effort input UI
-                break
+                editTextProperty(name: "Effort", at: idx)
             case "search":
                 delegate?.outlinerDidRequestCommandPalette()
             default:
@@ -440,6 +439,23 @@ class OutlinerView: NSView {
             if alert.runModal() == .alertFirstButtonReturn {
                 applyBlockProperty(name: name, value: input.stringValue, at: index)
             }
+        }
+    }
+
+    private func editTextProperty(name: String, at index: Int) {
+        guard index < blocks.count, index < blockViews.count else { return }
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.messageText = "Set \(name)"
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: "Cancel")
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+        input.stringValue = blocks[index].properties[name] ?? blocks[index].properties[name.lowercased()] ?? ""
+        alert.accessoryView = input
+        if alert.runModal() == .alertFirstButtonReturn {
+            applyBlockProperty(name: name, value: input.stringValue, at: index)
         }
     }
 
