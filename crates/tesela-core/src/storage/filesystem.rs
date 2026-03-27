@@ -206,10 +206,14 @@ impl NoteStore for FsNoteStore {
         }
 
         let now = Utc::now();
-        let frontmatter = generate_frontmatter(title, tags, now, &Default::default());
         let full_content = if content.is_empty() {
+            let frontmatter = generate_frontmatter(title, tags, now, &Default::default());
             format!("{}\n# {}\n\n", frontmatter, title)
+        } else if content.trim_start().starts_with("---") {
+            // Content already has frontmatter — use as-is (e.g. Property/Tag pages)
+            content.to_string()
         } else {
+            let frontmatter = generate_frontmatter(title, tags, now, &Default::default());
             format!("{}\n{}", frontmatter, content)
         };
 
