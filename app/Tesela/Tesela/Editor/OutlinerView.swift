@@ -413,25 +413,15 @@ class OutlinerView: NSView {
     private func editProperty(name: String, valueType: String, choices: [String]?, at index: Int) {
         guard index < blocks.count, index < blockViews.count else { return }
         let block = blocks[index]
+        let anchorView = blockViews[index]
 
-        if valueType == "date" {
-            showDatePicker(for: name.lowercased(), at: index, anchorView: blockViews[index])
+        if valueType == "date" || valueType == "datetime" {
+            showDatePicker(for: name.lowercased(), at: index, anchorView: anchorView)
         } else if valueType == "select", let choices, !choices.isEmpty {
-            // Show a popup menu for select properties
-            let menu = NSMenu()
-            for choice in choices {
-                let action = DatePickerAction { [weak self] in
-                    self?.applyBlockProperty(name: name, value: choice, at: index)
-                }
-                let item = NSMenuItem(title: choice, action: #selector(DatePickerAction.execute), keyEquivalent: "")
-                item.target = action
-                item.representedObject = action // retain
-                menu.addItem(item)
-            }
-            let view = blockViews[index]
-            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.frame.height), in: view)
+            // Popover with choice buttons
+            showSelectPopover(propertyName: name, choices: choices, at: index, anchorView: anchorView)
         } else {
-            // For text/number: use a simple input alert
+            // Text/number: inline input alert
             let alert = NSAlert()
             alert.messageText = "Set \(name)"
             alert.addButton(withTitle: "OK")
@@ -443,6 +433,46 @@ class OutlinerView: NSView {
                 applyBlockProperty(name: name, value: input.stringValue, at: index)
             }
         }
+    }
+
+    private func showSelectPopover(propertyName: String, choices: [String], at index: Int, anchorView: NSView) {
+        activePopover?.close()
+
+        let padding: CGFloat = 8
+        let buttonHeight: CGFloat = 28
+        let containerHeight = CGFloat(choices.count) * buttonHeight + padding * 2
+        let containerWidth: CGFloat = 200
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: containerWidth, height: containerHeight))
+
+        var actions: [DatePickerAction] = []
+        for (i, choice) in choices.enumerated() {
+            let btn = NSButton(title: choice, target: nil, action: nil)
+            btn.bezelStyle = .inline
+            btn.frame = NSRect(x: padding, y: containerHeight - padding - CGFloat(i + 1) * buttonHeight,
+                               width: containerWidth - padding * 2, height: buttonHeight)
+            let action = DatePickerAction { [weak self] in
+                self?.activePopover?.close()
+                self?.activePopover = nil
+                self?.applyBlockProperty(name: propertyName, value: choice, at: index)
+            }
+            btn.target = action
+            btn.action = #selector(DatePickerAction.execute)
+            actions.append(action)
+            container.addSubview(btn)
+        }
+
+        let vc = NSViewController()
+        vc.view = container
+
+        let popover = NSPopover()
+        popover.contentViewController = vc
+        popover.behavior = .transient
+        popover.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .maxY)
+        activePopover = popover
+
+        // Retain actions on the popover so they don't get deallocated
+        objc_setAssociatedObject(popover, "selectActions", actions, .OBJC_ASSOCIATION_RETAIN)
     }
 
     private func applyBlockProperty(name: String, value: String, at index: Int) {
