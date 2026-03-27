@@ -169,6 +169,23 @@ final class AppState {
         }
     }
 
+    /// Updates a page with complete content (frontmatter + body).
+    /// Use this when the frontmatter itself changes (e.g. Property page schema edits).
+    func updatePageContent(id: String, fullContent: String) async {
+        do {
+            let updated = try await api.updateNote(id: id, content: fullContent)
+            if currentPage?.id == id { currentPage = updated }
+            if let idx = pages.firstIndex(where: { $0.id == id }) {
+                pages[idx] = updated
+            }
+            // Refresh type/property registries since schema may have changed
+            typeRegistry = (try? await api.getTypes()) ?? typeRegistry
+            propertyRegistry = (try? await api.getProperties()) ?? propertyRegistry
+        } catch {
+            lastError = "Failed to save: \(error.localizedDescription)"
+        }
+    }
+
     func deletePage(_ page: Page) async {
         do {
             try await api.deleteNote(id: page.id)

@@ -9,6 +9,16 @@ struct TagPageView: View {
     @Environment(AppState.self) private var appState
     @State private var resolvedType: TypeDefinition?
     @State private var taggedBlocks: [TypedBlock] = []
+    @State private var isAddingProperty = false
+    @State private var propertySearchText = ""
+
+    /// The tag_properties from this tag's own frontmatter (not inherited)
+    private var ownPropertyNames: [String] {
+        if let tp = page.metadata.custom["tag_properties"], case .array(let arr) = tp {
+            return arr.compactMap { if case .string(let s) = $0 { return s } else { return nil } }
+        }
+        return []
+    }
 
     private var extendsTag: String? {
         if let ext = page.metadata.custom["extends"] {
@@ -71,10 +81,20 @@ struct TagPageView: View {
 
                     if let resolved = resolvedType {
                         ForEach(resolved.properties) { prop in
+                            let isOwn = ownPropertyNames.contains(prop.name)
                             HStack(spacing: 8) {
                                 Text(propertyTypeIcon(prop.valueType))
                                     .font(.caption).foregroundStyle(.secondary).frame(width: 20)
-                                Text(prop.name).bold()
+                                Button(prop.name) {
+                                    if let linked = appState.pages.first(where: {
+                                        $0.title.lowercased() == prop.name.lowercased()
+                                    }) {
+                                        appState.open(linked)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .bold()
+                                .foregroundStyle(Color.accentColor)
                                 Text("•").foregroundStyle(.tertiary)
                                 if let vals = prop.values, !vals.isEmpty {
                                     Text(vals.joined(separator: ", "))
@@ -83,17 +103,47 @@ struct TagPageView: View {
                                     Text(prop.valueType)
                                         .font(.caption).foregroundStyle(.tertiary)
                                 }
+                                if !isOwn {
+                                    Text("inherited")
+                                        .font(.caption2).foregroundStyle(.tertiary)
+                                        .padding(.horizontal, 6).padding(.vertical, 1)
+                                        .background(Color.secondary.opacity(0.08), in: Capsule())
+                                }
+                                Spacer()
+                                if isOwn {
+                                    Button {
+                                        Task { await removeProperty(prop.name) }
+                                    } label: {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
                             .padding(.horizontal, 52).padding(.vertical, 2)
                         }
                     }
 
-                    Button { } label: {
+                    Button { isAddingProperty.toggle() } label: {
                         HStack(spacing: 4) { Text("+"); Text("Add property") }
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
                     .padding(.horizontal, 52).padding(.top, 4)
+                    .popover(isPresented: $isAddingProperty, arrowEdge: .bottom) {
+                        PropertyPicker(
+                            existingNames: ownPropertyNames,
+                            allProperties: appState.propertyRegistry,
+                            onSelect: { propName in
+                                isAddingProperty = false
+                                Task { await addProperty(propName) }
+                            },
+                            onCreateNew: { propName in
+                                isAddingProperty = false
+                                Task { await createAndAddProperty(propName) }
+                            }
+                        )
+                    }
                 }
                 .padding(.bottom, 24)
 
@@ -187,6 +237,48 @@ struct TagPageView: View {
         taggedBlocks = (try? await appState.api.getTypedBlocks(typeName: page.title)) ?? []
     }
 
+    private func addProperty(_ name: String) async {
+        var props = ownPropertyNames
+        guard !props.contains(name) else { return }
+        props.append(name)
+        await saveTagProperties(props)
+    }
+
+    private func removeProperty(_ name: String) async {
+        var props = ownPropertyNames
+        props.removeAll { $0 == name }
+        await saveTagProperties(props)
+    }
+
+    private func createAndAddProperty(_ name: String) async {
+        // Create a new Property page, then add to this tag
+        let content = "---\ntitle: \"\(name)\"\ntype: \"Property\"\nvalue_type: \"text\"\ntags: []\n---\n- \(name) property.\n"
+        _ = try? await appState.api.createNote(title: name, content: content, tags: [])
+        await appState.refreshPages()
+        // Refresh property registry
+        appState.propertyRegistry = (try? await appState.api.getProperties()) ?? appState.propertyRegistry
+        await addProperty(name)
+    }
+
+    /// Reconstructs frontmatter with updated tag_properties and saves
+    private func saveTagProperties(_ properties: [String]) async {
+        let propsStr = properties.map { "\"\($0)\"" }.joined(separator: ", ")
+
+        var yaml = "---\n"
+        yaml += "title: \"\(page.title)\"\n"
+        yaml += "type: \"Tag\"\n"
+        if let ext = extendsTag {
+            yaml += "extends: \"\(ext)\"\n"
+        }
+        yaml += "tag_properties: [\(propsStr)]\n"
+        yaml += "tags: []\n"
+        yaml += "---\n"
+
+        let fullContent = yaml + page.body
+        await appState.updatePageContent(id: page.id, fullContent: fullContent)
+        await loadData()
+    }
+
     private func propertyTypeIcon(_ valueType: String) -> String {
         switch valueType {
         case "text", "select": return "T"
@@ -195,6 +287,94 @@ struct TagPageView: View {
         case "checkbox": return "☑"
         case "url": return "🔗"
         case "node": return "→"
+        default: return "T"
+        }
+    }
+}
+
+// MARK: - PropertyPicker
+// Popover for searching/adding properties to a tag
+private struct PropertyPicker: View {
+    let existingNames: [String]
+    let allProperties: [PropertyDef]
+    let onSelect: (String) -> Void
+    let onCreateNew: (String) -> Void
+    @State private var searchText = ""
+
+    private var filteredProperties: [PropertyDef] {
+        let available = allProperties.filter { !existingNames.contains($0.name) }
+        if searchText.isEmpty { return available }
+        return available.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    private var canCreateNew: Bool {
+        let trimmed = searchText.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return false }
+        return !allProperties.contains { $0.name.lowercased() == trimmed.lowercased() }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Search properties…", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+
+            if filteredProperties.isEmpty && !canCreateNew {
+                Text("No properties available")
+                    .font(.caption).foregroundStyle(.tertiary)
+            }
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(filteredProperties) { prop in
+                        Button {
+                            onSelect(prop.name)
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text(propIcon(prop.valueType))
+                                    .font(.caption).frame(width: 20)
+                                Text(prop.name)
+                                Text("·").foregroundStyle(.tertiary)
+                                Text(prop.valueType)
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+            .frame(maxHeight: 200)
+
+            if canCreateNew {
+                Divider()
+                Button {
+                    onCreateNew(searchText.trimmingCharacters(in: .whitespaces))
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus.circle.fill")
+                            .foregroundStyle(.green)
+                        Text("Create \"\(searchText.trimmingCharacters(in: .whitespaces))\"")
+                            .bold()
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+        .frame(width: 280)
+    }
+
+    private func propIcon(_ valueType: String) -> String {
+        switch valueType {
+        case "text", "select": return "T"
+        case "number": return "N°"
+        case "date": return "📅"
+        case "checkbox": return "☑"
         default: return "T"
         }
     }

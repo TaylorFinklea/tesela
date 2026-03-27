@@ -20,6 +20,8 @@ struct ContentArea: View {
             if let page = appState.currentPage {
                 if page.metadata.noteType == "Tag" {
                     TagPageView(page: page)
+                } else if page.metadata.noteType == "Property" {
+                    PropertyPageView(page: page)
                 } else {
                     PageEditorView(page: page)
                 }
