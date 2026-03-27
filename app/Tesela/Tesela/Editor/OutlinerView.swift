@@ -419,6 +419,10 @@ class OutlinerView: NSView {
         let block = blocks[index]
         let anchorView = blockViews[index]
 
+        // Ensure our window is frontmost before showing any popover/alert
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
         if valueType == "date" || valueType == "datetime" {
             showDatePicker(for: name.lowercased(), at: index, anchorView: anchorView)
         } else if valueType == "select", let choices, !choices.isEmpty {
@@ -441,6 +445,8 @@ class OutlinerView: NSView {
 
     private func showSelectPopover(propertyName: String, choices: [String], at index: Int, anchorView: NSView) {
         activePopover?.close()
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
 
         let padding: CGFloat = 8
         let buttonHeight: CGFloat = 28
@@ -1022,6 +1028,8 @@ class OutlinerView: NSView {
 
     private func showDatePicker(for propertyKey: String, at index: Int, anchorView: NSView) {
         activePopover?.close()
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
 
         let existingDateVal = existingDate(for: propertyKey, at: index) ?? Date()
 
