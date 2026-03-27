@@ -491,23 +491,54 @@ impl SqliteIndex {
             .await
             .map_err(|e| db_err("Failed to get tag defs", e))?;
 
-        Ok(rows.iter().map(|row| {
+        let mut result = Vec::new();
+        for row in &rows {
             let props_str: String = row.get("properties_json");
-            let props: Vec<String> = serde_json::from_str(&props_str).unwrap_or_default();
-            crate::types::TypeDefinition {
+            let prop_names: Vec<String> = serde_json::from_str(&props_str).unwrap_or_default();
+
+            // Resolve each property name against property_defs for full schema
+            let mut resolved_props = Vec::new();
+            for pname in &prop_names {
+                let prop_row = sqlx::query(
+                    "SELECT name, value_type, choices_json, default_value FROM property_defs WHERE LOWER(name) = LOWER(?)"
+                )
+                .bind(pname)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| db_err("Failed to resolve property in get_all_tag_defs", e))?;
+
+                match prop_row {
+                    Some(pr) => {
+                        let choices_str: Option<String> = pr.get("choices_json");
+                        resolved_props.push(crate::types::PropertyDef {
+                            name: pr.get("name"),
+                            value_type: pr.get("value_type"),
+                            values: choices_str.and_then(|s| serde_json::from_str(&s).ok()),
+                            default: pr.get("default_value"),
+                            required: false,
+                        });
+                    }
+                    None => {
+                        resolved_props.push(crate::types::PropertyDef {
+                            name: pname.clone(),
+                            value_type: "text".to_string(),
+                            values: None,
+                            default: None,
+                            required: false,
+                        });
+                    }
+                }
+            }
+
+            result.push(crate::types::TypeDefinition {
                 name: row.get("name"),
                 description: String::new(),
                 icon: row.get("icon"),
                 color: row.get("color"),
-                properties: props.iter().map(|p| crate::types::PropertyDef {
-                    name: p.clone(),
-                    value_type: "text".to_string(),
-                    values: None,
-                    default: None,
-                    required: false,
-                }).collect(),
-            }
-        }).collect())
+                properties: resolved_props,
+            });
+        }
+        Ok(result)
     }
 
     /// Get all blocks tagged with a specific type, with their properties from the DB index.
