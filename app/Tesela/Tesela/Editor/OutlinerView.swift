@@ -602,6 +602,10 @@ class OutlinerView: NSView {
     // MARK: - Callback wiring
 
     private func wireCallbacks(for view: BlockView, at index: Int) {
+        // Track focus on click/tab into a block
+        view.onFocused = { [weak self] in
+            self?.focusedBlockIndex = index
+        }
         // Vim integration
         view.vimEngine = vimEngine
         view.isNormalMode = (vimEngine.currentMode == .normal)

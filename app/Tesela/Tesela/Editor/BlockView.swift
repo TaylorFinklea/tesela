@@ -31,6 +31,7 @@ class BlockView: NSTextView {
     var onArrowUpAtStart: (() -> Void)?
     var onArrowDownAtEnd: (() -> Void)?
     var onWikiLinkClicked: ((String) -> Void)?
+    var onFocused: (() -> Void)?
 
     init(block: Block) {
         self.block = block
@@ -105,6 +106,7 @@ class BlockView: NSTextView {
         let result = super.becomeFirstResponder()
         // Force immediate cursor redraw so block cursor appears on focus
         needsDisplay = true
+        if result { onFocused?() }
         return result
     }
 
