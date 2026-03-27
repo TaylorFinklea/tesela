@@ -53,8 +53,36 @@ struct TilesView: View {
                 .padding(.bottom, 24)
             }
         }
+        .overlay(alignment: .topLeading) {
+            if appState.isSlashMenuVisible {
+                SlashMenuView(onCommand: handleMenuCommand)
+                    .padding(.leading, 40)
+                    .padding(.top, 60)
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            }
+        }
+        .overlay(alignment: .center) {
+            if appState.isSpaceMenuVisible {
+                SpaceMenuView(onCommand: handleMenuCommand)
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+            }
+        }
+        .animation(.spring(duration: 0.15), value: appState.isSlashMenuVisible)
+        .animation(.spring(duration: 0.15), value: appState.isSpaceMenuVisible)
         .task { await loadDailyNotes() }
         .refreshable { await loadDailyNotes() }
+    }
+
+    private func handleMenuCommand(_ commandId: String) {
+        appState.isSlashMenuVisible = false
+        appState.isSpaceMenuVisible = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            NotificationCenter.default.post(
+                name: .teselaExecuteCommand,
+                object: nil,
+                userInfo: ["commandId": commandId]
+            )
+        }
     }
 
     private func loadDailyNotes() async {
