@@ -1,5 +1,20 @@
 # Tesela — Claude Code Instructions
 
+## Session Workflow (AI Handoff)
+
+**Start of every session — read these files first:**
+1. `docs/ai/roadmap.md` — durable goals, milestones, constraints
+2. `docs/ai/current-state.md` — branch, recent progress, blockers, test status
+3. `docs/ai/next-steps.md` — exact next actions checklist
+
+**End of every work session — update shared state:**
+1. Update `docs/ai/current-state.md` — branch, what changed, blockers, validation status
+2. Update `docs/ai/next-steps.md` — check off completed items, add new ones
+3. Update `docs/ai/decisions.md` — if any non-obvious architectural decisions were made
+4. Commit the docs/ai/ updates along with your code changes
+
+These docs are the source of truth for cross-session continuity. See `docs/ai/handoff-template.md` for the session-end format.
+
 ## Bash Command Rules
 
 **One command per Bash call.** Do not chain commands with `&&` unless the second command literally requires the piped output of the first.
@@ -85,14 +100,6 @@ tags: ["example"]
 - `crates/tesela-tui/src/handler.rs` — pure key → action mapping (all tests here)
 - `crates/tesela-tui/src/state/mod.rs` — AppState struct
 
-## What's Done (Phase 8)
+## Progress & Roadmap
 
-- Legacy `src/` monolith removed
-- CI workflow added
-- TUI: create (`c`), edit (`e`), daily (`d`), delete (`D`), graph toggle (`g`), fuzzy finder (`Ctrl+P`)
-- Outliner widget renders `- ` block trees with `├─`/`└─` chars
-- Graph widget shows backlinks + forward links
-
-## What's Next
-
-- Phase 9: Slint desktop GUI
+See `docs/ai/roadmap.md` for milestones and `docs/ai/current-state.md` for live status.

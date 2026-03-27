@@ -1,5 +1,20 @@
 # Tesela — Agent Instructions
 
+## Session Workflow (AI Handoff)
+
+**Start of every session — read these files first:**
+1. `docs/ai/roadmap.md` — durable goals, milestones, constraints
+2. `docs/ai/current-state.md` — branch, recent progress, blockers, test status
+3. `docs/ai/next-steps.md` — exact next actions checklist
+
+**End of every work session — update shared state:**
+1. Update `docs/ai/current-state.md` — branch, what changed, blockers, validation status
+2. Update `docs/ai/next-steps.md` — check off completed items, add new ones
+3. Update `docs/ai/decisions.md` — if any non-obvious architectural decisions were made
+4. Commit the docs/ai/ updates along with your code changes
+
+These docs are the source of truth for cross-session continuity. See `docs/ai/handoff-template.md` for the session-end format.
+
 ## Progress Tracking
 
 **Always use todo lists.** When working on any task, create and maintain a todo list using TaskCreate/TaskUpdate so the user can see progress and what you're working on. Mark tasks `in_progress` when starting and `completed` when done. Break work into discrete steps.
