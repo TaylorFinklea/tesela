@@ -464,32 +464,23 @@ class OutlinerView: NSView {
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        let padding: CGFloat = 8
-        let buttonHeight: CGFloat = 28
-        let containerHeight = CGFloat(choices.count) * buttonHeight + padding * 2
-        let containerWidth: CGFloat = 200
+        // Pre-select current value if set
+        let currentValue = blocks[index].properties[propertyName] ?? blocks[index].properties[propertyName.lowercased()]
+        let initialIndex = currentValue.flatMap { val in choices.firstIndex(of: val) } ?? 0
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: containerWidth, height: containerHeight))
-
-        var actions: [DatePickerAction] = []
-        for (i, choice) in choices.enumerated() {
-            let btn = NSButton(title: choice, target: nil, action: nil)
-            btn.bezelStyle = .inline
-            btn.frame = NSRect(x: padding, y: containerHeight - padding - CGFloat(i + 1) * buttonHeight,
-                               width: containerWidth - padding * 2, height: buttonHeight)
-            let action = DatePickerAction { [weak self] in
-                self?.activePopover?.close()
-                self?.activePopover = nil
-                self?.applyBlockProperty(name: propertyName, value: choice, at: index)
-            }
-            btn.target = action
-            btn.action = #selector(DatePickerAction.execute)
-            actions.append(action)
-            container.addSubview(btn)
+        let listView = SelectListView(choices: choices, selectedIndex: initialIndex)
+        listView.onSelect = { [weak self] choice in
+            self?.activePopover?.close()
+            self?.activePopover = nil
+            self?.applyBlockProperty(name: propertyName, value: choice, at: index)
+        }
+        listView.onDismiss = { [weak self] in
+            self?.activePopover?.close()
+            self?.activePopover = nil
         }
 
         let vc = NSViewController()
-        vc.view = container
+        vc.view = listView
 
         let popover = NSPopover()
         popover.contentViewController = vc
@@ -497,8 +488,8 @@ class OutlinerView: NSView {
         popover.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .maxY)
         activePopover = popover
 
-        // Retain actions on the popover so they don't get deallocated
-        objc_setAssociatedObject(popover, "selectActions", actions, .OBJC_ASSOCIATION_RETAIN)
+        // Make the list view first responder so it receives key events
+        popover.contentViewController?.view.window?.makeFirstResponder(listView)
     }
 
     private func applyBlockProperty(name: String, value: String, at index: Int) {
