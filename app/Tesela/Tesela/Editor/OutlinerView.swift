@@ -28,6 +28,8 @@ class OutlinerView: NSView {
     var tileID: String?
     var typeRegistry: [TypeDefinition] = []
     var propertyRegistry: [PropertyDef] = []
+    var allTags: [String] = []
+    var allPageTitles: [String] = []
     private var expandedBlockIndex: Int?
     private var typeTagNames: Set<String> = []
 
@@ -633,6 +635,10 @@ class OutlinerView: NSView {
 
         view.onTextChanged = { [weak self] newText in
             guard let self, index < blocks.count else { return }
+
+            // Check for autocomplete triggers before processing text changes
+            checkForCompletion(in: view, at: index)
+
             let oldTags = Set(blocks[index].tags)
             blocks[index].updateDisplayText(newText, typeTagNames: typeTagNames)
             // Re-extract tags (live mode: skip end-of-string tags to avoid mid-typing)
@@ -1039,6 +1045,148 @@ class OutlinerView: NSView {
         }
     }
 
+    // MARK: - Inline autocomplete (#tags and [[page refs]])
+
+    private enum CompletionTrigger { case tag, pageRef }
+    private struct CompletionContext {
+        let trigger: CompletionTrigger
+        let blockIndex: Int
+        let triggerPosition: Int  // position of # or [[ in the text
+        var query: String
+    }
+
+    private var activeCompletionPopover: NSPopover?
+    private var activeCompletionView: CompletionView?
+    private var activeCompletion: CompletionContext?
+
+    /// Called from onTextChanged to detect and manage autocomplete.
+    private func checkForCompletion(in view: BlockView, at index: Int) {
+        guard vimEngine.currentMode == .insert else {
+            dismissCompletion()
+            return
+        }
+
+        let text = view.string
+        let cursorPos = view.selectedRange().location
+        guard cursorPos > 0 else { dismissCompletion(); return }
+
+        let before = String(text.prefix(cursorPos))
+
+        // Check for [[ trigger
+        if let bracketIdx = before.range(of: "[[", options: .backwards) {
+            let afterBrackets = String(before[bracketIdx.upperBound...])
+            // No closing ]] yet, and no newlines in query
+            if !afterBrackets.contains("]]") && !afterBrackets.contains("\n") {
+                let query = afterBrackets
+                let triggerPos = before.distance(from: before.startIndex, to: bracketIdx.lowerBound)
+                if let ctx = activeCompletion, ctx.trigger == .pageRef, ctx.blockIndex == index {
+                    // Update existing
+                    activeCompletion?.query = query
+                    activeCompletionView?.updateQuery(query)
+                } else {
+                    showCompletion(trigger: .pageRef, query: query, triggerPosition: triggerPos, blockIndex: index, anchorView: view)
+                }
+                return
+            }
+        }
+
+        // Check for # trigger
+        if let hashIdx = before.lastIndex(of: "#") {
+            let posInString = before.distance(from: before.startIndex, to: hashIdx)
+            // # must be at start or preceded by whitespace
+            let validStart = posInString == 0 || before[before.index(before: hashIdx)].isWhitespace
+            if validStart {
+                let afterHash = String(before[before.index(after: hashIdx)...])
+                // Query is alphanumeric/dash/underscore only, no spaces
+                let validQuery = afterHash.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }
+                if validQuery {
+                    if let ctx = activeCompletion, ctx.trigger == .tag, ctx.blockIndex == index {
+                        activeCompletion?.query = afterHash
+                        activeCompletionView?.updateQuery(afterHash)
+                    } else {
+                        showCompletion(trigger: .tag, query: afterHash, triggerPosition: posInString, blockIndex: index, anchorView: view)
+                    }
+                    return
+                }
+            }
+        }
+
+        // No trigger found
+        dismissCompletion()
+    }
+
+    private func showCompletion(trigger: CompletionTrigger, query: String, triggerPosition: Int, blockIndex: Int, anchorView: BlockView) {
+        dismissCompletion()
+
+        let items: [String] = switch trigger {
+        case .tag: allTags
+        case .pageRef: allPageTitles
+        }
+
+        guard !items.isEmpty else { return }
+
+        let completionView = CompletionView(items: items)
+        completionView.updateQuery(query)
+        completionView.onSelect = { [weak self] selected in
+            self?.insertCompletion(selected, trigger: trigger, blockIndex: blockIndex)
+        }
+        completionView.onDismiss = { [weak self] in
+            self?.dismissCompletion()
+        }
+
+        activeCompletion = CompletionContext(trigger: trigger, blockIndex: blockIndex, triggerPosition: triggerPosition, query: query)
+        activeCompletionView = completionView
+
+        let vc = NSViewController()
+        vc.view = completionView
+
+        let popover = NSPopover()
+        popover.contentViewController = vc
+        popover.behavior = .semitransient
+        popover.show(relativeTo: anchorView.cursorRect(), of: anchorView, preferredEdge: .maxY)
+        activeCompletionPopover = popover
+
+        // Make completion view first responder for keyboard nav
+        popover.contentViewController?.view.window?.makeFirstResponder(completionView)
+    }
+
+    private func dismissCompletion() {
+        activeCompletionPopover?.close()
+        activeCompletionPopover = nil
+        activeCompletionView = nil
+        activeCompletion = nil
+    }
+
+    private func insertCompletion(_ selected: String, trigger: CompletionTrigger, blockIndex: Int) {
+        guard blockIndex < blockViews.count,
+              let ctx = activeCompletion else { return }
+        let view = blockViews[blockIndex]
+
+        let text = view.string
+        let triggerPos = ctx.triggerPosition
+        let cursorPos = view.selectedRange().location
+
+        let replacement: String
+        switch trigger {
+        case .tag:
+            replacement = "#\(selected) "
+        case .pageRef:
+            replacement = "[[\(selected)]]"
+        }
+
+        let range = NSRange(location: triggerPos, length: cursorPos - triggerPos)
+        view.replaceCharacters(in: range, with: replacement)
+
+        // Move cursor to after the inserted text
+        let newPos = triggerPos + (replacement as NSString).length
+        view.setSelectedRange(NSRange(location: newPos, length: 0))
+
+        dismissCompletion()
+
+        // Trigger text change handlers
+        view.onTextChanged?(view.string)
+    }
+
     // MARK: - Date picker popover
 
     private var activePopover: NSPopover?
@@ -1321,6 +1469,8 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var apiClient: APIClient?
     var typeRegistry: [TypeDefinition] = []
     var propertyRegistry: [PropertyDef] = []
+    var allTags: [String] = []
+    var allPageTitles: [String] = []
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -1338,6 +1488,8 @@ struct OutlinerCoordinator: NSViewRepresentable {
         outliner.tileID = tileID
         outliner.typeRegistry = typeRegistry
         outliner.propertyRegistry = propertyRegistry
+        outliner.allTags = allTags
+        outliner.allPageTitles = allPageTitles
         context.coordinator.outlinerView = outliner
 
         scrollView.documentView = outliner

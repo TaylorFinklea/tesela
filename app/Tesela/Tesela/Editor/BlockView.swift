@@ -103,6 +103,19 @@ class BlockView: NSTextView {
         }
     }
 
+    /// Returns the rect of the insertion point in this view's coordinate space.
+    func cursorRect() -> NSRect {
+        guard let lm = layoutManager, let tc = textContainer else {
+            return NSRect(x: 0, y: 0, width: 1, height: 22)
+        }
+        let pos = selectedRange().location
+        let glyphIndex = pos < lm.numberOfGlyphs ? lm.glyphIndexForCharacter(at: pos) : max(lm.numberOfGlyphs - 1, 0)
+        let rect = lm.boundingRect(forGlyphRange: NSRange(location: glyphIndex, length: 1), in: tc)
+        return NSRect(x: rect.origin.x + textContainerInset.width,
+                      y: rect.origin.y + textContainerInset.height,
+                      width: max(rect.width, 1), height: rect.height)
+    }
+
     override func setNeedsDisplay(_ rect: NSRect, avoidAdditionalLayout flag: Bool) {
         super.setNeedsDisplay(bounds, avoidAdditionalLayout: flag)
     }

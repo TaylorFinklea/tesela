@@ -197,7 +197,9 @@ private struct EditableTileCard: View {
                 tileID: page.id,
                 apiClient: appState.api,
                 typeRegistry: appState.typeRegistry,
-                propertyRegistry: appState.propertyRegistry
+                propertyRegistry: appState.propertyRegistry,
+                allTags: appState.tags,
+                allPageTitles: appState.pages.map(\.title)
             )
             // Height expands to fit content — each block ~26px + generous buffer
             .frame(minHeight: max(CGFloat(blocks.count) * 26 + 60, 120))

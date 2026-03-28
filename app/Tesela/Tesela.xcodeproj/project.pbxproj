@@ -36,6 +36,7 @@
 		A522DAF696C8B8DE67161619 /* BlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C39EB381DB998940EAD68E5 /* BlockView.swift */; };
 		A793CE860040055CADCC5083 /* RightSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B516B1FB896984C9A47BA978 /* RightSidebarView.swift */; };
 		A8DE69CF9C792BC9A8CF1054 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05C044B8030091D728EA655 /* AppState.swift */; };
+		B61CC5AF133C6C8B10A7A938 /* CompletionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9054304570421DA7EA21A5ED /* CompletionView.swift */; };
 		B8037B1BBED0C10918FBE283 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DF308818C876207C0482E7E /* RootView.swift */; };
 		B939C3D3049B1637BD750C54 /* TypeDefinition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D2450A34E3D293628B09ADD /* TypeDefinition.swift */; };
 		B9E57229D4D9DC77224B5678 /* VimKeyHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52E040CAD40B4BBB0F7F9A74 /* VimKeyHandler.swift */; };
@@ -78,6 +79,7 @@
 		874E24328A38A9F099D6A121 /* WsEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WsEventTests.swift; sourceTree = "<group>"; };
 		8D2450A34E3D293628B09ADD /* TypeDefinition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypeDefinition.swift; sourceTree = "<group>"; };
 		8DF308818C876207C0482E7E /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		9054304570421DA7EA21A5ED /* CompletionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompletionView.swift; sourceTree = "<group>"; };
 		9C39EB381DB998940EAD68E5 /* BlockView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockView.swift; sourceTree = "<group>"; };
 		9D993C7569E49CF342A7C34C /* TeselaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = TeselaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		9E52D7EA7150FE7556F30E81 /* SpaceMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceMenuView.swift; sourceTree = "<group>"; };
@@ -203,6 +205,7 @@
 			children = (
 				C78419676B314818F2A956C2 /* BlockStyler.swift */,
 				9C39EB381DB998940EAD68E5 /* BlockView.swift */,
+				9054304570421DA7EA21A5ED /* CompletionView.swift */,
 				CAB173D4D76EDF9C10B73B0F /* OutlinerView.swift */,
 				9F68CA38D93CC0EB219E6FCB /* SelectListView.swift */,
 			);
@@ -390,6 +393,7 @@
 				8F52792C0E76B589EDAFF02E /* BlockStyler.swift in Sources */,
 				A522DAF696C8B8DE67161619 /* BlockView.swift in Sources */,
 				9BB3FC008F13F33A9D429D94 /* CommandPaletteView.swift in Sources */,
+				B61CC5AF133C6C8B10A7A938 /* CompletionView.swift in Sources */,
 				816EB5B12DE916E4A372699F /* ContentArea.swift in Sources */,
 				97EB950FAF03909286701F3A /* DateParser.swift in Sources */,
 				4A840C42D73B06AE6DA84313 /* GraphView.swift in Sources */,

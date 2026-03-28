@@ -156,7 +156,9 @@ struct PageEditorView: View {
                 },
                 apiClient: appState.api,
                 typeRegistry: appState.typeRegistry,
-                propertyRegistry: appState.propertyRegistry
+                propertyRegistry: appState.propertyRegistry,
+                allTags: appState.tags,
+                allPageTitles: appState.pages.map(\.title)
             )
             .padding(.horizontal, 8)
             .overlay(alignment: .topLeading) {
