@@ -33,6 +33,11 @@ class BlockView: NSTextView {
     var onWikiLinkClicked: ((String) -> Void)?
     var onFocused: (() -> Void)?
 
+    // Inline autocomplete
+    var isCompletionVisible: (() -> Bool)?
+    /// Forward a key event to the completion popover. Returns true if consumed.
+    var onCompletionKey: ((NSEvent) -> Bool)?
+
     /// Type tag names (lowercased) — only these tags are stripped from display text.
     /// Casual tags stay inline and are styled by BlockStyler.
     var typeTagNames: Set<String> = []
@@ -148,6 +153,14 @@ class BlockView: NSTextView {
                 )
             }
             return // don't let keys reach the editor while menu is open
+        }
+
+        // Forward nav keys to completion popover (arrow, Enter, Escape)
+        // Let all other keys (typing, backspace) pass through to the editor
+        if isCompletionVisible?() == true {
+            if onCompletionKey?(event) == true {
+                return
+            }
         }
 
         guard let vim = vimEngine else {

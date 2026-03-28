@@ -621,6 +621,26 @@ class OutlinerView: NSView {
         view.onFocused = { [weak self] in
             self?.focusedBlockIndex = index
         }
+        // Inline autocomplete — forward nav keys to CompletionView
+        view.isCompletionVisible = { [weak self] in
+            self?.activeCompletionPopover != nil
+        }
+        view.onCompletionKey = { [weak self] event in
+            guard let self, let cv = activeCompletionView else { return false }
+            switch event.keyCode {
+            case 125, 126: // Down arrow, Up arrow
+                cv.keyDown(with: event)
+                return true
+            case 36: // Enter
+                cv.keyDown(with: event)
+                return true
+            case 53: // Escape
+                dismissCompletion()
+                return true
+            default:
+                return false // let typing pass through to editor
+            }
+        }
         // Vim integration
         view.vimEngine = vimEngine
         view.isNormalMode = (vimEngine.currentMode == .normal)
@@ -1145,9 +1165,7 @@ class OutlinerView: NSView {
         popover.behavior = .semitransient
         popover.show(relativeTo: anchorView.cursorRect(), of: anchorView, preferredEdge: .maxY)
         activeCompletionPopover = popover
-
-        // Make completion view first responder for keyboard nav
-        popover.contentViewController?.view.window?.makeFirstResponder(completionView)
+        // BlockView keeps focus — keys forwarded via onCompletionKey callback
     }
 
     private func dismissCompletion() {

@@ -20,7 +20,7 @@ class CompletionView: NSView {
     private let viewWidth: CGFloat = 240
 
     override var isFlipped: Bool { true }
-    override var acceptsFirstResponder: Bool { true }
+    override var acceptsFirstResponder: Bool { false }
 
     var filteredItems: [String] {
         if query.isEmpty { return items }
@@ -120,11 +120,11 @@ class CompletionView: NSView {
     override func keyDown(with event: NSEvent) {
         let visible = filteredItems
         switch event.keyCode {
-        case 125, 38: // Down arrow, j
+        case 125: // Down arrow
             if selectedIndex < min(visible.count, maxVisibleRows) - 1 {
                 selectedIndex += 1
             }
-        case 126, 40: // Up arrow, k
+        case 126: // Up arrow
             if selectedIndex > 0 {
                 selectedIndex -= 1
             }
@@ -133,7 +133,6 @@ class CompletionView: NSView {
         case 53: // Escape
             onDismiss?()
         default:
-            // Let other keys pass through (they'll be handled by the text view)
             super.keyDown(with: event)
         }
     }
