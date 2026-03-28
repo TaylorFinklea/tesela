@@ -1139,10 +1139,8 @@ class OutlinerView: NSView {
     private func showCompletion(trigger: CompletionTrigger, query: String, triggerPosition: Int, blockIndex: Int, anchorView: BlockView) {
         dismissCompletion()
 
-        let items: [String] = switch trigger {
-        case .tag: allTags
-        case .pageRef: allPageTitles
-        }
+        // Both # and [[ search all pages — tags are just pages
+        let items = allPageTitles
 
         guard !items.isEmpty else { return }
 
