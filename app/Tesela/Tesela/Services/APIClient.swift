@@ -100,8 +100,17 @@ actor APIClient {
         try await getDecoded("/types/\(typeName)/nodes")
     }
 
-    func getTypedBlocks(typeName: String) async throws -> [TypedBlock] {
-        try await getDecoded("/types/\(typeName)/blocks")
+    func getTypedBlocks(typeName: String, filterProperty: String? = nil, filterValue: String? = nil, sortBy: String? = nil, sortDir: String? = nil) async throws -> [TypedBlock] {
+        var query: [URLQueryItem] = []
+        if let prop = filterProperty, let val = filterValue {
+            query.append(URLQueryItem(name: "filter_property", value: prop))
+            query.append(URLQueryItem(name: "filter_value", value: val))
+        }
+        if let sort = sortBy {
+            query.append(URLQueryItem(name: "sort_by", value: sort))
+            if let dir = sortDir { query.append(URLQueryItem(name: "sort_dir", value: dir)) }
+        }
+        return try await getDecoded("/types/\(typeName)/blocks", query: query)
     }
 
     // MARK: - Tags

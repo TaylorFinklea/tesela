@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     Json,
 };
+use serde::Deserialize;
 
 use tesela_core::{
     traits::note_store::NoteStore,
@@ -47,12 +48,49 @@ pub async fn list_typed_nodes(
     Ok(Json(notes))
 }
 
-/// List all blocks tagged with a specific type, with DB-indexed properties
+#[derive(Deserialize)]
+pub struct TypedBlocksQuery {
+    pub filter_property: Option<String>,
+    pub filter_value: Option<String>,
+    pub sort_by: Option<String>,
+    pub sort_dir: Option<String>,  // "asc" or "desc"
+}
+
+/// List all blocks tagged with a specific type, with DB-indexed properties.
+/// Supports optional filtering by property value: ?filter_property=status&filter_value=todo
 pub async fn list_typed_blocks(
     Path(name): Path<String>,
+    Query(q): Query<TypedBlocksQuery>,
     State(s): State<Arc<AppState>>,
 ) -> AppResult<Json<Vec<tesela_core::block::ParsedBlock>>> {
-    let blocks = s.index.get_typed_blocks(&name).await?;
+    let mut blocks = s.index.get_typed_blocks(&name).await?;
+
+    // Filter by property value
+    if let (Some(prop), Some(val)) = (&q.filter_property, &q.filter_value) {
+        let prop_lower = prop.to_lowercase();
+        let val_lower = val.to_lowercase();
+        blocks.retain(|b| {
+            b.properties.iter().any(|(k, v)| {
+                k.to_lowercase() == prop_lower && v.to_lowercase() == val_lower
+            })
+        });
+    }
+
+    // Sort by property
+    if let Some(sort_prop) = &q.sort_by {
+        let prop_lower = sort_prop.to_lowercase();
+        let ascending = q.sort_dir.as_deref() != Some("desc");
+        blocks.sort_by(|a, b| {
+            let va = a.properties.iter()
+                .find(|(k, _)| k.to_lowercase() == prop_lower)
+                .map(|(_, v)| v.as_str()).unwrap_or("");
+            let vb = b.properties.iter()
+                .find(|(k, _)| k.to_lowercase() == prop_lower)
+                .map(|(_, v)| v.as_str()).unwrap_or("");
+            if ascending { va.cmp(vb) } else { vb.cmp(va) }
+        });
+    }
+
     Ok(Json(blocks))
 }
 

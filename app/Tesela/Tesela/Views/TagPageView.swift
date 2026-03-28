@@ -12,6 +12,12 @@ struct TagPageView: View {
     @State private var isAddingProperty = false
     @State private var propertySearchText = ""
 
+    // Filtering
+    @State private var activeFilterProperty: String?
+    @State private var activeFilterValue: String?
+    @State private var sortProperty: String?
+    @State private var sortAscending = true
+
     /// The tag_properties from this tag's own frontmatter (not inherited)
     private var ownPropertyNames: [String] {
         if let tp = page.metadata.custom["tag_properties"], case .array(let arr) = tp {
@@ -165,12 +171,38 @@ struct TagPageView: View {
                     .padding(.horizontal, 24)
                     .padding(.top, 16)
 
+                    // Filter chips
+                    if let resolved = resolvedType, !resolved.properties.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(resolved.properties) { prop in
+                                    FilterChip(
+                                        property: prop,
+                                        isActive: activeFilterProperty == prop.name,
+                                        activeValue: activeFilterProperty == prop.name ? activeFilterValue : nil,
+                                        onSelect: { value in
+                                            activeFilterProperty = prop.name
+                                            activeFilterValue = value
+                                            Task { await loadData() }
+                                        },
+                                        onClear: {
+                                            activeFilterProperty = nil
+                                            activeFilterValue = nil
+                                            Task { await loadData() }
+                                        }
+                                    )
+                                }
+                            }
+                            .padding(.horizontal, 24)
+                        }
+                    }
+
                     if taggedBlocks.isEmpty {
                         Text("No \(page.title) blocks yet")
                             .font(.caption).foregroundStyle(.tertiary)
                             .padding(.horizontal, 24)
                     } else {
-                        // Table header
+                        // Table header — click to sort
                         let columns = resolvedType?.properties.prefix(5).map(\.name) ?? []
                         HStack(spacing: 0) {
                             Text("Name")
@@ -180,9 +212,27 @@ struct TagPageView: View {
                                 .font(.caption).bold().foregroundStyle(.secondary)
                                 .frame(width: 80, alignment: .leading)
                             ForEach(columns, id: \.self) { col in
-                                Text(col)
-                                    .font(.caption).bold().foregroundStyle(.secondary)
-                                    .frame(width: 100, alignment: .leading)
+                                Button {
+                                    if sortProperty == col {
+                                        sortAscending.toggle()
+                                    } else {
+                                        sortProperty = col
+                                        sortAscending = true
+                                    }
+                                    Task { await loadData() }
+                                } label: {
+                                    HStack(spacing: 2) {
+                                        Text(col)
+                                            .font(.caption).bold()
+                                        if sortProperty == col {
+                                            Image(systemName: sortAscending ? "chevron.up" : "chevron.down")
+                                                .font(.caption2)
+                                        }
+                                    }
+                                    .foregroundStyle(sortProperty == col ? Color.accentColor : .secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .frame(width: 100, alignment: .leading)
                             }
                         }
                         .padding(.horizontal, 24)
@@ -234,7 +284,13 @@ struct TagPageView: View {
 
     private func loadData() async {
         resolvedType = try? await appState.api.getResolvedType(name: page.title)
-        taggedBlocks = (try? await appState.api.getTypedBlocks(typeName: page.title)) ?? []
+        taggedBlocks = (try? await appState.api.getTypedBlocks(
+            typeName: page.title,
+            filterProperty: activeFilterProperty,
+            filterValue: activeFilterValue,
+            sortBy: sortProperty,
+            sortDir: sortProperty != nil ? (sortAscending ? "asc" : "desc") : nil
+        )) ?? []
     }
 
     private func addProperty(_ name: String) async {
@@ -377,5 +433,76 @@ private struct PropertyPicker: View {
         case "checkbox": return "☑"
         default: return "T"
         }
+    }
+}
+
+// MARK: - FilterChip
+// Clickable filter chip for a property. Shows a popover with values to filter by.
+private struct FilterChip: View {
+    let property: PropertyDef
+    let isActive: Bool
+    let activeValue: String?
+    let onSelect: (String) -> Void
+    let onClear: () -> Void
+    @State private var isShowingPopover = false
+
+    var body: some View {
+        Button {
+            if isActive {
+                onClear()
+            } else {
+                isShowingPopover = true
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(property.name)
+                    .font(.caption)
+                if let val = activeValue {
+                    Text("= \(val)")
+                        .font(.caption).bold()
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.caption2)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .foregroundStyle(isActive ? .white : .secondary)
+            .background(isActive ? Color.accentColor : Color.secondary.opacity(0.12), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $isShowingPopover, arrowEdge: .bottom) {
+            filterOptions
+        }
+    }
+
+    @ViewBuilder
+    private var filterOptions: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let choices = property.values, !choices.isEmpty {
+                // Select property — show choices
+                ForEach(choices, id: \.self) { choice in
+                    Button {
+                        isShowingPopover = false
+                        onSelect(choice)
+                    } label: {
+                        Text(choice)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 4)
+                            .padding(.horizontal, 8)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            } else {
+                // Text property — freeform input
+                TextField("Filter value…", text: .constant(""))
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit {
+                        // TODO: capture typed value
+                    }
+            }
+        }
+        .padding(8)
+        .frame(width: 180)
     }
 }
