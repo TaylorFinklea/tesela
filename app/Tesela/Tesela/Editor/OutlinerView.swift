@@ -1087,8 +1087,9 @@ class OutlinerView: NSView {
         }
 
         let text = view.string
+        guard !text.isEmpty else { dismissCompletion(); return }
         let cursorPos = view.selectedRange().location
-        guard cursorPos > 0 else { dismissCompletion(); return }
+        guard cursorPos > 0, cursorPos <= text.count else { dismissCompletion(); return }
 
         let before = String(text.prefix(cursorPos))
 
