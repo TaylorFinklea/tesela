@@ -1,6 +1,6 @@
 # Current State
 
-*Last updated: 2026-03-27 (session 2)*
+*Last updated: 2026-03-28*
 
 ## Active Branch
 
@@ -8,11 +8,14 @@
 
 ## Recent Progress
 
-- **Tag display rework**: Only type tags (#Task, #Project) become right-aligned pills; casual tags (#meeting, #work) stay inline with secondary label color styling
-- **Status icon layout**: Checkbox now sits right next to bullet (was detached 12px to the right)
-- **Date picker Enter fix**: Removed conflicting global event monitor; Enter now reliably fires in text input mode
-- **Phase H complete**: PropertyPageView, PropertyPicker popover, keyboard-navigable SelectListView
-- **Bug fixes**: BlockStyler crash, focusedBlockIndex tracking, TilesView slash/space overlays, popover z-ordering, store.create() frontmatter preservation
+- **Visual mode**: Character-level v selection with h/l/w/b/e/0/$ extend, d/c/y operate on selection
+- **/search**: / opens search bar, pattern matches across all blocks, n/N navigates matches
+- **Dot-repeat**: Count override works (5. after dw), tracks more edit commands
+- **Tag page filters**: Server-side filter_property/filter_value params, FilterChip UI, sortable columns
+- **Right sidebar polish**: Page Info section (type, tags, dates), backlinks grouped by source with context
+- **Inline autocomplete**: # and [[ show filtered page list as you type, arrow/Enter/Escape nav
+- **Tag display rework**: Type tags as pills, casual tags inline with styling
+- **Bug fixes**: BlockStyler crash, focusedBlockIndex, cursorRect bounds, store.create() frontmatter
 
 ## Changed Files (recent)
 
