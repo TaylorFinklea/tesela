@@ -4,9 +4,9 @@
 
 ## Immediate
 
-- [ ] Tag display rework — type tags (#Task, #Project) as right-aligned pills, casual tags (#meeting, #work) stay inline in block text
-- [ ] Date picker Enter key fix — Enter doesn't always fire in text input mode
-- [ ] Status icon layout — icon should be next to bullet, not replacing it
+- [x] Tag display rework — type tags (#Task, #Project) as right-aligned pills, casual tags (#meeting, #work) stay inline in block text
+- [x] Date picker Enter key fix — Enter doesn't always fire in text input mode
+- [x] Status icon layout — icon should be next to bullet, not replacing it
 
 ## Short-term
 

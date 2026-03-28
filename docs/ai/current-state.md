@@ -1,6 +1,6 @@
 # Current State
 
-*Last updated: 2026-03-27*
+*Last updated: 2026-03-27 (session 2)*
 
 ## Active Branch
 
@@ -8,10 +8,11 @@
 
 ## Recent Progress
 
-- **Phase H complete**: PropertyPageView (editable schema for Property pages), PropertyPicker popover on TagPageView, AppState.updatePageContent() for frontmatter mutations
-- **Keyboard-navigable select popover**: SelectListView replaces NSButton-based popover — arrow/j/k nav, Enter to confirm, Escape to dismiss
-- **Priority & Effort slash commands**: wired up (were TODO stubs)
-- **Bug fixes**: BlockStyler crash (text/textStorage length mismatch), focusedBlockIndex not set on becomeFirstResponder (slash commands broken on tiles), slash/space menu overlays missing from TilesView, popover z-ordering (window activation), store.create() double-frontmatter stripping custom fields
+- **Tag display rework**: Only type tags (#Task, #Project) become right-aligned pills; casual tags (#meeting, #work) stay inline with secondary label color styling
+- **Status icon layout**: Checkbox now sits right next to bullet (was detached 12px to the right)
+- **Date picker Enter fix**: Removed conflicting global event monitor; Enter now reliably fires in text input mode
+- **Phase H complete**: PropertyPageView, PropertyPicker popover, keyboard-navigable SelectListView
+- **Bug fixes**: BlockStyler crash, focusedBlockIndex tracking, TilesView slash/space overlays, popover z-ordering, store.create() frontmatter preservation
 
 ## Changed Files (recent)
 
