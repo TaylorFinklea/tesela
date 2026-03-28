@@ -784,7 +784,9 @@ class OutlinerView: NSView {
         // Track edits for dot-repeat
         switch cmd {
         case .deleteBlock, .deleteChar, .indentBlock, .dedentBlock,
-             .delete, .change, .pasteBelow, .pasteAbove:
+             .delete, .change, .pasteBelow, .pasteAbove,
+             .toggleTodo, .enterInsertNewLineBelow, .enterInsertNewLineAbove,
+             .joinBlock:
             vimEngine.lastEditCommand = cmd
         default: break
         }
@@ -855,6 +857,50 @@ class OutlinerView: NSView {
         case .enterVisualLine:
             // Select entire block text
             view.setSelectedRange(NSRange(location: 0, length: view.string.count))
+
+        // Visual mode — extend selection
+        case .visualExtendLeft:   view.moveLeftAndModifySelection(nil)
+        case .visualExtendRight:  view.moveRightAndModifySelection(nil)
+        case .visualExtendWordForward:  view.moveWordForwardAndModifySelection(nil)
+        case .visualExtendWordBackward: view.moveWordBackwardAndModifySelection(nil)
+        case .visualExtendLineStart:    view.moveToBeginningOfLineAndModifySelection(nil)
+        case .visualExtendLineEnd:      view.moveToEndOfLineAndModifySelection(nil)
+        case .visualExtendBlockDown:
+            // Extend selection to end of current block, then into next
+            view.moveToEndOfDocumentAndModifySelection(nil)
+        case .visualExtendBlockUp:
+            view.moveToBeginningOfDocumentAndModifySelection(nil)
+
+        // Visual mode — operators on selection
+        case .visualDelete:
+            let sel = view.selectedRange()
+            guard sel.length > 0 else { break }
+            let selectedText = (view.string as NSString).substring(with: sel)
+            vimEngine.yankRegister = selectedText
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(selectedText, forType: .string)
+            view.replaceCharacters(in: sel, with: "")
+            view.onTextChanged?(view.string)
+            vimEngine.lastEditCommand = .visualDelete
+        case .visualYank:
+            let sel = view.selectedRange()
+            guard sel.length > 0 else { break }
+            let selectedText = (view.string as NSString).substring(with: sel)
+            vimEngine.yankRegister = selectedText
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(selectedText, forType: .string)
+            // Move cursor to start of selection and deselect
+            view.setSelectedRange(NSRange(location: sel.location, length: 0))
+        case .visualChange:
+            let sel = view.selectedRange()
+            guard sel.length > 0 else { break }
+            let selectedText = (view.string as NSString).substring(with: sel)
+            vimEngine.yankRegister = selectedText
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(selectedText, forType: .string)
+            view.replaceCharacters(in: sel, with: "")
+            view.onTextChanged?(view.string)
+            vimEngine.lastEditCommand = .visualChange
 
         // Indent / dedent
         case .indentBlock:
@@ -948,12 +994,20 @@ class OutlinerView: NSView {
         // Dot-repeat
         case .repeatLastChange:
             if let lastCmd = vimEngine.lastEditCommand {
-                executeVimCommand(lastCmd, at: index)
+                // Use the NEW count (e.g., 5. after dw should repeat 5 times)
+                let repeatCount = count
+                for _ in 0..<repeatCount {
+                    executeVimCommand(lastCmd, at: index)
+                }
             }
 
         // Search
         case .startSearch:
-            delegate?.outlinerDidRequestCommandPalette()
+            showSearchBar()
+        case .searchNext:
+            jumpToNextMatch()
+        case .searchPrev:
+            jumpToPrevMatch()
 
         // Undo / redo — structural stack first, then NSTextView
         case .undo:
@@ -1202,6 +1256,110 @@ class OutlinerView: NSView {
 
         // Trigger text change handlers
         view.onTextChanged?(view.string)
+    }
+
+    // MARK: - In-page search (/pattern, n, N)
+
+    private var searchBar: NSTextField?
+    private var searchMatches: [(blockIndex: Int, range: NSRange)] = []
+    private var currentMatchIndex: Int = 0
+
+    private func showSearchBar() {
+        if searchBar != nil { return }
+        let bar = NSTextField()
+        bar.placeholderString = "/"
+        bar.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        bar.isBordered = true
+        bar.drawsBackground = true
+        bar.frame = NSRect(x: 8, y: bounds.maxY - 28, width: bounds.width - 16, height: 24)
+        addSubview(bar)
+        searchBar = bar
+        window?.makeFirstResponder(bar)
+
+        let action = DatePickerAction { [weak self] in
+            guard let self else { return }
+            let query = bar.stringValue
+            if query.isEmpty {
+                dismissSearchBar()
+            } else {
+                performSearch(query)
+            }
+        }
+        bar.target = action
+        bar.action = #selector(DatePickerAction.execute)
+        objc_setAssociatedObject(bar, "searchAction", action, .OBJC_ASSOCIATION_RETAIN)
+
+        // Escape to dismiss
+        let escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 { // Escape
+                self?.dismissSearchBar()
+                return nil
+            }
+            return event
+        }
+        objc_setAssociatedObject(bar, "escMonitor", escMonitor as AnyObject, .OBJC_ASSOCIATION_RETAIN)
+    }
+
+    private func dismissSearchBar() {
+        if let monitor = objc_getAssociatedObject(searchBar as Any, "escMonitor") {
+            NSEvent.removeMonitor(monitor)
+        }
+        searchBar?.removeFromSuperview()
+        searchBar = nil
+        searchMatches = []
+        currentMatchIndex = 0
+        // Restore focus to the last focused block
+        if let idx = focusedBlockIndex, idx < blockViews.count {
+            window?.makeFirstResponder(blockViews[idx])
+        }
+    }
+
+    private func performSearch(_ query: String) {
+        vimEngine.searchQuery = query
+        searchMatches = []
+        let lowerQuery = query.lowercased()
+        for (i, block) in blocks.enumerated() {
+            let text = block.text.lowercased()
+            var searchRange = text.startIndex..<text.endIndex
+            while let range = text.range(of: lowerQuery, range: searchRange) {
+                let nsRange = NSRange(range, in: text)
+                searchMatches.append((blockIndex: i, range: nsRange))
+                searchRange = range.upperBound..<text.endIndex
+            }
+        }
+        currentMatchIndex = 0
+        if !searchMatches.isEmpty {
+            jumpToMatch(at: 0)
+        }
+        dismissSearchBar()
+    }
+
+    private func jumpToNextMatch() {
+        guard !searchMatches.isEmpty else {
+            // If no matches but we have a query, re-search
+            if !vimEngine.searchQuery.isEmpty { performSearch(vimEngine.searchQuery) }
+            return
+        }
+        currentMatchIndex = (currentMatchIndex + 1) % searchMatches.count
+        jumpToMatch(at: currentMatchIndex)
+    }
+
+    private func jumpToPrevMatch() {
+        guard !searchMatches.isEmpty else { return }
+        currentMatchIndex = (currentMatchIndex - 1 + searchMatches.count) % searchMatches.count
+        jumpToMatch(at: currentMatchIndex)
+    }
+
+    private func jumpToMatch(at matchIndex: Int) {
+        guard matchIndex < searchMatches.count else { return }
+        let match = searchMatches[matchIndex]
+        guard match.blockIndex < blockViews.count else { return }
+        let view = blockViews[match.blockIndex]
+        focusedBlockIndex = match.blockIndex
+        window?.makeFirstResponder(view)
+        // Position cursor at the match
+        view.setSelectedRange(NSRange(location: match.range.location, length: 0))
+        view.scrollRangeToVisible(match.range)
     }
 
     // MARK: - Date picker popover

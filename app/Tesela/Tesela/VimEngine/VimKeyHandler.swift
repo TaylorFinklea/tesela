@@ -82,8 +82,23 @@ enum EditorCommand: Equatable, Sendable {
     case change(Motion)
     case yank(Motion)
 
+    // Visual mode operations (on NSTextView selection)
+    case visualDelete
+    case visualYank
+    case visualChange
+    case visualExtendLeft
+    case visualExtendRight
+    case visualExtendWordForward
+    case visualExtendWordBackward
+    case visualExtendLineStart
+    case visualExtendLineEnd
+    case visualExtendBlockDown
+    case visualExtendBlockUp
+
     // App
     case startSearch
+    case searchNext
+    case searchPrev
     case toggleTodo
     case prevSection   // { — jump to previous tile/section
     case nextSection   // } — jump to next tile/section
@@ -187,6 +202,8 @@ struct VimKeyHandler: Sendable {
         case "P": return .pasteAbove
         case ".": return .repeatLastChange
         case "/": return .startSearch
+        case "n": return .searchNext
+        case "N": return .searchPrev
         case "t": return .toggleTodo
 
         // Section navigation (tile jumping)
@@ -231,17 +248,36 @@ struct VimKeyHandler: Sendable {
 
     // MARK: - Visual mode
     private func handleVisual(event: KeyEvent, state: inout VimState) -> EditorCommand {
-        if event.characters == "\u{1B}" {
+        if event.characters == "\u{1B}" || event.characters == "v" {
             state.mode = .normal
             return .exitToNormal
         }
         switch event.characters {
-        case "d":
+        // Operators on selection
+        case "d", "x":
             state.mode = .normal
-            return .deleteBlock
+            return .visualDelete
         case "y":
             state.mode = .normal
-            return .yankBlock
+            return .visualYank
+        case "c", "s":
+            state.mode = .insert
+            return .visualChange
+
+        // Motion extends selection
+        case "h": return .visualExtendLeft
+        case "l": return .visualExtendRight
+        case "w", "e": return .visualExtendWordForward
+        case "b": return .visualExtendWordBackward
+        case "0": return .visualExtendLineStart
+        case "$": return .visualExtendLineEnd
+        case "j": return .visualExtendBlockDown
+        case "k": return .visualExtendBlockUp
+
+        // Block operations in visual line
+        case ">" where state.mode == .visualLine: return .indentBlock
+        case "<" where state.mode == .visualLine: return .dedentBlock
+
         default:
             return .none
         }
