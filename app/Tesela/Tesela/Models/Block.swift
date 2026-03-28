@@ -55,13 +55,25 @@ final class Block: Identifiable, @unchecked Sendable {
 
     // MARK: - Display text (clean text without tags or properties)
 
-    /// First line of text with #tags stripped — what the user sees in the editor.
+    /// First line of text with ALL #tags stripped — backward compat default.
     var displayText: String {
+        displayText(strippingOnly: nil)
+    }
+
+    /// First line of text with only the specified tags stripped.
+    /// Pass a set of lowercased tag names to strip (type tags). Casual tags stay inline.
+    /// Pass nil to strip ALL tags (legacy behavior).
+    func displayText(strippingOnly typeTagNames: Set<String>?) -> String {
         let firstLine = text.components(separatedBy: "\n").first ?? text
-        // Strip only complete tags (that have a trailing space/punctuation).
-        // Tags at end of line stay visible so user can see what they're typing.
+        let liveTags = BlockParser.extractTagsLive(from: firstLine)
+        let tagsToStrip: [String]
+        if let typeTagNames {
+            tagsToStrip = liveTags.filter { typeTagNames.contains($0.lowercased()) }
+        } else {
+            tagsToStrip = liveTags
+        }
         var result = firstLine
-        for tag in BlockParser.extractTagsLive(from: firstLine) {
+        for tag in tagsToStrip {
             result = result.replacingOccurrences(of: " #\(tag)", with: "")
             result = result.replacingOccurrences(of: "#\(tag) ", with: "")
             result = result.replacingOccurrences(of: "#\(tag)", with: "")
@@ -69,20 +81,28 @@ final class Block: Identifiable, @unchecked Sendable {
         return result.trimmingCharacters(in: .whitespaces)
     }
 
-    /// Update storage text from edited display text, preserving tags and property lines.
-    func updateDisplayText(_ newDisplay: String) {
+    /// Update storage text from edited display text, preserving hidden tags and property lines.
+    /// Only type tags (in typeTagNames) are re-appended since casual tags remain in display text.
+    func updateDisplayText(_ newDisplay: String, typeTagNames: Set<String>? = nil) {
         let lines = text.components(separatedBy: "\n")
         let firstLine = lines.first ?? ""
 
         // Extract COMPLETE tags from original text (not partial mid-typing ones)
         let originalTags = BlockParser.extractTagsLive(from: firstLine)
-            .map { "#\($0)" }
 
-        // Only re-append tags that aren't already in the new display text
+        // Only re-append type tags (the ones stripped from display), not casual tags
+        let tagsToRestore: [String]
+        if let typeTagNames {
+            tagsToRestore = originalTags.filter { typeTagNames.contains($0.lowercased()) }
+        } else {
+            tagsToRestore = originalTags
+        }
+        let hashTags = tagsToRestore.map { "#\($0)" }
+
         var result = newDisplay
-        let tagsToAppend = originalTags.filter { !newDisplay.contains($0) }
-        if !tagsToAppend.isEmpty {
-            result += " " + tagsToAppend.joined(separator: " ")
+        let toAppend = hashTags.filter { !newDisplay.contains($0) }
+        if !toAppend.isEmpty {
+            result += " " + toAppend.joined(separator: " ")
         }
 
         // Append property continuation lines

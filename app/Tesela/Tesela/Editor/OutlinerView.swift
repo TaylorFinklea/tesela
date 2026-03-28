@@ -29,6 +29,7 @@ class OutlinerView: NSView {
     var typeRegistry: [TypeDefinition] = []
     var propertyRegistry: [PropertyDef] = []
     private var expandedBlockIndex: Int?
+    private var typeTagNames: Set<String> = []
 
     private var blockViews: [BlockView] = []
     private var pendingFocusIndex: Int?
@@ -146,6 +147,9 @@ class OutlinerView: NSView {
         subviews.forEach { $0.removeFromSuperview() }
         blockViews.removeAll()
 
+        // Type tags become right-aligned pills; casual tags stay inline
+        typeTagNames = Set(typeRegistry.map { $0.name.lowercased() })
+
         var yOffset: CGFloat = 8
 
         for (index, block) in blocks.enumerated() {
@@ -153,8 +157,10 @@ class OutlinerView: NSView {
             let bulletX  = indentX + 8
             let textX    = indentX + 28
 
-            // Reserve space for right-side badges (tags + task properties)
-            let badgeCount = block.tags.count
+            let typeTags = block.tags.filter { typeTagNames.contains($0.lowercased()) }
+
+            // Reserve space for right-side badges (type tags only + task properties)
+            let badgeCount = typeTags.count
                 + (block.deadline != nil ? 1 : 0)
                 + (block.scheduled != nil ? 1 : 0)
                 + (block.effort != nil ? 1 : 0)
@@ -216,12 +222,12 @@ class OutlinerView: NSView {
                 statusLabel.isEditable = false
                 statusLabel.isBordered = false
                 statusLabel.drawsBackground = false
-                statusLabel.frame = NSRect(x: textX, y: yOffset, width: 18, height: 22)
+                statusLabel.frame = NSRect(x: bulletX + 14, y: yOffset, width: 16, height: 22)
                 addSubview(statusLabel)
-                actualTextX = textX + 18
+                actualTextX = bulletX + 32
             }
 
-            let view = BlockView(block: block)
+            let view = BlockView(block: block, typeTagNames: typeTagNames)
             view.frame = NSRect(x: actualTextX, y: yOffset, width: textWidth, height: 22)
             wireCallbacks(for: view, at: index)
             addSubview(view)
@@ -266,7 +272,7 @@ class OutlinerView: NSView {
                 badgeX += pill.frame.width + 4
             }
 
-            for tag in block.tags {
+            for tag in typeTags {
                 let pill = makeTagPill("#\(tag)")
                 let pillWidth = pill.frame.width
                 pill.frame = NSRect(x: badgeX, y: yOffset + (height - 18) / 2, width: pillWidth, height: 18)
@@ -628,7 +634,7 @@ class OutlinerView: NSView {
         view.onTextChanged = { [weak self] newText in
             guard let self, index < blocks.count else { return }
             let oldTags = Set(blocks[index].tags)
-            blocks[index].updateDisplayText(newText)
+            blocks[index].updateDisplayText(newText, typeTagNames: typeTagNames)
             // Re-extract tags (live mode: skip end-of-string tags to avoid mid-typing)
             blocks[index].tags = BlockParser.extractTagsLive(from: blocks[index].text)
             let newProps = BlockParser.extractProperties(from: blocks[index].text)
@@ -641,7 +647,7 @@ class OutlinerView: NSView {
             if abs(view.frame.size.height - newH) > 2 || tagsChanged {
                 pendingFocusIndex = index
                 // Preserve cursor position across rebuild (display text may be shorter after tag stripping)
-                let cursorPos = min(view.selectedRange().location, blocks[index].displayText.count)
+                let cursorPos = min(view.selectedRange().location, blocks[index].displayText(strippingOnly: typeTagNames.isEmpty ? nil : typeTagNames).count)
                 pendingCursorPosition = cursorPos
                 rebuildBlockViews()
             }
@@ -1124,17 +1130,12 @@ class OutlinerView: NSView {
                 textField.window?.makeFirstResponder(textField)
             }
         }
-        let applyRef = Box<(() -> Void)?>(nil)
         let tabMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             if event.keyCode == 48 { // Tab
                 tabAction.handler()
                 return nil
             }
-            // Enter key → apply date (works in both calendar and text mode)
-            if event.keyCode == 36 {
-                applyRef.value?()
-                return nil
-            }
+            // Enter handled by setButton.keyEquivalent (calendar) and textField.action (text mode)
             return event
         }
 
@@ -1164,8 +1165,6 @@ class OutlinerView: NSView {
             popover?.close()
             self.activePopover = nil
         }
-
-        applyRef.value = applyAndClose
 
         let clickAction = DatePickerAction(handler: applyAndClose)
         setButton.target = clickAction

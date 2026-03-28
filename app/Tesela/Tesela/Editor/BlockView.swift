@@ -33,10 +33,15 @@ class BlockView: NSTextView {
     var onWikiLinkClicked: ((String) -> Void)?
     var onFocused: (() -> Void)?
 
-    init(block: Block) {
-        self.block = block
+    /// Type tag names (lowercased) — only these tags are stripped from display text.
+    /// Casual tags stay inline and are styled by BlockStyler.
+    var typeTagNames: Set<String> = []
 
-        let storage = NSTextStorage(string: block.displayText)
+    init(block: Block, typeTagNames: Set<String> = []) {
+        self.block = block
+        self.typeTagNames = typeTagNames
+
+        let storage = NSTextStorage(string: block.displayText(strippingOnly: typeTagNames.isEmpty ? nil : typeTagNames))
         let layoutMgr = NSLayoutManager()
         storage.addLayoutManager(layoutMgr)
         let container = NSTextContainer(size: NSSize(width: 300, height: 1_000_000))
@@ -69,7 +74,7 @@ class BlockView: NSTextView {
 
         textStorage?.delegate = self
         if let ts = textStorage {
-            let display = block.displayText
+            let display = block.displayText(strippingOnly: typeTagNames.isEmpty ? nil : typeTagNames)
             BlockStyler.style(text: display, textStorage: ts)
             applyLinkAttributes(to: ts, text: display)
         }
