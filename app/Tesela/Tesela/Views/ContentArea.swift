@@ -198,6 +198,9 @@ struct PageEditorView: View {
                     searchCurrent = current
                     searchTotal = total
                 },
+                onFocusedBlock: { text, tags, props in
+                    appState.focusedBlockInfo = AppState.FocusedBlockInfo(text: text, tags: tags, properties: props)
+                },
                 apiClient: appState.api,
                 typeRegistry: appState.typeRegistry,
                 propertyRegistry: appState.propertyRegistry,

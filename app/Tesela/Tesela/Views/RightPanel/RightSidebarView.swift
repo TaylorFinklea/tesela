@@ -84,6 +84,50 @@ private struct RightSidebarContent: View {
                 .font(.caption)
             }
 
+            // Focused block properties
+            if let blockInfo = appState.focusedBlockInfo, !blockInfo.properties.isEmpty {
+                Section("Block Properties") {
+                    ForEach(blockInfo.properties.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
+                        LabeledContent {
+                            let stripped = BlockParser.stripWikiLink(value)
+                            let isLink = value.hasPrefix("[[") && value.hasSuffix("]]")
+                            if isLink {
+                                Button(stripped) {
+                                    if let linked = appState.pages.first(where: {
+                                        $0.title.lowercased() == stripped.lowercased()
+                                    }) {
+                                        appState.open(linked)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .font(.caption)
+                                .foregroundStyle(Color.accentColor)
+                            } else {
+                                Text(value)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        } label: {
+                            Text(key.capitalized)
+                                .font(.caption)
+                        }
+                    }
+
+                    if !blockInfo.tags.isEmpty {
+                        LabeledContent("Tags") {
+                            HStack(spacing: 4) {
+                                ForEach(blockInfo.tags, id: \.self) { tag in
+                                    Text("#\(tag)")
+                                        .font(.caption2)
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                        }
+                        .font(.caption)
+                    }
+                }
+            }
+
             // Backlinks — grouped by source page
             Section("Linked References (\(backlinks.count))") {
                 if backlinks.isEmpty {

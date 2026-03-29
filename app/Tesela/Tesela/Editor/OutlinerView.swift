@@ -14,6 +14,7 @@ protocol OutlinerDelegate: AnyObject {
     func outlinerDidRequestNextTile()
     func outlinerDidRequestBlockZoom(blockIndex: Int)
     func outlinerDidUpdateSearchStatus(current: Int, total: Int)
+    func outlinerDidFocusBlock(text: String, tags: [String], properties: [String: String])
 }
 
 // MARK: - OutlinerView
@@ -189,6 +190,32 @@ class OutlinerView: NSView {
             let bulletClick = NSClickGestureRecognizer(target: bulletClickAction, action: #selector(DatePickerAction.execute))
             bullet.addGestureRecognizer(bulletClick)
             objc_setAssociatedObject(bullet, "bulletClick", bulletClickAction, .OBJC_ASSOCIATION_RETAIN)
+
+            // Right-click context menu
+            let contextMenu = NSMenu()
+            let drillInAction = DatePickerAction { [weak self] in
+                self?.delegate?.outlinerDidRequestBlockZoom(blockIndex: blockIndex)
+            }
+            let drillInItem = NSMenuItem(title: "Drill In", action: #selector(DatePickerAction.execute), keyEquivalent: "")
+            drillInItem.target = drillInAction
+            contextMenu.addItem(drillInItem)
+
+            let propsAction = DatePickerAction { [weak self] in
+                guard let self else { return }
+                if expandedBlockIndex == blockIndex {
+                    expandedBlockIndex = nil
+                } else {
+                    expandedBlockIndex = blockIndex
+                }
+                rebuildBlockViews()
+            }
+            let propsItem = NSMenuItem(title: "Show Properties", action: #selector(DatePickerAction.execute), keyEquivalent: "")
+            propsItem.target = propsAction
+            contextMenu.addItem(propsItem)
+
+            bullet.menu = contextMenu
+            objc_setAssociatedObject(bullet, "contextActions", [drillInAction, propsAction], .OBJC_ASSOCIATION_RETAIN)
+
             addSubview(bullet)
 
             // Task status icon to the right of bullet (if task)
@@ -651,7 +678,12 @@ class OutlinerView: NSView {
     private func wireCallbacks(for view: BlockView, at index: Int) {
         // Track focus on click/tab into a block
         view.onFocused = { [weak self] in
-            self?.focusedBlockIndex = index
+            guard let self else { return }
+            focusedBlockIndex = index
+            if index < blocks.count {
+                let b = blocks[index]
+                delegate?.outlinerDidFocusBlock(text: b.displayText, tags: b.tags, properties: b.properties)
+            }
         }
         // Inline autocomplete — forward nav keys to CompletionView
         view.isCompletionVisible = { [weak self] in
@@ -1694,6 +1726,7 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var onNextTile: (() -> Void)?
     var onBlockZoom: ((Int) -> Void)?
     var onSearchStatus: ((Int, Int) -> Void)?  // (current, total)
+    var onFocusedBlock: ((String, [String], [String: String]) -> Void)?  // (text, tags, props)
     var tileID: String?
     var apiClient: APIClient?
     var typeRegistry: [TypeDefinition] = []
@@ -1779,6 +1812,10 @@ struct OutlinerCoordinator: NSViewRepresentable {
 
         func outlinerDidUpdateSearchStatus(current: Int, total: Int) {
             parent.onSearchStatus?(current, total)
+        }
+
+        func outlinerDidFocusBlock(text: String, tags: [String], properties: [String: String]) {
+            parent.onFocusedBlock?(text, tags, properties)
         }
     }
 }

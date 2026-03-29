@@ -32,6 +32,14 @@ final class AppState {
         return navigationStack[navigationIndex].blockIndex
     }
 
+    // MARK: - Focused Block (for right sidebar properties panel)
+    struct FocusedBlockInfo {
+        let text: String
+        let tags: [String]
+        let properties: [String: String]
+    }
+    var focusedBlockInfo: FocusedBlockInfo?
+
     // MARK: - Recent & Favorites
     var recentPageIds: [String] = []
     var favoritePageIds: [String] = []
