@@ -42,6 +42,9 @@ class BlockView: NSTextView {
     /// Casual tags stay inline and are styled by BlockStyler.
     var typeTagNames: Set<String> = []
 
+    /// Active search query for highlighting matches
+    var searchQuery: String?
+
     init(block: Block, typeTagNames: Set<String> = []) {
         self.block = block
         self.typeTagNames = typeTagNames
@@ -80,7 +83,7 @@ class BlockView: NSTextView {
         textStorage?.delegate = self
         if let ts = textStorage {
             let display = block.displayText(strippingOnly: typeTagNames.isEmpty ? nil : typeTagNames)
-            BlockStyler.style(text: display, textStorage: ts)
+            BlockStyler.style(text: display, textStorage: ts, searchQuery: searchQuery)
             applyLinkAttributes(to: ts, text: display)
         }
     }
@@ -315,7 +318,7 @@ extension BlockView: NSTextStorageDelegate {
         let text = textStorage.string
         MainActor.assumeIsolated {
             if let ts = self.textStorage {
-                BlockStyler.style(text: text, textStorage: ts)
+                BlockStyler.style(text: text, textStorage: ts, searchQuery: searchQuery)
                 applyLinkAttributes(to: ts, text: text)
             }
             onTextChanged?(text)

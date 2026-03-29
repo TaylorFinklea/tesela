@@ -9,7 +9,7 @@ enum BlockStyler {
     private static let wikiLinkRegex = try! NSRegularExpression(pattern: #"\[\[([^\]]+)\]\]"#)
     private static let hashTagRegex = try! NSRegularExpression(pattern: #"#([A-Za-z0-9_\-]+)"#)
 
-    static func style(text: String, textStorage: NSTextStorage) {
+    static func style(text: String, textStorage: NSTextStorage, searchQuery: String? = nil) {
         // Use textStorage's own length to avoid out-of-bounds when text drifts
         let storageLength = textStorage.length
         guard storageLength > 0 else { return }
@@ -34,6 +34,20 @@ enum BlockStyler {
         hashTagRegex.enumerateMatches(in: currentText, range: fullRange) { match, _, _ in
             guard let range = match?.range else { return }
             textStorage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: range)
+        }
+
+        // Search matches → yellow highlight
+        if let query = searchQuery, !query.isEmpty {
+            let lowerText = currentText.lowercased()
+            let lowerQuery = query.lowercased()
+            var searchStart = lowerText.startIndex
+            while let range = lowerText.range(of: lowerQuery, range: searchStart..<lowerText.endIndex) {
+                let nsRange = NSRange(range, in: lowerText)
+                if nsRange.location + nsRange.length <= storageLength {
+                    textStorage.addAttribute(.backgroundColor, value: NSColor.systemYellow.withAlphaComponent(0.4), range: nsRange)
+                }
+                searchStart = range.upperBound
+            }
         }
 
         textStorage.endEditing()

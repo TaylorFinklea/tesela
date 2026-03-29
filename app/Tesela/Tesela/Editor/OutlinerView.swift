@@ -230,6 +230,7 @@ class OutlinerView: NSView {
             }
 
             let view = BlockView(block: block, typeTagNames: typeTagNames)
+            view.searchQuery = vimEngine.searchQuery.isEmpty ? nil : vimEngine.searchQuery
             view.frame = NSRect(x: actualTextX, y: yOffset, width: textWidth, height: 22)
             wireCallbacks(for: view, at: index)
             addSubview(view)
@@ -1314,6 +1315,10 @@ class OutlinerView: NSView {
         if clearMatches {
             searchMatches = []
             currentMatchIndex = 0
+            vimEngine.searchQuery = ""
+            // Rebuild to remove yellow highlights
+            if let idx = focusedBlockIndex { pendingFocusIndex = idx }
+            rebuildBlockViews()
         }
         // Restore focus to the last focused block
         if let idx = focusedBlockIndex, idx < blockViews.count {
@@ -1338,8 +1343,11 @@ class OutlinerView: NSView {
             }
         }
 
-        // Dismiss first, then jump (so focus goes to the block, not the search bar)
+        // Dismiss first, then rebuild to show highlights, then jump
         dismissSearchBar()
+        // Rebuild to apply search highlighting to all blocks
+        if let idx = focusedBlockIndex { pendingFocusIndex = idx }
+        rebuildBlockViews()
         currentMatchIndex = 0
         if !searchMatches.isEmpty {
             jumpToMatch(at: 0)
