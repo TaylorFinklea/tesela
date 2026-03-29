@@ -1298,7 +1298,7 @@ class OutlinerView: NSView {
         // Escape to dismiss
         let escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53 { // Escape
-                self?.dismissSearchBar()
+                self?.dismissSearchBar(clearMatches: true)
                 return nil
             }
             return event
@@ -1306,14 +1306,16 @@ class OutlinerView: NSView {
         objc_setAssociatedObject(bar, "escMonitor", escMonitor as AnyObject, .OBJC_ASSOCIATION_RETAIN)
     }
 
-    private func dismissSearchBar() {
+    private func dismissSearchBar(clearMatches: Bool = false) {
         if let monitor = objc_getAssociatedObject(searchBar as Any, "escMonitor") {
             NSEvent.removeMonitor(monitor)
         }
         searchBar?.removeFromSuperview()
         searchBar = nil
-        searchMatches = []
-        currentMatchIndex = 0
+        if clearMatches {
+            searchMatches = []
+            currentMatchIndex = 0
+        }
         // Restore focus to the last focused block
         if let idx = focusedBlockIndex, idx < blockViews.count {
             window?.makeFirstResponder(blockViews[idx])

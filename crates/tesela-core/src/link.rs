@@ -41,15 +41,16 @@ pub fn extract_wiki_links(content: &str) -> Vec<Link> {
         .map(|cap| {
             let whole_match = cap.get(0).unwrap();
             let target = cap[1].trim().to_string();
-            let text = cap
-                .get(2)
-                .map(|m| m.as_str().trim().to_string())
-                .unwrap_or_else(|| target.clone());
+            let pos = whole_match.start();
+            // Extract the full line containing the link for context
+            let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line_end = content[pos..].find('\n').map(|i| pos + i).unwrap_or(content.len());
+            let full_line = content[line_start..line_end].trim().to_string();
             Link {
                 link_type: LinkType::Internal,
                 target,
-                text,
-                position: whole_match.start(),
+                text: full_line,
+                position: pos,
             }
         })
         .collect()
@@ -64,7 +65,7 @@ mod tests {
         let links = extract_wiki_links("See [[my-note]] for details.");
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].target, "my-note");
-        assert_eq!(links[0].text, "my-note");
+        assert_eq!(links[0].text, "See [[my-note]] for details.");
         assert_eq!(links[0].link_type, LinkType::Internal);
         assert_eq!(links[0].position, 4);
     }
@@ -74,7 +75,7 @@ mod tests {
         let links = extract_wiki_links("Check [[target-note|display text]] here.");
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].target, "target-note");
-        assert_eq!(links[0].text, "display text");
+        assert_eq!(links[0].text, "Check [[target-note|display text]] here.");
     }
 
     #[test]
@@ -83,9 +84,9 @@ mod tests {
         let links = extract_wiki_links(content);
         assert_eq!(links.len(), 2);
         assert_eq!(links[0].target, "note-a");
-        assert_eq!(links[0].text, "note-a");
+        assert_eq!(links[0].text, "Link to [[note-a]] and [[note-b|Note B]] end.");
         assert_eq!(links[1].target, "note-b");
-        assert_eq!(links[1].text, "Note B");
+        assert_eq!(links[1].text, "Link to [[note-a]] and [[note-b|Note B]] end.");
     }
 
     #[test]
