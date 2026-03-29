@@ -1269,7 +1269,7 @@ class OutlinerView: NSView {
         // Add to the scroll view so it stays fixed at the bottom of the visible area
         guard let scrollView = enclosingScrollView ?? superview else { return }
         let bar = NSTextField()
-        bar.placeholderString = "/"
+        bar.placeholderString = "Search…"
         bar.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         bar.isBordered = true
         bar.drawsBackground = true
@@ -1282,32 +1282,31 @@ class OutlinerView: NSView {
         searchBar = bar
         window?.makeFirstResponder(bar)
 
-        let action = DatePickerAction { [weak self] in
-            guard let self else { return }
-            let query = bar.stringValue
-            if query.isEmpty {
-                dismissSearchBar()
-            } else {
-                performSearch(query)
+        // Handle Enter and Escape via event monitor (NSTextField action unreliable in scroll views)
+        let monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak bar] event in
+            guard let self, let bar else { return event }
+            // Only intercept when search bar is focused
+            guard bar.window?.firstResponder == bar.currentEditor() else { return event }
+            if event.keyCode == 36 { // Enter
+                let query = bar.stringValue
+                if !query.isEmpty {
+                    self.performSearch(query)
+                } else {
+                    self.dismissSearchBar(clearMatches: true)
+                }
+                return nil
             }
-        }
-        bar.target = action
-        bar.action = #selector(DatePickerAction.execute)
-        objc_setAssociatedObject(bar, "searchAction", action, .OBJC_ASSOCIATION_RETAIN)
-
-        // Escape to dismiss
-        let escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             if event.keyCode == 53 { // Escape
-                self?.dismissSearchBar(clearMatches: true)
+                self.dismissSearchBar(clearMatches: true)
                 return nil
             }
             return event
         }
-        objc_setAssociatedObject(bar, "escMonitor", escMonitor as AnyObject, .OBJC_ASSOCIATION_RETAIN)
+        objc_setAssociatedObject(bar, "searchMonitor", monitor as AnyObject, .OBJC_ASSOCIATION_RETAIN)
     }
 
     private func dismissSearchBar(clearMatches: Bool = false) {
-        if let monitor = objc_getAssociatedObject(searchBar as Any, "escMonitor") {
+        if let monitor = objc_getAssociatedObject(searchBar as Any, "searchMonitor") {
             NSEvent.removeMonitor(monitor)
         }
         searchBar?.removeFromSuperview()
@@ -1326,8 +1325,11 @@ class OutlinerView: NSView {
         vimEngine.searchQuery = query
         searchMatches = []
         let lowerQuery = query.lowercased()
+
+        // Search display text (what the user sees in the editor)
         for (i, block) in blocks.enumerated() {
-            let text = block.text.lowercased()
+            let display = block.displayText(strippingOnly: typeTagNames.isEmpty ? nil : typeTagNames)
+            let text = display.lowercased()
             var searchRange = text.startIndex..<text.endIndex
             while let range = text.range(of: lowerQuery, range: searchRange) {
                 let nsRange = NSRange(range, in: text)
@@ -1335,11 +1337,13 @@ class OutlinerView: NSView {
                 searchRange = range.upperBound..<text.endIndex
             }
         }
+
+        // Dismiss first, then jump (so focus goes to the block, not the search bar)
+        dismissSearchBar()
         currentMatchIndex = 0
         if !searchMatches.isEmpty {
             jumpToMatch(at: 0)
         }
-        dismissSearchBar()
     }
 
     private func jumpToNextMatch() {
