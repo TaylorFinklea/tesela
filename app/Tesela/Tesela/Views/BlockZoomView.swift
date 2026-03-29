@@ -91,8 +91,9 @@ struct BlockZoomView: View {
                     appState.isSlashMenuVisible = false
                     appState.isSpaceMenuVisible = false
                 },
-                onBlockZoom: { childIndex in
-                    appState.openBlockZoom(blockIndex: childIndex)
+                onBlockZoom: { localIndex in
+                    // Convert local index within zoomed view to full-page flat index
+                    appState.openBlockZoom(blockIndex: blockIndex + localIndex)
                 },
                 apiClient: appState.api,
                 typeRegistry: appState.typeRegistry,
