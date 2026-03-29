@@ -96,6 +96,8 @@ struct PageEditorView: View {
     @State private var saveTask: Task<Void, Never>?
     @State private var showDeleteConfirm = false
     @State private var vimMode: VimMode = .insert
+    @State private var searchCurrent = 0
+    @State private var searchTotal = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -192,6 +194,10 @@ struct PageEditorView: View {
                 onBlockZoom: { blockIndex in
                     appState.openBlockZoom(blockIndex: blockIndex)
                 },
+                onSearchStatus: { current, total in
+                    searchCurrent = current
+                    searchTotal = total
+                },
                 apiClient: appState.api,
                 typeRegistry: appState.typeRegistry,
                 propertyRegistry: appState.propertyRegistry,
@@ -216,13 +222,23 @@ struct PageEditorView: View {
             .animation(.spring(duration: 0.15), value: appState.isSlashMenuVisible)
             .animation(.spring(duration: 0.15), value: appState.isSpaceMenuVisible)
             .overlay(alignment: .bottomTrailing) {
-                Text(vimMode.displayName)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(vimModeColor)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(vimModeColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
-                    .padding(12)
+                HStack(spacing: 8) {
+                    if searchTotal > 0 {
+                        Text("\(searchCurrent)/\(searchTotal)")
+                            .font(.system(.caption, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.yellow.opacity(0.15), in: RoundedRectangle(cornerRadius: 4))
+                    }
+                    Text(vimMode.displayName)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(vimModeColor)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(vimModeColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 4))
+                }
+                .padding(12)
             }
         }
         .onAppear { loadBlocks() }

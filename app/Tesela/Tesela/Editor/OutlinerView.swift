@@ -13,6 +13,7 @@ protocol OutlinerDelegate: AnyObject {
     func outlinerDidRequestPrevTile()
     func outlinerDidRequestNextTile()
     func outlinerDidRequestBlockZoom(blockIndex: Int)
+    func outlinerDidUpdateSearchStatus(current: Int, total: Int)
 }
 
 // MARK: - OutlinerView
@@ -1318,7 +1319,7 @@ class OutlinerView: NSView {
             searchMatches = []
             currentMatchIndex = 0
             vimEngine.searchQuery = ""
-            // Rebuild to remove yellow highlights
+            delegate?.outlinerDidUpdateSearchStatus(current: 0, total: 0)
             if let idx = focusedBlockIndex { pendingFocusIndex = idx }
             rebuildBlockViews()
         }
@@ -1382,6 +1383,7 @@ class OutlinerView: NSView {
         // Position cursor at the match
         view.setSelectedRange(NSRange(location: match.range.location, length: 0))
         view.scrollRangeToVisible(match.range)
+        delegate?.outlinerDidUpdateSearchStatus(current: matchIndex + 1, total: searchMatches.count)
     }
 
     // MARK: - Date picker popover
@@ -1663,6 +1665,7 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var onPrevTile: (() -> Void)?
     var onNextTile: (() -> Void)?
     var onBlockZoom: ((Int) -> Void)?
+    var onSearchStatus: ((Int, Int) -> Void)?  // (current, total)
     var tileID: String?
     var apiClient: APIClient?
     var typeRegistry: [TypeDefinition] = []
@@ -1744,6 +1747,10 @@ struct OutlinerCoordinator: NSViewRepresentable {
 
         func outlinerDidRequestBlockZoom(blockIndex: Int) {
             parent.onBlockZoom?(blockIndex)
+        }
+
+        func outlinerDidUpdateSearchStatus(current: Int, total: Int) {
+            parent.onSearchStatus?(current, total)
         }
     }
 }
