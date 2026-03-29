@@ -291,6 +291,9 @@ struct TagPageView: View {
                                 if let note = appState.pages.first(where: { $0.id == noteId }) {
                                     appState.open(note)
                                 }
+                            },
+                            onMoveBlock: { block, newValue in
+                                Task { await moveBlockProperty(block: block, newValue: newValue) }
                             }
                         )
                     }
@@ -314,6 +317,51 @@ struct TagPageView: View {
             sortBy: sortProperty,
             sortDir: sortProperty != nil ? (sortAscending ? "asc" : "desc") : nil
         )) ?? []
+    }
+
+    /// Update a block's property value when dragged between kanban columns.
+    /// Reads the source note, finds the block by line, updates the property, saves.
+    private func moveBlockProperty(block: TypedBlock, newValue: String) async {
+        guard let propName = kanbanProperty ?? resolvedType?.properties.first(where: { $0.valueType == "select" })?.name else { return }
+        do {
+            let note = try await appState.api.getNote(id: block.noteId)
+            var lines = note.body.components(separatedBy: "\n")
+            // block.id is "noteId:lineNumber"
+            let parts = block.id.split(separator: ":")
+            guard let lineNum = parts.last.flatMap({ Int($0) }), lineNum < lines.count else { return }
+
+            let blockLine = lines[lineNum]
+            let propKey = propName.lowercased()
+            let propPattern = "\(propKey):: "
+
+            // Check if the block already has this property as a continuation line
+            var propLineIndex: Int? = nil
+            for i in (lineNum + 1)..<lines.count {
+                let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix(propPattern) {
+                    propLineIndex = i
+                    break
+                }
+                // Stop if we hit a non-continuation line (not indented enough or a new block)
+                if !trimmed.contains(":: ") { break }
+            }
+
+            if let idx = propLineIndex {
+                // Update existing property line
+                let indent = String(lines[idx].prefix(while: { $0 == " " }))
+                lines[idx] = "\(indent)\(propKey):: \(newValue)"
+            } else {
+                // Add property as a continuation line after the block
+                let indent = String(repeating: " ", count: (block.indentLevel + 1) * 2)
+                lines.insert("\(indent)\(propKey):: \(newValue)", at: lineNum + 1)
+            }
+
+            let newBody = lines.joined(separator: "\n")
+            await appState.updatePage(id: block.noteId, newBody: newBody)
+            await loadData()
+        } catch {
+            print("[TagPageView] moveBlockProperty failed: \(error)")
+        }
     }
 
     private func addProperty(_ name: String) async {
@@ -379,6 +427,7 @@ private struct KanbanBoard: View {
     let kanbanProperty: String?
     let onSelectProperty: (String) -> Void
     let onNavigate: (String) -> Void
+    let onMoveBlock: (TypedBlock, String) -> Void  // (block, newValue)
 
     /// First select-type property, or user-chosen
     private var groupByProperty: PropertyDef? {
@@ -445,7 +494,9 @@ private struct KanbanBoard: View {
                             KanbanColumn(
                                 title: value,
                                 blocks: blocksForColumn(value),
-                                onNavigate: onNavigate
+                                allBlocks: blocks,
+                                onNavigate: onNavigate,
+                                onDrop: { block in onMoveBlock(block, value) }
                             )
                         }
                         // Uncategorized column
@@ -454,7 +505,9 @@ private struct KanbanBoard: View {
                             KanbanColumn(
                                 title: "Unset",
                                 blocks: uncat,
-                                onNavigate: onNavigate
+                                allBlocks: blocks,
+                                onNavigate: onNavigate,
+                                onDrop: { _ in }
                             )
                         }
                     }
@@ -470,7 +523,10 @@ private struct KanbanBoard: View {
 private struct KanbanColumn: View {
     let title: String
     let blocks: [TypedBlock]
+    let allBlocks: [TypedBlock]  // full list for drop lookup
     let onNavigate: (String) -> Void
+    let onDrop: (TypedBlock) -> Void
+    @State private var isTargeted = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -490,30 +546,8 @@ private struct KanbanColumn: View {
             ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(blocks) { block in
-                        Button {
-                            onNavigate(block.noteId)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(block.text.isEmpty ? "(empty)" : block.text)
-                                    .font(.caption)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(3)
-                                    .multilineTextAlignment(.leading)
-                                if !block.tags.isEmpty {
-                                    HStack(spacing: 4) {
-                                        ForEach(block.tags, id: \.self) { tag in
-                                            Text("#\(tag)")
-                                                .font(.caption2)
-                                                .foregroundStyle(Color.accentColor)
-                                        }
-                                    }
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(8)
-                            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                        }
-                        .buttonStyle(.plain)
+                        KanbanCard(block: block, onNavigate: onNavigate)
+                            .draggable(block.id)
                     }
                 }
                 .padding(.horizontal, 4)
@@ -521,7 +555,48 @@ private struct KanbanColumn: View {
             }
         }
         .frame(width: 200)
-        .background(Color.secondary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
+        .background(isTargeted ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
+        .dropDestination(for: String.self) { items, _ in
+            guard let droppedId = items.first,
+                  let block = allBlocks.first(where: { $0.id == droppedId }) else { return false }
+            onDrop(block)
+            return true
+        } isTargeted: { targeted in
+            isTargeted = targeted
+        }
+    }
+}
+
+// MARK: - KanbanCard
+private struct KanbanCard: View {
+    let block: TypedBlock
+    let onNavigate: (String) -> Void
+
+    var body: some View {
+        Button {
+            onNavigate(block.noteId)
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(block.text.isEmpty ? "(empty)" : block.text)
+                    .font(.caption)
+                    .foregroundStyle(.primary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                if !block.tags.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(block.tags, id: \.self) { tag in
+                            Text("#\(tag)")
+                                .font(.caption2)
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
     }
 }
 
