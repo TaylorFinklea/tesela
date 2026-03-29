@@ -18,7 +18,9 @@ struct ContentArea: View {
     var body: some View {
         Group {
             if let page = appState.currentPage {
-                if page.metadata.noteType == "Tag" {
+                if let blockId = appState.zoomedBlockId {
+                    BlockZoomView(page: page, blockId: blockId)
+                } else if page.metadata.noteType == "Tag" {
                     TagPageView(page: page)
                 } else if page.metadata.noteType == "Property" {
                     PropertyPageView(page: page)
@@ -37,6 +39,21 @@ struct ContentArea: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .keyboardShortcut("[", modifiers: .command)
+        .onKeyPress(keys: [KeyEquivalent("[")], phases: .down) { press in
+            if press.modifiers.contains(.command) {
+                appState.goBack()
+                return .handled
+            }
+            return .ignored
+        }
+        .onKeyPress(keys: [KeyEquivalent("]")], phases: .down) { press in
+            if press.modifiers.contains(.command) {
+                appState.goForward()
+                return .handled
+            }
+            return .ignored
+        }
     }
 }
 
@@ -84,6 +101,24 @@ struct PageEditorView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Title + toolbar
             HStack {
+                // Back / Forward
+                HStack(spacing: 2) {
+                    Button { appState.goBack() } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .disabled(!appState.canGoBack)
+                    .buttonStyle(.borderless)
+                    .help("Back (⌘[)")
+
+                    Button { appState.goForward() } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(!appState.canGoForward)
+                    .buttonStyle(.borderless)
+                    .help("Forward (⌘])")
+                }
+                .foregroundStyle(.secondary)
+
                 Text(page.title)
                     .font(.title2)
                     .bold()
@@ -153,6 +188,9 @@ struct PageEditorView: View {
                 onDismissMenu: {
                     appState.isSlashMenuVisible = false
                     appState.isSpaceMenuVisible = false
+                },
+                onBlockZoom: { blockId in
+                    appState.openBlockZoom(blockId: blockId)
                 },
                 apiClient: appState.api,
                 typeRegistry: appState.typeRegistry,

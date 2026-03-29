@@ -17,6 +17,21 @@ final class AppState {
     var typeRegistry: [TypeDefinition] = []
     var propertyRegistry: [PropertyDef] = []
 
+    // MARK: - Navigation Stack (back/forward)
+    struct NavEntry: Equatable {
+        let pageId: String
+        let blockId: UUID?
+    }
+    private(set) var navigationStack: [NavEntry] = []
+    private(set) var navigationIndex: Int = -1
+
+    var canGoBack: Bool { navigationIndex > 0 }
+    var canGoForward: Bool { navigationIndex < navigationStack.count - 1 }
+    var zoomedBlockId: UUID? {
+        guard navigationIndex >= 0, navigationIndex < navigationStack.count else { return nil }
+        return navigationStack[navigationIndex].blockId
+    }
+
     // MARK: - Recent & Favorites
     var recentPageIds: [String] = []
     var favoritePageIds: [String] = []
@@ -113,8 +128,42 @@ final class AppState {
 
     // MARK: - Navigation helpers
     func open(_ page: Page) {
+        // Truncate forward history and push
+        navigationStack = Array(navigationStack.prefix(navigationIndex + 1))
+        navigationStack.append(NavEntry(pageId: page.id, blockId: nil))
+        navigationIndex = navigationStack.count - 1
         currentPage = page
         addToRecents(page.id)
+    }
+
+    func openBlockZoom(blockId: UUID) {
+        guard let page = currentPage else { return }
+        navigationStack = Array(navigationStack.prefix(navigationIndex + 1))
+        navigationStack.append(NavEntry(pageId: page.id, blockId: blockId))
+        navigationIndex = navigationStack.count - 1
+    }
+
+    func exitBlockZoom() {
+        guard zoomedBlockId != nil else { return }
+        goBack()
+    }
+
+    func goBack() {
+        guard canGoBack else { return }
+        navigationIndex -= 1
+        let entry = navigationStack[navigationIndex]
+        if currentPage?.id != entry.pageId {
+            currentPage = pages.first { $0.id == entry.pageId }
+        }
+    }
+
+    func goForward() {
+        guard canGoForward else { return }
+        navigationIndex += 1
+        let entry = navigationStack[navigationIndex]
+        if currentPage?.id != entry.pageId {
+            currentPage = pages.first { $0.id == entry.pageId }
+        }
     }
 
     func addToRecents(_ id: String) {

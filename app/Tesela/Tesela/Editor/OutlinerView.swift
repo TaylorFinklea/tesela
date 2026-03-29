@@ -12,6 +12,7 @@ protocol OutlinerDelegate: AnyObject {
     func outlinerDidRequestSpaceMenu()
     func outlinerDidRequestPrevTile()
     func outlinerDidRequestNextTile()
+    func outlinerDidRequestBlockZoom(blockId: UUID)
 }
 
 // MARK: - OutlinerView
@@ -170,7 +171,7 @@ class OutlinerView: NSView {
             let priorityWidth: CGFloat = block.priority != nil ? 22 : 0
             let textWidth = max(bounds.width - textX - 12 - badgeWidth - priorityWidth, 80)
 
-            // Bullet always shows — click to expand/collapse properties
+            // Bullet — click to drill into block (Logseq-style block zoom)
             let bulletSymbol = block.indentLevel == 0 ? "•" : "◦"
             let bullet = NSTextField(labelWithString: bulletSymbol)
             bullet.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -179,14 +180,10 @@ class OutlinerView: NSView {
             bullet.isBordered = false
             bullet.drawsBackground = false
             bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
+            let blockId = block.id
             let bulletClickAction = DatePickerAction { [weak self] in
                 guard let self else { return }
-                if expandedBlockIndex == index {
-                    expandedBlockIndex = nil
-                } else {
-                    expandedBlockIndex = index
-                }
-                rebuildBlockViews()
+                delegate?.outlinerDidRequestBlockZoom(blockId: blockId)
             }
             let bulletClick = NSClickGestureRecognizer(target: bulletClickAction, action: #selector(DatePickerAction.execute))
             bullet.addGestureRecognizer(bulletClick)
@@ -1665,6 +1662,7 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var onDismissMenu: (() -> Void)?
     var onPrevTile: (() -> Void)?
     var onNextTile: (() -> Void)?
+    var onBlockZoom: ((UUID) -> Void)?
     var tileID: String?
     var apiClient: APIClient?
     var typeRegistry: [TypeDefinition] = []
@@ -1742,6 +1740,10 @@ struct OutlinerCoordinator: NSViewRepresentable {
 
         func outlinerDidRequestNextTile() {
             parent.onNextTile?()
+        }
+
+        func outlinerDidRequestBlockZoom(blockId: UUID) {
+            parent.onBlockZoom?(blockId)
         }
     }
 }
