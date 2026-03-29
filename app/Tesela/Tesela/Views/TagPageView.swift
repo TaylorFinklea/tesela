@@ -269,10 +269,26 @@ struct TagPageView: View {
 
                                 ForEach(columns, id: \.self) { col in
                                     let value = block.properties[col] ?? block.properties[col.lowercased()] ?? "Empty"
-                                    Text(value)
+                                    let stripped = BlockParser.stripWikiLink(value)
+                                    let isLink = value.hasPrefix("[[") && value.hasSuffix("]]")
+                                    if isLink {
+                                        Button(stripped) {
+                                            if let linked = appState.pages.first(where: {
+                                                $0.title.lowercased() == stripped.lowercased()
+                                            }) {
+                                                appState.open(linked)
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
                                         .font(.caption)
-                                        .foregroundStyle(value == "Empty" ? .tertiary : .primary)
+                                        .foregroundStyle(Color.accentColor)
                                         .frame(width: 100, alignment: .leading)
+                                    } else {
+                                        Text(value)
+                                            .font(.caption)
+                                            .foregroundStyle(value == "Empty" ? .tertiary : .primary)
+                                            .frame(width: 100, alignment: .leading)
+                                    }
                                 }
                             }
                             .padding(.horizontal, 24)

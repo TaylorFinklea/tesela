@@ -13,7 +13,7 @@ struct PropertyPageView: View {
     @State private var newChoice: String = ""
     @State private var isDirty = false
 
-    private let valueTypes = ["text", "number", "date", "select", "checkbox", "url"]
+    private let valueTypes = ["text", "number", "date", "select", "checkbox", "url", "node"]
 
     var body: some View {
         ScrollView {

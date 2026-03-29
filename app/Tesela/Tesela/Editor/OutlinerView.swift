@@ -437,8 +437,9 @@ class OutlinerView: NSView {
         if valueType == "date" || valueType == "datetime" {
             showDatePicker(for: name.lowercased(), at: index, anchorView: anchorView)
         } else if valueType == "select", let choices, !choices.isEmpty {
-            // Popover with choice buttons
             showSelectPopover(propertyName: name, choices: choices, at: index, anchorView: anchorView)
+        } else if valueType == "node" {
+            showNodePicker(propertyName: name, at: index, anchorView: anchorView)
         } else {
             // Text/number: inline input alert
             let alert = NSAlert()
@@ -452,6 +453,33 @@ class OutlinerView: NSView {
                 applyBlockProperty(name: name, value: input.stringValue, at: index)
             }
         }
+    }
+
+    private func showNodePicker(propertyName: String, at index: Int, anchorView: NSView) {
+        activePopover?.close()
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let completionView = CompletionView(items: allPageTitles)
+        completionView.onSelect = { [weak self] selected in
+            self?.activePopover?.close()
+            self?.activePopover = nil
+            self?.applyBlockProperty(name: propertyName, value: "[[\(selected)]]", at: index)
+        }
+        completionView.onDismiss = { [weak self] in
+            self?.activePopover?.close()
+            self?.activePopover = nil
+        }
+
+        let vc = NSViewController()
+        vc.view = completionView
+
+        let popover = NSPopover()
+        popover.contentViewController = vc
+        popover.behavior = .transient
+        popover.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .maxY)
+        activePopover = popover
+        popover.contentViewController?.view.window?.makeFirstResponder(completionView)
     }
 
     private func editTextProperty(name: String, at index: Int) {

@@ -183,12 +183,20 @@ enum BlockParser {
     }
 
     // Strip [[...]] wrapper from a property value (dates stored as wiki-links)
-    private static func stripWikiLink(_ value: String?) -> String? {
+    static func stripWikiLink(_ value: String?) -> String? {
         guard var v = value else { return nil }
         if v.hasPrefix("[[") && v.hasSuffix("]]") {
             v = String(v.dropFirst(2).dropLast(2))
         }
         return v.isEmpty ? nil : v
+    }
+
+    /// Non-optional version for display convenience
+    static func stripWikiLink(_ value: String) -> String {
+        if value.hasPrefix("[[") && value.hasSuffix("]]") {
+            return String(value.dropFirst(2).dropLast(2))
+        }
+        return value
     }
 
     // MARK: - Wiki-link extraction
