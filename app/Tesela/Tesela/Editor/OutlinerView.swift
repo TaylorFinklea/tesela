@@ -173,34 +173,15 @@ class OutlinerView: NSView {
             let priorityWidth: CGFloat = block.priority != nil ? 22 : 0
             let textWidth = max(bounds.width - textX - 12 - badgeWidth - priorityWidth, 80)
 
-            // Bullet — click to drill into block (Logseq-style block zoom)
+            // Bullet — left-click drills in, right-click shows context menu
             let bulletSymbol = block.indentLevel == 0 ? "•" : "◦"
-            let bullet = NSTextField(labelWithString: bulletSymbol)
-            bullet.font = .systemFont(ofSize: NSFont.systemFontSize)
-            bullet.textColor = .tertiaryLabelColor
-            bullet.isEditable = false
-            bullet.isBordered = false
-            bullet.drawsBackground = false
-            bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
             let blockIndex = index
-            let bulletClickAction = DatePickerAction { [weak self] in
-                guard let self else { return }
-                delegate?.outlinerDidRequestBlockZoom(blockIndex: blockIndex)
-            }
-            let bulletClick = NSClickGestureRecognizer(target: bulletClickAction, action: #selector(DatePickerAction.execute))
-            bullet.addGestureRecognizer(bulletClick)
-            objc_setAssociatedObject(bullet, "bulletClick", bulletClickAction, .OBJC_ASSOCIATION_RETAIN)
-
-            // Right-click context menu
-            let contextMenu = NSMenu()
-            let drillInAction = DatePickerAction { [weak self] in
+            let bullet = BulletView(symbol: bulletSymbol)
+            bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
+            bullet.onLeftClick = { [weak self] in
                 self?.delegate?.outlinerDidRequestBlockZoom(blockIndex: blockIndex)
             }
-            let drillInItem = NSMenuItem(title: "Drill In", action: #selector(DatePickerAction.execute), keyEquivalent: "")
-            drillInItem.target = drillInAction
-            contextMenu.addItem(drillInItem)
-
-            let propsAction = DatePickerAction { [weak self] in
+            bullet.onShowProperties = { [weak self] in
                 guard let self else { return }
                 if expandedBlockIndex == blockIndex {
                     expandedBlockIndex = nil
@@ -209,13 +190,6 @@ class OutlinerView: NSView {
                 }
                 rebuildBlockViews()
             }
-            let propsItem = NSMenuItem(title: "Show Properties", action: #selector(DatePickerAction.execute), keyEquivalent: "")
-            propsItem.target = propsAction
-            contextMenu.addItem(propsItem)
-
-            bullet.menu = contextMenu
-            objc_setAssociatedObject(bullet, "contextActions", [drillInAction, propsAction], .OBJC_ASSOCIATION_RETAIN)
-
             addSubview(bullet)
 
             // Task status icon to the right of bullet (if task)
@@ -1699,6 +1673,48 @@ class OutlinerView: NSView {
 }
 
 // MARK: - DatePickerAction (target-action helper for NSButton closure)
+// MARK: - BulletView (handles left-click drill-in + right-click context menu)
+class BulletView: NSView {
+    var onLeftClick: (() -> Void)?
+    var onShowProperties: (() -> Void)?
+    private let label: NSTextField
+
+    init(symbol: String) {
+        label = NSTextField(labelWithString: symbol)
+        super.init(frame: .zero)
+        label.font = .systemFont(ofSize: NSFont.systemFontSize)
+        label.textColor = .tertiaryLabelColor
+        label.isEditable = false
+        label.isBordered = false
+        label.drawsBackground = false
+        label.frame = NSRect(x: 0, y: 0, width: 16, height: 22)
+        addSubview(label)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func mouseDown(with event: NSEvent) {
+        onLeftClick?()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+
+        let drillIn = NSMenuItem(title: "Drill In", action: #selector(handleDrillIn), keyEquivalent: "")
+        drillIn.target = self
+        menu.addItem(drillIn)
+
+        let props = NSMenuItem(title: "Show Properties", action: #selector(handleShowProperties), keyEquivalent: "")
+        props.target = self
+        menu.addItem(props)
+
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func handleDrillIn() { onLeftClick?() }
+    @objc private func handleShowProperties() { onShowProperties?() }
+}
+
 class DatePickerAction: NSObject {
     var handler: () -> Void
     init(handler: @escaping () -> Void) { self.handler = handler }
