@@ -230,7 +230,12 @@ class OutlinerView: NSView {
             }
 
             let view = BlockView(block: block, typeTagNames: typeTagNames)
-            view.searchQuery = vimEngine.searchQuery.isEmpty ? nil : vimEngine.searchQuery
+            let activeSearch = vimEngine.searchQuery.isEmpty ? nil : vimEngine.searchQuery
+            view.searchQuery = activeSearch
+            // Re-apply styling with search highlights (initial styling in init ran before searchQuery was set)
+            if activeSearch != nil, let ts = view.textStorage {
+                BlockStyler.style(text: ts.string, textStorage: ts, searchQuery: activeSearch)
+            }
             view.frame = NSRect(x: actualTextX, y: yOffset, width: textWidth, height: 22)
             wireCallbacks(for: view, at: index)
             addSubview(view)
