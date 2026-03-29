@@ -12,11 +12,16 @@
 - [x] Tag page filters (filter by property value, sort by column)
 - [x] Right sidebar polish (page info, grouped backlinks, context lines)
 
+## Done (this session)
+
+- [x] Search highlighting (yellow background on /search matches, clears on Escape)
+- [x] Kanban board view on tag pages (toggle table/kanban, group by select property)
+
 ## Immediate
 
 - [ ] 13.7 Node references — properties that link to other nodes (bidirectional)
-- [ ] Kanban view on tag pages (in addition to table view)
-- [ ] Search highlighting (yellow background on matches in blocks)
+- [ ] Kanban drag-and-drop (move cards between columns to update property value)
+- [ ] Search match count display ("3/12 matches" in status bar)
 
 ## When picking up work
 
