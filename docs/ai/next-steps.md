@@ -17,11 +17,17 @@
 - [x] Search highlighting (yellow background on /search matches, clears on Escape)
 - [x] Kanban board view on tag pages (toggle table/kanban, group by select property)
 
+## Done (latest)
+
+- [x] Search match count (3/12) in bottom-right status badge
+- [x] Kanban drag-and-drop (move cards between columns updates property value)
+- [x] 13.7 Node references (node property type, page picker, clickable links in table)
+
 ## Immediate
 
-- [ ] 13.7 Node references — properties that link to other nodes (bidirectional)
-- [ ] Kanban drag-and-drop (move cards between columns to update property value)
-- [ ] Search match count display ("3/12 matches" in status bar)
+- [ ] 13.8 Queries — advanced filtering (multiple properties, AND/OR, saved queries)
+- [ ] Kanban card reordering within a column
+- [ ] Custom bullet icons per type (Tabler Icons)
 
 ## When picking up work
 
