@@ -20,16 +20,16 @@ final class AppState {
     // MARK: - Navigation Stack (back/forward)
     struct NavEntry: Equatable {
         let pageId: String
-        let blockId: UUID?
+        let blockIndex: Int?  // flat index into the page's block list, nil = full page
     }
     private(set) var navigationStack: [NavEntry] = []
     private(set) var navigationIndex: Int = -1
 
     var canGoBack: Bool { navigationIndex > 0 }
     var canGoForward: Bool { navigationIndex < navigationStack.count - 1 }
-    var zoomedBlockId: UUID? {
+    var zoomedBlockIndex: Int? {
         guard navigationIndex >= 0, navigationIndex < navigationStack.count else { return nil }
-        return navigationStack[navigationIndex].blockId
+        return navigationStack[navigationIndex].blockIndex
     }
 
     // MARK: - Recent & Favorites
@@ -130,21 +130,21 @@ final class AppState {
     func open(_ page: Page) {
         // Truncate forward history and push
         navigationStack = Array(navigationStack.prefix(navigationIndex + 1))
-        navigationStack.append(NavEntry(pageId: page.id, blockId: nil))
+        navigationStack.append(NavEntry(pageId: page.id, blockIndex: nil))
         navigationIndex = navigationStack.count - 1
         currentPage = page
         addToRecents(page.id)
     }
 
-    func openBlockZoom(blockId: UUID) {
+    func openBlockZoom(blockIndex: Int) {
         guard let page = currentPage else { return }
         navigationStack = Array(navigationStack.prefix(navigationIndex + 1))
-        navigationStack.append(NavEntry(pageId: page.id, blockId: blockId))
+        navigationStack.append(NavEntry(pageId: page.id, blockIndex: blockIndex))
         navigationIndex = navigationStack.count - 1
     }
 
     func exitBlockZoom() {
-        guard zoomedBlockId != nil else { return }
+        guard zoomedBlockIndex != nil else { return }
         goBack()
     }
 

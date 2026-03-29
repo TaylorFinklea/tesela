@@ -6,37 +6,31 @@ import SwiftUI
 
 struct BlockZoomView: View {
     let page: Page
-    let blockId: UUID
+    let blockIndex: Int  // flat index into the page's block list
     @Environment(AppState.self) private var appState
     @State private var blocks: [Block] = []
     @State private var zoomedBlockText: String = ""
     @State private var saveTask: Task<Void, Never>?
     @State private var vimMode: VimMode = .normal
 
-    /// Find the target block in the parsed tree and extract it + children
-    private func findBlock(id: UUID, in tree: [Block]) -> Block? {
-        for block in tree {
-            if block.id == id { return block }
-            if let found = findBlock(id: id, in: block.children) { return found }
+    /// Walk the tree depth-first to find the node at the given flat index.
+    private func treeNodeAtFlatIndex(_ target: Int, in tree: [Block]) -> Block? {
+        var counter = 0
+        func walk(_ nodes: [Block]) -> Block? {
+            for node in nodes {
+                if counter == target { return node }
+                counter += 1
+                if let found = walk(node.children) { return found }
+            }
+            return nil
         }
-        return nil
-    }
-
-    /// The line range in the original body where this block's subtree lives
-    private func findLineRange(for blockId: UUID, in body: String) -> Range<String.Index>? {
-        let tree = BlockParser.parse(markdown: body)
-        let flat = BlockParser.flatten(blocks: tree)
-        guard let idx = flat.firstIndex(where: { $0.id == blockId }) else { return nil }
-        // Find the serialized range by serializing up to and including this block's subtree
-        // This is approximate — for now, just re-serialize the whole page from modified tree
-        return nil
+        return walk(tree)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Breadcrumb header
             HStack {
-                // Back / Forward
                 HStack(spacing: 2) {
                     Button { appState.goBack() } label: {
                         Image(systemName: "chevron.left")
@@ -52,7 +46,6 @@ struct BlockZoomView: View {
                 }
                 .foregroundStyle(.secondary)
 
-                // Breadcrumb: Page Title > Block text
                 Button(page.title) {
                     appState.exitBlockZoom()
                 }
@@ -76,7 +69,6 @@ struct BlockZoomView: View {
 
             Divider()
 
-            // Outliner showing only the zoomed block + children
             OutlinerCoordinator(
                 blocks: $blocks,
                 onContentChanged: { updatedBlocks in
@@ -90,27 +82,17 @@ struct BlockZoomView: View {
                         appState.open(linked)
                     }
                 },
-                onModeChanged: { mode in
-                    vimMode = mode
-                },
-                onCommandPalette: {
-                    appState.isCommandPaletteVisible = true
-                },
-                onSlashMenu: {
-                    appState.isSlashMenuVisible = true
-                },
-                onSpaceMenu: {
-                    appState.isSpaceMenuVisible = true
-                },
-                isMenuVisible: {
-                    appState.isSlashMenuVisible || appState.isSpaceMenuVisible
-                },
+                onModeChanged: { mode in vimMode = mode },
+                onCommandPalette: { appState.isCommandPaletteVisible = true },
+                onSlashMenu: { appState.isSlashMenuVisible = true },
+                onSpaceMenu: { appState.isSpaceMenuVisible = true },
+                isMenuVisible: { appState.isSlashMenuVisible || appState.isSpaceMenuVisible },
                 onDismissMenu: {
                     appState.isSlashMenuVisible = false
                     appState.isSpaceMenuVisible = false
                 },
-                onBlockZoom: { childBlockId in
-                    appState.openBlockZoom(blockId: childBlockId)
+                onBlockZoom: { childIndex in
+                    appState.openBlockZoom(blockIndex: childIndex)
                 },
                 apiClient: appState.api,
                 typeRegistry: appState.typeRegistry,
@@ -121,19 +103,18 @@ struct BlockZoomView: View {
             .padding(.horizontal, 8)
         }
         .onAppear { loadZoomedBlocks() }
-        .onChange(of: blockId) { _, _ in loadZoomedBlocks() }
+        .onChange(of: blockIndex) { _, _ in loadZoomedBlocks() }
     }
 
     private func loadZoomedBlocks() {
-        // Parse the full page tree
         let tree = BlockParser.parse(markdown: page.body)
-        // Find the target block
-        guard let target = findBlock(id: blockId, in: tree) else {
+        guard let target = treeNodeAtFlatIndex(blockIndex, in: tree) else {
             blocks = [Block(text: "(block not found)")]
+            zoomedBlockText = "?"
             return
         }
         zoomedBlockText = target.displayText
-        // Flatten the target + its children for the outliner
+        // Flatten the target + its children, resetting indent levels to start at 0
         blocks = BlockParser.flatten(blocks: [target])
     }
 
@@ -143,38 +124,30 @@ struct BlockZoomView: View {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
 
-            // Re-parse the full page, find the zoomed block, replace its subtree
+            // Rebuild the full page: parse tree, replace the zoomed subtree, serialize
             let fullTree = BlockParser.parse(markdown: page.body)
-            guard replaceBlock(id: blockId, in: fullTree, with: updatedBlocks) else { return }
+            guard let target = treeNodeAtFlatIndex(blockIndex, in: fullTree) else { return }
 
-            // Serialize full tree back to markdown
+            // Update the target block's text and children from edited blocks
+            if let first = updatedBlocks.first {
+                target.text = first.text
+                target.tags = first.tags
+                target.properties = first.properties
+                target.priority = first.priority
+                target.deadline = first.deadline
+                target.scheduled = first.scheduled
+                target.effort = first.effort
+            }
+            // Rebuild children from the edited flat list
+            let childBlocks = Array(updatedBlocks.dropFirst())
+            if !childBlocks.isEmpty {
+                target.children = BlockParser.parse(markdown: BlockParser.serializeFlat(blocks: childBlocks))
+            } else {
+                target.children = []
+            }
+
             let newBody = BlockParser.serialize(blocks: fullTree)
             await appState.updatePage(id: page.id, newBody: newBody)
         }
-    }
-
-    /// Replace a block's content and children in the tree. Returns true if found.
-    @discardableResult
-    private func replaceBlock(id: UUID, in tree: [Block], with flat: [Block]) -> Bool {
-        for block in tree {
-            if block.id == id {
-                // Replace this block's text and children from the flat list
-                if let first = flat.first {
-                    block.text = first.text
-                    block.tags = first.tags
-                    block.properties = first.properties
-                    block.priority = first.priority
-                    block.deadline = first.deadline
-                    block.scheduled = first.scheduled
-                    block.effort = first.effort
-                }
-                // Rebuild children from flat list (skip first which is the block itself)
-                let childFlat = Array(flat.dropFirst())
-                block.children = BlockParser.parse(markdown: BlockParser.serializeFlat(blocks: childFlat))
-                return true
-            }
-            if replaceBlock(id: id, in: block.children, with: flat) { return true }
-        }
-        return false
     }
 }

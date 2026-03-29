@@ -18,8 +18,8 @@ struct ContentArea: View {
     var body: some View {
         Group {
             if let page = appState.currentPage {
-                if let blockId = appState.zoomedBlockId {
-                    BlockZoomView(page: page, blockId: blockId)
+                if let blockIndex = appState.zoomedBlockIndex {
+                    BlockZoomView(page: page, blockIndex: blockIndex)
                 } else if page.metadata.noteType == "Tag" {
                     TagPageView(page: page)
                 } else if page.metadata.noteType == "Property" {
@@ -189,8 +189,8 @@ struct PageEditorView: View {
                     appState.isSlashMenuVisible = false
                     appState.isSpaceMenuVisible = false
                 },
-                onBlockZoom: { blockId in
-                    appState.openBlockZoom(blockId: blockId)
+                onBlockZoom: { blockIndex in
+                    appState.openBlockZoom(blockIndex: blockIndex)
                 },
                 apiClient: appState.api,
                 typeRegistry: appState.typeRegistry,

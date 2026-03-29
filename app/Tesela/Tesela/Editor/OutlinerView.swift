@@ -12,7 +12,7 @@ protocol OutlinerDelegate: AnyObject {
     func outlinerDidRequestSpaceMenu()
     func outlinerDidRequestPrevTile()
     func outlinerDidRequestNextTile()
-    func outlinerDidRequestBlockZoom(blockId: UUID)
+    func outlinerDidRequestBlockZoom(blockIndex: Int)
 }
 
 // MARK: - OutlinerView
@@ -180,10 +180,10 @@ class OutlinerView: NSView {
             bullet.isBordered = false
             bullet.drawsBackground = false
             bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
-            let blockId = block.id
+            let blockIndex = index
             let bulletClickAction = DatePickerAction { [weak self] in
                 guard let self else { return }
-                delegate?.outlinerDidRequestBlockZoom(blockId: blockId)
+                delegate?.outlinerDidRequestBlockZoom(blockIndex: blockIndex)
             }
             let bulletClick = NSClickGestureRecognizer(target: bulletClickAction, action: #selector(DatePickerAction.execute))
             bullet.addGestureRecognizer(bulletClick)
@@ -1662,7 +1662,7 @@ struct OutlinerCoordinator: NSViewRepresentable {
     var onDismissMenu: (() -> Void)?
     var onPrevTile: (() -> Void)?
     var onNextTile: (() -> Void)?
-    var onBlockZoom: ((UUID) -> Void)?
+    var onBlockZoom: ((Int) -> Void)?
     var tileID: String?
     var apiClient: APIClient?
     var typeRegistry: [TypeDefinition] = []
@@ -1742,8 +1742,8 @@ struct OutlinerCoordinator: NSViewRepresentable {
             parent.onNextTile?()
         }
 
-        func outlinerDidRequestBlockZoom(blockId: UUID) {
-            parent.onBlockZoom?(blockId)
+        func outlinerDidRequestBlockZoom(blockIndex: Int) {
+            parent.onBlockZoom?(blockIndex)
         }
     }
 }
