@@ -194,6 +194,10 @@ private struct EditableTileCard: View {
                 },
                 onPrevTile: onPrevTile,
                 onNextTile: onNextTile,
+                onBlockZoom: { blockIndex in
+                    appState.open(page)
+                    appState.openBlockZoom(blockIndex: blockIndex)
+                },
                 tileID: page.id,
                 apiClient: appState.api,
                 typeRegistry: appState.typeRegistry,
