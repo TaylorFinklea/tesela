@@ -12,11 +12,15 @@ struct TagPageView: View {
     @State private var isAddingProperty = false
     @State private var propertySearchText = ""
 
-    // Filtering
+    // Filtering & View Mode
     @State private var activeFilterProperty: String?
     @State private var activeFilterValue: String?
     @State private var sortProperty: String?
     @State private var sortAscending = true
+    @State private var viewMode: ViewMode = .table
+    @State private var kanbanProperty: String?
+
+    private enum ViewMode { case table, kanban }
 
     /// The tag_properties from this tag's own frontmatter (not inherited)
     private var ownPropertyNames: [String] {
@@ -155,11 +159,11 @@ struct TagPageView: View {
 
                 Divider().padding(.horizontal, 24)
 
-                // Table view of all tagged nodes
+                // View mode header
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         HStack(spacing: 4) {
-                            Image(systemName: "tablecells")
+                            Image(systemName: viewMode == .table ? "tablecells" : "rectangle.split.3x1")
                             Text("All")
                                 .font(.headline)
                             Text("\(taggedBlocks.count)")
@@ -167,6 +171,13 @@ struct TagPageView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        // View mode toggle
+                        Picker("", selection: $viewMode) {
+                            Image(systemName: "tablecells").tag(ViewMode.table)
+                            Image(systemName: "rectangle.split.3x1").tag(ViewMode.kanban)
+                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 80)
                     }
                     .padding(.horizontal, 24)
                     .padding(.top, 16)
@@ -201,7 +212,7 @@ struct TagPageView: View {
                         Text("No \(page.title) blocks yet")
                             .font(.caption).foregroundStyle(.tertiary)
                             .padding(.horizontal, 24)
-                    } else {
+                    } else if viewMode == .table {
                         // Table header — click to sort
                         let columns = resolvedType?.properties.prefix(5).map(\.name) ?? []
                         HStack(spacing: 0) {
@@ -239,11 +250,10 @@ struct TagPageView: View {
                         .padding(.vertical, 6)
                         .background(Color.secondary.opacity(0.08))
 
-                        // Table rows — blocks with DB-indexed properties
+                        // Table rows
                         ForEach(taggedBlocks) { block in
                             HStack(spacing: 0) {
                                 Button(block.text.isEmpty ? "(empty)" : block.text) {
-                                    // Navigate to the note containing this block
                                     if let note = appState.pages.first(where: { $0.id == block.noteId }) {
                                         appState.open(note)
                                     }
@@ -270,6 +280,19 @@ struct TagPageView: View {
 
                             Divider().padding(.horizontal, 24)
                         }
+                    } else {
+                        // Kanban view — columns by first select property
+                        KanbanBoard(
+                            blocks: taggedBlocks,
+                            resolvedType: resolvedType,
+                            kanbanProperty: kanbanProperty,
+                            onSelectProperty: { kanbanProperty = $0 },
+                            onNavigate: { noteId in
+                                if let note = appState.pages.first(where: { $0.id == noteId }) {
+                                    appState.open(note)
+                                }
+                            }
+                        )
                     }
                 }
                 .padding(.bottom, 24)
@@ -345,6 +368,160 @@ struct TagPageView: View {
         case "node": return "→"
         default: return "T"
         }
+    }
+}
+
+// MARK: - KanbanBoard
+// Horizontal columns grouped by a select property's values.
+private struct KanbanBoard: View {
+    let blocks: [TypedBlock]
+    let resolvedType: TypeDefinition?
+    let kanbanProperty: String?
+    let onSelectProperty: (String) -> Void
+    let onNavigate: (String) -> Void
+
+    /// First select-type property, or user-chosen
+    private var groupByProperty: PropertyDef? {
+        guard let resolved = resolvedType else { return nil }
+        if let chosen = kanbanProperty {
+            return resolved.properties.first { $0.name == chosen }
+        }
+        return resolved.properties.first { $0.valueType == "select" }
+    }
+
+    private var columnValues: [String] {
+        groupByProperty?.values ?? []
+    }
+
+    private func blocksForColumn(_ value: String) -> [TypedBlock] {
+        guard let prop = groupByProperty else { return [] }
+        let key = prop.name.lowercased()
+        return blocks.filter { block in
+            let v = block.properties[prop.name] ?? block.properties[key] ?? ""
+            return v.lowercased() == value.lowercased()
+        }
+    }
+
+    private var uncategorizedBlocks: [TypedBlock] {
+        guard let prop = groupByProperty else { return blocks }
+        let key = prop.name.lowercased()
+        let validValues = Set(columnValues.map { $0.lowercased() })
+        return blocks.filter { block in
+            let v = (block.properties[prop.name] ?? block.properties[key] ?? "").lowercased()
+            return v.isEmpty || !validValues.contains(v)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Property selector (if multiple select properties)
+            if let resolved = resolvedType {
+                let selectProps = resolved.properties.filter { $0.valueType == "select" }
+                if selectProps.count > 1 {
+                    HStack(spacing: 8) {
+                        Text("Group by:")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ForEach(selectProps) { prop in
+                            Button(prop.name) {
+                                onSelectProperty(prop.name)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .tint(groupByProperty?.name == prop.name ? .accentColor : .secondary)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                }
+            }
+
+            if groupByProperty == nil {
+                Text("No select property to group by")
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .padding(.horizontal, 24)
+            } else {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    HStack(alignment: .top, spacing: 12) {
+                        ForEach(columnValues, id: \.self) { value in
+                            KanbanColumn(
+                                title: value,
+                                blocks: blocksForColumn(value),
+                                onNavigate: onNavigate
+                            )
+                        }
+                        // Uncategorized column
+                        let uncat = uncategorizedBlocks
+                        if !uncat.isEmpty {
+                            KanbanColumn(
+                                title: "Unset",
+                                blocks: uncat,
+                                onNavigate: onNavigate
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - KanbanColumn
+private struct KanbanColumn: View {
+    let title: String
+    let blocks: [TypedBlock]
+    let onNavigate: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Column header
+            HStack {
+                Text(title.capitalized)
+                    .font(.caption).bold()
+                Text("\(blocks.count)")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Color.secondary.opacity(0.08))
+
+            // Cards
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(blocks) { block in
+                        Button {
+                            onNavigate(block.noteId)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(block.text.isEmpty ? "(empty)" : block.text)
+                                    .font(.caption)
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(3)
+                                    .multilineTextAlignment(.leading)
+                                if !block.tags.isEmpty {
+                                    HStack(spacing: 4) {
+                                        ForEach(block.tags, id: \.self) { tag in
+                                            Text("#\(tag)")
+                                                .font(.caption2)
+                                                .foregroundStyle(Color.accentColor)
+                                        }
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 6)
+            }
+        }
+        .frame(width: 200)
+        .background(Color.secondary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
