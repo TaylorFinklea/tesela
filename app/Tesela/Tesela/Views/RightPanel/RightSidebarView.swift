@@ -27,6 +27,8 @@ private struct RightSidebarContent: View {
     let page: Page
     @State private var backlinks: [Link] = []
     @State private var forwardLinks: [Link] = []
+    @State private var unlinkedRefs: [SearchHit] = []
+    @State private var isUnlinkedExpanded = false
     @Environment(AppState.self) private var appState
 
     private var groupedBacklinks: [(source: String, links: [Link])] {
@@ -155,10 +157,46 @@ private struct RightSidebarContent: View {
                     }
                 }
             }
+
+            // Unlinked references — plain text mentions (not [[links]] or #tags)
+            Section {
+                DisclosureGroup(
+                    isExpanded: $isUnlinkedExpanded,
+                    content: {
+                        if unlinkedRefs.isEmpty {
+                            Text("No unlinked mentions")
+                                .foregroundStyle(.tertiary)
+                                .font(.caption)
+                        } else {
+                            ForEach(unlinkedRefs) { hit in
+                                Button {
+                                    navigateTo(noteId: hit.noteId)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(hit.title)
+                                            .font(.caption).bold()
+                                            .foregroundStyle(Color.accentColor)
+                                        Text(hit.snippet)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.vertical, 2)
+                            }
+                        }
+                    },
+                    label: {
+                        Text("Unlinked References (\(unlinkedRefs.count))")
+                    }
+                )
+            }
         }
         .listStyle(.sidebar)
         .task(id: page.id) {
             await loadLinks()
+            await loadUnlinkedRefs()
         }
     }
 
@@ -167,6 +205,16 @@ private struct RightSidebarContent: View {
         async let forwardLinksTask = appState.api.getLinks(id: page.id)
         backlinks = (try? await backlinksTask) ?? []
         forwardLinks = (try? await forwardLinksTask) ?? []
+    }
+
+    private func loadUnlinkedRefs() async {
+        guard !page.title.isEmpty else { return }
+        let hits = (try? await appState.api.search(query: page.title, limit: 50)) ?? []
+        // Filter out: current page, and pages already in backlinks
+        let backlinkIds = Set(backlinks.map(\.target))
+        unlinkedRefs = hits.filter { hit in
+            hit.noteId != page.id && !backlinkIds.contains(hit.noteId)
+        }
     }
 
     private func navigateTo(noteId: String) {
