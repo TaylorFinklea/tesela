@@ -676,7 +676,7 @@ impl LinkGraph for SqliteIndex {
     async fn get_backlinks(&self, id: &NoteId) -> Result<Vec<Link>> {
         let rows = sqlx::query(
             r#"
-            SELECT source_id, target, link_text, position, link_type
+            SELECT source_id AS target, link_text, position, link_type
             FROM links WHERE target = ?
             "#,
         )

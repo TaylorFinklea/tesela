@@ -1266,13 +1266,19 @@ class OutlinerView: NSView {
 
     private func showSearchBar() {
         if searchBar != nil { return }
+        // Add to the scroll view so it stays fixed at the bottom of the visible area
+        guard let scrollView = enclosingScrollView ?? superview else { return }
         let bar = NSTextField()
         bar.placeholderString = "/"
         bar.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         bar.isBordered = true
         bar.drawsBackground = true
-        bar.frame = NSRect(x: 8, y: bounds.maxY - 28, width: bounds.width - 16, height: 24)
-        addSubview(bar)
+        bar.wantsLayer = true
+        bar.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        let svBounds = scrollView.bounds
+        bar.frame = NSRect(x: 8, y: svBounds.height - 28, width: svBounds.width - 16, height: 24)
+        bar.autoresizingMask = [.width, .minYMargin]
+        scrollView.addSubview(bar)
         searchBar = bar
         window?.makeFirstResponder(bar)
 

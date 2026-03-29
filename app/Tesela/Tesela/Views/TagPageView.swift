@@ -445,6 +445,7 @@ private struct FilterChip: View {
     let onSelect: (String) -> Void
     let onClear: () -> Void
     @State private var isShowingPopover = false
+    @State private var textFilterValue = ""
 
     var body: some View {
         Button {
@@ -495,10 +496,13 @@ private struct FilterChip: View {
                 }
             } else {
                 // Text property — freeform input
-                TextField("Filter value…", text: .constant(""))
+                TextField("Filter value…", text: $textFilterValue)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit {
-                        // TODO: capture typed value
+                        let trimmed = textFilterValue.trimmingCharacters(in: .whitespaces)
+                        guard !trimmed.isEmpty else { return }
+                        isShowingPopover = false
+                        onSelect(trimmed)
                     }
             }
         }
