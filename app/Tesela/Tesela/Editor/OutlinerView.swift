@@ -1758,7 +1758,7 @@ class BulletView: NSView {
             let imageView = NSImageView()
             imageView.image = img.withSymbolConfiguration(config)
             imageView.contentTintColor = tintColor
-            imageView.frame = NSRect(x: 1, y: 5, width: 14, height: 14)
+            imageView.frame = NSRect(x: 1, y: 7, width: 14, height: 14)
             addSubview(imageView)
         } else {
             let label = NSTextField(labelWithString: symbol)
