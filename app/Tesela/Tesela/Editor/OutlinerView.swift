@@ -160,8 +160,8 @@ class OutlinerView: NSView {
 
         for (index, block) in blocks.enumerated() {
             let indentX = CGFloat(block.indentLevel) * 20
-            let bulletX  = indentX + 8
-            let textX    = indentX + 28
+            let bulletX  = indentX + 12
+            let textX    = indentX + 32
 
             let typeTags = block.tags.filter { typeTagNames.contains($0.lowercased()) }
 
@@ -238,9 +238,9 @@ class OutlinerView: NSView {
                 statusLabel.isEditable = false
                 statusLabel.isBordered = false
                 statusLabel.drawsBackground = false
-                statusLabel.frame = NSRect(x: bulletX + 14, y: yOffset, width: 16, height: 22)
+                statusLabel.frame = NSRect(x: bulletX + 18, y: yOffset, width: 16, height: 22)
                 addSubview(statusLabel)
-                actualTextX = bulletX + 32
+                actualTextX = bulletX + 36
             }
 
             let view = BlockView(block: block, typeTagNames: typeTagNames)
@@ -1197,7 +1197,7 @@ class OutlinerView: NSView {
             }
 
             // X: center of the parent's bullet
-            let bulletCenterX = CGFloat(parentIndent) * 20 + 8 + 7
+            let bulletCenterX = CGFloat(parentIndent) * 20 + 12 + 7
 
             // Y: from the center of the parent bullet to the center of the last child bullet
             let startY = blockPositions[i].y + blockPositions[i].height * 0.5 + 2
@@ -1758,7 +1758,7 @@ class BulletView: NSView {
             let imageView = NSImageView()
             imageView.image = img.withSymbolConfiguration(config)
             imageView.contentTintColor = tintColor
-            imageView.frame = NSRect(x: 1, y: 4, width: 14, height: 14)
+            imageView.frame = NSRect(x: 1, y: 5, width: 14, height: 14)
             addSubview(imageView)
         } else {
             let label = NSTextField(labelWithString: symbol)
