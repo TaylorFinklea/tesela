@@ -41,7 +41,12 @@ struct TagPageView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // Header
                 HStack {
-                    Text("# \(page.title)")
+                    // Type icon (from tag definition)
+                    if let icon = resolvedType?.icon, !icon.isEmpty {
+                        Text(icon)
+                            .font(.largeTitle)
+                    }
+                    Text(page.title)
                         .font(.largeTitle)
                         .bold()
                     Spacer()

@@ -173,8 +173,12 @@ class OutlinerView: NSView {
             let priorityWidth: CGFloat = block.priority != nil ? 22 : 0
             let textWidth = max(bounds.width - textX - 12 - badgeWidth - priorityWidth, 80)
 
-            // Bullet — left-click drills in, right-click shows context menu
-            let bulletSymbol = block.indentLevel == 0 ? "•" : "◦"
+            // Bullet — custom icon per type tag, or default bullet
+            let typeIcon = block.tags
+                .compactMap { tag in typeRegistry.first(where: { $0.name.lowercased() == tag.lowercased() }) }
+                .first
+                .flatMap { $0.icon.isEmpty ? nil : $0.icon }
+            let bulletSymbol = typeIcon ?? (block.indentLevel == 0 ? "•" : "◦")
             let blockIndex = index
             let bullet = BulletView(symbol: bulletSymbol)
             bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
