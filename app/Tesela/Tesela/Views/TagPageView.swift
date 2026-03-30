@@ -11,6 +11,7 @@ struct TagPageView: View {
     @State private var taggedBlocks: [TypedBlock] = []
     @State private var isAddingProperty = false
     @State private var propertySearchText = ""
+    @State private var isPickingIcon = false
 
     // Filtering & View Mode
     @State private var activeFilters: [String: String] = [:]  // property -> value
@@ -41,11 +42,30 @@ struct TagPageView: View {
             VStack(alignment: .leading, spacing: 0) {
                 // Header
                 HStack {
-                    // Type icon (from tag definition)
-                    if let icon = resolvedType?.icon, !icon.isEmpty {
-                        Text(icon)
-                            .font(.largeTitle)
+                    // Type icon — click to change
+                    Button {
+                        isPickingIcon = true
+                    } label: {
+                        if let icon = resolvedType?.icon, !icon.isEmpty,
+                           let _ = NSImage(systemSymbolName: icon, accessibilityDescription: nil) {
+                            Image(systemName: icon)
+                                .font(.title)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Image(systemName: "square.dashed")
+                                .font(.title)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
+                    .buttonStyle(.plain)
+                    .help("Change icon")
+                    .popover(isPresented: $isPickingIcon) {
+                        IconPickerView { selectedSymbol in
+                            isPickingIcon = false
+                            Task { await saveIcon(selectedSymbol) }
+                        }
+                    }
+
                     Text(page.title)
                         .font(.largeTitle)
                         .bold()
@@ -406,14 +426,28 @@ struct TagPageView: View {
     }
 
     /// Reconstructs frontmatter with updated tag_properties and saves
+    private func saveIcon(_ symbolName: String) async {
+        await saveTagFrontmatter(icon: symbolName)
+    }
+
     private func saveTagProperties(_ properties: [String]) async {
-        let propsStr = properties.map { "\"\($0)\"" }.joined(separator: ", ")
+        await saveTagFrontmatter(tagProperties: properties)
+    }
+
+    /// Rebuild and save the tag page frontmatter, preserving all fields
+    private func saveTagFrontmatter(icon: String? = nil, tagProperties: [String]? = nil) async {
+        let props = tagProperties ?? ownPropertyNames
+        let propsStr = props.map { "\"\($0)\"" }.joined(separator: ", ")
+        let iconValue = icon ?? resolvedType?.icon ?? ""
 
         var yaml = "---\n"
         yaml += "title: \"\(page.title)\"\n"
         yaml += "type: \"Tag\"\n"
         if let ext = extendsTag {
             yaml += "extends: \"\(ext)\"\n"
+        }
+        if !iconValue.isEmpty {
+            yaml += "icon: \"\(iconValue)\"\n"
         }
         yaml += "tag_properties: [\(propsStr)]\n"
         yaml += "tags: []\n"

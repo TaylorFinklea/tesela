@@ -4,6 +4,16 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-03-30 — Apple-first, web later (platform strategy)
+
+**Decision:** SwiftUI/AppKit is the primary GUI. Use SF Symbols for icons. A Tauri/web app can be built later sharing the Rust backend API, with its own icon set (Tabler/Lucide) mapped from the same frontmatter `icon` field.
+
+**Why:** Taylor is the sole user on macOS. Native AppKit gives the best keyboard-first editing experience. The Rust backend already runs cross-platform. Rewriting in a shared UI framework now would kill momentum for hypothetical users.
+
+**Trade-off:** Two GUI codebases eventually. But the server API is the shared contract, and different icon libraries per platform is normal (like VS Code vs native IDEs).
+
+---
+
 ### 2026-03-27 — Keyboard-navigable select popover (SelectListView)
 
 **Decision:** Replace NSButton-based select popovers with a custom NSView subclass that handles keyDown (arrow/j/k, Enter, Escape) and mouse clicks.
