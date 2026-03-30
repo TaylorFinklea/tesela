@@ -1742,8 +1742,10 @@ class BulletView: NSView {
         super.init(frame: .zero)
 
         // Try SF Symbol first (from map or direct name)
-        let sfName = Self.sfSymbolMap[symbol] ?? (symbol.contains(".") ? symbol : nil)
-        if let sfName, let img = NSImage(systemSymbolName: sfName, accessibilityDescription: nil) {
+        // Try SF Symbol: first from emoji map, then the raw string as an SF Symbol name
+        let sfName = Self.sfSymbolMap[symbol] ?? symbol
+        let isBulletDot = (symbol == "•" || symbol == "◦")
+        if !isBulletDot, let img = NSImage(systemSymbolName: sfName, accessibilityDescription: nil) {
             let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
             let imageView = NSImageView()
             imageView.image = img.withSymbolConfiguration(config)
