@@ -192,7 +192,7 @@ class OutlinerView: NSView {
             }()
             let blockIndex = index
             let bullet = BulletView(symbol: bulletSymbol, tintColor: bulletColor)
-            bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
+            bullet.frame = NSRect(x: bulletX, y: yOffset + 1, width: 16, height: 22)
             bullet.onLeftClick = { [weak self] in
                 self?.delegate?.outlinerDidRequestBlockZoom(blockIndex: blockIndex)
             }
@@ -238,7 +238,7 @@ class OutlinerView: NSView {
                 statusLabel.isEditable = false
                 statusLabel.isBordered = false
                 statusLabel.drawsBackground = false
-                statusLabel.frame = NSRect(x: bulletX + 18, y: yOffset, width: 16, height: 22)
+                statusLabel.frame = NSRect(x: bulletX + 18, y: yOffset + 1, width: 16, height: 22)
                 addSubview(statusLabel)
                 actualTextX = bulletX + 36
             }
@@ -1758,7 +1758,7 @@ class BulletView: NSView {
             let imageView = NSImageView()
             imageView.image = img.withSymbolConfiguration(config)
             imageView.contentTintColor = tintColor
-            imageView.frame = NSRect(x: 1, y: 7, width: 14, height: 14)
+            imageView.frame = NSRect(x: 1, y: 5, width: 14, height: 14)
             addSubview(imageView)
         } else {
             let label = NSTextField(labelWithString: symbol)
