@@ -1171,42 +1171,35 @@ class OutlinerView: NSView {
     private func drawThreadLines(blockPositions: [(y: CGFloat, height: CGFloat, indent: Int)]) {
         guard blockPositions.count > 1 else { return }
 
-        // For each indent level > 0, find spans where blocks are at that level or deeper,
-        // and draw a vertical line at the parent's bullet column
-        let maxIndent = blockPositions.map(\.indent).max() ?? 0
-        for level in 1...max(maxIndent, 1) {
-            var spanStart: Int? = nil
-            for i in 0..<blockPositions.count {
-                let atOrDeeper = blockPositions[i].indent >= level
-                if atOrDeeper && spanStart == nil {
-                    spanStart = i
-                } else if !atOrDeeper, let start = spanStart {
-                    drawThreadLine(level: level, from: start, to: i - 1, positions: blockPositions)
-                    spanStart = nil
-                }
+        // For each block that has children (next block is indented deeper),
+        // draw a vertical line from the parent bullet down to the last child
+        for i in 0..<blockPositions.count {
+            let parentIndent = blockPositions[i].indent
+
+            // Check if next block is a child
+            guard i + 1 < blockPositions.count, blockPositions[i + 1].indent > parentIndent else { continue }
+
+            // Find the last consecutive child (at parentIndent + 1 or deeper)
+            var lastChild = i + 1
+            for j in (i + 2)..<blockPositions.count {
+                if blockPositions[j].indent <= parentIndent { break }
+                lastChild = j
             }
-            if let start = spanStart {
-                drawThreadLine(level: level, from: start, to: blockPositions.count - 1, positions: blockPositions)
-            }
+
+            // X: center of the parent's bullet
+            let bulletCenterX = CGFloat(parentIndent) * 20 + 8 + 7
+
+            // Y: from the center of the parent bullet to the center of the last child bullet
+            let startY = blockPositions[i].y + blockPositions[i].height * 0.5 + 2
+            let endY = blockPositions[lastChild].y + blockPositions[lastChild].height * 0.5
+
+            guard endY > startY else { continue }
+
+            let line = NSView(frame: NSRect(x: bulletCenterX, y: startY, width: 1, height: endY - startY))
+            line.wantsLayer = true
+            line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
+            addSubview(line)
         }
-    }
-
-    private func drawThreadLine(level: Int, from startIdx: Int, to endIdx: Int, positions: [(y: CGFloat, height: CGFloat, indent: Int)]) {
-        guard startIdx < endIdx else { return }
-
-        // X position: centered on the bullet column for this indent level
-        let x = CGFloat(level - 1) * 20 + 8 + 7  // parent bullet center
-
-        // Y: from the bottom of the first block to the middle of the last
-        let startY = positions[startIdx].y + positions[startIdx].height
-        let endY = positions[endIdx].y + positions[endIdx].height / 2
-
-        guard endY > startY else { return }
-
-        let line = NSView(frame: NSRect(x: x, y: startY, width: 1, height: endY - startY))
-        line.wantsLayer = true
-        line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
-        addSubview(line)
     }
 
     // MARK: - Inline autocomplete (#tags and [[page refs]])
@@ -1729,18 +1722,45 @@ class OutlinerView: NSView {
 class BulletView: NSView {
     var onLeftClick: (() -> Void)?
     var onShowProperties: (() -> Void)?
-    private let label: NSTextField
+
+    // Map icon names to SF Symbols
+    private static let sfSymbolMap: [String: String] = [
+        "☑": "checkmark.square",
+        "🗂": "folder",
+        "👤": "person",
+        "📄": "doc",
+        "📅": "calendar",
+        "⚑": "flag",
+        "📋": "list.clipboard",
+        "💡": "lightbulb",
+        "🔗": "link",
+        "⭐": "star",
+        "🏷": "tag",
+    ]
 
     init(symbol: String) {
-        label = NSTextField(labelWithString: symbol)
         super.init(frame: .zero)
-        label.font = .systemFont(ofSize: NSFont.systemFontSize)
-        label.textColor = .tertiaryLabelColor
-        label.isEditable = false
-        label.isBordered = false
-        label.drawsBackground = false
-        label.frame = NSRect(x: 0, y: 0, width: 16, height: 22)
-        addSubview(label)
+
+        // Try SF Symbol first (from map or direct name)
+        let sfName = Self.sfSymbolMap[symbol] ?? (symbol.contains(".") ? symbol : nil)
+        if let sfName, let img = NSImage(systemSymbolName: sfName, accessibilityDescription: nil) {
+            let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+            let imageView = NSImageView()
+            imageView.image = img.withSymbolConfiguration(config)
+            imageView.contentTintColor = .tertiaryLabelColor
+            imageView.frame = NSRect(x: 1, y: 4, width: 14, height: 14)
+            addSubview(imageView)
+        } else {
+            // Fall back to text (for • ◦ or unknown emoji)
+            let label = NSTextField(labelWithString: symbol)
+            label.font = .systemFont(ofSize: NSFont.systemFontSize)
+            label.textColor = .tertiaryLabelColor
+            label.isEditable = false
+            label.isBordered = false
+            label.drawsBackground = false
+            label.frame = NSRect(x: 0, y: 0, width: 16, height: 22)
+            addSubview(label)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
