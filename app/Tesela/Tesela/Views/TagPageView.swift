@@ -13,8 +13,7 @@ struct TagPageView: View {
     @State private var propertySearchText = ""
 
     // Filtering & View Mode
-    @State private var activeFilterProperty: String?
-    @State private var activeFilterValue: String?
+    @State private var activeFilters: [String: String] = [:]  // property -> value
     @State private var sortProperty: String?
     @State private var sortAscending = true
     @State private var viewMode: ViewMode = .table
@@ -189,16 +188,14 @@ struct TagPageView: View {
                                 ForEach(resolved.properties) { prop in
                                     FilterChip(
                                         property: prop,
-                                        isActive: activeFilterProperty == prop.name,
-                                        activeValue: activeFilterProperty == prop.name ? activeFilterValue : nil,
+                                        isActive: activeFilters[prop.name] != nil,
+                                        activeValue: activeFilters[prop.name],
                                         onSelect: { value in
-                                            activeFilterProperty = prop.name
-                                            activeFilterValue = value
+                                            activeFilters[prop.name] = value
                                             Task { await loadData() }
                                         },
                                         onClear: {
-                                            activeFilterProperty = nil
-                                            activeFilterValue = nil
+                                            activeFilters.removeValue(forKey: prop.name)
                                             Task { await loadData() }
                                         }
                                     )
@@ -326,10 +323,10 @@ struct TagPageView: View {
 
     private func loadData() async {
         resolvedType = try? await appState.api.getResolvedType(name: page.title)
+        let filters = activeFilters.map { APIClient.PropertyFilter(property: $0.key, value: $0.value) }
         taggedBlocks = (try? await appState.api.getTypedBlocks(
             typeName: page.title,
-            filterProperty: activeFilterProperty,
-            filterValue: activeFilterValue,
+            filters: filters,
             sortBy: sortProperty,
             sortDir: sortProperty != nil ? (sortAscending ? "asc" : "desc") : nil
         )) ?? []

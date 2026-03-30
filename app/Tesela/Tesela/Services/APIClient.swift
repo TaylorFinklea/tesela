@@ -100,11 +100,18 @@ actor APIClient {
         try await getDecoded("/types/\(typeName)/nodes")
     }
 
-    func getTypedBlocks(typeName: String, filterProperty: String? = nil, filterValue: String? = nil, sortBy: String? = nil, sortDir: String? = nil) async throws -> [TypedBlock] {
+    struct PropertyFilter: Encodable {
+        let property: String
+        let value: String
+    }
+
+    func getTypedBlocks(typeName: String, filters: [PropertyFilter] = [], sortBy: String? = nil, sortDir: String? = nil) async throws -> [TypedBlock] {
         var query: [URLQueryItem] = []
-        if let prop = filterProperty, let val = filterValue {
-            query.append(URLQueryItem(name: "filter_property", value: prop))
-            query.append(URLQueryItem(name: "filter_value", value: val))
+        if !filters.isEmpty {
+            let encoder = JSONEncoder()
+            if let data = try? encoder.encode(filters), let json = String(data: data, encoding: .utf8) {
+                query.append(URLQueryItem(name: "filters", value: json))
+            }
         }
         if let sort = sortBy {
             query.append(URLQueryItem(name: "sort_by", value: sort))

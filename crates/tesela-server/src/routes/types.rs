@@ -50,14 +50,24 @@ pub async fn list_typed_nodes(
 
 #[derive(Deserialize)]
 pub struct TypedBlocksQuery {
+    /// Single filter (backward compat)
     pub filter_property: Option<String>,
     pub filter_value: Option<String>,
+    /// Multi-filter: JSON array of {"property":"...","value":"..."}
+    pub filters: Option<String>,
     pub sort_by: Option<String>,
-    pub sort_dir: Option<String>,  // "asc" or "desc"
+    pub sort_dir: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PropertyFilter {
+    property: String,
+    value: String,
 }
 
 /// List all blocks tagged with a specific type, with DB-indexed properties.
-/// Supports optional filtering by property value: ?filter_property=status&filter_value=todo
+/// Supports single filter (?filter_property=status&filter_value=todo)
+/// or multi-filter (?filters=[{"property":"status","value":"todo"},{"property":"priority","value":"high"}])
 pub async fn list_typed_blocks(
     Path(name): Path<String>,
     Query(q): Query<TypedBlocksQuery>,
@@ -65,10 +75,28 @@ pub async fn list_typed_blocks(
 ) -> AppResult<Json<Vec<tesela_core::block::ParsedBlock>>> {
     let mut blocks = s.index.get_typed_blocks(&name).await?;
 
-    // Filter by property value
+    // Collect all filters
+    let mut active_filters: Vec<PropertyFilter> = Vec::new();
+
+    // Single filter (backward compat)
     if let (Some(prop), Some(val)) = (&q.filter_property, &q.filter_value) {
-        let prop_lower = prop.to_lowercase();
-        let val_lower = val.to_lowercase();
+        active_filters.push(PropertyFilter {
+            property: prop.clone(),
+            value: val.clone(),
+        });
+    }
+
+    // Multi-filter JSON
+    if let Some(filters_json) = &q.filters {
+        if let Ok(parsed) = serde_json::from_str::<Vec<PropertyFilter>>(filters_json) {
+            active_filters.extend(parsed);
+        }
+    }
+
+    // Apply all filters (AND logic — block must match every filter)
+    for filter in &active_filters {
+        let prop_lower = filter.property.to_lowercase();
+        let val_lower = filter.value.to_lowercase();
         blocks.retain(|b| {
             b.properties.iter().any(|(k, v)| {
                 k.to_lowercase() == prop_lower && v.to_lowercase() == val_lower
