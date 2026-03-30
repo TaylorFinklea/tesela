@@ -23,11 +23,16 @@
 - [x] Kanban drag-and-drop (move cards between columns updates property value)
 - [x] 13.7 Node references (node property type, page picker, clickable links in table)
 
+## Done (this session)
+
+- [x] 13.8 Multi-property filtering (AND logic, JSON filters param)
+- [x] Custom bullet icons per type (Task=☑, Project=🗂, Person=👤)
+
 ## Immediate
 
-- [ ] 13.8 Queries — advanced filtering (multiple properties, AND/OR, saved queries)
-- [ ] Kanban card reordering within a column
-- [ ] Custom bullet icons per type (Tabler Icons)
+- [ ] Saved queries (persist filter + sort as a named view on tag pages)
+- [ ] Icon picker UI on tag pages (choose from emoji/SF Symbols)
+- [ ] Clean display: strip property continuation lines from editor display
 
 ## When picking up work
 
