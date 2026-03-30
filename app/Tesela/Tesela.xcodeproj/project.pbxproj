@@ -25,6 +25,7 @@
 		518AFD83D31911B5D8682C2F /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06974E4D9B0B4C5405569767 /* APIClient.swift */; };
 		592D19E290236B903FCF5DF2 /* BlockZoomView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B45089E2F58DE3194B4D971 /* BlockZoomView.swift */; };
 		5D4262E3D1311F8F916112A6 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 08DE7FEBB5035D6C7F7D9DF1 /* SidebarView.swift */; };
+		66C8B0CF231B76BF6DC3431C /* sf-symbols.txt in Resources */ = {isa = PBXBuildFile; fileRef = C6E448FF4598DF3B5458E091 /* sf-symbols.txt */; };
 		6F91B1483ADBA13457F21710 /* PropertyPageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2192D5B9A664C75BF850A425 /* PropertyPageView.swift */; };
 		7E0B74D079D9CF56310C1040 /* Block.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF6A8F52A14D5341307B7CDA /* Block.swift */; };
 		816EB5B12DE916E4A372699F /* ContentArea.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2516B7F64A5934EB90C0A2F3 /* ContentArea.swift */; };
@@ -38,6 +39,7 @@
 		A522DAF696C8B8DE67161619 /* BlockView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C39EB381DB998940EAD68E5 /* BlockView.swift */; };
 		A793CE860040055CADCC5083 /* RightSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B516B1FB896984C9A47BA978 /* RightSidebarView.swift */; };
 		A8DE69CF9C792BC9A8CF1054 /* AppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = B05C044B8030091D728EA655 /* AppState.swift */; };
+		AD28D1A190951373E3250C21 /* Color+Hex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CBC18D1F8475DD07A0F89F8 /* Color+Hex.swift */; };
 		B61CC5AF133C6C8B10A7A938 /* CompletionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9054304570421DA7EA21A5ED /* CompletionView.swift */; };
 		B8037B1BBED0C10918FBE283 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DF308818C876207C0482E7E /* RootView.swift */; };
 		B939C3D3049B1637BD750C54 /* TypeDefinition.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D2450A34E3D293628B09ADD /* TypeDefinition.swift */; };
@@ -79,6 +81,7 @@
 		6974F402BC0671BB7F6D24AB /* APIClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClientTests.swift; sourceTree = "<group>"; };
 		6A307563F2BC1FA272D9D732 /* TagPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TagPageView.swift; sourceTree = "<group>"; };
 		6C9E71BC5AA2F3BD2E8BC1ED /* VimEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VimEngine.swift; sourceTree = "<group>"; };
+		6CBC18D1F8475DD07A0F89F8 /* Color+Hex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Color+Hex.swift"; sourceTree = "<group>"; };
 		82D7AD3CCEA6697594652E84 /* MenuCommand.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuCommand.swift; sourceTree = "<group>"; };
 		874E24328A38A9F099D6A121 /* WsEventTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WsEventTests.swift; sourceTree = "<group>"; };
 		8D2450A34E3D293628B09ADD /* TypeDefinition.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TypeDefinition.swift; sourceTree = "<group>"; };
@@ -99,6 +102,7 @@
 		B516B1FB896984C9A47BA978 /* RightSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RightSidebarView.swift; sourceTree = "<group>"; };
 		BE9364B5F6D22ABA0E636572 /* TeselaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TeselaApp.swift; sourceTree = "<group>"; };
 		C3FED602B9C84575964F5FA2 /* PageListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageListView.swift; sourceTree = "<group>"; };
+		C6E448FF4598DF3B5458E091 /* sf-symbols.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = "sf-symbols.txt"; sourceTree = "<group>"; };
 		C77C769D643532067754AF5D /* TilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TilesView.swift; sourceTree = "<group>"; };
 		C78419676B314818F2A956C2 /* BlockStyler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockStyler.swift; sourceTree = "<group>"; };
 		CAB173D4D76EDF9C10B73B0F /* OutlinerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OutlinerView.swift; sourceTree = "<group>"; };
@@ -250,6 +254,7 @@
 			isa = PBXGroup;
 			children = (
 				F08A13EED0501975DFE86981 /* Info.plist */,
+				C6E448FF4598DF3B5458E091 /* sf-symbols.txt */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -260,6 +265,14 @@
 				FABC497C59C6C6EA5CC1DBD2 /* GraphView.swift */,
 			);
 			path = Graph;
+			sourceTree = "<group>";
+		};
+		953B5E04C4ED07927E93BA0B /* Extensions */ = {
+			isa = PBXGroup;
+			children = (
+				6CBC18D1F8475DD07A0F89F8 /* Color+Hex.swift */,
+			);
+			path = Extensions;
 			sourceTree = "<group>";
 		};
 		9A0650E8559F3D21FEA0FC62 /* SlashMenu */ = {
@@ -284,6 +297,7 @@
 			children = (
 				25DBE44E79C80731BE350726 /* App */,
 				70D67408C3222F43FC49E085 /* Editor */,
+				953B5E04C4ED07927E93BA0B /* Extensions */,
 				4C5CA7303831FDE0153071EB /* Models */,
 				83A26D1FF92B855BD5E96FCF /* Resources */,
 				5CDF5F42DDAFFC43BF6FF68E /* Services */,
@@ -311,6 +325,7 @@
 			buildConfigurationList = 7BD83CC4E786F396BE662127 /* Build configuration list for PBXNativeTarget "Tesela" */;
 			buildPhases = (
 				CD8A9F7ADDCF0A45DA2C160C /* Sources */,
+				28702DCD87065BBDC7638D36 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -376,6 +391,17 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		28702DCD87065BBDC7638D36 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				66C8B0CF231B76BF6DC3431C /* sf-symbols.txt in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
 		445DF3E46BE77215047586CA /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
@@ -399,6 +425,7 @@
 				8F52792C0E76B589EDAFF02E /* BlockStyler.swift in Sources */,
 				A522DAF696C8B8DE67161619 /* BlockView.swift in Sources */,
 				592D19E290236B903FCF5DF2 /* BlockZoomView.swift in Sources */,
+				AD28D1A190951373E3250C21 /* Color+Hex.swift in Sources */,
 				9BB3FC008F13F33A9D429D94 /* CommandPaletteView.swift in Sources */,
 				B61CC5AF133C6C8B10A7A938 /* CompletionView.swift in Sources */,
 				816EB5B12DE916E4A372699F /* ContentArea.swift in Sources */,

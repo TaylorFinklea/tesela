@@ -37,6 +37,13 @@ struct TagPageView: View {
         return nil
     }
 
+    private var tagColor: Color {
+        guard let colorStr = resolvedType?.color, !colorStr.isEmpty, colorStr != "#808080" else {
+            return .secondary
+        }
+        return Color(hex: colorStr) ?? .secondary
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -50,7 +57,7 @@ struct TagPageView: View {
                            let _ = NSImage(systemSymbolName: icon, accessibilityDescription: nil) {
                             Image(systemName: icon)
                                 .font(.title)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(tagColor)
                         } else {
                             Image(systemName: "square.dashed")
                                 .font(.title)
@@ -60,7 +67,7 @@ struct TagPageView: View {
                     .buttonStyle(.plain)
                     .help("Change icon")
                     .popover(isPresented: $isPickingIcon) {
-                        IconPickerView { selectedSymbol in
+                        IconPickerView(currentColor: tagColor) { selectedSymbol in
                             isPickingIcon = false
                             Task { await saveIcon(selectedSymbol) }
                         }
@@ -79,6 +86,16 @@ struct TagPageView: View {
                 }
                 .padding(.horizontal, 24)
                 .padding(.top, 24)
+                .padding(.bottom, 8)
+
+                // Color picker
+                HStack(spacing: 8) {
+                    Text("Color").font(.caption).foregroundStyle(.secondary)
+                    TagColorPicker(currentColor: tagColor) { color in
+                        Task { await saveColor(color) }
+                    }
+                }
+                .padding(.horizontal, 24)
                 .padding(.bottom, 16)
 
                 // Extends
@@ -430,15 +447,20 @@ struct TagPageView: View {
         await saveTagFrontmatter(icon: symbolName)
     }
 
+    private func saveColor(_ color: Color) async {
+        await saveTagFrontmatter(color: color.hexString)
+    }
+
     private func saveTagProperties(_ properties: [String]) async {
         await saveTagFrontmatter(tagProperties: properties)
     }
 
     /// Rebuild and save the tag page frontmatter, preserving all fields
-    private func saveTagFrontmatter(icon: String? = nil, tagProperties: [String]? = nil) async {
+    private func saveTagFrontmatter(icon: String? = nil, color: String? = nil, tagProperties: [String]? = nil) async {
         let props = tagProperties ?? ownPropertyNames
         let propsStr = props.map { "\"\($0)\"" }.joined(separator: ", ")
         let iconValue = icon ?? resolvedType?.icon ?? ""
+        let colorValue = color ?? resolvedType?.color ?? ""
 
         var yaml = "---\n"
         yaml += "title: \"\(page.title)\"\n"
@@ -448,6 +470,9 @@ struct TagPageView: View {
         }
         if !iconValue.isEmpty {
             yaml += "icon: \"\(iconValue)\"\n"
+        }
+        if !colorValue.isEmpty && colorValue != "#808080" {
+            yaml += "color: \"\(colorValue)\"\n"
         }
         yaml += "tag_properties: [\(propsStr)]\n"
         yaml += "tags: []\n"

@@ -174,14 +174,24 @@ class OutlinerView: NSView {
             let priorityWidth: CGFloat = block.priority != nil ? 22 : 0
             let textWidth = max(bounds.width - textX - 12 - badgeWidth - priorityWidth, 80)
 
-            // Bullet — custom icon per type tag, or default bullet
-            let typeIcon = block.tags
+            // Bullet — custom icon + color per type tag, or default bullet
+            let matchedType = block.tags
                 .compactMap { tag in typeRegistry.first(where: { $0.name.lowercased() == tag.lowercased() }) }
                 .first
-                .flatMap { $0.icon.isEmpty ? nil : $0.icon }
-            let bulletSymbol = typeIcon ?? (block.indentLevel == 0 ? "•" : "◦")
+            let bulletSymbol = matchedType.flatMap { $0.icon.isEmpty ? nil : $0.icon } ?? (block.indentLevel == 0 ? "•" : "◦")
+            let bulletColor: NSColor = {
+                guard let hex = matchedType?.color, !hex.isEmpty, hex != "#808080" else { return .tertiaryLabelColor }
+                var str = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+                if str.hasPrefix("#") { str.removeFirst() }
+                guard str.count == 6 else { return .tertiaryLabelColor }
+                var rgb: UInt64 = 0
+                Scanner(string: str).scanHexInt64(&rgb)
+                return NSColor(red: CGFloat((rgb >> 16) & 0xFF) / 255,
+                               green: CGFloat((rgb >> 8) & 0xFF) / 255,
+                               blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
+            }()
             let blockIndex = index
-            let bullet = BulletView(symbol: bulletSymbol)
+            let bullet = BulletView(symbol: bulletSymbol, tintColor: bulletColor)
             bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
             bullet.onLeftClick = { [weak self] in
                 self?.delegate?.outlinerDidRequestBlockZoom(blockIndex: blockIndex)
@@ -1738,25 +1748,22 @@ class BulletView: NSView {
         "🏷": "tag",
     ]
 
-    init(symbol: String) {
+    init(symbol: String, tintColor: NSColor = .tertiaryLabelColor) {
         super.init(frame: .zero)
 
-        // Try SF Symbol first (from map or direct name)
-        // Try SF Symbol: first from emoji map, then the raw string as an SF Symbol name
         let sfName = Self.sfSymbolMap[symbol] ?? symbol
         let isBulletDot = (symbol == "•" || symbol == "◦")
         if !isBulletDot, let img = NSImage(systemSymbolName: sfName, accessibilityDescription: nil) {
             let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
             let imageView = NSImageView()
             imageView.image = img.withSymbolConfiguration(config)
-            imageView.contentTintColor = .tertiaryLabelColor
+            imageView.contentTintColor = tintColor
             imageView.frame = NSRect(x: 1, y: 4, width: 14, height: 14)
             addSubview(imageView)
         } else {
-            // Fall back to text (for • ◦ or unknown emoji)
             let label = NSTextField(labelWithString: symbol)
             label.font = .systemFont(ofSize: NSFont.systemFontSize)
-            label.textColor = .tertiaryLabelColor
+            label.textColor = tintColor
             label.isEditable = false
             label.isBordered = false
             label.drawsBackground = false
