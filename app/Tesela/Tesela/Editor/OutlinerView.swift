@@ -156,6 +156,7 @@ class OutlinerView: NSView {
         typeTagNames = Set(typeRegistry.map { $0.name.lowercased() })
 
         var yOffset: CGFloat = 8
+        var blockPositions: [(y: CGFloat, height: CGFloat, indent: Int)] = []
 
         for (index, block) in blocks.enumerated() {
             let indentX = CGFloat(block.indentLevel) * 20
@@ -299,6 +300,7 @@ class OutlinerView: NSView {
                 badgeX += pillWidth + 4
             }
 
+            blockPositions.append((y: yOffset, height: height, indent: block.indentLevel))
             yOffset += height + 4
 
             // Expanded block: show inherited properties
@@ -365,6 +367,9 @@ class OutlinerView: NSView {
             }
 
         }
+
+        // Draw indent thread lines connecting parent bullets to children
+        drawThreadLines(blockPositions: blockPositions)
 
         let minHeight = superview?.bounds.height ?? 400
         frame.size.height = max(yOffset + 8, minHeight)
@@ -1159,6 +1164,49 @@ class OutlinerView: NSView {
         case .none:
             break
         }
+    }
+
+    // MARK: - Thread lines (indent hierarchy visualization)
+
+    private func drawThreadLines(blockPositions: [(y: CGFloat, height: CGFloat, indent: Int)]) {
+        guard blockPositions.count > 1 else { return }
+
+        // For each indent level > 0, find spans where blocks are at that level or deeper,
+        // and draw a vertical line at the parent's bullet column
+        let maxIndent = blockPositions.map(\.indent).max() ?? 0
+        for level in 1...max(maxIndent, 1) {
+            var spanStart: Int? = nil
+            for i in 0..<blockPositions.count {
+                let atOrDeeper = blockPositions[i].indent >= level
+                if atOrDeeper && spanStart == nil {
+                    spanStart = i
+                } else if !atOrDeeper, let start = spanStart {
+                    drawThreadLine(level: level, from: start, to: i - 1, positions: blockPositions)
+                    spanStart = nil
+                }
+            }
+            if let start = spanStart {
+                drawThreadLine(level: level, from: start, to: blockPositions.count - 1, positions: blockPositions)
+            }
+        }
+    }
+
+    private func drawThreadLine(level: Int, from startIdx: Int, to endIdx: Int, positions: [(y: CGFloat, height: CGFloat, indent: Int)]) {
+        guard startIdx < endIdx else { return }
+
+        // X position: centered on the bullet column for this indent level
+        let x = CGFloat(level - 1) * 20 + 8 + 7  // parent bullet center
+
+        // Y: from the bottom of the first block to the middle of the last
+        let startY = positions[startIdx].y + positions[startIdx].height
+        let endY = positions[endIdx].y + positions[endIdx].height / 2
+
+        guard endY > startY else { return }
+
+        let line = NSView(frame: NSRect(x: x, y: startY, width: 1, height: endY - startY))
+        line.wantsLayer = true
+        line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
+        addSubview(line)
     }
 
     // MARK: - Inline autocomplete (#tags and [[page refs]])
