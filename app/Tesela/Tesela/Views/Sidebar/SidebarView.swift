@@ -76,11 +76,13 @@ struct SidebarView: View {
     private func handleNavChange(to item: NavItem) {
         switch item {
         case .tiles:
-            appState.currentPage = nil  // Show TilesView in content area
+            appState.currentPage = nil
         case .pages:
-            appState.currentPage = nil  // Show page list in content area
+            appState.currentPage = nil
+        case .board:
+            appState.currentPage = nil
         case .graph:
-            appState.currentPage = nil  // Show graph in content area
+            appState.currentPage = nil
         }
     }
 }

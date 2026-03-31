@@ -191,8 +191,8 @@ enum BlockParser {
         return v.isEmpty ? nil : v
     }
 
-    /// Non-optional version for display convenience
-    static func stripWikiLink(_ value: String) -> String {
+    /// Non-optional convenience — returns original string if not a wiki link
+    static func strippedWikiLink(_ value: String) -> String {
         if value.hasPrefix("[[") && value.hasSuffix("]]") {
             return String(value.dropFirst(2).dropLast(2))
         }

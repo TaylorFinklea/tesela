@@ -308,7 +308,7 @@ struct TagPageView: View {
 
                                 ForEach(columns, id: \.self) { col in
                                     let value = block.properties[col] ?? block.properties[col.lowercased()] ?? "Empty"
-                                    let stripped = BlockParser.stripWikiLink(value)
+                                    let stripped = BlockParser.strippedWikiLink(value)
                                     let isLink = value.hasPrefix("[[") && value.hasSuffix("]]")
                                     if isLink {
                                         Button(stripped) {

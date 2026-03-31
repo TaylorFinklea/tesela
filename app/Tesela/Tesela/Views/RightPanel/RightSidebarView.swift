@@ -89,7 +89,7 @@ private struct RightSidebarContent: View {
                 Section("Block Properties") {
                     ForEach(blockInfo.properties.sorted(by: { $0.key < $1.key }), id: \.key) { key, value in
                         LabeledContent {
-                            let stripped = BlockParser.stripWikiLink(value)
+                            let stripped = BlockParser.strippedWikiLink(value)
                             let isLink = value.hasPrefix("[[") && value.hasSuffix("]]")
                             if isLink {
                                 Button(stripped) {
