@@ -322,14 +322,12 @@ enum ConnectionStatus: Equatable {
 enum NavItem: Hashable, CaseIterable {
     case tiles
     case pages
-    case board
     case graph
 
     var label: String {
         switch self {
         case .tiles: "Tiles"
         case .pages: "Pages"
-        case .board: "Board"
         case .graph: "Graph"
         }
     }
@@ -338,7 +336,6 @@ enum NavItem: Hashable, CaseIterable {
         switch self {
         case .tiles: "calendar"
         case .pages: "doc.text"
-        case .board: "rectangle.split.3x1"
         case .graph: "point.3.connected.trianglepath.dotted"
         }
     }
@@ -347,7 +344,6 @@ enum NavItem: Hashable, CaseIterable {
         switch self {
         case .tiles: "tiles"
         case .pages: "pages"
-        case .board: "board"
         case .graph: "graph"
         }
     }
@@ -355,7 +351,6 @@ enum NavItem: Hashable, CaseIterable {
     static func from(persistenceKey: String) -> NavItem {
         switch persistenceKey {
         case "pages": .pages
-        case "board": .board
         case "graph": .graph
         default: .tiles
         }

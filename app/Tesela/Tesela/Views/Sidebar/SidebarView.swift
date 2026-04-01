@@ -79,8 +79,6 @@ struct SidebarView: View {
             appState.currentPage = nil
         case .pages:
             appState.currentPage = nil
-        case .board:
-            appState.currentPage = nil
         case .graph:
             appState.currentPage = nil
         }

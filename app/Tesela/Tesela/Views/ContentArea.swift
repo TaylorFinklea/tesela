@@ -33,8 +33,6 @@ struct ContentArea: View {
                     TilesView()
                 case .pages:
                     PageListView()
-                case .board:
-                    BoardView()
                 case .graph:
                     GraphView()
                 }
