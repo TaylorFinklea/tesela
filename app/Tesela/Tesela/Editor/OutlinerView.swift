@@ -1289,9 +1289,10 @@ class OutlinerView: NSView {
         // Both # and [[ search all pages — tags are just pages
         let items = allPageTitles
 
-        guard !items.isEmpty else { return }
+        guard !items.isEmpty || trigger == .tag else { return }
 
         let completionView = CompletionView(items: items)
+        completionView.showCreateOption = (trigger == .tag)
         completionView.updateQuery(query)
         completionView.onSelect = { [weak self] selected in
             self?.insertCompletion(selected, trigger: trigger, blockIndex: blockIndex)

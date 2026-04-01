@@ -12,6 +12,8 @@ class CompletionView: NSView {
     }
     var onSelect: ((String) -> Void)?
     var onDismiss: (() -> Void)?
+    /// When true, shows "New tag: query" option when no exact match exists
+    var showCreateOption: Bool = false
 
     private let rowHeight: CGFloat = 24
     private let padding: CGFloat = 4
@@ -22,13 +24,27 @@ class CompletionView: NSView {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { false }
 
+    /// Sentinel prefix for "New tag" entries
+    static let createPrefix = "⊕ New tag: "
+
     var filteredItems: [String] {
-        if query.isEmpty { return items }
-        let q = query.lowercased()
-        // Prefix matches first, then contains matches
-        let prefix = items.filter { $0.lowercased().hasPrefix(q) }
-        let contains = items.filter { !$0.lowercased().hasPrefix(q) && $0.lowercased().contains(q) }
-        return prefix + contains
+        var result: [String]
+        if query.isEmpty {
+            result = items
+        } else {
+            let q = query.lowercased()
+            let prefix = items.filter { $0.lowercased().hasPrefix(q) }
+            let contains = items.filter { !$0.lowercased().hasPrefix(q) && $0.lowercased().contains(q) }
+            result = prefix + contains
+        }
+        // Add "New tag: query" option if enabled and no exact match
+        if showCreateOption && !query.isEmpty {
+            let exactMatch = items.contains { $0.lowercased() == query.lowercased() }
+            if !exactMatch {
+                result.append("\(Self.createPrefix)\(query)")
+            }
+        }
+        return result
     }
 
     init(items: [String]) {
@@ -83,6 +99,8 @@ class CompletionView: NSView {
             return
         }
 
+        // "New tag" entries get special green styling
+
         for i in 0..<min(visible.count, maxVisibleRows) {
             let item = visible[i]
             let rowRect = NSRect(x: 0, y: padding + CGFloat(i) * rowHeight,
@@ -104,9 +122,10 @@ class CompletionView: NSView {
     }
 
     private func highlightedString(_ text: String, query: String) -> NSAttributedString {
+        let isCreateOption = text.hasPrefix(Self.createPrefix)
         let str = NSMutableAttributedString(string: text, attributes: [
-            .font: NSFont.systemFont(ofSize: 12),
-            .foregroundColor: NSColor.labelColor
+            .font: isCreateOption ? NSFont.boldSystemFont(ofSize: 12) : NSFont.systemFont(ofSize: 12),
+            .foregroundColor: isCreateOption ? NSColor.systemGreen : NSColor.labelColor
         ])
         if !query.isEmpty, let range = text.range(of: query, options: .caseInsensitive) {
             let nsRange = NSRange(range, in: text)
@@ -152,6 +171,11 @@ class CompletionView: NSView {
     private func confirm() {
         let visible = filteredItems
         guard selectedIndex >= 0 && selectedIndex < visible.count else { return }
-        onSelect?(visible[selectedIndex])
+        var selected = visible[selectedIndex]
+        // Strip "New tag: " prefix — the caller just gets the tag name
+        if selected.hasPrefix(Self.createPrefix) {
+            selected = String(selected.dropFirst(Self.createPrefix.count))
+        }
+        onSelect?(selected)
     }
 }
