@@ -95,6 +95,12 @@ enum Commands {
         #[arg(short, long, default_value = "markdown")]
         format: String,
     },
+    /// Back up the notes directory to a timestamped archive
+    Backup {
+        /// Output directory for backups (defaults to .tesela/backups/)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
     /// Rebuild the search index
     Reindex,
     /// Launch the TUI interface
@@ -347,6 +353,83 @@ async fn cmd_export(ctx: &Ctx, query: String, format: String) -> Result<()> {
     Ok(())
 }
 
+async fn cmd_backup(mosaic: &PathBuf, output: Option<PathBuf>) -> Result<()> {
+    let notes_dir = mosaic.join("notes");
+    if !notes_dir.exists() {
+        anyhow::bail!("Notes directory not found: {}", notes_dir.display());
+    }
+
+    let backup_root = output.unwrap_or_else(|| mosaic.join(".tesela").join("backups"));
+    std::fs::create_dir_all(&backup_root)
+        .with_context(|| format!("Failed to create backup directory: {}", backup_root.display()))?;
+
+    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let backup_dir = backup_root.join(format!("backup-{}", timestamp));
+
+    // Copy notes/ recursively
+    copy_dir_recursive(&notes_dir, &backup_dir)?;
+
+    // Also copy .tesela/tesela.db as a snapshot
+    let db_path = mosaic.join(".tesela").join("tesela.db");
+    if db_path.exists() {
+        let db_dest = backup_dir.join("tesela.db");
+        std::fs::copy(&db_path, &db_dest)
+            .with_context(|| format!("Failed to copy database: {}", db_path.display()))?;
+    }
+
+    // Count files
+    let file_count = count_files_recursive(&backup_dir);
+
+    println!("Backup complete: {} ({} files)", backup_dir.display(), file_count);
+
+    // Clean old backups (keep last 10)
+    let mut backups: Vec<_> = std::fs::read_dir(&backup_root)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("backup-"))
+        .collect();
+    backups.sort_by_key(|e| e.file_name());
+    if backups.len() > 10 {
+        let to_remove = backups.len() - 10;
+        for entry in backups.into_iter().take(to_remove) {
+            if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+                tracing::warn!("Failed to clean old backup {}: {}", entry.path().display(), e);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn count_files_recursive(dir: &std::path::Path) -> usize {
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                count += count_files_recursive(&path);
+            } else {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
 async fn cmd_reindex(ctx: &Ctx) -> Result<()> {
     let notes = ctx
         .store
@@ -534,10 +617,15 @@ async fn main() -> Result<()> {
         return cmd_install(mosaic).await;
     }
 
+    // Handle backup — needs mosaic path but not a full Ctx
+    if let Commands::Backup { output } = cli.command {
+        return cmd_backup(&mosaic, output).await;
+    }
+
     let ctx = Ctx::new(mosaic).await?;
 
     match cli.command {
-        Commands::Init { .. } | Commands::Completions { .. } | Commands::Install | Commands::Uninstall => unreachable!(),
+        Commands::Init { .. } | Commands::Completions { .. } | Commands::Install | Commands::Uninstall | Commands::Backup { .. } => unreachable!(),
         Commands::New {
             title,
             tags,

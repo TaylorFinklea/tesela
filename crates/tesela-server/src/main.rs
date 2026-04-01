@@ -25,6 +25,10 @@ async fn main() -> Result<()> {
         .init();
 
     let mosaic = find_mosaic()?;
+
+    // Auto-backup on startup (keep last 5 daily backups)
+    auto_backup(&mosaic);
+
     let config = Config::default();
     let db_path = mosaic.join(".tesela").join("tesela.db");
     let notes_dir = mosaic.join("notes");
@@ -161,4 +165,66 @@ fn find_mosaic() -> Result<PathBuf> {
         }
     }
     anyhow::bail!("No mosaic found. Run 'tesela init' first.")
+}
+
+/// Auto-backup on server startup. Creates a daily backup of notes/.
+/// Only creates one backup per day. Keeps last 5 daily backups.
+fn auto_backup(mosaic: &PathBuf) {
+    let notes_dir = mosaic.join("notes");
+    if !notes_dir.exists() {
+        return;
+    }
+
+    let backup_root = mosaic.join(".tesela").join("backups");
+    if std::fs::create_dir_all(&backup_root).is_err() {
+        warn!("Failed to create backup directory");
+        return;
+    }
+
+    let today = chrono::Local::now().format("%Y%m%d").to_string();
+    let backup_dir = backup_root.join(format!("daily-{}", today));
+
+    // Skip if today's backup already exists
+    if backup_dir.exists() {
+        info!("Today's backup already exists: {}", backup_dir.display());
+        return;
+    }
+
+    // Copy notes/ recursively
+    if let Err(e) = copy_dir_recursive(&notes_dir, &backup_dir) {
+        warn!("Auto-backup failed: {}", e);
+        return;
+    }
+
+    info!("Auto-backup created: {}", backup_dir.display());
+
+    // Clean old backups (keep last 5)
+    if let Ok(entries) = std::fs::read_dir(&backup_root) {
+        let mut backups: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("daily-"))
+            .collect();
+        backups.sort_by_key(|e| e.file_name());
+        let total = backups.len();
+        if total > 5 {
+            for entry in backups.into_iter().take(total - 5) {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+}
+
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
 }
