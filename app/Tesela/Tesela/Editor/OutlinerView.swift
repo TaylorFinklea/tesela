@@ -163,10 +163,11 @@ class OutlinerView: NSView {
             let bulletX  = indentX + 12
             let textX    = indentX + 32
 
-            let typeTags = block.tags.filter { typeTagNames.contains($0.lowercased()) }
+            // All tags shown as right-side pills (stripped from editor text)
+            let allTags = block.tags
 
-            // Reserve space for right-side badges (type tags only + task properties)
-            let badgeCount = typeTags.count
+            // Reserve space for right-side badges (all tags + task properties)
+            let badgeCount = allTags.count
                 + (block.deadline != nil ? 1 : 0)
                 + (block.scheduled != nil ? 1 : 0)
                 + (block.effort != nil ? 1 : 0)
@@ -294,11 +295,12 @@ class OutlinerView: NSView {
                 badgeX += pill.frame.width + 4
             }
 
-            for tag in typeTags {
-                let pill = makeTagPill("#\(tag)")
+            let blockIdx = index
+            for tag in allTags {
+                let pill = makeTagPill("#\(tag)", removable: true)
                 let pillWidth = pill.frame.width
                 pill.frame = NSRect(x: badgeX, y: yOffset + (height - 18) / 2, width: pillWidth, height: 18)
-                // Make tag pill clickable — navigates to the tag's page
+                // Left-click navigates to the tag's page
                 let tagName = tag
                 let clickAction = DatePickerAction { [weak self] in
                     self?.delegate?.outlinerDidClickWikiLink(target: tagName.lowercased())
@@ -306,6 +308,15 @@ class OutlinerView: NSView {
                 let clickRecognizer = NSClickGestureRecognizer(target: clickAction, action: #selector(DatePickerAction.execute))
                 pill.addGestureRecognizer(clickRecognizer)
                 objc_setAssociatedObject(pill, "tagClickAction", clickAction, .OBJC_ASSOCIATION_RETAIN)
+                // × button removes the tag
+                let removeAction = DatePickerAction { [weak self] in
+                    self?.removeTag(tagName, at: blockIdx)
+                }
+                objc_setAssociatedObject(pill, "tagRemoveAction", removeAction, .OBJC_ASSOCIATION_RETAIN)
+                if let xButton = pill.subviews.first(where: { $0.tag == 999 }) {
+                    let removeClick = NSClickGestureRecognizer(target: removeAction, action: #selector(DatePickerAction.execute))
+                    xButton.addGestureRecognizer(removeClick)
+                }
                 addSubview(pill)
                 badgeX += pillWidth + 4
             }
@@ -578,10 +589,10 @@ class OutlinerView: NSView {
         delegate?.outlinerDidChangeContent(blocks: blocks)
     }
 
-    private func makeTagPill(_ text: String) -> NSView {
+    private func makeTagPill(_ text: String, removable: Bool = false) -> NSView {
         let container = NSView()
         container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.25).cgColor
+        container.layer?.backgroundColor = NSColor.secondaryLabelColor.withAlphaComponent(0.15).cgColor
         container.layer?.cornerRadius = 4
 
         let label = NSTextField(labelWithString: text)
@@ -593,8 +604,39 @@ class OutlinerView: NSView {
         label.sizeToFit()
         label.frame.origin = NSPoint(x: 6, y: 1)
         container.addSubview(label)
-        container.frame.size = NSSize(width: label.frame.width + 12, height: 18)
+
+        var totalWidth = label.frame.width + 12
+        if removable {
+            let xLabel = NSTextField(labelWithString: "×")
+            xLabel.font = .systemFont(ofSize: 9)
+            xLabel.textColor = .tertiaryLabelColor
+            xLabel.isEditable = false
+            xLabel.isBordered = false
+            xLabel.drawsBackground = false
+            xLabel.sizeToFit()
+            xLabel.frame.origin = NSPoint(x: label.frame.maxX + 2, y: 1)
+            xLabel.tag = 999  // marker for finding the × button
+            container.addSubview(xLabel)
+            totalWidth = xLabel.frame.maxX + 4
+        }
+
+        container.frame.size = NSSize(width: totalWidth, height: 18)
         return container
+    }
+
+    private func removeTag(_ tag: String, at index: Int) {
+        guard index < blocks.count else { return }
+        let block = blocks[index]
+        // Remove #tag from the raw text
+        var text = block.text
+        text = text.replacingOccurrences(of: " #\(tag)", with: "")
+        text = text.replacingOccurrences(of: "#\(tag) ", with: "")
+        text = text.replacingOccurrences(of: "#\(tag)", with: "")
+        blocks[index].text = text.trimmingCharacters(in: .whitespaces)
+        blocks[index].tags = BlockParser.extractTags(from: blocks[index].text)
+        pendingFocusIndex = index
+        rebuildBlockViews()
+        delegate?.outlinerDidChangeContent(blocks: blocks)
     }
 
     private func makeDeadlineBadge(_ dateStr: String) -> NSView {
@@ -717,7 +759,7 @@ class OutlinerView: NSView {
             checkForCompletion(in: view, at: index)
 
             let oldTags = Set(blocks[index].tags)
-            blocks[index].updateDisplayText(newText, typeTagNames: typeTagNames)
+            blocks[index].updateDisplayText(newText, typeTagNames: nil)
             // Re-extract tags (live mode: skip end-of-string tags to avoid mid-typing)
             blocks[index].tags = BlockParser.extractTagsLive(from: blocks[index].text)
             let newProps = BlockParser.extractProperties(from: blocks[index].text)
@@ -730,7 +772,7 @@ class OutlinerView: NSView {
             if abs(view.frame.size.height - newH) > 2 || tagsChanged {
                 pendingFocusIndex = index
                 // Preserve cursor position across rebuild (display text may be shorter after tag stripping)
-                let cursorPos = min(view.selectedRange().location, blocks[index].displayText(strippingOnly: typeTagNames.isEmpty ? nil : typeTagNames).count)
+                let cursorPos = min(view.selectedRange().location, blocks[index].displayText(strippingOnly: nil).count)
                 pendingCursorPosition = cursorPos
                 rebuildBlockViews()
             }
@@ -1426,7 +1468,7 @@ class OutlinerView: NSView {
 
         // Search display text (what the user sees in the editor)
         for (i, block) in blocks.enumerated() {
-            let display = block.displayText(strippingOnly: typeTagNames.isEmpty ? nil : typeTagNames)
+            let display = block.displayText(strippingOnly: nil)
             let text = display.lowercased()
             var searchRange = text.startIndex..<text.endIndex
             while let range = text.range(of: lowerQuery, range: searchRange) {

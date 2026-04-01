@@ -30,11 +30,8 @@ enum BlockStyler {
             textStorage.addAttribute(.backgroundColor, value: NSColor.systemBlue.withAlphaComponent(0.25), range: range)
         }
 
-        // #casual-tags → subtle styled inline (these are tags that stayed in display text)
-        hashTagRegex.enumerateMatches(in: currentText, range: fullRange) { match, _, _ in
-            guard let range = match?.range else { return }
-            textStorage.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: range)
-        }
+        // All tags are now stripped from display text and shown as right-side pills.
+        // No inline tag styling needed.
 
         // Search matches → yellow highlight
         if let query = searchQuery, !query.isEmpty {
