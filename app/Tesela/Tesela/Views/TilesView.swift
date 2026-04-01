@@ -219,6 +219,10 @@ private struct EditableTileCard: View {
             blocks = [Block(text: "")]
         } else {
             blocks = parsed
+            // Always have an empty block at the end ready for input
+            if let last = blocks.last, !last.text.isEmpty {
+                blocks.append(Block(text: ""))
+            }
         }
     }
 
