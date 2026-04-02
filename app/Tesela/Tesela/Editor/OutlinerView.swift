@@ -156,7 +156,7 @@ class OutlinerView: NSView {
         typeTagNames = Set(typeRegistry.map { $0.name.lowercased() })
 
         var yOffset: CGFloat = 8
-        var blockPositions: [(y: CGFloat, height: CGFloat, indent: Int)] = []
+        var blockPositions: [(y: CGFloat, height: CGFloat, indent: Int, bulletCenterX: CGFloat)] = []
 
         for (index, block) in blocks.enumerated() {
             let indentX = CGFloat(block.indentLevel) * 20
@@ -193,7 +193,7 @@ class OutlinerView: NSView {
             }()
             let blockIndex = index
             let bullet = BulletView(symbol: bulletSymbol, tintColor: bulletColor)
-            bullet.frame = NSRect(x: bulletX, y: yOffset + 2, width: 16, height: 22)
+            bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
             bullet.onLeftClick = { [weak self] in
                 self?.delegate?.outlinerDidRequestBlockZoom(blockIndex: blockIndex)
             }
@@ -239,7 +239,7 @@ class OutlinerView: NSView {
                 statusLabel.isEditable = false
                 statusLabel.isBordered = false
                 statusLabel.drawsBackground = false
-                statusLabel.frame = NSRect(x: bulletX + 18, y: yOffset + 2, width: 16, height: 22)
+                statusLabel.frame = NSRect(x: bulletX + 18, y: yOffset, width: 16, height: 22)
                 addSubview(statusLabel)
                 actualTextX = bulletX + 36
             }
@@ -321,7 +321,7 @@ class OutlinerView: NSView {
                 badgeX += pillWidth + 4
             }
 
-            blockPositions.append((y: yOffset, height: height, indent: block.indentLevel))
+            blockPositions.append((y: yOffset, height: height, indent: block.indentLevel, bulletCenterX: bulletX + 8))
             yOffset += height + 4
 
             // Expanded block: show inherited properties
@@ -1220,39 +1220,33 @@ class OutlinerView: NSView {
 
     // MARK: - Thread lines (indent hierarchy visualization)
 
-    private func drawThreadLines(blockPositions: [(y: CGFloat, height: CGFloat, indent: Int)]) {
+    private func drawThreadLines(blockPositions: [(y: CGFloat, height: CGFloat, indent: Int, bulletCenterX: CGFloat)]) {
         guard blockPositions.count > 1 else { return }
 
-        // For each block that has children, draw a vertical line at the
-        // CHILDREN's bullet X position (not the parent's). The line runs
-        // from just below the parent to the center of the last child.
-        // This matches Logseq's style where the line passes through the
-        // child bullets, connecting siblings visually.
+        // For each block with children, draw a vertical thread line at
+        // the first child's actual bullet X center. The line connects
+        // all siblings visually, like Logseq's threading.
         for i in 0..<blockPositions.count {
             let parentIndent = blockPositions[i].indent
-
-            // Check if next block is a child
             guard i + 1 < blockPositions.count, blockPositions[i + 1].indent > parentIndent else { continue }
 
-            let childIndent = parentIndent + 1
-
-            // Find the last direct child (or deeper) before indent returns to parent level
+            // Find the last block before indent returns to parent level
             var lastChild = i + 1
             for j in (i + 2)..<blockPositions.count {
                 if blockPositions[j].indent <= parentIndent { break }
                 lastChild = j
             }
 
-            // X: center of the CHILD bullets (not the parent)
-            let childBulletCenterX = CGFloat(childIndent) * 20 + 12 + 7
+            // Use the first child's actual bullet center X (recorded during layout)
+            let lineX = blockPositions[i + 1].bulletCenterX
 
-            // Y: from just below the parent bullet to the center of the last child
+            // Y: from bottom of parent to center of last child
             let startY = blockPositions[i].y + blockPositions[i].height + 2
             let endY = blockPositions[lastChild].y + blockPositions[lastChild].height * 0.5
 
             guard endY > startY else { continue }
 
-            let line = NSView(frame: NSRect(x: childBulletCenterX, y: startY, width: 1, height: endY - startY))
+            let line = NSView(frame: NSRect(x: lineX, y: startY, width: 1, height: endY - startY))
             line.wantsLayer = true
             line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
             addSubview(line)
@@ -1806,7 +1800,7 @@ class BulletView: NSView {
             let imageView = NSImageView()
             imageView.image = img.withSymbolConfiguration(config)
             imageView.contentTintColor = tintColor
-            imageView.frame = NSRect(x: 1, y: 5, width: 14, height: 14)
+            imageView.frame = NSRect(x: 1, y: 3, width: 14, height: 14)
             addSubview(imageView)
         } else {
             let label = NSTextField(labelWithString: symbol)
