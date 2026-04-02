@@ -65,7 +65,8 @@ final class Block: Identifiable, @unchecked Sendable {
     /// Pass nil to strip ALL tags (legacy behavior).
     func displayText(strippingOnly typeTagNames: Set<String>?) -> String {
         let firstLine = text.components(separatedBy: "\n").first ?? text
-        let liveTags = BlockParser.extractTagsLive(from: firstLine)
+        // Use extractTags (not extractTagsLive) to strip ALL tags including end-of-line
+        let liveTags = BlockParser.extractTags(from: firstLine)
         let tagsToStrip: [String]
         if let typeTagNames {
             tagsToStrip = liveTags.filter { typeTagNames.contains($0.lowercased()) }
@@ -87,8 +88,8 @@ final class Block: Identifiable, @unchecked Sendable {
         let lines = text.components(separatedBy: "\n")
         let firstLine = lines.first ?? ""
 
-        // Extract COMPLETE tags from original text (not partial mid-typing ones)
-        let originalTags = BlockParser.extractTagsLive(from: firstLine)
+        // Extract ALL tags from original text (these were stripped from display)
+        let originalTags = BlockParser.extractTags(from: firstLine)
 
         // Only re-append type tags (the ones stripped from display), not casual tags
         let tagsToRestore: [String]
