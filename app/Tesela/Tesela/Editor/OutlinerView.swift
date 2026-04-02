@@ -193,7 +193,7 @@ class OutlinerView: NSView {
             }()
             let blockIndex = index
             let bullet = BulletView(symbol: bulletSymbol, tintColor: bulletColor)
-            bullet.frame = NSRect(x: bulletX, y: yOffset + 1, width: 16, height: 22)
+            bullet.frame = NSRect(x: bulletX, y: yOffset + 2, width: 16, height: 22)
             bullet.onLeftClick = { [weak self] in
                 self?.delegate?.outlinerDidRequestBlockZoom(blockIndex: blockIndex)
             }
@@ -239,7 +239,7 @@ class OutlinerView: NSView {
                 statusLabel.isEditable = false
                 statusLabel.isBordered = false
                 statusLabel.drawsBackground = false
-                statusLabel.frame = NSRect(x: bulletX + 18, y: yOffset + 1, width: 16, height: 22)
+                statusLabel.frame = NSRect(x: bulletX + 18, y: yOffset + 2, width: 16, height: 22)
                 addSubview(statusLabel)
                 actualTextX = bulletX + 36
             }
@@ -1223,33 +1223,38 @@ class OutlinerView: NSView {
     private func drawThreadLines(blockPositions: [(y: CGFloat, height: CGFloat, indent: Int)]) {
         guard blockPositions.count > 1 else { return }
 
-        // For each block that has children (next block is indented deeper),
-        // draw a vertical line from the parent bullet down to the last child
+        // For each block that has children, draw a vertical line at the
+        // CHILDREN's bullet X position (not the parent's). The line runs
+        // from just below the parent to the center of the last child.
+        // This matches Logseq's style where the line passes through the
+        // child bullets, connecting siblings visually.
         for i in 0..<blockPositions.count {
             let parentIndent = blockPositions[i].indent
 
             // Check if next block is a child
             guard i + 1 < blockPositions.count, blockPositions[i + 1].indent > parentIndent else { continue }
 
-            // Find the last consecutive child (at parentIndent + 1 or deeper)
+            let childIndent = parentIndent + 1
+
+            // Find the last direct child (or deeper) before indent returns to parent level
             var lastChild = i + 1
             for j in (i + 2)..<blockPositions.count {
                 if blockPositions[j].indent <= parentIndent { break }
                 lastChild = j
             }
 
-            // X: center of the parent's bullet
-            let bulletCenterX = CGFloat(parentIndent) * 20 + 12 + 7
+            // X: center of the CHILD bullets (not the parent)
+            let childBulletCenterX = CGFloat(childIndent) * 20 + 12 + 7
 
-            // Y: from the center of the parent bullet to the center of the last child bullet
-            let startY = blockPositions[i].y + blockPositions[i].height * 0.5 + 2
+            // Y: from just below the parent bullet to the center of the last child
+            let startY = blockPositions[i].y + blockPositions[i].height + 2
             let endY = blockPositions[lastChild].y + blockPositions[lastChild].height * 0.5
 
             guard endY > startY else { continue }
 
-            let line = NSView(frame: NSRect(x: bulletCenterX, y: startY, width: 1, height: endY - startY))
+            let line = NSView(frame: NSRect(x: childBulletCenterX, y: startY, width: 1, height: endY - startY))
             line.wantsLayer = true
-            line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
+            line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
             addSubview(line)
         }
     }
