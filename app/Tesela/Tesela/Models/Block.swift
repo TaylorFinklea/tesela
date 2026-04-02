@@ -82,31 +82,23 @@ final class Block: Identifiable, @unchecked Sendable {
         return result.trimmingCharacters(in: .whitespaces)
     }
 
-    /// Update storage text from edited display text, preserving hidden tags and property lines.
-    /// Only type tags (in typeTagNames) are re-appended since casual tags remain in display text.
+    /// Update storage text from edited display text.
+    /// Tags are reconstructed from the `tags` array (source of truth), not re-extracted
+    /// from the original text. This eliminates the fragile strip/restore dance.
     func updateDisplayText(_ newDisplay: String, typeTagNames: Set<String>? = nil) {
         let lines = text.components(separatedBy: "\n")
-        let firstLine = lines.first ?? ""
 
-        // Extract ALL tags from original text (these were stripped from display)
-        let originalTags = BlockParser.extractTags(from: firstLine)
-
-        // Only re-append type tags (the ones stripped from display), not casual tags
-        let tagsToRestore: [String]
-        if let typeTagNames {
-            tagsToRestore = originalTags.filter { typeTagNames.contains($0.lowercased()) }
-        } else {
-            tagsToRestore = originalTags
-        }
-        let hashTags = tagsToRestore.map { "#\($0)" }
-
+        // Start with the new display text (what the user sees in the editor)
         var result = newDisplay
-        let toAppend = hashTags.filter { !newDisplay.contains($0) }
-        if !toAppend.isEmpty {
-            result += " " + toAppend.joined(separator: " ")
+
+        // Append tags from the tags array — these are managed by the pill UI,
+        // not by inline text editing. Only append tags not already in the display text.
+        let tagsToAppend = tags.map { "#\($0)" }.filter { !newDisplay.contains($0) }
+        if !tagsToAppend.isEmpty {
+            result += " " + tagsToAppend.joined(separator: " ")
         }
 
-        // Append property continuation lines
+        // Append property continuation lines (lines after the first)
         if lines.count > 1 {
             result += "\n" + lines.dropFirst().joined(separator: "\n")
         }
