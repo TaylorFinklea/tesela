@@ -6,7 +6,61 @@ This file tracks all releases of Tesela.
 ## v0.20250825.0 - 2025-08-25 12:03:02 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -36,7 +90,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -96,7 +204,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -126,7 +288,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -323,7 +539,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -353,7 +623,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -413,7 +737,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -443,7 +821,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -665,7 +1097,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260329.0
 ## v0.20260321.0 - 2026-03-21 13:20:20 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -695,7 +1181,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -755,7 +1295,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -785,7 +1379,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -982,7 +1630,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -1012,7 +1714,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -1072,7 +1828,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -1102,7 +1912,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -1364,7 +2228,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
 ## v0.20260319.0 - 2026-03-19 11:14:57 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -1394,7 +2312,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -1454,7 +2426,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -1484,7 +2510,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -1681,7 +2761,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -1711,7 +2845,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -1771,7 +2959,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -1801,7 +3043,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2023,7 +3319,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260329.0
 ## v0.20260321.0 - 2026-03-21 13:20:20 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2053,7 +3403,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2113,7 +3517,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2143,7 +3601,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2340,7 +3852,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2370,7 +3936,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2430,7 +4050,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2460,7 +4134,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2754,7 +4482,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260319.0
 ## v0.20250925.0 - 2025-09-25 20:33:36 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2784,7 +4566,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2844,7 +4680,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -2874,7 +4764,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3071,7 +5015,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3101,7 +5099,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3161,7 +5213,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3191,7 +5297,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3413,7 +5573,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260329.0
 ## v0.20260321.0 - 2026-03-21 13:20:20 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3443,7 +5657,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3503,7 +5771,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3533,7 +5855,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3730,7 +6106,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3760,7 +6190,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3820,7 +6304,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -3850,7 +6388,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4112,7 +6704,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
 ## v0.20260319.0 - 2026-03-19 11:14:57 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4142,7 +6788,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4202,7 +6902,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4232,7 +6986,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4429,7 +7237,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4459,7 +7321,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4519,7 +7435,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4549,7 +7519,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4771,7 +7795,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260329.0
 ## v0.20260321.0 - 2026-03-21 13:20:20 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4801,7 +7879,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4861,7 +7993,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -4891,7 +8077,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5088,7 +8328,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5118,7 +8412,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5178,7 +8526,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5208,7 +8610,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5528,7 +8984,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20250925.0
 ## v0.20250826.0 - 2025-08-26 00:19:54 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5558,7 +9068,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5618,7 +9182,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5648,7 +9266,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5845,7 +9517,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5875,7 +9601,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5935,7 +9715,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -5965,7 +9799,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -6187,7 +10075,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260329.0
 ## v0.20260321.0 - 2026-03-21 13:20:20 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -6217,7 +10159,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -6277,7 +10273,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -6307,7 +10357,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -6504,7 +10608,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -6534,7 +10692,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -6594,7 +10806,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -6624,7 +10890,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -6886,7 +11206,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
 ## v0.20260319.0 - 2026-03-19 11:14:57 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -6916,7 +11290,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -6976,7 +11404,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7006,7 +11488,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7203,7 +11739,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7233,7 +11823,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7293,7 +11937,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7323,7 +12021,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7545,7 +12297,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260329.0
 ## v0.20260321.0 - 2026-03-21 13:20:20 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7575,7 +12381,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7635,7 +12495,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7665,7 +12579,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7862,7 +12830,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7892,7 +12914,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7952,7 +13028,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -7982,7 +13112,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -8276,7 +13460,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260319.0
 ## v0.20250925.0 - 2025-09-25 20:33:36 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -8306,7 +13544,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -8366,7 +13658,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -8396,7 +13742,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -8593,7 +13993,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -8623,7 +14077,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -8683,7 +14191,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -8713,7 +14275,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -8935,7 +14551,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260329.0
 ## v0.20260321.0 - 2026-03-21 13:20:20 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -8965,7 +14635,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9025,7 +14749,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9055,7 +14833,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9252,7 +15084,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9282,7 +15168,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9342,7 +15282,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9372,7 +15366,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9634,7 +15682,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260321.0
 ## v0.20260319.0 - 2026-03-19 11:14:57 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9664,7 +15766,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9724,7 +15880,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9754,7 +15964,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9951,7 +16215,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -9981,7 +16299,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -10041,7 +16413,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -10071,7 +16497,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -10293,7 +16773,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260329.0
 ## v0.20260321.0 - 2026-03-21 13:20:20 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -10323,7 +16857,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -10383,7 +16971,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -10413,7 +17055,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -10610,7 +17306,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260330.0
 ## v0.20260329.0 - 2026-03-29 21:08:31 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -10640,7 +17390,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -10700,7 +17504,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260401.0
 ## v0.20260330.0 - 2026-03-30 21:56:40 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
@@ -10730,7 +17588,61 @@ cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.0
 ## v0.20260401.0 - 2026-04-01 19:04:47 UTC
 
 
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
+
+
 ## v0.20260402.0 - 2026-04-02 00:19:24 UTC
+
+
+## v0.20260402.1 - 2026-04-02 02:06:35 UTC
+
+## What's Changed
+
+- fix: thread lines use actual bullet positions, icon alignment reset (eb4660d)
+
+---
+
+### Installation
+
+#### Linux x64
+```bash
+curl -L https://github.com/TaylorFinklea/tesela/releases/download/v0.20260402.1/tesela-linux-x64 -o tesela
+chmod +x tesela
+sudo mv tesela /usr/local/bin/
+```
+
+#### From source
+```bash
+cargo install --git https://github.com/TaylorFinklea/tesela --tag v0.20260402.1
+```
+
+**Full Changelog**: https://github.com/TaylorFinklea/tesela/compare/v0.20260402.0...v0.20260402.1
+
+---
 
 ## What's Changed
 
