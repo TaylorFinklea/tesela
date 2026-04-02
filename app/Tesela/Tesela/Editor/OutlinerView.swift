@@ -760,8 +760,8 @@ class OutlinerView: NSView {
 
             let oldTags = Set(blocks[index].tags)
             blocks[index].updateDisplayText(newText, typeTagNames: nil)
-            // Re-extract tags (live mode: skip end-of-string tags to avoid mid-typing)
-            blocks[index].tags = BlockParser.extractTagsLive(from: blocks[index].text)
+            // Re-extract all tags (including end-of-line — tags are managed by pills, not inline typing)
+            blocks[index].tags = BlockParser.extractTags(from: blocks[index].text)
             let newProps = BlockParser.extractProperties(from: blocks[index].text)
             blocks[index].priority = Priority(rawValue: newProps["priority"] ?? "")
             blocks[index].properties = newProps
