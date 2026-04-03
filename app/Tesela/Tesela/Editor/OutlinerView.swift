@@ -191,9 +191,13 @@ class OutlinerView: NSView {
                                green: CGFloat((rgb >> 8) & 0xFF) / 255,
                                blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
             }()
+            // --- BASELINE-ALIGNED LAYOUT ---
+            // All inline elements (bullet, status, text, pills) align to a shared baseline
+            let baselineY = yOffset + 11  // visual center of the first text line
+
             let blockIndex = index
             let bullet = BulletView(symbol: bulletSymbol, tintColor: bulletColor)
-            bullet.frame = NSRect(x: bulletX, y: yOffset, width: 16, height: 22)
+            bullet.frame = NSRect(x: bulletX, y: baselineY - 7, width: 16, height: 14)
             bullet.onLeftClick = { [weak self] in
                 self?.delegate?.outlinerDidRequestBlockZoom(blockIndex: blockIndex)
             }
@@ -208,8 +212,7 @@ class OutlinerView: NSView {
             }
             addSubview(bullet)
 
-            // Task status icon to the right of bullet (if task)
-            // Color reflects priority: critical=red, high=orange, medium=default, low=blue
+            // Task status icon — aligned to baseline
             var actualTextX = textX
             if block.isTask {
                 let statusChar: String = switch block.status {
@@ -218,7 +221,6 @@ class OutlinerView: NSView {
                 case "done":  "☑"
                 default:      "☐"
                 }
-                // Priority determines the color of the status icon
                 let statusColor: NSColor = if let priority = block.priority {
                     switch priority {
                     case .critical: .systemRed
@@ -239,7 +241,7 @@ class OutlinerView: NSView {
                 statusLabel.isEditable = false
                 statusLabel.isBordered = false
                 statusLabel.drawsBackground = false
-                statusLabel.frame = NSRect(x: bulletX + 18, y: yOffset, width: 16, height: 22)
+                statusLabel.frame = NSRect(x: bulletX + 18, y: baselineY - 8, width: 16, height: 16)
                 addSubview(statusLabel)
                 actualTextX = bulletX + 36
             }
@@ -247,7 +249,6 @@ class OutlinerView: NSView {
             let view = BlockView(block: block, typeTagNames: typeTagNames)
             let activeSearch = vimEngine.searchQuery.isEmpty ? nil : vimEngine.searchQuery
             view.searchQuery = activeSearch
-            // Re-apply styling with search highlights (initial styling in init ran before searchQuery was set)
             if activeSearch != nil, let ts = view.textStorage {
                 BlockStyler.style(text: ts.string, textStorage: ts, searchQuery: activeSearch)
             }
@@ -258,39 +259,39 @@ class OutlinerView: NSView {
 
             let height = blockHeight(for: view)
             view.frame.size.height = height
-            bullet.frame.size.height = height
 
-            // Right-side badges: deadline, scheduled, effort, tags
+            // Right-side badges — all aligned to baseline
+            let pillY = baselineY - 9  // center 18px pill at baseline
+            let editBtnY = baselineY - 7  // center 14px button at baseline
             var badgeX = actualTextX + textWidth + 6
 
             if let deadline = block.deadline {
                 let pill = makeDeadlineBadge(deadline)
-                pill.frame.origin = NSPoint(x: badgeX, y: yOffset + (height - 18) / 2)
+                pill.frame.origin = NSPoint(x: badgeX, y: pillY)
                 addSubview(pill)
                 badgeX += pill.frame.width + 4
 
-                // Edit button (pencil) to reopen date picker
                 let editBtn = makeEditDateButton(propertyKey: "deadline", blockIndex: index)
-                editBtn.frame.origin = NSPoint(x: badgeX - 2, y: yOffset + (height - 14) / 2)
+                editBtn.frame.origin = NSPoint(x: badgeX - 2, y: editBtnY)
                 addSubview(editBtn)
                 badgeX += editBtn.frame.width + 4
             }
 
             if let scheduled = block.scheduled {
                 let pill = makeDateBadge("📅 \(formatDateShort(scheduled))", color: .secondaryLabelColor)
-                pill.frame.origin = NSPoint(x: badgeX, y: yOffset + (height - 18) / 2)
+                pill.frame.origin = NSPoint(x: badgeX, y: pillY)
                 addSubview(pill)
                 badgeX += pill.frame.width + 4
 
                 let editBtn = makeEditDateButton(propertyKey: "scheduled", blockIndex: index)
-                editBtn.frame.origin = NSPoint(x: badgeX - 2, y: yOffset + (height - 14) / 2)
+                editBtn.frame.origin = NSPoint(x: badgeX - 2, y: editBtnY)
                 addSubview(editBtn)
                 badgeX += editBtn.frame.width + 4
             }
 
             if let effort = block.effort {
                 let pill = makeDateBadge("⏱ \(effort)", color: .secondaryLabelColor)
-                pill.frame.origin = NSPoint(x: badgeX, y: yOffset + (height - 18) / 2)
+                pill.frame.origin = NSPoint(x: badgeX, y: pillY)
                 addSubview(pill)
                 badgeX += pill.frame.width + 4
             }
@@ -299,7 +300,7 @@ class OutlinerView: NSView {
             for tag in allTags {
                 let pill = makeTagPill("#\(tag)", removable: true)
                 let pillWidth = pill.frame.width
-                pill.frame = NSRect(x: badgeX, y: yOffset + (height - 18) / 2, width: pillWidth, height: 18)
+                pill.frame = NSRect(x: badgeX, y: pillY, width: pillWidth, height: 18)
                 // Left-click navigates to the tag's page
                 let tagName = tag
                 let clickAction = DatePickerAction { [weak self] in
@@ -1817,16 +1818,18 @@ class BulletView: NSView {
             let imageView = NSImageView()
             imageView.image = img.withSymbolConfiguration(config)
             imageView.contentTintColor = tintColor
-            imageView.frame = NSRect(x: 1, y: 3, width: 14, height: 14)
+            // Fill the BulletView frame — parent positions us at baseline
+            imageView.frame = NSRect(x: 1, y: 0, width: 14, height: 14)
             addSubview(imageView)
         } else {
             let label = NSTextField(labelWithString: symbol)
-            label.font = .systemFont(ofSize: NSFont.systemFontSize)
+            label.font = .systemFont(ofSize: 12)
             label.textColor = tintColor
             label.isEditable = false
             label.isBordered = false
             label.drawsBackground = false
-            label.frame = NSRect(x: 0, y: 0, width: 16, height: 22)
+            // Fill the BulletView frame — parent positions us at baseline
+            label.frame = NSRect(x: 0, y: 0, width: 16, height: 14)
             addSubview(label)
         }
     }
