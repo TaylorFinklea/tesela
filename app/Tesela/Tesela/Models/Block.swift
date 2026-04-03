@@ -63,22 +63,15 @@ final class Block: Identifiable, @unchecked Sendable {
     /// First line of text with only the specified tags stripped.
     /// Pass a set of lowercased tag names to strip (type tags). Casual tags stay inline.
     /// Pass nil to strip ALL tags (legacy behavior).
+    private static let tagStripRegex = try! NSRegularExpression(pattern: #"\s*#[A-Za-z][A-Za-z0-9_\-]*"#)
+
     func displayText(strippingOnly typeTagNames: Set<String>?) -> String {
         let firstLine = text.components(separatedBy: "\n").first ?? text
-        // Use extractTags (not extractTagsLive) to strip ALL tags including end-of-line
-        let liveTags = BlockParser.extractTags(from: firstLine)
-        let tagsToStrip: [String]
-        if let typeTagNames {
-            tagsToStrip = liveTags.filter { typeTagNames.contains($0.lowercased()) }
-        } else {
-            tagsToStrip = liveTags
-        }
-        var result = firstLine
-        for tag in tagsToStrip {
-            result = result.replacingOccurrences(of: " #\(tag)", with: "")
-            result = result.replacingOccurrences(of: "#\(tag) ", with: "")
-            result = result.replacingOccurrences(of: "#\(tag)", with: "")
-        }
+        // Strip ALL #tag patterns from display text — tags are shown as pills only
+        let range = NSRange(firstLine.startIndex..., in: firstLine)
+        let result = Self.tagStripRegex.stringByReplacingMatches(
+            in: firstLine, range: range, withTemplate: ""
+        )
         return result.trimmingCharacters(in: .whitespaces)
     }
 
