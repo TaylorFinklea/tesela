@@ -626,14 +626,14 @@ class OutlinerView: NSView {
 
     private func removeTag(_ tag: String, at index: Int) {
         guard index < blocks.count else { return }
-        let block = blocks[index]
-        // Remove #tag from the raw text
-        var text = block.text
+        // Remove from the tags array (source of truth)
+        blocks[index].tags.removeAll { $0 == tag }
+        // Remove from storage text too
+        var text = blocks[index].text
         text = text.replacingOccurrences(of: " #\(tag)", with: "")
         text = text.replacingOccurrences(of: "#\(tag) ", with: "")
         text = text.replacingOccurrences(of: "#\(tag)", with: "")
         blocks[index].text = text.trimmingCharacters(in: .whitespaces)
-        blocks[index].tags = BlockParser.extractTags(from: blocks[index].text)
         pendingFocusIndex = index
         rebuildBlockViews()
         delegate?.outlinerDidChangeContent(blocks: blocks)
@@ -760,8 +760,8 @@ class OutlinerView: NSView {
 
             let oldTags = Set(blocks[index].tags)
             blocks[index].updateDisplayText(newText, typeTagNames: nil)
-            // Re-extract all tags (including end-of-line — tags are managed by pills, not inline typing)
-            blocks[index].tags = BlockParser.extractTags(from: blocks[index].text)
+            // Tags are managed by the pill UI (add via autocomplete, remove via ×)
+            // Don't re-extract from text — block.tags is the source of truth
             let newProps = BlockParser.extractProperties(from: blocks[index].text)
             blocks[index].priority = Priority(rawValue: newProps["priority"] ?? "")
             blocks[index].properties = newProps
@@ -1368,24 +1368,39 @@ class OutlinerView: NSView {
               let ctx = activeCompletion else { return }
         let view = blockViews[blockIndex]
 
-        let text = view.string
         let triggerPos = ctx.triggerPosition
         let cursorPos = view.selectedRange().location
 
-        let replacement: String
         switch trigger {
         case .tag:
-            replacement = "#\(selected) "
+            // Don't insert #tag into the editor — add to block.tags and remove the typed #query
+            let range = NSRange(location: triggerPos, length: cursorPos - triggerPos)
+            view.replaceCharacters(in: range, with: "")
+            view.setSelectedRange(NSRange(location: triggerPos, length: 0))
+
+            // Add tag to the block's tags array (source of truth)
+            if !blocks[blockIndex].tags.contains(selected) {
+                blocks[blockIndex].tags.append(selected)
+            }
+            // Update storage text to include the new tag
+            blocks[blockIndex].text = view.string
+            let hashTags = blocks[blockIndex].tags.map { "#\($0)" }
+            blocks[blockIndex].text += (blocks[blockIndex].text.isEmpty ? "" : " ") + hashTags.joined(separator: " ")
+
+            // Rebuild to show the new pill
+            pendingFocusIndex = blockIndex
+            pendingCursorPosition = triggerPos
+            rebuildBlockViews()
+            delegate?.outlinerDidChangeContent(blocks: blocks)
+
         case .pageRef:
-            replacement = "[[\(selected)]]"
+            let replacement = "[[\(selected)]]"
+            let range = NSRange(location: triggerPos, length: cursorPos - triggerPos)
+            view.replaceCharacters(in: range, with: replacement)
+            let newPos = triggerPos + (replacement as NSString).length
+            view.setSelectedRange(NSRange(location: newPos, length: 0))
+            view.onTextChanged?(view.string)
         }
-
-        let range = NSRange(location: triggerPos, length: cursorPos - triggerPos)
-        view.replaceCharacters(in: range, with: replacement)
-
-        // Move cursor to after the inserted text
-        let newPos = triggerPos + (replacement as NSString).length
-        view.setSelectedRange(NSRange(location: newPos, length: 0))
 
         dismissCompletion()
 
