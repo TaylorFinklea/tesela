@@ -83,19 +83,24 @@ final class Block: Identifiable, @unchecked Sendable {
     }
 
     /// Update storage text from edited display text.
-    /// Tags are reconstructed from the `tags` array (source of truth), not re-extracted
-    /// from the original text. This eliminates the fragile strip/restore dance.
+    /// Tags are reconstructed from the `tags` array (source of truth).
     func updateDisplayText(_ newDisplay: String, typeTagNames: Set<String>? = nil) {
         let lines = text.components(separatedBy: "\n")
 
-        // Start with the new display text (what the user sees in the editor)
-        var result = newDisplay
+        // Strip any leaked #tags from the display text (e.g., from old saved blocks)
+        var cleanDisplay = newDisplay
+        for tag in tags {
+            cleanDisplay = cleanDisplay.replacingOccurrences(of: " #\(tag)", with: "")
+            cleanDisplay = cleanDisplay.replacingOccurrences(of: "#\(tag) ", with: "")
+            cleanDisplay = cleanDisplay.replacingOccurrences(of: "#\(tag)", with: "")
+        }
+        cleanDisplay = cleanDisplay.trimmingCharacters(in: .whitespaces)
 
-        // Append tags from the tags array — these are managed by the pill UI,
-        // not by inline text editing. Only append tags not already in the display text.
-        let tagsToAppend = tags.map { "#\($0)" }.filter { !newDisplay.contains($0) }
-        if !tagsToAppend.isEmpty {
-            result += " " + tagsToAppend.joined(separator: " ")
+        // Reconstruct: clean display text + ALL tags from the array
+        var result = cleanDisplay
+        let hashTags = tags.map { "#\($0)" }
+        if !hashTags.isEmpty {
+            result += (result.isEmpty ? "" : " ") + hashTags.joined(separator: " ")
         }
 
         // Append property continuation lines (lines after the first)
