@@ -755,8 +755,10 @@ class OutlinerView: NSView {
         view.onTextChanged = { [weak self] newText in
             guard let self, index < blocks.count else { return }
 
-            // Check for autocomplete triggers before processing text changes
-            checkForCompletion(in: view, at: index)
+            // Defer autocomplete check — cursor position is stale during textStorage delegate
+            DispatchQueue.main.async { [weak self] in
+                self?.checkForCompletion(in: view, at: index)
+            }
 
             let oldTags = Set(blocks[index].tags)
             blocks[index].updateDisplayText(newText, typeTagNames: nil)
