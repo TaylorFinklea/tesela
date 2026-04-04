@@ -106,6 +106,8 @@ Life OS kanban board, designed in React, implemented natively in Tesela.
 
 ## Backlog (for smaller AI models)
 
+<!-- tier3_owner: claude -->
+
 Items that can be done alongside phases by less expensive models. Each is self-contained, well-scoped, and doesn't require architectural decisions.
 
 ### Layout & Visual Polish
