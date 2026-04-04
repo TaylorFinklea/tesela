@@ -152,6 +152,7 @@ class OutlinerView: NSView {
         subviews.forEach { $0.removeFromSuperview() }
         blockViews.removeAll()
 
+        // MARK: Baseline alignment system
         // Type tags become right-aligned pills; casual tags stay inline
         typeTagNames = Set(typeRegistry.map { $0.name.lowercased() })
 
@@ -175,6 +176,7 @@ class OutlinerView: NSView {
             let priorityWidth: CGFloat = block.priority != nil ? 22 : 0
             let textWidth = max(bounds.width - textX - 12 - badgeWidth - priorityWidth, 80)
 
+            // MARK: Bullet creation
             // Bullet — custom icon + color per type tag, or default bullet
             let matchedType = block.tags
                 .compactMap { tag in typeRegistry.first(where: { $0.name.lowercased() == tag.lowercased() }) }
@@ -197,6 +199,7 @@ class OutlinerView: NSView {
 
             let blockIndex = index
             let bullet = BulletView(symbol: bulletSymbol, tintColor: bulletColor)
+            // Offset the bullet glyph so its optical center lands on the shared text baseline.
             bullet.frame = NSRect(x: bulletX, y: baselineY - 7, width: 16, height: 14)
             bullet.onLeftClick = { [weak self] in
                 self?.delegate?.outlinerDidRequestBlockZoom(blockIndex: blockIndex)
@@ -212,6 +215,7 @@ class OutlinerView: NSView {
             }
             addSubview(bullet)
 
+            // MARK: Status icon positioning
             // Task status icon — aligned to baseline
             var actualTextX = textX
             if block.isTask {
@@ -241,11 +245,13 @@ class OutlinerView: NSView {
                 statusLabel.isEditable = false
                 statusLabel.isBordered = false
                 statusLabel.drawsBackground = false
+                // The status symbol sits slightly lower than the bullet so the checkbox/ring feels centered with the text.
                 statusLabel.frame = NSRect(x: bulletX + 18, y: baselineY - 8, width: 16, height: 16)
                 addSubview(statusLabel)
                 actualTextX = bulletX + 36
             }
 
+            // MARK: BlockView creation and height measurement
             let view = BlockView(block: block, typeTagNames: typeTagNames)
             let activeSearch = vimEngine.searchQuery.isEmpty ? nil : vimEngine.searchQuery
             view.searchQuery = activeSearch
@@ -260,9 +266,10 @@ class OutlinerView: NSView {
             let height = blockHeight(for: view)
             view.frame.size.height = height
 
+            // MARK: Right-side badges
             // Right-side badges — all aligned to baseline
-            let pillY = baselineY - 9  // center 18px pill at baseline
-            let editBtnY = baselineY - 7  // center 14px button at baseline
+            let pillY = baselineY - 9  // 18pt pills are drawn 9pt above center to sit on the same baseline as text.
+            let editBtnY = baselineY - 7  // 14pt edit buttons use a shallower offset so the icon centers visually with the pill row.
             var badgeX = actualTextX + textWidth + 6
 
             if let deadline = block.deadline {
@@ -296,6 +303,7 @@ class OutlinerView: NSView {
                 badgeX += pill.frame.width + 4
             }
 
+            // MARK: Tag text rendering
             // Tags as right-aligned plain text (like Logseq)
             if !allTags.isEmpty {
                 let blockIdx = index
@@ -334,9 +342,11 @@ class OutlinerView: NSView {
                 addSubview(tagLabel)
             }
 
+            // MARK: Block position recording for threading
             blockPositions.append((y: yOffset, height: height, indent: block.indentLevel, bulletCenterX: bulletX + 8))
             yOffset += height + 4
 
+            // MARK: Expanded property display
             // Expanded block: show inherited properties
             if expandedBlockIndex == index && !block.tags.isEmpty {
                 let inheritedProps = resolveInheritedProperties(for: block)
@@ -402,6 +412,7 @@ class OutlinerView: NSView {
 
         }
 
+        // MARK: Thread line drawing
         // Draw indent thread lines connecting parent bullets to children
         drawThreadLines(blockPositions: blockPositions)
 
