@@ -296,30 +296,42 @@ class OutlinerView: NSView {
                 badgeX += pill.frame.width + 4
             }
 
-            let blockIdx = index
-            for tag in allTags {
-                let pill = makeTagPill("#\(tag)", removable: true)
-                let pillWidth = pill.frame.width
-                pill.frame = NSRect(x: badgeX, y: pillY, width: pillWidth, height: 18)
-                // Left-click navigates to the tag's page
-                let tagName = tag
+            // Tags as right-aligned plain text (like Logseq)
+            if !allTags.isEmpty {
+                let blockIdx = index
+                let tagText = allTags.map { "#\($0)" }.joined(separator: "  ")
+                let tagLabel = NSTextField(labelWithString: tagText)
+                tagLabel.font = .systemFont(ofSize: 12)
+                tagLabel.textColor = .systemBlue
+                tagLabel.isEditable = false
+                tagLabel.isBordered = false
+                tagLabel.drawsBackground = false
+                tagLabel.alignment = .right
+                tagLabel.sizeToFit()
+                // Right-align to the view edge
+                let tagX = bounds.width - tagLabel.frame.width - 16
+                tagLabel.frame = NSRect(x: tagX, y: baselineY - 8, width: tagLabel.frame.width, height: 16)
+                // Click navigates to tag page (first tag)
+                let firstTag = allTags[0]
                 let clickAction = DatePickerAction { [weak self] in
-                    self?.delegate?.outlinerDidClickWikiLink(target: tagName.lowercased())
+                    self?.delegate?.outlinerDidClickWikiLink(target: firstTag.lowercased())
                 }
                 let clickRecognizer = NSClickGestureRecognizer(target: clickAction, action: #selector(DatePickerAction.execute))
-                pill.addGestureRecognizer(clickRecognizer)
-                objc_setAssociatedObject(pill, "tagClickAction", clickAction, .OBJC_ASSOCIATION_RETAIN)
-                // × button removes the tag
-                let removeAction = DatePickerAction { [weak self] in
-                    self?.removeTag(tagName, at: blockIdx)
+                tagLabel.addGestureRecognizer(clickRecognizer)
+                objc_setAssociatedObject(tagLabel, "tagClickAction", clickAction, .OBJC_ASSOCIATION_RETAIN)
+                // Right-click to remove
+                let menu = NSMenu()
+                for tag in allTags {
+                    let removeAction = DatePickerAction { [weak self] in
+                        self?.removeTag(tag, at: blockIdx)
+                    }
+                    let item = NSMenuItem(title: "Remove #\(tag)", action: #selector(DatePickerAction.execute), keyEquivalent: "")
+                    item.target = removeAction
+                    menu.addItem(item)
+                    objc_setAssociatedObject(item, "removeAction", removeAction, .OBJC_ASSOCIATION_RETAIN)
                 }
-                objc_setAssociatedObject(pill, "tagRemoveAction", removeAction, .OBJC_ASSOCIATION_RETAIN)
-                if let xButton = pill.subviews.first(where: { $0.tag == 999 }) {
-                    let removeClick = NSClickGestureRecognizer(target: removeAction, action: #selector(DatePickerAction.execute))
-                    xButton.addGestureRecognizer(removeClick)
-                }
-                addSubview(pill)
-                badgeX += pillWidth + 4
+                tagLabel.menu = menu
+                addSubview(tagLabel)
             }
 
             blockPositions.append((y: yOffset, height: height, indent: block.indentLevel, bulletCenterX: bulletX + 8))
