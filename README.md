@@ -1,31 +1,31 @@
 # Tesela
 
-A keyboard-first note-taking system built in Rust with a native macOS SwiftUI app. Block outliner with Vim-style editing, a type system inspired by Logseq DB mode, and a local REST/WebSocket server that keeps the UI and backend cleanly separated.
+A keyboard-first note-taking system built in Rust with a native macOS SwiftUI app. Tesela combines a block outliner, Vim-style editing, a page-based type system, and a local REST/WebSocket server so the native UI and Rust backend can evolve independently.
 
 <!-- Screenshot goes here -->
 
-> **Work in progress** — this is Taylor's daily-driver tool. Reliability matters more than features.
+> **Work in progress** — this is Taylor's daily-driver tool. Reliability matters more than shipping a wide feature surface.
 
-## Key Features
+## Current Features
 
 - **Block outliner with Vim keybindings** — Normal/Insert/Visual mode, motions, operators, dot-repeat
 - **Inline autocomplete** for `#tags` and `[[page refs]]`, including "New tag" creation
-- **Type system** — Tags, Properties as pages with inheritance chains (Logseq DB-inspired)
+- **Type system** — tags and properties are pages, with inheritance chains and typed block filtering
 - **Custom bullet icons** — SF Symbols with per-type color picker
 - **Tag page views** — table and kanban with multi-property filtering, drag-and-drop, sortable columns
-- **Back/forward navigation** + block drill-in (Logseq-style zoom)
-- **/search** with highlighting and `n`/`N` navigation
+- **Back/forward navigation** and block drill-in (Logseq-style zoom)
+- **Search** with highlighting, match counts, and `n`/`N` navigation
 - **Daily tiles timeline** with inline editing
 - **Right sidebar** — page info, grouped backlinks with context, unlinked references, focused block properties
-- **Graph view**
-- **Dark/light/auto theme** + accent color customization
-- **Auto-start server** on app launch (LaunchAgent fallback for CLI use)
+- **Graph view** for note-link relationships
+- **Dark/light/auto theme** and accent color customization
+- **Embedded server management** in the macOS app, with CLI LaunchAgent support as a fallback
 - **Backup system** — `tesela backup` CLI + auto-daily on server startup
 - **MCP server** — AI integration via `search_notes`, `get_note`, `create_note`, `list_notes`, `get_backlinks`, `get_daily_note`
 
 ## Architecture
 
-6 crates in `crates/` plus a native SwiftUI macOS app in `app/Tesela/`:
+Tesela is a Cargo workspace plus a native SwiftUI macOS app in `app/Tesela/`.
 
 | Crate | Binary | Purpose |
 |-------|--------|---------|
@@ -36,44 +36,67 @@ A keyboard-first note-taking system built in Rust with a native macOS SwiftUI ap
 | `tesela-server` | `tesela-server` | REST API + WebSocket on localhost:7474 |
 | `tesela-plugins` | — | Lua runtime (working) + WASM stub |
 
-The SwiftUI app connects to `tesela-server` on `localhost:7474`. No business logic lives in the UI layers — only in `tesela-core` traits (`NoteStore`, `SearchIndex`, `LinkGraph`).
+The SwiftUI app talks to `tesela-server` at `localhost:7474` over REST and WebSocket. UI layers stay thin: note storage, search, links, indexing, and type resolution live in `tesela-core` and are exposed through traits such as `NoteStore`, `SearchIndex`, and `LinkGraph`.
 
-**Core principle:** Database-first. Files are export format.
+**Core principle:** database-first, files are export format.
 
-## Build & Run
+## Type System
 
-Requires Rust (stable) and Xcode.
+Tesela models schema as content:
+
+- **Tag pages** are notes with frontmatter like `type: "Tag"`, `extends`, and `tag_properties`.
+- **Property pages** are notes with frontmatter like `type: "Property"`, `value_type`, `choices`, and `default`.
+- **Blocks** inherit schema from their tags and store concrete values with inline `key:: value` properties.
+
+Built-in tags include `Task`, `Project`, `Person`, `Domain`, `LifeProject`, `Issue`, `Ritual`, and `ScheduledItem`.
+
+## Build
+
+Requires Rust (stable toolchain) and Xcode.
 
 ```bash
 # Build the full Rust workspace
 cargo build --workspace
 
-# Install the server so it's on your PATH
-cargo install --path crates/tesela-server
+# Run the Rust test suite
+cargo test --workspace
 
-# Open the macOS app in Xcode and run
-open app/Tesela/Tesela.xcodeproj
+# Lint with warnings as errors
+cargo clippy --workspace -- -D warnings
+
+# Format Rust sources
+cargo fmt --all
+
+# Build the macOS app
+xcodebuild -project app/Tesela/Tesela.xcodeproj -scheme Tesela -configuration Debug build
 ```
 
-The app expects `tesela-server` to be running on `localhost:7474`. Start it manually with `tesela-server` until the embedded-server feature lands.
+## Run
+
+```bash
+# Install the server binary if you want to run it manually
+cargo install --path crates/tesela-server
+
+# Start the local API server from a Tesela mosaic
+tesela-server
+```
+
+You can also launch the macOS app from Xcode by opening `app/Tesela/Tesela.xcodeproj`. The app will try to connect to an existing server and can start `tesela-server` itself when the binary is available locally.
 
 ## Development
 
 ```bash
-# Run tests
+# Rust workspace
+cargo build --workspace
 cargo test --workspace
-
-# Lint
 cargo clippy --workspace -- -D warnings
-
-# Format
 cargo fmt --all
 
-# Regenerate Xcode project after adding files
-cd app/Tesela && xcodegen generate
+# Swift app
+xcodebuild -project app/Tesela/Tesela.xcodeproj -scheme Tesela -configuration Debug build
 ```
 
-CI runs on every push/PR (`.github/workflows/ci.yml`): fmt + clippy + tests on Ubuntu and macOS.
+CI runs from `.github/workflows/ci.yml` and covers formatting, linting, and tests.
 
 ## Note Format
 
@@ -83,11 +106,13 @@ Markdown with YAML frontmatter and block-based outliner structure:
 ---
 title: "My Note"
 created: 2025-01-15T10:30:00Z
-tags: ["example"]
+tags: ["Project"]
 ---
-- Top-level block #tag
-  - Child block inherits #tag
-  - Another child
+- Ship the docs refresh #Task
+  status:: doing
+  priority:: high
+  deadline:: [[2026-04-10]]
+  - Child block
 ```
 
 ## License
