@@ -14,6 +14,8 @@ enum Persistence {
         static let leftSidebarVisible = "tesela.leftSidebarVisible"
         static let rightSidebarVisible = "tesela.rightSidebarVisible"
         static let selectedNavItem = "tesela.selectedNavItem"
+        static let colorScheme = "tesela.colorScheme"
+        static let accentColor = "tesela.accentColor"
     }
 
     // MARK: - Recents
@@ -67,5 +69,22 @@ enum Persistence {
 
     static func saveSelectedNavItem(_ item: String) {
         defaults.set(item, forKey: Keys.selectedNavItem)
+    }
+
+    // MARK: - Theme
+    static func loadColorScheme() -> String {
+        defaults.string(forKey: Keys.colorScheme) ?? "auto"
+    }
+
+    static func saveColorScheme(_ scheme: String) {
+        defaults.set(scheme, forKey: Keys.colorScheme)
+    }
+
+    static func loadAccentColor() -> String {
+        defaults.string(forKey: Keys.accentColor) ?? "blue"
+    }
+
+    static func saveAccentColor(_ color: String) {
+        defaults.set(color, forKey: Keys.accentColor)
     }
 }

@@ -3,13 +3,16 @@ import SwiftUI
 @main
 struct TeselaApp: App {
     @State private var appState = AppState()
-    @Environment(\.scenePhase) private var scenePhase
+    @State private var theme = ThemeManager.shared
 
     var body: some Scene {
         WindowGroup {
             RootView()
                 .environment(appState)
+                .environment(theme)
                 .frame(minWidth: 900, minHeight: 600)
+                .preferredColorScheme(theme.preferredColorScheme)
+                .tint(theme.tintColor)
         }
         .windowStyle(.automatic)
         .windowToolbarStyle(.unified)
@@ -21,6 +24,7 @@ struct TeselaApp: App {
         Settings {
             SettingsView()
                 .environment(appState)
+                .environment(theme)
         }
     }
 }

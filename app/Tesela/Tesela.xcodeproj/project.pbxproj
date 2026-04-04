@@ -20,6 +20,7 @@
 		3E290FD064E00EAFD8BD0067 /* APIClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6974F402BC0671BB7F6D24AB /* APIClientTests.swift */; };
 		436C7C139C9B2AFED1C3B9C3 /* BlockParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E79999F5035C127AFF64918F /* BlockParserTests.swift */; };
 		44DC03B9348A53C1FDFC5D96 /* TeselaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE9364B5F6D22ABA0E636572 /* TeselaApp.swift */; };
+		4646B21BA62020BCFBE7997A /* ThemeManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47C6B5A595D3E58F6F346126 /* ThemeManager.swift */; };
 		4A840C42D73B06AE6DA84313 /* GraphView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FABC497C59C6C6EA5CC1DBD2 /* GraphView.swift */; };
 		4DB52A1E1ACC75446C4D651A /* TypedBlock.swift in Sources */ = {isa = PBXBuildFile; fileRef = A3717F7B2FFCF0D807E27EB0 /* TypedBlock.swift */; };
 		4F320A24A8AE48A7B8F5271E /* BlockParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5BD310F1E47B48D2CC65526C /* BlockParser.swift */; };
@@ -75,6 +76,7 @@
 		2192D5B9A664C75BF850A425 /* PropertyPageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PropertyPageView.swift; sourceTree = "<group>"; };
 		2516B7F64A5934EB90C0A2F3 /* ContentArea.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentArea.swift; sourceTree = "<group>"; };
 		32154A01C5BEF15E051D8735 /* Tesela.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Tesela.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		47C6B5A595D3E58F6F346126 /* ThemeManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThemeManager.swift; sourceTree = "<group>"; };
 		4FD58250F3EE0FF38D7E6FD7 /* IconPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IconPickerView.swift; sourceTree = "<group>"; };
 		52E040CAD40B4BBB0F7F9A74 /* VimKeyHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VimKeyHandler.swift; sourceTree = "<group>"; };
 		5B45089E2F58DE3194B4D971 /* BlockZoomView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockZoomView.swift; sourceTree = "<group>"; };
@@ -144,6 +146,7 @@
 				B05C044B8030091D728EA655 /* AppState.swift */,
 				BE9364B5F6D22ABA0E636572 /* TeselaApp.swift */,
 				A558BEB394EBFAE4CBE4842E /* TeselaCommands.swift */,
+				47C6B5A595D3E58F6F346126 /* ThemeManager.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -455,6 +458,7 @@
 				066B25AA6572B71018CD340C /* TagPageView.swift in Sources */,
 				44DC03B9348A53C1FDFC5D96 /* TeselaApp.swift in Sources */,
 				1222FC6597693AC16EBDC84F /* TeselaCommands.swift in Sources */,
+				4646B21BA62020BCFBE7997A /* ThemeManager.swift in Sources */,
 				ECA1DA299F4978618A5946FC /* TilesView.swift in Sources */,
 				B939C3D3049B1637BD750C54 /* TypeDefinition.swift in Sources */,
 				4DB52A1E1ACC75446C4D651A /* TypedBlock.swift in Sources */,
