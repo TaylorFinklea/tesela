@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct TeselaApp: App {
     @State private var appState = AppState()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {

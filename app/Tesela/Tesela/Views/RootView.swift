@@ -18,6 +18,8 @@ struct RootView: View {
             }
         }
         .task {
+            // Start server automatically if not already running
+            let _ = await ServerManager.shared.ensureRunning()
             await appState.launch()
         }
     }
@@ -64,17 +66,22 @@ struct ConnectionErrorView: View {
             Divider()
                 .frame(maxWidth: 320)
 
-            Text("Start the server with:")
+            Text("The app tried to start tesela-server automatically but couldn't connect.")
                 .foregroundStyle(.secondary)
+                .font(.caption)
+                .multilineTextAlignment(.center)
 
-            Text("cargo run -p tesela-server")
-                .font(.system(.body, design: .monospaced))
+            Text("Make sure tesela-server is installed:\ncargo install --path crates/tesela-server")
+                .font(.system(.caption, design: .monospaced))
                 .padding(.horizontal, 16)
                 .padding(.vertical, 8)
                 .background(.fill.secondary, in: RoundedRectangle(cornerRadius: 8))
 
-            Button("Retry Connection") {
-                Task { await appState.launch() }
+            Button("Retry") {
+                Task {
+                    let _ = await ServerManager.shared.ensureRunning()
+                    await appState.launch()
+                }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
