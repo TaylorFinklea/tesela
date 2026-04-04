@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_INPUT\" | grep -q '\\.rs\"'; then cd /Users/tfinklea/git/tesela && cargo fmt --all 2>/dev/null; fi"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_INPUT\" | grep -qE '\\.env|\\.secret|credentials\\.'; then echo 'BLOCKED: Secrets go in macOS Keychain, not files. See ~/CLAUDE.md'; exit 2; fi"
+          }
+        ]
+      }
+    ]
+  }
+}
