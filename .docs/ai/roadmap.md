@@ -2,45 +2,155 @@
 
 ## What Tesela Is
 
-Keyboard-first, file-based note-taking system (org-mode successor). Rust backend, native macOS SwiftUI app. Taylor's daily-driver tool — reliability matters more than features.
+Keyboard-first note-taking system (org-mode successor). Rust backend, native macOS SwiftUI app. Taylor's daily-driver tool — reliability matters more than features.
 
-**Core principle:** Files are truth, SQLite is cache.
+**Core principle:** Database-first, files are export. Apple-first, web later.
 
 ## Architecture
 
 - **Rust workspace** (`crates/`): tesela-core, tesela-cli, tesela-tui, tesela-mcp, tesela-server, tesela-plugins
 - **SwiftUI macOS app** (`app/Tesela/`): connects to tesela-server on localhost:7474 (REST + WebSocket)
-- **Property system**: Tags, Properties, and Values are all pages with YAML frontmatter (Logseq DB model)
+- **Type system**: Tags, Properties, and Values are pages with YAML frontmatter (Logseq DB model)
+- **React board prototype**: external project for Life OS kanban design — will merge into Tesela when proven
 
-## Milestones
+## Completed
 
-### Done
+- MVP: Block outliner, sidebar, search, WebSocket sync, tiles, Vim mode, graph view
+- Type system: Tag/Property pages, inheritance chains, property configuration UI
+- Vim engine: Visual mode, dot-repeat, /search with highlighting + n/N
+- Inline autocomplete for `#tags` and `[[page refs]]` with "New tag" creation
+- Tag display: all tags as right-aligned plain text (Logseq style), removed from editor
+- Block drill-in (Logseq-style zoom) + back/forward navigation
+- Tag page views: table + kanban with multi-property filtering, drag-and-drop, sortable columns
+- Right sidebar: page info, grouped backlinks with context, unlinked references, focused block properties
+- Custom bullet icons (SF Symbols) with color picker per type
+- Baseline-aligned layout system for all inline elements
+- Backup: CLI `tesela backup` + auto-daily on server startup
+- Life OS data model types: Domain, LifeProject, Issue, Ritual, ScheduledItem
+- Node references (property type "node" linking to pages)
+- Search match count display
 
-- **Phase 11 (MVP)**: Block outliner, sidebar, search, WebSocket sync, tiles timeline, Vim mode, right sidebar, wiki-link pills, graph view, properties
-- **Phase 12 (v1 Polish)**: Inline tile editing, UX polish, graph polish
-- **Phase 13.1–13.6 (Types & Properties)**: Task MVP, typed properties, page types, Tag/Property pages, property inheritance, shared properties
-- **Phases A–H (Property System Migration)**: Auto-create tag pages, property pages as entities, tag_properties frontmatter, extends chain, table views on tag pages, block property indexing, block drill-in UI, property configuration UI, keyboard-navigable select popover
+---
 
-### Current Focus
+## Phase 1: Polish & Reliability (current)
 
-- Bug fixes and polish on the property/type system
-- Keyboard-first UX for all property interactions
+Make what exists beautiful and trustworthy. This is the gate to daily-driver status.
 
-### Upcoming
+- [ ] **UI overhaul** — professional visual quality, not passion-project look
+  - [ ] Consistent spacing, padding, and margins across all views
+  - [ ] Theme system (dark/light + accent color customization)
+  - [ ] Bullet threading that matches Logseq quality
+  - [ ] Icon/status alignment pixel-perfection
+- [ ] **Server lifecycle** — embed server in SwiftUI app as child process + keep LaunchAgent as CLI fallback
+- [ ] **Data integrity** — verify backup/restore round-trips, add restore command
+- [ ] **Empty block UX** — ghost bullet on hover (Logseq style), not permanent empty block
 
-- **Phase 9**: Slint desktop GUI (TUI side — deferred; SwiftUI app is primary focus)
-- **13.7 Node references**: Properties linking to other nodes, bidirectional
-- **13.8 Queries**: Filter by type + properties, table/list/kanban results
-- **Tag display rework**: Only type tags (#Task, #Project) become pills; casual tags (#meeting) stay inline
-- **Visual mode, dot-repeat, /search** in Vim engine
-- **Whiteboards, sync, App Store** — deferred post-v1
+## Phase 2: LogSeq Importer
+
+Bring 4.5 years of data in so Taylor can actually switch.
+
+- [ ] **CLI command**: `tesela import-logseq --source ~/logseq --target ~/mosaic`
+- [ ] **Format conversion**: journals → daily notes, pages → notes, properties → Tesela format
+- [ ] **Syntax mapping**: `DEADLINE:`, `SCHEDULED:`, `[#A]` priorities, `TODO/DOING/DONE`
+- [ ] **LogSeq-specific cleanup**: strip `collapsed::`, `id::`, `#+BEGIN_QUERY` blocks
+- [ ] **Dry-run mode**: preview what would be imported without writing
+
+## Phase 3: First-Class Types (Anytype-style) ⚠️ NEEDS DISCOVERY
+
+Types as classes, pages as instances. Requires product discovery session before coding.
+
+- [ ] **Discovery**: design type creation UI, @person syntax, type templates, layout options
+- [ ] **Type creation page**: name, plural name, icon, format (page/list), layout, properties
+- [ ] **Instance creation**: new page automatically gets type's property schema
+- [ ] **@person syntax**: `@taylor-finklea` → renders as mention, creates Person page
+- [ ] **Type-specific views**: per-type default layouts, table/kanban/list per type
+
+## Phase 4: Long-Form Writing Mode ⚠️ NEEDS DISCOVERY
+
+Outliner-only is limiting. Need Notion-like prose alongside block structure.
+
+- [ ] **Discovery**: design mixed outliner+prose pages, paragraph-level backlinking
+- [ ] **Prose blocks**: paragraphs rendered as flowing text, still individually referenceable
+- [ ] **Mixed pages**: switch between outline and prose sections on the same page
+- [ ] **Block-level backlinking in prose** (like Capacities)
+
+## Phase 5: Power Menu ⚠️ NEEDS DISCOVERY
+
+Alfred/Raycast-style universal command bar replacing Cmd+K.
+
+- [ ] **Discovery**: design grammar for natural language input, task shortcuts, inline properties
+- [ ] **Natural language tasks**: `t Get Milk tom at 4` → Task scheduled tomorrow 4 PM
+- [ ] **Universal navigation**: type page name to jump
+- [ ] **Quick capture**: bare text adds to today's daily note
+- [ ] **Inline properties**: `t Get Milk #shopping p:high d:friday`
+
+## Phase 6: Query Language ⚠️ NEEDS DISCOVERY
+
+Advanced filtering beyond the current property filters.
+
+- [ ] **Discovery**: syntax design for `status NOT "Done" AND Tags in ("cool")`
+- [ ] **Query builder UI** (visual) + raw query input (power users)
+- [ ] **Saved queries**: persist as named views on tag pages
+- [ ] **NOT / OR operators**: complement existing AND-only filtering
+
+## Phase 7: Board View (from React prototype)
+
+Life OS kanban board, designed in React, implemented natively in Tesela.
+
+- [ ] Import proven board design from React prototype
+- [ ] Native SwiftUI implementation with domain swimlanes
+- [ ] Sandbox mode (draft changes before applying)
+- [ ] AI integration via MCP (board state tools, domain insights)
+
+---
+
+## Backlog (for smaller AI models)
+
+Items that can be done alongside phases by less expensive models. Each is self-contained, well-scoped, and doesn't require architectural decisions.
+
+### Layout & Visual Polish
+- [ ] Pixel-perfect bullet/icon/text alignment across all block types
+- [ ] Bullet threading visual quality (line positioning, thickness, opacity)
+- [ ] Tag text alignment consistency across blocks
+- [ ] Consistent spacing between blocks, sections, headers
+- [ ] Status icon vertical centering with different font sizes
+- [ ] Date badge alignment with text baseline
+- [ ] Sidebar visual polish (spacing, section headers, icons)
+
+### Bug Fixes
+- [ ] Tag extraction edge cases (tags at end of line, tags with special chars)
+- [ ] Autocomplete popover positioning near screen edges
+- [ ] Cursor position bugs after block operations (Enter, delete, indent)
+- [ ] BlockStyler crash guards (text/textStorage length mismatches)
+- [ ] Search highlighting persistence across block rebuilds
+- [ ] WebSocket reconnection reliability
+- [ ] Block zoom save-back correctness for deeply nested blocks
+
+### Test Coverage
+- [ ] VimEngine unit tests: all motions, operators, visual mode, dot-repeat
+- [ ] BlockParser unit tests: tag extraction, property extraction, serialization round-trips
+- [ ] Block.displayText unit tests: tag stripping with various inputs
+- [ ] Block.updateDisplayText unit tests: tag preservation, property lines
+- [ ] API endpoint integration tests (server routes)
+- [ ] SwiftUI view snapshot tests (if feasible)
+
+### Documentation
+- [ ] README.md update with current features and architecture
+- [ ] API endpoint documentation (REST routes, parameters, responses)
+- [ ] MCP tool documentation (what each tool does, example usage)
+- [ ] Contributing guide (build steps, test commands, code conventions)
+- [ ] Type system documentation (how tags, properties, inheritance work)
+- [ ] Inline code comments for complex methods (OutlinerView.rebuildBlockViews, VimKeyHandler)
+
+---
 
 ## Constraints
 
 - macOS 26 minimum, Swift 6 strict concurrency
-- One Rust server process, one SwiftUI client
+- Apple-first, web later (Tauri/web shares Rust backend API)
 - No business logic in CLI/TUI/GUI — only in tesela-core traits
-- Files are the canonical source; DB is always rebuildable from files
+- Database-first; files are export format
+- SF Symbols for icons (web app uses Tabler/Lucide with name mapping)
 
 ## Non-Goals (for now)
 
