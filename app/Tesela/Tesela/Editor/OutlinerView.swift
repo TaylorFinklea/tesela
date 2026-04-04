@@ -1252,18 +1252,19 @@ class OutlinerView: NSView {
                 lastChild = j
             }
 
-            // Use the first child's actual bullet center X (recorded during layout)
+            // Use the first child's actual bullet center X
             let lineX = blockPositions[i + 1].bulletCenterX
 
-            // Y: from bottom of parent to center of last child
-            let startY = blockPositions[i].y + blockPositions[i].height + 2
-            let endY = blockPositions[lastChild].y + blockPositions[lastChild].height * 0.5
+            // Y: from parent's baseline down to the last child's baseline
+            // baseline = y + 11 (center of first text line)
+            let startY = blockPositions[i].y + 11 + 4  // just below parent baseline
+            let endY = blockPositions[lastChild].y + 11  // at last child baseline
 
             guard endY > startY else { continue }
 
             let line = NSView(frame: NSRect(x: lineX, y: startY, width: 1, height: endY - startY))
             line.wantsLayer = true
-            line.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.2).cgColor
+            line.layer?.backgroundColor = NSColor.tertiaryLabelColor.withAlphaComponent(0.25).cgColor
             addSubview(line)
         }
     }
