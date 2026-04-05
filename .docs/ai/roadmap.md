@@ -125,7 +125,7 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 - [x] Replace force-unwrap URL constructions with safe initializers (APIClient.swift:12,173,175)
 - [x] Add `.expect("reason")` messages to 5 mutex lock unwraps in lua.rs (crates/tesela-plugins/src/lua.rs:86,119,129,257,275)
 - [x] Add `.expect("reason")` messages to 3 regex unwraps in import_logseq.rs (crates/tesela-cli/src/import_logseq.rs:142-144)
-- [ ] Extract hardcoded magic numbers: SQLite max_connections, TUI tick_timeout, debounce durations (sqlite.rs:44,62, app.rs:81)
+- [~] Extract hardcoded magic numbers: SQLite max_connections, TUI tick_timeout, debounce durations (sqlite.rs:44,62, app.rs:81)
 
 ### Sonnet (some architectural judgment)
 
