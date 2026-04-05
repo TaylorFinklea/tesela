@@ -352,13 +352,21 @@ class OutlinerView: NSView {
                     }
                 }
                 let statusLabel = NSTextField(labelWithString: statusChar)
-                statusLabel.font = .systemFont(ofSize: NSFont.systemFontSize - 1)
+                let statusFont = NSFont.systemFont(ofSize: NSFont.systemFontSize - 1)
+                statusLabel.font = statusFont
                 statusLabel.textColor = statusColor
                 statusLabel.isEditable = false
                 statusLabel.isBordered = false
                 statusLabel.drawsBackground = false
-                // The status symbol sits slightly lower than the bullet so the checkbox/ring feels centered with the text.
-                statusLabel.frame = NSRect(x: bulletX + 18, y: baselineY - 8, width: 16, height: 16)
+                statusLabel.sizeToFit()
+                statusLabel.frame = baselineAlignedLabelFrame(
+                    for: statusLabel,
+                    font: statusFont,
+                    baselineY: baselineY,
+                    x: bulletX + 18,
+                    width: 16,
+                    minHeight: 16
+                )
                 addSubview(statusLabel)
                 actualTextX = bulletX + 36
             }
@@ -827,6 +835,20 @@ class OutlinerView: NSView {
         guard let date = fmt.date(from: dateStr),
               let threshold = Calendar.current.date(byAdding: .day, value: days, to: Date()) else { return false }
         return date <= threshold && date >= Calendar.current.startOfDay(for: Date())
+    }
+
+    private func baselineAlignedLabelFrame(
+        for label: NSTextField,
+        font: NSFont,
+        baselineY: CGFloat,
+        x: CGFloat,
+        width: CGFloat,
+        minHeight: CGFloat
+    ) -> NSRect {
+        let measuredHeight = max(label.frame.height, font.boundingRectForFont.height)
+        let height = max(minHeight, ceil(measuredHeight))
+        let y = baselineY - ceil(font.ascender) - floor((height - measuredHeight) / 2)
+        return NSRect(x: x, y: y, width: width, height: height)
     }
 
     private func makeEditDateButton(propertyKey: String, blockIndex: Int) -> NSView {

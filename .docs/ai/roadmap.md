@@ -104,22 +104,24 @@ Life OS kanban board, designed in React, implemented natively in Tesela.
 
 ---
 
-## Backlog (for smaller AI models)
+## Backlog (parallel, tiered by model capability)
 
 <!-- tier3_owner: claude -->
 
-Items that can be done alongside phases by less expensive models. Each is self-contained, well-scoped, and doesn't require architectural decisions.
+Items that can be done alongside phases. Each is self-contained and well-scoped. Tiered by required model capability — see `~/CLAUDE.md` for the claim protocol.
 
-### Layout & Visual Polish
+### Haiku (mechanical, no judgment)
+
 - [ ] Pixel-perfect bullet/icon/text alignment across all block types
 - [x] Bullet threading visual quality (line positioning, thickness, opacity)
 - [ ] Tag text alignment consistency across blocks
 - [ ] Consistent spacing between blocks, sections, headers
-- [ ] Status icon vertical centering with different font sizes
+- [x] Status icon vertical centering with different font sizes
 - [ ] Date badge alignment with text baseline
 - [ ] Sidebar visual polish (spacing, section headers, icons)
 
-### Bug Fixes
+### Sonnet (some architectural judgment)
+
 - [ ] Tag extraction edge cases (tags at end of line, tags with special chars)
 - [ ] Autocomplete popover positioning near screen edges
 - [ ] Cursor position bugs after block operations (Enter, delete, indent)
@@ -128,15 +130,17 @@ Items that can be done alongside phases by less expensive models. Each is self-c
 - [ ] WebSocket reconnection reliability
 - [ ] Block zoom save-back correctness for deeply nested blocks
 
-### Test Coverage
+### Opus (design skill, cross-cutting — owned by tier3_owner)
+
+- [ ] API endpoint integration tests (server routes)
+- [ ] SwiftUI view snapshot tests (if feasible)
+
+### Completed
+
 - [x] VimEngine unit tests: all motions, operators, visual mode, dot-repeat
 - [x] BlockParser unit tests: tag extraction, property extraction, serialization round-trips
 - [x] Block.displayText unit tests: tag stripping with various inputs
 - [x] Block.updateDisplayText unit tests: tag preservation, property lines
-- [ ] API endpoint integration tests (server routes)
-- [ ] SwiftUI view snapshot tests (if feasible)
-
-### Documentation
 - [x] README.md update with current features and architecture
 - [x] API endpoint documentation (REST routes, parameters, responses)
 - [x] MCP tool documentation (what each tool does, example usage)
