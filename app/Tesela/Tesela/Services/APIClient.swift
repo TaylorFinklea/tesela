@@ -8,6 +8,8 @@ actor APIClient {
     private let session: URLSession
     private let decoder: JSONDecoder
     private let encoder: JSONEncoder
+    private let standardTimeout: TimeInterval = 10.0
+    private let longTimeout: TimeInterval = 30.0
 
     init(baseURL: URL = URL(string: "http://localhost:7474")!) {
         self.baseURL = baseURL
@@ -130,7 +132,7 @@ actor APIClient {
     private func get(_ path: String, query: [URLQueryItem] = []) async throws -> (Data, URLResponse) {
         let url = url(path: path, query: query)
         var request = URLRequest(url: url)
-        request.timeoutInterval = 10
+        request.timeoutInterval = standardTimeout
         return try await session.data(for: request)
     }
 
@@ -153,7 +155,7 @@ actor APIClient {
     private func delete(_ path: String) async throws {
         var request = URLRequest(url: url(path: path))
         request.httpMethod = "DELETE"
-        request.timeoutInterval = 10
+        request.timeoutInterval = standardTimeout
         let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
     }
@@ -163,7 +165,7 @@ actor APIClient {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
-        request.timeoutInterval = 30
+        request.timeoutInterval = longTimeout
         let (data, response) = try await session.data(for: request)
         try validate(response, data: data)
         return data

@@ -12,6 +12,8 @@ final class ServerManager {
     private var process: Process?
     private let serverPort = 7474
     private let healthURL = URL(string: "http://127.0.0.1:7474/health")!
+    private let healthCheckIntervalMs: UInt64 = 100
+    private let healthCheckMaxAttempts = 50
 
     private init() {}
 
@@ -54,9 +56,9 @@ final class ServerManager {
         }
 
         // Wait for server to become healthy (up to 5 seconds)
-        for _ in 0..<50 {
+        for _ in 0..<healthCheckMaxAttempts {
             do {
-                try await Task.sleep(for: .milliseconds(100))
+                try await Task.sleep(for: .milliseconds(healthCheckIntervalMs))
             } catch {
                 logger.debug("Health check sleep failed: \(error.localizedDescription)")
             }
