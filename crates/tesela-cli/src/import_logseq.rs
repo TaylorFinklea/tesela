@@ -139,9 +139,9 @@ pub async fn run(mosaic: &PathBuf, source: PathBuf, dry_run: bool) -> Result<()>
 
 /// Convert LogSeq markdown content to Tesela format.
 fn convert_content(content: &str) -> String {
-    let logseq_date_re = regex::Regex::new(r"<(\d{4}-\d{2}-\d{2})\s+\w+>").unwrap();
-    let priority_re = regex::Regex::new(r"\[#([ABC])\]\s*").unwrap();
-    let block_ref_re = regex::Regex::new(r"\(\(([a-f0-9-]+)\)\)").unwrap();
+    let logseq_date_re = regex::Regex::new(r"<(\d{4}-\d{2}-\d{2})\s+\w+>").expect("logseq_date_re regex should be valid");
+    let priority_re = regex::Regex::new(r"\[#([ABC])\]\s*").expect("priority_re regex should be valid");
+    let block_ref_re = regex::Regex::new(r"\(\(([a-f0-9-]+)\)\)").expect("block_ref_re regex should be valid");
 
     let mut lines: Vec<String> = Vec::new();
     let mut in_query = false;
