@@ -3,6 +3,8 @@ use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tesela_core::traits::plugin::PluginRegistry;
+
+mod import_logseq;
 use tesela_core::{
     config::Config,
     daily::DailyNoteConfig,
@@ -100,6 +102,15 @@ enum Commands {
         /// Output directory for backups (defaults to .tesela/backups/)
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+    /// Import notes from a LogSeq graph
+    ImportLogseq {
+        /// Path to the LogSeq graph directory (containing journals/ and pages/)
+        #[arg(long)]
+        source: PathBuf,
+        /// Dry run — show what would be imported without writing
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Restore notes from a backup
     Restore {
@@ -730,10 +741,15 @@ async fn main() -> Result<()> {
         return cmd_restore(&mosaic, source, overwrite, dry_run).await;
     }
 
+    // Handle LogSeq import — needs mosaic path but not a full Ctx
+    if let Commands::ImportLogseq { source, dry_run } = cli.command {
+        return import_logseq::run(&mosaic, source, dry_run).await;
+    }
+
     let ctx = Ctx::new(mosaic).await?;
 
     match cli.command {
-        Commands::Init { .. } | Commands::Completions { .. } | Commands::Install | Commands::Uninstall | Commands::Backup { .. } | Commands::Restore { .. } => unreachable!(),
+        Commands::Init { .. } | Commands::Completions { .. } | Commands::Install | Commands::Uninstall | Commands::Backup { .. } | Commands::Restore { .. } | Commands::ImportLogseq { .. } => unreachable!(),
         Commands::New {
             title,
             tags,
