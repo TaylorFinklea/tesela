@@ -83,7 +83,7 @@ impl LuaPlugin {
 
     /// Call a named Lua function with one argument, if it exists
     fn call_hook_note(&self, func_name: &str, note: &Note) -> Result<()> {
-        let lua = self.lua.lock().unwrap();
+        let lua = self.lua.lock().expect("lua mutex should not be poisoned");
         let globals = lua.globals();
         if let Ok(func) = globals.get::<LuaFunction>(func_name) {
             let table = self
@@ -116,7 +116,7 @@ impl Plugin for LuaPlugin {
     }
 
     fn on_note_deleted(&self, id: &NoteId) -> Result<()> {
-        let lua = self.lua.lock().unwrap();
+        let lua = self.lua.lock().expect("lua mutex should not be poisoned");
         let globals = lua.globals();
         if let Ok(func) = globals.get::<LuaFunction>("on_note_deleted") {
             func.call::<()>(id.as_str())
@@ -126,7 +126,7 @@ impl Plugin for LuaPlugin {
     }
 
     fn on_search(&self, query: &str, results: &mut Vec<SearchHit>) -> Result<()> {
-        let lua = self.lua.lock().unwrap();
+        let lua = self.lua.lock().expect("lua mutex should not be poisoned");
         let globals = lua.globals();
         if let Ok(func) = globals.get::<LuaFunction>("on_search") {
             // Convert results to Lua table
@@ -254,7 +254,7 @@ end
         plugin.on_note_created(&note).unwrap();
 
         // Verify count via Lua eval
-        let lua = plugin.lua.lock().unwrap();
+        let lua = plugin.lua.lock().expect("lua mutex should not be poisoned");
         let count: i32 = lua.globals().get("_count").unwrap();
         assert_eq!(count, 2);
     }
@@ -272,7 +272,7 @@ end
         let plugin = LuaPlugin::from_code(code, "test").unwrap();
         plugin.on_note_deleted(&NoteId::new("note-abc")).unwrap();
 
-        let lua = plugin.lua.lock().unwrap();
+        let lua = plugin.lua.lock().expect("lua mutex should not be poisoned");
         let deleted: String = lua.globals().get("last_deleted").unwrap();
         assert_eq!(deleted, "note-abc");
     }
