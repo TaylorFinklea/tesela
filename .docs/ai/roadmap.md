@@ -140,7 +140,7 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 - [ ] Split sqlite.rs (1126 lines) into db/migrations.rs, db/search.rs, db/links.rs, db/types.rs
 - [ ] Split TagPageView.swift (841 lines) into TagPageHeader, TagBlockTable, TagKanbanBoard, TagPropertyEditor
 - [ ] Replace 4 hardcoded DispatchQueue.asyncAfter delays with proper state machine or animation callbacks (ContentArea.swift:265, TilesView.swift:27,40,79)
-- [ ] Create shared RegexCache for duplicate regex patterns across import_logseq.rs, notes.rs, BlockStyler.swift
+- [~] Create shared RegexCache for duplicate regex patterns across import_logseq.rs, notes.rs, BlockStyler.swift
 - [ ] Add structured error handling to AppState.loadInitialData — partial failures should show user-facing indicators, not silent defaults
 
 ### Opus (design skill, cross-cutting — owned by tier3_owner)
