@@ -30,6 +30,9 @@ pub struct SqliteIndex {
     pool: Pool<Sqlite>,
 }
 
+const DEFAULT_MAX_CONNECTIONS: u32 = 5;
+const IN_MEMORY_MAX_CONNECTIONS: u32 = 1;
+
 impl SqliteIndex {
     /// Open (or create) a SQLite database at the given path.
     pub async fn open(path: &Path) -> Result<Self> {
@@ -41,7 +44,7 @@ impl SqliteIndex {
             .foreign_keys(true);
 
         let pool = SqlitePoolOptions::new()
-            .max_connections(5)
+            .max_connections(DEFAULT_MAX_CONNECTIONS)
             .connect_with(options)
             .await
             .map_err(|e| db_err("Failed to connect to database", e))?;
@@ -59,7 +62,7 @@ impl SqliteIndex {
             .foreign_keys(true);
 
         let pool = SqlitePoolOptions::new()
-            .max_connections(1)
+            .max_connections(IN_MEMORY_MAX_CONNECTIONS)
             .connect_with(options)
             .await
             .map_err(|e| db_err("Failed to connect to in-memory database", e))?;

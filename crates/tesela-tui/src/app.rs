@@ -31,6 +31,8 @@ use crate::{
     state::{mode::Mode, AppState},
 };
 
+const TICK_INTERVAL_MS: u64 = 250;
+
 pub struct App {
     store: Arc<FsNoteStore>,
     index: Arc<SqliteIndex>,
@@ -78,7 +80,7 @@ impl App {
                         None => continue,
                     }
                 }
-                _ = tokio::time::sleep(Duration::from_millis(250)) => Event::Tick,
+                _ = tokio::time::sleep(Duration::from_millis(TICK_INTERVAL_MS)) => Event::Tick,
             };
 
             // Handle -> actions
