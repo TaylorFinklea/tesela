@@ -388,7 +388,12 @@ class OutlinerView: NSView {
 
             // MARK: Right-side badges
             // Right-side badges — all aligned to baseline
-            let pillY = baselineY - 9  // 18pt pills are drawn 9pt above center to sit on the same baseline as text.
+            let badgeFont = NSFont.systemFont(ofSize: 10)
+            let pillY = baselineAlignedPillY(
+                font: badgeFont,
+                baselineY: baselineY,
+                height: 18
+            )
             let editBtnY = baselineY - 7  // 14pt edit buttons use a shallower offset so the icon centers visually with the pill row.
             var badgeX = actualTextX + textWidth + 6
 
@@ -857,6 +862,10 @@ class OutlinerView: NSView {
         let height = max(minHeight, ceil(measuredHeight))
         let y = baselineY - ceil(font.ascender) - floor((height - measuredHeight) / 2)
         return NSRect(x: x, y: y, width: width, height: height)
+    }
+
+    private func baselineAlignedPillY(font: NSFont, baselineY: CGFloat, height: CGFloat) -> CGFloat {
+        baselineY - ceil(font.ascender) - floor((height - font.boundingRectForFont.height) / 2)
     }
 
     private func makeEditDateButton(propertyKey: String, blockIndex: Int) -> NSView {
