@@ -9,6 +9,7 @@ private let logger = Logger(subsystem: "com.tesela.AppState", category: "AppStat
 final class AppState {
     // MARK: - Connection
     var connectionStatus: ConnectionStatus = .disconnected
+    var initialDataError: String?
 
     // MARK: - Navigation
     var selectedNavItem: NavItem = .tiles {
@@ -131,19 +132,25 @@ final class AppState {
             tags = fetchedTags
         } catch {
             logger.error("loadInitialData failed: \(error.localizedDescription)")
+            initialDataError = "Failed to load notes and tags: \(error.localizedDescription)"
         }
-        // Types and properties loaded separately (non-fatal if missing)
         do {
             typeRegistry = try await typesTask
         } catch {
             logger.debug("Failed to load type registry: \(error.localizedDescription)")
             typeRegistry = []
+            if initialDataError == nil {
+                initialDataError = "Failed to load type registry"
+            }
         }
         do {
             propertyRegistry = try await api.getProperties()
         } catch {
             logger.debug("Failed to load property registry: \(error.localizedDescription)")
             propertyRegistry = []
+            if initialDataError == nil {
+                initialDataError = "Failed to load property registry"
+            }
         }
     }
 
