@@ -1,8 +1,7 @@
 //! Link types and wiki-link parsing for Tesela
 
-use regex::Regex;
+use crate::regex_cache::WIKI_LINK_RE;
 use serde::{Deserialize, Serialize};
-use std::sync::LazyLock;
 
 /// Extracted link from markdown
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,9 +30,6 @@ pub struct GraphEdge {
     pub target: String,
 }
 
-static WIKI_LINK_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\[\[([^\]|]+)(?:\|([^\]]+))?\]\]").unwrap());
-
 /// Parse [[wiki-links]] from markdown content
 pub fn extract_wiki_links(content: &str) -> Vec<Link> {
     WIKI_LINK_RE
@@ -44,7 +40,10 @@ pub fn extract_wiki_links(content: &str) -> Vec<Link> {
             let pos = whole_match.start();
             // Extract the full line containing the link for context
             let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-            let line_end = content[pos..].find('\n').map(|i| pos + i).unwrap_or(content.len());
+            let line_end = content[pos..]
+                .find('\n')
+                .map(|i| pos + i)
+                .unwrap_or(content.len());
             let full_line = content[line_start..line_end].trim().to_string();
             Link {
                 link_type: LinkType::Internal,
@@ -84,9 +83,15 @@ mod tests {
         let links = extract_wiki_links(content);
         assert_eq!(links.len(), 2);
         assert_eq!(links[0].target, "note-a");
-        assert_eq!(links[0].text, "Link to [[note-a]] and [[note-b|Note B]] end.");
+        assert_eq!(
+            links[0].text,
+            "Link to [[note-a]] and [[note-b|Note B]] end."
+        );
         assert_eq!(links[1].target, "note-b");
-        assert_eq!(links[1].text, "Link to [[note-a]] and [[note-b|Note B]] end.");
+        assert_eq!(
+            links[1].text,
+            "Link to [[note-a]] and [[note-b|Note B]] end."
+        );
     }
 
     #[test]

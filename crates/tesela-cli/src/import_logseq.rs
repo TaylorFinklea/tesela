@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::path::PathBuf;
+use tesela_core::regex_cache::{BLOCK_REF_RE, LOGSEQ_DATE_RE, PRIORITY_RE};
 
 /// Import notes from a LogSeq graph into a Tesela mosaic.
 pub async fn run(mosaic: &PathBuf, source: PathBuf, dry_run: bool) -> Result<()> {
@@ -139,10 +140,6 @@ pub async fn run(mosaic: &PathBuf, source: PathBuf, dry_run: bool) -> Result<()>
 
 /// Convert LogSeq markdown content to Tesela format.
 fn convert_content(content: &str) -> String {
-    let logseq_date_re = regex::Regex::new(r"<(\d{4}-\d{2}-\d{2})\s+\w+>").expect("logseq_date_re regex should be valid");
-    let priority_re = regex::Regex::new(r"\[#([ABC])\]\s*").expect("priority_re regex should be valid");
-    let block_ref_re = regex::Regex::new(r"\(\(([a-f0-9-]+)\)\)").expect("block_ref_re regex should be valid");
-
     let mut lines: Vec<String> = Vec::new();
     let mut in_query = false;
 
@@ -166,7 +163,7 @@ fn convert_content(content: &str) -> String {
 
         // Convert task markers
         if let Some((status, rest_text)) = strip_task_marker(trimmed) {
-            let (priority, clean_text) = extract_priority(&rest_text, &priority_re);
+            let (priority, clean_text) = extract_priority(&rest_text);
             let prop_indent = format!("{}  ", indent_str);
 
             lines.push(format!("{}{}", indent_str, clean_text));
@@ -182,14 +179,14 @@ fn convert_content(content: &str) -> String {
         // Convert DEADLINE/SCHEDULED
         if trimmed.starts_with("DEADLINE:") || trimmed.starts_with("SCHEDULED:") {
             let key = if trimmed.starts_with("DEADLINE") { "deadline" } else { "scheduled" };
-            if let Some(caps) = logseq_date_re.captures(trimmed) {
+            if let Some(caps) = LOGSEQ_DATE_RE.captures(trimmed) {
                 let date = caps.get(1).unwrap().as_str();
                 result = format!("{}{}:: {}", indent_str, key, date);
             }
         }
 
         // Convert ((block-ref-uuid)) → [ref]
-        result = block_ref_re.replace_all(&result, "[ref]").to_string();
+        result = BLOCK_REF_RE.replace_all(&result, "[ref]").to_string();
 
         // Convert tab indentation to 2-space
         result = result.replace('\t', "  ");
@@ -221,15 +218,15 @@ fn strip_task_marker(line: &str) -> Option<(String, String)> {
     None
 }
 
-fn extract_priority(text: &str, re: &regex::Regex) -> (Option<String>, String) {
-    if let Some(caps) = re.captures(text) {
+fn extract_priority(text: &str) -> (Option<String>, String) {
+    if let Some(caps) = PRIORITY_RE.captures(text) {
         let priority = match caps.get(1).unwrap().as_str() {
             "A" => "high",
             "B" => "medium",
             "C" => "low",
             _ => "medium",
         };
-        let clean = re.replace(text, "").to_string();
+        let clean = PRIORITY_RE.replace(text, "").to_string();
         (Some(priority.to_string()), clean)
     } else {
         (None, text.to_string())

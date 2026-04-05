@@ -3,15 +3,9 @@
 //! Parses markdown body text into blocks, extracting tags and properties.
 //! Mirrors the Swift `BlockParser` but runs server-side during indexing.
 
-use regex::Regex;
+use crate::regex_cache::{PROPERTY_RE, TAG_RE};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::LazyLock;
-
-static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"#([A-Za-z0-9_/-]+)").unwrap());
-
-static PROPERTY_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"([A-Za-z_][A-Za-z0-9_]*):: (.+)").unwrap());
 
 /// A parsed block from a note body.
 #[derive(Debug, Clone, Serialize)]

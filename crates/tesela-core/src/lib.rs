@@ -7,6 +7,7 @@ pub mod export;
 pub mod indexer;
 pub mod link;
 pub mod note;
+pub mod regex_cache;
 pub mod storage;
 pub mod tag;
 pub mod traits;
