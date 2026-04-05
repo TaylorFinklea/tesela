@@ -11,8 +11,12 @@ actor APIClient {
     private let standardTimeout: TimeInterval = 10.0
     private let longTimeout: TimeInterval = 30.0
 
-    init(baseURL: URL = URL(string: "http://localhost:7474")!) {
-        self.baseURL = baseURL
+    init(baseURL: URL? = nil) {
+        let url = baseURL ?? URL(string: "http://localhost:7474")
+        guard let validURL = url else {
+            fatalError("Invalid base URL for APIClient")
+        }
+        self.baseURL = validURL
         self.session = URLSession.shared
         self.decoder = JSONDecoder()
         self.decoder.dateDecodingStrategy = .iso8601
@@ -130,7 +134,9 @@ actor APIClient {
     // MARK: - Private helpers
 
     private func get(_ path: String, query: [URLQueryItem] = []) async throws -> (Data, URLResponse) {
-        let url = url(path: path, query: query)
+        guard let url = url(path: path, query: query) else {
+            throw APIError.invalidURL
+        }
         var request = URLRequest(url: url)
         request.timeoutInterval = standardTimeout
         return try await session.data(for: request)
@@ -153,7 +159,10 @@ actor APIClient {
     }
 
     private func delete(_ path: String) async throws {
-        var request = URLRequest(url: url(path: path))
+        guard let url = url(path: path) else {
+            throw APIError.invalidURL
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.timeoutInterval = standardTimeout
         let (data, response) = try await session.data(for: request)
@@ -161,7 +170,10 @@ actor APIClient {
     }
 
     private func send<Body: Encodable>(_ method: String, path: String, body: Body) async throws -> Data {
-        var request = URLRequest(url: url(path: path))
+        guard let url = url(path: path) else {
+            throw APIError.invalidURL
+        }
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try encoder.encode(body)
@@ -171,10 +183,10 @@ actor APIClient {
         return data
     }
 
-    private func url(path: String, query: [URLQueryItem] = []) -> URL {
-        var comps = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
-        if !query.isEmpty { comps.queryItems = query }
-        return comps.url!
+    private func url(path: String, query: [URLQueryItem] = []) -> URL? {
+        var comps = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)
+        if !query.isEmpty { comps?.queryItems = query }
+        return comps?.url
     }
 
     private func validate(_ response: URLResponse, data: Data) throws {
@@ -202,12 +214,14 @@ private struct UpdateNoteRequest: Encodable {
 // MARK: - Errors
 enum APIError: LocalizedError {
     case invalidResponse
+    case invalidURL
     case httpError(statusCode: Int, message: String)
     case decodingFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .invalidResponse: "Invalid server response"
+        case .invalidURL: "Invalid URL"
         case .httpError(let code, let msg): "HTTP \(code): \(msg)"
         case .decodingFailed(let reason): "Decoding failed: \(reason)"
         }
