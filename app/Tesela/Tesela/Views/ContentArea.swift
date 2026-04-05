@@ -287,10 +287,7 @@ struct PageEditorView: View {
             blocks = [Block(text: text)]
         } else {
             blocks = parsed
-            // Always have an empty block at the end ready for input
-            if let last = blocks.last, !last.text.isEmpty {
-                blocks.append(Block(text: ""))
-            }
+            // Ghost bullet on hover handles new block creation — no permanent empty block
         }
     }
 

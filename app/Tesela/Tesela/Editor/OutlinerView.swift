@@ -42,6 +42,10 @@ class OutlinerView: NSView {
     private var lastBoundsWidth: CGFloat = 0
     private var hasInitialized = false
 
+    // Ghost bullet hover state
+    private var ghostBullet: NSView?
+    private var ghostInsertIndex: Int?
+
     // Structural undo/redo stacks (for block-level operations)
     private var undoStack: [([Block], Int?)] = []  // (blocks snapshot, focused index)
     private var redoStack: [([Block], Int?)] = []
@@ -63,6 +67,114 @@ class OutlinerView: NSView {
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         setup()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        for area in trackingAreas { removeTrackingArea(area) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow],
+            owner: self
+        )
+        addTrackingArea(area)
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        updateGhostBullet(at: point)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        hideGhostBullet()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+
+        // If clicking on the ghost bullet area, insert a new block
+        if let insertIdx = ghostInsertIndex {
+            let ghostY = ghostBullet?.frame.midY ?? 0
+            if abs(point.y - ghostY) < 14 {
+                hideGhostBullet()
+                insertBlockAt(insertIdx)
+                return
+            }
+        }
+
+        hideGhostBullet()
+        super.mouseDown(with: event)
+    }
+
+    private func updateGhostBullet(at point: NSPoint) {
+        // Find which gap between blocks the mouse is in
+        guard !blockViews.isEmpty else {
+            // Show ghost at the top if no blocks exist
+            showGhostBullet(y: 8, insertIndex: 0)
+            return
+        }
+
+        // Check if mouse is below the last block
+        if let lastView = blockViews.last {
+            let lastBottom = lastView.frame.maxY + 4
+            if point.y > lastBottom {
+                showGhostBullet(y: lastBottom + 4, insertIndex: blocks.count)
+                return
+            }
+        }
+
+        // Check gaps between blocks
+        for i in 0..<blockViews.count {
+            let blockTop = blockViews[i].frame.minY
+            let prevBottom: CGFloat = i == 0 ? 0 : blockViews[i - 1].frame.maxY + 2
+
+            // Mouse is in the gap before this block
+            if point.y >= prevBottom && point.y < blockTop {
+                let gapCenter = (prevBottom + blockTop) / 2
+                showGhostBullet(y: gapCenter, insertIndex: i)
+                return
+            }
+        }
+
+        hideGhostBullet()
+    }
+
+    private func showGhostBullet(y: CGFloat, insertIndex: Int) {
+        ghostInsertIndex = insertIndex
+
+        if ghostBullet == nil {
+            let dot = NSTextField(labelWithString: "•")
+            dot.font = .systemFont(ofSize: NSFont.systemFontSize)
+            dot.textColor = .tertiaryLabelColor.withAlphaComponent(0.4)
+            dot.isEditable = false
+            dot.isBordered = false
+            dot.drawsBackground = false
+            dot.frame = NSRect(x: 12, y: 0, width: 16, height: 14)
+            addSubview(dot)
+            ghostBullet = dot
+        }
+
+        ghostBullet?.frame.origin.y = y - 7
+    }
+
+    private func hideGhostBullet() {
+        ghostBullet?.removeFromSuperview()
+        ghostBullet = nil
+        ghostInsertIndex = nil
+    }
+
+    private func insertBlockAt(_ index: Int) {
+        saveUndoState()
+        let newBlock = Block(text: "")
+        if index >= blocks.count {
+            blocks.append(newBlock)
+        } else {
+            blocks.insert(newBlock, at: index)
+        }
+        pendingFocusIndex = index
+        pendingCursorPosition = 0
+        rebuildBlockViews()
+        delegate?.outlinerDidChangeContent(blocks: blocks)
     }
 
     private func setup() {
