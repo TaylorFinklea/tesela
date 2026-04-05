@@ -35,6 +35,16 @@ final class BlockParserTests: XCTestCase {
         XCTAssertEqual(tags, ["my_project"])
     }
 
+    func testExtractsTagWithSlash() {
+        let tags = BlockParser.extractTags(from: "Nested #projects/tesela work")
+        XCTAssertEqual(tags, ["projects/tesela"])
+    }
+
+    func testExtractsTagStartingWithNumber() {
+        let tags = BlockParser.extractTags(from: "Ship #2026plan soon")
+        XCTAssertEqual(tags, ["2026plan"])
+    }
+
     func testTagExtractionIsCaseSensitive() {
         // Tag names preserve the exact casing from the source text
         let tags = BlockParser.extractTags(from: "Meeting #Work and #work")
@@ -96,6 +106,16 @@ final class BlockParserTests: XCTestCase {
     func testLiveTagWithUnderscores() {
         let tags = BlockParser.extractTagsLive(from: "check #my_project again")
         XCTAssertEqual(tags, ["my_project"])
+    }
+
+    func testLiveTagWithSlash() {
+        let tags = BlockParser.extractTagsLive(from: "see #projects/tesela next")
+        XCTAssertEqual(tags, ["projects/tesela"])
+    }
+
+    func testLiveTagStartingWithNumber() {
+        let tags = BlockParser.extractTagsLive(from: "track #2026plan next")
+        XCTAssertEqual(tags, ["2026plan"])
     }
 
     // MARK: - extractProperties

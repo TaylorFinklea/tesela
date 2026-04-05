@@ -155,7 +155,7 @@ enum BlockParser {
     }
 
     private static func extractTagsComplete(from text: String, requireTrailingSpace: Bool) -> [String] {
-        let pattern = /#([A-Za-z0-9_\-]+)/
+        let pattern = /#([A-Za-z0-9_\-\/]+)/
         return text.matches(of: pattern).compactMap { match in
             let tag = String(match.output.1)
             let fullMatch = String(match.output.0)

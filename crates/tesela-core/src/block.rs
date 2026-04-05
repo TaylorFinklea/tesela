@@ -8,8 +8,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 
-static TAG_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"#([A-Za-z][A-Za-z0-9_-]*)").unwrap());
+static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"#([A-Za-z0-9_/-]+)").unwrap());
 
 static PROPERTY_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"([A-Za-z_][A-Za-z0-9_]*):: (.+)").unwrap());
@@ -142,12 +141,32 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_block_with_tag_at_end_of_line() {
+        let body = "- Finish report #work";
+        let blocks = parse_blocks("test", body);
+        assert_eq!(blocks[0].tags, vec!["work"]);
+    }
+
+    #[test]
+    fn test_parse_block_with_special_character_tags() {
+        let body = "- Ship release #v2 #projects/tesela #follow-up";
+        let blocks = parse_blocks("test", body);
+        assert_eq!(blocks[0].tags, vec!["v2", "projects/tesela", "follow-up"]);
+    }
+
+    #[test]
     fn test_parse_block_with_properties() {
         let body = "- My task #Task\n  status:: todo\n  priority:: high";
         let blocks = parse_blocks("test", body);
         assert_eq!(blocks.len(), 1);
-        assert_eq!(blocks[0].properties.get("status"), Some(&"todo".to_string()));
-        assert_eq!(blocks[0].properties.get("priority"), Some(&"high".to_string()));
+        assert_eq!(
+            blocks[0].properties.get("status"),
+            Some(&"todo".to_string())
+        );
+        assert_eq!(
+            blocks[0].properties.get("priority"),
+            Some(&"high".to_string())
+        );
         assert_eq!(blocks[0].tags, vec!["Task"]);
     }
 
