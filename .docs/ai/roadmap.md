@@ -122,7 +122,7 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 
 ### Sonnet (some architectural judgment)
 
-- [ ] Tag extraction edge cases (tags at end of line, tags with special chars)
+- [~] Tag extraction edge cases (tags at end of line, tags with special chars)
 - [ ] Autocomplete popover positioning near screen edges
 - [ ] Cursor position bugs after block operations (Enter, delete, indent)
 - [ ] BlockStyler crash guards (text/textStorage length mismatches)
