@@ -119,6 +119,13 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 - [x] Status icon vertical centering with different font sizes
 - [x] Date badge alignment with text baseline
 - [ ] Sidebar visual polish (spacing, section headers, icons)
+- [ ] Replace 10 debug `print()` calls with os.log or remove (ServerManager.swift:22-71, AppState.swift:130, TagPageView.swift:418)
+- [ ] Replace 22 silent `try?` suppressions with logged error handling (AppState.swift, TagPageView.swift, ServerManager.swift)
+- [ ] Extract hardcoded timeout constants: ServerManager 5s health poll, APIClient 10s/30s request timeouts (ServerManager.swift:54, APIClient.swift:133,156)
+- [ ] Replace force-unwrap URL constructions with safe initializers (APIClient.swift:12,173,175)
+- [ ] Add `.expect("reason")` messages to 5 mutex lock unwraps in lua.rs (crates/tesela-plugins/src/lua.rs:86,119,129,257,275)
+- [ ] Add `.expect("reason")` messages to 3 regex unwraps in import_logseq.rs (crates/tesela-cli/src/import_logseq.rs:142-144)
+- [ ] Extract hardcoded magic numbers: SQLite max_connections, TUI tick_timeout, debounce durations (sqlite.rs:44,62, app.rs:81)
 
 ### Sonnet (some architectural judgment)
 
@@ -129,6 +136,12 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 - [ ] Search highlighting persistence across block rebuilds
 - [ ] WebSocket reconnection reliability
 - [ ] Block zoom save-back correctness for deeply nested blocks
+- [ ] Split OutlinerView.swift (2155 lines) into focused modules: OutlinerLayout, OutlinerCompletion, OutlinerSearch, OutlinerProperties
+- [ ] Split sqlite.rs (1126 lines) into db/migrations.rs, db/search.rs, db/links.rs, db/types.rs
+- [ ] Split TagPageView.swift (841 lines) into TagPageHeader, TagBlockTable, TagKanbanBoard, TagPropertyEditor
+- [ ] Replace 4 hardcoded DispatchQueue.asyncAfter delays with proper state machine or animation callbacks (ContentArea.swift:265, TilesView.swift:27,40,79)
+- [ ] Create shared RegexCache for duplicate regex patterns across import_logseq.rs, notes.rs, BlockStyler.swift
+- [ ] Add structured error handling to AppState.loadInitialData — partial failures should show user-facing indicators, not silent defaults
 
 ### Opus (design skill, cross-cutting — owned by tier3_owner)
 
