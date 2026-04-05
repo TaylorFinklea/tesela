@@ -429,7 +429,8 @@ class OutlinerView: NSView {
                 let blockIdx = index
                 let tagText = allTags.map { "#\($0)" }.joined(separator: "  ")
                 let tagLabel = NSTextField(labelWithString: tagText)
-                tagLabel.font = .systemFont(ofSize: 12)
+                let tagFont = NSFont.systemFont(ofSize: 12)
+                tagLabel.font = tagFont
                 tagLabel.textColor = .systemBlue
                 tagLabel.isEditable = false
                 tagLabel.isBordered = false
@@ -438,7 +439,14 @@ class OutlinerView: NSView {
                 tagLabel.sizeToFit()
                 // Right-align to the view edge
                 let tagX = bounds.width - tagLabel.frame.width - 16
-                tagLabel.frame = NSRect(x: tagX, y: baselineY - 8, width: tagLabel.frame.width, height: 16)
+                tagLabel.frame = baselineAlignedLabelFrame(
+                    for: tagLabel,
+                    font: tagFont,
+                    baselineY: baselineY,
+                    x: tagX,
+                    width: tagLabel.frame.width,
+                    minHeight: 16
+                )
                 // Click navigates to tag page (first tag)
                 let firstTag = allTags[0]
                 let clickAction = DatePickerAction { [weak self] in

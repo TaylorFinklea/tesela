@@ -114,7 +114,7 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 
 - [ ] Pixel-perfect bullet/icon/text alignment across all block types
 - [x] Bullet threading visual quality (line positioning, thickness, opacity)
-- [ ] Tag text alignment consistency across blocks
+- [x] Tag text alignment consistency across blocks
 - [ ] Consistent spacing between blocks, sections, headers
 - [x] Status icon vertical centering with different font sizes
 - [ ] Date badge alignment with text baseline
