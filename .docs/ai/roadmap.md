@@ -112,7 +112,7 @@ Items that can be done alongside phases by less expensive models. Each is self-c
 
 ### Layout & Visual Polish
 - [ ] Pixel-perfect bullet/icon/text alignment across all block types
-- [ ] Bullet threading visual quality (line positioning, thickness, opacity)
+- [x] Bullet threading visual quality (line positioning, thickness, opacity)
 - [ ] Tag text alignment consistency across blocks
 - [ ] Consistent spacing between blocks, sections, headers
 - [ ] Status icon vertical centering with different font sizes
@@ -129,20 +129,20 @@ Items that can be done alongside phases by less expensive models. Each is self-c
 - [ ] Block zoom save-back correctness for deeply nested blocks
 
 ### Test Coverage
-- [ ] VimEngine unit tests: all motions, operators, visual mode, dot-repeat
-- [ ] BlockParser unit tests: tag extraction, property extraction, serialization round-trips
-- [ ] Block.displayText unit tests: tag stripping with various inputs
-- [ ] Block.updateDisplayText unit tests: tag preservation, property lines
+- [x] VimEngine unit tests: all motions, operators, visual mode, dot-repeat
+- [x] BlockParser unit tests: tag extraction, property extraction, serialization round-trips
+- [x] Block.displayText unit tests: tag stripping with various inputs
+- [x] Block.updateDisplayText unit tests: tag preservation, property lines
 - [ ] API endpoint integration tests (server routes)
 - [ ] SwiftUI view snapshot tests (if feasible)
 
 ### Documentation
-- [ ] README.md update with current features and architecture
-- [ ] API endpoint documentation (REST routes, parameters, responses)
-- [ ] MCP tool documentation (what each tool does, example usage)
-- [ ] Contributing guide (build steps, test commands, code conventions)
-- [ ] Type system documentation (how tags, properties, inheritance work)
-- [ ] Inline code comments for complex methods (OutlinerView.rebuildBlockViews, VimKeyHandler)
+- [x] README.md update with current features and architecture
+- [x] API endpoint documentation (REST routes, parameters, responses)
+- [x] MCP tool documentation (what each tool does, example usage)
+- [x] Contributing guide (build steps, test commands, code conventions)
+- [x] Type system documentation (how tags, properties, inheritance work)
+- [x] Inline code comments for complex methods (OutlinerView.rebuildBlockViews, VimKeyHandler)
 
 ---
 
