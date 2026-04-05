@@ -1,5 +1,8 @@
 import SwiftUI
 import Observation
+import os.log
+
+private let logger = Logger(subsystem: "com.tesela.AppState", category: "AppState")
 
 @Observable
 @MainActor
@@ -127,7 +130,7 @@ final class AppState {
             pages = fetchedPages
             tags = fetchedTags
         } catch {
-            print("[AppState] loadInitialData failed: \(error)")
+            logger.error("loadInitialData failed: \(error.localizedDescription)")
         }
         // Types and properties loaded separately (non-fatal if missing)
         typeRegistry = (try? await typesTask) ?? []

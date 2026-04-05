@@ -1,4 +1,7 @@
 import SwiftUI
+import os.log
+
+private let logger = Logger(subsystem: "com.tesela.TagPageView", category: "TagPageView")
 
 // MARK: - TagPageView
 // Special view for Tag pages (type: "Tag"). Shows tag properties,
@@ -415,7 +418,7 @@ struct TagPageView: View {
             await appState.updatePage(id: block.noteId, newBody: newBody)
             await loadData()
         } catch {
-            print("[TagPageView] moveBlockProperty failed: \(error)")
+            logger.error("moveBlockProperty failed: \(error.localizedDescription)")
         }
     }
 

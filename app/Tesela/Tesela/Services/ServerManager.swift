@@ -1,4 +1,7 @@
 import Foundation
+import os.log
+
+private let logger = Logger(subsystem: "com.tesela.ServerManager", category: "ServerManager")
 
 /// Manages the lifecycle of the tesela-server child process.
 /// Launches on app start, kills on app quit, monitors health.
@@ -19,17 +22,17 @@ final class ServerManager {
 
         // Find the binary
         guard let binary = findServerBinary() else {
-            print("[ServerManager] tesela-server binary not found")
+            logger.error("tesela-server binary not found")
             return false
         }
 
         // Find the mosaic directory
         guard let mosaic = findMosaicDirectory() else {
-            print("[ServerManager] No mosaic directory found")
+            logger.error("No mosaic directory found")
             return false
         }
 
-        print("[ServerManager] Starting \(binary) in \(mosaic)")
+        logger.info("Starting \(binary) in \(mosaic)")
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: binary)
@@ -39,14 +42,14 @@ final class ServerManager {
 
         // Kill server when app terminates
         proc.terminationHandler = { p in
-            print("[ServerManager] Server exited with code \(p.terminationStatus)")
+            logger.info("Server exited with code \(p.terminationStatus)")
         }
 
         do {
             try proc.run()
             process = proc
         } catch {
-            print("[ServerManager] Failed to start server: \(error)")
+            logger.error("Failed to start server: \(error.localizedDescription)")
             return false
         }
 
@@ -54,12 +57,12 @@ final class ServerManager {
         for _ in 0..<50 {
             try? await Task.sleep(for: .milliseconds(100))
             if await isHealthy() {
-                print("[ServerManager] Server is healthy")
+                logger.info("Server is healthy")
                 return true
             }
         }
 
-        print("[ServerManager] Server did not become healthy in time")
+        logger.warning("Server did not become healthy in time")
         return false
     }
 
@@ -68,7 +71,7 @@ final class ServerManager {
         guard let proc = process, proc.isRunning else { return }
         proc.terminate()
         process = nil
-        print("[ServerManager] Server stopped")
+        logger.info("Server stopped")
     }
 
     /// Check if the server responds to /health
