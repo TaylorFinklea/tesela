@@ -133,8 +133,18 @@ final class AppState {
             logger.error("loadInitialData failed: \(error.localizedDescription)")
         }
         // Types and properties loaded separately (non-fatal if missing)
-        typeRegistry = (try? await typesTask) ?? []
-        propertyRegistry = (try? await api.getProperties()) ?? []
+        do {
+            typeRegistry = try await typesTask
+        } catch {
+            logger.debug("Failed to load type registry: \(error.localizedDescription)")
+            typeRegistry = []
+        }
+        do {
+            propertyRegistry = try await api.getProperties()
+        } catch {
+            logger.debug("Failed to load property registry: \(error.localizedDescription)")
+            propertyRegistry = []
+        }
     }
 
     // MARK: - Navigation helpers
@@ -239,8 +249,16 @@ final class AppState {
                 pages[idx] = updated
             }
             // Refresh type/property registries since schema may have changed
-            typeRegistry = (try? await api.getTypes()) ?? typeRegistry
-            propertyRegistry = (try? await api.getProperties()) ?? propertyRegistry
+            do {
+                typeRegistry = try await api.getTypes()
+            } catch {
+                logger.debug("Failed to refresh type registry: \(error.localizedDescription)")
+            }
+            do {
+                propertyRegistry = try await api.getProperties()
+            } catch {
+                logger.debug("Failed to refresh property registry: \(error.localizedDescription)")
+            }
         } catch {
             lastError = "Failed to save: \(error.localizedDescription)"
         }
@@ -263,9 +281,12 @@ final class AppState {
     func refreshPages() async {
         async let pagesTask = api.listNotes()
         async let tagsTask = api.listTags()
-        if let (fetchedPages, fetchedTags) = try? await (pagesTask, tagsTask) {
+        do {
+            let (fetchedPages, fetchedTags) = try await (pagesTask, tagsTask)
             pages = fetchedPages
             tags = fetchedTags
+        } catch {
+            logger.debug("Failed to refresh pages: \(error.localizedDescription)")
         }
     }
 

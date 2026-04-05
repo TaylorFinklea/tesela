@@ -367,14 +367,23 @@ struct TagPageView: View {
     }
 
     private func loadData() async {
-        resolvedType = try? await appState.api.getResolvedType(name: page.title)
+        do {
+            resolvedType = try await appState.api.getResolvedType(name: page.title)
+        } catch {
+            logger.debug("Failed to load resolved type: \(error.localizedDescription)")
+        }
         let filters = activeFilters.map { APIClient.PropertyFilter(property: $0.key, value: $0.value) }
-        taggedBlocks = (try? await appState.api.getTypedBlocks(
-            typeName: page.title,
-            filters: filters,
-            sortBy: sortProperty,
-            sortDir: sortProperty != nil ? (sortAscending ? "asc" : "desc") : nil
-        )) ?? []
+        do {
+            taggedBlocks = try await appState.api.getTypedBlocks(
+                typeName: page.title,
+                filters: filters,
+                sortBy: sortProperty,
+                sortDir: sortProperty != nil ? (sortAscending ? "asc" : "desc") : nil
+            )
+        } catch {
+            logger.debug("Failed to load tagged blocks: \(error.localizedDescription)")
+            taggedBlocks = []
+        }
     }
 
     /// Update a block's property value when dragged between kanban columns.
@@ -438,10 +447,18 @@ struct TagPageView: View {
     private func createAndAddProperty(_ name: String) async {
         // Create a new Property page, then add to this tag
         let content = "---\ntitle: \"\(name)\"\ntype: \"Property\"\nvalue_type: \"text\"\ntags: []\n---\n- \(name) property.\n"
-        _ = try? await appState.api.createNote(title: name, content: content, tags: [])
+        do {
+            try await appState.api.createNote(title: name, content: content, tags: [])
+        } catch {
+            logger.warning("Failed to create property page: \(error.localizedDescription)")
+        }
         await appState.refreshPages()
         // Refresh property registry
-        appState.propertyRegistry = (try? await appState.api.getProperties()) ?? appState.propertyRegistry
+        do {
+            appState.propertyRegistry = try await appState.api.getProperties()
+        } catch {
+            logger.debug("Failed to refresh property registry: \(error.localizedDescription)")
+        }
         await addProperty(name)
     }
 

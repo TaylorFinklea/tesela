@@ -120,7 +120,7 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 - [x] Date badge alignment with text baseline
 - [ ] Sidebar visual polish (spacing, section headers, icons)
 - [x] Replace 10 debug `print()` calls with os.log or remove (ServerManager.swift:22-71, AppState.swift:130, TagPageView.swift:418)
-- [~] Replace 22 silent `try?` suppressions with logged error handling (AppState.swift, TagPageView.swift, ServerManager.swift)
+- [x] Replace 22 silent `try?` suppressions with logged error handling (AppState.swift, TagPageView.swift, ServerManager.swift)
 - [ ] Extract hardcoded timeout constants: ServerManager 5s health poll, APIClient 10s/30s request timeouts (ServerManager.swift:54, APIClient.swift:133,156)
 - [ ] Replace force-unwrap URL constructions with safe initializers (APIClient.swift:12,173,175)
 - [ ] Add `.expect("reason")` messages to 5 mutex lock unwraps in lua.rs (crates/tesela-plugins/src/lua.rs:86,119,129,257,275)

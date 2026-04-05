@@ -55,7 +55,11 @@ final class ServerManager {
 
         // Wait for server to become healthy (up to 5 seconds)
         for _ in 0..<50 {
-            try? await Task.sleep(for: .milliseconds(100))
+            do {
+                try await Task.sleep(for: .milliseconds(100))
+            } catch {
+                logger.debug("Health check sleep failed: \(error.localizedDescription)")
+            }
             if await isHealthy() {
                 logger.info("Server is healthy")
                 return true
@@ -79,7 +83,13 @@ final class ServerManager {
         do {
             let (data, response) = try await URLSession.shared.data(from: healthURL)
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return false }
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: String]
+            let json: [String: String]?
+            do {
+                json = try JSONSerialization.jsonObject(with: data) as? [String: String]
+            } catch {
+                logger.debug("Health check JSON parsing failed: \(error.localizedDescription)")
+                json = nil
+            }
             return json?["status"] == "ok"
         } catch {
             return false
@@ -112,7 +122,11 @@ final class ServerManager {
         which.arguments = ["tesela-server"]
         let pipe = Pipe()
         which.standardOutput = pipe
-        try? which.run()
+        do {
+            try which.run()
+        } catch {
+            logger.debug("Failed to run which command: \(error.localizedDescription)")
+        }
         which.waitUntilExit()
         let output = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
