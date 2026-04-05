@@ -136,7 +136,7 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 - [ ] Search highlighting persistence across block rebuilds
 - [ ] WebSocket reconnection reliability
 - [ ] Block zoom save-back correctness for deeply nested blocks
-- [ ] Split OutlinerView.swift (2155 lines) into focused modules: OutlinerLayout, OutlinerCompletion, OutlinerSearch, OutlinerProperties
+- [~] Split OutlinerView.swift (2155 lines) into focused modules: OutlinerLayout, OutlinerCompletion, OutlinerSearch, OutlinerProperties
 - [ ] Split sqlite.rs (1126 lines) into db/migrations.rs, db/search.rs, db/links.rs, db/types.rs
 - [ ] Split TagPageView.swift (841 lines) into TagPageHeader, TagBlockTable, TagKanbanBoard, TagPropertyEditor
 - [ ] Replace 4 hardcoded DispatchQueue.asyncAfter delays with proper state machine or animation callbacks (ContentArea.swift:265, TilesView.swift:27,40,79)
