@@ -101,6 +101,17 @@ enum Commands {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Restore notes from a backup
+    Restore {
+        /// Backup directory to restore from (e.g., .tesela/backups/backup-20260404-120000)
+        source: PathBuf,
+        /// Overwrite existing notes (default: skip existing)
+        #[arg(long)]
+        overwrite: bool,
+        /// Dry run — show what would be restored without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Rebuild the search index
     Reindex,
     /// Launch the TUI interface
@@ -415,6 +426,98 @@ fn count_files_recursive(dir: &std::path::Path) -> usize {
     count
 }
 
+async fn cmd_restore(mosaic: &PathBuf, source: PathBuf, overwrite: bool, dry_run: bool) -> Result<()> {
+    let notes_dir = mosaic.join("notes");
+
+    // Verify source exists and looks like a backup
+    if !source.exists() {
+        anyhow::bail!("Backup directory not found: {}", source.display());
+    }
+
+    // Find notes in the backup (could be a flat dir or have a notes/ subdir)
+    let backup_notes = if source.join("notes").exists() {
+        source.join("notes")
+    } else {
+        // Assume the backup dir itself contains .md files
+        source.clone()
+    };
+
+    if !backup_notes.exists() {
+        anyhow::bail!("No notes found in backup: {}", backup_notes.display());
+    }
+
+    let _ = std::fs::create_dir_all(&notes_dir);
+
+    let mut restored = 0;
+    let mut skipped = 0;
+    let mut overwritten = 0;
+
+    restore_dir_recursive(&backup_notes, &notes_dir, overwrite, dry_run, &mut restored, &mut skipped, &mut overwritten)?;
+
+    if dry_run {
+        println!("Dry run complete:");
+    } else {
+        println!("Restore complete:");
+    }
+    println!("  Restored: {} files", restored);
+    println!("  Skipped (existing): {} files", skipped);
+    if overwrite {
+        println!("  Overwritten: {} files", overwritten);
+    }
+
+    // Restore database if present
+    let backup_db = source.join("tesela.db");
+    if backup_db.exists() {
+        let target_db = mosaic.join(".tesela").join("tesela.db");
+        if dry_run {
+            println!("  Would restore database: {}", backup_db.display());
+        } else {
+            std::fs::copy(&backup_db, &target_db)
+                .with_context(|| format!("Failed to restore database from {}", backup_db.display()))?;
+            println!("  Database restored");
+        }
+    }
+
+    if !dry_run {
+        println!("\nRestart tesela-server to reindex restored notes.");
+    }
+
+    Ok(())
+}
+
+fn restore_dir_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    overwrite: bool,
+    dry_run: bool,
+    restored: &mut usize,
+    skipped: &mut usize,
+    overwritten: &mut usize,
+) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            restore_dir_recursive(&src_path, &dst_path, overwrite, dry_run, restored, skipped, overwritten)?;
+        } else {
+            if dst_path.exists() && !overwrite {
+                *skipped += 1;
+                continue;
+            }
+            if dst_path.exists() && overwrite {
+                *overwritten += 1;
+            }
+            if !dry_run {
+                std::fs::copy(&src_path, &dst_path)?;
+            }
+            *restored += 1;
+        }
+    }
+    Ok(())
+}
+
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -622,10 +725,15 @@ async fn main() -> Result<()> {
         return cmd_backup(&mosaic, output).await;
     }
 
+    // Handle restore — needs mosaic path but not a full Ctx
+    if let Commands::Restore { source, overwrite, dry_run } = cli.command {
+        return cmd_restore(&mosaic, source, overwrite, dry_run).await;
+    }
+
     let ctx = Ctx::new(mosaic).await?;
 
     match cli.command {
-        Commands::Init { .. } | Commands::Completions { .. } | Commands::Install | Commands::Uninstall | Commands::Backup { .. } => unreachable!(),
+        Commands::Init { .. } | Commands::Completions { .. } | Commands::Install | Commands::Uninstall | Commands::Backup { .. } | Commands::Restore { .. } => unreachable!(),
         Commands::New {
             title,
             tags,
