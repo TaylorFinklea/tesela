@@ -9,6 +9,15 @@
             "command": "if echo \"$TOOL_INPUT\" | grep -q '\\.rs\"'; then cd /Users/tfinklea/git/tesela && cargo fmt --all 2>/dev/null; fi"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if echo \"$TOOL_OUTPUT\" | grep -qE 'feat\\(m[0-9]'; then echo 'AUTO_RELEASE: Milestone feature committed — dispatch release agent'; fi"
+          }
+        ]
       }
     ],
     "PreToolUse": [
