@@ -112,7 +112,7 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 
 ### Haiku (mechanical, no judgment)
 
-- [ ] Pixel-perfect bullet/icon/text alignment across all block types
+- [~] Pixel-perfect bullet/icon/text alignment across all block types
 - [x] Bullet threading visual quality (line positioning, thickness, opacity)
 - [x] Tag text alignment consistency across blocks
 - [ ] Consistent spacing between blocks, sections, headers
