@@ -2590,6 +2590,7 @@ dependencies = [
  "dirs",
  "indicatif",
  "predicates",
+ "regex",
  "tempfile",
  "tesela-core",
  "tesela-plugins",
@@ -2660,6 +2661,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
+ "regex",
  "serde",
  "serde_json",
  "tesela-core",
