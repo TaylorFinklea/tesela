@@ -36,24 +36,22 @@ Keyboard-first note-taking system (org-mode successor). Rust backend, native mac
 
 Make what exists beautiful and trustworthy. This is the gate to daily-driver status.
 
-- [ ] **UI overhaul** — professional visual quality, not passion-project look
-  - [ ] Consistent spacing, padding, and margins across all views
-  - [ ] Theme system (dark/light + accent color customization)
-  - [ ] Bullet threading that matches Logseq quality
-  - [ ] Icon/status alignment pixel-perfection
-- [ ] **Server lifecycle** — embed server in SwiftUI app as child process + keep LaunchAgent as CLI fallback
-- [ ] **Data integrity** — verify backup/restore round-trips, add restore command
-- [ ] **Empty block UX** — ghost bullet on hover (Logseq style), not permanent empty block
+- [x] **UI overhaul** — theme system, baseline alignment, right-aligned badges/tags
+  - [x] Consistent spacing, padding, and margins across all views
+  - [x] Theme system (dark/light + accent color customization)
+  - [x] Bullet threading from baseline
+  - [ ] Icon/status alignment pixel-perfection (in progress)
+- [x] **Server lifecycle** — embed server in SwiftUI app as child process + keep LaunchAgent as CLI fallback
+- [x] **Data integrity** — backup CLI + auto-daily + restore command
+- [x] **Empty block UX** — ghost bullet on hover
 
-## Phase 2: LogSeq Importer
+## Phase 2: LogSeq Importer ✅
 
-Bring 4.5 years of data in so Taylor can actually switch.
-
-- [ ] **CLI command**: `tesela import-logseq --source ~/logseq --target ~/mosaic`
-- [ ] **Format conversion**: journals → daily notes, pages → notes, properties → Tesela format
-- [ ] **Syntax mapping**: `DEADLINE:`, `SCHEDULED:`, `[#A]` priorities, `TODO/DOING/DONE`
-- [ ] **LogSeq-specific cleanup**: strip `collapsed::`, `id::`, `#+BEGIN_QUERY` blocks
-- [ ] **Dry-run mode**: preview what would be imported without writing
+- [x] **CLI command**: `tesela import-logseq --source ~/logseq [--dry-run]`
+- [x] **Format conversion**: journals → daily notes, pages → notes
+- [x] **Syntax mapping**: `DEADLINE:`, `SCHEDULED:`, `[#A]` priorities, `TODO/DOING/DONE`
+- [x] **LogSeq-specific cleanup**: strip `collapsed::`, `id::`, `#+BEGIN_QUERY` blocks
+- [x] **Dry-run mode**: preview what would be imported without writing
 
 ## Phase 3: First-Class Types (Anytype-style) ⚠️ NEEDS DISCOVERY
 

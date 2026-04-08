@@ -1,6 +1,6 @@
 # Current State
 
-*Last updated: 2026-04-04*
+*Last updated: 2026-04-07*
 
 ## Active Branch
 
@@ -8,42 +8,27 @@
 
 ## Last Session Summary
 
-**Date**: 2026-04-04
+**Date**: 2026-04-07
 
-**Phase 1 (Polish & Reliability) completed:**
-- Server auto-start: app finds and launches tesela-server as child process
-- Theme system: dark/light/auto + 11 accent colors, persisted in UserDefaults
-- Backup restore: `tesela restore <dir> [--overwrite] [--dry-run]`
-- Ghost bullet on hover: faint dot between blocks, click to insert new block
-- Bullet threading: lines from parent baseline to child baseline
-- Baseline-aligned layout: all inline elements share baselineY = yOffset + 11
-- Tags as right-aligned plain text (no pills)
-
-**Backlog items completed (subagents + external handoff agent):**
-- VimEngine unit tests: 90 tests
-- BlockParser + Block model tests: 60+ tests
-- README rewrite
-- API endpoint documentation
-- MCP tool documentation
-- Type system documentation
-- Contributing guide
-- Inline code comments (OutlinerView, VimKeyHandler)
-
-**Infrastructure:**
-- Claude Code automations: /build-and-test skill, auto-format hook, .env blocker hook
-- backlog-worker + test-writer subagent definitions
-- context7 MCP server installed
-- Handoff docs migrated from docs/ai/ to .docs/ai/
+- Fixed property continuation lines showing as blocks (hide `key:: value` lines)
+- Right-aligned date badges from view edge (consistent positioning)
+- External agents completed: RegexCache refactor, structured error handling, magic number extraction
+- External agents failed/reverted: OutlinerView split, DispatchQueue delay replacement, bullet alignment
+- Added automated release pipeline (scripts/release.sh + Haiku agent + auto-release hook)
+- Audit-backlog added 7 Haiku + 6 Sonnet items
+- Phase 2 (LogSeq importer) confirmed complete
 
 ## Build Status
 
-- `cargo test --workspace` — all tests pass
-- `xcodebuild -scheme Tesela -configuration Debug build` — builds clean
+- `cargo test --workspace` — needs verification (external agents modified Rust code)
+- `xcodebuild build` — needs verification
 
 ## Blockers
 
 None.
 
-## Next Phase
+## Next Phases
 
-Phase 2: LogSeq Importer — see `.docs/ai/roadmap.md`
+- Phase 3: First-class types — needs product discovery session with Taylor
+- Phase 5: Power menu — needs grammar design session with Taylor
+- Backlog: several Sonnet-tier bug fixes remain

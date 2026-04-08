@@ -1,35 +1,32 @@
 # Next Steps
 
-*Last updated: 2026-04-04*
+*Last updated: 2026-04-07*
 
 ## Phase 1: Complete ✅
+## Phase 2: Complete ✅
 
-All Phase 1 items shipped.
+## Phase 3: First-Class Types ⚠️ NEEDS DISCOVERY
 
-## Phase 2: LogSeq Importer (next)
+- [ ] Product design session with Taylor (Anytype-style type creation)
+- [ ] @person syntax design
+- [ ] Type creation UI spec
 
-- [ ] CLI command: `tesela import-logseq --source ~/logseq --target ~/mosaic`
-- [ ] Format conversion: journals → daily notes, pages → notes
-- [ ] Syntax mapping: DEADLINE, SCHEDULED, [#A] priorities, TODO/DOING/DONE
-- [ ] LogSeq-specific cleanup: strip collapsed::, id::, #+BEGIN_QUERY
-- [ ] Dry-run mode: preview what would be imported
+## Phase 5: Power Menu ⚠️ NEEDS DISCOVERY
 
-## Discovery Sessions Needed
+- [ ] Grammar design session with Taylor
 
-- [ ] Phase 3: First-class types (Anytype-style) — design session
-- [ ] Phase 5: Power menu grammar — design session
+## Active Work: Backlog + UI Polish
 
-## Backlog (remaining)
-
-See `.docs/ai/roadmap.md` → Backlog section. Remaining items:
-- Layout: pixel alignment, tag alignment, spacing, sidebar polish
-- Bugs: autocomplete positioning, cursor bugs, WebSocket reliability
-- Tests: API integration tests, SwiftUI snapshots
-- Docs: (most done — SwiftUI view snapshots still open)
+- [ ] Fix property line hiding (just shipped — needs testing)
+- [ ] Right-aligned date badges (just shipped — needs testing)
+- [ ] Autocomplete popover positioning near screen edges
+- [ ] Cursor position bugs after block operations
+- [ ] BlockStyler crash guards
+- [ ] Search highlighting persistence across block rebuilds
 
 ## When picking up work
 
 1. Read `.docs/ai/roadmap.md`, `current-state.md`, and this file
 2. Run `cargo test --workspace`
 3. Build: `xcodebuild -project app/Tesela/Tesela.xcodeproj -scheme Tesela -configuration Debug build`
-4. Pick from Phase 2 items or ask Taylor
+4. Pick from backlog or ask Taylor
