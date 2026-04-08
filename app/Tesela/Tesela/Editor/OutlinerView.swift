@@ -272,6 +272,18 @@ class OutlinerView: NSView {
         var blockPositions: [(y: CGFloat, height: CGFloat, indent: Int, bulletCenterX: CGFloat)] = []
 
         for (index, block) in blocks.enumerated() {
+            // Skip property continuation lines (status:: done, priority:: high, etc.)
+            // These are metadata, not user-visible blocks
+            let trimmedText = block.text.trimmingCharacters(in: .whitespaces)
+            if trimmedText.contains(":: ") && !trimmedText.hasPrefix("- ") {
+                // Still need a BlockView placeholder for index consistency
+                let emptyView = BlockView(block: block, typeTagNames: typeTagNames)
+                emptyView.frame = NSRect(x: 0, y: yOffset, width: 0, height: 0)
+                emptyView.isHidden = true
+                blockViews.append(emptyView)
+                continue
+            }
+
             let indentX = CGFloat(block.indentLevel) * 20
             let bulletX  = indentX + 12
             let textX    = indentX + 32
@@ -394,38 +406,44 @@ class OutlinerView: NSView {
                 baselineY: baselineY,
                 height: 18
             )
-            let editBtnY = baselineY - 7  // 14pt edit buttons use a shallower offset so the icon centers visually with the pill row.
-            var badgeX = actualTextX + textWidth + 6
-
-            if let deadline = block.deadline {
-                let pill = makeDeadlineBadge(deadline)
-                pill.frame.origin = NSPoint(x: badgeX, y: pillY)
-                addSubview(pill)
-                badgeX += pill.frame.width + 4
-
-                let editBtn = makeEditDateButton(propertyKey: "deadline", blockIndex: index)
-                editBtn.frame.origin = NSPoint(x: badgeX - 2, y: editBtnY)
-                addSubview(editBtn)
-                badgeX += editBtn.frame.width + 4
-            }
-
-            if let scheduled = block.scheduled {
-                let pill = makeDateBadge("📅 \(formatDateShort(scheduled))", color: .secondaryLabelColor)
-                pill.frame.origin = NSPoint(x: badgeX, y: pillY)
-                addSubview(pill)
-                badgeX += pill.frame.width + 4
-
-                let editBtn = makeEditDateButton(propertyKey: "scheduled", blockIndex: index)
-                editBtn.frame.origin = NSPoint(x: badgeX - 2, y: editBtnY)
-                addSubview(editBtn)
-                badgeX += editBtn.frame.width + 4
-            }
+            let editBtnY = baselineY - 7
+            // Right-align badges from the view edge (build right to left)
+            var rightEdge = bounds.width - 16
 
             if let effort = block.effort {
                 let pill = makeDateBadge("⏱ \(effort)", color: .secondaryLabelColor)
-                pill.frame.origin = NSPoint(x: badgeX, y: pillY)
+                rightEdge -= pill.frame.width
+                pill.frame.origin = NSPoint(x: rightEdge, y: pillY)
                 addSubview(pill)
-                badgeX += pill.frame.width + 4
+                rightEdge -= 4
+            }
+
+            if let scheduled = block.scheduled {
+                let editBtn = makeEditDateButton(propertyKey: "scheduled", blockIndex: index)
+                rightEdge -= editBtn.frame.width
+                editBtn.frame.origin = NSPoint(x: rightEdge, y: editBtnY)
+                addSubview(editBtn)
+                rightEdge -= 2
+
+                let pill = makeDateBadge("📅 \(formatDateShort(scheduled))", color: .secondaryLabelColor)
+                rightEdge -= pill.frame.width
+                pill.frame.origin = NSPoint(x: rightEdge, y: pillY)
+                addSubview(pill)
+                rightEdge -= 4
+            }
+
+            if let deadline = block.deadline {
+                let editBtn = makeEditDateButton(propertyKey: "deadline", blockIndex: index)
+                rightEdge -= editBtn.frame.width
+                editBtn.frame.origin = NSPoint(x: rightEdge, y: editBtnY)
+                addSubview(editBtn)
+                rightEdge -= 2
+
+                let pill = makeDeadlineBadge(deadline)
+                rightEdge -= pill.frame.width
+                pill.frame.origin = NSPoint(x: rightEdge, y: pillY)
+                addSubview(pill)
+                rightEdge -= 4
             }
 
             // MARK: Tag text rendering
@@ -442,8 +460,9 @@ class OutlinerView: NSView {
                 tagLabel.drawsBackground = false
                 tagLabel.alignment = .right
                 tagLabel.sizeToFit()
-                // Right-align to the view edge
-                let tagX = bounds.width - tagLabel.frame.width - 16
+                // Right-align to the view edge (or left of badges if present)
+                rightEdge -= tagLabel.frame.width
+                let tagX = rightEdge
                 tagLabel.frame = baselineAlignedLabelFrame(
                     for: tagLabel,
                     font: tagFont,
