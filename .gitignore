@@ -37,3 +37,10 @@ target
 # Test / local note data — use ~/z-temp/tesela-test as the mosaic for dev
 notes/
 attachments/
+
+# Xcode profiling artifacts
+*.profraw
+*.profdata
+
+# Superpowers plugin cache
+.superpowers/
