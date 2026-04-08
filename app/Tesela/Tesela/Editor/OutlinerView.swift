@@ -989,21 +989,25 @@ class OutlinerView: NSView {
             delegate?.outlinerDidChangeContent(blocks: blocks)
         }
 
-        view.onTabPressed = { [weak self] in
-            guard let self, index < blocks.count else { return }
+        view.onTabPressed = { [weak self, weak view] in
+            guard let self, let view, index < blocks.count else { return }
             saveUndoState()
+            let cursorPos = view.selectedRange().location
             let maxIndent = index > 0 ? blocks[index - 1].indentLevel + 1 : 0
             blocks[index].indentLevel = min(blocks[index].indentLevel + 1, maxIndent)
             pendingFocusIndex = index
+            pendingCursorPosition = cursorPos
             rebuildBlockViews()
             delegate?.outlinerDidChangeContent(blocks: blocks)
         }
 
-        view.onShiftTabPressed = { [weak self] in
-            guard let self, index < blocks.count else { return }
+        view.onShiftTabPressed = { [weak self, weak view] in
+            guard let self, let view, index < blocks.count else { return }
             saveUndoState()
+            let cursorPos = view.selectedRange().location
             blocks[index].indentLevel = max(blocks[index].indentLevel - 1, 0)
             pendingFocusIndex = index
+            pendingCursorPosition = cursorPos
             rebuildBlockViews()
             delegate?.outlinerDidChangeContent(blocks: blocks)
         }
@@ -1011,7 +1015,9 @@ class OutlinerView: NSView {
         view.onBackspaceAtStart = { [weak self] in
             guard let self, index > 0, index < blocks.count else { return }
             saveUndoState()
-            let cursorPos = blocks[index - 1].text.count
+            // Use displayText length (tag-stripped) so the cursor lands correctly
+            // in the BlockView, which displays displayText — not the raw text.
+            let cursorPos = blocks[index - 1].displayText(strippingOnly: nil).count
             let mergeText = blocks[index].text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !mergeText.isEmpty {
                 blocks[index - 1].text += " " + mergeText
@@ -1204,11 +1210,13 @@ class OutlinerView: NSView {
             let maxIndent = index > 0 ? blocks[index - 1].indentLevel + 1 : 0
             blocks[index].indentLevel = min(blocks[index].indentLevel + 1, maxIndent)
             pendingFocusIndex = index
+            pendingCursorPosition = view.selectedRange().location
             rebuildBlockViews()
             delegate?.outlinerDidChangeContent(blocks: blocks)
         case .dedentBlock:
             blocks[index].indentLevel = max(blocks[index].indentLevel - 1, 0)
             pendingFocusIndex = index
+            pendingCursorPosition = view.selectedRange().location
             rebuildBlockViews()
             delegate?.outlinerDidChangeContent(blocks: blocks)
 
