@@ -142,7 +142,8 @@ struct BlockZoomView: View {
             // Rebuild children from the edited flat list
             let childBlocks = Array(updatedBlocks.dropFirst())
             if !childBlocks.isEmpty {
-                target.children = BlockParser.parse(markdown: BlockParser.serializeFlat(blocks: childBlocks))
+                let markdown = BlockParser.serializeFlat(blocks: childBlocks)
+                target.children = BlockParser.parse(markdown: markdown)
             } else {
                 target.children = []
             }
