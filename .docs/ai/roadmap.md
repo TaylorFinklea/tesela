@@ -129,12 +129,12 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 ### Sonnet (some architectural judgment)
 
 - [x] Tag extraction edge cases (tags at end of line, tags with special chars)
-- [ ] Autocomplete popover positioning near screen edges
-- [ ] Cursor position bugs after block operations (Enter, delete, indent)
-- [ ] BlockStyler crash guards (text/textStorage length mismatches)
-- [ ] Search highlighting persistence across block rebuilds
-- [ ] WebSocket reconnection reliability
-- [ ] Block zoom save-back correctness for deeply nested blocks
+- [x] Autocomplete popover positioning near screen edges
+- [x] Cursor position bugs after block operations (Enter, delete, indent)
+- [x] BlockStyler crash guards (text/textStorage length mismatches)
+- [x] Search highlighting persistence across block rebuilds (verified working)
+- [x] WebSocket reconnection reliability (exponential backoff)
+- [x] Block zoom save-back correctness for deeply nested blocks (verified correct)
 - [ ] Split OutlinerView.swift (2155 lines) into focused modules: OutlinerLayout, OutlinerCompletion, OutlinerSearch, OutlinerProperties
 - [ ] Split sqlite.rs (1126 lines) into db/migrations.rs, db/search.rs, db/links.rs, db/types.rs
 - [ ] Split TagPageView.swift (841 lines) into TagPageHeader, TagBlockTable, TagKanbanBoard, TagPropertyEditor
