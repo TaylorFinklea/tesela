@@ -272,10 +272,12 @@ class OutlinerView: NSView {
         var blockPositions: [(y: CGFloat, height: CGFloat, indent: Int, bulletCenterX: CGFloat)] = []
 
         for (index, block) in blocks.enumerated() {
-            // Skip property continuation lines (status:: done, priority:: high, etc.)
-            // These are metadata, not user-visible blocks
-            let trimmedText = block.text.trimmingCharacters(in: .whitespaces)
-            if trimmedText.contains(":: ") && !trimmedText.hasPrefix("- ") {
+            // Skip blocks whose FIRST LINE is purely a property (status:: done, priority:: high)
+            // These are metadata continuation lines, not user-visible content
+            let firstLine = block.text.components(separatedBy: "\n").first ?? block.text
+            let trimmedFirstLine = firstLine.trimmingCharacters(in: .whitespaces)
+            let isPropertyOnly = trimmedFirstLine.range(of: #"^[A-Za-z_][A-Za-z0-9_]*:: "#, options: .regularExpression) != nil
+            if isPropertyOnly {
                 // Still need a BlockView placeholder for index consistency
                 let emptyView = BlockView(block: block, typeTagNames: typeTagNames)
                 emptyView.frame = NSRect(x: 0, y: yOffset, width: 0, height: 0)
