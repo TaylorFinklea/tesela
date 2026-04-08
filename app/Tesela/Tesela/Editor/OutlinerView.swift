@@ -1550,7 +1550,10 @@ class OutlinerView: NSView {
         let popover = NSPopover()
         popover.contentViewController = vc
         popover.behavior = .semitransient
-        popover.show(relativeTo: anchorView.cursorRect(), of: anchorView, preferredEdge: .maxY)
+        // Use cursorRect if valid, fall back to full bounds
+        let anchorRect = anchorView.cursorRect()
+        let safeRect = anchorRect.width > 0 && anchorRect.height > 0 ? anchorRect : anchorView.bounds
+        popover.show(relativeTo: safeRect, of: anchorView, preferredEdge: .maxY)
         activeCompletionPopover = popover
         // BlockView keeps focus — keys forwarded via onCompletionKey callback
     }

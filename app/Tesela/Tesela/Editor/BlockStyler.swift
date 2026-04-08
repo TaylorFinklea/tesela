@@ -25,7 +25,8 @@ enum BlockStyler {
 
         // [[wiki-links]] → blue text on tinted blue background (pill style)
         wikiLinkRegex.enumerateMatches(in: currentText, range: fullRange) { match, _, _ in
-            guard let range = match?.range else { return }
+            guard let range = match?.range,
+                  range.location + range.length <= storageLength else { return }
             textStorage.addAttribute(.foregroundColor, value: NSColor.systemBlue, range: range)
             textStorage.addAttribute(.backgroundColor, value: NSColor.systemBlue.withAlphaComponent(0.25), range: range)
         }
