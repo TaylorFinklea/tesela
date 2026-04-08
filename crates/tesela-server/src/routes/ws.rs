@@ -10,10 +10,7 @@ use axum::{
 
 use crate::state::AppState;
 
-pub async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(s): State<Arc<AppState>>,
-) -> impl IntoResponse {
+pub async fn ws_handler(ws: WebSocketUpgrade, State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let mut rx = s.ws_tx.subscribe();
     ws.on_upgrade(move |mut socket| async move {
         while let Ok(event) = rx.recv().await {
@@ -30,4 +27,3 @@ pub async fn ws_handler(
         }
     })
 }
-

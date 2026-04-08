@@ -65,7 +65,7 @@ pub async fn get_note(
 
 #[derive(Deserialize)]
 pub struct DailyQuery {
-    pub date: Option<String>,  // optional ISO date "2026-03-30"
+    pub date: Option<String>, // optional ISO date "2026-03-30"
 }
 
 pub async fn get_daily_note(
@@ -130,7 +130,9 @@ pub async fn update_note(
         .ok_or_else(|| AppError::NotFound(format!("Note not found after update: {}", id)))?;
     s.index.reindex(&updated).await?;
     ensure_tag_pages(&s, &updated).await;
-    let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated.clone() });
+    let _ = s.ws_tx.send(WsEvent::NoteUpdated {
+        note: updated.clone(),
+    });
     Ok(Json(updated))
 }
 
@@ -163,9 +165,7 @@ pub async fn get_forward_links(
     Ok(Json(links))
 }
 
-pub async fn get_all_edges(
-    State(s): State<Arc<AppState>>,
-) -> AppResult<Json<Vec<GraphEdge>>> {
+pub async fn get_all_edges(State(s): State<Arc<AppState>>) -> AppResult<Json<Vec<GraphEdge>>> {
     let edges = s.index.get_all_edges().await?;
     Ok(Json(edges))
 }
@@ -185,7 +185,9 @@ async fn ensure_tag_pages(s: &Arc<AppState>, note: &Note) {
     }
 
     for tag in &all_tags {
-        if tag == "daily" { continue; }
+        if tag == "daily" {
+            continue;
+        }
 
         let tag_id = NoteId::new(tag.to_lowercase());
         match s.store.get(&tag_id).await {
@@ -213,4 +215,3 @@ async fn ensure_tag_pages(s: &Arc<AppState>, note: &Note) {
         }
     }
 }
-

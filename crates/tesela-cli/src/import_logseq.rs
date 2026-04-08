@@ -1,9 +1,9 @@
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tesela_core::regex_cache::{BLOCK_REF_RE, LOGSEQ_DATE_RE, PRIORITY_RE};
 
 /// Import notes from a LogSeq graph into a Tesela mosaic.
-pub async fn run(mosaic: &PathBuf, source: PathBuf, dry_run: bool) -> Result<()> {
+pub async fn run(mosaic: &Path, source: PathBuf, dry_run: bool) -> Result<()> {
     let journals_dir = source.join("journals");
     let pages_dir = source.join("pages");
     let notes_dir = mosaic.join("notes");
@@ -23,7 +23,9 @@ pub async fn run(mosaic: &PathBuf, source: PathBuf, dry_run: bool) -> Result<()>
         for entry in std::fs::read_dir(&journals_dir)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if !name.ends_with(".md") { continue; }
+            if !name.ends_with(".md") {
+                continue;
+            }
 
             let stem = name.trim_end_matches(".md");
             let date_id = stem.replace('_', "-");
@@ -72,20 +74,20 @@ pub async fn run(mosaic: &PathBuf, source: PathBuf, dry_run: bool) -> Result<()>
         for entry in std::fs::read_dir(&pages_dir)? {
             let entry = entry?;
             let name = entry.file_name().to_string_lossy().to_string();
-            if !name.ends_with(".md") { continue; }
+            if !name.ends_with(".md") {
+                continue;
+            }
 
             let stem = name.trim_end_matches(".md");
             let clean_name = stem
                 .replace("___", "/")
                 .replace("%3A", ":")
                 .replace("%2F", "/");
-            let safe_name = clean_name
-                .replace('/', "-")
-                .replace(':', "-")
-                .replace(' ', "-")
-                .to_lowercase();
+            let safe_name = clean_name.replace(['/', ':', ' '], "-").to_lowercase();
 
-            if safe_name == "contents" || safe_name == "favorites" { continue; }
+            if safe_name == "contents" || safe_name == "favorites" {
+                continue;
+            }
 
             let target_path = notes_dir.join(format!("{}.md", safe_name));
             if target_path.exists() {
@@ -96,11 +98,8 @@ pub async fn run(mosaic: &PathBuf, source: PathBuf, dry_run: bool) -> Result<()>
             match std::fs::read_to_string(entry.path()) {
                 Ok(content) => {
                     let converted = convert_content(&content);
-                    let title = clean_name.split('/').last().unwrap_or(&clean_name);
-                    let full = format!(
-                        "---\ntitle: \"{}\"\ntags: []\n---\n{}",
-                        title, converted
-                    );
+                    let title = clean_name.split('/').next_back().unwrap_or(&clean_name);
+                    let full = format!("---\ntitle: \"{}\"\ntags: []\n---\n{}", title, converted);
 
                     if dry_run {
                         println!("  [page] {} → {}", name, target_path.display());
@@ -147,15 +146,31 @@ fn convert_content(content: &str) -> String {
         let trimmed = line.trim();
 
         // Skip LogSeq queries
-        if trimmed.starts_with("#+BEGIN_QUERY") { in_query = true; continue; }
-        if trimmed.contains("#+END_QUERY") { in_query = false; continue; }
-        if in_query { continue; }
+        if trimmed.starts_with("#+BEGIN_QUERY") {
+            in_query = true;
+            continue;
+        }
+        if trimmed.contains("#+END_QUERY") {
+            in_query = false;
+            continue;
+        }
+        if in_query {
+            continue;
+        }
 
         // Skip logseq-specific properties
-        if trimmed.starts_with("collapsed:: ") { continue; }
-        if trimmed.starts_with("id:: ") { continue; }
-        if trimmed.starts_with("file:: ") { continue; }
-        if trimmed.starts_with("file-path:: ") { continue; }
+        if trimmed.starts_with("collapsed:: ") {
+            continue;
+        }
+        if trimmed.starts_with("id:: ") {
+            continue;
+        }
+        if trimmed.starts_with("file:: ") {
+            continue;
+        }
+        if trimmed.starts_with("file-path:: ") {
+            continue;
+        }
 
         // Calculate leading whitespace
         let leading = line.len() - line.trim_start().len();
@@ -178,7 +193,11 @@ fn convert_content(content: &str) -> String {
 
         // Convert DEADLINE/SCHEDULED
         if trimmed.starts_with("DEADLINE:") || trimmed.starts_with("SCHEDULED:") {
-            let key = if trimmed.starts_with("DEADLINE") { "deadline" } else { "scheduled" };
+            let key = if trimmed.starts_with("DEADLINE") {
+                "deadline"
+            } else {
+                "scheduled"
+            };
             if let Some(caps) = LOGSEQ_DATE_RE.captures(trimmed) {
                 let date = caps.get(1).unwrap().as_str();
                 result = format!("{}{}:: {}", indent_str, key, date);
@@ -198,8 +217,11 @@ fn convert_content(content: &str) -> String {
 }
 
 fn strip_task_marker(line: &str) -> Option<(String, String)> {
-    let without_dash = if line.starts_with("- ") { &line[2..] } else { line };
-    let prefix = if line.starts_with("- ") { "- " } else { "" };
+    let (without_dash, prefix) = if let Some(stripped) = line.strip_prefix("- ") {
+        (stripped, "- ")
+    } else {
+        (line, "")
+    };
 
     for (marker, status) in [
         ("TODO ", "todo"),
@@ -210,8 +232,7 @@ fn strip_task_marker(line: &str) -> Option<(String, String)> {
         ("WAITING ", "backlog"),
         ("CANCELED ", "canceled"),
     ] {
-        if without_dash.starts_with(marker) {
-            let rest = &without_dash[marker.len()..];
+        if let Some(rest) = without_dash.strip_prefix(marker) {
             return Some((status.to_string(), format!("{}{}", prefix, rest)));
         }
     }

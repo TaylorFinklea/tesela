@@ -3,7 +3,10 @@ mod routes;
 mod state;
 
 use anyhow::Result;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
@@ -49,18 +52,22 @@ async fn main() -> Result<()> {
     // Indexer notify channel — maps file-system events to WsEvents
     let (note_event_tx, _) = broadcast::channel::<NoteEvent>(64);
 
-    let indexer = Indexer::new(store_dyn, index_dyn, graph_dyn)
-        .with_notify_tx(note_event_tx.clone());
+    let indexer =
+        Indexer::new(store_dyn, index_dyn, graph_dyn).with_notify_tx(note_event_tx.clone());
     indexer.initial_index().await?;
 
     // Auto-create tag pages for any tags that don't have a corresponding page
     {
         let all_notes = store.list(None, usize::MAX, 0).await?;
-        let existing_ids: std::collections::HashSet<String> =
-            all_notes.iter().map(|n| n.id.as_str().to_lowercase()).collect();
+        let existing_ids: std::collections::HashSet<String> = all_notes
+            .iter()
+            .map(|n| n.id.as_str().to_lowercase())
+            .collect();
         for note in &all_notes {
             for tag in &note.metadata.tags {
-                if tag == "daily" { continue; }
+                if tag == "daily" {
+                    continue;
+                }
                 let tag_lower = tag.to_lowercase();
                 if !existing_ids.contains(&tag_lower) {
                     let content = format!(
@@ -169,7 +176,7 @@ fn find_mosaic() -> Result<PathBuf> {
 
 /// Auto-backup on server startup. Creates a daily backup of notes/.
 /// Only creates one backup per day. Keeps last 5 daily backups.
-fn auto_backup(mosaic: &PathBuf) {
+fn auto_backup(mosaic: &Path) {
     let notes_dir = mosaic.join("notes");
     if !notes_dir.exists() {
         return;

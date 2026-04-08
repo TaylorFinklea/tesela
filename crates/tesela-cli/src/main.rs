@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tesela_core::traits::plugin::PluginRegistry;
 
@@ -375,15 +375,19 @@ async fn cmd_export(ctx: &Ctx, query: String, format: String) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_backup(mosaic: &PathBuf, output: Option<PathBuf>) -> Result<()> {
+async fn cmd_backup(mosaic: &Path, output: Option<PathBuf>) -> Result<()> {
     let notes_dir = mosaic.join("notes");
     if !notes_dir.exists() {
         anyhow::bail!("Notes directory not found: {}", notes_dir.display());
     }
 
     let backup_root = output.unwrap_or_else(|| mosaic.join(".tesela").join("backups"));
-    std::fs::create_dir_all(&backup_root)
-        .with_context(|| format!("Failed to create backup directory: {}", backup_root.display()))?;
+    std::fs::create_dir_all(&backup_root).with_context(|| {
+        format!(
+            "Failed to create backup directory: {}",
+            backup_root.display()
+        )
+    })?;
 
     let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let backup_dir = backup_root.join(format!("backup-{}", timestamp));
@@ -402,7 +406,11 @@ async fn cmd_backup(mosaic: &PathBuf, output: Option<PathBuf>) -> Result<()> {
     // Count files
     let file_count = count_files_recursive(&backup_dir);
 
-    println!("Backup complete: {} ({} files)", backup_dir.display(), file_count);
+    println!(
+        "Backup complete: {} ({} files)",
+        backup_dir.display(),
+        file_count
+    );
 
     // Clean old backups (keep last 10)
     let mut backups: Vec<_> = std::fs::read_dir(&backup_root)?
@@ -414,7 +422,11 @@ async fn cmd_backup(mosaic: &PathBuf, output: Option<PathBuf>) -> Result<()> {
         let to_remove = backups.len() - 10;
         for entry in backups.into_iter().take(to_remove) {
             if let Err(e) = std::fs::remove_dir_all(entry.path()) {
-                tracing::warn!("Failed to clean old backup {}: {}", entry.path().display(), e);
+                tracing::warn!(
+                    "Failed to clean old backup {}: {}",
+                    entry.path().display(),
+                    e
+                );
             }
         }
     }
@@ -437,7 +449,7 @@ fn count_files_recursive(dir: &std::path::Path) -> usize {
     count
 }
 
-async fn cmd_restore(mosaic: &PathBuf, source: PathBuf, overwrite: bool, dry_run: bool) -> Result<()> {
+async fn cmd_restore(mosaic: &Path, source: PathBuf, overwrite: bool, dry_run: bool) -> Result<()> {
     let notes_dir = mosaic.join("notes");
 
     // Verify source exists and looks like a backup
@@ -463,7 +475,15 @@ async fn cmd_restore(mosaic: &PathBuf, source: PathBuf, overwrite: bool, dry_run
     let mut skipped = 0;
     let mut overwritten = 0;
 
-    restore_dir_recursive(&backup_notes, &notes_dir, overwrite, dry_run, &mut restored, &mut skipped, &mut overwritten)?;
+    restore_dir_recursive(
+        &backup_notes,
+        &notes_dir,
+        overwrite,
+        dry_run,
+        &mut restored,
+        &mut skipped,
+        &mut overwritten,
+    )?;
 
     if dry_run {
         println!("Dry run complete:");
@@ -483,8 +503,9 @@ async fn cmd_restore(mosaic: &PathBuf, source: PathBuf, overwrite: bool, dry_run
         if dry_run {
             println!("  Would restore database: {}", backup_db.display());
         } else {
-            std::fs::copy(&backup_db, &target_db)
-                .with_context(|| format!("Failed to restore database from {}", backup_db.display()))?;
+            std::fs::copy(&backup_db, &target_db).with_context(|| {
+                format!("Failed to restore database from {}", backup_db.display())
+            })?;
             println!("  Database restored");
         }
     }
@@ -511,7 +532,15 @@ fn restore_dir_recursive(
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if src_path.is_dir() {
-            restore_dir_recursive(&src_path, &dst_path, overwrite, dry_run, restored, skipped, overwritten)?;
+            restore_dir_recursive(
+                &src_path,
+                &dst_path,
+                overwrite,
+                dry_run,
+                restored,
+                skipped,
+                overwritten,
+            )?;
         } else {
             if dst_path.exists() && !overwrite {
                 *skipped += 1;
@@ -621,8 +650,7 @@ async fn cmd_install(mosaic: PathBuf) -> Result<()> {
         .into_owned();
 
     let agents_dir = home.join("Library").join("LaunchAgents");
-    std::fs::create_dir_all(&agents_dir)
-        .context("Failed to create ~/Library/LaunchAgents")?;
+    std::fs::create_dir_all(&agents_dir).context("Failed to create ~/Library/LaunchAgents")?;
 
     let plist = PLIST_TEMPLATE
         .replace("{LABEL}", LAUNCHD_LABEL)
@@ -737,7 +765,12 @@ async fn main() -> Result<()> {
     }
 
     // Handle restore — needs mosaic path but not a full Ctx
-    if let Commands::Restore { source, overwrite, dry_run } = cli.command {
+    if let Commands::Restore {
+        source,
+        overwrite,
+        dry_run,
+    } = cli.command
+    {
         return cmd_restore(&mosaic, source, overwrite, dry_run).await;
     }
 
@@ -749,7 +782,13 @@ async fn main() -> Result<()> {
     let ctx = Ctx::new(mosaic).await?;
 
     match cli.command {
-        Commands::Init { .. } | Commands::Completions { .. } | Commands::Install | Commands::Uninstall | Commands::Backup { .. } | Commands::Restore { .. } | Commands::ImportLogseq { .. } => unreachable!(),
+        Commands::Init { .. }
+        | Commands::Completions { .. }
+        | Commands::Install
+        | Commands::Uninstall
+        | Commands::Backup { .. }
+        | Commands::Restore { .. }
+        | Commands::ImportLogseq { .. } => unreachable!(),
         Commands::New {
             title,
             tags,

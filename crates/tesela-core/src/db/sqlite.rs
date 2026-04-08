@@ -99,10 +99,12 @@ impl SqliteIndex {
             debug!("Applying migration: {}", name);
 
             for statement in *statements {
-                sqlx::query(statement)
-                    .execute(pool)
-                    .await
-                    .map_err(|e| db_err(&format!("Failed to apply migration {}: {}", name, statement), e))?;
+                sqlx::query(statement).execute(pool).await.map_err(|e| {
+                    db_err(
+                        &format!("Failed to apply migration {}: {}", name, statement),
+                        e,
+                    )
+                })?;
             }
 
             // Record migration
@@ -188,15 +190,27 @@ impl SqliteIndex {
         match note.metadata.note_type.as_deref() {
             Some("Tag") => {
                 // Extract tag_properties from frontmatter custom fields
-                let props_json = note.metadata.custom.get("tag_properties")
+                let props_json = note
+                    .metadata
+                    .custom
+                    .get("tag_properties")
                     .and_then(|v| serde_json::to_string(v).ok())
                     .unwrap_or_else(|| "[]".to_string());
-                let extends = note.metadata.custom.get("extends")
+                let extends = note
+                    .metadata
+                    .custom
+                    .get("extends")
                     .and_then(|v| v.as_str().map(String::from));
-                let icon = note.metadata.custom.get("icon")
+                let icon = note
+                    .metadata
+                    .custom
+                    .get("icon")
                     .and_then(|v| v.as_str().map(String::from))
                     .unwrap_or_else(|| "📄".to_string());
-                let color = note.metadata.custom.get("color")
+                let color = note
+                    .metadata
+                    .custom
+                    .get("color")
                     .and_then(|v| v.as_str().map(String::from))
                     .unwrap_or_else(|| "#808080".to_string());
 
@@ -215,20 +229,38 @@ impl SqliteIndex {
                 .map_err(|e| db_err("Failed to index tag def", e))?;
             }
             Some("Property") => {
-                let value_type = note.metadata.custom.get("value_type")
+                let value_type = note
+                    .metadata
+                    .custom
+                    .get("value_type")
                     .and_then(|v| v.as_str().map(String::from))
                     .unwrap_or_else(|| "text".to_string());
-                let choices_json = note.metadata.custom.get("choices")
+                let choices_json = note
+                    .metadata
+                    .custom
+                    .get("choices")
                     .and_then(|v| serde_json::to_string(v).ok());
-                let default_value = note.metadata.custom.get("default")
+                let default_value = note
+                    .metadata
+                    .custom
+                    .get("default")
                     .and_then(|v| v.as_str().map(String::from));
-                let multiple = note.metadata.custom.get("multiple_values")
+                let multiple = note
+                    .metadata
+                    .custom
+                    .get("multiple_values")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let hide_empty = note.metadata.custom.get("hide_empty")
+                let hide_empty = note
+                    .metadata
+                    .custom
+                    .get("hide_empty")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let description = note.metadata.custom.get("description")
+                let description = note
+                    .metadata
+                    .custom
+                    .get("description")
                     .and_then(|v| v.as_str().map(String::from));
 
                 sqlx::query(
@@ -276,7 +308,7 @@ impl SqliteIndex {
                 )
                 .bind(&block.id)
                 .bind(note.id.as_str())
-                .bind(&format!("{}:{}", key.to_lowercase(), block.id)) // property_id = key:block_id
+                .bind(format!("{}:{}", key.to_lowercase(), block.id)) // property_id = key:block_id
                 .bind(key)
                 .bind(value)
                 .execute(&self.pool)
@@ -378,22 +410,28 @@ impl SqliteIndex {
             .await
             .map_err(|e| db_err("Failed to get property defs", e))?;
 
-        Ok(rows.iter().map(|row| {
-            let choices_str: Option<String> = row.get("choices_json");
-            let choices: Option<Vec<String>> = choices_str
-                .and_then(|s| serde_json::from_str(&s).ok());
-            crate::types::PropertyDef {
-                name: row.get("name"),
-                value_type: row.get("value_type"),
-                values: choices,
-                default: row.get("default_value"),
-                required: false,
-            }
-        }).collect())
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let choices_str: Option<String> = row.get("choices_json");
+                let choices: Option<Vec<String>> =
+                    choices_str.and_then(|s| serde_json::from_str(&s).ok());
+                crate::types::PropertyDef {
+                    name: row.get("name"),
+                    value_type: row.get("value_type"),
+                    values: choices,
+                    default: row.get("default_value"),
+                    required: false,
+                }
+            })
+            .collect())
     }
 
     /// Get a single tag definition with resolved property schemas (walks extends chain).
-    pub async fn get_resolved_tag_def(&self, name: &str) -> Result<Option<crate::types::TypeDefinition>> {
+    pub async fn get_resolved_tag_def(
+        &self,
+        name: &str,
+    ) -> Result<Option<crate::types::TypeDefinition>> {
         use sqlx::Row;
 
         // Collect properties by walking the extends chain (child → parent → root)
@@ -404,7 +442,9 @@ impl SqliteIndex {
         let mut depth = 0;
 
         loop {
-            if depth > 10 { break; } // prevent infinite loops
+            if depth > 10 {
+                break;
+            } // prevent infinite loops
             depth += 1;
 
             let row = sqlx::query(
@@ -436,7 +476,9 @@ impl SqliteIndex {
             }
         }
 
-        if depth == 0 { return Ok(None); }
+        if depth == 0 {
+            return Ok(None);
+        }
 
         // Deduplicate (child properties take precedence)
         let mut seen = std::collections::HashSet::new();
@@ -489,10 +531,12 @@ impl SqliteIndex {
     /// Get all tag definitions from the cache.
     pub async fn get_all_tag_defs(&self) -> Result<Vec<crate::types::TypeDefinition>> {
         use sqlx::Row;
-        let rows = sqlx::query("SELECT name, extends, icon, color, properties_json FROM tag_defs ORDER BY name")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| db_err("Failed to get tag defs", e))?;
+        let rows = sqlx::query(
+            "SELECT name, extends, icon, color, properties_json FROM tag_defs ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| db_err("Failed to get tag defs", e))?;
 
         let mut result = Vec::new();
         for row in &rows {
@@ -550,14 +594,13 @@ impl SqliteIndex {
 
         // Find notes containing #TagName in body text (inline tags)
         // OR in frontmatter tags array
-        let notes = sqlx::query(
-            "SELECT id, title, body FROM notes WHERE body LIKE ? OR tags LIKE ?"
-        )
-        .bind(format!("%#{}%", tag_name))
-        .bind(format!("%\"{}%", tag_name))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| db_err("Failed to get typed notes", e))?;
+        let notes =
+            sqlx::query("SELECT id, title, body FROM notes WHERE body LIKE ? OR tags LIKE ?")
+                .bind(format!("%#{}%", tag_name))
+                .bind(format!("%\"{}%", tag_name))
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| db_err("Failed to get typed notes", e))?;
 
         let mut result = Vec::new();
         for row in &notes {
@@ -568,7 +611,7 @@ impl SqliteIndex {
                 if block.tags.iter().any(|t| t.eq_ignore_ascii_case(tag_name)) {
                     // Enrich with property values from DB index (more reliable than re-parsing)
                     let prop_rows = sqlx::query(
-                        "SELECT property_name, value FROM block_properties WHERE block_id = ?"
+                        "SELECT property_name, value FROM block_properties WHERE block_id = ?",
                     )
                     .bind(&block.id)
                     .fetch_all(&self.pool)

@@ -98,9 +98,9 @@ pub async fn list_typed_blocks(
         let prop_lower = filter.property.to_lowercase();
         let val_lower = filter.value.to_lowercase();
         blocks.retain(|b| {
-            b.properties.iter().any(|(k, v)| {
-                k.to_lowercase() == prop_lower && v.to_lowercase() == val_lower
-            })
+            b.properties
+                .iter()
+                .any(|(k, v)| k.to_lowercase() == prop_lower && v.to_lowercase() == val_lower)
         });
     }
 
@@ -109,13 +109,23 @@ pub async fn list_typed_blocks(
         let prop_lower = sort_prop.to_lowercase();
         let ascending = q.sort_dir.as_deref() != Some("desc");
         blocks.sort_by(|a, b| {
-            let va = a.properties.iter()
+            let va = a
+                .properties
+                .iter()
                 .find(|(k, _)| k.to_lowercase() == prop_lower)
-                .map(|(_, v)| v.as_str()).unwrap_or("");
-            let vb = b.properties.iter()
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("");
+            let vb = b
+                .properties
+                .iter()
                 .find(|(k, _)| k.to_lowercase() == prop_lower)
-                .map(|(_, v)| v.as_str()).unwrap_or("");
-            if ascending { va.cmp(vb) } else { vb.cmp(va) }
+                .map(|(_, v)| v.as_str())
+                .unwrap_or("");
+            if ascending {
+                va.cmp(vb)
+            } else {
+                vb.cmp(va)
+            }
         });
     }
 
