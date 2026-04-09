@@ -268,7 +268,14 @@ class OutlinerView: NSView {
         // Type tags become right-aligned pills; casual tags stay inline
         typeTagNames = Set(typeRegistry.map { $0.name.lowercased() })
 
-        var yOffset: CGFloat = 8
+        let topPadding: CGFloat = 8
+        let blockSpacing: CGFloat = 6
+        let sectionSpacing: CGFloat = 12
+        let sectionHeaderHeight: CGFloat = 18
+        let propertyRowHeight: CGFloat = 18
+        let rowSpacing: CGFloat = 4
+
+        var yOffset: CGFloat = topPadding
         var blockPositions: [(y: CGFloat, height: CGFloat, indent: Int, bulletCenterX: CGFloat)] = []
 
         for (index, block) in blocks.enumerated() {
@@ -496,13 +503,15 @@ class OutlinerView: NSView {
 
             // MARK: Block position recording for threading
             blockPositions.append((y: yOffset, height: height, indent: block.indentLevel, bulletCenterX: bullet.frame.midX))
-            yOffset += height + 4
+            yOffset += height + blockSpacing
 
             // MARK: Expanded property display
             // Expanded block: show inherited properties
             if expandedBlockIndex == index && !block.tags.isEmpty {
                 let inheritedProps = resolveInheritedProperties(for: block)
                 if !inheritedProps.isEmpty {
+                    yOffset += sectionSpacing - blockSpacing
+
                     // "Properties" header
                     let headerLabel = NSTextField(labelWithString: "▼ Properties")
                     headerLabel.font = .systemFont(ofSize: 11)
@@ -510,9 +519,9 @@ class OutlinerView: NSView {
                     headerLabel.isEditable = false
                     headerLabel.isBordered = false
                     headerLabel.drawsBackground = false
-                    headerLabel.frame = NSRect(x: textX + 8, y: yOffset, width: 200, height: 18)
+                    headerLabel.frame = NSRect(x: textX + 8, y: yOffset, width: 200, height: sectionHeaderHeight)
                     addSubview(headerLabel)
-                    yOffset += 20
+                    yOffset += sectionHeaderHeight + rowSpacing
 
                     for (propDef, currentValue) in inheritedProps {
                         let icon = propertyTypeIcon(propDef.valueType)
@@ -522,7 +531,7 @@ class OutlinerView: NSView {
                         iconLabel.isEditable = false
                         iconLabel.isBordered = false
                         iconLabel.drawsBackground = false
-                        iconLabel.frame = NSRect(x: textX + 8, y: yOffset, width: 20, height: 18)
+                        iconLabel.frame = NSRect(x: textX + 8, y: yOffset, width: 20, height: propertyRowHeight)
                         addSubview(iconLabel)
 
                         let nameLabel = NSTextField(labelWithString: propDef.name)
@@ -531,7 +540,7 @@ class OutlinerView: NSView {
                         nameLabel.isEditable = false
                         nameLabel.isBordered = false
                         nameLabel.drawsBackground = false
-                        nameLabel.frame = NSRect(x: textX + 30, y: yOffset, width: 100, height: 18)
+                        nameLabel.frame = NSRect(x: textX + 30, y: yOffset, width: 100, height: propertyRowHeight)
                         addSubview(nameLabel)
 
                         let valueText = currentValue ?? "Empty"
@@ -541,7 +550,7 @@ class OutlinerView: NSView {
                         valueLabel.isEditable = false
                         valueLabel.isBordered = false
                         valueLabel.drawsBackground = false
-                        valueLabel.frame = NSRect(x: textX + 140, y: yOffset, width: 200, height: 18)
+                        valueLabel.frame = NSRect(x: textX + 140, y: yOffset, width: 200, height: propertyRowHeight)
 
                         // Make value clickable for editing
                         let propName = propDef.name
@@ -556,9 +565,9 @@ class OutlinerView: NSView {
                         objc_setAssociatedObject(valueLabel, "editAction", editAction, .OBJC_ASSOCIATION_RETAIN)
 
                         addSubview(valueLabel)
-                        yOffset += 20
+                        yOffset += propertyRowHeight + rowSpacing
                     }
-                    yOffset += 8
+                    yOffset += sectionSpacing - rowSpacing
                 }
             }
 
@@ -569,7 +578,7 @@ class OutlinerView: NSView {
         drawThreadLines(blockPositions: blockPositions)
 
         let minHeight = superview?.bounds.height ?? 400
-        frame.size.height = max(yOffset + 8, minHeight)
+        frame.size.height = max(yOffset + topPadding, minHeight)
 
         if let idx = pendingFocusIndex {
             let target = min(idx, blockViews.count - 1)
