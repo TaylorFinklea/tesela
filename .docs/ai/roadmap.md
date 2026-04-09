@@ -124,6 +124,16 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 - [x] Add `.expect("reason")` messages to 5 mutex lock unwraps in lua.rs (crates/tesela-plugins/src/lua.rs:86,119,129,257,275)
 - [x] Add `.expect("reason")` messages to 3 regex unwraps in import_logseq.rs (crates/tesela-cli/src/import_logseq.rs:142-144)
 - [x] Extract hardcoded magic numbers: SQLite max_connections, TUI tick_timeout, debounce durations (sqlite.rs:44,62, app.rs:81)
+- [ ] Replace one-off `regex::Regex::new(r"#[...]")` in `crates/tesela-server/src/routes/notes.rs:179` with the cached `INLINE_TAG_RE` from `crates/tesela-core/src/regex_cache.rs:21` (already the identical pattern)
+- [ ] Replace `std::env::current_dir().unwrap()` in `crates/tesela-cli/src/main.rs:196` with `?` + `.context("Failed to resolve current directory")` so `tesela init` surfaces a real error instead of panicking
+- [ ] Replace 2 `plist_file.to_str().unwrap()` calls in `crates/tesela-cli/src/main.rs:666,690` with `.context("plist path is not valid UTF-8")` — currently panics on non-UTF-8 HOME paths
+- [ ] Replace 3 `serde_json::to_string_pretty(&results).unwrap()` calls in `crates/tesela-mcp/src/tools.rs:150,236,260` with `.expect("tool response is always serializable")` so the reason for the unwrap is documented
+- [ ] Annotate 2 regex-capture unwraps in `crates/tesela-cli/src/import_logseq.rs:202,244` with `.expect("regex group 1 exists after successful match")`
+- [ ] Annotate `cap.get(0).unwrap()` in `crates/tesela-core/src/link.rs:38` with `.expect("capture group 0 always exists on match")`
+- [ ] Extract hardcoded server bind address `"127.0.0.1:7474"` in `crates/tesela-server/src/main.rs:154` into a `const DEFAULT_BIND_ADDR` at the top of the file
+- [ ] Extract hardcoded backup-retention magic numbers into named constants: `MAX_MANUAL_BACKUPS = 10` in `crates/tesela-cli/src/main.rs:421` and `MAX_DAILY_BACKUPS = 5` in `crates/tesela-server/src/main.rs:216`
+- [ ] Add `accessibilityLabel` to icon-only `Button { ... } label: { Image(systemName: ...) }` call sites in `app/Tesela/Tesela/Views/TagPageView.swift:168` (remove-property xmark), `app/Tesela/Tesela/Views/PropertyPageView.swift:77` (remove-choice xmark), and `app/Tesela/Tesela/Views/IconPickerView.swift:38` (icon grid cells) — no `accessibilityLabel` exists anywhere in the Swift app today
+- [ ] Add `accessibilityLabel` to the icon-swatch buttons in `app/Tesela/Tesela/Views/IconPickerView.swift:101` (color circles) using the color name as the label
 
 ### Sonnet (some architectural judgment)
 
@@ -138,6 +148,8 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 - [ ] Split sqlite.rs (1126 lines) into db/migrations.rs, db/search.rs, db/links.rs, db/types.rs
 - [ ] Split TagPageView.swift (841 lines) into TagPageHeader, TagBlockTable, TagKanbanBoard, TagPropertyEditor
 - [ ] Replace 4 hardcoded DispatchQueue.asyncAfter delays with proper state machine or animation callbacks (ContentArea.swift:265, TilesView.swift:27,40,79)
+- [ ] Split `crates/tesela-cli/src/main.rs` (826 lines, 14 `cmd_*` functions including the 140-line backup/restore pair at lines 378-575) into a `src/commands/` submodule — one file per command (`init.rs`, `new.rs`, `list.rs`, `search.rs`, `cat.rs`, `edit.rs`, `daily.rs`, `links.rs`, `export.rs`, `backup.rs`, `restore.rs`, `reindex.rs`, `install.rs`, `uninstall.rs`) re-exported from `commands/mod.rs`. Keep `main.rs` as a thin dispatcher.
+- [ ] Extract duplicated `copy_dir_recursive` + backup retention logic out of `crates/tesela-cli/src/main.rs:561` and `crates/tesela-server/src/main.rs:224` into a shared `tesela_core::backup` module. Also unify the inconsistent retention counts (10 manual backups in CLI vs 5 daily backups in server) into a single `BackupPolicy` struct so both binaries share the same semantics.
 - [x] Create shared RegexCache for duplicate regex patterns across import_logseq.rs, notes.rs, BlockStyler.swift
 - [x] Add structured error handling to AppState.loadInitialData — partial failures should show user-facing indicators, not silent defaults
 
