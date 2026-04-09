@@ -319,14 +319,28 @@ class OutlinerView: NSView {
                                green: CGFloat((rgb >> 8) & 0xFF) / 255,
                                blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
             }()
-            // --- BASELINE-ALIGNED LAYOUT ---
-            // All inline elements (bullet, status, text, pills) align to a shared baseline
-            let baselineY = yOffset + 11  // visual center of the first text line
+            var actualTextX = textX
+            let showsTaskStatus = block.isTask
+            if showsTaskStatus {
+                actualTextX = bulletX + 36
+            }
+
+            let view = BlockView(block: block, typeTagNames: typeTagNames)
+            let activeSearch = vimEngine.searchQuery.isEmpty ? nil : vimEngine.searchQuery
+            view.searchQuery = activeSearch
+            if activeSearch != nil, let ts = view.textStorage {
+                BlockStyler.style(text: ts.string, textStorage: ts, searchQuery: activeSearch)
+            }
+            view.frame = NSRect(x: actualTextX, y: yOffset, width: textWidth, height: 22)
+            wireCallbacks(for: view, at: index)
+            addSubview(view)
+            blockViews.append(view)
+
+            let baselineY = firstLineBaselineY(for: view)
 
             let blockIndex = index
             let bullet = BulletView(symbol: bulletSymbol, tintColor: bulletColor)
-            // Offset the bullet glyph so its optical center lands on the shared text baseline.
-            bullet.frame = NSRect(x: bulletX, y: baselineY - 7, width: 16, height: 14)
+            bullet.frame = bulletFrame(symbol: bulletSymbol, baselineY: baselineY, x: bulletX)
             bullet.onLeftClick = { [weak self] in
                 self?.delegate?.outlinerDidRequestBlockZoom(blockIndex: blockIndex)
             }
@@ -341,10 +355,7 @@ class OutlinerView: NSView {
             }
             addSubview(bullet)
 
-            // MARK: Status icon positioning
-            // Task status icon — aligned to baseline
-            var actualTextX = textX
-            if block.isTask {
+            if showsTaskStatus {
                 let statusChar: String = switch block.status {
                 case "todo":  "☐"
                 case "doing": "◎"
@@ -382,20 +393,7 @@ class OutlinerView: NSView {
                     minHeight: 16
                 )
                 addSubview(statusLabel)
-                actualTextX = bulletX + 36
             }
-
-            // MARK: BlockView creation and height measurement
-            let view = BlockView(block: block, typeTagNames: typeTagNames)
-            let activeSearch = vimEngine.searchQuery.isEmpty ? nil : vimEngine.searchQuery
-            view.searchQuery = activeSearch
-            if activeSearch != nil, let ts = view.textStorage {
-                BlockStyler.style(text: ts.string, textStorage: ts, searchQuery: activeSearch)
-            }
-            view.frame = NSRect(x: actualTextX, y: yOffset, width: textWidth, height: 22)
-            wireCallbacks(for: view, at: index)
-            addSubview(view)
-            blockViews.append(view)
 
             let height = blockHeight(for: view)
             view.frame.size.height = height
@@ -497,7 +495,7 @@ class OutlinerView: NSView {
             }
 
             // MARK: Block position recording for threading
-            blockPositions.append((y: yOffset, height: height, indent: block.indentLevel, bulletCenterX: bulletX + 8))
+            blockPositions.append((y: yOffset, height: height, indent: block.indentLevel, bulletCenterX: bullet.frame.midX))
             yOffset += height + 4
 
             // MARK: Expanded property display
@@ -869,6 +867,21 @@ class OutlinerView: NSView {
         guard let date = fmt.date(from: dateStr),
               let threshold = Calendar.current.date(byAdding: .day, value: days, to: Date()) else { return false }
         return date <= threshold && date >= Calendar.current.startOfDay(for: Date())
+    }
+
+    private func firstLineBaselineY(for view: BlockView) -> CGFloat {
+        let font = view.font ?? .systemFont(ofSize: NSFont.systemFontSize)
+        return view.frame.minY + view.textContainerInset.height + ceil(font.ascender)
+    }
+
+    private func bulletFrame(symbol: String, baselineY: CGFloat, x: CGFloat) -> NSRect {
+        let font = BulletView.usesTextGlyph(symbol)
+            ? BulletView.glyphFont
+            : BulletView.symbolFont
+        let measuredHeight = font.boundingRectForFont.height
+        let height = max(BulletView.usesTextGlyph(symbol) ? 14 : 16, ceil(measuredHeight))
+        let y = baselineY - ceil(font.ascender) - floor((height - measuredHeight) / 2)
+        return NSRect(x: x, y: y, width: 16, height: height)
     }
 
     private func baselineAlignedLabelFrame(
@@ -2000,6 +2013,9 @@ class BulletView: NSView {
     var onLeftClick: (() -> Void)?
     var onShowProperties: (() -> Void)?
 
+    static let glyphFont = NSFont.systemFont(ofSize: 12)
+    static let symbolFont = NSFont.systemFont(ofSize: 11)
+
     // Map icon names to SF Symbols
     private static let sfSymbolMap: [String: String] = [
         "☑": "checkmark.square",
@@ -2015,13 +2031,17 @@ class BulletView: NSView {
         "🏷": "tag",
     ]
 
+    static func usesTextGlyph(_ symbol: String) -> Bool {
+        symbol == "•" || symbol == "◦"
+    }
+
     init(symbol: String, tintColor: NSColor = .tertiaryLabelColor) {
         super.init(frame: .zero)
 
         let sfName = Self.sfSymbolMap[symbol] ?? symbol
-        let isBulletDot = (symbol == "•" || symbol == "◦")
+        let isBulletDot = Self.usesTextGlyph(symbol)
         if !isBulletDot, let img = NSImage(systemSymbolName: sfName, accessibilityDescription: nil) {
-            let config = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+            let config = NSImage.SymbolConfiguration(pointSize: Self.symbolFont.pointSize, weight: .regular)
             let imageView = NSImageView()
             imageView.image = img.withSymbolConfiguration(config)
             imageView.contentTintColor = tintColor
@@ -2030,7 +2050,7 @@ class BulletView: NSView {
             addSubview(imageView)
         } else {
             let label = NSTextField(labelWithString: symbol)
-            label.font = .systemFont(ofSize: 12)
+            label.font = Self.glyphFont
             label.textColor = tintColor
             label.isEditable = false
             label.isBordered = false
