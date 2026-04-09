@@ -110,8 +110,7 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 
 ### Haiku (mechanical, no judgment)
 
-- [ ] Pixel-perfect bullet/icon/text alignment across all block types
-<!-- build-failed: 2026-04-06 cargo clippy failed at crates/tesela-core/src/db/sqlite.rs:311 (needless-borrows-for-generic-args) -->
+- [~] Pixel-perfect bullet/icon/text alignment across all block types
 - [x] Bullet threading visual quality (line positioning, thickness, opacity)
 - [x] Tag text alignment consistency across blocks
 - [ ] Consistent spacing between blocks, sections, headers
