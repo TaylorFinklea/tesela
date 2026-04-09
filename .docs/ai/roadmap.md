@@ -116,7 +116,7 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 - [x] Consistent spacing between blocks, sections, headers
 - [x] Status icon vertical centering with different font sizes
 - [x] Date badge alignment with text baseline
-- [ ] Sidebar visual polish (spacing, section headers, icons)
+- [x] Sidebar visual polish (spacing, section headers, icons)
 - [x] Replace 10 debug `print()` calls with os.log or remove (ServerManager.swift:22-71, AppState.swift:130, TagPageView.swift:418)
 - [x] Replace 22 silent `try?` suppressions with logged error handling (AppState.swift, TagPageView.swift, ServerManager.swift)
 - [x] Extract hardcoded timeout constants: ServerManager 5s health poll, APIClient 10s/30s request timeouts (ServerManager.swift:54, APIClient.swift:133,156)

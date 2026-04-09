@@ -19,7 +19,7 @@ struct SidebarView: View {
             set: { if let item = $0 { appState.selectedNavItem = item } }
         )) {
             // MARK: Navigation
-            Section("Navigation") {
+            Section {
                 ForEach(NavItem.allCases, id: \.self) { item in
                     Label(item.label, systemImage: item.systemImage)
                         .tag(item)
@@ -28,6 +28,8 @@ struct SidebarView: View {
                             appState.currentPage = nil
                         }
                 }
+            } header: {
+                SidebarSectionHeader(title: "Navigation", systemImage: "square.grid.2x2")
             }
 
             // MARK: Favorites
@@ -37,7 +39,7 @@ struct SidebarView: View {
                         PageRowView(page: page)
                     }
                 } header: {
-                    Text("Favorites")
+                    SidebarSectionHeader(title: "Favorites", systemImage: "star.fill")
                 }
             }
 
@@ -48,7 +50,7 @@ struct SidebarView: View {
                         PageRowView(page: page)
                     }
                 } header: {
-                    Text("Recent")
+                    SidebarSectionHeader(title: "Recent", systemImage: "clock")
                 }
             }
         }
@@ -90,23 +92,60 @@ private struct PageRowView: View {
     let page: Page
     @Environment(AppState.self) private var appState
 
+    private var pageIcon: String {
+        if page.metadata.tags.contains("daily") {
+            return "calendar"
+        }
+        switch page.metadata.noteType {
+        case "Tag":
+            return "tag"
+        case "Property":
+            return "slider.horizontal.3"
+        default:
+            return "doc.text"
+        }
+    }
+
     var body: some View {
         Button {
             appState.open(page)
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(page.title)
-                    .font(.body)
-                    .lineLimit(1)
-                if !page.metadata.tags.isEmpty {
-                    Text(page.metadata.tags.map { "#\($0)" }.joined(separator: " "))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: pageIcon)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 14, alignment: .center)
+                    .padding(.top, 2)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(page.title)
+                        .font(.body)
                         .lineLimit(1)
+                    if !page.metadata.tags.isEmpty {
+                        Text(page.metadata.tags.map { "#\($0)" }.joined(separator: " "))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
                 }
+                Spacer(minLength: 0)
             }
+            .padding(.vertical, 2)
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct SidebarSectionHeader: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .tracking(0.4)
     }
 }
 
