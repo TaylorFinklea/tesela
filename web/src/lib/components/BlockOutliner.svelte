@@ -15,13 +15,20 @@
     onContentChange?: (fullContent: string) => void;
   } = $props();
 
-  let parsedBlocks = $derived(parseBlocks(noteId, body));
-  let blocks = $state<ParsedBlock[]>([]);
+  let blocks = $state<ParsedBlock[]>(parseBlocks(noteId, body));
   let focusedIndex = $state<number | null>(null);
+  let lastBodyFromServer = $state(body);
 
-  // Sync parsed blocks into mutable state (external updates reset blocks)
+  // Only reset blocks when the body prop changes from an EXTERNAL source
+  // (e.g., WebSocket push, navigation). Ignore changes from our own saves.
   $effect(() => {
-    blocks = parsedBlocks;
+    if (body !== lastBodyFromServer) {
+      lastBodyFromServer = body;
+      // Only reset if we're not currently editing (no focused block)
+      if (focusedIndex === null) {
+        blocks = parseBlocks(noteId, body);
+      }
+    }
   });
 
   function saveBlocks(updated: ParsedBlock[]) {
@@ -104,8 +111,8 @@
         note_id: noteId,
       };
       blocks = [newBlock];
-      saveBlocks(blocks);
       focusedIndex = 0;
+      // Don't save yet — let the user type first. Save happens on block change.
     }}
   >
     Click to start writing…

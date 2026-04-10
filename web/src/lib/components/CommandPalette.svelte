@@ -57,7 +57,7 @@
 
   async function createAndNavigate(title: string) {
     try {
-      const content = `---\ntitle: "${title}"\ntags: []\n---\n- `;
+      const content = `---\ntitle: "${title}"\ntags: []\n---\n`;
       const note = await api.createNote(title, content);
       queryClient.invalidateQueries({ queryKey: ["notes"] });
       open = false;
