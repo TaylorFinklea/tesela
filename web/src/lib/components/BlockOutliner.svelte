@@ -89,7 +89,27 @@
 </script>
 
 {#if blocks.length === 0}
-  <div class="text-sm text-muted-foreground italic">No blocks. Start typing with "- " to create one.</div>
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="text-sm text-muted-foreground cursor-text py-2 hover:bg-accent/20 rounded px-2"
+    onclick={() => {
+      const newBlock = {
+        id: `${noteId}:new-${Date.now()}`,
+        text: "",
+        raw_text: "",
+        tags: [],
+        properties: {},
+        indent_level: 0,
+        note_id: noteId,
+      };
+      blocks = [newBlock];
+      saveBlocks(blocks);
+      focusedIndex = 0;
+    }}
+  >
+    Click to start writing…
+  </div>
 {:else}
   <div class="space-y-0.5" tabindex="-1">
     {#each blocks as block, index (block.id)}

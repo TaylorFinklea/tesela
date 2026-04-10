@@ -3,6 +3,7 @@
  * Types from ts-rs (crates/tesela-core).
  */
 import type { Note } from "$lib/types/Note";
+import type { SearchHit } from "$lib/types/SearchHit";
 
 const BASE_URL = "http://127.0.0.1:7474";
 
@@ -20,6 +21,17 @@ export class ApiError extends Error {
 async function get<T>(path: string): Promise<T> {
   const url = `${BASE_URL}${path}`;
   const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) throw new ApiError(res.status, await res.text(), url);
+  return (await res.json()) as T;
+}
+
+async function post<T>(path: string, body: unknown): Promise<T> {
+  const url = `${BASE_URL}${path}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
   if (!res.ok) throw new ApiError(res.status, await res.text(), url);
   return (await res.json()) as T;
 }
@@ -48,4 +60,16 @@ export const api = {
   getNote: (id: string) => get<Note>(`/notes/${encodeURIComponent(id)}`),
   updateNote: (id: string, content: string) =>
     put<Note>(`/notes/${encodeURIComponent(id)}`, { content }),
+  createNote: (title: string, content: string, tags: string[] = []) =>
+    post<Note>("/notes", { title, content, tags }),
+  getDailyNote: (date?: string) => {
+    const q = date ? `?date=${date}` : "";
+    return get<Note>(`/notes/daily${q}`);
+  },
+  search: (query: string, limit = 20) => {
+    const q = new URLSearchParams({ q: query, limit: String(limit) });
+    return get<SearchHit[]>(`/search?${q.toString()}`);
+  },
+  deleteNote: (id: string) =>
+    fetch(`${BASE_URL}/notes/${encodeURIComponent(id)}`, { method: "DELETE" }),
 };

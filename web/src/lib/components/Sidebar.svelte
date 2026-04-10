@@ -35,6 +35,12 @@
       />
     </div>
 
+    <div class="px-1.5 py-1">
+      <a href="/daily" class="flex items-center gap-2 rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors">
+        <span>☀</span> Today
+      </a>
+    </div>
+
     <nav class="flex-1 overflow-y-auto px-1.5 pb-2">
       <div class="text-[10px] font-medium text-muted-foreground uppercase tracking-wider px-1.5 py-1.5">Pages</div>
       {#if notesQuery.isLoading}
