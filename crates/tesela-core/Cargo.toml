@@ -25,4 +25,4 @@ tokio-util.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 tokio-test.workspace = true
-ts-rs = { version = "12", features = ["chrono-impl", "serde-json-impl"] }
+ts-rs = { version = "12", features = ["chrono-impl"] }

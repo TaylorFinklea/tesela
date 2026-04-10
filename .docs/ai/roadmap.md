@@ -2,16 +2,20 @@
 
 ## What Tesela Is
 
-Keyboard-first note-taking system (org-mode successor). Rust backend, native macOS SwiftUI app. Taylor's daily-driver tool — reliability matters more than features.
+Keyboard-first note-taking system (org-mode successor). Rust backend + web frontend. Taylor's daily-driver tool — reliability matters more than features.
 
-**Core principle:** Database-first, files are export. Apple-first, web later.
+**Core principle:** Database-first, files are export. **Web-first (pivoted 2026-04-09)** — SwiftUI frozen.
+
+**Design quality bar:** Linear × Logseq × Zed — craft, restraint, keyboard-first.
+
+**Approved pivot plan:** `/Users/tfinklea/.claude/plans/async-giggling-moth.md`
 
 ## Architecture
 
 - **Rust workspace** (`crates/`): tesela-core, tesela-cli, tesela-tui, tesela-mcp, tesela-server, tesela-plugins
-- **SwiftUI macOS app** (`app/Tesela/`): connects to tesela-server on localhost:7474 (REST + WebSocket)
+- **Web app** (`web/`, NEW): Next.js 16 App Router + React + TypeScript + CodeMirror 6 + shadcn/ui, connects to tesela-server on localhost:7474
+- **SwiftUI macOS app** (`app/Tesela/`, FROZEN): no new feature work; stays in repo as fallback until web client hits parity
 - **Type system**: Tags, Properties, and Values are pages with YAML frontmatter (Logseq DB model)
-- **React board prototype**: external project for Life OS kanban design — will merge into Tesela when proven
 
 ## Completed
 
@@ -32,7 +36,70 @@ Keyboard-first note-taking system (org-mode successor). Rust backend, native mac
 
 ---
 
-## Phase 1: Polish & Reliability (current)
+## Phase 1b: Web Client (CURRENT — active work)
+
+Replaces SwiftUI as the primary client. See the approved plan at `/Users/tfinklea/.claude/plans/async-giggling-moth.md` for the full rationale, architecture, and design direction.
+
+**Stack:** Next.js 16 + React + TypeScript + CodeMirror 6 + `@replit/codemirror-vim` + shadcn/ui + Tailwind + TanStack Query + Zustand + cmdk + Radix + Lucide + Cytoscape.js.
+
+**Shipping strategy:** Browser-first in dev (`pnpm -C web dev` → `localhost:3000`), Tauri wrap later.
+
+### M0 — Scaffold & Connect ✓ (2026-04-09)
+
+- [x] Added `ts-rs` v12 to `tesela-core` dev-deps; derived on `Note`/`NoteId`/`NoteMetadata`/`Attachment`/`SearchHit`/`Link`/`LinkType`/`GraphEdge`/`TypeDefinition`/`PropertyDef`/`ParsedBlock`; `cargo test -p tesela-core --lib export_bindings` writes 11 files to `web/src/lib/types/`
+- [x] `pnpm create next-app web` (Next.js 16.2.3, Tailwind v4, App Router, src/). `output: 'export'` deferred to M8 (needs normal SSR/cookies during dev)
+- [x] Installed CM6 core + lang-markdown + search, `@replit/codemirror-vim`, TanStack Query v5, Zustand v5, cmdk, shadcn/ui (base-nova preset, `@base-ui/react`), Lucide. Radix not needed — shadcn uses base-ui now
+- [x] `web/src/lib/api-client.ts` — typed `ApiClient` with `health()` + `listNotes()`, extensible to the rest of the route table
+- [x] `web/src/lib/ws-client.ts` — exponential backoff reconnect (1s→30s), intentionally-stopped latch, connection-id guard (ported from `WebSocketClient.swift`)
+- [x] Boot screen at `/`: header with status pill (live/loading/offline), notes list, error/empty/loading states. `/p/[id]` deferred to M1
+- [x] `web/.gitignore` from create-next-app is adequate; removed nested `web/.git` that blocked parent tracking
+- [x] Verified via Chrome DevTools MCP — page loads, dark theme applies, api-client fires, error state renders, WS reconnect loop backs off correctly
+
+### M1 — Read-only outliner
+- [ ] Port `BlockParser` from `app/Tesela/Tesela/Services/BlockParser.swift`
+- [ ] `BlockEditor` with one CM6 per block (read-only), wiki-link + tag-pill decorations, arrow-key navigation
+
+### M2 — Editing + save-back
+- [ ] CM6 editable, 500ms debounced `PUT /notes/{id}`
+- [ ] Enter/Tab/Shift-Tab block ops, WS reconcile without clobbering in-flight edits, undo/redo
+
+### M3 — Vim engine
+- [ ] Port Swift `VimState`/`VimEngine`/`VimKeyHandler` to TS (`web/src/editor/vim-engine/`)
+- [ ] Port Swift Vim tests to Vitest
+- [ ] Cross-block motion routing layered over `@replit/codemirror-vim`
+- [ ] Command palette (cmdk); global shortcuts `⌘K`, `⌘J`, `⌘[`, `⌘]`
+
+### M4 — Sidebar & tag pages (table only)
+- [ ] Left sidebar (pages, recents, favorites, search)
+- [ ] Tag page table view (TanStack Table) with filter/sort/property columns
+- [ ] Property editor (port `PropertyPageView.swift`)
+- [ ] Right sidebar: backlinks, forward links, focused-block properties
+
+### M5 — Tiles & drill-in
+- [ ] Daily notes timeline (virtualized)
+- [ ] Block zoom route `/p/[id]/zoom/[block]`
+
+### M6 — Graph & search UI
+- [ ] Cytoscape.js graph view
+- [ ] Search results page against `/search`
+
+### M7 — Theme, settings, polish
+- [ ] Settings page (theme, accent color, server URL)
+- [ ] 11-accent theme, dark mode default
+- [ ] Empty/loading/error states for every view
+- [ ] **Linear/Logseq/Zed craft bar** — every screen held to this design standard before it ships
+
+### M8 — (Optional) Tauri wrap
+- [ ] Tauri shell serving `web/out/`
+- [ ] Menu bar, global hotkeys, `tesela web` CLI subcommand
+
+**Deferred past Phase 1b:** kanban, long-form writing mode, power menu grammar, query language, mobile/iOS, attachment upload, bulk ops.
+
+---
+
+## Phase 1 (SwiftUI): FROZEN 2026-04-09
+
+**Status:** No new SwiftUI feature work. The app stays in the repo as a fallback until the web client hits parity. Items below reflect the state at freeze time — do not pick them up.
 
 Make what exists beautiful and trustworthy. This is the gate to daily-driver status.
 
@@ -137,6 +204,8 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 
 ### Sonnet (some architectural judgment)
 
+**Note (2026-04-09):** Swift-side items are **FROZEN** under the web pivot. Rust-side items (sqlite.rs split, tesela-cli refactor, shared backup module) are still active — they benefit `tesela-server` which both clients use.
+
 - [x] Tag extraction edge cases (tags at end of line, tags with special chars)
 - [x] Autocomplete popover positioning near screen edges
 - [x] Cursor position bugs after block operations (Enter, delete, indent)
@@ -144,10 +213,10 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 - [x] Search highlighting persistence across block rebuilds (verified working)
 - [x] WebSocket reconnection reliability (exponential backoff)
 - [x] Block zoom save-back correctness for deeply nested blocks (verified correct)
-- [~] Split OutlinerView.swift (2155 lines) into focused modules: OutlinerLayout, OutlinerCompletion, OutlinerSearch, OutlinerProperties
+- [ ] **[FROZEN]** Split OutlinerView.swift (2155 lines) into focused modules — attempted in working tree, broken, left alone per Taylor
 - [ ] Split sqlite.rs (1126 lines) into db/migrations.rs, db/search.rs, db/links.rs, db/types.rs
-- [ ] Split TagPageView.swift (841 lines) into TagPageHeader, TagBlockTable, TagKanbanBoard, TagPropertyEditor
-- [ ] Replace 4 hardcoded DispatchQueue.asyncAfter delays with proper state machine or animation callbacks (ContentArea.swift:265, TilesView.swift:27,40,79)
+- [ ] **[FROZEN]** Split TagPageView.swift (841 lines) into TagPageHeader, TagBlockTable, TagKanbanBoard, TagPropertyEditor
+- [ ] **[FROZEN]** Replace 4 hardcoded DispatchQueue.asyncAfter delays with proper state machine or animation callbacks (ContentArea.swift:265, TilesView.swift:27,40,79)
 - [ ] Split `crates/tesela-cli/src/main.rs` (826 lines, 14 `cmd_*` functions including the 140-line backup/restore pair at lines 378-575) into a `src/commands/` submodule — one file per command (`init.rs`, `new.rs`, `list.rs`, `search.rs`, `cat.rs`, `edit.rs`, `daily.rs`, `links.rs`, `export.rs`, `backup.rs`, `restore.rs`, `reindex.rs`, `install.rs`, `uninstall.rs`) re-exported from `commands/mod.rs`. Keep `main.rs` as a thin dispatcher.
 - [ ] Extract duplicated `copy_dir_recursive` + backup retention logic out of `crates/tesela-cli/src/main.rs:561` and `crates/tesela-server/src/main.rs:224` into a shared `tesela_core::backup` module. Also unify the inconsistent retention counts (10 manual backups in CLI vs 5 daily backups in server) into a single `BackupPolicy` struct so both binaries share the same semantics.
 - [x] Create shared RegexCache for duplicate regex patterns across import_logseq.rs, notes.rs, BlockStyler.swift
@@ -156,7 +225,7 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 ### Opus (design skill, cross-cutting — owned by tier3_owner)
 
 - [ ] API endpoint integration tests (server routes)
-- [ ] SwiftUI view snapshot tests (if feasible)
+- [ ] **[FROZEN]** SwiftUI view snapshot tests (if feasible)
 
 ### Completed
 
@@ -175,11 +244,12 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 
 ## Constraints
 
-- macOS 26 minimum, Swift 6 strict concurrency
-- Apple-first, web later (Tauri/web shares Rust backend API)
-- No business logic in CLI/TUI/GUI — only in tesela-core traits
+- **Web-first** (pivoted 2026-04-09): Next.js + React + CodeMirror 6 is primary, SwiftUI frozen
+- Design quality bar: Linear × Logseq × Zed — craft, restraint, keyboard-first, dark-mode default
+- No business logic in clients (web or SwiftUI) — only in tesela-core traits
 - Database-first; files are export format
-- SF Symbols for icons (web app uses Tabler/Lucide with name mapping)
+- Icons: Lucide in web (with name-mapping to SF Symbols used by the frozen SwiftUI app)
+- SwiftUI app (`app/Tesela/`) stays in the repo but receives no new feature work until/unless retired
 
 ## Non-Goals (for now)
 

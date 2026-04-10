@@ -91,6 +91,7 @@ pub struct NoteMetadata {
     /// Page type (e.g., "Task", "Project", "Person")
     pub note_type: Option<String>,
     /// Custom key-value pairs
+    #[cfg_attr(test, ts(type = "Record<string, unknown>"))]
     pub custom: HashMap<String, serde_json::Value>,
     /// Creation date from frontmatter
     pub created: Option<DateTime<Utc>>,
