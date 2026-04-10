@@ -7,8 +7,13 @@ use crate::regex_cache::{PROPERTY_RE, TAG_RE};
 use serde::Serialize;
 use std::collections::HashMap;
 
+#[cfg(test)]
+use ts_rs::TS;
+
 /// A parsed block from a note body.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct ParsedBlock {
     /// Deterministic ID: `{note_id}:{line_number}`
     pub id: String,

@@ -3,8 +3,13 @@
 use crate::regex_cache::WIKI_LINK_RE;
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+use ts_rs::TS;
+
 /// Extracted link from markdown
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct Link {
     /// Type of link (internal, external, attachment)
     pub link_type: LinkType,
@@ -17,6 +22,8 @@ pub struct Link {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub enum LinkType {
     Internal,
     External,
@@ -25,6 +32,8 @@ pub enum LinkType {
 
 /// Lightweight source→target pair for graph rendering
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct GraphEdge {
     pub source: String,
     pub target: String,

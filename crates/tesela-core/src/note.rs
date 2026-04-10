@@ -5,8 +5,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+#[cfg(test)]
+use ts_rs::TS;
+
 /// Unique identifier for a note
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct NoteId(String);
 
 impl NoteId {
@@ -47,6 +52,8 @@ impl From<&str> for NoteId {
 
 /// Represents a note with its metadata and content
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct Note {
     /// Unique identifier for the note (usually filename without extension)
     pub id: NoteId,
@@ -72,6 +79,8 @@ pub struct Note {
 
 /// Note metadata extracted from frontmatter
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct NoteMetadata {
     /// Note title from frontmatter (overrides extracted title)
     pub title: Option<String>,
@@ -91,6 +100,8 @@ pub struct NoteMetadata {
 
 /// Represents an attachment
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct Attachment {
     /// Unique identifier
     pub id: String,
@@ -110,6 +121,8 @@ pub struct Attachment {
 
 /// A search result hit
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct SearchHit {
     pub note_id: NoteId,
     pub title: String,

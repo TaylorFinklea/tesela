@@ -7,8 +7,13 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[cfg(test)]
+use ts_rs::TS;
+
 /// A type definition (e.g., Task, Project, Person)
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct TypeDefinition {
     pub name: String,
     #[serde(default)]
@@ -30,6 +35,8 @@ fn default_color() -> String {
 
 /// A property definition within a type
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct PropertyDef {
     pub name: String,
     #[serde(default = "default_value_type")]
