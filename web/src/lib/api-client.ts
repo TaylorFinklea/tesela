@@ -1,19 +1,10 @@
 /**
- * Typed fetch wrapper for the tesela-server REST API.
- *
- * Types are generated from Rust via ts-rs (see crates/tesela-core/src/*).
- * The server runs on http://127.0.0.1:7474 by default (see crates/tesela-server).
- *
- * Only the endpoints needed by the current milestone are wired here;
- * extend as features require them.
+ * Typed fetch wrapper for tesela-server REST API.
+ * Types from ts-rs (crates/tesela-core).
  */
+import type { Note } from "$lib/types/Note";
 
-import type { Note } from "@/lib/types/Note";
-
-export interface ApiClientOptions {
-  baseUrl?: string;
-  fetchImpl?: typeof fetch;
-}
+const BASE_URL = "http://127.0.0.1:7474";
 
 export class ApiError extends Error {
   constructor(
@@ -26,70 +17,35 @@ export class ApiError extends Error {
   }
 }
 
-export class ApiClient {
-  readonly baseUrl: string;
-  private readonly fetchImpl: typeof fetch;
-
-  constructor(opts: ApiClientOptions = {}) {
-    this.baseUrl = opts.baseUrl ?? "http://127.0.0.1:7474";
-    this.fetchImpl = opts.fetchImpl ?? fetch.bind(globalThis);
-  }
-
-  /** Health probe — used at startup to confirm the server is up. */
-  async health(): Promise<{ status: string }> {
-    return this.get<{ status: string }>("/health");
-  }
-
-  /** List notes, optionally filtered by tag. */
-  async listNotes(params: ListNotesParams = {}): Promise<Note[]> {
-    const query = new URLSearchParams();
-    if (params.tag) query.set("tag", params.tag);
-    if (params.limit !== undefined) query.set("limit", String(params.limit));
-    if (params.offset !== undefined) query.set("offset", String(params.offset));
-    const qs = query.toString();
-    return this.get<Note[]>(`/notes${qs ? `?${qs}` : ""}`);
-  }
-
-  /** Fetch a single note by ID. */
-  async getNote(id: string): Promise<Note> {
-    return this.get<Note>(`/notes/${encodeURIComponent(id)}`);
-  }
-
-  /** Update a note's full content (including frontmatter). */
-  async updateNote(id: string, content: string): Promise<Note> {
-    return this.put<Note>(`/notes/${encodeURIComponent(id)}`, { content });
-  }
-
-  private async get<T>(path: string): Promise<T> {
-    const url = `${this.baseUrl}${path}`;
-    const res = await this.fetchImpl(url, {
-      headers: { Accept: "application/json" },
-    });
-    if (!res.ok) {
-      throw new ApiError(res.status, await res.text(), url);
-    }
-    return (await res.json()) as T;
-  }
-
-  private async put<T>(path: string, body: unknown): Promise<T> {
-    const url = `${this.baseUrl}${path}`;
-    const res = await this.fetchImpl(url, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json", Accept: "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) {
-      throw new ApiError(res.status, await res.text(), url);
-    }
-    return (await res.json()) as T;
-  }
+async function get<T>(path: string): Promise<T> {
+  const url = `${BASE_URL}${path}`;
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) throw new ApiError(res.status, await res.text(), url);
+  return (await res.json()) as T;
 }
 
-export interface ListNotesParams {
-  tag?: string;
-  limit?: number;
-  offset?: number;
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const url = `${BASE_URL}${path}`;
+  const res = await fetch(url, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new ApiError(res.status, await res.text(), url);
+  return (await res.json()) as T;
 }
 
-/** Default singleton for convenience. Most callers can just use this. */
-export const api = new ApiClient();
+export const api = {
+  health: () => get<{ status: string }>("/health"),
+  listNotes: (params: { tag?: string; limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.tag) q.set("tag", params.tag);
+    if (params.limit !== undefined) q.set("limit", String(params.limit));
+    if (params.offset !== undefined) q.set("offset", String(params.offset));
+    const qs = q.toString();
+    return get<Note[]>(`/notes${qs ? `?${qs}` : ""}`);
+  },
+  getNote: (id: string) => get<Note>(`/notes/${encodeURIComponent(id)}`),
+  updateNote: (id: string, content: string) =>
+    put<Note>(`/notes/${encodeURIComponent(id)}`, { content }),
+};
