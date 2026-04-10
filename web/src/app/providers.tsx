@@ -7,13 +7,10 @@ import {
 import { useEffect, useState } from "react";
 
 import { wsClient } from "@/lib/ws-client";
+import { CommandPalette } from "@/components/CommandPalette";
 
 /**
- * Client-side provider tree: TanStack Query + a lazy WsClient connect on mount.
- *
- * The WsClient singleton lives for the lifetime of the tab. We connect once
- * on first mount and never disconnect — tesela-server runs locally, so staying
- * subscribed is essentially free.
+ * Client-side provider tree: TanStack Query + WsClient + Command Palette.
  */
 export function Providers({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(
@@ -38,6 +35,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    <QueryClientProvider client={queryClient}>
+      {children}
+      <CommandPalette />
+    </QueryClientProvider>
   );
 }

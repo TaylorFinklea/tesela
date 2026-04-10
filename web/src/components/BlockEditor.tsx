@@ -2,6 +2,7 @@ import { useRef, useEffect, useCallback } from "react";
 import { EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { vim } from "@replit/codemirror-vim";
 
 /**
  * Inline CM6 editor for a single block's raw text.
@@ -181,7 +182,8 @@ export function BlockEditor({
     const state = EditorState.create({
       doc: initialText,
       extensions: [
-        blockKeymap, // Must come before defaultKeymap so our bindings take priority
+        blockKeymap, // Must come before vim/defaultKeymap so Escape/Enter/Tab take priority
+        vim(),       // Vim mode: hjkl, motions, operators, visual, dot-repeat, /search
         keymap.of([...defaultKeymap, ...historyKeymap]),
         history(),
         theme,
