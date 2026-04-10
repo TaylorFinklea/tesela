@@ -1,6 +1,6 @@
 ---
 name: build-and-test
-description: Run full Rust + Swift build and test suite with pass/fail per step
+description: Run full Rust + web build and test suite with pass/fail per step
 disable-model-invocation: true
 ---
 
@@ -25,14 +25,14 @@ Run each step in order. Stop and report on first failure.
    cargo test --workspace
    ```
 
-4. **Regenerate Xcode project**
+4. **Web TypeScript check**
    ```bash
-   cd app/Tesela && xcodegen generate
+   pnpm --dir web tsc --noEmit
    ```
 
-5. **Swift build**
+5. **Web lint**
    ```bash
-   xcodebuild -project app/Tesela/Tesela.xcodeproj -scheme Tesela -configuration Debug build
+   pnpm --dir web lint
    ```
 
 ## Output
@@ -44,7 +44,7 @@ Report a table:
 | cargo fmt | ✅/❌ |
 | cargo clippy | ✅/❌ |
 | cargo test | ✅/❌ (N tests) |
-| xcodegen | ✅/❌ |
-| xcodebuild | ✅/❌ |
+| tsc --noEmit | ✅/❌ |
+| eslint | ✅/❌ |
 
 If any step fails, show the error output and stop.

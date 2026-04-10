@@ -2,170 +2,97 @@
 
 ## What Tesela Is
 
-Keyboard-first note-taking system (org-mode successor). Rust backend + web frontend. Taylor's daily-driver tool — reliability matters more than features.
+Keyboard-first note-taking system (org-mode successor). Rust backend + Next.js web frontend. Taylor's daily-driver tool — reliability matters more than features.
 
-**Core principle:** Database-first, files are export. **Web-first (pivoted 2026-04-09)** — SwiftUI frozen.
+**Core principle:** Database-first, files are export format.
 
-**Design quality bar:** Linear × Logseq × Zed — craft, restraint, keyboard-first.
-
-**Approved pivot plan:** `/Users/tfinklea/.claude/plans/async-giggling-moth.md`
+**Design quality bar:** Linear × Logseq × Zed — craft, restraint, keyboard-first, dark-mode default.
 
 ## Architecture
 
 - **Rust workspace** (`crates/`): tesela-core, tesela-cli, tesela-tui, tesela-mcp, tesela-server, tesela-plugins
-- **Web app** (`web/`, NEW): Next.js 16 App Router + React + TypeScript + CodeMirror 6 + shadcn/ui, connects to tesela-server on localhost:7474
-- **SwiftUI macOS app** (`app/Tesela/`, FROZEN): no new feature work; stays in repo as fallback until web client hits parity
+- **Web app** (`web/`): Next.js 16 App Router + React + TypeScript + CodeMirror 6 + `@replit/codemirror-vim` + shadcn/ui + Tailwind + TanStack Query + Zustand + cmdk + Lucide; connects to `tesela-server` on `localhost:7474`
 - **Type system**: Tags, Properties, and Values are pages with YAML frontmatter (Logseq DB model)
 
-## Completed
+## Rust backend — already done
 
-- MVP: Block outliner, sidebar, search, WebSocket sync, tiles, Vim mode, graph view
-- Type system: Tag/Property pages, inheritance chains, property configuration UI
-- Vim engine: Visual mode, dot-repeat, /search with highlighting + n/N
-- Inline autocomplete for `#tags` and `[[page refs]]` with "New tag" creation
-- Tag display: all tags as right-aligned plain text (Logseq style), removed from editor
-- Block drill-in (Logseq-style zoom) + back/forward navigation
-- Tag page views: table + kanban with multi-property filtering, drag-and-drop, sortable columns
-- Right sidebar: page info, grouped backlinks with context, unlinked references, focused block properties
-- Custom bullet icons (SF Symbols) with color picker per type
-- Baseline-aligned layout system for all inline elements
-- Backup: CLI `tesela backup` + auto-daily on server startup
-- Life OS data model types: Domain, LifeProject, Issue, Ritual, ScheduledItem
-- Node references (property type "node" linking to pages)
-- Search match count display
+This is the stable surface the web client builds on. No immediate feature work planned here beyond the backlog below.
+
+- Block outliner data model, wiki-link + tag + property parsing
+- SQLite/FTS5 indexer with incremental reindex
+- REST + WebSocket server (`tesela-server`) with ~95% coverage for UI needs
+- MCP server for AI integration (`search_notes`, `get_note`, `create_note`, `list_notes`, `get_backlinks`, `get_daily_note`)
+- CLI with `init`, `new`, `list`, `search`, `cat`, `edit`, `daily`, `links`, `export`, `backup`, `restore`, `reindex`, `install`, `uninstall`
+- Daily-backup system + restore command
+- LogSeq importer (`tesela import-logseq --source ~/logseq`)
+- TUI (`tesela-tui`) — Elm-style, kept for headless/SSH use
+- Type registry with Tag/Property/Value pages and inheritance
 
 ---
 
-## Phase 1b: Web Client (CURRENT — active work)
+## Web Client — active work
 
-Replaces SwiftUI as the primary client. See the approved plan at `/Users/tfinklea/.claude/plans/async-giggling-moth.md` for the full rationale, architecture, and design direction.
+Replaces the earlier native UI. See `/Users/tfinklea/.claude/plans/async-giggling-moth.md` for the full plan.
 
-**Stack:** Next.js 16 + React + TypeScript + CodeMirror 6 + `@replit/codemirror-vim` + shadcn/ui + Tailwind + TanStack Query + Zustand + cmdk + Radix + Lucide + Cytoscape.js.
-
-**Shipping strategy:** Browser-first in dev (`pnpm -C web dev` → `localhost:3000`), Tauri wrap later.
+**Shipping strategy:** Browser-first in dev (`pnpm --dir web dev` → `localhost:3000`), Tauri wrap later.
 
 ### M0 — Scaffold & Connect ✓ (2026-04-09)
 
-- [x] Added `ts-rs` v12 to `tesela-core` dev-deps; derived on `Note`/`NoteId`/`NoteMetadata`/`Attachment`/`SearchHit`/`Link`/`LinkType`/`GraphEdge`/`TypeDefinition`/`PropertyDef`/`ParsedBlock`; `cargo test -p tesela-core --lib export_bindings` writes 11 files to `web/src/lib/types/`
-- [x] `pnpm create next-app web` (Next.js 16.2.3, Tailwind v4, App Router, src/). `output: 'export'` deferred to M8 (needs normal SSR/cookies during dev)
-- [x] Installed CM6 core + lang-markdown + search, `@replit/codemirror-vim`, TanStack Query v5, Zustand v5, cmdk, shadcn/ui (base-nova preset, `@base-ui/react`), Lucide. Radix not needed — shadcn uses base-ui now
-- [x] `web/src/lib/api-client.ts` — typed `ApiClient` with `health()` + `listNotes()`, extensible to the rest of the route table
-- [x] `web/src/lib/ws-client.ts` — exponential backoff reconnect (1s→30s), intentionally-stopped latch, connection-id guard (ported from `WebSocketClient.swift`)
-- [x] Boot screen at `/`: header with status pill (live/loading/offline), notes list, error/empty/loading states. `/p/[id]` deferred to M1
-- [x] `web/.gitignore` from create-next-app is adequate; removed nested `web/.git` that blocked parent tracking
-- [x] Verified via Chrome DevTools MCP — page loads, dark theme applies, api-client fires, error state renders, WS reconnect loop backs off correctly
+- [x] Added `ts-rs` v12 to `tesela-core` dev-deps; derived on `Note`/`NoteId`/`NoteMetadata`/`Attachment`/`SearchHit`/`Link`/`LinkType`/`GraphEdge`/`TypeDefinition`/`PropertyDef`/`ParsedBlock`. `cargo test -p tesela-core --lib export_bindings` writes 11 TS files to `web/src/lib/types/`.
+- [x] Scaffolded `web/` with Next.js 16.2.3, React 19, Tailwind v4, TypeScript, App Router, `src/` layout. shadcn/ui initialized with the base-nova preset on `@base-ui/react` (neutral base color, full dark-mode tokens).
+- [x] Installed CM6 core + lang-markdown + search, `@replit/codemirror-vim`, TanStack Query v5, Zustand v5, cmdk, Lucide.
+- [x] `web/src/lib/api-client.ts` — typed `ApiClient` with `health()` + `listNotes()`, extensible to the full route table.
+- [x] `web/src/lib/ws-client.ts` — exponential backoff reconnect (1s → 30s), `intentionallyStopped` latch, connection-id guard against stale receive loops.
+- [x] Boot screen at `/`: header with live/loading/offline status pill, notes list, error/empty/loading states.
+- [x] Verified via Chrome DevTools MCP — page loads, dark theme applies, api-client fires, WS reconnect loop backs off correctly.
 
 ### M1 — Read-only outliner
-- [ ] Port `BlockParser` from `app/Tesela/Tesela/Services/BlockParser.swift`
-- [ ] `BlockEditor` with one CM6 per block (read-only), wiki-link + tag-pill decorations, arrow-key navigation
+
+- [ ] Port or reuse `BlockParser` (decision: port to TS for zero round-trip, or call `tesela-core::block::parse_blocks` via a new `/notes/:id/blocks` API endpoint)
+- [ ] `/p/[id]` route that fetches a note and renders its blocks in an indented outliner layout
+- [ ] `BlockEditor` with one CM6 instance per block (read-only), wiki-link + tag-pill + property-line decorations, arrow-key navigation between blocks
 
 ### M2 — Editing + save-back
+
 - [ ] CM6 editable, 500ms debounced `PUT /notes/{id}`
 - [ ] Enter/Tab/Shift-Tab block ops, WS reconcile without clobbering in-flight edits, undo/redo
 
 ### M3 — Vim engine
-- [ ] Port Swift `VimState`/`VimEngine`/`VimKeyHandler` to TS (`web/src/editor/vim-engine/`)
-- [ ] Port Swift Vim tests to Vitest
+
+- [ ] Write a new TS Vim engine (`web/src/editor/vim-engine/`) with state machine, motions, operators, dot-repeat, visual mode
 - [ ] Cross-block motion routing layered over `@replit/codemirror-vim`
+- [ ] Vitest coverage for motions, operators, visual mode, dot-repeat
 - [ ] Command palette (cmdk); global shortcuts `⌘K`, `⌘J`, `⌘[`, `⌘]`
 
 ### M4 — Sidebar & tag pages (table only)
+
 - [ ] Left sidebar (pages, recents, favorites, search)
 - [ ] Tag page table view (TanStack Table) with filter/sort/property columns
-- [ ] Property editor (port `PropertyPageView.swift`)
+- [ ] Property editor
 - [ ] Right sidebar: backlinks, forward links, focused-block properties
 
 ### M5 — Tiles & drill-in
+
 - [ ] Daily notes timeline (virtualized)
 - [ ] Block zoom route `/p/[id]/zoom/[block]`
 
 ### M6 — Graph & search UI
+
 - [ ] Cytoscape.js graph view
 - [ ] Search results page against `/search`
 
 ### M7 — Theme, settings, polish
+
 - [ ] Settings page (theme, accent color, server URL)
-- [ ] 11-accent theme, dark mode default
 - [ ] Empty/loading/error states for every view
 - [ ] **Linear/Logseq/Zed craft bar** — every screen held to this design standard before it ships
 
 ### M8 — (Optional) Tauri wrap
+
 - [ ] Tauri shell serving `web/out/`
 - [ ] Menu bar, global hotkeys, `tesela web` CLI subcommand
 
-**Deferred past Phase 1b:** kanban, long-form writing mode, power menu grammar, query language, mobile/iOS, attachment upload, bulk ops.
-
----
-
-## Phase 1 (SwiftUI): FROZEN 2026-04-09
-
-**Status:** No new SwiftUI feature work. The app stays in the repo as a fallback until the web client hits parity. Items below reflect the state at freeze time — do not pick them up.
-
-Make what exists beautiful and trustworthy. This is the gate to daily-driver status.
-
-- [x] **UI overhaul** — theme system, baseline alignment, right-aligned badges/tags
-  - [x] Consistent spacing, padding, and margins across all views
-  - [x] Theme system (dark/light + accent color customization)
-  - [x] Bullet threading from baseline
-  - [ ] Icon/status alignment pixel-perfection (in progress)
-- [x] **Server lifecycle** — embed server in SwiftUI app as child process + keep LaunchAgent as CLI fallback
-- [x] **Data integrity** — backup CLI + auto-daily + restore command
-- [x] **Empty block UX** — ghost bullet on hover
-
-## Phase 2: LogSeq Importer ✅
-
-- [x] **CLI command**: `tesela import-logseq --source ~/logseq [--dry-run]`
-- [x] **Format conversion**: journals → daily notes, pages → notes
-- [x] **Syntax mapping**: `DEADLINE:`, `SCHEDULED:`, `[#A]` priorities, `TODO/DOING/DONE`
-- [x] **LogSeq-specific cleanup**: strip `collapsed::`, `id::`, `#+BEGIN_QUERY` blocks
-- [x] **Dry-run mode**: preview what would be imported without writing
-
-## Phase 3: First-Class Types (Anytype-style) ⚠️ NEEDS DISCOVERY
-
-Types as classes, pages as instances. Requires product discovery session before coding.
-
-- [ ] **Discovery**: design type creation UI, @person syntax, type templates, layout options
-- [ ] **Type creation page**: name, plural name, icon, format (page/list), layout, properties
-- [ ] **Instance creation**: new page automatically gets type's property schema
-- [ ] **@person syntax**: `@taylor-finklea` → renders as mention, creates Person page
-- [ ] **Type-specific views**: per-type default layouts, table/kanban/list per type
-
-## Phase 4: Long-Form Writing Mode ⚠️ NEEDS DISCOVERY
-
-Outliner-only is limiting. Need Notion-like prose alongside block structure.
-
-- [ ] **Discovery**: design mixed outliner+prose pages, paragraph-level backlinking
-- [ ] **Prose blocks**: paragraphs rendered as flowing text, still individually referenceable
-- [ ] **Mixed pages**: switch between outline and prose sections on the same page
-- [ ] **Block-level backlinking in prose** (like Capacities)
-
-## Phase 5: Power Menu ⚠️ NEEDS DISCOVERY
-
-Alfred/Raycast-style universal command bar replacing Cmd+K.
-
-- [ ] **Discovery**: design grammar for natural language input, task shortcuts, inline properties
-- [ ] **Natural language tasks**: `t Get Milk tom at 4` → Task scheduled tomorrow 4 PM
-- [ ] **Universal navigation**: type page name to jump
-- [ ] **Quick capture**: bare text adds to today's daily note
-- [ ] **Inline properties**: `t Get Milk #shopping p:high d:friday`
-
-## Phase 6: Query Language ⚠️ NEEDS DISCOVERY
-
-Advanced filtering beyond the current property filters.
-
-- [ ] **Discovery**: syntax design for `status NOT "Done" AND Tags in ("cool")`
-- [ ] **Query builder UI** (visual) + raw query input (power users)
-- [ ] **Saved queries**: persist as named views on tag pages
-- [ ] **NOT / OR operators**: complement existing AND-only filtering
-
-## Phase 7: Board View (from React prototype)
-
-Life OS kanban board, designed in React, implemented natively in Tesela.
-
-- [ ] Import proven board design from React prototype
-- [ ] Native SwiftUI implementation with domain swimlanes
-- [ ] Sandbox mode (draft changes before applying)
-- [ ] AI integration via MCP (board state tools, domain insights)
+**Deferred past M8:** kanban, long-form writing mode, power menu grammar, query language, mobile/iOS, attachment upload, bulk ops.
 
 ---
 
@@ -173,24 +100,10 @@ Life OS kanban board, designed in React, implemented natively in Tesela.
 
 <!-- tier3_owner: claude -->
 
-Items that can be done alongside phases. Each is self-contained and well-scoped. Tiered by required model capability — see `~/CLAUDE.md` for the claim protocol.
+Items that can be done alongside milestone work. Each is self-contained and well-scoped. Tiered by required model capability — see `~/CLAUDE.md` for the claim protocol.
 
 ### Haiku (mechanical, no judgment)
 
-- [x] Pixel-perfect bullet/icon/text alignment across all block types
-- [x] Bullet threading visual quality (line positioning, thickness, opacity)
-- [x] Tag text alignment consistency across blocks
-- [x] Consistent spacing between blocks, sections, headers
-- [x] Status icon vertical centering with different font sizes
-- [x] Date badge alignment with text baseline
-- [x] Sidebar visual polish (spacing, section headers, icons)
-- [x] Replace 10 debug `print()` calls with os.log or remove (ServerManager.swift:22-71, AppState.swift:130, TagPageView.swift:418)
-- [x] Replace 22 silent `try?` suppressions with logged error handling (AppState.swift, TagPageView.swift, ServerManager.swift)
-- [x] Extract hardcoded timeout constants: ServerManager 5s health poll, APIClient 10s/30s request timeouts (ServerManager.swift:54, APIClient.swift:133,156)
-- [x] Replace force-unwrap URL constructions with safe initializers (APIClient.swift:12,173,175)
-- [x] Add `.expect("reason")` messages to 5 mutex lock unwraps in lua.rs (crates/tesela-plugins/src/lua.rs:86,119,129,257,275)
-- [x] Add `.expect("reason")` messages to 3 regex unwraps in import_logseq.rs (crates/tesela-cli/src/import_logseq.rs:142-144)
-- [x] Extract hardcoded magic numbers: SQLite max_connections, TUI tick_timeout, debounce durations (sqlite.rs:44,62, app.rs:81)
 - [ ] Replace one-off `regex::Regex::new(r"#[...]")` in `crates/tesela-server/src/routes/notes.rs:179` with the cached `INLINE_TAG_RE` from `crates/tesela-core/src/regex_cache.rs:21` (already the identical pattern)
 - [ ] Replace `std::env::current_dir().unwrap()` in `crates/tesela-cli/src/main.rs:196` with `?` + `.context("Failed to resolve current directory")` so `tesela init` surfaces a real error instead of panicking
 - [ ] Replace 2 `plist_file.to_str().unwrap()` calls in `crates/tesela-cli/src/main.rs:666,690` with `.context("plist path is not valid UTF-8")` — currently panics on non-UTF-8 HOME paths
@@ -199,57 +112,25 @@ Items that can be done alongside phases. Each is self-contained and well-scoped.
 - [ ] Annotate `cap.get(0).unwrap()` in `crates/tesela-core/src/link.rs:38` with `.expect("capture group 0 always exists on match")`
 - [ ] Extract hardcoded server bind address `"127.0.0.1:7474"` in `crates/tesela-server/src/main.rs:154` into a `const DEFAULT_BIND_ADDR` at the top of the file
 - [ ] Extract hardcoded backup-retention magic numbers into named constants: `MAX_MANUAL_BACKUPS = 10` in `crates/tesela-cli/src/main.rs:421` and `MAX_DAILY_BACKUPS = 5` in `crates/tesela-server/src/main.rs:216`
-- [ ] Add `accessibilityLabel` to icon-only `Button { ... } label: { Image(systemName: ...) }` call sites in `app/Tesela/Tesela/Views/TagPageView.swift:168` (remove-property xmark), `app/Tesela/Tesela/Views/PropertyPageView.swift:77` (remove-choice xmark), and `app/Tesela/Tesela/Views/IconPickerView.swift:38` (icon grid cells) — no `accessibilityLabel` exists anywhere in the Swift app today
-- [ ] Add `accessibilityLabel` to the icon-swatch buttons in `app/Tesela/Tesela/Views/IconPickerView.swift:101` (color circles) using the color name as the label
 
 ### Sonnet (some architectural judgment)
 
-**Note (2026-04-09):** Swift-side items are **FROZEN** under the web pivot. Rust-side items (sqlite.rs split, tesela-cli refactor, shared backup module) are still active — they benefit `tesela-server` which both clients use.
-
-- [x] Tag extraction edge cases (tags at end of line, tags with special chars)
-- [x] Autocomplete popover positioning near screen edges
-- [x] Cursor position bugs after block operations (Enter, delete, indent)
-- [x] BlockStyler crash guards (text/textStorage length mismatches)
-- [x] Search highlighting persistence across block rebuilds (verified working)
-- [x] WebSocket reconnection reliability (exponential backoff)
-- [x] Block zoom save-back correctness for deeply nested blocks (verified correct)
-- [ ] **[FROZEN]** Split OutlinerView.swift (2155 lines) into focused modules — attempted in working tree, broken, left alone per Taylor
-- [ ] Split sqlite.rs (1126 lines) into db/migrations.rs, db/search.rs, db/links.rs, db/types.rs
-- [ ] **[FROZEN]** Split TagPageView.swift (841 lines) into TagPageHeader, TagBlockTable, TagKanbanBoard, TagPropertyEditor
-- [ ] **[FROZEN]** Replace 4 hardcoded DispatchQueue.asyncAfter delays with proper state machine or animation callbacks (ContentArea.swift:265, TilesView.swift:27,40,79)
-- [ ] Split `crates/tesela-cli/src/main.rs` (826 lines, 14 `cmd_*` functions including the 140-line backup/restore pair at lines 378-575) into a `src/commands/` submodule — one file per command (`init.rs`, `new.rs`, `list.rs`, `search.rs`, `cat.rs`, `edit.rs`, `daily.rs`, `links.rs`, `export.rs`, `backup.rs`, `restore.rs`, `reindex.rs`, `install.rs`, `uninstall.rs`) re-exported from `commands/mod.rs`. Keep `main.rs` as a thin dispatcher.
+- [ ] Split `crates/tesela-core/src/db/sqlite.rs` (1126 lines) into `db/migrations.rs`, `db/search.rs`, `db/links.rs`, `db/types.rs`
+- [ ] Split `crates/tesela-cli/src/main.rs` (826 lines, 14 `cmd_*` functions including the 140-line backup/restore pair at lines 378-575) into a `src/commands/` submodule — one file per command, re-exported from `commands/mod.rs`. Keep `main.rs` as a thin dispatcher.
 - [ ] Extract duplicated `copy_dir_recursive` + backup retention logic out of `crates/tesela-cli/src/main.rs:561` and `crates/tesela-server/src/main.rs:224` into a shared `tesela_core::backup` module. Also unify the inconsistent retention counts (10 manual backups in CLI vs 5 daily backups in server) into a single `BackupPolicy` struct so both binaries share the same semantics.
-- [x] Create shared RegexCache for duplicate regex patterns across import_logseq.rs, notes.rs, BlockStyler.swift
-- [x] Add structured error handling to AppState.loadInitialData — partial failures should show user-facing indicators, not silent defaults
 
 ### Opus (design skill, cross-cutting — owned by tier3_owner)
 
 - [ ] API endpoint integration tests (server routes)
-- [ ] **[FROZEN]** SwiftUI view snapshot tests (if feasible)
-
-### Completed
-
-- [x] VimEngine unit tests: all motions, operators, visual mode, dot-repeat
-- [x] BlockParser unit tests: tag extraction, property extraction, serialization round-trips
-- [x] Block.displayText unit tests: tag stripping with various inputs
-- [x] Block.updateDisplayText unit tests: tag preservation, property lines
-- [x] README.md update with current features and architecture
-- [x] API endpoint documentation (REST routes, parameters, responses)
-- [x] MCP tool documentation (what each tool does, example usage)
-- [x] Contributing guide (build steps, test commands, code conventions)
-- [x] Type system documentation (how tags, properties, inheritance work)
-- [x] Inline code comments for complex methods (OutlinerView.rebuildBlockViews, VimKeyHandler)
 
 ---
 
 ## Constraints
 
-- **Web-first** (pivoted 2026-04-09): Next.js + React + CodeMirror 6 is primary, SwiftUI frozen
 - Design quality bar: Linear × Logseq × Zed — craft, restraint, keyboard-first, dark-mode default
-- No business logic in clients (web or SwiftUI) — only in tesela-core traits
+- No business logic in the web client — only in `tesela-core` traits (`NoteStore`, `SearchIndex`, `LinkGraph`)
 - Database-first; files are export format
-- Icons: Lucide in web (with name-mapping to SF Symbols used by the frozen SwiftUI app)
-- SwiftUI app (`app/Tesela/`) stays in the repo but receives no new feature work until/unless retired
+- Icons: Lucide everywhere in the web client
 
 ## Non-Goals (for now)
 

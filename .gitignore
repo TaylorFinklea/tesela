@@ -38,9 +38,5 @@ target
 notes/
 attachments/
 
-# Xcode profiling artifacts
-*.profraw
-*.profdata
-
 # Superpowers plugin cache
 .superpowers/

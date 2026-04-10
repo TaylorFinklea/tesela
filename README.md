@@ -1,31 +1,14 @@
 # Tesela
 
-A keyboard-first note-taking system built in Rust with a native macOS SwiftUI app. Tesela combines a block outliner, Vim-style editing, a page-based type system, and a local REST/WebSocket server so the native UI and Rust backend can evolve independently.
+A keyboard-first note-taking system built in Rust with a web frontend. Tesela combines a block outliner, Vim-style editing, a page-based type system, and a local REST/WebSocket server so the UI and backend can evolve independently.
 
 <!-- Screenshot goes here -->
 
 > **Work in progress** — this is Taylor's daily-driver tool. Reliability matters more than shipping a wide feature surface.
 
-## Current Features
-
-- **Block outliner with Vim keybindings** — Normal/Insert/Visual mode, motions, operators, dot-repeat
-- **Inline autocomplete** for `#tags` and `[[page refs]]`, including "New tag" creation
-- **Type system** — tags and properties are pages, with inheritance chains and typed block filtering
-- **Custom bullet icons** — SF Symbols with per-type color picker
-- **Tag page views** — table and kanban with multi-property filtering, drag-and-drop, sortable columns
-- **Back/forward navigation** and block drill-in (Logseq-style zoom)
-- **Search** with highlighting, match counts, and `n`/`N` navigation
-- **Daily tiles timeline** with inline editing
-- **Right sidebar** — page info, grouped backlinks with context, unlinked references, focused block properties
-- **Graph view** for note-link relationships
-- **Dark/light/auto theme** and accent color customization
-- **Embedded server management** in the macOS app, with CLI LaunchAgent support as a fallback
-- **Backup system** — `tesela backup` CLI + auto-daily on server startup
-- **MCP server** — AI integration via `search_notes`, `get_note`, `create_note`, `list_notes`, `get_backlinks`, `get_daily_note`
-
 ## Architecture
 
-Tesela is a Cargo workspace plus a native SwiftUI macOS app in `app/Tesela/`.
+Tesela is a Cargo workspace plus a Next.js web client in `web/`.
 
 | Crate | Binary | Purpose |
 |-------|--------|---------|
@@ -36,7 +19,7 @@ Tesela is a Cargo workspace plus a native SwiftUI macOS app in `app/Tesela/`.
 | `tesela-server` | `tesela-server` | REST API + WebSocket on localhost:7474 |
 | `tesela-plugins` | — | Lua runtime (working) + WASM stub |
 
-The SwiftUI app talks to `tesela-server` at `localhost:7474` over REST and WebSocket. UI layers stay thin: note storage, search, links, indexing, and type resolution live in `tesela-core` and are exposed through traits such as `NoteStore`, `SearchIndex`, and `LinkGraph`.
+The web client talks to `tesela-server` at `localhost:7474` over REST and WebSocket. UI stays thin: note storage, search, links, indexing, and type resolution live in `tesela-core` and are exposed through traits such as `NoteStore`, `SearchIndex`, and `LinkGraph`.
 
 **Core principle:** database-first, files are export format.
 
@@ -52,7 +35,7 @@ Built-in tags include `Task`, `Project`, `Person`, `Domain`, `LifeProject`, `Iss
 
 ## Build
 
-Requires Rust (stable toolchain) and Xcode.
+Requires Rust (stable toolchain), Node 20+, and pnpm.
 
 ```bash
 # Build the full Rust workspace
@@ -67,8 +50,8 @@ cargo clippy --workspace -- -D warnings
 # Format Rust sources
 cargo fmt --all
 
-# Build the macOS app
-xcodebuild -project app/Tesela/Tesela.xcodeproj -scheme Tesela -configuration Debug build
+# Install web client dependencies
+pnpm --dir web install
 ```
 
 ## Run
@@ -79,9 +62,12 @@ cargo install --path crates/tesela-server
 
 # Start the local API server from a Tesela mosaic
 tesela-server
+
+# In another terminal, start the web client
+pnpm --dir web dev
 ```
 
-You can also launch the macOS app from Xcode by opening `app/Tesela/Tesela.xcodeproj`. The app will try to connect to an existing server and can start `tesela-server` itself when the binary is available locally.
+Then open `http://localhost:3000`.
 
 ## Development
 
@@ -92,11 +78,16 @@ cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt --all
 
-# Swift app
-xcodebuild -project app/Tesela/Tesela.xcodeproj -scheme Tesela -configuration Debug build
+# Web client
+pnpm --dir web dev        # dev server on localhost:3000
+pnpm --dir web tsc --noEmit
+pnpm --dir web lint
+
+# Regenerate TypeScript types from Rust (writes web/src/lib/types/)
+cargo test -p tesela-core --lib export_bindings
 ```
 
-CI runs from `.github/workflows/ci.yml` and covers formatting, linting, and tests.
+CI runs from `.github/workflows/ci.yml` and covers formatting, linting, and tests for the Rust workspace.
 
 ## Note Format
 

@@ -18,8 +18,8 @@ Copy and fill this out at the end of each work session, then update `current-sta
 
 ## What Changed
 
-- `path/to/file.swift` — brief description of change
 - `path/to/file.rs` — brief description of change
+- `web/src/path/to/file.tsx` — brief description of change
 
 ## What's Next
 
@@ -33,5 +33,6 @@ Copy and fill this out at the end of each work session, then update `current-sta
 ## Build & Test Status
 
 - `cargo test --workspace`: pass/fail
-- `xcodebuild build`: pass/fail
+- `pnpm --dir web tsc --noEmit`: pass/fail
+- `pnpm --dir web lint`: pass/fail
 - Manual QA notes: what was tested, what wasn't

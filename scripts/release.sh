@@ -60,15 +60,6 @@ echo "--- Rust tests ---"
 cargo test --workspace
 
 echo ""
-echo "--- Swift build ---"
-if [ -d "app/Tesela" ]; then
-  cd app/Tesela
-  xcodegen generate 2>/dev/null || true
-  xcodebuild -project Tesela.xcodeproj -scheme Tesela -configuration Debug build 2>&1 | tail -1
-  cd "$REPO_ROOT"
-fi
-
-echo ""
 echo "--- All checks passed ---"
 
 if $DRY_RUN; then

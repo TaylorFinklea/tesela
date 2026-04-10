@@ -8,9 +8,9 @@ Handoff state lives in `.docs/ai/` (follows global workflow from `~/CLAUDE.md`).
 
 **One command per Bash call.** Do not chain commands with `&&` unless the second command literally requires the piped output of the first.
 
-- Wrong: `cd app/Tesela && xcodegen generate`
-- Right: two separate Bash calls, or use `git -C /path` instead of `cd && git`
-- Piping is fine: `xcodebuild ... | grep "error:"` — the second command needs the first's stdout
+- Wrong: `cd crates/tesela-core && cargo test`
+- Right: two separate Bash calls, or `cargo test -p tesela-core`, or `git -C /path` instead of `cd && git`
+- Piping is fine: `cargo test 2>&1 | grep "error\["` — the second command needs the first's stdout
 
 This keeps the permission allowlist minimal and each action reviewable.
 
@@ -23,22 +23,22 @@ This keeps the permission allowlist minimal and each action reviewable.
 2. `git commit` with a descriptive message
 3. Do **not** push unless explicitly asked
 
-**Always produce a QA checklist.** After implementing any user-facing TUI feature, output a step-by-step manual test plan the user can follow to verify the feature works end-to-end. Include:
-- Exact key sequences to trigger each new feature
+**Always produce a QA checklist.** After implementing any user-facing feature (web or TUI), output a step-by-step manual test plan the user can follow to verify the feature works end-to-end. Include:
+- Exact key sequences or click paths to trigger each new feature
 - Observable expected outcomes (what the user should see)
 - Edge cases / Esc / cancel paths
 - A short regression section covering anything that could have broken
 
 ## Project Overview
 
-Tesela is a keyboard-first, file-based note-taking system (org-mode successor) written in Rust.
+Tesela is a keyboard-first, file-based note-taking system (org-mode successor) with a Rust backend and a web frontend.
 It's Taylor's daily-driver tool — reliability matters more than features.
 
-**Core principle:** Files are truth, SQLite is cache.
+**Core principle:** Database-first, files are export format.
 
 ## Workspace Structure
 
-5 crates in `crates/`:
+6 crates in `crates/`:
 
 | Crate | Binary | Purpose |
 |-------|--------|---------|
@@ -46,18 +46,27 @@ It's Taylor's daily-driver tool — reliability matters more than features.
 | `tesela-cli` | `tesela` | Thin dispatcher; all subcommands via `clap` |
 | `tesela-tui` | `tesela-tui` | Elm-style TUI (ratatui/crossterm) |
 | `tesela-mcp` | `tesela-mcp` | MCP server over JSON-RPC 2.0 on stdin/stdout |
+| `tesela-server` | `tesela-server` | REST + WebSocket API on localhost:7474 (the web client's backend) |
 | `tesela-plugins` | — | Lua runtime (working) + WASM stub |
+
+Plus the web client in `web/`: Next.js 16 App Router + React 19 + TypeScript + CodeMirror 6 + shadcn/ui + Tailwind v4. TypeScript types are generated from Rust via `ts-rs` — run `cargo test -p tesela-core --lib export_bindings` to regenerate `web/src/lib/types/`.
 
 ## Build & Test
 
 ```bash
+# Rust
 cargo build --workspace
 cargo test --workspace
 cargo clippy --workspace -- -D warnings
 cargo fmt --all
+
+# Web
+pnpm --dir web dev
+pnpm --dir web tsc --noEmit
+pnpm --dir web lint
 ```
 
-CI runs on every push/PR (`.github/workflows/ci.yml`): fmt + clippy + tests on ubuntu + macOS.
+CI runs on every push/PR (`.github/workflows/ci.yml`): fmt + clippy + tests on ubuntu + macOS for the Rust workspace.
 
 ## Architecture Notes
 

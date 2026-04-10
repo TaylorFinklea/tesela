@@ -15,8 +15,8 @@ Handoff state lives in `.docs/ai/` (follows global workflow from `~/CLAUDE.md`).
 2. Create a commit with a descriptive message
 3. Do **not** push unless explicitly asked by the user
 
-**Always produce a QA checklist.** After implementing any user-facing TUI feature, output a step-by-step manual test plan covering:
-- Exact key sequences to trigger each new feature
+**Always produce a QA checklist.** After implementing any user-facing feature (web or TUI), output a step-by-step manual test plan covering:
+- Exact key sequences or click paths to trigger each new feature
 - Observable expected outcomes (what the user should see)
 - Cancel/Esc paths and edge cases
 - A regression section for anything adjacent that could have broken
@@ -25,14 +25,14 @@ Handoff state lives in `.docs/ai/` (follows global workflow from `~/CLAUDE.md`).
 
 **One command per Bash call.** Do not chain with `&&` unless the second command needs the first's stdout via a pipe.
 
-- Wrong: `cd app/Tesela && xcodegen generate`
-- Right: two separate calls, or `git -C /path/to/repo commit ...` to avoid a `cd`
-- Piping is fine: `xcodebuild ... | grep "error:"`
+- Wrong: `cd crates/tesela-core && cargo test`
+- Right: two separate calls, or `cargo test -p tesela-core`, or `git -C /path/to/repo commit ...` to avoid a `cd`
+- Piping is fine: `cargo test 2>&1 | grep "error\["`
 
 ## Project
 
-Tesela is a keyboard-first, file-based note-taking system in Rust.
-5-crate Cargo workspace. See `CLAUDE.md` for full details.
+Tesela is a keyboard-first note-taking system with a Rust backend and a Next.js web frontend.
+6-crate Cargo workspace plus `web/`. See `CLAUDE.md` for full details.
 
 ## Build & Verify
 

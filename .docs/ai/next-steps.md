@@ -2,48 +2,46 @@
 
 *Last updated: 2026-04-09*
 
-## Web Frontend Pivot — M0 Complete, M1 Next
+## Web Client — M1 Next
 
 Plan: `/Users/tfinklea/.claude/plans/async-giggling-moth.md`
 
 ### M0 — Scaffold & Connect ✓
 
-All M0 items done. See `current-state.md` for the full summary. Committed as `465c6a8` (ts-rs wiring) plus the pending commit for the `web/` scaffold and handoff doc updates.
+All M0 items done. See `current-state.md` for the full summary.
 
-**Outstanding after M0:**
-- Verify full happy path by starting `tesela-server` and confirming notes list renders + WS status flips to "live"
-- Decide whether to add a `.docs/ai/` mention of how to regenerate TS types (`cargo test -p tesela-core --lib export_bindings`)
+### M1 — Read-only outliner (immediate)
 
-### Next — M1 Read-only Outliner
+Open questions to resolve before starting:
+- **BlockParser strategy.** Port `tesela-core/src/block.rs` to TypeScript (zero round-trip, duplicated logic) or expose it via a new `GET /notes/:id/blocks` endpoint (single source of truth, one extra fetch per note open). Recommended: port to TS — block parsing needs to be synchronous inside the editor.
+- **Route shape.** `/p/[id]` for a single note, or stick with `/notes/[id]`? Pick one and stay consistent.
 
-- Port `BlockParser.swift` logic to `web/src/lib/block-parser.ts` (already have a Rust version in `tesela-core/src/block.rs` — could call that via an API endpoint instead of re-implementing in TS; decide)
-- One CM6 instance per block, read-only, with decorations for wiki-links (`[[target]]`), tags (`#tag`), and property lines (`key:: value`)
-- `/p/[id]` route that renders a note's blocks in an indented outliner layout
-- Use existing `api.getNote(id)` (add this endpoint to `api-client.ts`)
+Implementation:
+- Add `api.getNote(id)` to `web/src/lib/api-client.ts`
+- Create `web/src/lib/block-parser.ts` (if porting) or the new API endpoint (if not)
+- Create `web/src/app/p/[id]/page.tsx` — fetches the note, parses blocks, renders them in an indented layout
+- Create `web/src/components/BlockEditor.tsx` — one CM6 instance per block in read-only mode, with decorations for `[[wiki-links]]`, `#tags`, and `key:: value` property lines
+- Arrow-key navigation between blocks (leaves editor focus on blur, restores on focus)
+- Click a wiki-link → route to that page
 
-### Next up
+### Post-M1
 
-- **M1** — Read-only outliner (BlockParser port, one CM6 per block, wiki-link/tag decorations)
-- **M2** — Editing + save-back
-- **M3** — Vim engine port
+- **M2** — CM6 editable + 500ms debounced `PUT /notes/{id}` + Enter/Tab/Shift-Tab block ops + WS reconcile without clobbering in-flight edits
+- **M3** — Vim engine (new TS implementation, Vitest coverage, cross-block motions, command palette)
 - **M4** — Sidebar & tag pages
 - **M5** — Tiles & drill-in
 - **M6** — Graph & search UI
-- **M7** — Theme, settings, polish to Linear/Logseq/Zed bar
+- **M7** — Theme/polish to Linear/Logseq/Zed bar
 - **M8** — (Optional) Tauri wrap
 
-### SwiftUI-side work
+### Rust-side backlog (still active)
 
-**All frozen.** The SwiftUI app stays in the repo but no new feature work. The broken OutlinerView split in the working tree is left alone per Taylor's call.
-
-### Rust-side backlog (still active — benefits both clients)
-
-- See `.docs/ai/roadmap.md` Backlog section — Rust Haiku/Sonnet items are still fair game. Swift items are frozen.
+See `.docs/ai/roadmap.md` Backlog section — Haiku and Sonnet items are fair game.
 
 ## When picking up work
 
 1. Read `.docs/ai/roadmap.md`, `current-state.md`, and this file
 2. Read the plan file at `/Users/tfinklea/.claude/plans/async-giggling-moth.md`
 3. Start `tesela-server` for testing: `cargo run -p tesela-server`
-4. Start the web dev server: `pnpm -C web dev`
+4. Start the web dev server: `pnpm --dir web dev`
 5. Pick from the current milestone's checklist
