@@ -4,6 +4,10 @@
  */
 import type { Note } from "$lib/types/Note";
 import type { SearchHit } from "$lib/types/SearchHit";
+import type { Link } from "$lib/types/Link";
+import type { GraphEdge } from "$lib/types/GraphEdge";
+import type { TypeDefinition } from "$lib/types/TypeDefinition";
+import type { ParsedBlock } from "$lib/types/ParsedBlock";
 
 const BASE_URL = "http://127.0.0.1:7474";
 
@@ -72,4 +76,13 @@ export const api = {
   },
   deleteNote: (id: string) =>
     fetch(`${BASE_URL}/notes/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  getBacklinks: (id: string) =>
+    get<Link[]>(`/notes/${encodeURIComponent(id)}/backlinks`),
+  getForwardLinks: (id: string) =>
+    get<Link[]>(`/notes/${encodeURIComponent(id)}/links`),
+  getAllEdges: () => get<GraphEdge[]>("/links"),
+  getType: (name: string) =>
+    get<TypeDefinition>(`/types/${encodeURIComponent(name)}`),
+  getTypedBlocks: (typeName: string) =>
+    get<ParsedBlock[]>(`/types/${encodeURIComponent(typeName)}/blocks`),
 };
