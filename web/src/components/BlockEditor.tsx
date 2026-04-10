@@ -5,29 +5,50 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 
 /**
  * Inline CM6 editor for a single block's raw text.
- * Mounts when a block is focused, unmounts on blur.
+ *
+ * Supports:
+ * - ArrowUp at first line → navigate to previous block
+ * - ArrowDown at last line → navigate to next block
+ * - Escape → exit editing mode
+ * - Enter → create new block (when onEnter provided)
+ * - Tab / Shift-Tab → indent/outdent (when provided)
  */
 export function BlockEditor({
   initialText,
   onBlur,
   onChange,
+  onNavigate,
+  onEscape,
+  onEnter,
+  onIndent,
+  onBackspaceEmpty,
 }: {
   initialText: string;
   onBlur: () => void;
   onChange: (text: string) => void;
+  onNavigate?: (direction: "up" | "down") => void;
+  onEscape?: () => void;
+  onEnter?: () => void;
+  onIndent?: (direction: "indent" | "outdent") => void;
+  onBackspaceEmpty?: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
   const onBlurRef = useRef(onBlur);
+  const onNavigateRef = useRef(onNavigate);
+  const onEscapeRef = useRef(onEscape);
+  const onEnterRef = useRef(onEnter);
+  const onIndentRef = useRef(onIndent);
+  const onBackspaceEmptyRef = useRef(onBackspaceEmpty);
 
-  useEffect(() => {
-    onChangeRef.current = onChange;
-  }, [onChange]);
-
-  useEffect(() => {
-    onBlurRef.current = onBlur;
-  }, [onBlur]);
+  useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
+  useEffect(() => { onBlurRef.current = onBlur; }, [onBlur]);
+  useEffect(() => { onNavigateRef.current = onNavigate; }, [onNavigate]);
+  useEffect(() => { onEscapeRef.current = onEscape; }, [onEscape]);
+  useEffect(() => { onEnterRef.current = onEnter; }, [onEnter]);
+  useEffect(() => { onIndentRef.current = onIndent; }, [onIndent]);
+  useEffect(() => { onBackspaceEmptyRef.current = onBackspaceEmpty; }, [onBackspaceEmpty]);
 
   const createView = useCallback(() => {
     if (!containerRef.current) return;
@@ -64,8 +85,6 @@ export function BlockEditor({
       { dark: true },
     );
 
-    // Track whether the editor is "armed" for blur — prevents the mount
-    // click from immediately triggering blur before the user sees the editor.
     let blurArmed = false;
 
     const blurHandler = EditorView.domEventHandlers({
@@ -77,6 +96,82 @@ export function BlockEditor({
       },
     });
 
+    // Custom keybindings for block navigation
+    const blockKeymap = keymap.of([
+      {
+        key: "Escape",
+        run: () => {
+          onEscapeRef.current?.();
+          return true;
+        },
+      },
+      {
+        key: "ArrowUp",
+        run: (view) => {
+          // If cursor is on the first line, navigate up
+          const line = view.state.doc.lineAt(view.state.selection.main.head);
+          if (line.number === 1) {
+            onNavigateRef.current?.("up");
+            return true;
+          }
+          return false; // Let CM6 handle normal cursor movement
+        },
+      },
+      {
+        key: "ArrowDown",
+        run: (view) => {
+          // If cursor is on the last line, navigate down
+          const line = view.state.doc.lineAt(view.state.selection.main.head);
+          if (line.number === view.state.doc.lines) {
+            onNavigateRef.current?.("down");
+            return true;
+          }
+          return false;
+        },
+      },
+      {
+        key: "Enter",
+        run: () => {
+          if (onEnterRef.current) {
+            onEnterRef.current();
+            return true;
+          }
+          return false; // Allow normal Enter if no handler
+        },
+      },
+      {
+        key: "Tab",
+        run: () => {
+          if (onIndentRef.current) {
+            onIndentRef.current("indent");
+            return true;
+          }
+          return false;
+        },
+      },
+      {
+        key: "Shift-Tab",
+        run: () => {
+          if (onIndentRef.current) {
+            onIndentRef.current("outdent");
+            return true;
+          }
+          return false;
+        },
+      },
+      {
+        key: "Backspace",
+        run: (view) => {
+          // Only handle if doc is empty and cursor is at position 0
+          if (view.state.doc.length === 0 && onBackspaceEmptyRef.current) {
+            onBackspaceEmptyRef.current();
+            return true;
+          }
+          return false; // Let CM6 handle normal backspace
+        },
+      },
+    ]);
+
     const updateListener = EditorView.updateListener.of((update) => {
       if (update.docChanged) {
         onChangeRef.current(update.state.doc.toString());
@@ -86,6 +181,7 @@ export function BlockEditor({
     const state = EditorState.create({
       doc: initialText,
       extensions: [
+        blockKeymap, // Must come before defaultKeymap so our bindings take priority
         keymap.of([...defaultKeymap, ...historyKeymap]),
         history(),
         theme,
@@ -100,14 +196,11 @@ export function BlockEditor({
       parent: containerRef.current,
     });
 
-    // Delay focus to next frame so the mounting click doesn't cause an
-    // immediate blur cycle.
     requestAnimationFrame(() => {
       view.focus();
       view.dispatch({
         selection: { anchor: view.state.doc.length },
       });
-      // Arm blur handler after focus is stable
       setTimeout(() => {
         blurArmed = true;
       }, 100);

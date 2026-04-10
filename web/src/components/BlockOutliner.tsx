@@ -5,13 +5,6 @@ import { parseBlocks, extractWikiLinks } from "@/lib/block-parser";
 import type { ParsedBlock } from "@/lib/types/ParsedBlock";
 import { BlockEditor } from "./BlockEditor";
 
-/**
- * Renders a note's body as an indented block outliner.
- *
- * Each block shows as a bullet with display text. Tags render as pills,
- * wiki-links as clickable links. Clicking a block focuses it for editing
- * in a CM6 instance. On blur, the full body is reconstructed and saved.
- */
 export function BlockOutliner({
   noteId,
   body,
@@ -23,32 +16,143 @@ export function BlockOutliner({
   frontmatter: string;
   onContentChange?: (fullContent: string) => void;
 }) {
-  const blocks = useMemo(() => parseBlocks(noteId, body), [noteId, body]);
-  const [focusedBlockId, setFocusedBlockId] = useState<string | null>(null);
+  const initialBlocks = useMemo(() => parseBlocks(noteId, body), [noteId, body]);
+  const [blocks, setBlocks] = useState(initialBlocks);
+  const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const blocksRef = useRef(blocks);
+
   useEffect(() => {
     blocksRef.current = blocks;
   }, [blocks]);
 
-  const handleBlockChange = useCallback(
-    (blockId: string, newRawText: string) => {
-      const updated = blocksRef.current.map((b) =>
-        b.id === blockId ? { ...b, raw_text: newRawText } : b,
-      );
-      blocksRef.current = updated;
-
-      // Reconstruct body from blocks
+  const saveBlocks = useCallback(
+    (updated: ParsedBlock[]) => {
       const bodyLines = updated
         .map((b) => {
           const indent = "  ".repeat(b.indent_level);
-          return `${indent}- ${b.raw_text}`;
+          const contIndent = indent + "  "; // continuation lines get one extra level
+          const lines = b.raw_text.split("\n");
+          const first = `${indent}- ${lines[0]}`;
+          const rest = lines.slice(1).map((l) => `${contIndent}${l}`);
+          return [first, ...rest].join("\n");
         })
         .join("\n");
-
       onContentChange?.(`${frontmatter}${bodyLines}\n`);
     },
     [frontmatter, onContentChange],
   );
+
+  const handleBlockChange = useCallback(
+    (blockId: string, newRawText: string) => {
+      setBlocks((prev) => {
+        const updated = prev.map((b) =>
+          b.id === blockId ? { ...b, raw_text: newRawText, text: newRawText.split("\n")[0]?.replace(/#([A-Za-z0-9_/-]+)/g, "").trim() ?? "" } : b,
+        );
+        blocksRef.current = updated;
+        saveBlocks(updated);
+        return updated;
+      });
+    },
+    [saveBlocks],
+  );
+
+  const handleNavigate = useCallback(
+    (direction: "up" | "down") => {
+      setFocusedIndex((current) => {
+        if (current === null) return null;
+        const next =
+          direction === "up"
+            ? Math.max(0, current - 1)
+            : Math.min(blocksRef.current.length - 1, current + 1);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const handleEscape = useCallback(() => {
+    setFocusedIndex(null);
+  }, []);
+
+  const handleEnter = useCallback(
+    (atIndex: number) => {
+      setBlocks((prev) => {
+        const current = prev[atIndex];
+        if (!current) return prev;
+        const newBlock: ParsedBlock = {
+          id: `${noteId}:new-${Date.now()}`,
+          text: "",
+          raw_text: "",
+          tags: [],
+          properties: {},
+          indent_level: current.indent_level,
+          note_id: noteId,
+        };
+        const updated = [...prev.slice(0, atIndex + 1), newBlock, ...prev.slice(atIndex + 1)];
+        blocksRef.current = updated;
+        saveBlocks(updated);
+        return updated;
+      });
+      setFocusedIndex(atIndex + 1);
+    },
+    [noteId, saveBlocks],
+  );
+
+  const handleIndent = useCallback(
+    (atIndex: number, direction: "indent" | "outdent") => {
+      setBlocks((prev) => {
+        const block = prev[atIndex];
+        if (!block) return prev;
+        const newLevel =
+          direction === "indent"
+            ? block.indent_level + 1
+            : Math.max(0, block.indent_level - 1);
+        if (newLevel === block.indent_level) return prev;
+        const updated = prev.map((b, i) =>
+          i === atIndex ? { ...b, indent_level: newLevel } : b,
+        );
+        blocksRef.current = updated;
+        saveBlocks(updated);
+        return updated;
+      });
+    },
+    [saveBlocks],
+  );
+
+  const handleBackspace = useCallback(
+    (atIndex: number) => {
+      setBlocks((prev) => {
+        const block = prev[atIndex];
+        if (!block || block.raw_text !== "") return prev; // Only delete empty blocks
+        if (prev.length <= 1) return prev; // Don't delete the last block
+        const updated = prev.filter((_, i) => i !== atIndex);
+        blocksRef.current = updated;
+        saveBlocks(updated);
+        return updated;
+      });
+      setFocusedIndex((current) => {
+        if (current === null || current === 0) return current;
+        return current - 1;
+      });
+    },
+    [saveBlocks],
+  );
+
+  // Keyboard nav when no block is focused
+  const containerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el || focusedIndex !== null) return;
+
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        setFocusedIndex(0);
+      }
+    };
+    el.addEventListener("keydown", handler);
+    return () => el.removeEventListener("keydown", handler);
+  }, [focusedIndex]);
 
   if (blocks.length === 0) {
     return (
@@ -59,14 +163,23 @@ export function BlockOutliner({
   }
 
   return (
-    <div className="space-y-0.5">
-      {blocks.map((block) => (
+    <div ref={containerRef} className="space-y-0.5" tabIndex={-1}>
+      {blocks.map((block, index) => (
         <BlockItem
           key={block.id}
           block={block}
-          isFocused={focusedBlockId === block.id}
-          onFocus={() => setFocusedBlockId(block.id)}
-          onBlur={() => setFocusedBlockId(null)}
+          isFocused={focusedIndex === index}
+          onFocus={() => setFocusedIndex(index)}
+          onBlur={() => {
+            setFocusedIndex((current) =>
+              current === index ? null : current,
+            );
+          }}
+          onNavigate={handleNavigate}
+          onEscape={handleEscape}
+          onEnter={() => handleEnter(index)}
+          onIndent={(dir) => handleIndent(index, dir)}
+          onBackspaceEmpty={() => handleBackspace(index)}
           onChange={handleBlockChange}
         />
       ))}
@@ -79,19 +192,31 @@ function BlockItem({
   isFocused,
   onFocus,
   onBlur,
+  onNavigate,
+  onEscape,
+  onEnter,
+  onIndent,
+  onBackspaceEmpty,
   onChange,
 }: {
   block: ParsedBlock;
   isFocused: boolean;
   onFocus: () => void;
   onBlur: () => void;
+  onNavigate: (direction: "up" | "down") => void;
+  onEscape: () => void;
+  onEnter: () => void;
+  onIndent: (direction: "indent" | "outdent") => void;
+  onBackspaceEmpty: () => void;
   onChange: (blockId: string, newRawText: string) => void;
 }) {
   const indent = block.indent_level * 24;
 
   return (
     <div
-      className="group flex items-start gap-1.5 rounded-sm hover:bg-accent/30 transition-colors"
+      className={`group flex items-start gap-1.5 rounded-sm transition-colors ${
+        isFocused ? "bg-accent/20" : "hover:bg-accent/30"
+      }`}
       style={{ paddingLeft: `${indent}px` }}
     >
       <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/50" />
@@ -100,7 +225,12 @@ function BlockItem({
           <BlockEditor
             initialText={block.raw_text}
             onBlur={onBlur}
-            onChange={(text) => onChange(block.id, text)}
+            onChange={(text: string) => onChange(block.id, text)}
+            onNavigate={onNavigate}
+            onEscape={onEscape}
+            onEnter={onEnter}
+            onIndent={onIndent}
+            onBackspaceEmpty={onBackspaceEmpty}
           />
         ) : (
           <div
@@ -139,7 +269,6 @@ function BlockItem({
   );
 }
 
-/** Renders a block's display text with wiki-links as clickable links. */
 function BlockDisplayText({ block }: { block: ParsedBlock }) {
   const text = block.text;
   const links = extractWikiLinks(text);
@@ -173,7 +302,6 @@ function BlockDisplayText({ block }: { block: ParsedBlock }) {
   return <>{parts}</>;
 }
 
-/** Renders a property value, turning [[links]] into clickable links. */
 function PropertyValue({ value }: { value: string }) {
   const links = extractWikiLinks(value);
   if (links.length === 0) return <span>{value}</span>;

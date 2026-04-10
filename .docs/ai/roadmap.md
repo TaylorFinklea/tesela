@@ -4,95 +4,171 @@
 
 Keyboard-first note-taking system (org-mode successor). Rust backend + Next.js web frontend. Taylor's daily-driver tool — reliability matters more than features.
 
-**Core principle:** Database-first, files are export format.
+**Core principle:** Database-first, files are export format. Everything is a page.
 
 **Design quality bar:** Linear × Logseq × Zed — craft, restraint, keyboard-first, dark-mode default.
+
+## Product Vision
+
+Tesela is NOT just an outliner. The long-term vision is a personal knowledge operating system with:
+
+1. **Block outliner with Vim mode** — Zed-quality keybindings, per-block editing, block drill-in
+2. **Command palette (⌘K)** — Alfred/Raycast-style universal launcher: search pages, run commands, create notes, navigate
+3. **Slash commands (/)** — in-block quick actions: change block type, insert template, add property, convert to task
+4. **Space/Leader commands** — Neovim which-key-style hierarchical command menu from Normal mode: `Space f` → file commands, `Space s` → search, `Space g` → graph
+5. **Anytype-style type system** — types, relations, and properties are all pages. Tags are classes. Properties are global entities. Blocks inherit property schemas from their tags. Table/kanban/list views per type.
+6. **Sidebar + right panel** — Logseq DB layout: left sidebar (pages, recents, favorites, graph, tiles), right sidebar (backlinks, forward links, properties, pinned pages)
+7. **Graph view** — force-directed note relationship graph with click-to-navigate
+8. **Daily notes timeline** — scrollable tiles view with inline editing
+9. **Search** — full-text search with highlighting, match counts, live results
 
 ## Architecture
 
 - **Rust workspace** (`crates/`): tesela-core, tesela-cli, tesela-tui, tesela-mcp, tesela-server, tesela-plugins
-- **Web app** (`web/`): Next.js 16 App Router + React + TypeScript + CodeMirror 6 + `@replit/codemirror-vim` + shadcn/ui + Tailwind + TanStack Query + Zustand + cmdk + Lucide; connects to `tesela-server` on `localhost:7474`
-- **Type system**: Tags, Properties, and Values are pages with YAML frontmatter (Logseq DB model)
+- **Web app** (`web/`): Next.js 16 App Router + React + TypeScript + CodeMirror 6 + `@replit/codemirror-vim` + shadcn/ui + Tailwind + TanStack Query + Zustand + cmdk + Lucide
+- **Type system**: Tags, Properties, and Values are pages with YAML frontmatter (Logseq DB + AnyType hybrid — see `memory/project_property_system_vision.md` for deep architecture)
 
-## Rust backend — already done
+## Rust Backend — stable, not blocked
 
-This is the stable surface the web client builds on. No immediate feature work planned here beyond the backlog below.
+The server + core library are mature. No immediate feature work needed beyond backlog items.
 
 - Block outliner data model, wiki-link + tag + property parsing
 - SQLite/FTS5 indexer with incremental reindex
-- REST + WebSocket server (`tesela-server`) with ~95% coverage for UI needs
-- MCP server for AI integration (`search_notes`, `get_note`, `create_note`, `list_notes`, `get_backlinks`, `get_daily_note`)
-- CLI with `init`, `new`, `list`, `search`, `cat`, `edit`, `daily`, `links`, `export`, `backup`, `restore`, `reindex`, `install`, `uninstall`
-- Daily-backup system + restore command
-- LogSeq importer (`tesela import-logseq --source ~/logseq`)
-- TUI (`tesela-tui`) — Elm-style, kept for headless/SSH use
+- REST + WebSocket server (`tesela-server`) with ~95% API coverage
+- MCP server for AI integration
+- CLI, TUI, plugin system (Lua), backup/restore, LogSeq importer
 - Type registry with Tag/Property/Value pages and inheritance
 
 ---
 
-## Web Client — active work
+## Web Client — Phases
 
-Replaces the earlier native UI. See `/Users/tfinklea/.claude/plans/async-giggling-moth.md` for the full plan.
+### Phase 1: Core Outliner (CURRENT)
 
-**Shipping strategy:** Browser-first in dev (`pnpm --dir web dev` → `localhost:3000`), Tauri wrap later.
+Get to daily-driver outliner with Vim. This is the minimum before Taylor can use it.
 
-### M0 — Scaffold & Connect ✓ (2026-04-09)
+#### M0 — Scaffold & Connect ✓ (2026-04-09)
+- [x] ts-rs type bridge (11 Rust types → TS)
+- [x] Next.js 16 + shadcn/ui + CM6 + TanStack Query scaffold
+- [x] api-client.ts + ws-client.ts (exponential backoff reconnect)
+- [x] Boot screen with live WS status, notes list
 
-- [x] Added `ts-rs` v12 to `tesela-core` dev-deps; derived on `Note`/`NoteId`/`NoteMetadata`/`Attachment`/`SearchHit`/`Link`/`LinkType`/`GraphEdge`/`TypeDefinition`/`PropertyDef`/`ParsedBlock`. `cargo test -p tesela-core --lib export_bindings` writes 11 TS files to `web/src/lib/types/`.
-- [x] Scaffolded `web/` with Next.js 16.2.3, React 19, Tailwind v4, TypeScript, App Router, `src/` layout. shadcn/ui initialized with the base-nova preset on `@base-ui/react` (neutral base color, full dark-mode tokens).
-- [x] Installed CM6 core + lang-markdown + search, `@replit/codemirror-vim`, TanStack Query v5, Zustand v5, cmdk, Lucide.
-- [x] `web/src/lib/api-client.ts` — typed `ApiClient` with `health()` + `listNotes()`, extensible to the full route table.
-- [x] `web/src/lib/ws-client.ts` — exponential backoff reconnect (1s → 30s), `intentionallyStopped` latch, connection-id guard against stale receive loops.
-- [x] Boot screen at `/`: header with live/loading/offline status pill, notes list, error/empty/loading states.
-- [x] Verified via Chrome DevTools MCP — page loads, dark theme applies, api-client fires, WS reconnect loop backs off correctly.
+#### M1 — Block Outliner ✓ (2026-04-10)
+- [x] Block parser ported to TypeScript
+- [x] Indented block rendering with bullet dots
+- [x] Tag pills (#Task, #urgent) linking to tag pages
+- [x] Wiki-links ([[Person]]) as clickable navigation
+- [x] Property display (status:: doing) below blocks
+- [x] Click-to-edit with inline CM6, debounced PUT save
+- [ ] Arrow-key navigation between blocks (up/down moves focus)
+- [ ] Escape to exit block editor back to reading mode
 
-### M1 — Read-only outliner
+#### M2 — Block Operations
+- [ ] Enter creates a new sibling block below
+- [ ] Tab indents block (becomes child of previous sibling)
+- [ ] Shift-Tab outdents block
+- [ ] Backspace at start of empty block deletes it
+- [ ] Backspace at start of non-empty block merges with previous
+- [ ] Copy/paste blocks (preserving hierarchy)
 
-- [ ] Port or reuse `BlockParser` (decision: port to TS for zero round-trip, or call `tesela-core::block::parse_blocks` via a new `/notes/:id/blocks` API endpoint)
-- [ ] `/p/[id]` route that fetches a note and renders its blocks in an indented outliner layout
-- [ ] `BlockEditor` with one CM6 instance per block (read-only), wiki-link + tag-pill + property-line decorations, arrow-key navigation between blocks
+#### M3 — Vim Engine + Command Palette
+- [ ] Vim mode toggle (start in Normal mode)
+- [ ] Normal mode: `h`/`j`/`k`/`l`, `w`/`b`/`e`, `gg`/`G`, `0`/`$`
+- [ ] Operators: `d`/`c`/`y` with motions and text objects
+- [ ] Visual mode (character + line)
+- [ ] Dot-repeat, count prefix
+- [ ] `/` search with `n`/`N` navigation and highlighting
+- [ ] Cross-block `j`/`k` (exit current block's CM6, focus prev/next block)
+- [ ] **⌘K Command Palette** (cmdk) — search pages, run commands, create notes
+- [ ] Command palette actions: "New note", "Go to daily", "Search all notes", "Toggle sidebar"
 
-### M2 — Editing + save-back
+### Phase 2: Navigation & Views
 
-- [ ] CM6 editable, 500ms debounced `PUT /notes/{id}`
-- [ ] Enter/Tab/Shift-Tab block ops, WS reconcile without clobbering in-flight edits, undo/redo
+#### M4 — Sidebar
+- [ ] Left sidebar: Pages list, Recents, Favorites, Graph nav
+- [ ] Sidebar search/filter
+- [ ] Sidebar collapse toggle
+- [ ] Favorite/unfavorite pages
 
-### M3 — Vim engine
+#### M5 — Tag Page Views
+- [ ] Tag pages show table of all blocks/notes with that tag
+- [ ] Table view with sortable columns based on tag properties
+- [ ] Filter by property values
+- [ ] Kanban view (group by a select property like Status)
+- [ ] Property editor on tag pages (add/remove/reorder tag_properties)
 
-- [ ] Write a new TS Vim engine (`web/src/editor/vim-engine/`) with state machine, motions, operators, dot-repeat, visual mode
-- [ ] Cross-block motion routing layered over `@replit/codemirror-vim`
-- [ ] Vitest coverage for motions, operators, visual mode, dot-repeat
-- [ ] Command palette (cmdk); global shortcuts `⌘K`, `⌘J`, `⌘[`, `⌘]`
+#### M6 — Right Sidebar
+- [ ] Backlinks panel (grouped by source page with context)
+- [ ] Forward links panel
+- [ ] Properties panel for focused block
+- [ ] Pin any page to right sidebar (split view)
+- [ ] Table of contents / page structure
 
-### M4 — Sidebar & tag pages (table only)
+#### M7 — Daily Notes & Tiles
+- [ ] Daily notes timeline (virtualized scrolling)
+- [ ] Click to open, inline editing in timeline
+- [ ] "Go to today" shortcut
+- [ ] Daily note auto-creation
 
-- [ ] Left sidebar (pages, recents, favorites, search)
-- [ ] Tag page table view (TanStack Table) with filter/sort/property columns
-- [ ] Property editor
-- [ ] Right sidebar: backlinks, forward links, focused-block properties
+#### M8 — Graph & Search
+- [ ] Force-directed graph view (Cytoscape.js or similar)
+- [ ] Click node → navigate to note
+- [ ] Graph filters (by tag, by connection depth)
+- [ ] Global search modal with live results, highlighting, match counts
+- [ ] Search result snippets with context
 
-### M5 — Tiles & drill-in
+### Phase 3: Power Features
 
-- [ ] Daily notes timeline (virtualized)
-- [ ] Block zoom route `/p/[id]/zoom/[block]`
+#### M9 — Slash Commands
+- [ ] Type `/` at start of block → command menu appears
+- [ ] `/task` — convert block to Task (add #Task tag + properties)
+- [ ] `/heading` — convert to heading block
+- [ ] `/todo`, `/doing`, `/done` — set task status
+- [ ] `/template` — insert a template (from template pages)
+- [ ] `/property` — add an inline property to this block
+- [ ] `/date` — insert date picker
+- [ ] `/link` — search and insert wiki-link
+- [ ] Extensible — new slash commands via config or plugin pages
 
-### M6 — Graph & search UI
+#### M10 — Space/Leader Commands
+- [ ] In Normal mode, press Space → which-key-style popup appears
+- [ ] `Space f` → file: new, open, recent, favorites
+- [ ] `Space s` → search: full-text, tags, properties, backlinks
+- [ ] `Space g` → graph: open graph, focus current page in graph
+- [ ] `Space b` → buffer: switch between open pages, close page
+- [ ] `Space t` → tasks: list all tasks, filter by status
+- [ ] `Space d` → daily: go to today, yesterday, tomorrow
+- [ ] `Space p` → properties: edit current block/page properties
+- [ ] Hierarchical — each category opens a sub-menu with more options
+- [ ] Discoverable — key hints shown in popup, searchable
 
-- [ ] Cytoscape.js graph view
-- [ ] Search results page against `/search`
+#### M11 — Anytype-Style Types & Relations
+- [ ] **Property pages** — Status, Priority, Deadline are pages with `type: "Property"`, `value_type`, `choices`
+- [ ] **Global property registry** — when adding a property to a tag, search existing property pages first
+- [ ] **Tag inheritance** — `extends` chain (Task → Root Tag), child inherits parent's tag_properties
+- [ ] **Property configuration UI** — value type, default, choices, hide-by-default, position
+- [ ] **Property value types** — Text, Number, Date, DateTime, Checkbox, Select, URL, Node (link to another page)
+- [ ] **Node references** — property value links to another page (bidirectional)
+- [ ] **Type creation UI** — name, icon, properties, default layout (page/list/table/kanban)
+- [ ] **Queries / Sets** — saved filters by type + property values, displayed as table/list/kanban
+- [ ] **Collections** — manual groupings of pages (complement to query-based Sets)
 
-### M7 — Theme, settings, polish
+### Phase 4: Polish & Distribution
 
-- [ ] Settings page (theme, accent color, server URL)
+#### M12 — Theme & Settings
+- [ ] Settings page (theme, accent color, server URL, Vim toggle)
+- [ ] Dark/light/auto theme
+- [ ] Accent color picker
 - [ ] Empty/loading/error states for every view
-- [ ] **Linear/Logseq/Zed craft bar** — every screen held to this design standard before it ships
+- [ ] **Linear/Logseq/Zed craft bar** — every screen held to this design standard
 
-### M8 — (Optional) Tauri wrap
-
+#### M13 — (Optional) Tauri Wrap
 - [ ] Tauri shell serving `web/out/`
-- [ ] Menu bar, global hotkeys, `tesela web` CLI subcommand
+- [ ] Menu bar, global hotkeys
+- [ ] `tesela web` CLI subcommand
+- [ ] System tray with quick capture
 
-**Deferred past M8:** kanban, long-form writing mode, power menu grammar, query language, mobile/iOS, attachment upload, bulk ops.
+**Deferred past Phase 4:** Whiteboards (Excalidraw), long-form prose mode, mobile/iOS, multi-device sync (CRDTs), App Store distribution, plugin marketplace, collaborative editing.
 
 ---
 
@@ -100,37 +176,38 @@ Replaces the earlier native UI. See `/Users/tfinklea/.claude/plans/async-gigglin
 
 <!-- tier3_owner: claude -->
 
-Items that can be done alongside milestone work. Each is self-contained and well-scoped. Tiered by required model capability — see `~/CLAUDE.md` for the claim protocol.
-
 ### Haiku (mechanical, no judgment)
 
-- [ ] Replace one-off `regex::Regex::new(r"#[...]")` in `crates/tesela-server/src/routes/notes.rs:179` with the cached `INLINE_TAG_RE` from `crates/tesela-core/src/regex_cache.rs:21` (already the identical pattern)
-- [ ] Replace `std::env::current_dir().unwrap()` in `crates/tesela-cli/src/main.rs:196` with `?` + `.context("Failed to resolve current directory")` so `tesela init` surfaces a real error instead of panicking
-- [ ] Replace 2 `plist_file.to_str().unwrap()` calls in `crates/tesela-cli/src/main.rs:666,690` with `.context("plist path is not valid UTF-8")` — currently panics on non-UTF-8 HOME paths
-- [ ] Replace 3 `serde_json::to_string_pretty(&results).unwrap()` calls in `crates/tesela-mcp/src/tools.rs:150,236,260` with `.expect("tool response is always serializable")` so the reason for the unwrap is documented
-- [ ] Annotate 2 regex-capture unwraps in `crates/tesela-cli/src/import_logseq.rs:202,244` with `.expect("regex group 1 exists after successful match")`
-- [ ] Annotate `cap.get(0).unwrap()` in `crates/tesela-core/src/link.rs:38` with `.expect("capture group 0 always exists on match")`
-- [ ] Extract hardcoded server bind address `"127.0.0.1:7474"` in `crates/tesela-server/src/main.rs:154` into a `const DEFAULT_BIND_ADDR` at the top of the file
-- [ ] Extract hardcoded backup-retention magic numbers into named constants: `MAX_MANUAL_BACKUPS = 10` in `crates/tesela-cli/src/main.rs:421` and `MAX_DAILY_BACKUPS = 5` in `crates/tesela-server/src/main.rs:216`
+- [ ] Replace one-off `regex::Regex::new(r"#[...]")` in `crates/tesela-server/src/routes/notes.rs:179` with cached `INLINE_TAG_RE`
+- [ ] Replace `std::env::current_dir().unwrap()` in `crates/tesela-cli/src/main.rs:196` with `?` + `.context()`
+- [ ] Replace 2 `plist_file.to_str().unwrap()` calls in `crates/tesela-cli/src/main.rs:666,690` with `.context()`
+- [ ] Replace 3 `serde_json::to_string_pretty(&results).unwrap()` calls in `crates/tesela-mcp/src/tools.rs:150,236,260` with `.expect("reason")`
+- [ ] Annotate 2 regex-capture unwraps in `crates/tesela-cli/src/import_logseq.rs:202,244` with `.expect("reason")`
+- [ ] Annotate `cap.get(0).unwrap()` in `crates/tesela-core/src/link.rs:38` with `.expect("reason")`
+- [ ] Extract hardcoded server bind address `"127.0.0.1:7474"` into a named constant
+- [ ] Extract hardcoded backup-retention magic numbers into named constants
 
 ### Sonnet (some architectural judgment)
 
-- [ ] Split `crates/tesela-core/src/db/sqlite.rs` (1126 lines) into `db/migrations.rs`, `db/search.rs`, `db/links.rs`, `db/types.rs`
-- [ ] Split `crates/tesela-cli/src/main.rs` (826 lines, 14 `cmd_*` functions including the 140-line backup/restore pair at lines 378-575) into a `src/commands/` submodule — one file per command, re-exported from `commands/mod.rs`. Keep `main.rs` as a thin dispatcher.
-- [ ] Extract duplicated `copy_dir_recursive` + backup retention logic out of `crates/tesela-cli/src/main.rs:561` and `crates/tesela-server/src/main.rs:224` into a shared `tesela_core::backup` module. Also unify the inconsistent retention counts (10 manual backups in CLI vs 5 daily backups in server) into a single `BackupPolicy` struct so both binaries share the same semantics.
+- [ ] Split `crates/tesela-core/src/db/sqlite.rs` (1126 lines) into db/migrations.rs, db/search.rs, db/links.rs, db/types.rs
+- [ ] Split `crates/tesela-cli/src/main.rs` (826 lines) into `src/commands/` submodule
+- [ ] Extract duplicated backup logic into shared `tesela_core::backup` module
 
-### Opus (design skill, cross-cutting — owned by tier3_owner)
+### Opus (design skill, cross-cutting)
 
 - [ ] API endpoint integration tests (server routes)
+- [ ] New server endpoints needed for web client: `GET /notes/:id/blocks`, `POST /notes/:id/blocks` (block-level CRUD)
 
 ---
 
 ## Constraints
 
 - Design quality bar: Linear × Logseq × Zed — craft, restraint, keyboard-first, dark-mode default
-- No business logic in the web client — only in `tesela-core` traits (`NoteStore`, `SearchIndex`, `LinkGraph`)
+- No business logic in the web client — only in `tesela-core` traits
 - Database-first; files are export format
-- Icons: Lucide everywhere in the web client
+- Everything is a page — types, properties, tags are all note files
+- Icons: Lucide in web client
+- Command palette is the primary discovery surface for commands
 
 ## Non-Goals (for now)
 
@@ -139,3 +216,4 @@ Items that can be done alongside milestone work. Each is self-contained and well
 - App Store distribution
 - Plugin marketplace
 - Collaborative editing
+- Whiteboards / infinite canvas
