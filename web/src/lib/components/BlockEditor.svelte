@@ -3,7 +3,7 @@
   import { EditorState } from "@codemirror/state";
   import { EditorView, keymap } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-  import { vim } from "@replit/codemirror-vim";
+  import { vim, Vim, getCM } from "@replit/codemirror-vim";
 
   let {
     initialText,
@@ -14,6 +14,7 @@
     onenter: onEnter,
     onindent: onIndent,
     onbackspaceempty: onBackspaceEmpty,
+    startininsert: startInInsert,
   }: {
     initialText: string;
     onblur: () => void;
@@ -23,6 +24,7 @@
     onenter?: () => void;
     onindent?: (direction: "indent" | "outdent") => void;
     onbackspaceempty?: () => void;
+    startininsert?: boolean;
   } = $props();
 
   let container: HTMLDivElement;
@@ -99,8 +101,14 @@
     view = new EditorView({ state, parent: container });
 
     requestAnimationFrame(() => {
-      view?.focus();
-      view?.dispatch({ selection: { anchor: view.state.doc.length } });
+      if (!view) return;
+      view.focus();
+      view.dispatch({ selection: { anchor: view.state.doc.length } });
+      // Enter insert mode if requested (e.g., after Enter creates a new block)
+      if (startInInsert) {
+        const cm = getCM(view);
+        if (cm) Vim.handleKey(cm, "i", "mapping");
+      }
       setTimeout(() => { blurArmed = true; }, 100);
     });
 

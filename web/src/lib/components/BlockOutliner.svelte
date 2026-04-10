@@ -17,6 +17,7 @@
 
   let blocks = $state<ParsedBlock[]>(parseBlocks(noteId, body));
   let focusedIndex = $state<number | null>(null);
+  let startNewBlockInInsert = $state(false);
   let lastBodyFromServer = $state(body);
 
   // Only reset blocks when the body prop changes from an EXTERNAL source
@@ -74,6 +75,7 @@
     };
     blocks = [...blocks.slice(0, atIndex + 1), newBlock, ...blocks.slice(atIndex + 1)];
     saveBlocks(blocks);
+    startNewBlockInInsert = true;
     focusedIndex = atIndex + 1;
   }
 
@@ -111,6 +113,7 @@
         note_id: noteId,
       };
       blocks = [newBlock];
+      startNewBlockInInsert = true;
       focusedIndex = 0;
       // Don't save yet — let the user type first. Save happens on block change.
     }}
@@ -129,18 +132,19 @@
           {#if focusedIndex === index}
             <BlockEditor
               initialText={block.raw_text}
-              onblur={() => { if (focusedIndex === index) focusedIndex = null; }}
+              onblur={() => { if (focusedIndex === index) { focusedIndex = null; startNewBlockInInsert = false; } }}
               onchange={(text) => handleBlockChange(block.id, text)}
               onnavigate={handleNavigate}
-              onescape={() => (focusedIndex = null)}
+              onescape={() => { focusedIndex = null; startNewBlockInInsert = false; }}
               onenter={() => handleEnter(index)}
               onindent={(dir) => handleIndent(index, dir)}
               onbackspaceempty={() => handleBackspace(index)}
+              startininsert={startNewBlockInInsert}
             />
           {:else}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="text-sm leading-relaxed cursor-text min-h-[24px]" onclick={() => (focusedIndex = index)}>
+            <div class="text-sm leading-relaxed cursor-text min-h-[24px]" onclick={() => { startNewBlockInInsert = false; focusedIndex = index; }}>
               {@render blockDisplayText(block)}
               {#if block.tags.length > 0}
                 <span class="ml-2 inline-flex gap-1">
