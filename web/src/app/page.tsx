@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { api, ApiError } from "@/lib/api-client";
@@ -99,13 +100,18 @@ function NotesList({ notes }: { notes: Note[] }) {
   return (
     <ul className="divide-y divide-border">
       {notes.map((note) => (
-        <li key={note.id} className="px-6 py-3 hover:bg-accent/50">
-          <div className="flex items-baseline justify-between gap-4">
-            <span className="text-sm font-medium truncate">{note.title}</span>
-            <span className="text-xs text-muted-foreground font-mono shrink-0">
-              {formatTimestamp(note.modified_at)}
-            </span>
-          </div>
+        <li key={note.id}>
+          <Link
+            href={`/p/${encodeURIComponent(note.id)}`}
+            className="block px-6 py-3 hover:bg-accent/50"
+          >
+            <div className="flex items-baseline justify-between gap-4">
+              <span className="text-sm font-medium truncate">{note.title}</span>
+              <span className="text-xs text-muted-foreground font-mono shrink-0">
+                {formatTimestamp(note.modified_at)}
+              </span>
+            </div>
+          </Link>
         </li>
       ))}
     </ul>

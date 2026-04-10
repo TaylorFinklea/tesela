@@ -50,10 +50,33 @@ export class ApiClient {
     return this.get<Note[]>(`/notes${qs ? `?${qs}` : ""}`);
   }
 
+  /** Fetch a single note by ID. */
+  async getNote(id: string): Promise<Note> {
+    return this.get<Note>(`/notes/${encodeURIComponent(id)}`);
+  }
+
+  /** Update a note's full content (including frontmatter). */
+  async updateNote(id: string, content: string): Promise<Note> {
+    return this.put<Note>(`/notes/${encodeURIComponent(id)}`, { content });
+  }
+
   private async get<T>(path: string): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const res = await this.fetchImpl(url, {
       headers: { Accept: "application/json" },
+    });
+    if (!res.ok) {
+      throw new ApiError(res.status, await res.text(), url);
+    }
+    return (await res.json()) as T;
+  }
+
+  private async put<T>(path: string, body: unknown): Promise<T> {
+    const url = `${this.baseUrl}${path}`;
+    const res = await this.fetchImpl(url, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       throw new ApiError(res.status, await res.text(), url);
