@@ -7,6 +7,7 @@ import {
 import { useEffect, useState } from "react";
 
 import { wsClient } from "@/lib/ws-client";
+import { AppShell } from "@/components/AppShell";
 import { CommandPalette } from "@/components/CommandPalette";
 
 /**
@@ -36,7 +37,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      {children}
+      <AppShell>{children}</AppShell>
       <CommandPalette />
     </QueryClientProvider>
   );

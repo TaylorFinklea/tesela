@@ -33,9 +33,9 @@ export default function Home() {
   }, [notesQuery]);
 
   return (
-    <main className="flex-1 flex flex-col">
-      <header className="border-b border-border px-6 py-4 flex items-center justify-between">
-        <h1 className="text-sm font-medium tracking-tight">Tesela</h1>
+    <div className="flex-1 flex flex-col">
+      <header className="border-b border-border px-6 py-3 flex items-center justify-between">
+        <span className="text-xs text-muted-foreground">All Notes</span>
         <StatusPill wsConnected={wsConnected} loading={notesQuery.isLoading} />
       </header>
 
@@ -47,7 +47,7 @@ export default function Home() {
           <NotesList notes={notesQuery.data} />
         )}
       </section>
-    </main>
+    </div>
   );
 }
 
