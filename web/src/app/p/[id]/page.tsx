@@ -3,11 +3,33 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useRef } from "react";
+import { useCallback, useMemo, useRef } from "react";
 
 import { api, ApiError } from "@/lib/api-client";
-import { NoteEditor } from "@/components/NoteEditor";
+import { BlockOutliner } from "@/components/BlockOutliner";
 import type { Note } from "@/lib/types/Note";
+
+/**
+ * Splits a note's content into frontmatter + body.
+ * Returns { frontmatter: "---\n...\n---\n", body: "..." }
+ */
+function splitContent(content: string): { frontmatter: string; body: string } {
+  if (!content.startsWith("---")) {
+    return { frontmatter: "", body: content };
+  }
+  const endIdx = content.indexOf("---", 3);
+  if (endIdx === -1) {
+    return { frontmatter: "", body: content };
+  }
+  const fmEnd = endIdx + 3;
+  const afterFm = content.slice(fmEnd);
+  // Skip the newline right after ---
+  const bodyStart = afterFm.startsWith("\n") ? 1 : 0;
+  return {
+    frontmatter: content.slice(0, fmEnd) + "\n",
+    body: afterFm.slice(bodyStart),
+  };
+}
 
 export default function NotePage() {
   const { id } = useParams<{ id: string }>();
@@ -20,14 +42,17 @@ export default function NotePage() {
     enabled: !!id,
   });
 
+  const { frontmatter, body } = useMemo(
+    () => splitContent(noteQuery.data?.content ?? ""),
+    [noteQuery.data?.content],
+  );
+
   const handleContentChange = useCallback(
-    (content: string) => {
-      // Debounce saves at 500ms
+    (fullContent: string) => {
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(async () => {
         try {
-          const updated = await api.updateNote(id, content);
-          // Update the cache without refetching
+          const updated = await api.updateNote(id, fullContent);
           queryClient.setQueryData(["note", id], updated);
         } catch (e) {
           console.error("Save failed:", e);
@@ -68,19 +93,20 @@ export default function NotePage() {
 
   return (
     <div className="flex-1 flex flex-col">
-      <NoteHeader title={note.title} />
+      <NoteHeader title={note.title} tags={note.metadata.tags} />
       <div className="flex-1 overflow-y-auto px-8 py-4">
-        <NoteEditor
-          initialContent={note.content}
+        <BlockOutliner
+          noteId={note.id}
+          body={body}
+          frontmatter={frontmatter}
           onContentChange={handleContentChange}
-          className="min-h-full"
         />
       </div>
     </div>
   );
 }
 
-function NoteHeader({ title }: { title: string }) {
+function NoteHeader({ title, tags }: { title: string; tags?: string[] }) {
   return (
     <header className="border-b border-border px-6 py-4 flex items-center gap-4">
       <Link
@@ -90,6 +116,18 @@ function NoteHeader({ title }: { title: string }) {
         &larr; Notes
       </Link>
       <h1 className="text-sm font-medium tracking-tight truncate">{title}</h1>
+      {tags && tags.length > 0 && (
+        <div className="flex gap-1">
+          {tags.map((tag) => (
+            <span
+              key={tag}
+              className="text-xs px-1.5 py-0.5 rounded bg-accent text-accent-foreground"
+            >
+              {tag}
+            </span>
+          ))}
+        </div>
+      )}
     </header>
   );
 }
