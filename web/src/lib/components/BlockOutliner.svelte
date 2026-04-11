@@ -93,6 +93,50 @@
     saveBlocks(blocks);
     if (focusedIndex !== null && focusedIndex > 0) focusedIndex = focusedIndex - 1;
   }
+
+  // Block clipboard for yy/p
+  let blockClipboard = $state<ParsedBlock | null>(null);
+
+  function handleDeleteBlock(atIndex: number) {
+    if (blocks.length <= 1) return;
+    const prev = Math.max(0, atIndex - 1);
+    blocks = blocks.filter((_, i) => i !== atIndex);
+    saveBlocks(blocks);
+    focusedIndex = Math.min(prev, blocks.length - 1);
+  }
+
+  function handleYankBlock(atIndex: number) {
+    const block = blocks[atIndex];
+    if (block) blockClipboard = { ...block };
+  }
+
+  function handlePasteBlock(atIndex: number) {
+    if (!blockClipboard) return;
+    const pasted: ParsedBlock = {
+      ...blockClipboard,
+      id: `${noteId}:paste-${Date.now()}`,
+    };
+    blocks = [...blocks.slice(0, atIndex + 1), pasted, ...blocks.slice(atIndex + 1)];
+    saveBlocks(blocks);
+    focusedIndex = atIndex + 1;
+  }
+
+  function handleNewBlockAbove(atIndex: number) {
+    const current = blocks[atIndex];
+    if (!current) return;
+    const newBlock: ParsedBlock = {
+      id: `${noteId}:new-${Date.now()}`,
+      text: "",
+      raw_text: "",
+      tags: [],
+      properties: {},
+      indent_level: current.indent_level,
+      note_id: noteId,
+    };
+    blocks = [...blocks.slice(0, atIndex), newBlock, ...blocks.slice(atIndex)];
+    saveBlocks(blocks);
+    focusedIndex = atIndex;
+  }
 </script>
 
 {#if blocks.length === 0}
@@ -137,6 +181,11 @@
             onbackspaceempty={() => handleBackspace(index)}
             startininsert={focusedIndex === index && block.raw_text === ""}
             onleader={onLeader}
+            ondeleteblock={() => handleDeleteBlock(index)}
+            onyankblock={() => handleYankBlock(index)}
+            onpasteblock={() => handlePasteBlock(index)}
+            onnewblockbelow={() => handleEnter(index)}
+            onnewblockabove={() => handleNewBlockAbove(index)}
             focused={focusedIndex === index}
           />
         </div>

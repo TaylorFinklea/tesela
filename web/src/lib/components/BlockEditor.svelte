@@ -19,6 +19,11 @@
     startininsert: startInInsert,
     onslashcommand: onSlashCommand,
     onleader: onLeader,
+    ondeleteblock: onDeleteBlock,
+    onyankblock: onYankBlock,
+    onpasteblock: onPasteBlock,
+    onnewblockbelow: onNewBlockBelow,
+    onnewblockabove: onNewBlockAbove,
     focused,
   }: {
     initialText: string;
@@ -33,6 +38,11 @@
     startininsert?: boolean;
     onslashcommand?: (command: string) => void;
     onleader?: () => void;
+    ondeleteblock?: () => void;
+    onyankblock?: () => void;
+    onpasteblock?: () => void;
+    onnewblockbelow?: () => void;
+    onnewblockabove?: () => void;
     focused?: boolean;
   } = $props();
 
@@ -240,13 +250,46 @@
 
     view = new EditorView({ state, parent: container });
 
-    // Register Vim normal-mode Space → leader menu
+    // Register Vim normal-mode commands
     const cm = getCM(view);
-    if (cm && onLeader) {
-      Vim.defineAction("openLeaderMenu", () => {
-        onLeader?.();
-      });
-      Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
+    if (cm) {
+      // Space → leader menu
+      if (onLeader) {
+        Vim.defineAction("openLeaderMenu", () => { onLeader?.(); });
+        Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
+      }
+      // dd → delete block
+      if (onDeleteBlock) {
+        Vim.defineAction("deleteBlock", () => { onDeleteBlock?.(); });
+        Vim.mapCommand("dd", "action", "deleteBlock", {}, { context: "normal" });
+      }
+      // yy → yank block
+      if (onYankBlock) {
+        Vim.defineAction("yankBlock", () => { onYankBlock?.(); });
+        Vim.mapCommand("yy", "action", "yankBlock", {}, { context: "normal" });
+      }
+      // p → paste block below
+      if (onPasteBlock) {
+        Vim.defineAction("pasteBlock", () => { onPasteBlock?.(); });
+        Vim.mapCommand("p", "action", "pasteBlock", {}, { context: "normal" });
+      }
+      // o → new block below, enter insert
+      if (onNewBlockBelow) {
+        Vim.defineAction("newBlockBelow", () => { onNewBlockBelow?.(); });
+        Vim.mapCommand("o", "action", "newBlockBelow", {}, { context: "normal" });
+      }
+      // O → new block above, enter insert
+      if (onNewBlockAbove) {
+        Vim.defineAction("newBlockAbove", () => { onNewBlockAbove?.(); });
+        Vim.mapCommand("O", "action", "newBlockAbove", {}, { context: "normal" });
+      }
+      // >> → indent block
+      if (onIndent) {
+        Vim.defineAction("indentBlock", () => { onIndent?.("indent"); });
+        Vim.mapCommand(">>", "action", "indentBlock", {}, { context: "normal" });
+        Vim.defineAction("outdentBlock", () => { onIndent?.("outdent"); });
+        Vim.mapCommand("<<", "action", "outdentBlock", {}, { context: "normal" });
+      }
     }
 
     // If this block should start focused and in insert mode
