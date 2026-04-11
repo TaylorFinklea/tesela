@@ -24,8 +24,8 @@
   onMount(() => {
     connect();
 
-    // Space leader key — only when not in an input/editor
-    const handler = (e: KeyboardEvent) => {
+    // Space leader key — works outside editors AND from Vim normal mode (via custom event)
+    const spaceHandler = (e: KeyboardEvent) => {
       if (e.key === " " && !showLeaderMenu) {
         const target = e.target as HTMLElement;
         const isEditing =
@@ -39,8 +39,16 @@
         }
       }
     };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    // Listen for leader menu trigger from Vim normal mode inside CM6
+    const leaderHandler = () => {
+      showLeaderMenu = true;
+    };
+    document.addEventListener("keydown", spaceHandler);
+    document.addEventListener("tesela:leader", leaderHandler);
+    return () => {
+      document.removeEventListener("keydown", spaceHandler);
+      document.removeEventListener("tesela:leader", leaderHandler);
+    };
   });
 </script>
 

@@ -86,6 +86,7 @@
           body={split.body}
           frontmatter={split.frontmatter}
           onContentChange={handleContentChange}
+          onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
         />
 
         {#if isTagPage}

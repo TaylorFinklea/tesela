@@ -17,6 +17,7 @@
     onbackspaceempty: onBackspaceEmpty,
     startininsert: startInInsert,
     onslashcommand: onSlashCommand,
+    onleader: onLeader,
   }: {
     initialText: string;
     onblur: () => void;
@@ -28,6 +29,7 @@
     onbackspaceempty?: () => void;
     startininsert?: boolean;
     onslashcommand?: (command: string) => void;
+    onleader?: () => void;
   } = $props();
 
   let container: HTMLDivElement;
@@ -38,6 +40,7 @@
   let slashFilter = $state("");
   let slashPosition = $state({ x: 0, y: 0 });
   let slashMenuRef = $state<SlashMenu | null>(null);
+  let slashStartPos = $state<number>(-1); // cursor position where / was typed
 
   function getSlashCommands(): SlashCommand[] {
     return [
@@ -53,65 +56,52 @@
   }
 
   function applySlash(command: string) {
-    if (!view) return;
+    if (!view || slashStartPos < 0) return;
     const doc = view.state.doc.toString();
-    // Remove the /command text from the doc
-    const slashStart = doc.indexOf("/");
-    if (slashStart === -1) return;
+    const cursorPos = view.state.selection.main.head;
+    // Remove everything from slash start to cursor (the /command text)
+    const before = doc.slice(0, slashStartPos);
+    const after = doc.slice(cursorPos);
 
-    let replacement = "";
+    let insert = "";
     switch (command) {
       case "task":
-        replacement = doc.slice(0, slashStart).trimEnd() + (slashStart > 0 ? " " : "") + "#Task";
+        insert = before.trimEnd() + (before.length > 0 ? " " : "") + "#Task" + after;
         break;
       case "todo":
-        replacement = doc.slice(0, slashStart).trimEnd() + "\nstatus:: todo";
+        insert = before.trimEnd() + "\nstatus:: todo" + after;
         break;
       case "doing":
-        replacement = doc.slice(0, slashStart).trimEnd() + "\nstatus:: doing";
+        insert = before.trimEnd() + "\nstatus:: doing" + after;
         break;
       case "done":
-        replacement = doc.slice(0, slashStart).trimEnd() + "\nstatus:: done";
+        insert = before.trimEnd() + "\nstatus:: done" + after;
         break;
       case "heading":
-        replacement = "# " + doc.slice(0, slashStart).trim();
+        insert = "# " + before.trim() + after;
         break;
       case "property":
-        replacement = doc.slice(0, slashStart).trimEnd() + "\nkey:: value";
+        insert = before.trimEnd() + "\nkey:: value" + after;
         break;
       case "link":
-        replacement = doc.slice(0, slashStart) + "[[]]";
+        insert = before + "[[]]" + after;
         break;
       case "date": {
         const today = new Date().toISOString().slice(0, 10);
-        replacement = doc.slice(0, slashStart) + `[[${today}]]`;
+        insert = before + `[[${today}]]` + after;
         break;
       }
     }
 
     view.dispatch({
-      changes: { from: 0, to: doc.length, insert: replacement },
-      selection: { anchor: replacement.length },
+      changes: { from: 0, to: doc.length, insert },
+      selection: { anchor: insert.length - after.length },
     });
-    onChange(replacement);
+    onChange(insert);
     showSlashMenu = false;
     slashFilter = "";
+    slashStartPos = -1;
     onSlashCommand?.(command);
-  }
-
-  function checkForSlash(doc: string) {
-    // Check if text starts with / or has / after whitespace
-    const match = doc.match(/^\//);
-    if (match && view) {
-      showSlashMenu = true;
-      slashFilter = doc.slice(1); // everything after /
-      // Position the menu below the editor
-      const rect = container.getBoundingClientRect();
-      slashPosition = { x: rect.left, y: rect.bottom + 4 };
-    } else {
-      showSlashMenu = false;
-      slashFilter = "";
-    }
   }
 
   onMount(() => {
@@ -134,11 +124,39 @@
       blur: () => { if (blurArmed && !showSlashMenu) onBlur(); return false; },
     });
 
+    // Detect / typed in Insert mode via input handler
+    const slashInputHandler = EditorView.inputHandler.of((v, from, _to, inserted) => {
+      if (inserted === "/") {
+        // Check if this / is at the start of text or after whitespace
+        const docBefore = v.state.doc.sliceString(0, from);
+        const isAtStart = docBefore.trim() === "";
+        const isAfterSpace = docBefore.endsWith(" ") || docBefore.endsWith("\n");
+        if (isAtStart || isAfterSpace) {
+          // Schedule slash menu to show after the / is inserted
+          setTimeout(() => {
+            if (!view) return;
+            slashStartPos = from;
+            showSlashMenu = true;
+            slashFilter = "";
+            // Position at cursor
+            const coords = view.coordsAtPos(from + 1);
+            if (coords) {
+              slashPosition = { x: coords.left, y: coords.bottom + 4 };
+            } else {
+              const rect = container.getBoundingClientRect();
+              slashPosition = { x: rect.left, y: rect.bottom + 4 };
+            }
+          }, 0);
+        }
+      }
+      return false; // Don't prevent the input
+    });
+
     const blockKeymap = keymap.of([
       {
         key: "Escape",
         run: () => {
-          if (showSlashMenu) { showSlashMenu = false; slashFilter = ""; return true; }
+          if (showSlashMenu) { showSlashMenu = false; slashFilter = ""; slashStartPos = -1; return true; }
           onEscape?.();
           return true;
         },
@@ -187,7 +205,18 @@
       if (update.docChanged) {
         const doc = update.state.doc.toString();
         onChange(doc);
-        checkForSlash(doc);
+        // Update slash filter if menu is open
+        if (showSlashMenu && slashStartPos >= 0) {
+          const cursorPos = update.state.selection.main.head;
+          if (cursorPos <= slashStartPos) {
+            // Cursor moved before slash — close menu
+            showSlashMenu = false;
+            slashFilter = "";
+            slashStartPos = -1;
+          } else {
+            slashFilter = doc.slice(slashStartPos + 1, cursorPos);
+          }
+        }
       }
     });
 
@@ -199,6 +228,7 @@
         keymap.of([...defaultKeymap, ...historyKeymap]),
         history(),
         theme,
+        slashInputHandler,
         updateListener,
         blurHandler,
         EditorView.lineWrapping,
@@ -207,13 +237,22 @@
 
     view = new EditorView({ state, parent: container });
 
+    // Register Vim normal-mode Space → leader menu
+    const cm = getCM(view);
+    if (cm && onLeader) {
+      Vim.defineAction("openLeaderMenu", () => {
+        onLeader?.();
+      });
+      Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
+    }
+
     requestAnimationFrame(() => {
       if (!view) return;
       view.focus();
       view.dispatch({ selection: { anchor: view.state.doc.length } });
       if (startInInsert) {
-        const cm = getCM(view);
-        if (cm) Vim.handleKey(cm, "i", "mapping");
+        const cm2 = getCM(view);
+        if (cm2) Vim.handleKey(cm2, "i", "mapping");
       }
       setTimeout(() => { blurArmed = true; }, 100);
     });
@@ -234,7 +273,7 @@
       commands={getSlashCommands()}
       filter={slashFilter}
       position={slashPosition}
-      onclose={() => { showSlashMenu = false; slashFilter = ""; }}
+      onclose={() => { showSlashMenu = false; slashFilter = ""; slashStartPos = -1; }}
     />
   {/if}
 </div>

@@ -8,11 +8,13 @@
     body,
     frontmatter,
     onContentChange,
+    onleader: onLeader,
   }: {
     noteId: string;
     body: string;
     frontmatter: string;
     onContentChange?: (fullContent: string) => void;
+    onleader?: () => void;
   } = $props();
 
   let blocks = $state<ParsedBlock[]>(parseBlocks(noteId, body));
@@ -140,6 +142,7 @@
               onindent={(dir) => handleIndent(index, dir)}
               onbackspaceempty={() => handleBackspace(index)}
               startininsert={startNewBlockInInsert}
+              onleader={onLeader}
             />
           {:else}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
