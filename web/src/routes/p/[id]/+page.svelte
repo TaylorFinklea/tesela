@@ -7,13 +7,15 @@
   import RightSidebar from "$lib/components/RightSidebar.svelte";
   import type { Note } from "$lib/types/Note";
   import { addRecent } from "$lib/stores/recents.svelte";
+  import { untrack } from "svelte";
 
   const queryClient = useQueryClient();
   const noteId = $derived(page.params.id ?? "");
 
-  // Track recently viewed notes
+  // Track recently viewed notes (untrack the write to prevent infinite loop)
   $effect(() => {
-    if (noteId) addRecent(noteId);
+    const id = noteId;
+    if (id) untrack(() => addRecent(id));
   });
 
   const noteQuery = createQuery(() => ({

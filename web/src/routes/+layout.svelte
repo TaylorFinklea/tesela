@@ -47,11 +47,6 @@
     const leaderHandler = () => {
       showLeaderMenu = true;
     };
-    // Track page navigations for [ / ] history
-    $effect(() => {
-      pushNavigation(page.url.pathname);
-    });
-
     // Global shortcuts (outside editors): 1, [, ], /
     const panelHandler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
