@@ -2,9 +2,13 @@
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
   import { onMount } from "svelte";
   import { connect } from "$lib/ws-client.svelte";
+  import { goto } from "$app/navigation";
+  import { page } from "$app/state";
+  import { pushNavigation, goBack, goForward } from "$lib/stores/navigation.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import LeaderMenu from "$lib/components/LeaderMenu.svelte";
+  import StatusBar from "$lib/components/StatusBar.svelte";
   import "../app.css";
 
   let { children } = $props();
@@ -43,7 +47,12 @@
     const leaderHandler = () => {
       showLeaderMenu = true;
     };
-    // 1/2/3 panel toggles (outside editors)
+    // Track page navigations for [ / ] history
+    $effect(() => {
+      pushNavigation(page.url.pathname);
+    });
+
+    // Global shortcuts (outside editors): 1, [, ], /
     const panelHandler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       const isEditing =
@@ -54,6 +63,21 @@
       if (isEditing) return;
 
       if (e.key === "1") { e.preventDefault(); sidebarCollapsed = !sidebarCollapsed; }
+      if (e.key === "[") {
+        e.preventDefault();
+        const prev = goBack();
+        if (prev) goto(prev);
+      }
+      if (e.key === "]") {
+        e.preventDefault();
+        const next = goForward();
+        if (next) goto(next);
+      }
+      if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault();
+        // Dispatch ⌘K to open command palette
+        document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+      }
     };
 
     document.addEventListener("keydown", spaceHandler);
@@ -72,11 +96,14 @@
 </svelte:head>
 
 <QueryClientProvider client={queryClient}>
-  <div class="flex h-full dark">
-    <Sidebar collapsed={sidebarCollapsed} onToggle={() => (sidebarCollapsed = !sidebarCollapsed)} />
-    <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
-      {@render children()}
-    </main>
+  <div class="flex flex-col h-full dark">
+    <div class="flex flex-1 min-h-0">
+      <Sidebar collapsed={sidebarCollapsed} onToggle={() => (sidebarCollapsed = !sidebarCollapsed)} />
+      <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {@render children()}
+      </main>
+    </div>
+    <StatusBar />
   </div>
   <CommandPalette />
   {#if showLeaderMenu}

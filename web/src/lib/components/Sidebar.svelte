@@ -162,8 +162,14 @@
     </nav>
 
     <!-- Footer -->
-    <div class="border-t border-border px-3 py-2 shrink-0">
-      <div class="text-[10px] text-muted-foreground/40">{notes.length} notes · j/k to navigate</div>
+    <div class="border-t border-border px-2 py-1.5 shrink-0 space-y-px">
+      <a
+        href="/settings"
+        class="flex items-center gap-2 rounded-md px-2 py-1 text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-colors {currentPath === '/settings' ? 'bg-accent text-accent-foreground' : ''}"
+      >
+        <span class="w-4 text-center">⚙</span> Settings
+      </a>
+      <div class="text-[10px] text-muted-foreground/30 px-2 py-0.5">{notes.length} notes · j/k nav</div>
     </div>
   </div>
 {/if}

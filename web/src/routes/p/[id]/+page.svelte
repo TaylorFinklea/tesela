@@ -6,9 +6,15 @@
   import TagTable from "$lib/components/TagTable.svelte";
   import RightSidebar from "$lib/components/RightSidebar.svelte";
   import type { Note } from "$lib/types/Note";
+  import { addRecent } from "$lib/stores/recents.svelte";
 
   const queryClient = useQueryClient();
   const noteId = $derived(page.params.id ?? "");
+
+  // Track recently viewed notes
+  $effect(() => {
+    if (noteId) addRecent(noteId);
+  });
 
   const noteQuery = createQuery(() => ({
     queryKey: ["note", noteId] as const,
