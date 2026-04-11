@@ -35,9 +35,15 @@
       />
     </div>
 
-    <div class="px-1.5 py-1">
-      <a href="/daily" class="flex items-center gap-2 rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors">
+    <div class="px-1.5 py-1 space-y-0.5">
+      <a href="/daily" class="flex items-center gap-2 rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors {currentPath.startsWith('/p/20') ? 'bg-accent text-accent-foreground' : ''}">
         <span>☀</span> Today
+      </a>
+      <a href="/timeline" class="flex items-center gap-2 rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors {currentPath === '/timeline' ? 'bg-accent text-accent-foreground' : ''}">
+        <span>📅</span> Timeline
+      </a>
+      <a href="/graph" class="flex items-center gap-2 rounded px-1.5 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors {currentPath === '/graph' ? 'bg-accent text-accent-foreground' : ''}">
+        <span>◉</span> Graph
       </a>
     </div>
 
