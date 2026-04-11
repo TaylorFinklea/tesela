@@ -68,6 +68,19 @@
     }
   }
 
+  async function createTypeAndNavigate(title: string) {
+    try {
+      const content = `---\ntitle: "${title}"\ntype: "Tag"\nextends: "Root Tag"\ntag_properties: []\ntags: []\n---\n- ${title} type page.\n`;
+      const note = await api.createNote(title, content);
+      queryClient.invalidateQueries({ queryKey: ["notes"] });
+      open = false;
+      search = "";
+      goto(`/p/${encodeURIComponent(note.id)}`);
+    } catch (e) {
+      console.error("Failed to create type:", e);
+    }
+  }
+
   async function goToDaily() {
     try {
       const note = await api.getDailyNote();
@@ -88,6 +101,7 @@
   type Item =
     | { type: "action"; label: string; icon: string; action: () => void }
     | { type: "create"; label: string }
+    | { type: "create-type"; label: string }
     | { type: "note"; label: string; path: string; tags: string[] }
     | { type: "search-hit"; label: string; snippet: string; path: string };
 
@@ -102,9 +116,10 @@
       items.push({ type: "action", label: "Go to daily note", icon: "☀", action: () => goToDaily() });
     }
 
-    // Create option (if search doesn't match an existing title)
+    // Create options (if search doesn't match an existing title)
     if (search.length > 0 && !exactMatch) {
       items.push({ type: "create", label: `Create "${search}"` });
+      items.push({ type: "create-type", label: `Create Type "${search}"` });
     }
 
     // Title-matched notes
@@ -128,6 +143,8 @@
       item.action();
     } else if (item.type === "create") {
       createAndNavigate(search);
+    } else if (item.type === "create-type") {
+      createTypeAndNavigate(search);
     } else if (item.type === "note" || item.type === "search-hit") {
       navigateTo(item.path);
     }
@@ -197,6 +214,9 @@
                   <span>{item.label}</span>
                 {:else if item.type === "create"}
                   <span class="text-muted-foreground mr-1">+</span>
+                  <span>{item.label}</span>
+                {:else if item.type === "create-type"}
+                  <span class="text-muted-foreground mr-1">◆</span>
                   <span>{item.label}</span>
                 {:else if item.type === "note"}
                   <span class="truncate">{item.label}</span>
