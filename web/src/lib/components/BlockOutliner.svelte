@@ -1,6 +1,9 @@
 <script lang="ts">
+  import { createQuery } from "@tanstack/svelte-query";
   import { parseBlocks } from "$lib/block-parser";
+  import { api } from "$lib/api-client";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
+  import type { Note } from "$lib/types/Note";
   import BlockEditor from "./BlockEditor.svelte";
 
   let {
@@ -16,6 +19,19 @@
     onContentChange?: (fullContent: string) => void;
     onleader?: () => void;
   } = $props();
+
+  // Fetch notes list for autocomplete
+  const notesForAutocomplete = createQuery(() => ({
+    queryKey: ["notes", { limit: 200 }] as const,
+    queryFn: () => api.listNotes({ limit: 200 }),
+  }));
+  const notesList = $derived(
+    ((notesForAutocomplete.data ?? []) as Note[]).map((n) => ({
+      id: n.id,
+      title: n.title,
+      tags: n.metadata.tags,
+    })),
+  );
 
   let blocks = $state<ParsedBlock[]>(parseBlocks(noteId, body));
   let focusedIndex = $state<number | null>(null);
@@ -164,9 +180,17 @@
   <div class="space-y-0">
     {#each blocks as block, index (block.id)}
       <div
-        class="group flex items-start transition-colors {focusedIndex === index ? 'border-l-2 border-primary/40' : 'border-l-2 border-transparent'}"
+        class="group flex items-start transition-colors relative {focusedIndex === index ? 'border-l-2 border-primary/30' : 'border-l-2 border-transparent'}"
         style="padding-left: {block.indent_level * 20}px"
       >
+        {#if block.indent_level > 0}
+          {#each { length: block.indent_level } as _, lvl}
+            <span
+              class="absolute top-0 bottom-0 w-px bg-border/30"
+              style="left: {lvl * 20 + 10}px"
+            ></span>
+          {/each}
+        {/if}
         <div class="flex-1 min-w-0 py-px pl-2">
           <BlockEditor
             initialText={block.raw_text}
@@ -186,6 +210,7 @@
             onnewblockbelow={() => handleEnter(index)}
             onnewblockabove={() => handleNewBlockAbove(index)}
             focused={focusedIndex === index}
+            noteslist={notesList}
           />
         </div>
       </div>

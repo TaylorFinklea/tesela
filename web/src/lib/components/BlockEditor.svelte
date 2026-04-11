@@ -5,6 +5,7 @@
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim, Vim, getCM } from "@replit/codemirror-vim";
   import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
+  import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
 
   let {
     initialText,
@@ -25,6 +26,7 @@
     onnewblockbelow: onNewBlockBelow,
     onnewblockabove: onNewBlockAbove,
     focused,
+    noteslist: notesList,
   }: {
     initialText: string;
     onblur: () => void;
@@ -44,6 +46,7 @@
     onnewblockbelow?: () => void;
     onnewblockabove?: () => void;
     focused?: boolean;
+    noteslist?: Array<{ id: string; title: string; tags: string[] }>;
   } = $props();
 
   let container: HTMLDivElement;
@@ -55,6 +58,46 @@
   let slashPosition = $state({ x: 0, y: 0 });
   let slashMenuRef = $state<SlashMenu | null>(null);
   let slashStartPos = $state<number>(-1);
+
+  // Autocomplete state (for # tags and [[ wiki-links)
+  let showAutocomplete = $state(false);
+  let autocompleteFilter = $state("");
+  let autocompletePosition = $state({ x: 0, y: 0 });
+  let autocompleteRef = $state<AutocompleteMenu | null>(null);
+  let autocompleteStartPos = $state<number>(-1);
+  let autocompleteType = $state<"tag" | "link">("tag");
+
+  const autocompleteItems: AutocompleteItem[] = $derived(
+    (notesList ?? []).map((n) => ({
+      id: n.id,
+      label: n.title,
+      secondary: n.tags.length > 0 ? n.tags[0] : undefined,
+    })),
+  );
+
+  function applyAutocomplete(item: AutocompleteItem) {
+    if (!view || autocompleteStartPos < 0) return;
+    const doc = view.state.doc.toString();
+    const cursorPos = view.state.selection.main.head;
+    const before = doc.slice(0, autocompleteStartPos);
+    const after = doc.slice(cursorPos);
+
+    let insert: string;
+    if (autocompleteType === "tag") {
+      insert = before + "#" + item.label + after;
+    } else {
+      insert = before + "[[" + item.label + "]]" + after;
+    }
+
+    view.dispatch({
+      changes: { from: 0, to: doc.length, insert },
+      selection: { anchor: insert.length - after.length },
+    });
+    onChange(insert);
+    showAutocomplete = false;
+    autocompleteFilter = "";
+    autocompleteStartPos = -1;
+  }
 
   function getSlashCommands(): SlashCommand[] {
     return [
@@ -143,7 +186,8 @@
       blur: () => { if (!showSlashMenu) onBlur(); return false; },
     });
 
-    const slashInputHandler = EditorView.inputHandler.of((v, from, _to, inserted) => {
+    const inputHandler = EditorView.inputHandler.of((v, from, _to, inserted) => {
+      // Slash commands: / at start or after whitespace
       if (inserted === "/") {
         const docBefore = v.state.doc.sliceString(0, from);
         const isAtStart = docBefore.trim() === "";
@@ -164,6 +208,45 @@
           }, 0);
         }
       }
+
+      // Tag autocomplete: # after space or at start
+      if (inserted === "#") {
+        const docBefore = v.state.doc.sliceString(0, from);
+        const isAtStart = docBefore.trim() === "";
+        const isAfterSpace = docBefore.endsWith(" ") || docBefore.endsWith("\n");
+        if (isAtStart || isAfterSpace) {
+          setTimeout(() => {
+            if (!view) return;
+            autocompleteStartPos = from;
+            autocompleteType = "tag";
+            showAutocomplete = true;
+            autocompleteFilter = "";
+            const coords = view.coordsAtPos(from + 1);
+            autocompletePosition = coords
+              ? { x: coords.left, y: coords.bottom + 4 }
+              : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
+          }, 0);
+        }
+      }
+
+      // Wiki-link autocomplete: [[ (detect second [)
+      if (inserted === "[") {
+        const docBefore = v.state.doc.sliceString(0, from);
+        if (docBefore.endsWith("[")) {
+          setTimeout(() => {
+            if (!view) return;
+            autocompleteStartPos = from - 1; // position of first [
+            autocompleteType = "link";
+            showAutocomplete = true;
+            autocompleteFilter = "";
+            const coords = view.coordsAtPos(from + 1);
+            autocompletePosition = coords
+              ? { x: coords.left, y: coords.bottom + 4 }
+              : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
+          }, 0);
+        }
+      }
+
       return false;
     });
 
@@ -172,6 +255,7 @@
         key: "Escape",
         run: () => {
           if (showSlashMenu) { showSlashMenu = false; slashFilter = ""; slashStartPos = -1; return true; }
+          if (showAutocomplete) { showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1; return true; }
           onEscape?.();
           return true;
         },
@@ -180,6 +264,7 @@
         key: "ArrowUp",
         run: (v) => {
           if (showSlashMenu) return slashMenuRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowUp" })) ?? false;
+          if (showAutocomplete) return autocompleteRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowUp" })) ?? false;
           const line = v.state.doc.lineAt(v.state.selection.main.head);
           if (line.number === 1) { onNavigate?.("up"); return true; }
           return false;
@@ -189,6 +274,7 @@
         key: "ArrowDown",
         run: (v) => {
           if (showSlashMenu) return slashMenuRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowDown" })) ?? false;
+          if (showAutocomplete) return autocompleteRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowDown" })) ?? false;
           const line = v.state.doc.lineAt(v.state.selection.main.head);
           if (line.number === v.state.doc.lines) { onNavigate?.("down"); return true; }
           return false;
@@ -199,6 +285,10 @@
         run: () => {
           if (showSlashMenu) {
             slashMenuRef?.handleKeydown(new KeyboardEvent("keydown", { key: "Enter" }));
+            return true;
+          }
+          if (showAutocomplete) {
+            autocompleteRef?.handleKeydown(new KeyboardEvent("keydown", { key: "Enter" }));
             return true;
           }
           if (onEnter) { onEnter(); return true; }
@@ -220,14 +310,22 @@
       if (update.docChanged) {
         const doc = update.state.doc.toString();
         onChange(doc);
+        const cursorPos = update.state.selection.main.head;
+        // Update slash filter
         if (showSlashMenu && slashStartPos >= 0) {
-          const cursorPos = update.state.selection.main.head;
           if (cursorPos <= slashStartPos) {
-            showSlashMenu = false;
-            slashFilter = "";
-            slashStartPos = -1;
+            showSlashMenu = false; slashFilter = ""; slashStartPos = -1;
           } else {
             slashFilter = doc.slice(slashStartPos + 1, cursorPos);
+          }
+        }
+        // Update autocomplete filter
+        if (showAutocomplete && autocompleteStartPos >= 0) {
+          const offset = autocompleteType === "tag" ? 1 : 2; // skip # or [[
+          if (cursorPos <= autocompleteStartPos + offset) {
+            showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1;
+          } else {
+            autocompleteFilter = doc.slice(autocompleteStartPos + offset, cursorPos);
           }
         }
       }
@@ -241,7 +339,7 @@
         keymap.of([...defaultKeymap, ...historyKeymap]),
         history(),
         theme,
-        slashInputHandler,
+        inputHandler,
         updateListener,
         focusBlurHandler,
         EditorView.lineWrapping,
@@ -322,6 +420,17 @@
       filter={slashFilter}
       position={slashPosition}
       onclose={() => { showSlashMenu = false; slashFilter = ""; slashStartPos = -1; }}
+    />
+  {/if}
+
+  {#if showAutocomplete}
+    <AutocompleteMenu
+      bind:this={autocompleteRef}
+      items={autocompleteItems}
+      filter={autocompleteFilter}
+      position={autocompletePosition}
+      onselect={(item) => applyAutocomplete(item)}
+      onclose={() => { showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1; }}
     />
   {/if}
 </div>

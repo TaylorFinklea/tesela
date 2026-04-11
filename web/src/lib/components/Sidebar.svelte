@@ -3,6 +3,7 @@
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { api } from "$lib/api-client";
+  import { getRecents } from "$lib/stores/recents.svelte";
   import type { Note } from "$lib/types/Note";
 
   let { collapsed, onToggle }: { collapsed: boolean; onToggle: () => void } = $props();
@@ -18,6 +19,11 @@
     filter ? notes.filter((n: Note) => n.title.toLowerCase().includes(filter.toLowerCase())) : notes,
   );
   const currentPath = $derived(page.url.pathname);
+  const recentNotes: Note[] = $derived(
+    getRecents().slice(0, 5)
+      .map((id: string) => notes.find((n: Note) => n.id === id))
+      .filter((n): n is Note => n !== undefined),
+  );
 
   // Quick nav items that appear before pages
   const quickNav = [
@@ -134,6 +140,25 @@
           </a>
         {/each}
       </div>
+
+      <!-- Recents section -->
+      {#if recentNotes.length > 0}
+        {#if recentNotes.length > 0}
+          <div class="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-widest px-2 py-1.5">
+            Recent
+          </div>
+          {#each recentNotes as note (note.id)}
+            {@const isActive = currentPath === `/p/${encodeURIComponent(note.id)}`}
+            <a
+              href="/p/{encodeURIComponent(note.id)}"
+              class="block rounded-md px-2 py-[5px] text-[12px] truncate transition-colors
+                {isActive ? 'bg-accent/60 text-accent-foreground font-medium' : 'text-muted-foreground/70 hover:text-foreground hover:bg-accent/60'}"
+            >
+              {note.title}
+            </a>
+          {/each}
+        {/if}
+      {/if}
 
       <!-- Pages section -->
       <div class="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-widest px-2 py-1.5">
