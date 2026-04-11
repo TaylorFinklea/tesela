@@ -351,6 +351,41 @@
     // Register Vim normal-mode commands
     const cm = getCM(view);
     if (cm) {
+      // j/k — cross-block navigation at boundaries
+      if (onNavigate) {
+        Vim.defineAction("moveDownOrNextBlock", () => {
+          const v = view;
+          if (!v) return;
+          const state = v.state;
+          const line = state.doc.lineAt(state.selection.main.head);
+          if (line.number === state.doc.lines) {
+            onNavigate("down");
+          } else {
+            // Move cursor down one line
+            const nextLine = state.doc.line(line.number + 1);
+            const col = state.selection.main.head - line.from;
+            v.dispatch({ selection: { anchor: Math.min(nextLine.from + col, nextLine.to) } });
+          }
+        });
+        Vim.mapCommand("j", "action", "moveDownOrNextBlock", {}, { context: "normal" });
+
+        Vim.defineAction("moveUpOrPrevBlock", () => {
+          const v = view;
+          if (!v) return;
+          const state = v.state;
+          const line = state.doc.lineAt(state.selection.main.head);
+          if (line.number === 1) {
+            onNavigate("up");
+          } else {
+            // Move cursor up one line
+            const prevLine = state.doc.line(line.number - 1);
+            const col = state.selection.main.head - line.from;
+            v.dispatch({ selection: { anchor: Math.min(prevLine.from + col, prevLine.to) } });
+          }
+        });
+        Vim.mapCommand("k", "action", "moveUpOrPrevBlock", {}, { context: "normal" });
+      }
+
       // Space → leader menu
       if (onLeader) {
         Vim.defineAction("openLeaderMenu", () => { onLeader?.(); });
