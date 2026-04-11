@@ -4,6 +4,7 @@
   import { api, ApiError } from "$lib/api-client";
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
   import TagTable from "$lib/components/TagTable.svelte";
+  import TagPropertyConfig from "$lib/components/TagPropertyConfig.svelte";
   import RightSidebar from "$lib/components/RightSidebar.svelte";
   import type { Note } from "$lib/types/Note";
   import { addRecent } from "$lib/stores/recents.svelte";
@@ -98,11 +99,15 @@
         />
 
         {#if isTagPage}
-          <div class="mt-6 pt-4 border-t border-border">
-            <h2 class="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-3">
-              #{note.title} Blocks
-            </h2>
-            <TagTable tagName={note.title} />
+          <div class="mt-6 pt-4 border-t border-border space-y-6">
+            <TagPropertyConfig tagName={note.title} noteId={note.id} />
+
+            <div>
+              <h2 class="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">
+                #{note.title} Blocks
+              </h2>
+              <TagTable tagName={note.title} />
+            </div>
           </div>
         {/if}
       {/if}
