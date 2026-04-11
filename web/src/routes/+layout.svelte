@@ -4,6 +4,7 @@
   import { connect } from "$lib/ws-client.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
+  import LeaderMenu from "$lib/components/LeaderMenu.svelte";
   import "../app.css";
 
   let { children } = $props();
@@ -18,9 +19,28 @@
   });
 
   let sidebarCollapsed = $state(false);
+  let showLeaderMenu = $state(false);
 
   onMount(() => {
     connect();
+
+    // Space leader key — only when not in an input/editor
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === " " && !showLeaderMenu) {
+        const target = e.target as HTMLElement;
+        const isEditing =
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable ||
+          target.closest(".cm-editor");
+        if (!isEditing) {
+          e.preventDefault();
+          showLeaderMenu = true;
+        }
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
   });
 </script>
 
@@ -36,4 +56,7 @@
     </main>
   </div>
   <CommandPalette />
+  {#if showLeaderMenu}
+    <LeaderMenu onclose={() => (showLeaderMenu = false)} />
+  {/if}
 </QueryClientProvider>
