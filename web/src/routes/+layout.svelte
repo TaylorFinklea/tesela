@@ -43,10 +43,25 @@
     const leaderHandler = () => {
       showLeaderMenu = true;
     };
+    // 1/2/3 panel toggles (outside editors)
+    const panelHandler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      const isEditing =
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable ||
+        target.closest(".cm-editor");
+      if (isEditing) return;
+
+      if (e.key === "1") { e.preventDefault(); sidebarCollapsed = !sidebarCollapsed; }
+    };
+
     document.addEventListener("keydown", spaceHandler);
+    document.addEventListener("keydown", panelHandler);
     document.addEventListener("tesela:leader", leaderHandler);
     return () => {
       document.removeEventListener("keydown", spaceHandler);
+      document.removeEventListener("keydown", panelHandler);
       document.removeEventListener("tesela:leader", leaderHandler);
     };
   });
