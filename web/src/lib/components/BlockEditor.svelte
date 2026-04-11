@@ -9,6 +9,7 @@
   let {
     initialText,
     onblur: onBlur,
+    onfocus: onFocus,
     onchange: onChange,
     onnavigate: onNavigate,
     onescape: onEscape,
@@ -18,9 +19,11 @@
     startininsert: startInInsert,
     onslashcommand: onSlashCommand,
     onleader: onLeader,
+    focused,
   }: {
     initialText: string;
     onblur: () => void;
+    onfocus?: () => void;
     onchange: (text: string) => void;
     onnavigate?: (direction: "up" | "down") => void;
     onescape?: () => void;
@@ -30,6 +33,7 @@
     startininsert?: boolean;
     onslashcommand?: (command: string) => void;
     onleader?: () => void;
+    focused?: boolean;
   } = $props();
 
   let container: HTMLDivElement;
@@ -40,7 +44,7 @@
   let slashFilter = $state("");
   let slashPosition = $state({ x: 0, y: 0 });
   let slashMenuRef = $state<SlashMenu | null>(null);
-  let slashStartPos = $state<number>(-1); // cursor position where / was typed
+  let slashStartPos = $state<number>(-1);
 
   function getSlashCommands(): SlashCommand[] {
     return [
@@ -59,7 +63,6 @@
     if (!view || slashStartPos < 0) return;
     const doc = view.state.doc.toString();
     const cursorPos = view.state.selection.main.head;
-    // Remove everything from slash start to cursor (the /command text)
     const before = doc.slice(0, slashStartPos);
     const after = doc.slice(cursorPos);
 
@@ -104,9 +107,14 @@
     onSlashCommand?.(command);
   }
 
-  onMount(() => {
-    let blurArmed = false;
+  // When parent changes focused prop, programmatically focus/blur CM6
+  $effect(() => {
+    if (focused && view && !view.hasFocus) {
+      view.focus();
+    }
+  });
 
+  onMount(() => {
     const theme = EditorView.theme(
       {
         "&": { backgroundColor: "transparent", color: "var(--foreground)", fontSize: "14px", fontFamily: "inherit" },
@@ -120,25 +128,22 @@
       { dark: true },
     );
 
-    const blurHandler = EditorView.domEventHandlers({
-      blur: () => { if (blurArmed && !showSlashMenu) onBlur(); return false; },
+    const focusBlurHandler = EditorView.domEventHandlers({
+      focus: () => { onFocus?.(); return false; },
+      blur: () => { if (!showSlashMenu) onBlur(); return false; },
     });
 
-    // Detect / typed in Insert mode via input handler
     const slashInputHandler = EditorView.inputHandler.of((v, from, _to, inserted) => {
       if (inserted === "/") {
-        // Check if this / is at the start of text or after whitespace
         const docBefore = v.state.doc.sliceString(0, from);
         const isAtStart = docBefore.trim() === "";
         const isAfterSpace = docBefore.endsWith(" ") || docBefore.endsWith("\n");
         if (isAtStart || isAfterSpace) {
-          // Schedule slash menu to show after the / is inserted
           setTimeout(() => {
             if (!view) return;
             slashStartPos = from;
             showSlashMenu = true;
             slashFilter = "";
-            // Position at cursor
             const coords = view.coordsAtPos(from + 1);
             if (coords) {
               slashPosition = { x: coords.left, y: coords.bottom + 4 };
@@ -149,7 +154,7 @@
           }, 0);
         }
       }
-      return false; // Don't prevent the input
+      return false;
     });
 
     const blockKeymap = keymap.of([
@@ -205,11 +210,9 @@
       if (update.docChanged) {
         const doc = update.state.doc.toString();
         onChange(doc);
-        // Update slash filter if menu is open
         if (showSlashMenu && slashStartPos >= 0) {
           const cursorPos = update.state.selection.main.head;
           if (cursorPos <= slashStartPos) {
-            // Cursor moved before slash — close menu
             showSlashMenu = false;
             slashFilter = "";
             slashStartPos = -1;
@@ -230,7 +233,7 @@
         theme,
         slashInputHandler,
         updateListener,
-        blurHandler,
+        focusBlurHandler,
         EditorView.lineWrapping,
       ],
     });
@@ -246,16 +249,18 @@
       Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
     }
 
-    requestAnimationFrame(() => {
-      if (!view) return;
-      view.focus();
-      view.dispatch({ selection: { anchor: view.state.doc.length } });
-      if (startInInsert) {
-        const cm2 = getCM(view);
-        if (cm2) Vim.handleKey(cm2, "i", "mapping");
-      }
-      setTimeout(() => { blurArmed = true; }, 100);
-    });
+    // If this block should start focused and in insert mode
+    if (focused) {
+      requestAnimationFrame(() => {
+        if (!view) return;
+        view.focus();
+        view.dispatch({ selection: { anchor: view.state.doc.length } });
+        if (startInInsert) {
+          const cm2 = getCM(view);
+          if (cm2) Vim.handleKey(cm2, "i", "mapping");
+        }
+      });
+    }
 
     return () => {
       view?.destroy();
@@ -265,7 +270,7 @@
 </script>
 
 <div class="relative">
-  <div bind:this={container} class="text-sm leading-relaxed min-h-[24px] ring-1 ring-ring/20 rounded-sm px-1 -mx-1"></div>
+  <div bind:this={container} class="text-sm leading-relaxed min-h-[24px]"></div>
 
   {#if showSlashMenu}
     <SlashMenu
