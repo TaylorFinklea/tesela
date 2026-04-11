@@ -43,14 +43,14 @@
 </script>
 
 {#if collapsed}
-  <div class="w-10 border-l border-border flex flex-col items-center py-3">
-    <button onclick={onToggle} class="text-muted-foreground hover:text-foreground text-xs" title="Show right panel">◀</button>
+  <div class="w-10 bg-surface border-l border-border flex flex-col items-center pt-3">
+    <button onclick={onToggle} class="text-muted-foreground hover:text-foreground text-[10px] p-1.5 rounded hover:bg-accent transition-colors" title="Show right panel">◀</button>
   </div>
 {:else}
-  <div class="w-64 border-l border-border flex flex-col shrink-0 overflow-y-auto">
-    <div class="flex items-center justify-between px-3 py-3 border-b border-border">
-      <span class="text-xs font-medium text-muted-foreground uppercase tracking-wider">Links</span>
-      <button onclick={onToggle} class="text-muted-foreground hover:text-foreground text-xs" title="Hide right panel">▶</button>
+  <div class="w-56 bg-surface border-l border-border flex flex-col shrink-0 overflow-y-auto">
+    <div class="flex items-center justify-between px-3 h-11 border-b border-border shrink-0">
+      <span class="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-widest">Links</span>
+      <button onclick={onToggle} class="text-muted-foreground hover:text-foreground text-[10px] p-1 rounded hover:bg-accent transition-colors" title="Hide right panel">▶</button>
     </div>
 
     <!-- Backlinks -->

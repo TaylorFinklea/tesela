@@ -161,14 +161,13 @@
     Click to start writing…
   </div>
 {:else}
-  <div class="space-y-0.5">
+  <div class="space-y-0">
     {#each blocks as block, index (block.id)}
       <div
-        class="group flex items-start gap-1.5 rounded-sm transition-colors {focusedIndex === index ? 'bg-accent/10' : ''}"
-        style="padding-left: {block.indent_level * 24}px"
+        class="group flex items-start transition-colors {focusedIndex === index ? 'border-l-2 border-primary/40' : 'border-l-2 border-transparent'}"
+        style="padding-left: {block.indent_level * 20}px"
       >
-        <span class="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/40"></span>
-        <div class="flex-1 min-w-0 py-0.5">
+        <div class="flex-1 min-w-0 py-px pl-2">
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => { if (focusedIndex === index) focusedIndex = null; }}

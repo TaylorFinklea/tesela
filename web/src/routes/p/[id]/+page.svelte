@@ -50,26 +50,26 @@
 
 <div class="flex-1 flex min-h-0">
   <div class="flex-1 flex flex-col min-w-0">
-    <header class="border-b border-border px-6 py-4 flex items-center gap-4">
-      <a href="/" class="text-xs text-muted-foreground hover:text-foreground">&larr; Notes</a>
+    <header class="border-b border-border px-5 h-11 flex items-center gap-3 shrink-0">
+      <a href="/" class="text-[11px] text-muted-foreground/60 hover:text-foreground transition-colors">&larr;</a>
       {#if note}
-        <h1 class="text-sm font-medium tracking-tight truncate">{note.title}</h1>
+        <h1 class="text-[13px] font-semibold tracking-tight truncate">{note.title}</h1>
         {#if note.metadata.tags.length > 0}
           <div class="flex gap-1">
             {#each note.metadata.tags as tag}
-              <span class="text-xs px-1.5 py-0.5 rounded bg-accent text-accent-foreground">{tag}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded-md bg-accent text-muted-foreground font-medium">{tag}</span>
             {/each}
           </div>
         {/if}
         {#if isTagPage}
-          <span class="text-xs px-1.5 py-0.5 rounded bg-primary/10 text-primary">Tag</span>
+          <span class="text-[10px] px-1.5 py-0.5 rounded-md bg-primary/8 text-primary/80 font-medium">Tag</span>
         {/if}
       {:else}
-        <h1 class="text-sm font-medium tracking-tight">Loading…</h1>
+        <h1 class="text-[13px] font-semibold tracking-tight text-muted-foreground">Loading…</h1>
       {/if}
     </header>
 
-    <div class="flex-1 overflow-y-auto px-8 py-4">
+    <div class="flex-1 overflow-y-auto px-6 py-4">
       {#if noteQuery.isLoading}
         <div class="text-sm text-muted-foreground">Loading…</div>
       {:else if noteQuery.isError}
