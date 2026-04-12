@@ -180,18 +180,18 @@
   <div class="space-y-0">
     {#each blocks as block, index (block.id)}
       <div
-        class="group flex items-start transition-colors relative {focusedIndex === index ? 'border-l-2 border-primary/30' : 'border-l-2 border-transparent'}"
-        style="padding-left: {block.indent_level * 20}px"
+        class="group flex items-start transition-all relative {focusedIndex === index ? 'border-l-[3px] border-primary/50' : 'border-l-[3px] border-transparent'}"
+        style="padding-left: {block.indent_level * 22}px"
       >
         {#if block.indent_level > 0}
           {#each { length: block.indent_level } as _, lvl}
             <span
-              class="absolute top-0 bottom-0 w-px bg-border/30"
-              style="left: {lvl * 20 + 10}px"
+              class="absolute top-0 bottom-0 w-px bg-muted-foreground/8"
+              style="left: {lvl * 22 + 11}px"
             ></span>
           {/each}
         {/if}
-        <div class="flex-1 min-w-0 py-px pl-2">
+        <div class="flex-1 min-w-0 py-0.5 pl-2.5">
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => { if (focusedIndex === index) focusedIndex = null; }}

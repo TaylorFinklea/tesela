@@ -10,8 +10,8 @@
   let filter = $state("");
   let selectedIndex = $state(-1);
   let sidebarFocused = $state(false);
-  let filterInput: HTMLInputElement;
-  let sidebarEl: HTMLElement;
+  let filterInput = $state<HTMLInputElement | undefined>(undefined);
+  let sidebarEl = $state<HTMLElement | undefined>(undefined);
 
   const notesQuery = createQuery(() => ({ queryKey: ["notes", { limit: 200 }] as const, queryFn: () => api.listNotes({ limit: 200 }) }));
   const notes = $derived(notesQuery.data ?? [] as Note[]);
@@ -25,14 +25,12 @@
       .filter((n): n is Note => n !== undefined),
   );
 
-  // Quick nav items that appear before pages
   const quickNav = [
-    { path: "/daily", label: "Today", icon: "☀" },
-    { path: "/timeline", label: "Timeline", icon: "📅" },
-    { path: "/graph", label: "Graph", icon: "◉" },
+    { path: "/daily", label: "Today", icon: "☀", color: "text-amber-400" },
+    { path: "/timeline", label: "Timeline", icon: "📅", color: "text-blue-400" },
+    { path: "/graph", label: "Graph", icon: "◉", color: "text-violet-400" },
   ];
 
-  // All navigable items for j/k
   const allItems = $derived([
     ...quickNav.map((q) => ({ path: q.path, label: q.label })),
     ...filtered.map((n: Note) => ({ path: `/p/${encodeURIComponent(n.id)}`, label: n.title })),
@@ -40,132 +38,93 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (!sidebarFocused) return;
-
-    if (e.key === "j" || e.key === "ArrowDown") {
-      e.preventDefault();
-      selectedIndex = Math.min(allItems.length - 1, selectedIndex + 1);
-    } else if (e.key === "k" || e.key === "ArrowUp") {
-      e.preventDefault();
-      selectedIndex = Math.max(0, selectedIndex - 1);
-    } else if (e.key === "Enter" && allItems[selectedIndex]) {
-      e.preventDefault();
-      goto(allItems[selectedIndex].path);
-    } else if (e.key === "/") {
-      e.preventDefault();
-      filterInput?.focus();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      if (filter) {
-        filter = "";
-      } else {
-        sidebarFocused = false;
-        sidebarEl?.blur();
-      }
-    }
+    if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); selectedIndex = Math.min(allItems.length - 1, selectedIndex + 1); }
+    else if (e.key === "k" || e.key === "ArrowUp") { e.preventDefault(); selectedIndex = Math.max(0, selectedIndex - 1); }
+    else if (e.key === "Enter" && allItems[selectedIndex]) { e.preventDefault(); goto(allItems[selectedIndex].path); }
+    else if (e.key === "/") { e.preventDefault(); filterInput?.focus(); }
+    else if (e.key === "Escape") { e.preventDefault(); if (filter) filter = ""; else { sidebarFocused = false; sidebarEl?.blur(); } }
   }
 
   function handleFilterKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      filter = "";
-      filterInput?.blur();
-      sidebarEl?.focus();
-    } else if (e.key === "ArrowDown") {
-      e.preventDefault();
-      filterInput?.blur();
-      sidebarEl?.focus();
-      selectedIndex = 0;
-    } else if (e.key === "Enter" && allItems.length > 0) {
-      e.preventDefault();
-      goto(allItems[0].path);
-      filter = "";
-    }
+    if (e.key === "Escape") { e.preventDefault(); filter = ""; filterInput?.blur(); sidebarEl?.focus(); }
+    else if (e.key === "ArrowDown") { e.preventDefault(); filterInput?.blur(); sidebarEl?.focus(); selectedIndex = 0; }
+    else if (e.key === "Enter" && allItems.length > 0) { e.preventDefault(); goto(allItems[0].path); filter = ""; }
   }
 </script>
 
 {#if collapsed}
-  <div class="w-10 bg-surface border-r border-border flex flex-col items-center pt-3">
-    <button onclick={onToggle} class="text-muted-foreground hover:text-foreground text-[10px] p-1.5 rounded hover:bg-accent transition-colors" title="Expand sidebar (1)">
-      ▶
-    </button>
+  <div class="w-10 bg-surface border-r border-border flex flex-col items-center pt-4">
+    <button onclick={onToggle} class="text-muted-foreground hover:text-primary text-[10px] p-1.5 rounded-md hover:bg-muted transition-all" title="Expand (1)">▶</button>
   </div>
 {:else}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <div
     bind:this={sidebarEl}
-    class="w-56 bg-surface border-r border-border flex flex-col shrink-0 select-none outline-none"
+    class="w-[220px] bg-surface border-r border-border flex flex-col shrink-0 select-none outline-none"
     tabindex="0"
     onfocus={() => { sidebarFocused = true; if (selectedIndex < 0) selectedIndex = 0; }}
     onblur={() => { sidebarFocused = false; }}
     onkeydown={handleKeydown}
   >
-    <!-- Header -->
-    <div class="flex items-center justify-between px-3 h-11 border-b border-border shrink-0">
-      <a href="/" class="text-[13px] font-semibold tracking-tight text-foreground/90">Tesela</a>
-      <button onclick={onToggle} class="text-muted-foreground hover:text-foreground text-[10px] p-1 rounded hover:bg-accent transition-colors" title="Collapse sidebar (1)">
-        ◀
-      </button>
+    <!-- Brand -->
+    <div class="flex items-center justify-between px-4 h-[52px] shrink-0">
+      <a href="/" class="text-[15px] font-bold tracking-tight text-foreground/90">Tesela</a>
+      <button onclick={onToggle} class="text-muted-foreground hover:text-primary text-[10px] p-1 rounded-md hover:bg-muted transition-all" title="Collapse (1)">◀</button>
     </div>
 
     <!-- Search -->
-    <div class="px-2 py-2 shrink-0">
+    <div class="px-3 pb-3 shrink-0">
       <input
         bind:this={filterInput}
         type="text"
-        placeholder="Filter… (/)"
+        placeholder="Search... ⌘K"
         bind:value={filter}
         onkeydown={handleFilterKeydown}
         onfocus={() => { sidebarFocused = true; }}
-        class="w-full text-[12px] bg-muted/50 rounded-md px-2.5 py-1.5 text-foreground/90 placeholder:text-muted-foreground/60 outline-none border border-transparent focus:border-ring/30 transition-colors"
+        class="w-full text-[12px] bg-muted/40 rounded-lg px-3 py-[7px] text-foreground/80 placeholder:text-muted-foreground/40 outline-none border border-border/50 focus:border-primary/30 focus:bg-muted/60 transition-all"
       />
     </div>
 
-    <!-- Quick nav + pages -->
-    <nav class="flex-1 overflow-y-auto px-2 pb-2">
-      <!-- Quick nav -->
-      <div class="pb-1 space-y-px">
-        {#each quickNav as item, qi}
-          {@const itemIndex = qi}
-          {@const isSelected = sidebarFocused && selectedIndex === itemIndex}
-          {@const isActive = currentPath === item.path || (item.path === "/daily" && currentPath.startsWith("/p/20"))}
-          <a
-            href={item.path}
-            class="flex items-center gap-2 rounded-md px-2 py-1 text-[12px] transition-colors
-              {isSelected ? 'bg-accent text-accent-foreground ring-1 ring-ring/20' : ''}
-              {isActive && !isSelected ? 'bg-accent/60 text-accent-foreground' : ''}
-              {!isActive && !isSelected ? 'text-muted-foreground hover:text-foreground hover:bg-accent/60' : ''}"
-          >
-            <span class="w-4 text-center text-[11px]">{item.icon}</span>
-            <span>{item.label}</span>
-          </a>
-        {/each}
-      </div>
+    <!-- Quick nav -->
+    <div class="px-2 pb-2 space-y-px shrink-0">
+      {#each quickNav as item, qi}
+        {@const itemIndex = qi}
+        {@const isSelected = sidebarFocused && selectedIndex === itemIndex}
+        {@const isActive = currentPath === item.path || (item.path === "/daily" && currentPath.startsWith("/p/20"))}
+        <a
+          href={item.path}
+          class="flex items-center gap-2.5 rounded-lg px-3 py-[7px] text-[12px] transition-all
+            {isSelected ? 'bg-primary/10 text-primary ring-1 ring-primary/20' : ''}
+            {isActive && !isSelected ? 'bg-muted/60 text-foreground/90' : ''}
+            {!isActive && !isSelected ? 'text-muted-foreground hover:text-foreground/80 hover:bg-muted/40' : ''}"
+        >
+          <span class="w-4 text-center text-[12px] {item.color}">{item.icon}</span>
+          <span>{item.label}</span>
+        </a>
+      {/each}
+    </div>
 
-      <!-- Recents section -->
-      {#if recentNotes.length > 0}
-        {#if recentNotes.length > 0}
-          <div class="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-widest px-2 py-1.5">
-            Recent
-          </div>
-          {#each recentNotes as note (note.id)}
-            {@const isActive = currentPath === `/p/${encodeURIComponent(note.id)}`}
-            <a
-              href="/p/{encodeURIComponent(note.id)}"
-              class="block rounded-md px-2 py-[5px] text-[12px] truncate transition-colors
-                {isActive ? 'bg-accent/60 text-accent-foreground font-medium' : 'text-muted-foreground/70 hover:text-foreground hover:bg-accent/60'}"
-            >
-              {note.title}
-            </a>
-          {/each}
-        {/if}
+    <!-- Scrollable area: recents + pages -->
+    <nav class="flex-1 overflow-y-auto px-2 pb-2">
+      <!-- Recents -->
+      {#if recentNotes.length > 0 && !filter}
+        <div class="text-[10px] font-semibold text-muted-foreground/35 uppercase tracking-[0.12em] px-3 pt-2 pb-1.5">Recent</div>
+        {#each recentNotes as note (note.id)}
+          {@const isActive = currentPath === `/p/${encodeURIComponent(note.id)}`}
+          <a
+            href="/p/{encodeURIComponent(note.id)}"
+            class="block rounded-lg px-3 py-[5px] text-[12px] truncate transition-all
+              {isActive ? 'bg-muted/60 text-foreground/90 font-medium' : 'text-muted-foreground/50 hover:text-foreground/70 hover:bg-muted/30'}"
+          >{note.title}</a>
+        {/each}
       {/if}
 
-      <!-- Pages section -->
-      <div class="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-widest px-2 py-1.5">
-        Pages
+      <!-- Pages -->
+      <div class="text-[10px] font-semibold text-muted-foreground/35 uppercase tracking-[0.12em] px-3 pt-3 pb-1.5">
+        {filter ? `Results` : `Pages`}
       </div>
       {#if notesQuery.isLoading}
-        <div class="px-2 py-1 text-[12px] text-muted-foreground/50">Loading…</div>
+        <div class="px-3 py-1 text-[12px] text-muted-foreground/30">Loading...</div>
       {/if}
       {#each filtered as note, ni (note.id)}
         {@const itemIndex = quickNav.length + ni}
@@ -173,28 +132,26 @@
         {@const isActive = currentPath === `/p/${encodeURIComponent(note.id)}`}
         <a
           href="/p/{encodeURIComponent(note.id)}"
-          class="block rounded-md px-2 py-[5px] text-[12px] truncate transition-colors
-            {isSelected ? 'bg-accent text-accent-foreground ring-1 ring-ring/20 font-medium' : ''}
-            {isActive && !isSelected ? 'bg-accent/60 text-accent-foreground font-medium' : ''}
-            {!isActive && !isSelected ? 'text-muted-foreground hover:text-foreground hover:bg-accent/60' : ''}"
-        >
-          {note.title}
-        </a>
+          class="block rounded-lg px-3 py-[5px] text-[12px] truncate transition-all
+            {isSelected ? 'bg-primary/10 text-primary ring-1 ring-primary/15 font-medium' : ''}
+            {isActive && !isSelected ? 'bg-muted/60 text-foreground/90 font-medium' : ''}
+            {!isActive && !isSelected ? 'text-muted-foreground/60 hover:text-foreground/80 hover:bg-muted/30' : ''}"
+        >{note.title}</a>
       {/each}
       {#if filtered.length === 0 && !notesQuery.isLoading}
-        <div class="px-2 py-1 text-[12px] text-muted-foreground/50">{filter ? "No matches" : "No notes"}</div>
+        <div class="px-3 py-1 text-[12px] text-muted-foreground/30">{filter ? "No matches" : "No notes"}</div>
       {/if}
     </nav>
 
     <!-- Footer -->
-    <div class="border-t border-border px-2 py-1.5 shrink-0 space-y-px">
+    <div class="border-t border-border/50 px-2 py-1.5 shrink-0 space-y-px">
       <a
         href="/settings"
-        class="flex items-center gap-2 rounded-md px-2 py-1 text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-accent/60 transition-colors {currentPath === '/settings' ? 'bg-accent text-accent-foreground' : ''}"
+        class="flex items-center gap-2.5 rounded-lg px-3 py-[6px] text-[11px] text-muted-foreground/35 hover:text-foreground/70 hover:bg-muted/30 transition-all {currentPath === '/settings' ? 'bg-muted/50 text-foreground/70' : ''}"
       >
         <span class="w-4 text-center">⚙</span> Settings
       </a>
-      <div class="text-[10px] text-muted-foreground/30 px-2 py-0.5">{notes.length} notes · j/k nav</div>
+      <div class="text-[10px] text-muted-foreground/20 px-3 py-0.5">{notes.length} notes</div>
     </div>
   </div>
 {/if}

@@ -59,19 +59,19 @@
 
 <div class="flex-1 flex min-h-0">
   <div class="flex-1 flex flex-col min-w-0">
-    <header class="border-b border-border px-5 h-11 flex items-center gap-3 shrink-0">
-      <a href="/" class="text-[11px] text-muted-foreground/60 hover:text-foreground transition-colors">&larr;</a>
+    <header class="border-b border-border px-6 h-[52px] flex items-center gap-3 shrink-0">
+      <a href="/" class="text-[12px] text-muted-foreground/40 hover:text-primary transition-colors">&larr;</a>
       {#if note}
-        <h1 class="text-[13px] font-semibold tracking-tight truncate">{note.title}</h1>
+        <h1 class="text-[15px] font-bold tracking-tight truncate">{note.title}</h1>
         {#if note.metadata.tags.length > 0}
-          <div class="flex gap-1">
+          <div class="flex gap-1.5">
             {#each note.metadata.tags as tag}
-              <span class="text-[10px] px-1.5 py-0.5 rounded-md bg-accent text-muted-foreground font-medium">{tag}</span>
+              <span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-300/80 border border-blue-500/10 font-medium">{tag}</span>
             {/each}
           </div>
         {/if}
         {#if isTagPage}
-          <span class="text-[10px] px-1.5 py-0.5 rounded-md bg-primary/8 text-primary/80 font-medium">Tag</span>
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium border border-primary/15">Tag</span>
         {/if}
       {:else}
         <h1 class="text-[13px] font-semibold tracking-tight text-muted-foreground">Loading…</h1>

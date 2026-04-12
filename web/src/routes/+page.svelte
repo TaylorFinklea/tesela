@@ -28,10 +28,10 @@
 </script>
 
 <div class="flex-1 flex flex-col">
-  <header class="border-b border-border px-5 h-11 flex items-center justify-between shrink-0">
-    <span class="text-[13px] font-semibold tracking-tight">All Notes</span>
-    <div class="flex items-center gap-1.5 text-[11px] text-muted-foreground/60">
-      <span class="inline-block h-1.5 w-1.5 rounded-full {wsConnected ? 'bg-emerald-500/80' : 'bg-muted-foreground/40'}"></span>
+  <header class="border-b border-border px-6 h-[52px] flex items-center justify-between shrink-0">
+    <span class="text-[15px] font-bold tracking-tight">All Notes</span>
+    <div class="flex items-center gap-2 text-[11px] text-muted-foreground/40">
+      <span class="inline-block h-[6px] w-[6px] rounded-full {wsConnected ? 'bg-emerald-400/70' : 'bg-muted-foreground/30'}"></span>
       <span>{notesQuery.isLoading ? "loading" : wsConnected ? "live" : "offline"}</span>
     </div>
   </header>
@@ -53,13 +53,18 @@
     {:else if notes && notes.length === 0}
       <div class="px-6 py-8 text-sm text-muted-foreground">No notes yet.</div>
     {:else if notes}
-      <ul class="divide-y divide-border/50">
+      <ul>
         {#each notes as note (note.id)}
           <li>
-            <a href="/p/{encodeURIComponent(note.id)}" class="block px-5 py-2.5 hover:bg-accent/40 transition-colors">
-              <div class="flex items-baseline justify-between gap-4">
-                <span class="text-[13px] font-medium truncate">{note.title}</span>
-                <span class="text-[11px] text-muted-foreground/50 font-mono shrink-0">{formatTimestamp(note.modified_at)}</span>
+            <a href="/p/{encodeURIComponent(note.id)}" class="block px-6 py-3 hover:bg-muted/30 transition-all border-b border-border/30">
+              <div class="flex items-center justify-between gap-4">
+                <div class="flex items-center gap-2.5 min-w-0">
+                  <span class="text-[13px] font-medium truncate">{note.title}</span>
+                  {#if note.metadata.tags.length > 0}
+                    <span class="text-[9px] px-1.5 py-px rounded-full bg-blue-500/8 text-blue-300/50 border border-blue-500/8 shrink-0">{note.metadata.tags[0]}</span>
+                  {/if}
+                </div>
+                <span class="text-[10px] text-muted-foreground/30 font-mono shrink-0">{formatTimestamp(note.modified_at)}</span>
               </div>
             </a>
           </li>
