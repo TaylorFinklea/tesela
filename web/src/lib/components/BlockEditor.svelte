@@ -4,6 +4,7 @@
   import { EditorView, keymap } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim, Vim, getCM } from "@replit/codemirror-vim";
+  import { teselaDecorations, teselaDecorationTheme } from "$lib/cm-decorations";
   import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
 
@@ -342,6 +343,8 @@
         inputHandler,
         updateListener,
         focusBlurHandler,
+        teselaDecorations,
+        teselaDecorationTheme,
         EditorView.lineWrapping,
       ],
     });
