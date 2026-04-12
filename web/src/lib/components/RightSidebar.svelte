@@ -49,17 +49,17 @@
 {:else}
   <div class="w-[200px] bg-surface border-l border-border flex flex-col shrink-0 overflow-y-auto">
     <div class="flex items-center justify-between px-4 h-[52px] border-b border-border shrink-0">
-      <span class="text-[10px] font-semibold text-muted-foreground/30 uppercase tracking-[0.12em]">Links</span>
+      <span class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em]">Links</span>
       <button onclick={onToggle} class="text-muted-foreground hover:text-primary text-[10px] p-1 rounded-md hover:bg-muted transition-all" title="Hide right panel">▶</button>
     </div>
 
     <!-- Backlinks -->
     <div class="px-4 py-3">
-      <div class="text-[10px] font-semibold text-muted-foreground/25 uppercase tracking-[0.12em] mb-2">
+      <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">
         Backlinks ({allBacklinkSources.length})
       </div>
       {#if allBacklinkSources.length === 0}
-        <div class="text-[11px] text-muted-foreground/20 italic">No pages link here</div>
+        <div class="text-[11px] text-muted-foreground/50 italic">No pages link here</div>
       {:else}
         {#each allBacklinkSources as source}
           <a
@@ -74,11 +74,11 @@
 
     <!-- Forward Links -->
     <div class="px-4 py-3 border-t border-border/30">
-      <div class="text-[10px] font-semibold text-muted-foreground/25 uppercase tracking-[0.12em] mb-2">
+      <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">
         Forward ({forwardLinks.length})
       </div>
       {#if forwardLinks.length === 0}
-        <div class="text-[11px] text-muted-foreground/20 italic">No outgoing links</div>
+        <div class="text-[11px] text-muted-foreground/50 italic">No outgoing links</div>
       {:else}
         {#each forwardLinks as link}
           <a

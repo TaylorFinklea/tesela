@@ -119,7 +119,7 @@
     <nav class="flex-1 overflow-y-auto px-2 pb-2">
       <!-- Recents -->
       {#if recentNotes.length > 0 && !filter}
-        <div class="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground/35 uppercase tracking-[0.12em] px-3 pt-2 pb-1.5">
+        <div class="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] px-3 pt-2 pb-1.5">
           <IconClock size={11} stroke={1.5} class="text-primary/30" /> Recent
         </div>
         {#each recentNotes as note (note.id)}
@@ -127,18 +127,18 @@
           <a
             href="/p/{encodeURIComponent(note.id)}"
             class="block rounded-lg px-3 py-[5px] text-[12px] truncate transition-all
-              {isActive ? 'bg-muted/60 text-foreground/90 font-medium' : 'text-muted-foreground/50 hover:text-foreground/70 hover:bg-muted/30'}"
+              {isActive ? 'bg-muted/60 text-foreground/90 font-medium' : 'text-muted-foreground/80 hover:text-foreground/70 hover:bg-muted/30'}"
           >{note.title}</a>
         {/each}
       {/if}
 
       <!-- Pages -->
-      <div class="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground/35 uppercase tracking-[0.12em] px-3 pt-3 pb-1.5">
+      <div class="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] px-3 pt-3 pb-1.5">
         <IconFile size={11} stroke={1.5} class="text-primary/30" />
         {filter ? `Results` : `Pages`}
       </div>
       {#if notesQuery.isLoading}
-        <div class="px-3 py-1 text-[12px] text-muted-foreground/30">Loading...</div>
+        <div class="px-3 py-1 text-[12px] text-muted-foreground/60">Loading...</div>
       {/if}
       {#each filtered as note, ni (note.id)}
         {@const itemIndex = 3 + ni}
@@ -149,11 +149,11 @@
           class="block rounded-lg px-3 py-[5px] text-[12px] truncate transition-all
             {isSelected ? 'bg-primary/10 text-primary ring-1 ring-primary/15 font-medium' : ''}
             {isActive && !isSelected ? 'bg-muted/60 text-foreground/90 font-medium' : ''}
-            {!isActive && !isSelected ? 'text-muted-foreground/60 hover:text-foreground/80 hover:bg-muted/30' : ''}"
+            {!isActive && !isSelected ? 'text-muted-foreground hover:text-foreground/80 hover:bg-muted/30' : ''}"
         >{note.title}</a>
       {/each}
       {#if filtered.length === 0 && !notesQuery.isLoading}
-        <div class="px-3 py-1 text-[12px] text-muted-foreground/30">{filter ? "No matches" : "No notes"}</div>
+        <div class="px-3 py-1 text-[12px] text-muted-foreground/60">{filter ? "No matches" : "No notes"}</div>
       {/if}
     </nav>
 
@@ -161,11 +161,11 @@
     <div class="border-t border-border/50 px-2 py-1.5 shrink-0 space-y-px">
       <a
         href="/settings"
-        class="flex items-center gap-2.5 rounded-lg px-3 py-[6px] text-[11px] text-muted-foreground/35 hover:text-foreground/70 hover:bg-muted/30 transition-all {currentPath === '/settings' ? 'bg-muted/50 text-foreground/70' : ''}"
+        class="flex items-center gap-2.5 rounded-lg px-3 py-[6px] text-[11px] text-muted-foreground/60 hover:text-foreground/70 hover:bg-muted/30 transition-all {currentPath === '/settings' ? 'bg-muted/50 text-foreground/70' : ''}"
       >
         <span class="w-4 text-primary/30"><IconSettings size={14} stroke={1.5} /></span> Settings
       </a>
-      <div class="text-[10px] text-muted-foreground/20 px-3 py-0.5">{notes.length} notes</div>
+      <div class="text-[10px] text-muted-foreground/50 px-3 py-0.5">{notes.length} notes</div>
     </div>
   </div>
 {/if}
