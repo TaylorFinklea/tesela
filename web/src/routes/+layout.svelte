@@ -9,6 +9,8 @@
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import LeaderMenu from "$lib/components/LeaderMenu.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
+  import { applyTheme } from "$lib/themes";
+  import { browser } from "$app/environment";
   import "../app.css";
 
   let { children } = $props();
@@ -27,6 +29,11 @@
 
   onMount(() => {
     connect();
+    // Apply saved theme
+    if (browser) {
+      const savedTheme = localStorage.getItem("tesela:theme-id") ?? "tesela";
+      applyTheme(savedTheme);
+    }
 
     // Space leader key — works outside editors AND from Vim normal mode (via custom event)
     const spaceHandler = (e: KeyboardEvent) => {

@@ -5,6 +5,7 @@
   import { api } from "$lib/api-client";
   import { getRecents } from "$lib/stores/recents.svelte";
   import type { Note } from "$lib/types/Note";
+  import { IconSun, IconCalendarEvent, IconGraph, IconSearch, IconSettings, IconChevronLeft, IconChevronRight, IconStar, IconClock, IconFile } from "@tabler/icons-svelte";
 
   let { collapsed, onToggle }: { collapsed: boolean; onToggle: () => void } = $props();
   let filter = $state("");
@@ -25,14 +26,16 @@
       .filter((n): n is Note => n !== undefined),
   );
 
-  const quickNav = [
-    { path: "/daily", label: "Today", icon: "☀", color: "text-amber-400" },
-    { path: "/timeline", label: "Timeline", icon: "📅", color: "text-blue-400" },
-    { path: "/graph", label: "Graph", icon: "◉", color: "text-violet-400" },
+  const iconSize = 16;
+  const iconStroke = 1.5;
+  const navItems = [
+    { path: "/daily", label: "Today", match: (p: string) => p === "/daily" || p.startsWith("/p/20") },
+    { path: "/timeline", label: "Timeline", match: (p: string) => p === "/timeline" },
+    { path: "/graph", label: "Graph", match: (p: string) => p === "/graph" },
   ];
 
   const allItems = $derived([
-    ...quickNav.map((q) => ({ path: q.path, label: q.label })),
+    { path: "/daily", label: "Today" }, { path: "/timeline", label: "Timeline" }, { path: "/graph", label: "Graph" },
     ...filtered.map((n: Note) => ({ path: `/p/${encodeURIComponent(n.id)}`, label: n.title })),
   ]);
 
@@ -54,7 +57,9 @@
 
 {#if collapsed}
   <div class="w-10 bg-surface border-r border-border flex flex-col items-center pt-4">
-    <button onclick={onToggle} class="text-muted-foreground hover:text-primary text-[10px] p-1.5 rounded-md hover:bg-muted transition-all" title="Expand (1)">▶</button>
+    <button onclick={onToggle} class="text-muted-foreground hover:text-primary p-1.5 rounded-md hover:bg-muted transition-all" title="Expand (1)">
+      <IconChevronRight size={14} stroke={1.5} />
+    </button>
   </div>
 {:else}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
@@ -69,7 +74,9 @@
     <!-- Brand -->
     <div class="flex items-center justify-between px-4 h-[52px] shrink-0">
       <a href="/" class="text-[15px] font-bold tracking-tight text-foreground/90">Tesela</a>
-      <button onclick={onToggle} class="text-muted-foreground hover:text-primary text-[10px] p-1 rounded-md hover:bg-muted transition-all" title="Collapse (1)">◀</button>
+      <button onclick={onToggle} class="text-muted-foreground hover:text-primary p-1 rounded-md hover:bg-muted transition-all" title="Collapse (1)">
+        <IconChevronLeft size={14} stroke={1.5} />
+      </button>
     </div>
 
     <!-- Search -->
@@ -87,10 +94,9 @@
 
     <!-- Quick nav -->
     <div class="px-2 pb-2 space-y-px shrink-0">
-      {#each quickNav as item, qi}
-        {@const itemIndex = qi}
-        {@const isSelected = sidebarFocused && selectedIndex === itemIndex}
-        {@const isActive = currentPath === item.path || (item.path === "/daily" && currentPath.startsWith("/p/20"))}
+      {#each navItems as item, qi}
+        {@const isSelected = sidebarFocused && selectedIndex === qi}
+        {@const isActive = item.match(currentPath)}
         <a
           href={item.path}
           class="flex items-center gap-2.5 rounded-lg px-3 py-[7px] text-[12px] transition-all
@@ -98,7 +104,12 @@
             {isActive && !isSelected ? 'bg-muted/60 text-foreground/90' : ''}
             {!isActive && !isSelected ? 'text-muted-foreground hover:text-foreground/80 hover:bg-muted/40' : ''}"
         >
-          <span class="w-4 text-center text-[12px] {item.color}">{item.icon}</span>
+          <span class="w-4 text-primary/60">
+            {#if qi === 0}<IconSun size={iconSize} stroke={iconStroke} />
+            {:else if qi === 1}<IconCalendarEvent size={iconSize} stroke={iconStroke} />
+            {:else}<IconGraph size={iconSize} stroke={iconStroke} />
+            {/if}
+          </span>
           <span>{item.label}</span>
         </a>
       {/each}
@@ -108,7 +119,9 @@
     <nav class="flex-1 overflow-y-auto px-2 pb-2">
       <!-- Recents -->
       {#if recentNotes.length > 0 && !filter}
-        <div class="text-[10px] font-semibold text-muted-foreground/35 uppercase tracking-[0.12em] px-3 pt-2 pb-1.5">Recent</div>
+        <div class="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground/35 uppercase tracking-[0.12em] px-3 pt-2 pb-1.5">
+          <IconClock size={11} stroke={1.5} class="text-primary/30" /> Recent
+        </div>
         {#each recentNotes as note (note.id)}
           {@const isActive = currentPath === `/p/${encodeURIComponent(note.id)}`}
           <a
@@ -120,14 +133,15 @@
       {/if}
 
       <!-- Pages -->
-      <div class="text-[10px] font-semibold text-muted-foreground/35 uppercase tracking-[0.12em] px-3 pt-3 pb-1.5">
+      <div class="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground/35 uppercase tracking-[0.12em] px-3 pt-3 pb-1.5">
+        <IconFile size={11} stroke={1.5} class="text-primary/30" />
         {filter ? `Results` : `Pages`}
       </div>
       {#if notesQuery.isLoading}
         <div class="px-3 py-1 text-[12px] text-muted-foreground/30">Loading...</div>
       {/if}
       {#each filtered as note, ni (note.id)}
-        {@const itemIndex = quickNav.length + ni}
+        {@const itemIndex = 3 + ni}
         {@const isSelected = sidebarFocused && selectedIndex === itemIndex}
         {@const isActive = currentPath === `/p/${encodeURIComponent(note.id)}`}
         <a
@@ -149,7 +163,7 @@
         href="/settings"
         class="flex items-center gap-2.5 rounded-lg px-3 py-[6px] text-[11px] text-muted-foreground/35 hover:text-foreground/70 hover:bg-muted/30 transition-all {currentPath === '/settings' ? 'bg-muted/50 text-foreground/70' : ''}"
       >
-        <span class="w-4 text-center">⚙</span> Settings
+        <span class="w-4 text-primary/30"><IconSettings size={14} stroke={1.5} /></span> Settings
       </a>
       <div class="text-[10px] text-muted-foreground/20 px-3 py-0.5">{notes.length} notes</div>
     </div>

@@ -18,6 +18,8 @@
   --color-ring: var(--ring);
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
+  --color-block-bg: var(--block-bg);
+  --color-block-border: var(--block-border);
   --font-sans: "Inter", -apple-system, system-ui, sans-serif;
   --font-mono: "Berkeley Mono", "JetBrains Mono", "Fira Code", ui-monospace, monospace;
 }
@@ -56,6 +58,13 @@
   --ring: oklch(0.78 0.14 75);
   --popover: oklch(0.13 0.008 280);
   --popover-foreground: oklch(0.90 0 0);
+  /* Block-level theme vars (overridden by theme system) */
+  --block-bg: oklch(0.12 0.012 280);
+  --block-border: oklch(1 0 0 / 4%);
+  --block-radius: 10px;
+  --block-shadow: 0 2px 8px -2px oklch(0 0 0 / 20%);
+  --focus-glow: 0 0 12px -3px oklch(0.78 0.14 75 / 20%);
+  --thread-border: oklch(1 0 0 / 4%);
 }
 
 @layer base {

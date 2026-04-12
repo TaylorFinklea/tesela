@@ -1,7 +1,7 @@
 <script lang="ts">
   import { browser } from "$app/environment";
+  import { themes, applyTheme, type ThemeId } from "$lib/themes";
 
-  // Load settings from localStorage
   function loadSetting(key: string, fallback: string): string {
     if (!browser) return fallback;
     return localStorage.getItem(`tesela:${key}`) ?? fallback;
@@ -11,24 +11,10 @@
     if (browser) localStorage.setItem(`tesela:${key}`, value);
   }
 
-  let theme = $state(loadSetting("theme", "dark"));
+  let themeId = $state(loadSetting("theme-id", "tesela"));
   let fontSize = $state(loadSetting("fontSize", "14"));
   let vimEnabled = $state(loadSetting("vimEnabled", "true"));
   let serverUrl = $state(loadSetting("serverUrl", "http://127.0.0.1:7474"));
-
-  const accentColors = [
-    { name: "Neutral", value: "neutral" },
-    { name: "Blue", value: "blue" },
-    { name: "Green", value: "green" },
-    { name: "Purple", value: "purple" },
-    { name: "Orange", value: "orange" },
-  ];
-  let accent = $state(loadSetting("accent", "neutral"));
-
-  function handleThemeChange(value: string) {
-    theme = value;
-    saveSetting("theme", value);
-  }
 
   function handleFontSizeChange(value: string) {
     fontSize = value;
@@ -38,11 +24,6 @@
   function handleVimToggle() {
     vimEnabled = vimEnabled === "true" ? "false" : "true";
     saveSetting("vimEnabled", vimEnabled);
-  }
-
-  function handleAccentChange(value: string) {
-    accent = value;
-    saveSetting("accent", value);
   }
 
   function handleServerUrlChange(value: string) {
@@ -62,28 +43,14 @@
       <!-- Theme -->
       <section>
         <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">Theme</h2>
-        <div class="flex gap-2">
-          {#each ["dark", "light", "auto"] as t}
+        <div class="grid grid-cols-2 gap-2">
+          {#each themes as t}
             <button
-              class="px-3 py-1.5 rounded-md text-[12px] transition-colors {theme === t ? 'bg-accent text-accent-foreground font-medium' : 'text-muted-foreground hover:bg-accent/60'}"
-              onclick={() => handleThemeChange(t)}
+              class="text-left px-3 py-2.5 rounded-lg text-[12px] transition-all border {themeId === t.id ? 'bg-primary/10 text-primary border-primary/20 ring-1 ring-primary/15' : 'text-muted-foreground border-border/50 hover:bg-muted/40 hover:text-foreground'}"
+              onclick={() => { themeId = t.id; saveSetting("theme-id", t.id); applyTheme(t.id); }}
             >
-              {t.charAt(0).toUpperCase() + t.slice(1)}
-            </button>
-          {/each}
-        </div>
-      </section>
-
-      <!-- Accent color -->
-      <section>
-        <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">Accent Color</h2>
-        <div class="flex gap-2">
-          {#each accentColors as color}
-            <button
-              class="px-3 py-1.5 rounded-md text-[12px] transition-colors {accent === color.value ? 'bg-accent text-accent-foreground font-medium ring-1 ring-ring/30' : 'text-muted-foreground hover:bg-accent/60'}"
-              onclick={() => handleAccentChange(color.value)}
-            >
-              {color.name}
+              <div class="font-medium">{t.name}</div>
+              <div class="text-[10px] mt-0.5 {themeId === t.id ? 'text-primary/60' : 'text-muted-foreground/40'}">{t.description}</div>
             </button>
           {/each}
         </div>
