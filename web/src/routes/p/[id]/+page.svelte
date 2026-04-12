@@ -8,7 +8,10 @@
   import RightSidebar from "$lib/components/RightSidebar.svelte";
   import type { Note } from "$lib/types/Note";
   import { addRecent } from "$lib/stores/recents.svelte";
+  import { goto } from "$app/navigation";
   import { untrack } from "svelte";
+  import { IconTrash } from "@tabler/icons-svelte";
+  import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
 
   const queryClient = useQueryClient();
   const noteId = $derived(page.params.id ?? "");
@@ -44,13 +47,30 @@
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let rightSidebarCollapsed = $state(false);
 
+  async function deleteNote() {
+    if (!note) return;
+    const confirmed = window.confirm(`Delete "${note.title}"? This cannot be undone.`);
+    if (!confirmed) return;
+    try {
+      await api.deleteNote(noteId);
+      queryClient.invalidateQueries({ queryKey: ["notes"] });
+      goto("/");
+    } catch (e) {
+      console.error("Failed to delete:", e);
+    }
+  }
+
   function handleContentChange(fullContent: string) {
     if (saveTimer) clearTimeout(saveTimer);
+    setSaving();
     saveTimer = setTimeout(async () => {
       try {
         const updated = await api.updateNote(noteId, fullContent);
         queryClient.setQueryData(["note", noteId], updated);
+        setSaved();
       } catch (e) {
+        const msg = e instanceof Error ? e.message : "Unknown error";
+        setSaveError(msg);
         console.error("Save failed:", e);
       }
     }, 500);
@@ -73,6 +93,14 @@
         {#if isTagPage}
           <span class="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium border border-primary/15">Tag</span>
         {/if}
+        <div class="flex-1"></div>
+        <button
+          onclick={deleteNote}
+          class="text-muted-foreground/40 hover:text-destructive p-1 rounded-md hover:bg-destructive/10 transition-all"
+          title="Delete note"
+        >
+          <IconTrash size={14} stroke={1.5} />
+        </button>
       {:else}
         <h1 class="text-[13px] font-semibold tracking-tight text-muted-foreground">Loading…</h1>
       {/if}

@@ -1,21 +1,12 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
   import { api, ApiError } from "$lib/api-client";
-  import { getConnected, setHandlers } from "$lib/ws-client.svelte";
+  import { getConnected } from "$lib/ws-client.svelte";
   import type { Note } from "$lib/types/Note";
-  import { onMount } from "svelte";
 
   const notesQuery = createQuery(() => ({ queryKey: ["notes", { limit: 100 }] as const, queryFn: () => api.listNotes({ limit: 100 }) }));
   const notes: Note[] | undefined = $derived(notesQuery.data as Note[] | undefined);
   const wsConnected = $derived(getConnected());
-
-  onMount(() => {
-    setHandlers({
-      onNoteCreated: () => notesQuery.refetch(),
-      onNoteUpdated: () => notesQuery.refetch(),
-      onNoteDeleted: () => notesQuery.refetch(),
-    });
-  });
 
   function formatTimestamp(iso: string): string {
     try {

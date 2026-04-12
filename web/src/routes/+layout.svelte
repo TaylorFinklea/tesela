@@ -1,7 +1,7 @@
 <script lang="ts">
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
   import { onMount } from "svelte";
-  import { connect } from "$lib/ws-client.svelte";
+  import { connect, setHandlers } from "$lib/ws-client.svelte";
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { pushNavigation, goBack, goForward } from "$lib/stores/navigation.svelte";
@@ -29,6 +29,21 @@
 
   onMount(() => {
     connect();
+
+    // Wire WS events to invalidate TanStack Query caches globally
+    setHandlers({
+      onNoteCreated: () => { queryClient.invalidateQueries({ queryKey: ["notes"] }); },
+      onNoteUpdated: (note) => {
+        queryClient.invalidateQueries({ queryKey: ["notes"] });
+        queryClient.invalidateQueries({ queryKey: ["note", note.id] });
+        queryClient.invalidateQueries({ queryKey: ["typed-blocks"] });
+      },
+      onNoteDeleted: (id) => {
+        queryClient.invalidateQueries({ queryKey: ["notes"] });
+        queryClient.invalidateQueries({ queryKey: ["note", id] });
+      },
+    });
+
     // Apply saved theme
     if (browser) {
       const savedTheme = localStorage.getItem("tesela:theme-id") ?? "tesela";

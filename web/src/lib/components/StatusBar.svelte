@@ -1,10 +1,12 @@
 <script lang="ts">
   import { page } from "$app/state";
   import { getConnected } from "$lib/ws-client.svelte";
+  import { getSaveStatus } from "$lib/stores/save-state.svelte";
 
   let { vimMode = "NORMAL" }: { vimMode?: string } = $props();
 
   const wsConnected = $derived(getConnected());
+  const saveStatus = $derived(getSaveStatus());
   const currentPath = $derived(page.url.pathname);
   const noteName = $derived(
     currentPath.startsWith("/p/")
@@ -19,10 +21,20 @@
   <span class="font-bold {vimMode === 'INSERT' ? 'text-emerald-400' : vimMode === 'VISUAL' ? 'text-violet-400' : 'text-primary'}">
     {vimMode}
   </span>
-  <span class="text-muted-foreground/40 truncate">{noteName}</span>
+  <span class="text-muted-foreground/60 truncate">{noteName}</span>
+
+  <!-- Save indicator -->
+  {#if saveStatus === "saving"}
+    <span class="text-muted-foreground/50">saving…</span>
+  {:else if saveStatus === "saved"}
+    <span class="text-emerald-400/60">saved</span>
+  {:else if saveStatus === "error"}
+    <span class="text-destructive/80">save failed</span>
+  {/if}
+
   <div class="flex-1"></div>
   <div class="flex items-center gap-1.5">
-    <span class="inline-block h-[5px] w-[5px] rounded-full {wsConnected ? 'bg-emerald-400/60' : 'bg-muted-foreground/20'}"></span>
-    <span class="text-muted-foreground/25">{wsConnected ? "connected" : "offline"}</span>
+    <span class="inline-block h-[5px] w-[5px] rounded-full {wsConnected ? 'bg-emerald-400/60' : 'bg-destructive/60'}"></span>
+    <span class="text-muted-foreground/40">{wsConnected ? "connected" : "offline"}</span>
   </div>
 </div>
