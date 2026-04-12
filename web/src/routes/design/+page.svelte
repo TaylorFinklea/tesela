@@ -1,12 +1,12 @@
 <script lang="ts">
   let activeOption = $state(0);
-  const options = ["Frosted Glass", "Glass Accents", "Depth Layers", "Neon Glow"];
+  const options = ["Frosted Glass", "Glass Accents", "Depth Layers", "Neon Glow", "Warm Mosaic", "Tile Grid", "Terracotta", "Woven"];
 </script>
 
 <div class="flex-1 flex flex-col bg-[#08080c] overflow-hidden">
   <!-- Tab bar -->
-  <div class="flex items-center gap-1 px-4 py-3 border-b border-white/5">
-    <span class="text-[13px] font-semibold text-white/60 mr-4">Design Preview</span>
+  <div class="flex items-center gap-1 px-4 py-2.5 border-b border-white/5 flex-wrap">
+    <span class="text-[12px] font-semibold text-white/60 mr-3">Design</span>
     {#each options as opt, i}
       <button
         class="px-3 py-1.5 rounded-md text-[12px] transition-all {activeOption === i ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30' : 'text-white/40 hover:text-white/70 hover:bg-white/5'}"
@@ -273,7 +273,7 @@
           </div>
         </div>
 
-      {:else}
+      {:else if activeOption === 3}
         <!-- ═══ NEON GLOW ═══ -->
         <div class="w-56 bg-[#0a0a0f] border-r border-white/[0.04] flex flex-col">
           <div class="px-4 h-12 flex items-center border-b border-white/[0.04]">
@@ -344,6 +344,291 @@
             <div class="flex-1"></div>
             <span class="inline-block h-1.5 w-1.5 rounded-full bg-amber-400 shadow-[0_0_8px_2px] shadow-amber-400/40 mr-1.5"></span>
             <span class="text-[11px] font-mono text-white/20">connected</span>
+          </div>
+        </div>
+      {:else if activeOption === 4}
+        <!-- ═══ WARM MOSAIC ═══ -->
+        <!-- Warm earthy tones, subtle tile-like card sections, terracotta accents -->
+        <div class="w-56 bg-[#1a1410] border-r border-[#2a2018]/60 flex flex-col">
+          <div class="px-4 h-[52px] flex items-center border-b border-[#2a2018]/60">
+            <span class="text-[15px] font-bold text-[#e8d5b8] tracking-tight">Tesela</span>
+            <span class="text-[9px] ml-1.5 text-[#c4956a]/40 tracking-widest">MOSAIC</span>
+          </div>
+          <div class="px-3 py-2.5">
+            <div class="bg-[#221c14] rounded-lg px-3 py-2 text-[12px] text-[#8a7a68] border border-[#2a2018]/50">Search...</div>
+          </div>
+          <div class="px-3 space-y-0.5">
+            <div class="px-2.5 py-2 rounded-lg text-[12px] text-[#c4a882] flex items-center gap-2.5"><span class="text-amber-500">☀</span> Today</div>
+            <div class="px-2.5 py-2 rounded-lg text-[12px] text-[#8a7a68] flex items-center gap-2.5"><span class="text-[#7a9eb8]">📅</span> Timeline</div>
+            <div class="px-2.5 py-2 rounded-lg text-[12px] text-[#8a7a68] flex items-center gap-2.5"><span class="text-[#b87a9e]">◉</span> Graph</div>
+          </div>
+          <div class="px-3 mt-4">
+            <div class="text-[10px] font-semibold text-[#5a4a38] uppercase tracking-[0.15em] px-2.5 mb-2">Pages</div>
+            <div class="space-y-1">
+              <!-- Tile-like selected item with warm border -->
+              <div class="px-2.5 py-2 rounded-lg text-[12px] font-medium text-[#e8d5b8] bg-[#2a2018] border border-[#c4956a]/20 shadow-sm">Test Outliner</div>
+              <div class="px-2.5 py-1.5 rounded-lg text-[12px] text-[#7a6a58]">Weekly Review</div>
+              <div class="px-2.5 py-1.5 rounded-lg text-[12px] text-[#7a6a58]">Task</div>
+              <div class="px-2.5 py-1.5 rounded-lg text-[12px] text-[#7a6a58]">Project Ideas</div>
+            </div>
+          </div>
+        </div>
+        <div class="flex-1 flex flex-col bg-[#141210]">
+          <div class="h-[52px] px-6 flex items-center gap-3 border-b border-[#2a2018]/40">
+            <span class="text-[15px] font-bold text-[#e8d5b8]">Test Outliner</span>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-[#c4956a]/15 text-[#c4956a] border border-[#c4956a]/20">Project</span>
+          </div>
+          <div class="flex-1 px-10 py-8">
+            <div class="space-y-3 max-w-2xl">
+              <!-- Warm tile card for focused block -->
+              <div class="bg-[#1c1814] rounded-xl p-4 border border-[#2a2018]/40 shadow-sm">
+                <div class="text-[14px] text-[#e8d5b8] font-medium">Ship the docs refresh
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-[#7a9eb8]/15 text-[#7a9eb8] ml-2">#Task</span>
+                </div>
+                <div class="flex gap-2 mt-2">
+                  <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-600/10 text-amber-400/80 border border-amber-600/10">doing</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded-full bg-red-600/10 text-red-400/80 border border-red-600/10">high</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded-full bg-[#2a2018] text-[#8a7a68]">📅 2026-04-15</span>
+                </div>
+              </div>
+              <div class="pl-6 space-y-1">
+                <div class="pl-3 py-1.5 text-[13px] text-[#a09080] border-l border-[#2a2018]">Write the getting started guide</div>
+                <div class="pl-3 py-1.5 text-[13px] text-[#a09080] border-l border-[#2a2018]">Review with <span class="text-[#c4956a]">Person</span> team</div>
+              </div>
+              <div class="bg-[#181614]/60 rounded-xl p-4 border border-[#2a2018]/20">
+                <div class="text-[14px] text-[#d8c5a8]">Fix the login bug
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-[#7a9eb8]/15 text-[#7a9eb8] ml-2">#Task</span>
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-red-500/10 text-red-400/70 ml-1">#urgent</span>
+                </div>
+                <div class="mt-2"><span class="text-[10px] px-2 py-0.5 rounded-full bg-[#2a2018] text-[#8a7a68]">todo</span></div>
+              </div>
+              <div class="pl-6 space-y-1">
+                <div class="pl-3 py-1.5 text-[13px] text-[#a09080] border-l border-[#2a2018]">Reproduce on staging</div>
+              </div>
+            </div>
+          </div>
+          <div class="h-7 bg-[#12100e] border-t border-[#2a2018]/40 flex items-center px-4">
+            <span class="text-[11px] font-mono font-bold text-[#c4956a]">NORMAL</span>
+            <span class="text-[11px] font-mono text-[#5a4a38] ml-4">test-outliner</span>
+            <div class="flex-1"></div>
+            <span class="inline-block h-[5px] w-[5px] rounded-full bg-emerald-500/50 mr-1.5"></span>
+            <span class="text-[11px] font-mono text-[#5a4a38]">connected</span>
+          </div>
+        </div>
+
+      {:else if activeOption === 5}
+        <!-- ═══ TILE GRID ═══ -->
+        <!-- Blocks as distinct tile cards in a grid-like layout, geometric feel -->
+        <div class="w-56 bg-[#0e0e14] border-r border-white/[0.04] flex flex-col">
+          <div class="px-4 h-[52px] flex items-center border-b border-white/[0.04]">
+            <div class="flex items-center gap-2">
+              <div class="grid grid-cols-2 gap-0.5 w-3.5 h-3.5">
+                <div class="bg-amber-400/60 rounded-[1px]"></div>
+                <div class="bg-amber-400/30 rounded-[1px]"></div>
+                <div class="bg-amber-400/30 rounded-[1px]"></div>
+                <div class="bg-amber-400/60 rounded-[1px]"></div>
+              </div>
+              <span class="text-[15px] font-bold text-white/85">Tesela</span>
+            </div>
+          </div>
+          <div class="px-3 py-2.5">
+            <div class="bg-white/[0.03] rounded-md px-3 py-2 text-[12px] text-white/25 border border-white/[0.05]">Search...</div>
+          </div>
+          <div class="px-3 space-y-0.5">
+            <div class="px-2.5 py-2 rounded-md text-[12px] text-white/50 flex items-center gap-2.5"><span class="text-amber-400">☀</span> Today</div>
+            <div class="px-2.5 py-2 rounded-md text-[12px] text-white/50 flex items-center gap-2.5"><span class="text-blue-400">📅</span> Timeline</div>
+          </div>
+          <div class="px-3 mt-4">
+            <div class="text-[10px] font-semibold text-white/20 uppercase tracking-[0.15em] px-2.5 mb-2">Pages</div>
+            <div class="space-y-0.5">
+              <div class="px-2.5 py-2 rounded-md text-[12px] font-medium text-amber-200 bg-amber-500/[0.08] border-l-2 border-amber-400">Test Outliner</div>
+              <div class="px-2.5 py-1.5 rounded-md text-[12px] text-white/40">Weekly Review</div>
+              <div class="px-2.5 py-1.5 rounded-md text-[12px] text-white/40">Task</div>
+            </div>
+          </div>
+        </div>
+        <div class="flex-1 flex flex-col bg-[#0a0a0f]">
+          <div class="h-[52px] px-6 flex items-center gap-3 border-b border-white/[0.04]">
+            <span class="text-[15px] font-bold text-white/90">Test Outliner</span>
+            <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/15">Project</span>
+          </div>
+          <div class="flex-1 px-8 py-6">
+            <!-- Grid of tile cards -->
+            <div class="grid gap-2 max-w-2xl">
+              <div class="bg-[#12121a] rounded-lg p-4 border border-white/[0.05] hover:border-amber-500/20 transition-colors">
+                <div class="text-[14px] text-white/90 font-medium mb-2">Ship the docs refresh
+                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 ml-2">#Task</span>
+                </div>
+                <div class="flex gap-2">
+                  <span class="text-[10px] px-2 py-0.5 rounded bg-amber-500/10 text-amber-300/80">doing</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded bg-red-500/10 text-red-300/80">high</span>
+                </div>
+                <div class="mt-2 pl-3 space-y-0.5 border-l border-white/[0.06]">
+                  <div class="text-[12px] text-white/45">Write the getting started guide</div>
+                  <div class="text-[12px] text-white/45">Review with <span class="text-amber-400/60">Person</span> team</div>
+                </div>
+              </div>
+              <div class="bg-[#12121a] rounded-lg p-4 border border-white/[0.05] hover:border-amber-500/20 transition-colors">
+                <div class="text-[14px] text-white/85 font-medium mb-2">Fix the login bug
+                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-300 ml-2">#Task</span>
+                  <span class="text-[10px] px-1.5 py-0.5 rounded bg-red-500/10 text-red-300 ml-1">#urgent</span>
+                </div>
+                <div class="flex gap-2">
+                  <span class="text-[10px] px-2 py-0.5 rounded bg-white/[0.04] text-white/35">todo</span>
+                </div>
+                <div class="mt-2 pl-3 space-y-0.5 border-l border-white/[0.06]">
+                  <div class="text-[12px] text-white/45">Reproduce on staging</div>
+                  <div class="text-[12px] text-white/45">Check auth middleware</div>
+                </div>
+              </div>
+              <div class="bg-[#12121a] rounded-lg p-4 border border-white/[0.05] hover:border-amber-500/20 transition-colors">
+                <div class="text-[14px] text-white/85 font-medium">Weekly sync with <span class="text-amber-400/70">Domain</span> leads</div>
+                <div class="mt-2 pl-3 space-y-0.5 border-l border-white/[0.06]">
+                  <div class="text-[12px] text-white/45">Discuss Q2 roadmap</div>
+                  <div class="text-[12px] text-white/45">Review <span class="text-amber-400/60">LifeProject</span> priorities</div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="h-7 bg-[#08080e] border-t border-white/[0.04] flex items-center px-4">
+            <span class="text-[11px] font-mono font-bold text-amber-400">NORMAL</span>
+            <span class="text-[11px] font-mono text-white/20 ml-4">test-outliner</span>
+          </div>
+        </div>
+
+      {:else if activeOption === 6}
+        <!-- ═══ TERRACOTTA ═══ -->
+        <!-- Warm clay/earth, rounded shapes, Mediterranean/artisan feel -->
+        <div class="w-56 bg-[#1e1612] border-r border-[#3a2820]/50 flex flex-col">
+          <div class="px-4 h-[52px] flex items-center border-b border-[#3a2820]/50">
+            <span class="text-[15px] font-bold text-[#f0d8c0] tracking-tight">Tesela</span>
+          </div>
+          <div class="px-3 py-2.5">
+            <div class="bg-[#2a1e18] rounded-xl px-3 py-2 text-[12px] text-[#8a6a50] border border-[#3a2820]/30">Search...</div>
+          </div>
+          <div class="px-3 space-y-0.5">
+            <div class="px-2.5 py-2 rounded-xl text-[12px] text-[#c0a088] flex items-center gap-2.5"><span class="text-orange-400">☀</span> Today</div>
+            <div class="px-2.5 py-2 rounded-xl text-[12px] text-[#8a7060] flex items-center gap-2.5"><span class="text-sky-400">📅</span> Timeline</div>
+            <div class="px-2.5 py-2 rounded-xl text-[12px] text-[#8a7060] flex items-center gap-2.5"><span class="text-rose-400">◉</span> Graph</div>
+          </div>
+          <div class="px-3 mt-4">
+            <div class="text-[10px] font-semibold text-[#5a4030] uppercase tracking-[0.15em] px-2.5 mb-2">Pages</div>
+            <div class="space-y-1">
+              <!-- Terracotta selected tile -->
+              <div class="px-2.5 py-2 rounded-xl text-[12px] font-medium text-[#f0d8c0] bg-gradient-to-r from-[#c4704a]/15 to-transparent border border-[#c4704a]/20">Test Outliner</div>
+              <div class="px-2.5 py-1.5 rounded-xl text-[12px] text-[#7a6050]">Weekly Review</div>
+              <div class="px-2.5 py-1.5 rounded-xl text-[12px] text-[#7a6050]">Task</div>
+              <div class="px-2.5 py-1.5 rounded-xl text-[12px] text-[#7a6050]">Project Ideas</div>
+            </div>
+          </div>
+        </div>
+        <div class="flex-1 flex flex-col bg-[#161210]">
+          <div class="h-[52px] px-6 flex items-center gap-3 border-b border-[#3a2820]/30">
+            <span class="text-[15px] font-bold text-[#f0d8c0]">Test Outliner</span>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-[#c4704a]/15 text-[#c4704a] border border-[#c4704a]/15">Project</span>
+          </div>
+          <div class="flex-1 px-10 py-8">
+            <div class="space-y-2 max-w-2xl">
+              <div class="border-l-[3px] border-[#c4704a]/50 pl-4 py-2 bg-[#1e1814]/60 rounded-r-xl">
+                <div class="text-[14px] text-[#f0d8c0] font-medium">Ship the docs refresh
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-500/10 text-sky-300 ml-2">#Task</span>
+                </div>
+                <div class="flex gap-2 mt-1.5">
+                  <span class="text-[10px] px-2 py-0.5 rounded-full bg-orange-500/10 text-orange-300 border border-orange-500/10">doing</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-300 border border-rose-500/10">high</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded-full bg-[#2a2018] text-[#8a7060]">📅 2026-04-15</span>
+                </div>
+              </div>
+              <div class="pl-10 space-y-1">
+                <div class="pl-3 py-1.5 text-[13px] text-[#a08868] border-l border-[#3a2820]/40">Write the getting started guide</div>
+                <div class="pl-3 py-1.5 text-[13px] text-[#a08868] border-l border-[#3a2820]/40">Review with <span class="text-[#c4704a]">Person</span> team</div>
+              </div>
+              <div class="border-l-[3px] border-transparent pl-4 py-2">
+                <div class="text-[14px] text-[#d8c0a8]">Fix the login bug
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-500/10 text-sky-300 ml-2">#Task</span>
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-500/10 text-rose-300 ml-1">#urgent</span>
+                </div>
+                <div class="mt-1.5"><span class="text-[10px] px-2 py-0.5 rounded-full bg-[#2a2018] text-[#8a7060]">todo</span></div>
+              </div>
+            </div>
+          </div>
+          <div class="h-7 bg-[#12100e] border-t border-[#3a2820]/30 flex items-center px-4">
+            <span class="text-[11px] font-mono font-bold text-[#c4704a]">NORMAL</span>
+            <span class="text-[11px] font-mono text-[#5a4030] ml-4">test-outliner</span>
+            <div class="flex-1"></div>
+            <span class="inline-block h-[5px] w-[5px] rounded-full bg-emerald-400/60 mr-1.5"></span>
+            <span class="text-[11px] font-mono text-[#5a4030]">connected</span>
+          </div>
+        </div>
+
+      {:else if activeOption === 7}
+        <!-- ═══ WOVEN ═══ -->
+        <!-- Textile/fabric-inspired, fine borders as threads, warm muted palette -->
+        <div class="w-56 bg-[#141216] border-r border-[#2a2530]/80 flex flex-col">
+          <div class="px-4 h-[52px] flex items-center border-b border-[#2a2530]/80">
+            <span class="text-[15px] font-bold text-[#d8c8e0] tracking-tight">Tesela</span>
+            <span class="text-[9px] ml-2 text-[#8a78a0]/40 font-mono">///</span>
+          </div>
+          <div class="px-3 py-2.5">
+            <div class="bg-[#1a1620] rounded-lg px-3 py-2 text-[12px] text-[#6a5a7a] border border-[#2a2530]/60">Search...</div>
+          </div>
+          <div class="px-3 space-y-0.5">
+            <div class="px-2.5 py-2 rounded-lg text-[12px] text-[#a898b8] flex items-center gap-2.5"><span class="text-amber-400">☀</span> Today</div>
+            <div class="px-2.5 py-2 rounded-lg text-[12px] text-[#7a6a90] flex items-center gap-2.5"><span class="text-indigo-400">📅</span> Timeline</div>
+            <div class="px-2.5 py-2 rounded-lg text-[12px] text-[#7a6a90] flex items-center gap-2.5"><span class="text-pink-400">◉</span> Graph</div>
+          </div>
+          <div class="px-3 mt-4">
+            <div class="text-[10px] font-semibold text-[#4a3a58] uppercase tracking-[0.15em] px-2.5 mb-2">Pages</div>
+            <div class="space-y-0.5">
+              <!-- Woven thread-like selection -->
+              <div class="px-2.5 py-2 rounded-lg text-[12px] font-medium text-amber-200 bg-amber-500/[0.06] border-l-2 border-amber-400/40 border-t border-b border-r border-[#2a2530]/40">Test Outliner</div>
+              <div class="px-2.5 py-1.5 rounded-lg text-[12px] text-[#7a6a90] border-l-2 border-transparent">Weekly Review</div>
+              <div class="px-2.5 py-1.5 rounded-lg text-[12px] text-[#7a6a90] border-l-2 border-transparent">Task</div>
+              <div class="px-2.5 py-1.5 rounded-lg text-[12px] text-[#7a6a90] border-l-2 border-transparent">Project Ideas</div>
+            </div>
+          </div>
+        </div>
+        <div class="flex-1 flex flex-col bg-[#0e0c10]">
+          <div class="h-[52px] px-6 flex items-center gap-3 border-b border-[#2a2530]/40">
+            <span class="text-[15px] font-bold text-[#d8c8e0]">Test Outliner</span>
+            <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-400/10 text-amber-300 border border-amber-400/15">Project</span>
+          </div>
+          <div class="flex-1 px-10 py-8">
+            <div class="space-y-1 max-w-2xl">
+              <!-- Woven block with top/bottom thread borders -->
+              <div class="border-l-2 border-amber-400/30 border-t border-t-[#2a2530]/30 border-b border-b-[#2a2530]/30 pl-4 py-3 rounded-r">
+                <div class="text-[14px] text-[#d8c8e0] font-medium">Ship the docs refresh
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 ml-2">#Task</span>
+                </div>
+                <div class="flex gap-2 mt-1.5">
+                  <span class="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300/80 border border-amber-500/10">doing</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/10 text-rose-300/80 border border-rose-500/10">high</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded-full bg-[#1a1620] text-[#7a6a90] border border-[#2a2530]/40">📅 2026-04-15</span>
+                </div>
+              </div>
+              <div class="pl-10 space-y-0">
+                <div class="pl-3 py-2 text-[13px] text-[#9a8aaa] border-l border-[#2a2530]/50 border-b border-b-[#2a2530]/20">Write the getting started guide</div>
+                <div class="pl-3 py-2 text-[13px] text-[#9a8aaa] border-l border-[#2a2530]/50">Review with <span class="text-amber-400/70">Person</span> team</div>
+              </div>
+              <div class="border-l-2 border-transparent border-t border-t-[#2a2530]/20 pl-4 py-3">
+                <div class="text-[14px] text-[#c8b8d0]">Fix the login bug
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 ml-2">#Task</span>
+                  <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-500/10 text-rose-300 ml-1">#urgent</span>
+                </div>
+                <div class="mt-1.5"><span class="text-[10px] px-2 py-0.5 rounded-full bg-[#1a1620] text-[#7a6a90] border border-[#2a2530]/40">todo</span></div>
+              </div>
+              <div class="pl-10 space-y-0">
+                <div class="pl-3 py-2 text-[13px] text-[#9a8aaa] border-l border-[#2a2530]/50 border-b border-b-[#2a2530]/20">Reproduce on staging</div>
+                <div class="pl-3 py-2 text-[13px] text-[#9a8aaa] border-l border-[#2a2530]/50">Check auth middleware</div>
+              </div>
+            </div>
+          </div>
+          <div class="h-7 bg-[#0a080c] border-t border-[#2a2530]/40 flex items-center px-4">
+            <span class="text-[11px] font-mono font-bold text-amber-400">NORMAL</span>
+            <span class="text-[11px] font-mono text-[#4a3a58] ml-4">test-outliner</span>
+            <div class="flex-1"></div>
+            <span class="inline-block h-[5px] w-[5px] rounded-full bg-emerald-400/60 mr-1.5"></span>
+            <span class="text-[11px] font-mono text-[#4a3a58]">connected</span>
           </div>
         </div>
       {/if}
