@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tesela — UX Explorations</title>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400&family=Source+Sans+3:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Source Sans 3', sans-serif; background: #1a1820; color: #e8e0d4; min-height: 100vh; }
+
+  .nav { position: fixed; top: 0; left: 0; right: 0; display: flex; gap: 4px; padding: 12px 20px; background: #1a1820; border-bottom: 1px solid rgba(255,240,210,0.06); z-index: 100; }
+  .nav a { padding: 8px 16px; border-radius: 8px; text-decoration: none; color: #9a918a; font-size: 13px; font-weight: 500; transition: all 0.2s; }
+  .nav a:hover { background: rgba(255,240,210,0.04); color: #e8e0d4; }
+  .nav a.active { background: rgba(212,160,74,0.12); color: #d4a04a; }
+
+  .mockup { display: none; padding-top: 60px; min-height: 100vh; }
+  .mockup.active { display: block; }
+
+  .label { position: fixed; bottom: 20px; right: 20px; background: #d4a04a; color: #1a1820; padding: 8px 16px; border-radius: 8px; font-size: 12px; font-weight: 600; z-index: 100; }
+</style>
+</head>
+<body>
+
+<div class="nav">
+  <a href="#" data-target="a" class="active">A: Focus Mode</a>
+  <a href="#" data-target="b">B: Canvas</a>
+  <a href="#" data-target="c">C: Journal</a>
+  <a href="#" data-target="d">D: Command-First</a>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- MOCKUP A: Focus Mode — one note fills the screen   -->
+<!-- ═══════════════════════════════════════════════════ -->
+<div class="mockup active" id="a" style="background: #faf7f2;">
+<style>
+  #a { color: #2c2824; }
+  #a .shell { max-width: 720px; margin: 0 auto; padding: 60px 40px 120px; }
+  #a .breadcrumb { font-size: 12px; color: #8a8078; margin-bottom: 32px; display: flex; gap: 8px; align-items: center; }
+  #a .breadcrumb a { color: #c4852c; text-decoration: none; }
+  #a .title { font-family: 'Newsreader', serif; font-size: 36px; font-weight: 600; margin-bottom: 8px; line-height: 1.2; letter-spacing: -0.02em; }
+  #a .meta { display: flex; gap: 12px; margin-bottom: 40px; font-size: 12px; color: #8a8078; }
+  #a .meta .tag { background: rgba(196,133,44,0.1); color: #c4852c; padding: 2px 10px; border-radius: 99px; font-weight: 500; }
+  #a .block { position: relative; padding: 16px 20px; margin-bottom: 4px; border-radius: 8px; transition: all 0.15s; cursor: text; }
+  #a .block:hover { background: rgba(196,133,44,0.03); }
+  #a .block.focused { background: #fff; box-shadow: 0 1px 4px rgba(120,90,50,0.06); border-left: 3px solid #c4852c; }
+  #a .block .text { font-size: 15px; line-height: 1.7; color: #2c2824; }
+  #a .block .props { display: flex; gap: 8px; margin-top: 6px; }
+  #a .block .props span { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: #f0e8dc; color: #8a8078; }
+  #a .block .props span.status { background: rgba(90,154,106,0.1); color: #5a9a6a; }
+  #a .block .props span.priority { background: rgba(196,90,74,0.08); color: #c45a4a; }
+  #a .block.child { margin-left: 32px; border-left: 2px solid #e8e0d4; }
+  #a .link { color: #c4852c; text-decoration: underline; text-decoration-color: rgba(196,133,44,0.3); text-underline-offset: 3px; }
+  #a .sidebar-toggle { position: fixed; top: 72px; left: 20px; width: 36px; height: 36px; border-radius: 8px; border: 1px solid #e8e0d4; background: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; color: #8a8078; font-size: 14px; box-shadow: 0 1px 3px rgba(120,90,50,0.06); }
+  #a .cmd-hint { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #fff; border: 1px solid #e8e0d4; padding: 8px 16px; border-radius: 8px; font-size: 11px; color: #8a8078; box-shadow: 0 2px 8px rgba(120,90,50,0.06); display: flex; gap: 16px; }
+  #a .cmd-hint kbd { background: #f0e8dc; padding: 2px 6px; border-radius: 4px; font-family: 'JetBrains Mono', monospace; font-size: 10px; }
+</style>
+
+  <div class="sidebar-toggle">☰</div>
+
+  <div class="shell">
+    <div class="breadcrumb">
+      <a href="#">Notes</a> <span>›</span> <span>Test Outliner</span>
+    </div>
+
+    <div class="title">Test Outliner</div>
+    <div class="meta">
+      <span class="tag">Project</span>
+      <span>Created Apr 10, 2026</span>
+      <span>·</span>
+      <span>10 blocks</span>
+    </div>
+
+    <div class="block focused">
+      <div class="text">Ship the docs refresh <span style="background:rgba(74,127,181,0.1);color:#4a7fb5;padding:2px 8px;border-radius:4px;font-size:13px;font-weight:500;">#Task</span></div>
+      <div class="props">
+        <span class="status">⏳ doing</span>
+        <span class="priority">🔴 high</span>
+        <span>📅 2026-04-15</span>
+      </div>
+    </div>
+
+    <div class="block child">
+      <div class="text">Write the getting started guide</div>
+    </div>
+    <div class="block child">
+      <div class="text">Review with <a class="link" href="#">Person</a> team</div>
+    </div>
+
+    <div class="block">
+      <div class="text">Fix the login bug <span style="background:rgba(74,127,181,0.1);color:#4a7fb5;padding:2px 8px;border-radius:4px;font-size:13px;font-weight:500;">#Task</span> <span style="background:rgba(196,90,74,0.08);color:#c45a4a;padding:2px 8px;border-radius:4px;font-size:13px;font-weight:500;">#urgent</span></div>
+      <div class="props">
+        <span>📋 todo</span>
+      </div>
+    </div>
+
+    <div class="block child">
+      <div class="text">Reproduce on staging</div>
+    </div>
+    <div class="block child">
+      <div class="text">Check auth middleware</div>
+    </div>
+
+    <div class="block">
+      <div class="text">Weekly sync with <a class="link" href="#">Domain</a> leads</div>
+    </div>
+
+    <div class="block child">
+      <div class="text">Discuss Q2 roadmap</div>
+    </div>
+    <div class="block child">
+      <div class="text">Review <a class="link" href="#">LifeProject</a> priorities</div>
+    </div>
+  </div>
+
+  <div class="cmd-hint">
+    <span><kbd>⌘K</kbd> Search</span>
+    <span><kbd>Space</kbd> Menu</span>
+    <span><kbd>j/k</kbd> Navigate</span>
+    <span><kbd>/</kbd> Filter</span>
+  </div>
+
+  <div class="label">A: Focus Mode — sidebar hidden, note fills screen, keyboard hints at bottom</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- MOCKUP B: Canvas — notes as cards on a surface     -->
+<!-- ═══════════════════════════════════════════════════ -->
+<div class="mockup" id="b" style="background: #f5f0e8;">
+<style>
+  #b { color: #2c2824; }
+  #b .canvas { padding: 80px 60px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; max-width: 1200px; margin: 0 auto; }
+  #b .card { background: #fff; border-radius: 12px; padding: 24px; box-shadow: 0 1px 4px rgba(120,90,50,0.06); border: 1px solid #e8e0d4; transition: all 0.2s; cursor: pointer; }
+  #b .card:hover { box-shadow: 0 4px 16px rgba(120,90,50,0.1); transform: translateY(-1px); }
+  #b .card.wide { grid-column: 1 / -1; }
+  #b .card .card-title { font-family: 'Newsreader', serif; font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+  #b .card .card-meta { display: flex; gap: 8px; margin-bottom: 12px; }
+  #b .card .card-meta span { font-size: 10px; padding: 2px 8px; border-radius: 99px; background: rgba(196,133,44,0.08); color: #c4852c; font-weight: 500; }
+  #b .card .card-blocks { }
+  #b .card .card-block { padding: 6px 0; font-size: 14px; color: #5a5048; border-bottom: 1px solid #f0e8dc; }
+  #b .card .card-block:last-child { border-bottom: none; }
+  #b .card .card-block .link { color: #c4852c; text-decoration: none; }
+  #b .daily { background: linear-gradient(135deg, rgba(196,133,44,0.06), rgba(196,133,44,0.02)); border: 1px solid rgba(196,133,44,0.15); }
+  #b .daily .card-title { color: #c4852c; }
+  #b .header { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; }
+  #b .header h1 { font-family: 'Newsreader', serif; font-size: 28px; font-weight: 600; }
+  #b .header .actions { display: flex; gap: 8px; }
+  #b .header .actions button { padding: 8px 16px; border-radius: 8px; border: 1px solid #e8e0d4; background: #fff; font-size: 12px; color: #8a8078; cursor: pointer; }
+  #b .header .actions button.primary { background: #c4852c; color: #fff; border-color: #c4852c; }
+</style>
+
+  <div class="canvas">
+    <div class="header">
+      <h1>Your Notes</h1>
+      <div class="actions">
+        <button>⌘K Search</button>
+        <button class="primary">+ New Note</button>
+      </div>
+    </div>
+
+    <div class="card daily">
+      <div class="card-title">📅 Today — April 13, 2026</div>
+      <div class="card-blocks">
+        <div class="card-block" style="color: #8a8078; font-style: italic;">Click to start your daily note…</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Test Outliner</div>
+      <div class="card-meta"><span>Project</span><span>10 blocks</span></div>
+      <div class="card-blocks">
+        <div class="card-block">Ship the docs refresh <span style="color:#4a7fb5">#Task</span></div>
+        <div class="card-block">Fix the login bug <span style="color:#c45a4a">#urgent</span></div>
+        <div class="card-block">Weekly sync with <a class="link" href="#">Domain</a> leads</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Weekly Review</div>
+      <div class="card-meta"><span>3 blocks</span></div>
+      <div class="card-blocks">
+        <div class="card-block">Review Q2 goals and progress</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Task</div>
+      <div class="card-meta"><span>Tag</span><span>2 typed blocks</span></div>
+      <div class="card-blocks">
+        <div class="card-block" style="display:flex;justify-content:space-between;"><span>Ship the docs refresh</span><span style="color:#5a9a6a;font-size:12px;">doing</span></div>
+        <div class="card-block" style="display:flex;justify-content:space-between;"><span>Fix the login bug</span><span style="color:#8a8078;font-size:12px;">todo</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Person</div>
+      <div class="card-meta"><span>Tag</span></div>
+      <div class="card-blocks">
+        <div class="card-block">Person tag page.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="label">B: Canvas — notes as cards on a warm surface, daily note featured, grid layout</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════ -->
+<!-- MOCKUP C: Journal — chronological, paper-like      -->
+<!-- ═══════════════════════════════════════════════════ -->
+<div class="mockup" id="c" style="background: #faf7f2;">
+<style>
+  #c { color: #2c2824; }
+  #c .journal { max-width: 640px; margin: 0 auto; padding: 60px 20px 120px; }
+  #c .day { margin-bottom: 48px; }
+  #c .day-header { font-family: 'Newsreader', serif; font-size: 14px; font-weight: 500; color: #c4852c; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 16px; padding-bottom: 8px; border-bottom: 1px solid #e8e0d4; }
+  #c .entry { padding: 12px 16px; margin-bottom: 2px; border-radius: 6px; font-size: 15px; line-height: 1.7; cursor: text; transition: background 0.15s; }
+  #c .entry:hover { background: rgba(196,133,44,0.03); }
+  #c .entry .note-ref { font-size: 10px; color: #8a8078; margin-left: 8px; }
+  #c .entry .tag { background: rgba(74,127,181,0.08); color: #4a7fb5; padding: 1px 6px; border-radius: 4px; font-size: 12px; }
+  #c .entry .link { color: #c4852c; text-decoration: underline; text-decoration-color: rgba(196,133,44,0.3); text-underline-offset: 3px; }
+  #c .entry .prop { font-size: 12px; color: #8a8078; margin-top: 4px; }
+  #c .entry-group { border-left: 2px solid #e8e0d4; margin-left: 8px; padding-left: 12px; }
+  #c .sidebar { position: fixed; right: 20px; top: 80px; width: 180px; }
+  #c .sidebar .section { margin-bottom: 24px; }
+  #c .sidebar .section-title { font-size: 10px; color: #c4852c; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; margin-bottom: 8px; }
+  #c .sidebar .item { font-size: 12px; color: #8a8078; padding: 4px 0; cursor: pointer; }
+  #c .sidebar .item:hover { color: #2c2824; }
+</style>
+
+  <div class="sidebar">
+    <div class="section">
+      <div class="section-title">Jump to</div>
+      <div class="item">Today</div>
+      <div class="item">This Week</div>
+      <div class="item">This Month</div>
+    </div>
+    <div class="section">
+      <div class="section-title">Recent Notes</div>
+      <div class="item">Test Outliner</div>
+      <div class="item">Weekly Review</div>
+      <div class="item">Task</div>
+    </div>
+  </div>
+
+  <div class="journal">
+    <div class="day">
+      <div class="day-header">Today — Sunday, April 13</div>
+      <div class="entry" style="color: #8a8078; font-style: italic;">What's on your mind?</div>
+    </div>
+
+    <div class="day">
+      <div class="day-header">Saturday, April 12</div>
+      <div class="entry">Worked on the Tesela redesign all day <span class="note-ref">daily note</span></div>
+    </div>
+
+    <div class="day">
+      <div class="day-header">Friday, April 11</div>
+      <div class="entry">Ship the docs refresh <span class="tag">#Task</span>
+        <div class="prop">status: doing · priority: high · deadline: 2026-04-15</div>
+      </div>
+      <div class="entry-group">
+        <div class="entry">Write the getting started guide</div>
+        <div class="entry">Review with <a class="link" href="#">Person</a> team</div>
+      </div>
+      <div class="entry">Fix the login bug <span class="tag">#Task</span> <span class="tag" style="background:rgba(196,90,74,0.06);color:#c45a4a;">#urgent</span></div>
+      <div class="entry-group">
+        <div class="entry">Reproduce on staging</div>
+        <div class="entry">Check auth middleware</div>
+      </div>
+      <div class="entry">Weekly sync with <a class="link" href="#">Domain</a> leads</div>
+    </div>
+
+    <div class="day">
+      <div class="day-header">Thursday, April 10</div>
+      <div class="entry">Created Test Outliner page <span class="note-ref">test-outliner</span></div>
+      <div class="entry">Set up the web client with SvelteKit</div>
+    </div>
+  </div>
+
+  <div class="label">C: Journal — chronological daily stream, everything flows like a diary</div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<!-- MOCKUP D: Command-First — Raycast meets Obsidian      -->
+<!-- ═══════════════════════════════════════════════════════ -->
+<div class="mockup" id="d" style="background: #1a1820;">
+<style>
+  #d { color: #e8e0d4; }
+  #d .cmd-shell { max-width: 680px; margin: 0 auto; padding: 80px 20px; }
+  #d .cmd-bar { background: #24222c; border: 1px solid rgba(255,240,210,0.06); border-radius: 12px; padding: 16px 20px; margin-bottom: 24px; display: flex; align-items: center; gap: 12px; }
+  #d .cmd-bar input { background: none; border: none; outline: none; color: #e8e0d4; font-size: 16px; flex: 1; font-family: 'Source Sans 3', sans-serif; }
+  #d .cmd-bar input::placeholder { color: #5a5060; }
+  #d .cmd-bar .shortcut { font-size: 10px; color: #5a5060; background: #2a2830; padding: 2px 6px; border-radius: 4px; }
+  #d .results { }
+  #d .result-group { margin-bottom: 20px; }
+  #d .result-group-title { font-size: 10px; color: #d4a04a; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 600; margin-bottom: 8px; padding-left: 12px; }
+  #d .result { padding: 12px 16px; border-radius: 10px; cursor: pointer; transition: all 0.1s; display: flex; align-items: center; gap: 12px; }
+  #d .result:hover, #d .result.selected { background: rgba(212,160,74,0.08); }
+  #d .result.selected { border-left: 3px solid #d4a04a; }
+  #d .result .icon { width: 32px; height: 32px; border-radius: 8px; background: #2a2830; display: flex; align-items: center; justify-content: center; font-size: 14px; flex-shrink: 0; }
+  #d .result .info { flex: 1; min-width: 0; }
+  #d .result .info .name { font-size: 14px; font-weight: 500; }
+  #d .result .info .desc { font-size: 12px; color: #6a6070; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #d .result .meta { font-size: 11px; color: #5a5060; }
+  #d .preview { position: fixed; right: 40px; top: 80px; width: 400px; background: #24222c; border-radius: 12px; border: 1px solid rgba(255,240,210,0.06); padding: 24px; }
+  #d .preview .preview-title { font-family: 'Newsreader', serif; font-size: 22px; font-weight: 600; margin-bottom: 12px; }
+  #d .preview .preview-block { padding: 6px 0; font-size: 13px; color: #9a918a; border-bottom: 1px solid rgba(255,240,210,0.04); }
+  #d .preview .preview-block:last-child { border-bottom: none; }
+  #d .preview .preview-block .tag { color: #4a8fc5; }
+  #d .preview .preview-block .link { color: #d4a04a; }
+</style>
+
+  <div class="cmd-shell">
+    <div class="cmd-bar">
+      <span style="color: #d4a04a;">⌘</span>
+      <input type="text" placeholder="Search notes, run commands, or create…" autofocus>
+      <span class="shortcut">⌘K</span>
+    </div>
+
+    <div class="results">
+      <div class="result-group">
+        <div class="result-group-title">Quick Actions</div>
+        <div class="result">
+          <div class="icon">☀</div>
+          <div class="info"><div class="name">Today's Note</div><div class="desc">Open or create today's daily note</div></div>
+          <div class="meta">⌘D</div>
+        </div>
+        <div class="result">
+          <div class="icon">+</div>
+          <div class="info"><div class="name">New Note</div><div class="desc">Create a blank note</div></div>
+          <div class="meta">⌘N</div>
+        </div>
+      </div>
+
+      <div class="result-group">
+        <div class="result-group-title">Recent</div>
+        <div class="result selected">
+          <div class="icon">📄</div>
+          <div class="info"><div class="name">Test Outliner</div><div class="desc">Ship the docs refresh · Fix the login bug · Weekly sync…</div></div>
+          <div class="meta">10 blocks</div>
+        </div>
+        <div class="result">
+          <div class="icon">📄</div>
+          <div class="info"><div class="name">Weekly Review</div><div class="desc">Review Q2 goals and progress</div></div>
+          <div class="meta">1 block</div>
+        </div>
+        <div class="result">
+          <div class="icon">🏷</div>
+          <div class="info"><div class="name">Task</div><div class="desc">Tag page · 2 typed blocks</div></div>
+          <div class="meta">Tag</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="preview">
+    <div class="preview-title">Test Outliner</div>
+    <div class="preview-block">Ship the docs refresh <span class="tag">#Task</span> · doing · high</div>
+    <div class="preview-block" style="padding-left: 16px; border-left: 2px solid rgba(255,240,210,0.06);">Write the getting started guide</div>
+    <div class="preview-block" style="padding-left: 16px; border-left: 2px solid rgba(255,240,210,0.06);">Review with <span class="link">Person</span> team</div>
+    <div class="preview-block">Fix the login bug <span class="tag">#Task</span> · todo</div>
+    <div class="preview-block">Weekly sync with <span class="link">Domain</span> leads</div>
+  </div>
+
+  <div class="label">D: Command-First — everything via search bar, preview on the side, Raycast energy</div>
+</div>
+
+<script>
+  document.querySelectorAll('.nav a').forEach(a => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      document.querySelectorAll('.nav a').forEach(x => x.classList.remove('active'));
+      document.querySelectorAll('.mockup').forEach(x => x.classList.remove('active'));
+      a.classList.add('active');
+      document.getElementById(a.dataset.target).classList.add('active');
+    });
+  });
+</script>
+</body>
+</html>
