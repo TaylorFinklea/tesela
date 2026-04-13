@@ -169,18 +169,16 @@
   });
 
   onMount(() => {
-    const theme = EditorView.theme(
-      {
-        "&": { backgroundColor: "transparent", color: "var(--foreground)", fontSize: "14px", fontFamily: "inherit" },
-        ".cm-content": { caretColor: "var(--foreground)", padding: "0" },
-        ".cm-line": { padding: "0" },
-        "&.cm-focused .cm-cursor": { borderLeftColor: "var(--foreground)" },
-        "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": { backgroundColor: "hsl(0 0% 30%)" },
-        ".cm-gutters": { display: "none" },
-        "&.cm-focused": { outline: "none" },
-      },
-      { dark: true },
-    );
+    const theme = EditorView.theme({
+      "&": { backgroundColor: "transparent", color: "var(--foreground)", fontSize: "14px", fontFamily: "'Source Sans 3', -apple-system, system-ui, sans-serif", lineHeight: "1.7" },
+      ".cm-content": { caretColor: "var(--primary)", padding: "0" },
+      ".cm-line": { padding: "2px 0" },
+      "&.cm-focused .cm-cursor": { borderLeftColor: "var(--primary)", borderLeftWidth: "2px" },
+      ".cm-fat-cursor": { background: "color-mix(in srgb, var(--primary) 25%, transparent) !important" },
+      "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": { backgroundColor: "color-mix(in srgb, var(--primary) 15%, transparent)" },
+      ".cm-gutters": { display: "none" },
+      "&.cm-focused": { outline: "none" },
+    });
 
     const focusBlurHandler = EditorView.domEventHandlers({
       focus: () => { onFocus?.(); return false; },

@@ -79,19 +79,19 @@
 
 <div class="flex-1 flex min-h-0">
   <div class="flex-1 flex flex-col min-w-0">
-    <header class="border-b border-border px-6 h-[52px] flex items-center gap-3 shrink-0">
-      <a href="/" class="text-[12px] text-muted-foreground/40 hover:text-primary transition-colors">&larr;</a>
+    <header class="border-b border-border px-8 h-14 flex items-center gap-4 shrink-0">
+      <a href="/" class="text-muted-foreground hover:text-primary transition-colors text-sm">&larr;</a>
       {#if note}
-        <h1 class="text-[15px] font-bold tracking-tight truncate">{note.title}</h1>
+        <h1 class="font-display text-xl font-semibold tracking-tight truncate">{note.title}</h1>
         {#if note.metadata.tags.length > 0}
           <div class="flex gap-1.5">
             {#each note.metadata.tags as tag}
-              <span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-300/80 border border-blue-500/10 font-medium">{tag}</span>
+              <span class="text-[11px] px-2.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">{tag}</span>
             {/each}
           </div>
         {/if}
         {#if isTagPage}
-          <span class="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium border border-primary/15">Tag</span>
+          <span class="text-[11px] px-2.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">Tag</span>
         {/if}
         <div class="flex-1"></div>
         <button
@@ -106,7 +106,7 @@
       {/if}
     </header>
 
-    <div class="flex-1 overflow-y-auto px-6 py-4">
+    <div class="flex-1 overflow-y-auto px-10 py-8">
       {#if noteQuery.isLoading}
         <div class="text-sm text-muted-foreground">Loading…</div>
       {:else if noteQuery.isError}

@@ -177,21 +177,13 @@
     Click to start writing…
   </div>
 {:else}
-  <div class="space-y-0">
+  <div class="space-y-2">
     {#each blocks as block, index (block.id)}
       <div
-        class="group flex items-start transition-all relative"
-        style="padding-left: {block.indent_level * 22}px; background: {block.indent_level === 0 ? 'var(--block-bg, transparent)' : 'transparent'}; border-radius: {block.indent_level === 0 ? 'var(--block-radius, 0px)' : '0px'}; box-shadow: {block.indent_level === 0 && focusedIndex === index ? 'var(--focus-glow, none)' : block.indent_level === 0 ? 'var(--block-shadow, none)' : 'none'}; border: {block.indent_level === 0 ? '1px solid var(--block-border, transparent)' : 'none'}; margin-bottom: {block.indent_level === 0 ? '4px' : '0px'}; border-left: {focusedIndex === index ? '3px solid var(--primary)' : '3px solid transparent'};"
+        class="group flex items-start transition-all relative rounded-[var(--block-radius,10px)]"
+        style="padding-left: {block.indent_level * 24}px; background: {block.indent_level === 0 ? 'var(--block-bg)' : 'transparent'}; box-shadow: {block.indent_level === 0 ? (focusedIndex === index ? 'var(--focus-glow)' : 'var(--block-shadow)') : 'none'}; border: {block.indent_level === 0 ? '1px solid var(--block-border)' : 'none'}; border-left: {focusedIndex === index ? '3px solid var(--primary)' : block.indent_level === 0 ? '3px solid transparent' : '2px solid var(--thread-border)'};"
       >
-        {#if block.indent_level > 0}
-          {#each { length: block.indent_level } as _, lvl}
-            <span
-              class="absolute top-0 bottom-0 w-px"
-              style="left: {lvl * 22 + 11}px; background: var(--thread-border, oklch(1 0 0 / 4%));"
-            ></span>
-          {/each}
-        {/if}
-        <div class="flex-1 min-w-0 py-1 pl-2.5">
+        <div class="flex-1 min-w-0 py-3 px-4">
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => { if (focusedIndex === index) focusedIndex = null; }}

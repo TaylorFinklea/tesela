@@ -11,7 +11,7 @@
     if (browser) localStorage.setItem(`tesela:${key}`, value);
   }
 
-  let themeId = $state(loadSetting("theme-id", "tesela"));
+  let themeId = $state(loadSetting("mode", "day"));
   let fontSize = $state(loadSetting("fontSize", "14"));
   let vimEnabled = $state(loadSetting("vimEnabled", "true"));
   let serverUrl = $state(loadSetting("serverUrl", "http://127.0.0.1:7474"));
