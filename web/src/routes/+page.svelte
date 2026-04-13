@@ -19,10 +19,10 @@
 </script>
 
 <div class="flex-1 flex flex-col">
-  <header class="border-b border-border px-6 h-[52px] flex items-center justify-between shrink-0">
-    <span class="text-[15px] font-bold tracking-tight">All Notes</span>
-    <div class="flex items-center gap-2 text-[11px] text-muted-foreground/40">
-      <span class="inline-block h-[6px] w-[6px] rounded-full {wsConnected ? 'bg-emerald-400/70' : 'bg-muted-foreground/30'}"></span>
+  <header class="border-b border-border px-8 h-14 flex items-center justify-between shrink-0">
+    <h1 class="font-display text-xl font-semibold tracking-tight">All Notes</h1>
+    <div class="flex items-center gap-2 text-[12px] text-muted-foreground">
+      <span class="inline-block h-[6px] w-[6px] rounded-full {wsConnected ? 'bg-emerald-500' : 'bg-muted-foreground'}"></span>
       <span>{notesQuery.isLoading ? "loading" : wsConnected ? "live" : "offline"}</span>
     </div>
   </header>

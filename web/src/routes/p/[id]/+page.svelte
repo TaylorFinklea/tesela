@@ -79,34 +79,41 @@
 
 <div class="flex-1 flex min-h-0">
   <div class="flex-1 flex flex-col min-w-0">
-    <header class="border-b border-border px-6 h-[52px] flex items-center gap-3 shrink-0">
-      <a href="/" class="text-[12px] text-muted-foreground/40 hover:text-primary transition-colors">&larr;</a>
-      {#if note}
-        <h1 class="text-[15px] font-bold tracking-tight truncate">{note.title}</h1>
-        {#if note.metadata.tags.length > 0}
-          <div class="flex gap-1.5">
-            {#each note.metadata.tags as tag}
-              <span class="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-300/80 border border-blue-500/10 font-medium">{tag}</span>
-            {/each}
+    <div class="flex-1 overflow-y-auto">
+      <!-- Focus Mode header — inline with content, not a separate bar -->
+      <div class="max-w-3xl mx-auto px-10 pt-10 pb-4">
+        {#if note}
+          <div class="flex items-center gap-2 text-[12px] text-muted-foreground mb-4">
+            <a href="/" class="hover:text-primary transition-colors">Notes</a>
+            <span>›</span>
+            <span>{note.title}</span>
+            <div class="flex-1"></div>
+            <button
+              onclick={deleteNote}
+              class="text-muted-foreground/40 hover:text-destructive p-1 rounded-md hover:bg-destructive/10 transition-all"
+              title="Delete note"
+            >
+              <IconTrash size={14} stroke={1.5} />
+            </button>
           </div>
+          <h1 class="font-display text-3xl font-semibold tracking-tight leading-tight mb-2">{note.title}</h1>
+          <div class="flex items-center gap-3 mb-8">
+            {#if note.metadata.tags.length > 0}
+              {#each note.metadata.tags as tag}
+                <span class="text-[11px] px-2.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">{tag}</span>
+              {/each}
+            {/if}
+            {#if isTagPage}
+              <span class="text-[11px] px-2.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">Tag</span>
+            {/if}
+          </div>
+        {:else}
+          <div class="py-8 text-muted-foreground">Loading…</div>
         {/if}
-        {#if isTagPage}
-          <span class="text-[10px] px-2 py-0.5 rounded-full bg-primary/10 text-primary font-medium border border-primary/15">Tag</span>
-        {/if}
-        <div class="flex-1"></div>
-        <button
-          onclick={deleteNote}
-          class="text-muted-foreground/40 hover:text-destructive p-1 rounded-md hover:bg-destructive/10 transition-all"
-          title="Delete note"
-        >
-          <IconTrash size={14} stroke={1.5} />
-        </button>
-      {:else}
-        <h1 class="text-[13px] font-semibold tracking-tight text-muted-foreground">Loading…</h1>
-      {/if}
-    </header>
+      </div>
 
-    <div class="flex-1 overflow-y-auto px-6 py-4">
+      <!-- Content -->
+      <div class="max-w-3xl mx-auto px-10 pb-16">
       {#if noteQuery.isLoading}
         <div class="text-sm text-muted-foreground">Loading…</div>
       {:else if noteQuery.isError}
@@ -139,6 +146,7 @@
           </div>
         {/if}
       {/if}
+      </div>
     </div>
   </div>
 

@@ -70,29 +70,31 @@ export const teselaDecorations = ViewPlugin.fromClass(
 
 export const teselaDecorationTheme = EditorView.theme({
   ".cm-tesela-tag": {
-    color: "oklch(0.70 0.15 220)",
-    backgroundColor: "oklch(0.70 0.15 220 / 8%)",
+    color: "var(--primary)",
+    backgroundColor: "color-mix(in srgb, var(--primary) 10%, transparent)",
     borderRadius: "4px",
-    padding: "1px 5px",
+    padding: "1px 6px",
     fontSize: "0.88em",
     fontWeight: "500",
   },
   ".cm-tesela-wikilink": {
-    color: "oklch(0.78 0.14 75)",
+    color: "var(--primary)",
     textDecoration: "underline",
-    textDecorationColor: "oklch(0.78 0.14 75 / 30%)",
-    textUnderlineOffset: "2px",
+    textDecorationColor: "color-mix(in srgb, var(--primary) 30%, transparent)",
+    textUnderlineOffset: "3px",
+    textDecorationThickness: "1px",
   },
   ".cm-tesela-wikilink-bracket": {
-    color: "oklch(0.78 0.14 75 / 25%)",
+    color: "var(--muted-foreground)",
+    opacity: "0.4",
     fontSize: "0.85em",
   },
   ".cm-tesela-prop-key": {
-    color: "oklch(0.45 0 0)",
+    color: "var(--muted-foreground)",
     fontSize: "0.9em",
   },
   ".cm-tesela-prop-value": {
-    color: "oklch(0.68 0.10 160)",
+    color: "color-mix(in srgb, var(--primary) 50%, var(--foreground))",
     fontSize: "0.9em",
   },
 });

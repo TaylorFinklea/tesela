@@ -177,21 +177,31 @@
     Click to start writing…
   </div>
 {:else}
-  <div class="space-y-0">
+  <div class="space-y-1">
     {#each blocks as block, index (block.id)}
       <div
         class="group flex items-start transition-all relative"
-        style="padding-left: {block.indent_level * 22}px; background: {block.indent_level === 0 ? 'var(--block-bg, transparent)' : 'transparent'}; border-radius: {block.indent_level === 0 ? 'var(--block-radius, 0px)' : '0px'}; box-shadow: {block.indent_level === 0 && focusedIndex === index ? 'var(--focus-glow, none)' : block.indent_level === 0 ? 'var(--block-shadow, none)' : 'none'}; border: {block.indent_level === 0 ? '1px solid var(--block-border, transparent)' : 'none'}; margin-bottom: {block.indent_level === 0 ? '4px' : '0px'}; border-left: {focusedIndex === index ? '3px solid var(--primary)' : '3px solid transparent'};"
+        style="padding-left: {block.indent_level * 24}px; {block.indent_level === 0 ? `background: var(--block-bg); border-radius: var(--block-radius, 8px); box-shadow: ${focusedIndex === index ? 'var(--focus-glow)' : 'var(--block-shadow)'}; border: 1px solid var(--block-border);` : ''}"
       >
+        <!-- Threading lines -->
         {#if block.indent_level > 0}
           {#each { length: block.indent_level } as _, lvl}
             <span
               class="absolute top-0 bottom-0 w-px"
-              style="left: {lvl * 22 + 11}px; background: var(--thread-border, oklch(1 0 0 / 4%));"
+              style="left: {lvl * 24 + 10}px; background: var(--thread-border);"
             ></span>
           {/each}
         {/if}
-        <div class="flex-1 min-w-0 py-1 pl-2.5">
+
+        <!-- Bullet -->
+        <div class="shrink-0 pt-[14px] pl-2 pr-1">
+          <span
+            class="block w-[6px] h-[6px] rounded-full transition-colors {focusedIndex === index ? 'bg-primary' : 'bg-muted-foreground/40'}"
+          ></span>
+        </div>
+
+        <!-- Content -->
+        <div class="flex-1 min-w-0 py-2 pr-3">
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => { if (focusedIndex === index) focusedIndex = null; }}

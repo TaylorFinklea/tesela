@@ -46,8 +46,8 @@
 
     // Apply saved theme
     if (browser) {
-      const savedTheme = localStorage.getItem("tesela:theme-id") ?? "tesela";
-      applyTheme(savedTheme);
+      const mode = localStorage.getItem("tesela:mode") ?? "day";
+      applyTheme(mode);
     }
 
     // Space leader key — works outside editors AND from Vim normal mode (via custom event)

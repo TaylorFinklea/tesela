@@ -73,7 +73,7 @@
   >
     <!-- Brand -->
     <div class="flex items-center justify-between px-4 h-[52px] shrink-0">
-      <a href="/" class="text-[15px] font-bold tracking-tight text-foreground/90">Tesela</a>
+      <a href="/" class="font-display text-lg font-semibold tracking-tight text-foreground">Tesela</a>
       <button onclick={onToggle} class="text-muted-foreground hover:text-primary p-1 rounded-md hover:bg-muted transition-all" title="Collapse (1)">
         <IconChevronLeft size={14} stroke={1.5} />
       </button>
