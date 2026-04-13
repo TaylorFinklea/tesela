@@ -11,7 +11,7 @@
     if (browser) localStorage.setItem(`tesela:${key}`, value);
   }
 
-  let themeId = $state(loadSetting("theme-id", "tesela"));
+  let themeId = $state(loadSetting("mode", "day"));
   let fontSize = $state(loadSetting("fontSize", "14"));
   let vimEnabled = $state(loadSetting("vimEnabled", "true"));
   let serverUrl = $state(loadSetting("serverUrl", "http://127.0.0.1:7474"));
@@ -47,7 +47,7 @@
           {#each themes as t}
             <button
               class="text-left px-3 py-2.5 rounded-lg text-[12px] transition-all border {themeId === t.id ? 'bg-primary/10 text-primary border-primary/20 ring-1 ring-primary/15' : 'text-muted-foreground border-border/50 hover:bg-muted/40 hover:text-foreground'}"
-              onclick={() => { themeId = t.id; saveSetting("theme-id", t.id); applyTheme(t.id); }}
+              onclick={() => { themeId = t.id; applyTheme(t.id); }}
             >
               <div class="font-medium">{t.name}</div>
               <div class="text-[10px] mt-0.5 {themeId === t.id ? 'text-primary/60' : 'text-muted-foreground/40'}">{t.description}</div>
