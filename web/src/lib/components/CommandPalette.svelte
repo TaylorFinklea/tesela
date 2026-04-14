@@ -260,10 +260,10 @@
 {#if open}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="fixed inset-0 z-50 flex items-start justify-center pt-[15vh]" style="animation: palette-fade-in 0.12s ease-out;">
+  <div class="fixed inset-0 z-50 flex items-start justify-center pt-[10vh]" style="animation: palette-fade-in 0.12s ease-out;">
     <div class="absolute inset-0 bg-foreground/10 backdrop-blur-sm" onclick={close}></div>
 
-    <div class="relative w-full max-w-[560px] rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl overflow-hidden" style="animation: palette-slide-in 0.12s ease-out;">
+    <div class="relative w-full max-w-[560px] max-h-[70vh] flex flex-col rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl overflow-hidden" style="animation: palette-slide-in 0.12s ease-out;">
       <!-- Search input -->
       <div class="flex items-center gap-3 px-4 py-3 border-b border-border">
         <IconSearch size={16} stroke={1.5} class="text-muted-foreground shrink-0" />

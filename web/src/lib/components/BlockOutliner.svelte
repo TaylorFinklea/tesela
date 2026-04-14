@@ -177,11 +177,11 @@
     Click to start writing…
   </div>
 {:else}
-  <div class="space-y-1">
+  <div class="space-y-0">
     {#each blocks as block, index (block.id)}
       <div
-        class="group flex items-start transition-all relative"
-        style="padding-left: {block.indent_level * 24}px; {block.indent_level === 0 ? `background: var(--block-bg); border-radius: var(--block-radius, 8px); box-shadow: ${focusedIndex === index ? 'var(--focus-glow)' : 'var(--block-shadow)'}; border: 1px solid var(--block-border);` : ''}"
+        class="group flex items-start transition-all relative {focusedIndex === index ? 'bg-accent/40' : ''}"
+        style="padding-left: {block.indent_level * 24}px;"
       >
         <!-- Threading lines -->
         {#if block.indent_level > 0}
@@ -194,14 +194,14 @@
         {/if}
 
         <!-- Bullet -->
-        <div class="shrink-0 pt-[14px] pl-2 pr-1">
+        <div class="shrink-0 pt-[12px] pl-2 pr-1.5">
           <span
-            class="block w-[6px] h-[6px] rounded-full transition-colors {focusedIndex === index ? 'bg-primary' : 'bg-muted-foreground/40'}"
+            class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === index ? 'bg-primary' : 'bg-muted-foreground/30'}"
           ></span>
         </div>
 
         <!-- Content -->
-        <div class="flex-1 min-w-0 py-2 pr-3">
+        <div class="flex-1 min-w-0 py-1 pr-3">
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => { if (focusedIndex === index) focusedIndex = null; }}
