@@ -235,10 +235,12 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "ArrowDown") {
+    const down = e.key === "ArrowDown" || (e.ctrlKey && e.key === "j");
+    const up = e.key === "ArrowUp" || (e.ctrlKey && e.key === "k");
+    if (down) {
       e.preventDefault();
       selectedIndex = Math.min(allItems.length - 1, selectedIndex + 1);
-    } else if (e.key === "ArrowUp") {
+    } else if (up) {
       e.preventDefault();
       selectedIndex = Math.max(0, selectedIndex - 1);
     } else if (e.key === "Enter" && allItems[selectedIndex]) {
