@@ -106,6 +106,7 @@
     type: "command" | "note" | "search" | "create";
     label: string;
     sublabel?: string;
+    htmlSublabel?: boolean;
     icon?: string;
     shortcut?: string;
     action: () => void;
@@ -211,7 +212,8 @@
           items: uniqueSearchResults.map((h) => ({
             type: "search" as const,
             label: h.title,
-            sublabel: h.snippet.replace(/<\/?b>/g, ""),
+            sublabel: h.snippet.replace(/<(?!\/?b>)[^>]+>/g, ""),
+            htmlSublabel: true,
             action: () => { close(); goto(`/p/${encodeURIComponent(h.note_id)}`); },
           })),
         });
@@ -306,7 +308,11 @@
                 {/if}
                 <span class="flex-1 truncate">{item.label}</span>
                 {#if item.sublabel}
-                  <span class="text-[11px] text-muted-foreground truncate max-w-[180px]">{item.sublabel}</span>
+                  {#if item.htmlSublabel}
+                    <span class="text-[11px] text-muted-foreground truncate max-w-[220px] [&>b]:text-foreground [&>b]:font-semibold">{@html item.sublabel}</span>
+                  {:else}
+                    <span class="text-[11px] text-muted-foreground truncate max-w-[180px]">{item.sublabel}</span>
+                  {/if}
                 {/if}
                 {#if item.shortcut}
                   <kbd class="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded shrink-0">{item.shortcut}</kbd>
