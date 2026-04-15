@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { IconArrowsExchange } from "@tabler/icons-svelte";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { PropertyDef } from "$lib/types/PropertyDef";
 
@@ -13,7 +14,7 @@
     properties: PropertyDef[];
     groupByProp: string;
     ondragstart: (e: DragEvent, block: ParsedBlock) => void;
-    onmoverequest: (block: ParsedBlock) => void;
+    onmoverequest: (block: ParsedBlock, event: MouseEvent) => void;
   } = $props();
 
   // Show up to 3 non-group-by properties that have values
@@ -32,26 +33,27 @@
   function handleDragStart(e: DragEvent) {
     ondragstart(e, block);
   }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "m") {
-      e.preventDefault();
-      onmoverequest(block);
-    }
-  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="kanban-card rounded-lg border p-3 cursor-grab active:cursor-grabbing transition-all hover:shadow-md focus:outline-none"
+  class="kanban-card group rounded-lg border p-3 cursor-grab active:cursor-grabbing transition-all hover:shadow-md"
   style="background: var(--block-bg); border-color: var(--block-border); box-shadow: var(--block-shadow)"
   draggable="true"
-  tabindex="0"
   ondragstart={handleDragStart}
-  onkeydown={handleKeydown}
 >
-  <div class="text-[13px] leading-snug line-clamp-2" style="color: var(--foreground)">
-    {block.text || "(empty)"}
+  <div class="flex items-start gap-1">
+    <div class="flex-1 text-[13px] leading-snug line-clamp-2" style="color: var(--foreground)">
+      {block.text || "(empty)"}
+    </div>
+    <button
+      onclick={(e: MouseEvent) => { e.stopPropagation(); onmoverequest(block, e); }}
+      class="shrink-0 p-0.5 rounded opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+      style="color: var(--muted-foreground)"
+      title="Move to column"
+    >
+      <IconArrowsExchange size={12} />
+    </button>
   </div>
 
   {#if badges.length > 0}

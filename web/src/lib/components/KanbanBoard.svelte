@@ -113,15 +113,14 @@
     dragOverColumn = null;
   }
 
-  // Keyboard move: column picker
+  // Move picker (triggered by hover button on card)
   let movePickerBlock = $state<ParsedBlock | null>(null);
   let movePickerPosition = $state({ x: 0, y: 0 });
 
-  function handleMoveRequest(block: ParsedBlock) {
-    // Position picker near the card
-    const card = document.querySelector(`[data-block-id="${CSS.escape(block.id)}"]`);
-    if (card) {
-      const rect = card.getBoundingClientRect();
+  function handleMoveRequest(block: ParsedBlock, event?: MouseEvent) {
+    if (event) {
+      const target = event.currentTarget as HTMLElement;
+      const rect = target.getBoundingClientRect();
       movePickerPosition = { x: rect.right + 4, y: rect.top };
     }
     movePickerBlock = block;
@@ -215,7 +214,6 @@
         <div class="flex flex-col gap-2 p-2 flex-1 min-h-[80px] overflow-y-auto max-h-[60vh]">
           {#each columnBlocks as block (block.id)}
             <div
-              data-block-id={block.id}
               class="transition-opacity {draggedBlockId === block.id ? 'opacity-40' : ''}"
             >
               <KanbanCard
