@@ -4,8 +4,9 @@
   import { goto } from "$app/navigation";
   import { api } from "$lib/api-client";
   import { getRecents } from "$lib/stores/recents.svelte";
+  import { getFavorites } from "$lib/stores/favorites.svelte";
   import type { Note } from "$lib/types/Note";
-  import { IconSun, IconCalendarEvent, IconGraph, IconSettings, IconChevronLeft, IconChevronRight, IconClock, IconFile } from "@tabler/icons-svelte";
+  import { IconSun, IconCalendarEvent, IconGraph, IconSettings, IconChevronLeft, IconChevronRight, IconClock, IconFile, IconStar } from "@tabler/icons-svelte";
 
   let { collapsed, onToggle }: { collapsed: boolean; onToggle: () => void } = $props();
   let selectedIndex = $state(-1);
@@ -15,6 +16,11 @@
   const notesQuery = createQuery(() => ({ queryKey: ["notes", { limit: 200 }] as const, queryFn: () => api.listNotes({ limit: 200 }) }));
   const notes = $derived(notesQuery.data ?? [] as Note[]);
   const currentPath = $derived(page.url.pathname);
+  const favoriteNotes: Note[] = $derived(
+    getFavorites()
+      .map((id: string) => notes.find((n: Note) => n.id === id))
+      .filter((n): n is Note => n !== undefined),
+  );
   const recentNotes: Note[] = $derived(
     getRecents().slice(0, 5)
       .map((id: string) => notes.find((n: Note) => n.id === id))
@@ -32,6 +38,7 @@
 
   const allItems = $derived([
     ...navItems.map((item) => ({ path: item.path, label: item.label })),
+    ...favoriteNotes.map((n: Note) => ({ path: `/p/${encodeURIComponent(n.id)}`, label: n.title })),
     ...recentNotes.map((n: Note) => ({ path: `/p/${encodeURIComponent(n.id)}`, label: n.title })),
   ]);
 
@@ -92,14 +99,32 @@
       {/each}
     </div>
 
-    <!-- Scrollable area: recents -->
+    <!-- Scrollable area: favorites + recents -->
     <nav class="flex-1 overflow-y-auto px-2 pb-2">
+      {#if favoriteNotes.length > 0}
+        <div class="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] px-3 pt-2 pb-1.5">
+          <IconStar size={11} stroke={1.5} class="text-primary/30" /> Favorites
+        </div>
+        {#each favoriteNotes as note, fi (note.id)}
+          {@const itemIndex = navItems.length + fi}
+          {@const isSelected = sidebarFocused && selectedIndex === itemIndex}
+          {@const isActive = currentPath === `/p/${encodeURIComponent(note.id)}`}
+          <a
+            href="/p/{encodeURIComponent(note.id)}"
+            class="block rounded-lg px-3 py-[5px] text-[12px] truncate transition-all
+              {isSelected ? 'bg-primary/10 text-primary ring-1 ring-primary/15 font-medium' : ''}
+              {isActive && !isSelected ? 'bg-muted/60 text-foreground/90 font-medium' : ''}
+              {!isActive && !isSelected ? 'text-muted-foreground/80 hover:text-foreground/70 hover:bg-muted/30' : ''}"
+          >{note.title}</a>
+        {/each}
+      {/if}
+
       {#if recentNotes.length > 0}
         <div class="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] px-3 pt-2 pb-1.5">
           <IconClock size={11} stroke={1.5} class="text-primary/30" /> Recent
         </div>
         {#each recentNotes as note, ni (note.id)}
-          {@const itemIndex = navItems.length + ni}
+          {@const itemIndex = navItems.length + favoriteNotes.length + ni}
           {@const isSelected = sidebarFocused && selectedIndex === itemIndex}
           {@const isActive = currentPath === `/p/${encodeURIComponent(note.id)}`}
           <a

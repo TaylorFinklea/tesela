@@ -26,6 +26,7 @@ export function buildCommands(deps: {
   toggleTheme: () => void;
   deleteNote?: () => void;
   copyNoteLink?: () => void;
+  toggleFavorite?: () => void;
 }): Command[] {
   const commands: Command[] = [
     // === Actions ===
@@ -130,6 +131,18 @@ export function buildCommands(deps: {
       keywords: ["copy", "link", "url", "share"],
       context: "note-page",
       action: () => deps.copyNoteLink!(),
+    });
+  }
+
+  if (deps.toggleFavorite) {
+    commands.push({
+      id: "toggle-favorite",
+      label: "Toggle Favorite",
+      icon: "IconStar",
+      category: "context",
+      keywords: ["favorite", "star", "pin", "bookmark"],
+      context: "note-page",
+      action: () => deps.toggleFavorite!(),
     });
   }
 

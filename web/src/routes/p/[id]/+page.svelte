@@ -10,8 +10,9 @@
   import { addRecent } from "$lib/stores/recents.svelte";
   import { goto } from "$app/navigation";
   import { untrack } from "svelte";
-  import { IconTrash } from "@tabler/icons-svelte";
+  import { IconTrash, IconStar, IconStarFilled } from "@tabler/icons-svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
+  import { isFavorite, toggleFavorite } from "$lib/stores/favorites.svelte";
 
   const queryClient = useQueryClient();
   const noteId = $derived(page.params.id ?? "");
@@ -88,6 +89,17 @@
             <span>›</span>
             <span>{note.title}</span>
             <div class="flex-1"></div>
+            <button
+              onclick={() => toggleFavorite(noteId)}
+              class="p-1 rounded-md transition-all {isFavorite(noteId) ? 'text-primary' : 'text-muted-foreground/40 hover:text-primary/60 hover:bg-primary/10'}"
+              title={isFavorite(noteId) ? "Remove from favorites" : "Add to favorites"}
+            >
+              {#if isFavorite(noteId)}
+                <IconStarFilled size={14} stroke={1.5} />
+              {:else}
+                <IconStar size={14} stroke={1.5} />
+              {/if}
+            </button>
             <button
               onclick={deleteNote}
               class="text-muted-foreground/40 hover:text-destructive p-1 rounded-md hover:bg-destructive/10 transition-all"

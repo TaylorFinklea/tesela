@@ -5,6 +5,7 @@
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import { getRecents } from "$lib/stores/recents.svelte";
+  import { toggleFavorite } from "$lib/stores/favorites.svelte";
   import { getTheme, applyTheme } from "$lib/themes";
   import { buildCommands, matchesQuery, type Command } from "$lib/commands";
   import type { Note } from "$lib/types/Note";
@@ -91,6 +92,10 @@
     } : undefined,
     copyNoteLink: isNotePage ? () => {
       navigator.clipboard.writeText(`tesela://p/${currentNoteId}`);
+      close();
+    } : undefined,
+    toggleFavorite: isNotePage ? () => {
+      toggleFavorite(currentNoteId);
       close();
     } : undefined,
   }));
