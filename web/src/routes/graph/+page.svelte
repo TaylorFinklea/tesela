@@ -16,8 +16,55 @@
     queryFn: () => api.getAllEdges(),
   }));
 
-  const notes: Note[] = $derived((notesQuery.data ?? []) as Note[]);
-  const edges: GraphEdge[] = $derived((edgesQuery.data ?? []) as GraphEdge[]);
+  const allNotes: Note[] = $derived((notesQuery.data ?? []) as Note[]);
+  const allEdges: GraphEdge[] = $derived((edgesQuery.data ?? []) as GraphEdge[]);
+
+  // Filters
+  let filterTag = $state("");
+  let maxDepth = $state(0); // 0 = show all
+
+  // Available tags for filter
+  const availableTags = $derived.by(() => {
+    const tagSet = new Set<string>();
+    for (const n of allNotes) {
+      for (const t of n.metadata.tags) tagSet.add(t);
+    }
+    return [...tagSet].sort();
+  });
+
+  // Filtered notes/edges based on tag + depth
+  const { notes, edges } = $derived.by(() => {
+    if (!filterTag && maxDepth === 0) return { notes: allNotes, edges: allEdges };
+
+    // Start with notes matching the tag filter
+    let matchingIds: Set<string>;
+    if (filterTag) {
+      matchingIds = new Set(allNotes.filter((n) => n.metadata.tags.includes(filterTag)).map((n) => n.id.toLowerCase()));
+    } else {
+      matchingIds = new Set(allNotes.map((n) => n.id.toLowerCase()));
+    }
+
+    // Expand by depth (BFS from matching nodes along edges)
+    if (maxDepth > 0 && filterTag) {
+      let frontier = new Set(matchingIds);
+      for (let d = 0; d < maxDepth; d++) {
+        const next = new Set<string>();
+        for (const edge of allEdges) {
+          const sl = edge.source.toLowerCase();
+          const tl = edge.target.toLowerCase();
+          if (frontier.has(sl) && !matchingIds.has(tl)) next.add(tl);
+          if (frontier.has(tl) && !matchingIds.has(sl)) next.add(sl);
+        }
+        for (const id of next) matchingIds.add(id);
+        frontier = next;
+        if (next.size === 0) break;
+      }
+    }
+
+    const filteredNotes = allNotes.filter((n) => matchingIds.has(n.id.toLowerCase()));
+    const filteredEdges = allEdges.filter((e) => matchingIds.has(e.source.toLowerCase()) && matchingIds.has(e.target.toLowerCase()));
+    return { notes: filteredNotes, edges: filteredEdges };
+  });
 
   let canvas: HTMLCanvasElement;
   let width = $state(800);
@@ -131,10 +178,16 @@
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
+    // Read theme colors
+    const style = getComputedStyle(document.documentElement);
+    const primary = style.getPropertyValue("--primary").trim() || "#c9a84c";
+    const fg = style.getPropertyValue("--foreground").trim() || "#ffffff";
+    const muted = style.getPropertyValue("--muted-foreground").trim() || "#888888";
+
     ctx.clearRect(0, 0, width, height);
 
     // Edges
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.08)";
+    ctx.strokeStyle = muted + "20";
     ctx.lineWidth = 1;
     for (const edge of graphEdges) {
       const a = nodes[edge.source];
@@ -153,16 +206,16 @@
       ctx.beginPath();
       ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
       ctx.fillStyle = isHovered
-        ? "rgba(255, 255, 255, 0.9)"
+        ? primary
         : node.connections > 0
-          ? "rgba(255, 255, 255, 0.5)"
-          : "rgba(255, 255, 255, 0.2)";
+          ? fg + "80"
+          : fg + "33";
       ctx.fill();
 
       // Label for hovered or connected nodes
       if (isHovered || node.connections >= 2) {
-        ctx.font = isHovered ? "12px sans-serif" : "10px sans-serif";
-        ctx.fillStyle = isHovered ? "rgba(255,255,255,0.95)" : "rgba(255,255,255,0.4)";
+        ctx.font = isHovered ? "12px 'Source Sans 3', sans-serif" : "10px 'Source Sans 3', sans-serif";
+        ctx.fillStyle = isHovered ? fg : muted + "66";
         ctx.fillText(node.title, node.x + r + 4, node.y + 4);
       }
     }
@@ -219,8 +272,45 @@
 </script>
 
 <div class="flex-1 flex flex-col">
-  <header class="border-b border-border px-6 py-3 flex items-center justify-between">
-    <span class="text-xs text-muted-foreground">Graph View</span>
+  <header class="border-b border-border px-6 py-2.5 flex items-center gap-4 shrink-0">
+    <span class="text-xs text-muted-foreground shrink-0">Graph View</span>
+
+    <!-- Tag filter -->
+    <select
+      bind:value={filterTag}
+      class="text-[11px] bg-muted/30 border border-border/50 rounded-md px-2 py-1 text-foreground/80 outline-none focus:border-primary/40 transition-colors"
+    >
+      <option value="">All tags</option>
+      {#each availableTags as tag}
+        <option value={tag}>{tag}</option>
+      {/each}
+    </select>
+
+    <!-- Depth slider (only when filtering) -->
+    {#if filterTag}
+      <div class="flex items-center gap-2">
+        <span class="text-[10px] text-muted-foreground/60">Depth</span>
+        <input
+          type="range"
+          min="0"
+          max="5"
+          bind:value={maxDepth}
+          class="w-16 accent-primary"
+        />
+        <span class="text-[10px] text-muted-foreground font-mono w-4">{maxDepth || "∞"}</span>
+      </div>
+    {/if}
+
+    {#if filterTag}
+      <button
+        onclick={() => { filterTag = ""; maxDepth = 0; }}
+        class="text-[10px] text-muted-foreground/50 hover:text-foreground/70 transition-colors"
+      >
+        Clear
+      </button>
+    {/if}
+
+    <span class="flex-1"></span>
     <span class="text-xs text-muted-foreground">{notes.length} notes, {edges.length} links</span>
   </header>
 
