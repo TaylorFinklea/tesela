@@ -71,7 +71,7 @@ Daily-driver outliner with Vim. Migrated from Next.js/React to SvelteKit/Svelte 
 ### Phase 3: Power Features (NEXT)
 
 #### Anytype-Style Types & Relations
-- [ ] Kanban view on tag pages (group by select property like Status)
+- [x] Kanban view on tag pages (group by select property like Status)
 - [ ] Queries / Sets — saved filters by type + property, displayed as table/list/kanban
 - [ ] Collections — manual page groupings
 - [ ] Node references — property value links to another page (bidirectional)
