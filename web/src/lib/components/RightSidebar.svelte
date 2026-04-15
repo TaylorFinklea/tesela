@@ -1,10 +1,37 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
+  import type { Note } from "$lib/types/Note";
   import type { Link } from "$lib/types/Link";
   import type { GraphEdge } from "$lib/types/GraphEdge";
 
   let { noteId, collapsed, onToggle }: { noteId: string; collapsed: boolean; onToggle: () => void } = $props();
+
+  const noteQuery = createQuery(() => ({
+    queryKey: ["note", noteId] as const,
+    queryFn: () => api.getNote(noteId),
+    enabled: !collapsed && noteId !== "",
+  }));
+
+  const note: Note | undefined = $derived(noteQuery.data as Note | undefined);
+
+  // Extract custom properties from content (key:: value lines)
+  const customProperties = $derived.by(() => {
+    if (!note) return [];
+    const props: { key: string; value: string }[] = [];
+    const lines = note.content.split("\n");
+    for (const line of lines) {
+      const match = line.trim().match(/^([A-Za-z_][A-Za-z0-9_]*):: (.+)$/);
+      if (match) {
+        const key = match[1];
+        // Skip duplicates (take first occurrence)
+        if (!props.some((p) => p.key.toLowerCase() === key.toLowerCase())) {
+          props.push({ key, value: match[2] });
+        }
+      }
+    }
+    return props;
+  });
 
   const backlinksQuery = createQuery(() => ({
     queryKey: ["backlinks", noteId] as const,
@@ -49,9 +76,53 @@
 {:else}
   <div class="w-[200px] bg-surface border-l border-border flex flex-col shrink-0 overflow-y-auto">
     <div class="flex items-center justify-between px-4 h-[52px] border-b border-border shrink-0">
-      <span class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em]">Links</span>
+      <span class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em]">Details</span>
       <button onclick={onToggle} class="text-muted-foreground hover:text-primary text-[10px] p-1 rounded-md hover:bg-muted transition-all" title="Hide right panel">▶</button>
     </div>
+
+    <!-- Properties -->
+    {#if note}
+      <div class="px-4 py-3">
+        <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">Properties</div>
+
+        <!-- Tags -->
+        {#if note.metadata.tags.length > 0}
+          <div class="mb-2">
+            <div class="text-[10px] text-muted-foreground/50 mb-1">Tags</div>
+            <div class="flex flex-wrap gap-1">
+              {#each note.metadata.tags as tag}
+                <a
+                  href="/p/{encodeURIComponent(tag)}"
+                  class="text-[10px] px-1.5 py-px rounded-full bg-primary/10 text-primary/80 hover:text-primary transition-colors"
+                >{tag}</a>
+              {/each}
+            </div>
+          </div>
+        {/if}
+
+        <!-- Type -->
+        {#if note.metadata.note_type}
+          <div class="mb-2">
+            <div class="text-[10px] text-muted-foreground/50 mb-0.5">Type</div>
+            <div class="text-[11px] text-foreground/70">{note.metadata.note_type}</div>
+          </div>
+        {/if}
+
+        <!-- Custom properties -->
+        {#if customProperties.length > 0}
+          {#each customProperties as prop}
+            <div class="mb-1.5">
+              <div class="text-[10px] text-muted-foreground/50 mb-0.5">{prop.key}</div>
+              <div class="text-[11px] text-foreground/70 break-words">{prop.value}</div>
+            </div>
+          {/each}
+        {/if}
+
+        {#if note.metadata.tags.length === 0 && !note.metadata.note_type && customProperties.length === 0}
+          <div class="text-[11px] text-muted-foreground/40 italic">No properties</div>
+        {/if}
+      </div>
+    {/if}
 
     <!-- Backlinks -->
     <div class="px-4 py-3">
