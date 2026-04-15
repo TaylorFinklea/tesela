@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
+  import { updateBlockProperty } from "$lib/property-update";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { TypeDefinition } from "$lib/types/TypeDefinition";
   import type { PropertyDef } from "$lib/types/PropertyDef";
@@ -73,63 +74,17 @@
 
   async function handlePropertyUpdate(value: string) {
     if (!editingBlock || !editingProp) return;
-    const block = editingBlock;
-    const propKey = editingProp.name.toLowerCase();
-
-    // Fetch the note, update the block's property in the raw content
     try {
-      const note = await api.getNote(block.note_id);
-      const content = note.content;
-
-      // Find the block in the content and update the property line
-      const lines = content.split("\n");
-      let updated = false;
-
-      // Find the block by matching its text (more reliable than line-number indexing)
-      const blockText = block.raw_text.split("\n")[0] ?? "";
-      let inBlock = false;
-
-      for (let i = 0; i < lines.length; i++) {
-        const trimmed = lines[i].trim();
-
-        // Match the block's first line (strip "- " prefix for comparison)
-        if (trimmed.startsWith("- ") && trimmed.slice(2).startsWith(blockText.split("\n")[0])) {
-          inBlock = true;
-          continue;
-        }
-
-        if (inBlock) {
-          // End of block: next block line or empty line
-          if (trimmed.startsWith("- ") || (trimmed === "" && i > 0)) {
-            // Property not found in block — insert it before this line
-            const blockIndent = lines[i - 1] ? (lines[i - 1].length - lines[i - 1].trimStart().length) : 2;
-            lines.splice(i, 0, " ".repeat(blockIndent) + `${propKey}:: ${value}`);
-            updated = true;
-            break;
-          }
-          const propMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*):: (.+)$/);
-          if (propMatch && propMatch[1].toLowerCase() === propKey) {
-            // Replace the property value
-            const indent = lines[i].length - lines[i].trimStart().length;
-            lines[i] = " ".repeat(indent) + `${propMatch[1]}:: ${value}`;
-            updated = true;
-            break;
-          }
-        }
-      }
-
-      if (!updated && inBlock) {
-        lines.push(`  ${propKey}:: ${value}`);
-      }
-
-      const newContent = lines.join("\n");
-      await api.updateNote(block.note_id, newContent);
-      queryClient.invalidateQueries({ queryKey: ["typed-blocks", tagName] });
-      queryClient.invalidateQueries({ queryKey: ["note", block.note_id] });
+      await updateBlockProperty({
+        block: editingBlock,
+        propKey: editingProp.name,
+        value,
+        tagName,
+        queryClient,
+      });
     } catch (e) {
       console.error("Failed to update property:", e);
     }
-
     editingBlock = null;
     editingProp = null;
   }
