@@ -31,11 +31,11 @@ let viewModes = $state<Record<string, ViewMode>>({});
 let groupByProps = $state<Record<string, string>>({});
 
 export function getViewMode(tagName: string): ViewMode {
-  if (viewModes[tagName] !== undefined) return viewModes[tagName];
+  // Read $state first (for reactivity tracking), fall back to localStorage
+  const cached = viewModes[tagName];
+  if (cached !== undefined) return cached;
   const stored = load(VIEW_KEY_PREFIX + tagName);
-  const mode = stored === "kanban" ? "kanban" : "table";
-  viewModes[tagName] = mode;
-  return mode;
+  return stored === "kanban" ? "kanban" : "table";
 }
 
 export function setViewMode(tagName: string, mode: ViewMode) {
@@ -44,9 +44,9 @@ export function setViewMode(tagName: string, mode: ViewMode) {
 }
 
 export function getGroupByProp(tagName: string): string {
-  if (groupByProps[tagName] !== undefined) return groupByProps[tagName];
+  const cached = groupByProps[tagName];
+  if (cached !== undefined) return cached;
   const stored = load(GROUP_KEY_PREFIX + tagName);
-  groupByProps[tagName] = stored ?? "";
   return stored ?? "";
 }
 
