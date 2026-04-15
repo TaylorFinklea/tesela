@@ -1,47 +1,46 @@
 # Next Steps
 
-*Last updated: 2026-04-09*
+*Last updated: 2026-04-14*
 
-## Web Client — M1 Next
+## What's Done
 
-Plan: `/Users/tfinklea/.claude/plans/async-giggling-moth.md`
+The web client is feature-complete through Phase 2 (Navigation & Discovery). All core outliner, Vim, slash commands, leader menu, sidebar, command palette, graph, timeline, tag tables, settings, themes, favorites, search highlighting, tag table filtering, right sidebar properties, and graph filters are implemented and working.
 
-### M0 — Scaffold & Connect ✓
+## Next Phase Candidates
 
-All M0 items done. See `current-state.md` for the full summary.
+Pick from these based on what feels most needed for daily-driver use:
 
-### M1 — Read-only outliner (immediate)
+### Phase 3A: Type System Depth (Anytype vision)
+- [ ] Kanban view on tag pages (group blocks by a select property like Status)
+- [ ] Queries / Sets — saved filters by type + property values, displayed as table/list/kanban
+- [ ] Collections — manual groupings of pages
+- [ ] Node references — property value links to another page (bidirectional)
+- [ ] Tag inheritance — `extends` chain (Task → Root Tag), child inherits parent properties
+- [ ] Global property registry — search existing property pages when adding to a tag
 
-Open questions to resolve before starting:
-- **BlockParser strategy.** Port `tesela-core/src/block.rs` to TypeScript (zero round-trip, duplicated logic) or expose it via a new `GET /notes/:id/blocks` endpoint (single source of truth, one extra fetch per note open). Recommended: port to TS — block parsing needs to be synchronous inside the editor.
-- **Route shape.** `/p/[id]` for a single note, or stick with `/notes/[id]`? Pick one and stay consistent.
+### Phase 3B: Editor Power Features
+- [ ] Visual mode in Vim (character + line selection)
+- [ ] Block merge on Backspace at start of non-empty block
+- [ ] Multi-block selection and operations
+- [ ] `/template` slash command — insert from template pages
+- [ ] `/date` slash command — date picker UI
+- [ ] Block drill-in — focus on a single block and its children
 
-Implementation:
-- Add `api.getNote(id)` to `web/src/lib/api-client.ts`
-- Create `web/src/lib/block-parser.ts` (if porting) or the new API endpoint (if not)
-- Create `web/src/app/p/[id]/page.tsx` — fetches the note, parses blocks, renders them in an indented layout
-- Create `web/src/components/BlockEditor.tsx` — one CM6 instance per block in read-only mode, with decorations for `[[wiki-links]]`, `#tags`, and `key:: value` property lines
-- Arrow-key navigation between blocks (leaves editor focus on blur, restores on focus)
-- Click a wiki-link → route to that page
+### Phase 3C: Polish & Edge Cases
+- [ ] Empty/loading/error states for every view (audit)
+- [ ] Keyboard shortcuts for favorites (e.g., `f` to toggle)
+- [ ] Graph: click node → navigate, drag to reposition
+- [ ] Right sidebar: inline property editing (not just display)
+- [ ] Breadcrumb improvements — clickable path segments
+- [ ] Mobile/responsive layout considerations
 
-### Post-M1
+### Rust Backlog (parallel)
+See `roadmap.md` Backlog section — Haiku and Sonnet tier items are safe for parallel work.
 
-- **M2** — CM6 editable + 500ms debounced `PUT /notes/{id}` + Enter/Tab/Shift-Tab block ops + WS reconcile without clobbering in-flight edits
-- **M3** — Vim engine (new TS implementation, Vitest coverage, cross-block motions, command palette)
-- **M4** — Sidebar & tag pages
-- **M5** — Tiles & drill-in
-- **M6** — Graph & search UI
-- **M7** — Theme/polish to Linear/Logseq/Zed bar
-- **M8** — (Optional) Tauri wrap
+## When Picking Up Work
 
-### Rust-side backlog (still active)
-
-See `.docs/ai/roadmap.md` Backlog section — Haiku and Sonnet items are fair game.
-
-## When picking up work
-
-1. Read `.docs/ai/roadmap.md`, `current-state.md`, and this file
-2. Read the plan file at `/Users/tfinklea/.claude/plans/async-giggling-moth.md`
-3. Start `tesela-server` for testing: `cargo run -p tesela-server`
-4. Start the web dev server: `pnpm --dir web dev`
-5. Pick from the current milestone's checklist
+1. Read `.docs/ai/current-state.md` and this file
+2. Check `git log --oneline -10` to see recent changes
+3. Start `tesela-server`: `cargo run -p tesela-server`
+4. Start web dev server: `pnpm --dir web dev`
+5. Pick a phase or ask Taylor what to prioritize

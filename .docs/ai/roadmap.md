@@ -2,7 +2,7 @@
 
 ## What Tesela Is
 
-Keyboard-first note-taking system (org-mode successor). Rust backend + Next.js web frontend. Taylor's daily-driver tool — reliability matters more than features.
+Keyboard-first note-taking system (org-mode successor). Rust backend + SvelteKit web frontend. Taylor's daily-driver tool — reliability matters more than features.
 
 **Core principle:** Database-first, files are export format. Everything is a page.
 
@@ -25,7 +25,7 @@ Tesela is NOT just an outliner. The long-term vision is a personal knowledge ope
 ## Architecture
 
 - **Rust workspace** (`crates/`): tesela-core, tesela-cli, tesela-tui, tesela-mcp, tesela-server, tesela-plugins
-- **Web app** (`web/`): Next.js 16 App Router + React + TypeScript + CodeMirror 6 + `@replit/codemirror-vim` + shadcn/ui + Tailwind + TanStack Query + Zustand + cmdk + Lucide
+- **Web app** (`web/`): SvelteKit 2 + Svelte 5 (runes) + TypeScript + CodeMirror 6 + `@replit/codemirror-vim` + Tailwind v4 + TanStack Query (@tanstack/svelte-query) + Tabler Icons
 - **Type system**: Tags, Properties, and Values are pages with YAML frontmatter (Logseq DB + AnyType hybrid — see `memory/project_property_system_vision.md` for deep architecture)
 
 ## Rust Backend — stable, not blocked
@@ -43,132 +43,62 @@ The server + core library are mature. No immediate feature work needed beyond ba
 
 ## Web Client — Phases
 
-### Phase 1: Core Outliner (CURRENT)
+### Phase 1: Core Outliner ✓
 
-Get to daily-driver outliner with Vim. This is the minimum before Taylor can use it.
+Daily-driver outliner with Vim. Migrated from Next.js/React to SvelteKit/Svelte 5 on 2026-04-10.
 
-#### M0 — Scaffold & Connect ✓ (2026-04-09)
-- [x] ts-rs type bridge (11 Rust types → TS)
-- [x] Next.js 16 + shadcn/ui + CM6 + TanStack Query scaffold
-- [x] api-client.ts + ws-client.ts (exponential backoff reconnect)
-- [x] Boot screen with live WS status, notes list
+#### M0–M2 — Core Outliner ✓ (2026-04-09 → 2026-04-11)
+- [x] SvelteKit 2 + Svelte 5 scaffold (migrated from Next.js)
+- [x] Block parser, always-editable CM6, block operations
+- [x] Vim mode + block operators (dd, yy, p, o, O, >>, <<)
+- [x] ⌘K Raycast-style command palette with sections, search highlighting
+- [x] Slash commands (/task, /todo, /doing, /done, /heading, /property, /link, /date)
+- [x] Space leader menu (hierarchical, which-key style)
+- [x] Inline autocomplete for #tags and [[wiki-links]]
 
-#### M1 — Block Outliner ✓ (2026-04-10)
-- [x] Block parser ported to TypeScript
-- [x] Indented block rendering with bullet dots
-- [x] Tag pills (#Task, #urgent) linking to tag pages
-- [x] Wiki-links ([[Person]]) as clickable navigation
-- [x] Property display (status:: doing) below blocks
-- [x] Click-to-edit with inline CM6, debounced PUT save
-- [ ] Arrow-key navigation between blocks (up/down moves focus)
-- [ ] Escape to exit block editor back to reading mode
+### Phase 2: Navigation & Views ✓ (2026-04-12 → 2026-04-14)
 
-#### M2 — Block Operations
-- [ ] Enter creates a new sibling block below
-- [ ] Tab indents block (becomes child of previous sibling)
-- [ ] Shift-Tab outdents block
-- [ ] Backspace at start of empty block deletes it
-- [ ] Backspace at start of non-empty block merges with previous
-- [ ] Copy/paste blocks (preserving hierarchy)
+- [x] Sidebar: Today/Timeline/Graph/Pages nav, Favorites, Recents, collapse toggle
+- [x] Tag page table views: sortable columns, per-column filters, inline property editing
+- [x] Right sidebar: properties panel (tags, type, custom), backlinks, forward links
+- [x] Logseq-style journal timeline with inline editable blocks per day
+- [x] Canvas force-directed graph with tag filters, depth slider, theme-aware colors
+- [x] Full-text search with bold match highlighting in command palette
+- [x] Favorites system (localStorage, star toggle, sidebar section, command palette)
+- [x] Settings page (themes, font size, Vim toggle, server URL, shortcuts reference)
+- [x] 6 themes: Day, Evening, Woven, Tile Grid, Depth Layers, Neon Glow
 
-#### M3 — Vim Engine + Command Palette
-- [ ] Vim mode toggle (start in Normal mode)
-- [ ] Normal mode: `h`/`j`/`k`/`l`, `w`/`b`/`e`, `gg`/`G`, `0`/`$`
-- [ ] Operators: `d`/`c`/`y` with motions and text objects
-- [ ] Visual mode (character + line)
-- [ ] Dot-repeat, count prefix
-- [ ] `/` search with `n`/`N` navigation and highlighting
-- [ ] Cross-block `j`/`k` (exit current block's CM6, focus prev/next block)
-- [ ] **⌘K Command Palette** (cmdk) — search pages, run commands, create notes
-- [ ] Command palette actions: "New note", "Go to daily", "Search all notes", "Toggle sidebar"
+### Phase 3: Power Features (NEXT)
 
-### Phase 2: Navigation & Views
+#### Anytype-Style Types & Relations
+- [ ] Kanban view on tag pages (group by select property like Status)
+- [ ] Queries / Sets — saved filters by type + property, displayed as table/list/kanban
+- [ ] Collections — manual page groupings
+- [ ] Node references — property value links to another page (bidirectional)
+- [ ] Tag inheritance — `extends` chain, child inherits parent properties
+- [ ] Global property registry — search existing property pages when adding to a tag
 
-#### M4 — Sidebar
-- [ ] Left sidebar: Pages list, Recents, Favorites, Graph nav
-- [ ] Sidebar search/filter
-- [ ] Sidebar collapse toggle
-- [ ] Favorite/unfavorite pages
+#### Editor Power Features
+- [ ] Visual mode (character + line selection)
+- [ ] Block merge on Backspace at start of non-empty block
+- [ ] Multi-block selection and operations
+- [ ] `/template` — insert from template pages
+- [ ] `/date` — date picker UI
+- [ ] Block drill-in (focus single block + children)
 
-#### M5 — Tag Page Views
-- [ ] Tag pages show table of all blocks/notes with that tag
-- [ ] Table view with sortable columns based on tag properties
-- [ ] Filter by property values
-- [ ] Kanban view (group by a select property like Status)
-- [ ] Property editor on tag pages (add/remove/reorder tag_properties)
+#### Polish
+- [ ] Right sidebar: inline property editing (not just display)
+- [ ] Right sidebar: pin pages for split view
+- [ ] Empty/loading/error state audit across all views
+- [ ] Graph: drag nodes to reposition
 
-#### M6 — Right Sidebar
-- [ ] Backlinks panel (grouped by source page with context)
-- [ ] Forward links panel
-- [ ] Properties panel for focused block
-- [ ] Pin any page to right sidebar (split view)
-- [ ] Table of contents / page structure
+### Phase 4: Distribution
 
-#### M7 — Daily Notes & Tiles
-- [ ] Daily notes timeline (virtualized scrolling)
-- [ ] Click to open, inline editing in timeline
-- [ ] "Go to today" shortcut
-- [ ] Daily note auto-creation
-
-#### M8 — Graph & Search
-- [ ] Force-directed graph view (Cytoscape.js or similar)
-- [ ] Click node → navigate to note
-- [ ] Graph filters (by tag, by connection depth)
-- [ ] Global search modal with live results, highlighting, match counts
-- [ ] Search result snippets with context
-
-### Phase 3: Power Features
-
-#### M9 — Slash Commands
-- [ ] Type `/` at start of block → command menu appears
-- [ ] `/task` — convert block to Task (add #Task tag + properties)
-- [ ] `/heading` — convert to heading block
-- [ ] `/todo`, `/doing`, `/done` — set task status
-- [ ] `/template` — insert a template (from template pages)
-- [ ] `/property` — add an inline property to this block
-- [ ] `/date` — insert date picker
-- [ ] `/link` — search and insert wiki-link
-- [ ] Extensible — new slash commands via config or plugin pages
-
-#### M10 — Space/Leader Commands
-- [ ] In Normal mode, press Space → which-key-style popup appears
-- [ ] `Space f` → file: new, open, recent, favorites
-- [ ] `Space s` → search: full-text, tags, properties, backlinks
-- [ ] `Space g` → graph: open graph, focus current page in graph
-- [ ] `Space b` → buffer: switch between open pages, close page
-- [ ] `Space t` → tasks: list all tasks, filter by status
-- [ ] `Space d` → daily: go to today, yesterday, tomorrow
-- [ ] `Space p` → properties: edit current block/page properties
-- [ ] Hierarchical — each category opens a sub-menu with more options
-- [ ] Discoverable — key hints shown in popup, searchable
-
-#### M11 — Anytype-Style Types & Relations
-- [ ] **Property pages** — Status, Priority, Deadline are pages with `type: "Property"`, `value_type`, `choices`
-- [ ] **Global property registry** — when adding a property to a tag, search existing property pages first
-- [ ] **Tag inheritance** — `extends` chain (Task → Root Tag), child inherits parent's tag_properties
-- [ ] **Property configuration UI** — value type, default, choices, hide-by-default, position
-- [ ] **Property value types** — Text, Number, Date, DateTime, Checkbox, Select, URL, Node (link to another page)
-- [ ] **Node references** — property value links to another page (bidirectional)
-- [ ] **Type creation UI** — name, icon, properties, default layout (page/list/table/kanban)
-- [ ] **Queries / Sets** — saved filters by type + property values, displayed as table/list/kanban
-- [ ] **Collections** — manual groupings of pages (complement to query-based Sets)
-
-### Phase 4: Polish & Distribution
-
-#### M12 — Theme & Settings
-- [ ] Settings page (theme, accent color, server URL, Vim toggle)
-- [ ] Dark/light/auto theme
-- [ ] Accent color picker
-- [ ] Empty/loading/error states for every view
-- [ ] **Linear/Logseq/Zed craft bar** — every screen held to this design standard
-
-#### M13 — (Optional) Tauri Wrap
+#### (Optional) Tauri Wrap
 - [ ] Tauri shell serving `web/out/`
-- [ ] Menu bar, global hotkeys
-- [ ] `tesela web` CLI subcommand
-- [ ] System tray with quick capture
+- [ ] Menu bar, global hotkeys, system tray
 
-**Deferred past Phase 4:** Whiteboards (Excalidraw), long-form prose mode, mobile/iOS, multi-device sync (CRDTs), App Store distribution, plugin marketplace, collaborative editing.
+**Deferred:** Whiteboards, long-form prose, mobile/iOS, multi-device sync (CRDTs), App Store, plugin marketplace, collaborative editing.
 
 ---
 
@@ -206,7 +136,7 @@ Get to daily-driver outliner with Vim. This is the minimum before Taylor can use
 - No business logic in the web client — only in `tesela-core` traits
 - Database-first; files are export format
 - Everything is a page — types, properties, tags are all note files
-- Icons: Lucide in web client
+- Icons: Tabler Icons in web client
 - Command palette is the primary discovery surface for commands
 
 ## Non-Goals (for now)
