@@ -224,15 +224,19 @@
     }
   }
 
-  // Scroll focused card into view when navigation changes
+  // Scroll focused card (or column, when the column has no cards) into view
   $effect(() => {
     if (!focused) return;
     // Read reactive dependencies
     const _c = focusedColIndex;
     const _r = focusedCardIndex;
-    queueMicrotask(() => {
-      const el = document.querySelector("[data-kanban-focused='true']");
-      if (el) el.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+    requestAnimationFrame(() => {
+      const card = document.querySelector("[data-kanban-focused='true']");
+      const column = document.querySelector("[data-kanban-col-focused='true']");
+      // Horizontal scroll: always scroll the column into view (for h/l column nav)
+      if (column) column.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+      // Vertical scroll: focused card into view within its column
+      if (card) card.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
     });
   });
 </script>
@@ -274,6 +278,7 @@
       {@const isDragOver = dragOverColumn === column}
       {@const isColumnFocused = focused && colIdx === focusedColIndex}
       <div
+        data-kanban-col-focused={isColumnFocused ? "true" : undefined}
         class="flex-shrink-0 w-64 min-w-[256px] flex flex-col rounded-lg transition-all"
         class:ring-2={isDragOver || isColumnFocused}
         style="
