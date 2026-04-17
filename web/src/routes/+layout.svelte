@@ -131,6 +131,10 @@
 
       // Second key: dispatch window command
       if (isCtrlWPending()) {
+        // Ignore modifier-only keydowns so user can press Shift to type "+"
+        if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") {
+          return;
+        }
         e.preventDefault();
         e.stopPropagation();
         switch (e.key) {

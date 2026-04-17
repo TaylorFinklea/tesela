@@ -15,12 +15,10 @@
     onclose: () => void;
   } = $props();
 
-  let selectedIndex = $state(0);
-
-  $effect(() => {
-    const idx = columns.indexOf(currentColumn);
-    if (idx >= 0) selectedIndex = idx;
-  });
+  // Initialize to current column's index (or 0). Don't use $effect — that re-runs
+  // whenever the parent's derived columns array is re-read and resets selection.
+  const initialIdx = columns.indexOf(currentColumn);
+  let selectedIndex = $state(initialIdx >= 0 ? initialIdx : 0);
 
   function label(col: string): string {
     return col === "__unset__" ? "Unset" : col;
