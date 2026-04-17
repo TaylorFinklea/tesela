@@ -7,8 +7,19 @@
   import TagPropertyConfig from "$lib/components/TagPropertyConfig.svelte";
   import ViewSwitcher from "$lib/components/ViewSwitcher.svelte";
   import KanbanBoard from "$lib/components/KanbanBoard.svelte";
+  import SplitDivider from "$lib/components/SplitDivider.svelte";
   import RightSidebar from "$lib/components/RightSidebar.svelte";
   import { getViewMode, setViewMode } from "$lib/stores/tag-view-prefs.svelte";
+  import {
+    isSplitOpen,
+    getActivePane,
+    getSplitRatio,
+    setActivePane,
+    openSplit,
+    closeSplit,
+    setSplitRatio,
+    isVimEnabled,
+  } from "$lib/stores/pane-state.svelte";
   import type { Note } from "$lib/types/Note";
   import { addRecent } from "$lib/stores/recents.svelte";
   import { goto } from "$app/navigation";
@@ -48,6 +59,35 @@
   // Detect if this is a Tag page (show table view)
   const isTagPage = $derived(note?.metadata.note_type === "Tag");
 
+  // Split pane derived state
+  const tagName = $derived(note?.title ?? "");
+  const viewMode = $derived(tagName ? getViewMode(tagName) : "table");
+  const vimOn = $derived(isVimEnabled());
+  const showSplit = $derived(vimOn && isSplitOpen() && isTagPage && viewMode === "kanban");
+  const activePane = $derived(getActivePane());
+  const splitRatio = $derived(getSplitRatio());
+
+  // Auto-open split on tag pages in kanban mode (with Vim on)
+  $effect(() => {
+    if (isTagPage && vimOn && viewMode === "kanban" && !isSplitOpen()) {
+      untrack(() => openSplit());
+    }
+  });
+
+  // Close split when navigating away from tag pages
+  $effect(() => {
+    if (!isTagPage && isSplitOpen()) {
+      untrack(() => closeSplit());
+    }
+  });
+
+  function handleViewChange(mode: "table" | "kanban") {
+    if (!tagName) return;
+    setViewMode(tagName, mode);
+    if (mode === "kanban" && vimOn) openSplit();
+    else closeSplit();
+  }
+
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let rightSidebarCollapsed = $state(false);
 
@@ -83,8 +123,16 @@
 
 <div class="flex-1 flex min-h-0">
   <div class="flex-1 flex flex-col min-w-0">
-    <div class="flex-1 overflow-y-auto">
-      <!-- Focus Mode header — inline with content, not a separate bar -->
+    <!-- Top pane: note header + outliner + tag config + (inline kanban/table when not split) -->
+    <div
+      class="overflow-y-auto transition-shadow"
+      style="
+        {showSplit ? `height: ${splitRatio}%` : 'flex: 1 1 0%'};
+        {showSplit && activePane === 'outliner' ? 'box-shadow: inset 2px 0 0 0 var(--primary)' : ''}
+      "
+      onclick={() => { if (showSplit) setActivePane('outliner'); }}
+    >
+      <!-- Focus Mode header -->
       <div class="max-w-3xl mx-auto px-10 pt-10 pb-4">
         {#if note}
           <div class="flex items-center gap-2 text-[12px] text-muted-foreground mb-4">
@@ -149,7 +197,6 @@
         />
 
         {#if isTagPage}
-          {@const viewMode = getViewMode(note.title)}
           <div class="mt-6 pt-4 border-t border-border space-y-6">
             <TagPropertyConfig tagName={note.title} noteId={note.id} />
 
@@ -158,12 +205,18 @@
                 <h2 class="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-widest">
                   #{note.title} Blocks
                 </h2>
-                <ViewSwitcher mode={viewMode} onchange={(m) => setViewMode(note.title, m)} />
+                <ViewSwitcher mode={viewMode} onchange={handleViewChange} />
               </div>
-              {#if viewMode === "kanban"}
-                <KanbanBoard tagName={note.title} />
+              {#if !showSplit}
+                {#if viewMode === "kanban"}
+                  <KanbanBoard tagName={note.title} />
+                {:else}
+                  <TagTable tagName={note.title} />
+                {/if}
               {:else}
-                <TagTable tagName={note.title} />
+                <div class="text-[11px] text-muted-foreground/60 italic py-2">
+                  Kanban open in split pane below. Ctrl+w j/k to switch panes.
+                </div>
               {/if}
             </div>
           </div>
@@ -171,6 +224,26 @@
       {/if}
       </div>
     </div>
+
+    <!-- Split divider + bottom pane -->
+    {#if showSplit && note}
+      <SplitDivider onresize={(r: number) => setSplitRatio(r)} />
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="overflow-hidden flex flex-col transition-shadow"
+        style="
+          height: {100 - splitRatio}%;
+          background: var(--surface);
+          {activePane === 'kanban' ? 'box-shadow: inset 2px 0 0 0 var(--primary)' : ''}
+        "
+        onclick={() => setActivePane('kanban')}
+      >
+        <div class="flex-1 overflow-y-auto px-4 py-3">
+          <KanbanBoard tagName={note.title} focused={activePane === "kanban"} />
+        </div>
+      </div>
+    {/if}
   </div>
 
   <RightSidebar

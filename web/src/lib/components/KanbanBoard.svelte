@@ -1,6 +1,7 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
+  import { goto } from "$app/navigation";
   import { updateBlockProperty, clearBlockProperty } from "$lib/property-update";
   import { getGroupByProp, setGroupByProp } from "$lib/stores/tag-view-prefs.svelte";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
@@ -9,7 +10,7 @@
   import KanbanCard from "./KanbanCard.svelte";
   import KanbanColumnPicker from "./KanbanColumnPicker.svelte";
 
-  let { tagName }: { tagName: string } = $props();
+  let { tagName, focused = false }: { tagName: string; focused?: boolean } = $props();
 
   const queryClient = useQueryClient();
 
@@ -145,7 +146,98 @@
   function columnLabel(col: string): string {
     return col === "__unset__" ? "Unset" : col;
   }
+
+  // Keyboard navigation (active when focused)
+  let focusedColIndex = $state(0);
+  let focusedCardIndex = $state(0);
+
+  function clampCardIndex() {
+    const cards = groupedBlocks.get(columnNames[focusedColIndex]) ?? [];
+    focusedCardIndex = Math.min(focusedCardIndex, Math.max(0, cards.length - 1));
+  }
+
+  function handleKanbanKeydown(e: KeyboardEvent) {
+    if (!focused) return;
+    if (movePickerBlock) return; // picker handles its own keys
+
+    const target = e.target;
+    if (target instanceof HTMLElement) {
+      const isEditing =
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable ||
+        target.closest(".cm-editor") !== null;
+      if (isEditing) return;
+    }
+
+    const cols = columnNames;
+    const currentCards = groupedBlocks.get(cols[focusedColIndex]) ?? [];
+
+    switch (e.key) {
+      case "j":
+        e.preventDefault();
+        focusedCardIndex = Math.min(Math.max(0, currentCards.length - 1), focusedCardIndex + 1);
+        break;
+      case "k":
+        e.preventDefault();
+        focusedCardIndex = Math.max(0, focusedCardIndex - 1);
+        break;
+      case "h":
+        e.preventDefault();
+        focusedColIndex = Math.max(0, focusedColIndex - 1);
+        clampCardIndex();
+        break;
+      case "l":
+        e.preventDefault();
+        focusedColIndex = Math.min(cols.length - 1, focusedColIndex + 1);
+        clampCardIndex();
+        break;
+      case "G":
+        e.preventDefault();
+        focusedCardIndex = Math.max(0, currentCards.length - 1);
+        break;
+      case "g":
+        e.preventDefault();
+        focusedCardIndex = 0;
+        break;
+      case "Enter": {
+        e.preventDefault();
+        const card = currentCards[focusedCardIndex];
+        if (card) goto(`/p/${encodeURIComponent(card.note_id)}`);
+        break;
+      }
+      case "m": {
+        e.preventDefault();
+        const block = currentCards[focusedCardIndex];
+        if (block) {
+          // Position picker next to the focused card
+          const el = document.querySelector("[data-kanban-focused='true']") as HTMLElement | null;
+          if (el) {
+            const rect = el.getBoundingClientRect();
+            movePickerPosition = { x: rect.right + 4, y: rect.top };
+          }
+          movePickerBlock = block;
+        }
+        break;
+      }
+    }
+  }
+
+  // Scroll focused card into view when navigation changes
+  $effect(() => {
+    if (!focused) return;
+    // Read reactive dependencies
+    const _c = focusedColIndex;
+    const _r = focusedCardIndex;
+    queueMicrotask(() => {
+      const el = document.querySelector("[data-kanban-focused='true']");
+      if (el) el.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+    });
+  });
 </script>
+
+<svelte:window onkeydown={handleKanbanKeydown} />
 
 {#if blocksQuery.isLoading || typeQuery.isLoading}
   <div class="text-[12px] text-muted-foreground py-4">Loading...</div>
@@ -176,16 +268,18 @@
   <!-- Columns -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="flex gap-3 overflow-x-auto pb-4 px-1" ondragend={handleDragEnd}>
-    {#each columnNames as column (column)}
+    {#each columnNames as column, colIdx (column)}
       {@const columnBlocks = groupedBlocks.get(column) ?? []}
       {@const isUnset = column === "__unset__"}
       {@const isDragOver = dragOverColumn === column}
+      {@const isColumnFocused = focused && colIdx === focusedColIndex}
       <div
         class="flex-shrink-0 w-64 min-w-[256px] flex flex-col rounded-lg transition-all"
-        class:ring-2={isDragOver}
+        class:ring-2={isDragOver || isColumnFocused}
         style="
           background: color-mix(in srgb, var(--surface) 50%, transparent);
           {isDragOver ? `ring-color: color-mix(in srgb, var(--primary) 30%, transparent); background: color-mix(in srgb, var(--primary) 5%, transparent)` : ''}
+          {isColumnFocused && !isDragOver ? `ring-color: color-mix(in srgb, var(--primary) 25%, transparent)` : ''}
         "
         ondragover={(e) => handleColumnDragOver(e, column)}
         ondragleave={handleColumnDragLeave}
@@ -212,14 +306,17 @@
 
         <!-- Cards -->
         <div class="flex flex-col gap-2 p-2 flex-1 min-h-[80px] overflow-y-auto max-h-[60vh]">
-          {#each columnBlocks as block (block.id)}
+          {#each columnBlocks as block, cardIdx (block.id)}
+            {@const isCardFocused = focused && colIdx === focusedColIndex && cardIdx === focusedCardIndex}
             <div
+              data-kanban-focused={isCardFocused ? "true" : undefined}
               class="transition-opacity {draggedBlockId === block.id ? 'opacity-40' : ''}"
             >
               <KanbanCard
                 {block}
                 properties={typeDef?.properties ?? []}
                 groupByProp={groupByPropName}
+                isFocused={isCardFocused}
                 ondragstart={handleCardDragStart}
                 onmoverequest={handleMoveRequest}
               />

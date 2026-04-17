@@ -5,6 +5,16 @@
   import { goto } from "$app/navigation";
   import { page } from "$app/state";
   import { pushNavigation, goBack, goForward } from "$lib/stores/navigation.svelte";
+  import {
+    isVimEnabled,
+    isCtrlWPending,
+    setCtrlWPending,
+    setActivePane,
+    toggleSplit,
+    closeSplit,
+    adjustSplitRatio,
+    setSplitRatio,
+  } from "$lib/stores/pane-state.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import LeaderMenu from "$lib/components/LeaderMenu.svelte";
@@ -97,13 +107,56 @@
       }
     };
 
+    // Ctrl+w chord handler — Vim-style window commands.
+    // Capture phase to beat browser's "close tab" on Ctrl+w.
+    let pendingTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearPending = () => {
+      setCtrlWPending(false);
+      if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
+    };
+
+    const ctrlWHandler = (e: KeyboardEvent) => {
+      if (showLeaderMenu) return; // leader menu takes priority
+      if (!isVimEnabled()) return;
+
+      // First key: Ctrl+w (lowercase or uppercase)
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "w" || e.key === "W")) {
+        e.preventDefault();
+        e.stopPropagation();
+        setCtrlWPending(true);
+        if (pendingTimer) clearTimeout(pendingTimer);
+        pendingTimer = setTimeout(clearPending, 2000);
+        return;
+      }
+
+      // Second key: dispatch window command
+      if (isCtrlWPending()) {
+        e.preventDefault();
+        e.stopPropagation();
+        switch (e.key) {
+          case "j": setActivePane("kanban"); break;
+          case "k": setActivePane("outliner"); break;
+          case "s": toggleSplit(); break;
+          case "q": closeSplit(); break;
+          case "=": setSplitRatio(50); break;
+          case "+": adjustSplitRatio(-10); break;
+          case "-": adjustSplitRatio(10); break;
+          // Escape or any other key: cancel silently
+        }
+        clearPending();
+      }
+    };
+
     document.addEventListener("keydown", spaceHandler);
     document.addEventListener("keydown", panelHandler);
+    document.addEventListener("keydown", ctrlWHandler, true); // capture phase
     document.addEventListener("tesela:leader", leaderHandler);
     return () => {
       document.removeEventListener("keydown", spaceHandler);
       document.removeEventListener("keydown", panelHandler);
+      document.removeEventListener("keydown", ctrlWHandler, true);
       document.removeEventListener("tesela:leader", leaderHandler);
+      if (pendingTimer) clearTimeout(pendingTimer);
     };
   });
 </script>

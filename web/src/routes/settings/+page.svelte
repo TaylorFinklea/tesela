@@ -117,6 +117,15 @@
             ["yy / p", "Vim: Yank / paste block"],
             ["o / O", "Vim: New block below / above"],
             [">> / <<", "Vim: Indent / outdent"],
+            ["Ctrl+w s", "Split: toggle Kanban split"],
+            ["Ctrl+w j / k", "Split: focus bottom / top pane"],
+            ["Ctrl+w q", "Split: close split"],
+            ["Ctrl+w =", "Split: equalize panes"],
+            ["Ctrl+w + / -", "Split: resize panes"],
+            ["j / k", "Kanban: prev / next card in column"],
+            ["h / l", "Kanban: prev / next column"],
+            ["Enter", "Kanban: open focused card's note"],
+            ["m", "Kanban: move card to another column"],
           ] as [key, desc]}
             <div class="flex items-center gap-3">
               <kbd class="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded text-muted-foreground min-w-[48px] text-center">{key}</kbd>

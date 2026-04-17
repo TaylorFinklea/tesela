@@ -7,12 +7,14 @@
     block,
     properties,
     groupByProp,
+    isFocused = false,
     ondragstart,
     onmoverequest,
   }: {
     block: ParsedBlock;
     properties: PropertyDef[];
     groupByProp: string;
+    isFocused?: boolean;
     ondragstart: (e: DragEvent, block: ParsedBlock) => void;
     onmoverequest: (block: ParsedBlock, event: MouseEvent) => void;
   } = $props();
@@ -38,7 +40,13 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
   class="kanban-card group rounded-lg border p-3 cursor-grab active:cursor-grabbing transition-all hover:shadow-md"
-  style="background: var(--block-bg); border-color: var(--block-border); box-shadow: var(--block-shadow)"
+  class:ring-2={isFocused}
+  style="
+    background: var(--block-bg);
+    border-color: {isFocused ? 'var(--primary)' : 'var(--block-border)'};
+    box-shadow: var(--block-shadow);
+    {isFocused ? 'ring-color: color-mix(in srgb, var(--primary) 40%, transparent)' : ''}
+  "
   draggable="true"
   ondragstart={handleDragStart}
 >
