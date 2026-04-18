@@ -48,10 +48,11 @@
     }
   });
 
-  // Notify parent of focused block changes
+  // Notify parent when a block GAINS focus — keeps focusedBlock as "last focused"
+  // so the sidebar doesn't lose its context when the user clicks into it.
   $effect(() => {
-    const block = focusedIndex !== null ? (blocks[focusedIndex] ?? null) : null;
-    onfocusedblockchange?.(block);
+    if (focusedIndex === null) return;
+    onfocusedblockchange?.(blocks[focusedIndex] ?? null);
   });
 
   function parseProperties(rawText: string): Record<string, string> {
@@ -99,6 +100,9 @@
         return [first, ...rest].join("\n");
       })
       .join("\n");
+    // Pre-update lastBodyFromServer so when the server confirms this exact content
+    // the $effect doesn't trigger a re-parse that would scramble block IDs.
+    lastBodyFromServer = `${bodyLines}\n`;
     onContentChange?.(`${frontmatter}${bodyLines}\n`);
   }
 
@@ -297,7 +301,7 @@
         {:else}
           <!-- svelte-ignore a11y_consider_explicit_label -->
           <button
-            class="shrink-0 pt-[12px] pl-2 pr-1.5 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+            class="shrink-0 pt-[12px] pl-2 pr-1.5 cursor-default hover:cursor-pointer transition-opacity"
             onclick={(e) => { e.stopPropagation(); handleStatusCycle(index); }}
             title="Set status"
           >

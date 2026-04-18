@@ -21,7 +21,8 @@
 
   const queryClient = useQueryClient();
 
-  // "page" = page properties panel, "block" = focused block properties
+  // "page" = page properties, "block" = last-focused block properties.
+  // Never auto-switches — user controls it via the pg/blk toggle.
   let panelContext = $state<"page" | "block">("page");
 
   // Inline editing state for page properties
@@ -57,7 +58,7 @@
     return props;
   });
 
-  // Block properties as array
+  // Block properties as array from the last-focused block
   const blockProperties = $derived.by(() => {
     if (!focusedBlock) return [];
     return Object.entries(focusedBlock.properties).map(([key, value]) => ({ key, value }));
@@ -94,12 +95,6 @@
     const fromApi = new Set(backlinks.map((l) => l.target));
     const combined = new Set([...fromApi, ...incomingFromEdges]);
     return [...combined];
-  });
-
-  // Switch to block panel when a block is focused
-  $effect(() => {
-    if (focusedBlock) panelContext = "block";
-    else panelContext = "page";
   });
 
   async function savePageProperty(key: string, newValue: string) {
@@ -161,7 +156,6 @@
     <div class="flex items-center justify-between px-4 h-[52px] border-b border-border shrink-0">
       <div class="flex items-center gap-2">
         <span class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em]">Details</span>
-        <!-- Panel context toggle -->
         <div class="flex items-center bg-muted/40 rounded-md p-0.5">
           <button
             onclick={() => { panelContext = "page"; }}
@@ -179,8 +173,8 @@
     </div>
 
     {#if panelContext === "block"}
-      <!-- Block context panel -->
-      <div class="px-4 py-3">
+      <!-- Block context panel — properties of the last-focused block only -->
+      <div class="px-4 py-3 flex-1">
         <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">Block</div>
         {#if focusedBlock}
           <div class="text-[10px] text-muted-foreground/50 mb-2 break-words line-clamp-2 italic">
@@ -214,11 +208,11 @@
             <div class="text-[11px] text-muted-foreground/40 italic">No properties</div>
           {/if}
         {:else}
-          <div class="text-[11px] text-muted-foreground/40 italic">No block focused</div>
+          <div class="text-[11px] text-muted-foreground/40 italic">Focus a block to see its properties</div>
         {/if}
       </div>
     {:else}
-      <!-- Page context panel -->
+      <!-- Page context panel — page properties + backlinks + forward links -->
       {#if note}
         <div class="px-4 py-3">
           <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">Properties</div>
@@ -278,44 +272,44 @@
           {/if}
         </div>
       {/if}
+
+      <!-- Backlinks -->
+      <div class="px-4 py-3 border-t border-border/30">
+        <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">
+          Backlinks ({allBacklinkSources.length})
+        </div>
+        {#if allBacklinkSources.length === 0}
+          <div class="text-[11px] text-muted-foreground/50 italic">No pages link here</div>
+        {:else}
+          {#each allBacklinkSources as source}
+            <a
+              href="/p/{encodeURIComponent(source.toLowerCase())}"
+              class="block text-[12px] py-1 text-primary/60 hover:text-primary rounded-md px-1 transition-colors"
+            >
+              {source}
+            </a>
+          {/each}
+        {/if}
+      </div>
+
+      <!-- Forward Links -->
+      <div class="px-4 py-3 border-t border-border/30">
+        <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">
+          Forward ({forwardLinks.length})
+        </div>
+        {#if forwardLinks.length === 0}
+          <div class="text-[11px] text-muted-foreground/50 italic">No outgoing links</div>
+        {:else}
+          {#each forwardLinks as link}
+            <a
+              href="/p/{encodeURIComponent(link.target.toLowerCase())}"
+              class="block text-[12px] py-1 text-primary/60 hover:text-primary rounded-md px-1 transition-colors"
+            >
+              {link.target}
+            </a>
+          {/each}
+        {/if}
+      </div>
     {/if}
-
-    <!-- Backlinks -->
-    <div class="px-4 py-3">
-      <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">
-        Backlinks ({allBacklinkSources.length})
-      </div>
-      {#if allBacklinkSources.length === 0}
-        <div class="text-[11px] text-muted-foreground/50 italic">No pages link here</div>
-      {:else}
-        {#each allBacklinkSources as source}
-          <a
-            href="/p/{encodeURIComponent(source.toLowerCase())}"
-            class="block text-[12px] py-1 text-primary/60 hover:text-primary rounded-md px-1 transition-colors"
-          >
-            {source}
-          </a>
-        {/each}
-      {/if}
-    </div>
-
-    <!-- Forward Links -->
-    <div class="px-4 py-3 border-t border-border/30">
-      <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">
-        Forward ({forwardLinks.length})
-      </div>
-      {#if forwardLinks.length === 0}
-        <div class="text-[11px] text-muted-foreground/50 italic">No outgoing links</div>
-      {:else}
-        {#each forwardLinks as link}
-          <a
-            href="/p/{encodeURIComponent(link.target.toLowerCase())}"
-            class="block text-[12px] py-1 text-primary/60 hover:text-primary rounded-md px-1 transition-colors"
-          >
-            {link.target}
-          </a>
-        {/each}
-      {/if}
-    </div>
   </div>
 {/if}
