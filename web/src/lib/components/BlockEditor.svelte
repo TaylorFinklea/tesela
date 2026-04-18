@@ -1,9 +1,93 @@
+<script module lang="ts">
+  import type { EditorView } from "@codemirror/view";
+  import { Vim } from "@replit/codemirror-vim";
+
+  // Shared context always pointing to the currently focused block editor.
+  // Vim actions are registered ONCE globally (Vim.defineAction is a singleton
+  // registry — per-instance calls overwrite each other, causing stale closures
+  // when a block unmounts). Actions read from this ctx at call time instead.
+  const vimCtx: {
+    view: EditorView | null;
+    navigate: ((dir: "up" | "down") => void) | null;
+    deleteBlock: (() => void) | null;
+    yankBlock: (() => void) | null;
+    pasteBlock: (() => void) | null;
+    newBlockBelow: (() => void) | null;
+    newBlockAbove: (() => void) | null;
+    indent: ((dir: "indent" | "outdent") => void) | null;
+    leader: (() => void) | null;
+  } = {
+    view: null, navigate: null, deleteBlock: null, yankBlock: null,
+    pasteBlock: null, newBlockBelow: null, newBlockAbove: null,
+    indent: null, leader: null,
+  };
+
+  let _vimActionsRegistered = false;
+
+  function initVimActions() {
+    if (_vimActionsRegistered) return;
+    _vimActionsRegistered = true;
+
+    Vim.defineAction("moveDownOrNextBlock", () => {
+      const v = vimCtx.view;
+      if (!v) return;
+      const s = v.state;
+      const line = s.doc.lineAt(s.selection.main.head);
+      if (line.number === s.doc.lines) {
+        vimCtx.navigate?.("down");
+      } else {
+        const next = s.doc.line(line.number + 1);
+        v.dispatch({ selection: { anchor: Math.min(next.from + (s.selection.main.head - line.from), next.to) } });
+      }
+    });
+    Vim.mapCommand("j", "action", "moveDownOrNextBlock", {}, { context: "normal" });
+
+    Vim.defineAction("moveUpOrPrevBlock", () => {
+      const v = vimCtx.view;
+      if (!v) return;
+      const s = v.state;
+      const line = s.doc.lineAt(s.selection.main.head);
+      if (line.number === 1) {
+        vimCtx.navigate?.("up");
+      } else {
+        const prev = s.doc.line(line.number - 1);
+        v.dispatch({ selection: { anchor: Math.min(prev.from + (s.selection.main.head - line.from), prev.to) } });
+      }
+    });
+    Vim.mapCommand("k", "action", "moveUpOrPrevBlock", {}, { context: "normal" });
+
+    Vim.defineAction("openLeaderMenu", () => { vimCtx.leader?.(); });
+    Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
+
+    Vim.defineAction("deleteBlock", () => { vimCtx.deleteBlock?.(); });
+    Vim.mapCommand("dd", "action", "deleteBlock", {}, { context: "normal" });
+
+    Vim.defineAction("yankBlock", () => { vimCtx.yankBlock?.(); });
+    Vim.mapCommand("yy", "action", "yankBlock", {}, { context: "normal" });
+
+    Vim.defineAction("pasteBlock", () => { vimCtx.pasteBlock?.(); });
+    Vim.mapCommand("p", "action", "pasteBlock", {}, { context: "normal" });
+
+    Vim.defineAction("newBlockBelow", () => { vimCtx.newBlockBelow?.(); });
+    Vim.mapCommand("o", "action", "newBlockBelow", {}, { context: "normal" });
+
+    Vim.defineAction("newBlockAbove", () => { vimCtx.newBlockAbove?.(); });
+    Vim.mapCommand("O", "action", "newBlockAbove", {}, { context: "normal" });
+
+    Vim.defineAction("indentBlock", () => { vimCtx.indent?.("indent"); });
+    Vim.mapCommand(">>", "action", "indentBlock", {}, { context: "normal" });
+
+    Vim.defineAction("outdentBlock", () => { vimCtx.indent?.("outdent"); });
+    Vim.mapCommand("<<", "action", "outdentBlock", {}, { context: "normal" });
+  }
+</script>
+
 <script lang="ts">
   import { onMount } from "svelte";
   import { EditorState } from "@codemirror/state";
   import { EditorView, keymap } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
-  import { vim, Vim, getCM } from "@replit/codemirror-vim";
+  import { vim, getCM } from "@replit/codemirror-vim";
   import { teselaDecorations, teselaDecorationTheme } from "$lib/cm-decorations";
   import { setVimMode } from "$lib/stores/pane-state.svelte";
   import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
@@ -56,7 +140,7 @@
   } = $props();
 
   let container: HTMLDivElement;
-  let view: EditorView | null = null;
+  let view = $state<EditorView | null>(null);
 
   // Slash menu state
   let showSlashMenu = $state(false);
@@ -171,6 +255,24 @@
     if (focused && view && !view.hasFocus) {
       view.focus();
     }
+  });
+
+  // Keep the global vim context pointing to whichever block is currently focused.
+  // This lets the module-level vim actions (registered once) always target the right block.
+  $effect(() => {
+    if (!focused || !view) return;
+    vimCtx.view = view;
+    vimCtx.navigate = onNavigate ?? null;
+    vimCtx.leader = onLeader ?? null;
+    vimCtx.deleteBlock = onDeleteBlock ?? null;
+    vimCtx.yankBlock = onYankBlock ?? null;
+    vimCtx.pasteBlock = onPasteBlock ?? null;
+    vimCtx.newBlockBelow = onNewBlockBelow ?? null;
+    vimCtx.newBlockAbove = onNewBlockAbove ?? null;
+    vimCtx.indent = onIndent ?? null;
+    return () => {
+      if (vimCtx.view === view) vimCtx.view = null;
+    };
   });
 
   onMount(() => {
@@ -381,86 +483,15 @@
       view.focus();
     }
 
-    // Register Vim normal-mode commands and track mode changes via cm.on
+    // Register global vim actions once (no-op after first call) and wire
+    // mode-change tracking via the CM5-like instance event (not a DOM event).
     let vimModeOff: (() => void) | null = null;
     const cm = getCM(view);
     if (cm) {
-      // vim-mode-change fires on the CM5-like instance, not as a DOM event
+      initVimActions();
       const modeListener = (info: { mode: string }) => { setVimMode(info.mode); };
       cm.on("vim-mode-change", modeListener);
       vimModeOff = () => cm.off("vim-mode-change", modeListener);
-      // j/k — cross-block navigation at boundaries
-      if (onNavigate) {
-        Vim.defineAction("moveDownOrNextBlock", () => {
-          const v = view;
-          if (!v) return;
-          const state = v.state;
-          const line = state.doc.lineAt(state.selection.main.head);
-          if (line.number === state.doc.lines) {
-            onNavigate("down");
-          } else {
-            // Move cursor down one line
-            const nextLine = state.doc.line(line.number + 1);
-            const col = state.selection.main.head - line.from;
-            v.dispatch({ selection: { anchor: Math.min(nextLine.from + col, nextLine.to) } });
-          }
-        });
-        Vim.mapCommand("j", "action", "moveDownOrNextBlock", {}, { context: "normal" });
-
-        Vim.defineAction("moveUpOrPrevBlock", () => {
-          const v = view;
-          if (!v) return;
-          const state = v.state;
-          const line = state.doc.lineAt(state.selection.main.head);
-          if (line.number === 1) {
-            onNavigate("up");
-          } else {
-            // Move cursor up one line
-            const prevLine = state.doc.line(line.number - 1);
-            const col = state.selection.main.head - line.from;
-            v.dispatch({ selection: { anchor: Math.min(prevLine.from + col, prevLine.to) } });
-          }
-        });
-        Vim.mapCommand("k", "action", "moveUpOrPrevBlock", {}, { context: "normal" });
-      }
-
-      // Space → leader menu
-      if (onLeader) {
-        Vim.defineAction("openLeaderMenu", () => { onLeader?.(); });
-        Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
-      }
-      // dd → delete block
-      if (onDeleteBlock) {
-        Vim.defineAction("deleteBlock", () => { onDeleteBlock?.(); });
-        Vim.mapCommand("dd", "action", "deleteBlock", {}, { context: "normal" });
-      }
-      // yy → yank block
-      if (onYankBlock) {
-        Vim.defineAction("yankBlock", () => { onYankBlock?.(); });
-        Vim.mapCommand("yy", "action", "yankBlock", {}, { context: "normal" });
-      }
-      // p → paste block below
-      if (onPasteBlock) {
-        Vim.defineAction("pasteBlock", () => { onPasteBlock?.(); });
-        Vim.mapCommand("p", "action", "pasteBlock", {}, { context: "normal" });
-      }
-      // o → new block below, enter insert
-      if (onNewBlockBelow) {
-        Vim.defineAction("newBlockBelow", () => { onNewBlockBelow?.(); });
-        Vim.mapCommand("o", "action", "newBlockBelow", {}, { context: "normal" });
-      }
-      // O → new block above, enter insert
-      if (onNewBlockAbove) {
-        Vim.defineAction("newBlockAbove", () => { onNewBlockAbove?.(); });
-        Vim.mapCommand("O", "action", "newBlockAbove", {}, { context: "normal" });
-      }
-      // >> → indent block
-      if (onIndent) {
-        Vim.defineAction("indentBlock", () => { onIndent?.("indent"); });
-        Vim.mapCommand(">>", "action", "indentBlock", {}, { context: "normal" });
-        Vim.defineAction("outdentBlock", () => { onIndent?.("outdent"); });
-        Vim.mapCommand("<<", "action", "outdentBlock", {}, { context: "normal" });
-      }
     }
 
     // Focus and optionally enter insert mode for newly created blocks
