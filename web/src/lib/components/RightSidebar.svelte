@@ -6,6 +6,12 @@
   import type { GraphEdge } from "$lib/types/GraphEdge";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import { updateBlockProperty } from "$lib/property-update";
+  import {
+    buildRegistry,
+    getVisibleChoices,
+    parseHiddenChoices,
+  } from "$lib/property-registry";
+  import type { PropertyDefinition, PropertyRegistry } from "$lib/property-registry";
 
   let {
     noteId,
@@ -21,15 +27,13 @@
 
   const queryClient = useQueryClient();
 
-  // "page" = page properties, "block" = last-focused block properties.
-  // Never auto-switches — user controls it via the pg/blk toggle.
   let panelContext = $state<"page" | "block">("page");
 
-  // Inline editing state for page properties
+  // Text-editing state for page properties
   let editingKey = $state<string | null>(null);
   let editingValue = $state("");
 
-  // Inline editing state for block properties
+  // Text-editing state for block properties (text/number/url/etc types)
   let editingBlockKey = $state<string | null>(null);
   let editingBlockValue = $state("");
 
@@ -38,8 +42,25 @@
     queryFn: () => api.getNote(noteId),
     enabled: !collapsed && noteId !== "",
   }));
-
   const note: Note | undefined = $derived(noteQuery.data as Note | undefined);
+
+  // All notes — used to build the property registry
+  const allNotesQuery = createQuery(() => ({
+    queryKey: ["notes", { limit: 500 }] as const,
+    queryFn: () => api.listNotes({ limit: 500 }),
+    enabled: !collapsed,
+  }));
+
+  const propertyRegistry: PropertyRegistry = $derived.by(() => {
+    const notes = (allNotesQuery.data ?? []) as Note[];
+    return buildRegistry(notes);
+  });
+
+  // Hidden choices: only applies when the current page is a Tag page
+  const hiddenChoices = $derived.by(() => {
+    if (!note || note.metadata.note_type !== "Tag") return {};
+    return parseHiddenChoices(note.metadata.custom);
+  });
 
   // Extract custom properties from content (key:: value lines)
   const customProperties = $derived.by(() => {
@@ -58,7 +79,6 @@
     return props;
   });
 
-  // Block properties as array from the last-focused block
   const blockProperties = $derived.by(() => {
     if (!focusedBlock) return [];
     return Object.entries(focusedBlock.properties).map(([key, value]) => ({ key, value }));
@@ -69,13 +89,11 @@
     queryFn: () => api.getBacklinks(noteId),
     enabled: !collapsed && noteId !== "",
   }));
-
   const forwardLinksQuery = createQuery(() => ({
     queryKey: ["forward-links", noteId] as const,
     queryFn: () => api.getForwardLinks(noteId),
     enabled: !collapsed && noteId !== "",
   }));
-
   const edgesQuery = createQuery(() => ({
     queryKey: ["all-edges"] as const,
     queryFn: () => api.getAllEdges(),
@@ -87,16 +105,16 @@
   const edges: GraphEdge[] = $derived((edgesQuery.data ?? []) as GraphEdge[]);
 
   const incomingFromEdges = $derived(
-    edges.filter((e) => e.target.toLowerCase() === noteId.toLowerCase() || e.target === noteId)
-      .map((e) => e.source)
+    edges
+      .filter((e) => e.target.toLowerCase() === noteId.toLowerCase() || e.target === noteId)
+      .map((e) => e.source),
   );
-
   const allBacklinkSources = $derived.by(() => {
     const fromApi = new Set(backlinks.map((l) => l.target));
-    const combined = new Set([...fromApi, ...incomingFromEdges]);
-    return [...combined];
+    return [...new Set([...fromApi, ...incomingFromEdges])];
   });
 
+  // Page property save
   async function savePageProperty(key: string, newValue: string) {
     editingKey = null;
     if (!note || newValue.trim() === "") return;
@@ -114,6 +132,7 @@
     queryClient.setQueryData(["note", noteId], updated);
   }
 
+  // Block property save
   async function saveBlockProperty(key: string, newValue: string) {
     editingBlockKey = null;
     if (!focusedBlock || newValue.trim() === "") return;
@@ -121,19 +140,9 @@
       block: focusedBlock,
       propKey: key,
       value: newValue.trim(),
-      tagName: "",
+      tagName: note?.metadata.note_type === "Tag" ? (note.title ?? "") : "",
       queryClient,
     });
-  }
-
-  function startEditPage(key: string, current: string) {
-    editingKey = key;
-    editingValue = current;
-  }
-
-  function startEditBlock(key: string, current: string) {
-    editingBlockKey = key;
-    editingBlockValue = current;
   }
 
   function handlePageKeydown(e: KeyboardEvent, key: string) {
@@ -145,14 +154,39 @@
     if (e.key === "Enter") { e.preventDefault(); saveBlockProperty(key, editingBlockValue); }
     else if (e.key === "Escape") { editingBlockKey = null; }
   }
+
+  // Type-appropriate input component selector
+  function isSelectType(def: PropertyDefinition | undefined): boolean {
+    return def?.value_type === "select" || def?.value_type === "multi-select";
+  }
+
+  function isAlwaysInteractive(def: PropertyDefinition | undefined): boolean {
+    return def?.value_type === "checkbox" || isSelectType(def) || def?.value_type === "date";
+  }
+
+  function inputTypeFor(def: PropertyDefinition | undefined): string {
+    switch (def?.value_type) {
+      case "number": return "number";
+      case "url": return "url";
+      case "email": return "email";
+      case "phone": return "tel";
+      case "date": return "date";
+      default: return "text";
+    }
+  }
 </script>
 
 {#if collapsed}
   <div class="w-10 bg-surface border-l border-border flex flex-col items-center pt-4">
-    <button onclick={onToggle} class="text-muted-foreground hover:text-primary text-[10px] p-1.5 rounded-md hover:bg-muted transition-all" title="Show right panel">◀</button>
+    <button
+      onclick={onToggle}
+      class="text-muted-foreground hover:text-primary text-[10px] p-1.5 rounded-md hover:bg-muted transition-all"
+      title="Show right panel"
+    >◀</button>
   </div>
 {:else}
   <div class="w-[200px] bg-surface border-l border-border flex flex-col shrink-0 overflow-y-auto">
+    <!-- Header with pg/blk toggle -->
     <div class="flex items-center justify-between px-4 h-[52px] border-b border-border shrink-0">
       <div class="flex items-center gap-2">
         <span class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em]">Details</span>
@@ -165,40 +199,92 @@
           <button
             onclick={() => { panelContext = "block"; }}
             class="text-[9px] px-1.5 py-0.5 rounded transition-all {panelContext === 'block' ? 'bg-surface text-primary shadow-sm' : 'text-muted-foreground/60 hover:text-muted-foreground'}"
-            title="Focused block properties"
+            title="Block properties"
           >blk</button>
         </div>
       </div>
-      <button onclick={onToggle} class="text-muted-foreground hover:text-primary text-[10px] p-1 rounded-md hover:bg-muted transition-all" title="Hide right panel">▶</button>
+      <button
+        onclick={onToggle}
+        class="text-muted-foreground hover:text-primary text-[10px] p-1 rounded-md hover:bg-muted transition-all"
+        title="Hide right panel"
+      >▶</button>
     </div>
 
     {#if panelContext === "block"}
-      <!-- Block context panel — properties of the last-focused block only -->
+      <!-- Block panel -->
       <div class="px-4 py-3 flex-1">
         <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">Block</div>
         {#if focusedBlock}
-          <div class="text-[10px] text-muted-foreground/50 mb-2 break-words line-clamp-2 italic">
+          <div class="text-[10px] text-muted-foreground/50 mb-3 break-words line-clamp-2 italic">
             "{focusedBlock.text || "(empty)"}"
           </div>
           {#if blockProperties.length > 0}
             {#each blockProperties as prop}
-              <div class="mb-1.5">
-                <div class="text-[10px] text-muted-foreground/50 mb-0.5">{prop.key}</div>
-                {#if editingBlockKey === prop.key}
+              {@const def = propertyRegistry.get(prop.key.toLowerCase())}
+              {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, hiddenChoices) : []}
+              <div class="mb-2">
+                <div class="text-[10px] text-muted-foreground/50 mb-0.5 flex items-center gap-1">
+                  {prop.key}
+                  {#if def}
+                    <span class="text-muted-foreground/30 text-[9px]">{def.value_type}</span>
+                  {/if}
+                </div>
+
+                {#if def?.value_type === "checkbox"}
+                  <!-- Checkbox toggle -->
+                  <label class="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={prop.value === "true" || prop.value === "yes"}
+                      onchange={(e) => saveBlockProperty(prop.key, (e.target as HTMLInputElement).checked ? "true" : "false")}
+                      class="rounded border-border"
+                    />
+                    <span class="text-[11px] text-foreground/70">{prop.value}</span>
+                  </label>
+
+                {:else if isSelectType(def)}
+                  <!-- Select dropdown — always interactive -->
+                  <select
+                    class="w-full text-[11px] bg-muted/60 border border-border/60 rounded px-1.5 py-0.5 text-foreground outline-none focus:border-primary/60 cursor-pointer"
+                    value={prop.value}
+                    onchange={(e) => saveBlockProperty(prop.key, (e.target as HTMLSelectElement).value)}
+                  >
+                    {#if !visibleChoices.includes(prop.value)}
+                      <option value={prop.value}>{prop.value}</option>
+                    {/if}
+                    {#each visibleChoices as choice}
+                      <option value={choice}>{choice}</option>
+                    {/each}
+                  </select>
+
+                {:else if def?.value_type === "date"}
+                  <!-- Date input — always interactive -->
+                  <input
+                    type="date"
+                    value={prop.value}
+                    onchange={(e) => saveBlockProperty(prop.key, (e.target as HTMLInputElement).value)}
+                    class="w-full text-[11px] bg-muted/60 border border-border/60 rounded px-1.5 py-0.5 text-foreground outline-none focus:border-primary/60"
+                  />
+
+                {:else if editingBlockKey === prop.key}
+                  <!-- Text/number/url/etc — edit mode -->
                   <!-- svelte-ignore a11y_autofocus -->
                   <input
                     autofocus
+                    type={inputTypeFor(def)}
                     class="w-full text-[11px] bg-muted/60 border border-primary/40 rounded px-1.5 py-0.5 text-foreground outline-none focus:border-primary"
                     bind:value={editingBlockValue}
                     onblur={() => saveBlockProperty(prop.key, editingBlockValue)}
                     onkeydown={(e) => handleBlockKeydown(e, prop.key)}
                   />
+
                 {:else}
+                  <!-- Text display — click to edit -->
                   <!-- svelte-ignore a11y_click_events_have_key_events -->
                   <!-- svelte-ignore a11y_no_static_element_interactions -->
                   <div
                     class="text-[11px] text-foreground/70 break-words px-1 -mx-1 rounded hover:bg-muted/60 cursor-text transition-colors"
-                    onclick={() => startEditBlock(prop.key, prop.value)}
+                    onclick={() => { editingBlockKey = prop.key; editingBlockValue = prop.value; }}
                     title="Click to edit"
                   >{prop.value}</div>
                 {/if}
@@ -211,13 +297,13 @@
           <div class="text-[11px] text-muted-foreground/40 italic">Focus a block to see its properties</div>
         {/if}
       </div>
+
     {:else}
-      <!-- Page context panel — page properties + backlinks + forward links -->
+      <!-- Page panel -->
       {#if note}
         <div class="px-4 py-3">
           <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">Properties</div>
 
-          <!-- Tags -->
           {#if note.metadata.tags.length > 0}
             <div class="mb-2">
               <div class="text-[10px] text-muted-foreground/50 mb-1">Tags</div>
@@ -232,7 +318,6 @@
             </div>
           {/if}
 
-          <!-- Type -->
           {#if note.metadata.note_type}
             <div class="mb-2">
               <div class="text-[10px] text-muted-foreground/50 mb-0.5">Type</div>
@@ -240,32 +325,72 @@
             </div>
           {/if}
 
-          <!-- Custom properties (editable) -->
-          {#if customProperties.length > 0}
-            {#each customProperties as prop}
-              <div class="mb-1.5">
-                <div class="text-[10px] text-muted-foreground/50 mb-0.5">{prop.key}</div>
-                {#if editingKey === prop.key}
-                  <!-- svelte-ignore a11y_autofocus -->
-                  <input
-                    autofocus
-                    class="w-full text-[11px] bg-muted/60 border border-primary/40 rounded px-1.5 py-0.5 text-foreground outline-none focus:border-primary"
-                    bind:value={editingValue}
-                    onblur={() => savePageProperty(prop.key, editingValue)}
-                    onkeydown={(e) => handlePageKeydown(e, prop.key)}
-                  />
-                {:else}
-                  <!-- svelte-ignore a11y_click_events_have_key_events -->
-                  <!-- svelte-ignore a11y_no_static_element_interactions -->
-                  <div
-                    class="text-[11px] text-foreground/70 break-words px-1 -mx-1 rounded hover:bg-muted/60 cursor-text transition-colors"
-                    onclick={() => startEditPage(prop.key, prop.value)}
-                    title="Click to edit"
-                  >{prop.value}</div>
+          {#each customProperties as prop}
+            {@const def = propertyRegistry.get(prop.key.toLowerCase())}
+            {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, hiddenChoices) : []}
+            <div class="mb-1.5">
+              <div class="text-[10px] text-muted-foreground/50 mb-0.5 flex items-center gap-1">
+                {prop.key}
+                {#if def}
+                  <span class="text-muted-foreground/30 text-[9px]">{def.value_type}</span>
                 {/if}
               </div>
-            {/each}
-          {/if}
+
+              {#if def?.value_type === "checkbox"}
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={prop.value === "true" || prop.value === "yes"}
+                    onchange={(e) => savePageProperty(prop.key, (e.target as HTMLInputElement).checked ? "true" : "false")}
+                    class="rounded border-border"
+                  />
+                  <span class="text-[11px] text-foreground/70">{prop.value}</span>
+                </label>
+
+              {:else if isSelectType(def)}
+                <select
+                  class="w-full text-[11px] bg-muted/60 border border-border/60 rounded px-1.5 py-0.5 text-foreground outline-none focus:border-primary/60 cursor-pointer"
+                  value={prop.value}
+                  onchange={(e) => savePageProperty(prop.key, (e.target as HTMLSelectElement).value)}
+                >
+                  {#if !visibleChoices.includes(prop.value)}
+                    <option value={prop.value}>{prop.value}</option>
+                  {/if}
+                  {#each visibleChoices as choice}
+                    <option value={choice}>{choice}</option>
+                  {/each}
+                </select>
+
+              {:else if def?.value_type === "date"}
+                <input
+                  type="date"
+                  value={prop.value}
+                  onchange={(e) => savePageProperty(prop.key, (e.target as HTMLInputElement).value)}
+                  class="w-full text-[11px] bg-muted/60 border border-border/60 rounded px-1.5 py-0.5 text-foreground outline-none focus:border-primary/60"
+                />
+
+              {:else if editingKey === prop.key}
+                <!-- svelte-ignore a11y_autofocus -->
+                <input
+                  autofocus
+                  type={inputTypeFor(def)}
+                  class="w-full text-[11px] bg-muted/60 border border-primary/40 rounded px-1.5 py-0.5 text-foreground outline-none focus:border-primary"
+                  bind:value={editingValue}
+                  onblur={() => savePageProperty(prop.key, editingValue)}
+                  onkeydown={(e) => handlePageKeydown(e, prop.key)}
+                />
+
+              {:else}
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <div
+                  class="text-[11px] text-foreground/70 break-words px-1 -mx-1 rounded hover:bg-muted/60 cursor-text transition-colors"
+                  onclick={() => { editingKey = prop.key; editingValue = prop.value; }}
+                  title="Click to edit"
+                >{prop.value}</div>
+              {/if}
+            </div>
+          {/each}
 
           {#if note.metadata.tags.length === 0 && !note.metadata.note_type && customProperties.length === 0}
             <div class="text-[11px] text-muted-foreground/40 italic">No properties</div>
@@ -285,9 +410,7 @@
             <a
               href="/p/{encodeURIComponent(source.toLowerCase())}"
               class="block text-[12px] py-1 text-primary/60 hover:text-primary rounded-md px-1 transition-colors"
-            >
-              {source}
-            </a>
+            >{source}</a>
           {/each}
         {/if}
       </div>
@@ -304,9 +427,7 @@
             <a
               href="/p/{encodeURIComponent(link.target.toLowerCase())}"
               class="block text-[12px] py-1 text-primary/60 hover:text-primary rounded-md px-1 transition-colors"
-            >
-              {link.target}
-            </a>
+            >{link.target}</a>
           {/each}
         {/if}
       </div>
