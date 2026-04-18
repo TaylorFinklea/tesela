@@ -56,10 +56,36 @@
     return buildRegistry(notes);
   });
 
-  // Hidden choices: only applies when the current page is a Tag page
+  // Resolve hidden choices from a list of tag names by looking up their tag pages
+  function hiddenChoicesForTags(tags: string[]): Record<string, string[]> {
+    const allNotes = (allNotesQuery.data ?? []) as Note[];
+    const merged: Record<string, string[]> = {};
+    for (const tag of tags) {
+      const tagPage = allNotes.find(
+        (n) => n.title.toLowerCase() === tag.toLowerCase() && n.metadata.note_type === "Tag",
+      );
+      if (tagPage) {
+        const tagHidden = parseHiddenChoices(tagPage.metadata.custom);
+        for (const [key, vals] of Object.entries(tagHidden)) {
+          merged[key] = [...(merged[key] ?? []), ...vals];
+        }
+      }
+    }
+    return merged;
+  }
+
+  // Page panel: hidden choices from the note's own tag pages
   const hiddenChoices = $derived.by(() => {
-    if (!note || note.metadata.note_type !== "Tag") return {};
-    return parseHiddenChoices(note.metadata.custom);
+    if (!note) return {};
+    if (note.metadata.note_type === "Tag") return parseHiddenChoices(note.metadata.custom);
+    return hiddenChoicesForTags(note.metadata.tags);
+  });
+
+  // Block panel: hidden choices from the block's own tags, falling back to the note's tags
+  const blockHiddenChoices = $derived.by(() => {
+    if (!focusedBlock) return {};
+    const tags = focusedBlock.tags.length > 0 ? focusedBlock.tags : (note?.metadata.tags ?? []);
+    return hiddenChoicesForTags(tags);
   });
 
   // Extract custom properties from content (key:: value lines)
@@ -221,7 +247,7 @@
           {#if blockProperties.length > 0}
             {#each blockProperties as prop}
               {@const def = propertyRegistry.get(prop.key.toLowerCase())}
-              {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, hiddenChoices) : []}
+              {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, blockHiddenChoices) : []}
               <div class="mb-2">
                 <div class="text-[10px] text-muted-foreground/50 mb-0.5 flex items-center gap-1">
                   {prop.key}
