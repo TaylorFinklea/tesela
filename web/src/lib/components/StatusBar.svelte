@@ -2,9 +2,7 @@
   import { page } from "$app/state";
   import { getConnected } from "$lib/ws-client.svelte";
   import { getSaveStatus } from "$lib/stores/save-state.svelte";
-  import { isSplitOpen, getActivePane, isCtrlWPending } from "$lib/stores/pane-state.svelte";
-
-  let { vimMode = "NORMAL" }: { vimMode?: string } = $props();
+  import { isSplitOpen, getActivePane, isCtrlWPending, getVimMode, isVimEnabled } from "$lib/stores/pane-state.svelte";
 
   const wsConnected = $derived(getConnected());
   const saveStatus = $derived(getSaveStatus());
@@ -19,12 +17,16 @@
   const splitOpen = $derived(isSplitOpen());
   const activePane = $derived(getActivePane());
   const ctrlWPending = $derived(isCtrlWPending());
+  const vimMode = $derived(getVimMode());
+  const vimOn = $derived(isVimEnabled());
 </script>
 
 <div class="h-7 bg-surface border-t border-border flex items-center px-4 gap-4 text-[11px] font-mono shrink-0 select-none">
-  <span class="font-bold {vimMode === 'INSERT' ? 'text-emerald-400' : vimMode === 'VISUAL' ? 'text-violet-400' : 'text-primary'}">
-    {vimMode}
-  </span>
+  {#if vimOn}
+    <span class="font-bold {vimMode === 'INSERT' ? 'text-emerald-400' : vimMode === 'VISUAL' ? 'text-violet-400' : 'text-primary'}">
+      {vimMode}
+    </span>
+  {/if}
   {#if ctrlWPending}
     <span class="text-amber-400 font-bold animate-pulse">^W</span>
   {/if}

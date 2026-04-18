@@ -35,6 +35,7 @@ let splitOpen = $state(false);
 let activePane = $state<ActivePane>("outliner");
 let splitRatio = $state(loadRatio());
 let ctrlWPending = $state(false);
+let vimMode = $state("NORMAL");
 
 export function isSplitOpen(): boolean {
   return splitOpen;
@@ -89,6 +90,14 @@ export function setSplitRatio(n: number) {
 
 export function setCtrlWPending(v: boolean) {
   ctrlWPending = v;
+}
+
+export function getVimMode(): string {
+  return vimMode;
+}
+
+export function setVimMode(mode: string) {
+  vimMode = mode.toUpperCase();
 }
 
 export function isVimEnabled(): boolean {

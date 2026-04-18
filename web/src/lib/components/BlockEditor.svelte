@@ -5,6 +5,7 @@
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim, Vim, getCM } from "@replit/codemirror-vim";
   import { teselaDecorations, teselaDecorationTheme } from "$lib/cm-decorations";
+  import { setVimMode } from "$lib/stores/pane-state.svelte";
   import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
 
@@ -37,7 +38,7 @@
     onchange: (text: string) => void;
     onnavigate?: (direction: "up" | "down") => void;
     onescape?: () => void;
-    onenter?: () => void;
+    onenter?: (textAfterCursor: string) => void;
     onindent?: (direction: "indent" | "outdent") => void;
     onbackspaceempty?: () => void;
     onbackspacemerge?: (text: string) => void;
@@ -285,7 +286,7 @@
       },
       {
         key: "Enter",
-        run: () => {
+        run: (v) => {
           if (showSlashMenu) {
             slashMenuRef?.handleKeydown(new KeyboardEvent("keydown", { key: "Enter" }));
             return true;
@@ -294,7 +295,14 @@
             autocompleteRef?.handleKeydown(new KeyboardEvent("keydown", { key: "Enter" }));
             return true;
           }
-          if (onEnter) { onEnter(); return true; }
+          if (onEnter) {
+            const cursor = v.state.selection.main.head;
+            const textBefore = v.state.doc.sliceString(0, cursor);
+            const textAfter = v.state.doc.sliceString(cursor);
+            if (textAfter) onChange(textBefore);
+            onEnter(textAfter);
+            return true;
+          }
           return false;
         },
       },
@@ -362,6 +370,13 @@
     });
 
     view = new EditorView({ state, parent: container });
+
+    // Track vim mode changes (fires on the container element)
+    const vimModeHandler = (e: Event) => {
+      const mode = (e as CustomEvent<{ mode: string }>).detail?.mode;
+      if (mode) setVimMode(mode);
+    };
+    container.addEventListener("vim-mode-change", vimModeHandler);
 
     // If an initial cursor position was requested, focus and (in Vim) switch to insert mode
     if (clampedCursor !== undefined) {
@@ -459,6 +474,7 @@
     }
 
     return () => {
+      container.removeEventListener("vim-mode-change", vimModeHandler);
       view?.destroy();
       view = null;
     };

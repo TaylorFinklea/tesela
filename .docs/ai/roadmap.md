@@ -80,7 +80,7 @@ Daily-driver outliner with Vim. Migrated from Next.js/React to SvelteKit/Svelte 
 
 #### Editor Power Features
 - [ ] Visual mode (character + line selection)
-- [ ] Block merge on Backspace at start of non-empty block
+- [x] Block merge on Backspace at start of non-empty block
 - [ ] Multi-block selection and operations
 - [ ] `/template` — insert from template pages
 - [ ] `/date` — date picker UI
@@ -88,6 +88,7 @@ Daily-driver outliner with Vim. Migrated from Next.js/React to SvelteKit/Svelte 
 
 #### Polish
 - [ ] Right sidebar: inline property editing (not just display)
+- [ ] Right sidebar: toggle between page context and block context (focused block's own properties + a useful place for hidden/icon properties like status)
 - [ ] Right sidebar: pin pages for split view
 - [ ] Empty/loading/error state audit across all views
 - [ ] Graph: drag nodes to reposition
@@ -127,6 +128,7 @@ Daily-driver outliner with Vim. Migrated from Next.js/React to SvelteKit/Svelte 
 
 - [ ] API endpoint integration tests (server routes)
 - [ ] New server endpoints needed for web client: `GET /notes/:id/blocks`, `POST /notes/:id/blocks` (block-level CRUD)
+- [ ] Block merge with property conflict resolution: when both the merged-from and merged-into blocks have properties, show an overlay dialog letting the user choose which properties to keep (rather than naively concatenating duplicate keys)
 
 ---
 

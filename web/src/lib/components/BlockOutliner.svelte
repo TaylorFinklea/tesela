@@ -76,19 +76,26 @@
     focusedIndex = next;
   }
 
-  function handleEnter(atIndex: number) {
+  function handleEnter(atIndex: number, textAfterCursor: string = "") {
     const current = blocks[atIndex];
     if (!current) return;
     const newBlock: ParsedBlock = {
       id: `${noteId}:new-${Date.now()}`,
-      text: "",
-      raw_text: "",
+      text: (textAfterCursor.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
+      raw_text: textAfterCursor,
       tags: [],
       properties: {},
       indent_level: current.indent_level,
       note_id: noteId,
     };
-    blocks = [...blocks.slice(0, atIndex + 1), newBlock, ...blocks.slice(atIndex + 1)];
+    if (textAfterCursor) {
+      // Mid-block split: force current block remount so CM6 shows trimmed text
+      const updatedCurrent: ParsedBlock = { ...current, id: `${noteId}:split-${Date.now() + 1}` };
+      mountHint = { blockId: newBlock.id, pos: 0, startInInsert: true };
+      blocks = [...blocks.slice(0, atIndex), updatedCurrent, newBlock, ...blocks.slice(atIndex + 1)];
+    } else {
+      blocks = [...blocks.slice(0, atIndex + 1), newBlock, ...blocks.slice(atIndex + 1)];
+    }
     saveBlocks(blocks);
     focusedIndex = atIndex + 1;
   }
@@ -125,7 +132,7 @@
       raw_text: mergedText,
       text: (mergedText.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
     };
-    mergeCursorHint = { blockId: mergedBlock.id, pos: mergePos };
+    mountHint = { blockId: mergedBlock.id, pos: mergePos, startInInsert: false };
     blocks = [
       ...blocks.slice(0, atIndex - 1),
       mergedBlock,
@@ -135,8 +142,8 @@
     focusedIndex = atIndex - 1;
   }
 
-  // Pending initial-cursor hint for the next block to mount (cleared after one read)
-  let mergeCursorHint = $state<{ blockId: string; pos: number } | null>(null);
+  // Pending mount hint: cursor position + optional insert-mode entry for the next block to mount
+  let mountHint = $state<{ blockId: string; pos: number; startInInsert: boolean } | null>(null);
 
   // Block clipboard for yy/p
   let blockClipboard = $state<ParsedBlock | null>(null);
@@ -237,12 +244,12 @@
             onchange={(text) => handleBlockChange(block.id, text)}
             onnavigate={handleNavigate}
             onescape={() => { focusedIndex = null; }}
-            onenter={() => handleEnter(index)}
+            onenter={(textAfter: string) => handleEnter(index, textAfter)}
             onindent={(dir) => handleIndent(index, dir)}
             onbackspaceempty={() => handleBackspace(index)}
             onbackspacemerge={(text: string) => handleBackspaceMerge(index, text)}
-            initialCursorPos={mergeCursorHint?.blockId === block.id ? mergeCursorHint.pos : undefined}
-            startininsert={focusedIndex === index && block.raw_text === ""}
+            initialCursorPos={mountHint?.blockId === block.id ? mountHint.pos : undefined}
+            startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (focusedIndex === index && block.raw_text === "")}
             onleader={onLeader}
             ondeleteblock={() => handleDeleteBlock(index)}
             onyankblock={() => handleYankBlock(index)}
