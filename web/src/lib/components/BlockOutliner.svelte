@@ -110,6 +110,34 @@
     if (focusedIndex !== null && focusedIndex > 0) focusedIndex = focusedIndex - 1;
   }
 
+  // Merge the current block's text into the previous block.
+  // Triggered when Backspace is pressed at cursor position 0 of a non-empty block.
+  function handleBackspaceMerge(atIndex: number, currentText: string) {
+    if (atIndex === 0) return; // no previous block to merge into
+    const prev = blocks[atIndex - 1];
+    if (!prev) return;
+    const mergePos = prev.raw_text.length;
+    const mergedText = prev.raw_text + currentText;
+    // New id forces BlockEditor to remount with the merged text + cursor position
+    const mergedBlock: ParsedBlock = {
+      ...prev,
+      id: `${noteId}:merged-${Date.now()}`,
+      raw_text: mergedText,
+      text: (mergedText.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
+    };
+    mergeCursorHint = { blockId: mergedBlock.id, pos: mergePos };
+    blocks = [
+      ...blocks.slice(0, atIndex - 1),
+      mergedBlock,
+      ...blocks.slice(atIndex + 1),
+    ];
+    saveBlocks(blocks);
+    focusedIndex = atIndex - 1;
+  }
+
+  // Pending initial-cursor hint for the next block to mount (cleared after one read)
+  let mergeCursorHint = $state<{ blockId: string; pos: number } | null>(null);
+
   // Block clipboard for yy/p
   let blockClipboard = $state<ParsedBlock | null>(null);
 
@@ -212,6 +240,8 @@
             onenter={() => handleEnter(index)}
             onindent={(dir) => handleIndent(index, dir)}
             onbackspaceempty={() => handleBackspace(index)}
+            onbackspacemerge={(text: string) => handleBackspaceMerge(index, text)}
+            initialCursorPos={mergeCursorHint?.blockId === block.id ? mergeCursorHint.pos : undefined}
             startininsert={focusedIndex === index && block.raw_text === ""}
             onleader={onLeader}
             ondeleteblock={() => handleDeleteBlock(index)}

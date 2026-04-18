@@ -18,6 +18,8 @@
     onenter: onEnter,
     onindent: onIndent,
     onbackspaceempty: onBackspaceEmpty,
+    onbackspacemerge: onBackspaceMerge,
+    initialCursorPos,
     startininsert: startInInsert,
     onslashcommand: onSlashCommand,
     onleader: onLeader,
@@ -38,6 +40,8 @@
     onenter?: () => void;
     onindent?: (direction: "indent" | "outdent") => void;
     onbackspaceempty?: () => void;
+    onbackspacemerge?: (text: string) => void;
+    initialCursorPos?: number;
     startininsert?: boolean;
     onslashcommand?: (command: string) => void;
     onleader?: () => void;
@@ -300,6 +304,12 @@
         key: "Backspace",
         run: (v) => {
           if (v.state.doc.length === 0 && onBackspaceEmpty) { onBackspaceEmpty(); return true; }
+          // Merge with previous block when Backspace at cursor pos 0 with content
+          const cursor = v.state.selection.main.head;
+          if (cursor === 0 && v.state.selection.main.anchor === 0 && v.state.doc.length > 0 && onBackspaceMerge) {
+            onBackspaceMerge(v.state.doc.toString());
+            return true;
+          }
           return false;
         },
       },
@@ -330,8 +340,12 @@
       }
     });
 
+    const clampedCursor = initialCursorPos !== undefined
+      ? Math.max(0, Math.min(initialText.length, initialCursorPos))
+      : undefined;
     const state = EditorState.create({
       doc: initialText,
+      selection: clampedCursor !== undefined ? { anchor: clampedCursor, head: clampedCursor } : undefined,
       extensions: [
         blockKeymap,
         vim(),
@@ -348,6 +362,11 @@
     });
 
     view = new EditorView({ state, parent: container });
+
+    // If an initial cursor position was requested, focus and (in Vim) switch to insert mode
+    if (clampedCursor !== undefined) {
+      view.focus();
+    }
 
     // Register Vim normal-mode commands
     const cm = getCM(view);
