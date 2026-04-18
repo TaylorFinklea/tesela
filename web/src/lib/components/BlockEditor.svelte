@@ -257,9 +257,14 @@
     const blockKeymap = keymap.of([
       {
         key: "Escape",
-        run: () => {
+        run: (v) => {
           if (showSlashMenu) { showSlashMenu = false; slashFilter = ""; slashStartPos = -1; return true; }
           if (showAutocomplete) { showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1; return true; }
+          // Let vim handle Escape when in insert/visual mode so it can transition to normal.
+          // Only intercept when already in normal mode (to unfocus the block).
+          const cm = getCM(v);
+          const vimState = cm?.state?.vim as { insertMode?: boolean; visualMode?: boolean } | undefined;
+          if (vimState?.insertMode || vimState?.visualMode) return false;
           onEscape?.();
           return true;
         },
@@ -371,21 +376,19 @@
 
     view = new EditorView({ state, parent: container });
 
-    // Track vim mode changes (fires on the container element)
-    const vimModeHandler = (e: Event) => {
-      const mode = (e as CustomEvent<{ mode: string }>).detail?.mode;
-      if (mode) setVimMode(mode);
-    };
-    container.addEventListener("vim-mode-change", vimModeHandler);
-
-    // If an initial cursor position was requested, focus and (in Vim) switch to insert mode
+    // If an initial cursor position was requested, focus immediately
     if (clampedCursor !== undefined) {
       view.focus();
     }
 
-    // Register Vim normal-mode commands
+    // Register Vim normal-mode commands and track mode changes via cm.on
+    let vimModeOff: (() => void) | null = null;
     const cm = getCM(view);
     if (cm) {
+      // vim-mode-change fires on the CM5-like instance, not as a DOM event
+      const modeListener = (info: { mode: string }) => { setVimMode(info.mode); };
+      cm.on("vim-mode-change", modeListener);
+      vimModeOff = () => cm.off("vim-mode-change", modeListener);
       // j/k — cross-block navigation at boundaries
       if (onNavigate) {
         Vim.defineAction("moveDownOrNextBlock", () => {
@@ -460,12 +463,16 @@
       }
     }
 
-    // If this block should start focused and in insert mode
+    // Focus and optionally enter insert mode for newly created blocks
     if (focused) {
       requestAnimationFrame(() => {
         if (!view) return;
         view.focus();
-        view.dispatch({ selection: { anchor: view.state.doc.length } });
+        // Only move cursor to end when no explicit initialCursorPos was given;
+        // for split/merge blocks the EditorState already has the right selection.
+        if (clampedCursor === undefined) {
+          view.dispatch({ selection: { anchor: view.state.doc.length } });
+        }
         if (startInInsert) {
           const cm2 = getCM(view);
           if (cm2) Vim.handleKey(cm2, "i", "mapping");
@@ -474,7 +481,7 @@
     }
 
     return () => {
-      container.removeEventListener("vim-mode-change", vimModeHandler);
+      vimModeOff?.();
       view?.destroy();
       view = null;
     };
