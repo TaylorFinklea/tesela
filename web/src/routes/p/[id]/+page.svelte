@@ -21,6 +21,7 @@
     isVimEnabled,
   } from "$lib/stores/pane-state.svelte";
   import type { Note } from "$lib/types/Note";
+  import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import { addRecent } from "$lib/stores/recents.svelte";
   import { goto } from "$app/navigation";
   import { untrack } from "svelte";
@@ -90,6 +91,7 @@
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let rightSidebarCollapsed = $state(false);
+  let focusedBlock = $state<ParsedBlock | null>(null);
 
   async function deleteNote() {
     if (!note) return;
@@ -194,6 +196,7 @@
           frontmatter={split.frontmatter}
           onContentChange={handleContentChange}
           onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
+          onfocusedblockchange={(b) => { focusedBlock = b; }}
         />
 
         {#if isTagPage}
@@ -250,5 +253,6 @@
     noteId={noteId}
     collapsed={rightSidebarCollapsed}
     onToggle={() => (rightSidebarCollapsed = !rightSidebarCollapsed)}
+    {focusedBlock}
   />
 </div>

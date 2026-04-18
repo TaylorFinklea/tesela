@@ -1,5 +1,5 @@
 <script module lang="ts">
-  import type { EditorView } from "@codemirror/view";
+  import { EditorView } from "@codemirror/view";
   import { Vim } from "@replit/codemirror-vim";
 
   // Shared context always pointing to the currently focused block editor.
@@ -85,7 +85,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { EditorState } from "@codemirror/state";
-  import { EditorView, keymap } from "@codemirror/view";
+  import { keymap } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim, getCM } from "@replit/codemirror-vim";
   import { teselaDecorations, teselaDecorationTheme } from "$lib/cm-decorations";

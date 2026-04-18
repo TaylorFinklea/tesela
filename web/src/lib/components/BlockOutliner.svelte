@@ -12,12 +12,14 @@
     frontmatter,
     onContentChange,
     onleader: onLeader,
+    onfocusedblockchange,
   }: {
     noteId: string;
     body: string;
     frontmatter: string;
     onContentChange?: (fullContent: string) => void;
     onleader?: () => void;
+    onfocusedblockchange?: (block: ParsedBlock | null) => void;
   } = $props();
 
   // Fetch notes list for autocomplete
@@ -46,6 +48,47 @@
     }
   });
 
+  // Notify parent of focused block changes
+  $effect(() => {
+    const block = focusedIndex !== null ? (blocks[focusedIndex] ?? null) : null;
+    onfocusedblockchange?.(block);
+  });
+
+  function parseProperties(rawText: string): Record<string, string> {
+    const props: Record<string, string> = {};
+    for (const m of rawText.matchAll(/([A-Za-z_][A-Za-z0-9_]*):: (.+)/g)) {
+      props[m[1]] = m[2];
+    }
+    return props;
+  }
+
+  const STATUS_CYCLE = ["", "todo", "doing", "done"] as const;
+
+  function statusChar(s: string): string {
+    if (s === "todo") return "○";
+    if (s === "doing") return "◑";
+    if (s === "done") return "✓";
+    return "";
+  }
+
+  function statusColorClass(s: string): string {
+    if (s === "todo") return "text-amber-400/80";
+    if (s === "doing") return "text-blue-400/80";
+    if (s === "done") return "text-emerald-400/80";
+    return "";
+  }
+
+  function setBlockStatus(rawText: string, status: string): string {
+    const hasStatus = /^status:: .+$/m.test(rawText);
+    if (status === "") {
+      return rawText.replace(/\nstatus:: [^\n]+/g, "").replace(/^status:: [^\n]+\n?/gm, "");
+    } else if (hasStatus) {
+      return rawText.replace(/^status:: .+$/m, `status:: ${status}`);
+    } else {
+      return rawText + `\nstatus:: ${status}`;
+    }
+  }
+
   function saveBlocks(updated: ParsedBlock[]) {
     const bodyLines = updated
       .map((b) => {
@@ -62,10 +105,24 @@
   function handleBlockChange(blockId: string, newRawText: string) {
     blocks = blocks.map((b) =>
       b.id === blockId
-        ? { ...b, raw_text: newRawText, text: (newRawText.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim() }
+        ? {
+            ...b,
+            raw_text: newRawText,
+            text: (newRawText.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
+            properties: parseProperties(newRawText),
+          }
         : b,
     );
     saveBlocks(blocks);
+  }
+
+  function handleStatusCycle(atIndex: number) {
+    const block = blocks[atIndex];
+    if (!block) return;
+    const current = block.properties.status ?? "";
+    const idx = STATUS_CYCLE.indexOf(current as (typeof STATUS_CYCLE)[number]);
+    const next = STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
+    handleBlockChange(block.id, setBlockStatus(block.raw_text, next));
   }
 
   function handleNavigate(direction: "up" | "down") {
@@ -117,15 +174,12 @@
     if (focusedIndex !== null && focusedIndex > 0) focusedIndex = focusedIndex - 1;
   }
 
-  // Merge the current block's text into the previous block.
-  // Triggered when Backspace is pressed at cursor position 0 of a non-empty block.
   function handleBackspaceMerge(atIndex: number, currentText: string) {
-    if (atIndex === 0) return; // no previous block to merge into
+    if (atIndex === 0) return;
     const prev = blocks[atIndex - 1];
     if (!prev) return;
     const mergePos = prev.raw_text.length;
     const mergedText = prev.raw_text + currentText;
-    // New id forces BlockEditor to remount with the merged text + cursor position
     const mergedBlock: ParsedBlock = {
       ...prev,
       id: `${noteId}:merged-${Date.now()}`,
@@ -228,12 +282,28 @@
           {/each}
         {/if}
 
-        <!-- Bullet -->
-        <div class="shrink-0 pt-[12px] pl-2 pr-1.5">
-          <span
-            class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === index ? 'bg-primary' : 'bg-muted-foreground/30'}"
-          ></span>
-        </div>
+        <!-- Bullet / Status icon -->
+        {#if block.properties.status}
+          <!-- svelte-ignore a11y_consider_explicit_label -->
+          <button
+            class="shrink-0 pt-[10px] pl-2 pr-1 cursor-pointer opacity-70 hover:opacity-100 transition-opacity"
+            onclick={(e) => { e.stopPropagation(); handleStatusCycle(index); }}
+            title="Cycle status ({block.properties.status})"
+          >
+            <span class="block text-[12px] leading-none font-mono w-[14px] text-center {statusColorClass(block.properties.status)}">
+              {statusChar(block.properties.status)}
+            </span>
+          </button>
+        {:else}
+          <!-- svelte-ignore a11y_consider_explicit_label -->
+          <button
+            class="shrink-0 pt-[12px] pl-2 pr-1.5 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity"
+            onclick={(e) => { e.stopPropagation(); handleStatusCycle(index); }}
+            title="Set status"
+          >
+            <span class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === index ? 'bg-primary' : 'bg-muted-foreground/30'}"></span>
+          </button>
+        {/if}
 
         <!-- Content -->
         <div class="flex-1 min-w-0 py-1 pr-3">
