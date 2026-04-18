@@ -9,6 +9,7 @@
   import KanbanBoard from "$lib/components/KanbanBoard.svelte";
   import SplitDivider from "$lib/components/SplitDivider.svelte";
   import RightSidebar from "$lib/components/RightSidebar.svelte";
+  import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
   import { getViewMode, setViewMode } from "$lib/stores/tag-view-prefs.svelte";
   import {
     isSplitOpen,
@@ -59,6 +60,7 @@
 
   // Detect if this is a Tag page (show table view)
   const isTagPage = $derived(note?.metadata.note_type === "Tag");
+  const isPropertyPage = $derived(note?.metadata.note_type === "Property");
 
   // Split pane derived state
   const tagName = $derived(note?.title ?? "");
@@ -198,6 +200,12 @@
           onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
           onfocusedblockchange={(b) => { focusedBlock = b; }}
         />
+
+        {#if isPropertyPage}
+          <div class="mt-6 pt-4 border-t border-border">
+            <PropertyTypeConfig note={note} />
+          </div>
+        {/if}
 
         {#if isTagPage}
           <div class="mt-6 pt-4 border-t border-border space-y-6">
