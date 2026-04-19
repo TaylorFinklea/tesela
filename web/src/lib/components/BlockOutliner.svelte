@@ -50,14 +50,15 @@
 
   let blocks = $state<ParsedBlock[]>(parseBlocks(noteId, body));
   let focusedIndex = $state<number | null>(null);
-  let lastBodyFromServer = $state(body);
+  let lastExternalBody = $state(body);
+  let lastSentBody = $state(body);
 
   $effect(() => {
-    if (body !== lastBodyFromServer) {
-      lastBodyFromServer = body;
-      if (focusedIndex === null) {
-        blocks = parseBlocks(noteId, body);
-      }
+    if (body === lastExternalBody) return;
+    lastExternalBody = body;
+    if (body === lastSentBody) return;
+    if (focusedIndex === null) {
+      blocks = parseBlocks(noteId, body);
     }
   });
 
@@ -111,9 +112,7 @@
         return [first, ...rest].join("\n");
       })
       .join("\n");
-    // Pre-update lastBodyFromServer so when the server confirms this exact content
-    // the $effect doesn't trigger a re-parse that would scramble block IDs.
-    lastBodyFromServer = `${bodyLines}\n`;
+    lastSentBody = `${bodyLines}\n`;
     onContentChange?.(`${frontmatter}${bodyLines}\n`);
   }
 
