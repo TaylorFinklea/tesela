@@ -10,30 +10,46 @@ const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
 
 export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
   const lines = body.split("\n");
-  const blocks: ParsedBlock[] = [];
+  const raw: { lineNum: number; indent: number; text: string }[] = [];
   let current: { lineNum: number; indent: number; text: string } | null = null;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const trimmed = line.trim();
     if (trimmed === "") continue;
-
     const spaces = line.length - line.trimStart().length;
     const indent = Math.floor(spaces / 2);
-
     if (trimmed.startsWith("- ")) {
-      if (current) blocks.push(makeBlock(noteId, current.lineNum, current.indent, current.text));
+      if (current) raw.push(current);
       current = { lineNum: i, indent, text: trimmed.slice(2) };
     } else if (current) {
       current.text += "\n" + trimmed;
     }
   }
+  if (current) raw.push(current);
 
-  if (current) blocks.push(makeBlock(noteId, current.lineNum, current.indent, current.text));
+  // Build blocks with inherited_tags via ancestor stack
+  const ancestorStack: { indent: number; tags: string[] }[] = [];
+  const blocks: ParsedBlock[] = [];
+
+  for (const { lineNum, indent, text } of raw) {
+    while (ancestorStack.length > 0 && ancestorStack[ancestorStack.length - 1].indent >= indent) {
+      ancestorStack.pop();
+    }
+    const seen = new Set<string>();
+    const inherited_tags = ancestorStack
+      .flatMap((a) => a.tags)
+      .filter((t) => (seen.has(t) ? false : (seen.add(t), true)));
+
+    const block = makeBlock(noteId, lineNum, indent, text, inherited_tags);
+    ancestorStack.push({ indent, tags: block.tags });
+    blocks.push(block);
+  }
+
   return blocks;
 }
 
-function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText: string): ParsedBlock {
+function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText: string, inherited_tags: string[]): ParsedBlock {
   const tags = extractTags(rawText);
   const properties = extractProperties(rawText);
   const firstLine = rawText.split("\n")[0] ?? rawText;
@@ -44,6 +60,7 @@ function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText
     text,
     raw_text: rawText,
     tags,
+    inherited_tags,
     properties,
     indent_level: indentLevel,
     note_id: noteId,

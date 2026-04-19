@@ -113,8 +113,10 @@
     onpasteblock: onPasteBlock,
     onnewblockbelow: onNewBlockBelow,
     onnewblockabove: onNewBlockAbove,
+    oncyclestatus: onCycleStatus,
     focused,
     noteslist: notesList,
+    statusChoices,
   }: {
     initialText: string;
     onblur: () => void;
@@ -135,8 +137,10 @@
     onpasteblock?: () => void;
     onnewblockbelow?: () => void;
     onnewblockabove?: () => void;
+    oncyclestatus?: () => void;
     focused?: boolean;
     noteslist?: Array<{ id: string; title: string; tags: string[] }>;
+    statusChoices?: string[];
   } = $props();
 
   let container: HTMLDivElement;
@@ -189,12 +193,24 @@
     autocompleteStartPos = -1;
   }
 
+  function statusIcon(s: string): string {
+    if (s === "done") return "✓";
+    if (s === "doing") return "◎";
+    return "☐";
+  }
+
   function getSlashCommands(): SlashCommand[] {
+    const choices = statusChoices ?? ["todo", "doing", "done"];
+    const statusItems: SlashCommand[] = choices.map((s) => ({
+      id: s,
+      label: s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, " "),
+      description: `Set status:: ${s}`,
+      icon: statusIcon(s),
+      action: () => applySlash(s),
+    }));
     return [
       { id: "task", label: "Task", description: "Add #Task tag", icon: "☑", action: () => applySlash("task") },
-      { id: "todo", label: "Todo", description: "Set status:: todo", icon: "☐", action: () => applySlash("todo") },
-      { id: "doing", label: "Doing", description: "Set status:: doing", icon: "◎", action: () => applySlash("doing") },
-      { id: "done", label: "Done", description: "Set status:: done", icon: "✓", action: () => applySlash("done") },
+      ...statusItems,
       { id: "heading", label: "Heading", description: "Convert to heading", icon: "#", action: () => applySlash("heading") },
       { id: "property", label: "Property", description: "Add key:: value", icon: "⊞", action: () => applySlash("property") },
       { id: "link", label: "Link", description: "Insert [[page link]]", icon: "⟦", action: () => applySlash("link") },
@@ -210,32 +226,30 @@
     const after = doc.slice(cursorPos);
 
     let insert = "";
-    switch (command) {
-      case "task":
-        insert = before.trimEnd() + (before.length > 0 ? " " : "") + "#Task" + after;
-        break;
-      case "todo":
-        insert = before.trimEnd() + "\nstatus:: todo" + after;
-        break;
-      case "doing":
-        insert = before.trimEnd() + "\nstatus:: doing" + after;
-        break;
-      case "done":
-        insert = before.trimEnd() + "\nstatus:: done" + after;
-        break;
-      case "heading":
-        insert = "# " + before.trim() + after;
-        break;
-      case "property":
-        insert = before.trimEnd() + "\nkey:: value" + after;
-        break;
-      case "link":
-        insert = before + "[[]]" + after;
-        break;
-      case "date": {
-        const today = new Date().toISOString().slice(0, 10);
-        insert = before + `[[${today}]]` + after;
-        break;
+    const allStatuses = statusChoices ?? ["todo", "doing", "done"];
+    if (allStatuses.includes(command)) {
+      insert = before.trimEnd() + "\nstatus:: " + command + after;
+    } else {
+      switch (command) {
+        case "task":
+          insert = before.trimEnd() + (before.length > 0 ? " " : "") + "#Task" + after;
+          break;
+        case "heading":
+          insert = "# " + before.trim() + after;
+          break;
+        case "property":
+          insert = before.trimEnd() + "\nkey:: value" + after;
+          break;
+        case "link":
+          insert = before + "[[]]" + after;
+          break;
+        case "date": {
+          const today = new Date().toISOString().slice(0, 10);
+          insert = before + `[[${today}]]` + after;
+          break;
+        }
+        default:
+          return;
       }
     }
 
@@ -413,6 +427,7 @@
           return false;
         },
       },
+      { key: "Mod-Enter", run: () => { if (onCycleStatus) { onCycleStatus(); return true; } return false; } },
       { key: "Tab", run: () => { if (onIndent) { onIndent("indent"); return true; } return false; } },
       { key: "Shift-Tab", run: () => { if (onIndent) { onIndent("outdent"); return true; } return false; } },
       {

@@ -17,9 +17,13 @@ text: string,
  */
 raw_text: string, 
 /**
- * Tags found in the block (e.g., ["Task", "urgent"])
+ * Tags found directly on this block (e.g., ["Task", "urgent"])
  */
 tags: Array<string>, 
+/**
+ * Tags inherited from ancestor blocks (parent, grandparent, etc.)
+ */
+inherited_tags: Array<string>, 
 /**
  * Properties extracted from the block (e.g., {"status": "todo"})
  */

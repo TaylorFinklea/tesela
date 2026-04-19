@@ -222,7 +222,7 @@
                 {#if viewMode === "kanban"}
                   <KanbanBoard tagName={note.title} />
                 {:else}
-                  <TagTable tagName={note.title} />
+                  <TagTable tagName={note.title} noteId={noteId} />
                 {/if}
               {:else}
                 <div class="text-[11px] text-muted-foreground/60 italic py-2">

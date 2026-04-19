@@ -21,8 +21,10 @@ pub struct ParsedBlock {
     pub text: String,
     /// Full raw text including continuation lines
     pub raw_text: String,
-    /// Tags found in the block (e.g., ["Task", "urgent"])
+    /// Tags found directly on this block (e.g., ["Task", "urgent"])
     pub tags: Vec<String>,
+    /// Tags inherited from ancestor blocks (parent, grandparent, etc.)
+    pub inherited_tags: Vec<String>,
     /// Properties extracted from the block (e.g., {"status": "todo"})
     pub properties: HashMap<String, String>,
     /// Indentation level (0 = root)
@@ -35,46 +37,67 @@ pub struct ParsedBlock {
 ///
 /// Each `- ` prefixed line starts a new block. Non-`- ` lines that follow
 /// are continuation lines (properties or multi-line text) belonging to the
-/// previous block.
+/// previous block. Child blocks inherit the tags of their ancestors.
 pub fn parse_blocks(note_id: &str, body: &str) -> Vec<ParsedBlock> {
-    let lines: Vec<&str> = body.lines().collect();
-    let mut blocks: Vec<ParsedBlock> = Vec::new();
-    let mut current_block: Option<(usize, usize, String)> = None; // (line_num, indent, text)
+    // Pass 1: collect raw block data (line_num, indent, text)
+    let mut raw_blocks: Vec<(usize, usize, String)> = Vec::new();
+    let mut current: Option<(usize, usize, String)> = None;
 
-    for (line_num, line) in lines.iter().enumerate() {
+    for (line_num, line) in body.lines().enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
-
-        // Count leading spaces for indent level
         let spaces = line.len() - line.trim_start().len();
         let indent = spaces / 2;
 
         if trimmed.starts_with("- ") {
-            // Finalize previous block
-            if let Some((start_line, block_indent, text)) = current_block.take() {
-                blocks.push(make_block(note_id, start_line, block_indent, &text));
+            if let Some(b) = current.take() {
+                raw_blocks.push(b);
             }
-            // Start new block
-            let block_text = trimmed.strip_prefix("- ").unwrap_or(trimmed).to_string();
-            current_block = Some((line_num, indent, block_text));
-        } else if let Some((_, _, ref mut text)) = current_block {
-            // Continuation line — append to current block
+            let text = trimmed.strip_prefix("- ").unwrap_or(trimmed).to_string();
+            current = Some((line_num, indent, text));
+        } else if let Some((_, _, ref mut text)) = current {
             text.push('\n');
             text.push_str(trimmed);
         }
     }
+    if let Some(b) = current {
+        raw_blocks.push(b);
+    }
 
-    // Finalize last block
-    if let Some((start_line, indent, text)) = current_block {
-        blocks.push(make_block(note_id, start_line, indent, &text));
+    // Pass 2: build ParsedBlocks, computing inherited_tags via an ancestor stack
+    let mut ancestor_stack: Vec<(usize, Vec<String>)> = Vec::new(); // (indent, tags)
+    let mut blocks = Vec::with_capacity(raw_blocks.len());
+
+    for (line_num, indent, raw_text) in raw_blocks {
+        // Pop stack entries that are at the same or deeper indent (not true ancestors)
+        while ancestor_stack.last().map(|(i, _)| *i >= indent).unwrap_or(false) {
+            ancestor_stack.pop();
+        }
+        // Collect unique tags from all remaining ancestors (preserving order)
+        let mut seen = std::collections::HashSet::new();
+        let inherited_tags: Vec<String> = ancestor_stack
+            .iter()
+            .flat_map(|(_, tags)| tags.iter().cloned())
+            .filter(|t| seen.insert(t.clone()))
+            .collect();
+
+        let block = make_block(note_id, line_num, indent, &raw_text, inherited_tags);
+        ancestor_stack.push((indent, block.tags.clone()));
+        blocks.push(block);
     }
 
     blocks
 }
 
-fn make_block(note_id: &str, line_num: usize, indent_level: usize, raw_text: &str) -> ParsedBlock {
+fn make_block(
+    note_id: &str,
+    line_num: usize,
+    indent_level: usize,
+    raw_text: &str,
+    inherited_tags: Vec<String>,
+) -> ParsedBlock {
     let tags = extract_tags(raw_text);
     let properties = extract_properties(raw_text);
 
@@ -87,6 +110,7 @@ fn make_block(note_id: &str, line_num: usize, indent_level: usize, raw_text: &st
         text: display_text,
         raw_text: raw_text.to_string(),
         tags,
+        inherited_tags,
         properties,
         indent_level,
         note_id: note_id.to_string(),
@@ -179,6 +203,17 @@ mod tests {
     fn test_parse_heading_only() {
         let blocks = parse_blocks("test", "# My Heading\nSome prose");
         assert!(blocks.is_empty()); // No bullet blocks
+    }
+
+    #[test]
+    fn test_inherited_tags_from_parent() {
+        let body = "- Parent #Task\n  - Child\n    status:: todo";
+        let blocks = parse_blocks("test", body);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].tags, vec!["Task"]);
+        assert!(blocks[0].inherited_tags.is_empty());
+        assert!(blocks[1].tags.is_empty());
+        assert_eq!(blocks[1].inherited_tags, vec!["Task"]);
     }
 
     #[test]

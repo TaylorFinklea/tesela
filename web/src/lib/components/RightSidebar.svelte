@@ -81,10 +81,13 @@
     return hiddenChoicesForTags(note.metadata.tags);
   });
 
-  // Block panel: hidden choices from the block's own tags, falling back to the note's tags
+  // Block panel: hidden choices from block's own tags + inherited tags, falling back to note's tags
   const blockHiddenChoices = $derived.by(() => {
     if (!focusedBlock) return {};
-    const tags = focusedBlock.tags.length > 0 ? focusedBlock.tags : (note?.metadata.tags ?? []);
+    const direct = focusedBlock.tags;
+    const inherited = focusedBlock.inherited_tags ?? [];
+    const allBlockTags = [...new Set([...direct, ...inherited])];
+    const tags = allBlockTags.length > 0 ? allBlockTags : (note?.metadata.tags ?? []);
     return hiddenChoicesForTags(tags);
   });
 

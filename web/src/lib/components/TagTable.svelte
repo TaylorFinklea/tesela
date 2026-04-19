@@ -5,9 +5,16 @@
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { TypeDefinition } from "$lib/types/TypeDefinition";
   import type { PropertyDef } from "$lib/types/PropertyDef";
+  import type { Note } from "$lib/types/Note";
   import PropertyEditor from "./PropertyEditor.svelte";
+  import {
+    buildRegistry,
+    parseHiddenChoices,
+    getVisibleChoices,
+  } from "$lib/property-registry";
+  import type { PropertyDefinition } from "$lib/property-registry";
 
-  let { tagName }: { tagName: string } = $props();
+  let { tagName, noteId }: { tagName: string; noteId: string } = $props();
 
   const queryClient = useQueryClient();
 
@@ -24,6 +31,35 @@
   const typeDef: TypeDefinition | undefined = $derived(typeQuery.data as TypeDefinition | undefined);
   const blocks: ParsedBlock[] = $derived((blocksQuery.data ?? []) as ParsedBlock[]);
   const columns = $derived(typeDef?.properties ?? []);
+
+  // Property registry for typed choices + hidden choices from tag page
+  const allNotesQuery = createQuery(() => ({
+    queryKey: ["notes", { limit: 500 }] as const,
+    queryFn: () => api.listNotes({ limit: 500 }),
+  }));
+  const tagNoteQuery = createQuery(() => ({
+    queryKey: ["note", noteId] as const,
+    queryFn: () => api.getNote(noteId),
+  }));
+  const propertyRegistry = $derived(buildRegistry((allNotesQuery.data ?? []) as Note[]));
+  const hiddenChoices = $derived.by(() => {
+    const tagNote = tagNoteQuery.data as Note | undefined;
+    if (!tagNote) return {};
+    return parseHiddenChoices(tagNote.metadata.custom as Record<string, unknown>);
+  });
+
+  function getEffectiveChoices(prop: PropertyDef): string[] | null {
+    const def: PropertyDefinition | undefined = propertyRegistry.get(prop.name.toLowerCase());
+    const rawChoices = def?.choices?.length ? def.choices : (prop.values ?? null);
+    if (!rawChoices) return null;
+    const fakeDef: PropertyDefinition = {
+      name: prop.name,
+      value_type: def?.value_type ?? (prop.value_type as import("$lib/property-registry").PropertyType),
+      choices: rawChoices,
+      default: null,
+    };
+    return getVisibleChoices(fakeDef, hiddenChoices);
+  }
 
   let sortColumn = $state<string | null>(null);
   let sortAsc = $state(true);
@@ -190,7 +226,7 @@
       propertyName={editingProp.name}
       currentValue={getPropertyValue(editingBlock, editingProp.name)}
       valueType={editingProp.value_type}
-      choices={editingProp.values ?? null}
+      choices={getEffectiveChoices(editingProp)}
       position={editorPosition}
       onselect={handlePropertyUpdate}
       onclose={() => { editingBlock = null; editingProp = null; }}

@@ -34,6 +34,7 @@
     { path: "/timeline", label: "Timeline", match: (p: string) => p === "/timeline" },
     { path: "/graph", label: "Graph", match: (p: string) => p === "/graph" },
     { path: "/", label: "Pages", match: (p: string) => p === "/" },
+    { path: "/properties", label: "Properties", match: (p: string) => p === "/properties" },
   ];
 
   const allItems = $derived([

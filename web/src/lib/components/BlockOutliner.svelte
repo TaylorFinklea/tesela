@@ -35,6 +35,19 @@
     })),
   );
 
+  // Fetch Status property page for dynamic status choices
+  const statusPropertyQuery = createQuery(() => ({
+    queryKey: ["note", "status"] as const,
+    queryFn: () => api.getNote("status"),
+  }));
+  const statusChoices = $derived.by((): string[] => {
+    const statusNote = statusPropertyQuery.data as Note | undefined;
+    if (!statusNote) return ["todo", "doing", "done"];
+    const choices = statusNote.metadata.custom.choices;
+    return Array.isArray(choices) ? (choices as string[]) : ["todo", "doing", "done"];
+  });
+  const statusCycle = $derived(["", ...statusChoices]);
+
   let blocks = $state<ParsedBlock[]>(parseBlocks(noteId, body));
   let focusedIndex = $state<number | null>(null);
   let lastBodyFromServer = $state(body);
@@ -63,20 +76,18 @@
     return props;
   }
 
-  const STATUS_CYCLE = ["", "todo", "doing", "done"] as const;
-
   function statusChar(s: string): string {
-    if (s === "todo") return "○";
-    if (s === "doing") return "◑";
     if (s === "done") return "✓";
-    return "";
+    if (s === "doing" || s === "in-review") return "◑";
+    if (s === "todo") return "○";
+    return "·";
   }
 
   function statusColorClass(s: string): string {
-    if (s === "todo") return "text-amber-400/80";
-    if (s === "doing") return "text-blue-400/80";
     if (s === "done") return "text-emerald-400/80";
-    return "";
+    if (s === "doing" || s === "in-review") return "text-blue-400/80";
+    if (s === "todo") return "text-amber-400/80";
+    return "text-muted-foreground/60";
   }
 
   function setBlockStatus(rawText: string, status: string): string {
@@ -124,8 +135,8 @@
     const block = blocks[atIndex];
     if (!block) return;
     const current = block.properties.status ?? "";
-    const idx = STATUS_CYCLE.indexOf(current as (typeof STATUS_CYCLE)[number]);
-    const next = STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
+    const idx = statusCycle.indexOf(current);
+    const next = statusCycle[(idx + 1) % statusCycle.length] ?? "";
     handleBlockChange(block.id, setBlockStatus(block.raw_text, next));
   }
 
@@ -145,6 +156,7 @@
       text: (textAfterCursor.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
       raw_text: textAfterCursor,
       tags: [],
+      inherited_tags: [],
       properties: {},
       indent_level: current.indent_level,
       note_id: noteId,
@@ -238,6 +250,7 @@
       text: "",
       raw_text: "",
       tags: [],
+      inherited_tags: [],
       properties: {},
       indent_level: current.indent_level,
       note_id: noteId,
@@ -254,11 +267,12 @@
   <div
     class="text-sm text-muted-foreground cursor-text py-2 hover:bg-accent/20 rounded px-2"
     onclick={() => {
-      const newBlock = {
+      const newBlock: ParsedBlock = {
         id: `${noteId}:new-${Date.now()}`,
         text: "",
         raw_text: "",
         tags: [],
+        inherited_tags: [],
         properties: {},
         indent_level: 0,
         note_id: noteId,
@@ -325,6 +339,7 @@
             initialCursorPos={mountHint?.blockId === block.id ? mountHint.pos : undefined}
             startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (focusedIndex === index && block.raw_text === "")}
             onleader={onLeader}
+            oncyclestatus={() => handleStatusCycle(index)}
             ondeleteblock={() => handleDeleteBlock(index)}
             onyankblock={() => handleYankBlock(index)}
             onpasteblock={() => handlePasteBlock(index)}
@@ -332,6 +347,7 @@
             onnewblockabove={() => handleNewBlockAbove(index)}
             focused={focusedIndex === index}
             noteslist={notesList}
+            statusChoices={statusChoices}
           />
         </div>
       </div>
