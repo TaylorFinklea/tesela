@@ -3,6 +3,7 @@
   import { page } from "$app/state";
   import { api, ApiError } from "$lib/api-client";
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
+  import DocumentEditor from "$lib/components/DocumentEditor.svelte";
   import TagTable from "$lib/components/TagTable.svelte";
   import TagPropertyConfig from "$lib/components/TagPropertyConfig.svelte";
   import ViewSwitcher from "$lib/components/ViewSwitcher.svelte";
@@ -27,7 +28,7 @@
   import { addRecent } from "$lib/stores/recents.svelte";
   import { goto } from "$app/navigation";
   import { untrack } from "svelte";
-  import { IconTrash, IconStar, IconStarFilled } from "@tabler/icons-svelte";
+  import { IconTrash, IconStar, IconStarFilled, IconFileText, IconLayoutList } from "@tabler/icons-svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
   import { isFavorite, toggleFavorite } from "$lib/stores/favorites.svelte";
 
@@ -76,6 +77,24 @@
   // Detect if this is a Tag page (show table view)
   const isTagPage = $derived(note?.metadata.note_type === "Tag");
   const isPropertyPage = $derived(note?.metadata.note_type === "Property");
+
+  // Document mode: stored as `mode: document` in frontmatter
+  const isDocumentMode = $derived(note?.metadata.custom.mode === "document");
+
+  function toggleDocumentMode() {
+    if (!note) return;
+    const { frontmatter, body } = split;
+    let newFm: string;
+    if (isDocumentMode) {
+      newFm = frontmatter.replace(/^mode: document\n/m, "");
+    } else if (frontmatter) {
+      const lastDash = frontmatter.lastIndexOf("---");
+      newFm = frontmatter.slice(0, lastDash) + "mode: document\n---\n";
+    } else {
+      newFm = "---\nmode: document\n---\n";
+    }
+    handleContentChange(`${newFm}${body}`);
+  }
 
   // Split pane derived state
   const tagName = $derived(note?.title ?? "");
@@ -177,6 +196,17 @@
               {/if}
             </button>
             <button
+              onclick={toggleDocumentMode}
+              class="p-1 rounded-md transition-all {isDocumentMode ? 'text-primary bg-primary/10' : 'text-muted-foreground/40 hover:text-primary/60 hover:bg-primary/10'}"
+              title={isDocumentMode ? "Switch to outline mode" : "Switch to document mode"}
+            >
+              {#if isDocumentMode}
+                <IconLayoutList size={14} stroke={1.5} />
+              {:else}
+                <IconFileText size={14} stroke={1.5} />
+              {/if}
+            </button>
+            <button
               onclick={deleteNote}
               class="text-muted-foreground/40 hover:text-destructive p-1 rounded-md hover:bg-destructive/10 transition-all"
               title="Delete note"
@@ -213,16 +243,24 @@
           </div>
         </div>
       {:else if note}
-        <BlockOutliner
-          noteId={note.id}
-          body={split.body}
-          frontmatter={split.frontmatter}
-          onContentChange={handleContentChange}
-          onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
-          onfocusedblockchange={(b) => { focusedBlock = b; }}
-          {drillBlockId}
-          onDrillIn={drillInto}
-        />
+        {#if isDocumentMode}
+          <DocumentEditor
+            body={split.body}
+            frontmatter={split.frontmatter}
+            onContentChange={handleContentChange}
+          />
+        {:else}
+          <BlockOutliner
+            noteId={note.id}
+            body={split.body}
+            frontmatter={split.frontmatter}
+            onContentChange={handleContentChange}
+            onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
+            onfocusedblockchange={(b) => { focusedBlock = b; }}
+            {drillBlockId}
+            onDrillIn={drillInto}
+          />
+        {/if}
 
         {#if isPropertyPage}
           <div class="mt-6 pt-4 border-t border-border">
