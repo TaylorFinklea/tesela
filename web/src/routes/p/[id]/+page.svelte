@@ -23,6 +23,7 @@
   } from "$lib/stores/pane-state.svelte";
   import type { Note } from "$lib/types/Note";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
+  import { parseBlocks } from "$lib/block-parser";
   import { addRecent } from "$lib/stores/recents.svelte";
   import { goto } from "$app/navigation";
   import { untrack } from "svelte";
@@ -57,6 +58,20 @@
 
   const note: Note | undefined = $derived(noteQuery.data as Note | undefined);
   const split = $derived(splitContent(note?.content ?? ""));
+
+  // Drill-in URL state
+  const drillBlockId = $derived(page.url.searchParams.get("block") ?? "");
+  const drillBlock = $derived.by((): ParsedBlock | null => {
+    if (!drillBlockId || !note) return null;
+    return parseBlocks(note.id, split.body).find(b => b.id === drillBlockId) ?? null;
+  });
+
+  function drillInto(blockId: string) {
+    goto(`?block=${encodeURIComponent(blockId)}`, { replaceState: false, noScroll: true });
+  }
+  function drillOut() {
+    goto(page.url.pathname, { replaceState: false, noScroll: true });
+  }
 
   // Detect if this is a Tag page (show table view)
   const isTagPage = $derived(note?.metadata.note_type === "Tag");
@@ -142,7 +157,13 @@
           <div class="flex items-center gap-2 text-[12px] text-muted-foreground mb-4">
             <a href="/" class="hover:text-primary transition-colors">Notes</a>
             <span>›</span>
-            <span>{note.title}</span>
+            {#if drillBlock}
+              <button onclick={drillOut} class="hover:text-primary transition-colors">{note.title}</button>
+              <span>›</span>
+              <span class="text-foreground/70 truncate max-w-[240px]">{drillBlock.text}</span>
+            {:else}
+              <span>{note.title}</span>
+            {/if}
             <div class="flex-1"></div>
             <button
               onclick={() => toggleFavorite(noteId)}
@@ -199,6 +220,8 @@
           onContentChange={handleContentChange}
           onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
           onfocusedblockchange={(b) => { focusedBlock = b; }}
+          {drillBlockId}
+          onDrillIn={drillInto}
         />
 
         {#if isPropertyPage}

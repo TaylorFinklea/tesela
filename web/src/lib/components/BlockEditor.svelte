@@ -16,10 +16,19 @@
     newBlockAbove: (() => void) | null;
     indent: ((dir: "indent" | "outdent") => void) | null;
     leader: (() => void) | null;
+    drillIn: (() => void) | null;
+    enterVisualMode: (() => void) | null;
+    exitVisualMode: (() => void) | null;
+    visualMode: boolean;
+    visualNav: ((dir: "up" | "down") => void) | null;
+    visualDelete: (() => void) | null;
+    visualYank: (() => void) | null;
   } = {
     view: null, navigate: null, deleteBlock: null, yankBlock: null,
     pasteBlock: null, newBlockBelow: null, newBlockAbove: null,
     indent: null, leader: null,
+    drillIn: null, enterVisualMode: null, exitVisualMode: null,
+    visualMode: false, visualNav: null, visualDelete: null, visualYank: null,
   };
 
   let _vimActionsRegistered = false;
@@ -29,6 +38,7 @@
     _vimActionsRegistered = true;
 
     Vim.defineAction("moveDownOrNextBlock", () => {
+      if (vimCtx.visualMode) { vimCtx.visualNav?.("down"); return; }
       const v = vimCtx.view;
       if (!v) return;
       const s = v.state;
@@ -43,6 +53,7 @@
     Vim.mapCommand("j", "action", "moveDownOrNextBlock", {}, { context: "normal" });
 
     Vim.defineAction("moveUpOrPrevBlock", () => {
+      if (vimCtx.visualMode) { vimCtx.visualNav?.("up"); return; }
       const v = vimCtx.view;
       if (!v) return;
       const s = v.state;
@@ -59,10 +70,16 @@
     Vim.defineAction("openLeaderMenu", () => { vimCtx.leader?.(); });
     Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
 
-    Vim.defineAction("deleteBlock", () => { vimCtx.deleteBlock?.(); });
+    Vim.defineAction("deleteBlock", () => {
+      if (vimCtx.visualMode) { vimCtx.visualDelete?.(); return; }
+      vimCtx.deleteBlock?.();
+    });
     Vim.mapCommand("dd", "action", "deleteBlock", {}, { context: "normal" });
 
-    Vim.defineAction("yankBlock", () => { vimCtx.yankBlock?.(); });
+    Vim.defineAction("yankBlock", () => {
+      if (vimCtx.visualMode) { vimCtx.visualYank?.(); return; }
+      vimCtx.yankBlock?.();
+    });
     Vim.mapCommand("yy", "action", "yankBlock", {}, { context: "normal" });
 
     Vim.defineAction("pasteBlock", () => { vimCtx.pasteBlock?.(); });
@@ -79,6 +96,12 @@
 
     Vim.defineAction("outdentBlock", () => { vimCtx.indent?.("outdent"); });
     Vim.mapCommand("<<", "action", "outdentBlock", {}, { context: "normal" });
+
+    Vim.defineAction("blockVisualMode", () => { vimCtx.enterVisualMode?.(); });
+    Vim.mapCommand("V", "action", "blockVisualMode", {}, { context: "normal" });
+
+    Vim.defineAction("drillIntoBlock", () => { vimCtx.drillIn?.(); });
+    Vim.mapCommand("<CR>", "action", "drillIntoBlock", {}, { context: "normal" });
   }
 </script>
 
@@ -114,6 +137,13 @@
     onnewblockbelow: onNewBlockBelow,
     onnewblockabove: onNewBlockAbove,
     oncyclestatus: onCycleStatus,
+    ondrillIn: onDrillIn,
+    onentervisualmode: onEnterVisualMode,
+    onexitvisualmode: onExitVisualMode,
+    onvisualnav: onVisualNav,
+    onvisualdelete: onVisualDelete,
+    onvisualyank: onVisualYank,
+    inVisualMode,
     focused,
     noteslist: notesList,
     statusChoices,
@@ -138,6 +168,13 @@
     onnewblockbelow?: () => void;
     onnewblockabove?: () => void;
     oncyclestatus?: () => void;
+    ondrillIn?: () => void;
+    onentervisualmode?: () => void;
+    onexitvisualmode?: () => void;
+    onvisualnav?: (dir: "up" | "down") => void;
+    onvisualdelete?: () => void;
+    onvisualyank?: () => void;
+    inVisualMode?: boolean;
     focused?: boolean;
     noteslist?: Array<{ id: string; title: string; tags: string[] }>;
     statusChoices?: string[];
@@ -271,6 +308,9 @@
     }
   });
 
+  // Keep visualMode flag in sync so j/k vim actions can check it without props.
+  $effect(() => { vimCtx.visualMode = inVisualMode ?? false; });
+
   // Keep the global vim context pointing to whichever block is currently focused.
   // This lets the module-level vim actions (registered once) always target the right block.
   $effect(() => {
@@ -284,6 +324,12 @@
     vimCtx.newBlockBelow = onNewBlockBelow ?? null;
     vimCtx.newBlockAbove = onNewBlockAbove ?? null;
     vimCtx.indent = onIndent ?? null;
+    vimCtx.drillIn = onDrillIn ?? null;
+    vimCtx.enterVisualMode = onEnterVisualMode ?? null;
+    vimCtx.exitVisualMode = onExitVisualMode ?? null;
+    vimCtx.visualNav = onVisualNav ?? null;
+    vimCtx.visualDelete = onVisualDelete ?? null;
+    vimCtx.visualYank = onVisualYank ?? null;
     return () => {
       if (vimCtx.view === view) vimCtx.view = null;
     };
@@ -377,6 +423,7 @@
         run: (v) => {
           if (showSlashMenu) { showSlashMenu = false; slashFilter = ""; slashStartPos = -1; return true; }
           if (showAutocomplete) { showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1; return true; }
+          if (inVisualMode) { onExitVisualMode?.(); return true; }
           // Let vim handle Escape when in insert/visual mode so it can transition to normal.
           // Only intercept when already in normal mode (to unfocus the block).
           const cm = getCM(v);

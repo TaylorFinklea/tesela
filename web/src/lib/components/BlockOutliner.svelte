@@ -5,6 +5,7 @@
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { Note } from "$lib/types/Note";
   import BlockEditor from "./BlockEditor.svelte";
+  import { IconArrowRight } from "@tabler/icons-svelte";
 
   let {
     noteId,
@@ -13,6 +14,8 @@
     onContentChange,
     onleader: onLeader,
     onfocusedblockchange,
+    drillBlockId = "",
+    onDrillIn,
   }: {
     noteId: string;
     body: string;
@@ -20,6 +23,8 @@
     onContentChange?: (fullContent: string) => void;
     onleader?: () => void;
     onfocusedblockchange?: (block: ParsedBlock | null) => void;
+    drillBlockId?: string;
+    onDrillIn?: (blockId: string) => void;
   } = $props();
 
   // Fetch notes list for autocomplete
@@ -53,6 +58,35 @@
   let lastExternalBody = $state(body);
   let lastSentBody = $state(body);
 
+  // Drill-in: show only the target block and its descendants
+  const drillRootIndent = $derived.by(() => {
+    if (!drillBlockId) return 0;
+    return blocks.find(b => b.id === drillBlockId)?.indent_level ?? 0;
+  });
+  const visibleBlocks = $derived.by(() => {
+    if (!drillBlockId) return blocks;
+    const rootIdx = blocks.findIndex(b => b.id === drillBlockId);
+    if (rootIdx < 0) return blocks;
+    const rootIndent = blocks[rootIdx].indent_level;
+    const result: ParsedBlock[] = [];
+    for (let i = rootIdx; i < blocks.length; i++) {
+      if (i > rootIdx && blocks[i].indent_level <= rootIndent) break;
+      result.push(blocks[i]);
+    }
+    return result;
+  });
+
+  // Block-visual mode state
+  let blockVisualMode = $state(false);
+  let visualAnchor = $state<number | null>(null);
+  let visualExtent = $state<number | null>(null);
+  const visualRange = $derived.by(() => {
+    if (!blockVisualMode || visualAnchor === null || visualExtent === null) return new Set<number>();
+    const lo = Math.min(visualAnchor, visualExtent);
+    const hi = Math.max(visualAnchor, visualExtent);
+    return new Set(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i));
+  });
+
   $effect(() => {
     if (body === lastExternalBody) return;
     lastExternalBody = body;
@@ -66,7 +100,7 @@
   // so the sidebar doesn't lose its context when the user clicks into it.
   $effect(() => {
     if (focusedIndex === null) return;
-    onfocusedblockchange?.(blocks[focusedIndex] ?? null);
+    onfocusedblockchange?.(visibleBlocks[focusedIndex] ?? null);
   });
 
   function parseProperties(rawText: string): Record<string, string> {
@@ -130,8 +164,8 @@
     saveBlocks(blocks);
   }
 
-  function handleStatusCycle(atIndex: number) {
-    const block = blocks[atIndex];
+  function handleStatusCycle(vi: number) {
+    const block = visibleBlocks[vi];
     if (!block) return;
     const current = block.properties.status ?? "";
     const idx = statusCycle.indexOf(current);
@@ -143,13 +177,15 @@
     if (focusedIndex === null) return;
     const next = direction === "up"
       ? Math.max(0, focusedIndex - 1)
-      : Math.min(blocks.length - 1, focusedIndex + 1);
+      : Math.min(visibleBlocks.length - 1, focusedIndex + 1);
     focusedIndex = next;
   }
 
-  function handleEnter(atIndex: number, textAfterCursor: string = "") {
-    const current = blocks[atIndex];
+  function handleEnter(vi: number, textAfterCursor: string = "") {
+    const current = visibleBlocks[vi];
     if (!current) return;
+    const fullIdx = blocks.findIndex(b => b.id === current.id);
+    if (fullIdx < 0) return;
     const newBlock: ParsedBlock = {
       id: `${noteId}:new-${Date.now()}`,
       text: (textAfterCursor.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
@@ -161,38 +197,41 @@
       note_id: noteId,
     };
     if (textAfterCursor) {
-      // Mid-block split: force current block remount so CM6 shows trimmed text
       const updatedCurrent: ParsedBlock = { ...current, id: `${noteId}:split-${Date.now() + 1}` };
       mountHint = { blockId: newBlock.id, pos: 0, startInInsert: true };
-      blocks = [...blocks.slice(0, atIndex), updatedCurrent, newBlock, ...blocks.slice(atIndex + 1)];
+      blocks = [...blocks.slice(0, fullIdx), updatedCurrent, newBlock, ...blocks.slice(fullIdx + 1)];
     } else {
-      blocks = [...blocks.slice(0, atIndex + 1), newBlock, ...blocks.slice(atIndex + 1)];
+      blocks = [...blocks.slice(0, fullIdx + 1), newBlock, ...blocks.slice(fullIdx + 1)];
     }
     saveBlocks(blocks);
-    focusedIndex = atIndex + 1;
+    focusedIndex = vi + 1;
   }
 
-  function handleIndent(atIndex: number, direction: "indent" | "outdent") {
-    const block = blocks[atIndex];
+  function handleIndent(vi: number, direction: "indent" | "outdent") {
+    const block = visibleBlocks[vi];
     if (!block) return;
     const newLevel = direction === "indent" ? block.indent_level + 1 : Math.max(0, block.indent_level - 1);
     if (newLevel === block.indent_level) return;
-    blocks = blocks.map((b, i) => (i === atIndex ? { ...b, indent_level: newLevel } : b));
+    blocks = blocks.map(b => b.id === block.id ? { ...b, indent_level: newLevel } : b);
     saveBlocks(blocks);
   }
 
-  function handleBackspace(atIndex: number) {
-    const block = blocks[atIndex];
+  function handleBackspace(vi: number) {
+    const block = visibleBlocks[vi];
     if (!block || block.raw_text !== "" || blocks.length <= 1) return;
-    blocks = blocks.filter((_, i) => i !== atIndex);
+    blocks = blocks.filter(b => b.id !== block.id);
     saveBlocks(blocks);
     if (focusedIndex !== null && focusedIndex > 0) focusedIndex = focusedIndex - 1;
   }
 
-  function handleBackspaceMerge(atIndex: number, currentText: string) {
-    if (atIndex === 0) return;
-    const prev = blocks[atIndex - 1];
-    if (!prev) return;
+  function handleBackspaceMerge(vi: number, currentText: string) {
+    if (vi === 0) return;
+    const prev = visibleBlocks[vi - 1];
+    const current = visibleBlocks[vi];
+    if (!prev || !current) return;
+    const fullPrevIdx = blocks.findIndex(b => b.id === prev.id);
+    const fullCurrIdx = blocks.findIndex(b => b.id === current.id);
+    if (fullPrevIdx < 0 || fullCurrIdx < 0) return;
     const mergePos = prev.raw_text.length;
     const mergedText = prev.raw_text + currentText;
     const mergedBlock: ParsedBlock = {
@@ -203,47 +242,55 @@
     };
     mountHint = { blockId: mergedBlock.id, pos: mergePos, startInInsert: false };
     blocks = [
-      ...blocks.slice(0, atIndex - 1),
+      ...blocks.slice(0, fullPrevIdx),
       mergedBlock,
-      ...blocks.slice(atIndex + 1),
+      ...blocks.slice(fullCurrIdx + 1),
     ];
     saveBlocks(blocks);
-    focusedIndex = atIndex - 1;
+    focusedIndex = vi - 1;
   }
 
   // Pending mount hint: cursor position + optional insert-mode entry for the next block to mount
   let mountHint = $state<{ blockId: string; pos: number; startInInsert: boolean } | null>(null);
 
-  // Block clipboard for yy/p
-  let blockClipboard = $state<ParsedBlock | null>(null);
+  // Block clipboard for yy/p (array to support multi-block visual yank)
+  let blockClipboard = $state<ParsedBlock[]>([]);
 
-  function handleDeleteBlock(atIndex: number) {
-    if (blocks.length <= 1) return;
-    const prev = Math.max(0, atIndex - 1);
-    blocks = blocks.filter((_, i) => i !== atIndex);
+  function handleDeleteBlock(vi: number) {
+    if (visibleBlocks.length <= 1) return;
+    const block = visibleBlocks[vi];
+    if (!block) return;
+    const prev = Math.max(0, vi - 1);
+    blocks = blocks.filter(b => b.id !== block.id);
     saveBlocks(blocks);
-    focusedIndex = Math.min(prev, blocks.length - 1);
+    focusedIndex = Math.min(prev, visibleBlocks.length - 2);
   }
 
-  function handleYankBlock(atIndex: number) {
-    const block = blocks[atIndex];
-    if (block) blockClipboard = { ...block };
+  function handleYankBlock(vi: number) {
+    const block = visibleBlocks[vi];
+    if (block) blockClipboard = [{ ...block }];
   }
 
-  function handlePasteBlock(atIndex: number) {
-    if (!blockClipboard) return;
-    const pasted: ParsedBlock = {
-      ...blockClipboard,
-      id: `${noteId}:paste-${Date.now()}`,
-    };
-    blocks = [...blocks.slice(0, atIndex + 1), pasted, ...blocks.slice(atIndex + 1)];
+  function handlePasteBlock(vi: number) {
+    if (blockClipboard.length === 0) return;
+    const anchor = visibleBlocks[vi];
+    if (!anchor) return;
+    const fullIdx = blocks.findIndex(b => b.id === anchor.id);
+    if (fullIdx < 0) return;
+    const pasted = blockClipboard.map((b, i) => ({
+      ...b,
+      id: `${noteId}:paste-${Date.now()}-${i}`,
+    }));
+    blocks = [...blocks.slice(0, fullIdx + 1), ...pasted, ...blocks.slice(fullIdx + 1)];
     saveBlocks(blocks);
-    focusedIndex = atIndex + 1;
+    focusedIndex = vi + pasted.length;
   }
 
-  function handleNewBlockAbove(atIndex: number) {
-    const current = blocks[atIndex];
+  function handleNewBlockAbove(vi: number) {
+    const current = visibleBlocks[vi];
     if (!current) return;
+    const fullIdx = blocks.findIndex(b => b.id === current.id);
+    if (fullIdx < 0) return;
     const newBlock: ParsedBlock = {
       id: `${noteId}:new-${Date.now()}`,
       text: "",
@@ -254,13 +301,50 @@
       indent_level: current.indent_level,
       note_id: noteId,
     };
-    blocks = [...blocks.slice(0, atIndex), newBlock, ...blocks.slice(atIndex)];
+    blocks = [...blocks.slice(0, fullIdx), newBlock, ...blocks.slice(fullIdx)];
     saveBlocks(blocks);
-    focusedIndex = atIndex;
+    focusedIndex = vi;
+  }
+
+  // Visual mode handlers
+  function enterBlockVisualMode() {
+    if (focusedIndex === null) return;
+    blockVisualMode = true;
+    visualAnchor = focusedIndex;
+    visualExtent = focusedIndex;
+  }
+
+  function exitBlockVisualMode() {
+    blockVisualMode = false;
+    visualAnchor = null;
+    visualExtent = null;
+  }
+
+  function handleVisualNav(dir: "up" | "down") {
+    if (dir === "down") visualExtent = Math.min(visibleBlocks.length - 1, (visualExtent ?? 0) + 1);
+    else visualExtent = Math.max(0, (visualExtent ?? 0) - 1);
+  }
+
+  function deleteVisualBlocks() {
+    const sorted = [...visualRange].sort((a, b) => a - b);
+    if (sorted.length === 0) return;
+    const ids = new Set(sorted.map(vi => visibleBlocks[vi]?.id).filter(Boolean));
+    if (blocks.length - ids.size < 1) return;
+    const newFocus = Math.min(sorted[0]!, visibleBlocks.length - 1 - sorted.length);
+    blocks = blocks.filter(b => !ids.has(b.id));
+    saveBlocks(blocks);
+    focusedIndex = Math.max(0, newFocus);
+    exitBlockVisualMode();
+  }
+
+  function yankVisualBlocks() {
+    const sorted = [...visualRange].sort((a, b) => a - b);
+    blockClipboard = sorted.map(vi => ({ ...visibleBlocks[vi]! })).filter(b => b.id);
+    exitBlockVisualMode();
   }
 </script>
 
-{#if blocks.length === 0}
+{#if visibleBlocks.length === 0}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
@@ -284,14 +368,17 @@
   </div>
 {:else}
   <div class="space-y-0">
-    {#each blocks as block, index (block.id)}
+    {#each visibleBlocks as block, vi (block.id)}
+      {@const displayIndent = block.indent_level - drillRootIndent}
       <div
-        class="group flex items-start transition-all relative {focusedIndex === index ? 'bg-accent/40' : ''}"
-        style="padding-left: {block.indent_level * 24}px;"
+        class="group flex items-start transition-all relative
+          {focusedIndex === vi ? 'bg-accent/40' : ''}
+          {visualRange.has(vi) ? 'bg-primary/10 ring-1 ring-primary/20 rounded-md' : ''}"
+        style="padding-left: {displayIndent * 24}px;"
       >
         <!-- Threading lines -->
-        {#if block.indent_level > 0}
-          {#each { length: block.indent_level } as _, lvl}
+        {#if displayIndent > 0}
+          {#each { length: displayIndent } as _, lvl}
             <span
               class="absolute top-0 bottom-0 w-px"
               style="left: {lvl * 24 + 10}px; background: var(--thread-border);"
@@ -304,7 +391,7 @@
           <!-- svelte-ignore a11y_consider_explicit_label -->
           <button
             class="shrink-0 pt-[10px] pl-2 pr-1 cursor-pointer opacity-70 hover:opacity-100 transition-opacity"
-            onclick={(e) => { e.stopPropagation(); handleStatusCycle(index); }}
+            onclick={(e) => { e.stopPropagation(); handleStatusCycle(vi); }}
             title="Cycle status ({block.properties.status})"
           >
             <span class="block text-[12px] leading-none font-mono w-[14px] text-center {statusColorClass(block.properties.status)}">
@@ -315,36 +402,53 @@
           <!-- svelte-ignore a11y_consider_explicit_label -->
           <button
             class="shrink-0 pt-[12px] pl-2 pr-1.5 cursor-default hover:cursor-pointer transition-opacity"
-            onclick={(e) => { e.stopPropagation(); handleStatusCycle(index); }}
+            onclick={(e) => { e.stopPropagation(); handleStatusCycle(vi); }}
             title="Set status"
           >
-            <span class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === index ? 'bg-primary' : 'bg-muted-foreground/30'}"></span>
+            <span class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === vi ? 'bg-primary' : 'bg-muted-foreground/30'}"></span>
           </button>
         {/if}
+
+        <!-- Drill-in icon (shows on hover) -->
+        <!-- svelte-ignore a11y_consider_explicit_label -->
+        <button
+          class="shrink-0 pt-[11px] px-0.5 opacity-0 group-hover:opacity-30 hover:!opacity-90 transition-opacity"
+          onclick={(e) => { e.stopPropagation(); onDrillIn?.(block.id); }}
+          title="Drill in (Enter)"
+        >
+          <IconArrowRight size={11} stroke={1.5} class="text-muted-foreground" />
+        </button>
 
         <!-- Content -->
         <div class="flex-1 min-w-0 py-1 pr-3">
           <BlockEditor
             initialText={block.raw_text}
-            onblur={() => { if (focusedIndex === index) focusedIndex = null; }}
-            onfocus={() => { focusedIndex = index; }}
+            onblur={() => { if (focusedIndex === vi) focusedIndex = null; }}
+            onfocus={() => { focusedIndex = vi; }}
             onchange={(text) => handleBlockChange(block.id, text)}
             onnavigate={handleNavigate}
             onescape={() => { focusedIndex = null; }}
-            onenter={(textAfter: string) => handleEnter(index, textAfter)}
-            onindent={(dir) => handleIndent(index, dir)}
-            onbackspaceempty={() => handleBackspace(index)}
-            onbackspacemerge={(text: string) => handleBackspaceMerge(index, text)}
+            onenter={(textAfter: string) => handleEnter(vi, textAfter)}
+            onindent={(dir) => handleIndent(vi, dir)}
+            onbackspaceempty={() => handleBackspace(vi)}
+            onbackspacemerge={(text: string) => handleBackspaceMerge(vi, text)}
             initialCursorPos={mountHint?.blockId === block.id ? mountHint.pos : undefined}
-            startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (focusedIndex === index && block.raw_text === "")}
+            startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (focusedIndex === vi && block.raw_text === "")}
             onleader={onLeader}
-            oncyclestatus={() => handleStatusCycle(index)}
-            ondeleteblock={() => handleDeleteBlock(index)}
-            onyankblock={() => handleYankBlock(index)}
-            onpasteblock={() => handlePasteBlock(index)}
-            onnewblockbelow={() => handleEnter(index)}
-            onnewblockabove={() => handleNewBlockAbove(index)}
-            focused={focusedIndex === index}
+            oncyclestatus={() => handleStatusCycle(vi)}
+            ondeleteblock={() => handleDeleteBlock(vi)}
+            onyankblock={() => handleYankBlock(vi)}
+            onpasteblock={() => handlePasteBlock(vi)}
+            onnewblockbelow={() => handleEnter(vi)}
+            onnewblockabove={() => handleNewBlockAbove(vi)}
+            ondrillIn={() => onDrillIn?.(block.id)}
+            onentervisualmode={enterBlockVisualMode}
+            onexitvisualmode={exitBlockVisualMode}
+            onvisualnav={handleVisualNav}
+            onvisualdelete={deleteVisualBlocks}
+            onvisualyank={yankVisualBlocks}
+            inVisualMode={blockVisualMode}
+            focused={focusedIndex === vi}
             noteslist={notesList}
             statusChoices={statusChoices}
           />
