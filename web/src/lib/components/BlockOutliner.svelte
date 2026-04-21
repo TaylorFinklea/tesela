@@ -164,6 +164,13 @@
     saveBlocks(blocks);
   }
 
+  function removeBlockTag(block: ParsedBlock, tagName: string) {
+    const escaped = tagName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`\\s*#${escaped}(?![A-Za-z0-9_/-])`, "gi");
+    const newText = block.raw_text.replace(re, "").trim();
+    handleBlockChange(block.id, newText);
+  }
+
   function handleStatusCycle(vi: number) {
     const block = visibleBlocks[vi];
     if (!block) return;
@@ -420,7 +427,7 @@
         </button>
 
         <!-- Content -->
-        <div class="flex-1 min-w-0 py-1 pr-3">
+        <div class="flex-1 min-w-0 py-1">
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => { if (focusedIndex === vi) focusedIndex = null; }}
@@ -453,6 +460,23 @@
             statusChoices={statusChoices}
           />
         </div>
+
+        <!-- Tag pills (right side) -->
+        {#if block.tags.length > 0}
+          <div class="shrink-0 flex items-center gap-1 self-center pr-2 py-1">
+            {#each block.tags as tag}
+              <span class="group/tag inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary/70 font-medium">
+                {tag}
+                <!-- svelte-ignore a11y_consider_explicit_label -->
+                <button
+                  class="opacity-0 group-hover/tag:opacity-100 leading-none text-primary/40 hover:text-destructive transition-opacity ml-0.5"
+                  onclick={(e) => { e.stopPropagation(); removeBlockTag(block, tag); }}
+                  title="Remove #{tag}"
+                >×</button>
+              </span>
+            {/each}
+          </div>
+        {/if}
       </div>
     {/each}
   </div>

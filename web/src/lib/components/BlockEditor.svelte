@@ -247,6 +247,7 @@
     }));
     return [
       { id: "task", label: "Task", description: "Add #Task tag", icon: "☑", action: () => applySlash("task") },
+      { id: "tag", label: "Tag", description: "Add a tag to this block", icon: "#", action: () => applySlash("tag") },
       ...statusItems,
       { id: "heading", label: "Heading", description: "Convert to heading", icon: "#", action: () => applySlash("heading") },
       { id: "property", label: "Property", description: "Add key:: value", icon: "⊞", action: () => applySlash("property") },
@@ -280,6 +281,23 @@
         case "link":
           insert = before + "[[]]" + after;
           break;
+        case "tag": {
+          const prefix = before.trimEnd() + (before.trimEnd().length > 0 ? " " : "");
+          insert = prefix + "#" + after;
+          const hashPos = prefix.length;
+          setTimeout(() => {
+            if (!view) return;
+            autocompleteStartPos = hashPos;
+            autocompleteType = "tag";
+            showAutocomplete = true;
+            autocompleteFilter = "";
+            const coords = view.coordsAtPos(hashPos + 1);
+            autocompletePosition = coords
+              ? { x: coords.left, y: coords.bottom + 4 }
+              : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
+          }, 0);
+          break;
+        }
         case "date": {
           const today = new Date().toISOString().slice(0, 10);
           insert = before + `[[${today}]]` + after;
