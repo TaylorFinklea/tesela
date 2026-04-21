@@ -88,6 +88,34 @@ export function parseHiddenChoices(custom: Record<string, unknown>): Record<stri
   return result;
 }
 
+/** Maps tagName (lowercase) → parent tagName (lowercase). Built from Tag pages with `extends:` in frontmatter. */
+export type InheritanceMap = Map<string, string>;
+
+export function buildInheritanceMap(notes: Note[]): InheritanceMap {
+  const m = new Map<string, string>();
+  for (const n of notes) {
+    if (n.metadata.note_type !== "Tag") continue;
+    const ext = n.metadata.custom.extends;
+    if (typeof ext === "string" && ext.trim()) {
+      m.set(n.title.toLowerCase(), ext.trim().toLowerCase());
+    }
+  }
+  return m;
+}
+
+/** Returns the full ancestor chain for a tag, starting with itself. Cycle-safe (max 10 hops). */
+export function resolveTagChain(tagName: string, inheritance: InheritanceMap): string[] {
+  const chain: string[] = [tagName.toLowerCase()];
+  let current = tagName.toLowerCase();
+  for (let i = 0; i < 10; i++) {
+    const parent = inheritance.get(current);
+    if (!parent || chain.includes(parent)) break;
+    chain.push(parent);
+    current = parent;
+  }
+  return chain;
+}
+
 /**
  * Updates or inserts a key in YAML frontmatter.
  * value must already be serialized (e.g. `"select"` or `["a", "b"]`).

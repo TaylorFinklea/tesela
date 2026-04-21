@@ -8,10 +8,12 @@
   import { updateBlockProperty } from "$lib/property-update";
   import {
     buildRegistry,
+    buildInheritanceMap,
+    resolveTagChain,
     getVisibleChoices,
     parseHiddenChoices,
   } from "$lib/property-registry";
-  import type { PropertyDefinition, PropertyRegistry } from "$lib/property-registry";
+  import type { PropertyDefinition, PropertyRegistry, InheritanceMap } from "$lib/property-registry";
 
   let {
     noteId,
@@ -56,13 +58,24 @@
     return buildRegistry(notes);
   });
 
-  // Resolve hidden choices from a list of tag names by looking up their tag pages
+  const inheritanceMap: InheritanceMap = $derived.by(() => {
+    const notes = (allNotesQuery.data ?? []) as Note[];
+    return buildInheritanceMap(notes);
+  });
+
+  // Resolve hidden choices from a list of tag names, walking extends chains
   function hiddenChoicesForTags(tags: string[]): Record<string, string[]> {
     const allNotes = (allNotesQuery.data ?? []) as Note[];
     const merged: Record<string, string[]> = {};
+    const resolved = new Set<string>();
     for (const tag of tags) {
+      for (const t of resolveTagChain(tag, inheritanceMap)) {
+        resolved.add(t);
+      }
+    }
+    for (const tagName of resolved) {
       const tagPage = allNotes.find(
-        (n) => n.title.toLowerCase() === tag.toLowerCase() && n.metadata.note_type === "Tag",
+        (n) => n.title.toLowerCase() === tagName && n.metadata.note_type === "Tag",
       );
       if (tagPage) {
         const tagHidden = parseHiddenChoices(tagPage.metadata.custom);

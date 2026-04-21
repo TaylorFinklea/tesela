@@ -48,6 +48,42 @@
     tagNote ? parseHiddenChoices(tagNote.metadata.custom as Record<string, unknown>) : {},
   );
 
+  // Tag inheritance
+  const extendsTagName = $derived.by((): string => {
+    const ext = tagNote?.metadata.custom.extends;
+    return typeof ext === "string" ? ext.trim() : "";
+  });
+
+  let editingExtends = $state(false);
+  let extendsInput = $state("");
+
+  const parentTypeQuery = createQuery(() => ({
+    queryKey: ["type", extendsTagName] as const,
+    queryFn: () => api.getType(extendsTagName),
+    enabled: extendsTagName !== "",
+  }));
+
+  const parentProperties = $derived.by(() => {
+    if (!extendsTagName) return [];
+    const data = parentTypeQuery.data as TypeDefinition | undefined;
+    return data?.properties ?? [];
+  });
+
+  const inheritedProperties = $derived.by(() => {
+    const ownNames = new Set(properties.map((p) => p.name.toLowerCase()));
+    return parentProperties.filter((p) => !ownNames.has(p.name.toLowerCase()));
+  });
+
+  async function saveExtends(value: string) {
+    editingExtends = false;
+    const note = await api.getNote(noteId);
+    const newContent = value.trim()
+      ? updateFrontmatterKey(note.content, "extends", `"${value.trim()}"`)
+      : removeFrontmatterKey(note.content, "extends");
+    await api.updateNote(noteId, newContent);
+    queryClient.invalidateQueries({ queryKey: ["note", noteId] });
+  }
+
   let expandedProp = $state<string | null>(null);
 
   async function toggleHiddenChoice(propName: string, choice: string, isHidden: boolean) {
@@ -134,6 +170,28 @@
 </script>
 
 <div class="space-y-2">
+  <!-- Extends row -->
+  <div class="flex items-center gap-2 text-[11px] text-muted-foreground/50 mb-1">
+    <span class="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/40">Extends</span>
+    {#if editingExtends}
+      <input
+        class="flex-1 text-[11px] bg-muted/50 rounded px-2 py-0.5 outline-none border border-ring/30"
+        placeholder="Parent tag name…"
+        bind:value={extendsInput}
+        autofocus
+        onkeydown={(e) => { if (e.key === "Enter") saveExtends(extendsInput); if (e.key === "Escape") editingExtends = false; }}
+        onblur={() => saveExtends(extendsInput)}
+      />
+    {:else}
+      <button
+        class="flex-1 text-left text-[11px] px-1 -mx-1 rounded hover:bg-muted/50 transition-colors {extendsTagName ? 'text-primary/70' : 'text-muted-foreground/30 italic'}"
+        onclick={() => { extendsInput = extendsTagName; editingExtends = true; }}
+      >
+        {extendsTagName || "None"}
+      </button>
+    {/if}
+  </div>
+
   <div class="flex items-center justify-between">
     <h3 class="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-widest">Properties</h3>
     <button
@@ -224,6 +282,24 @@
           {/if}
         </div>
       {/each}
+    </div>
+  {/if}
+
+  <!-- Inherited properties from parent tag -->
+  {#if inheritedProperties.length > 0}
+    <div class="mt-2 pt-2 border-t border-border/30">
+      <div class="text-[10px] text-muted-foreground/40 uppercase tracking-widest mb-1.5">
+        Inherited from #{extendsTagName}
+      </div>
+      <div class="space-y-0.5 opacity-60">
+        {#each inheritedProperties as prop}
+          {@const def = propertyRegistry.get(prop.name.toLowerCase())}
+          <div class="flex items-center gap-2 px-2 py-1 rounded text-muted-foreground/60">
+            <span class="text-[12px]">{prop.name}</span>
+            <span class="text-[10px] text-muted-foreground/30">{def?.value_type ?? prop.value_type}</span>
+          </div>
+        {/each}
+      </div>
     </div>
   {/if}
 </div>
