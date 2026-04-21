@@ -176,7 +176,7 @@
     onvisualyank?: () => void;
     inVisualMode?: boolean;
     focused?: boolean;
-    noteslist?: Array<{ id: string; title: string; tags: string[] }>;
+    noteslist?: Array<{ id: string; title: string; tags: string[]; note_type?: string | null }>;
     statusChoices?: string[];
   } = $props();
 
@@ -196,7 +196,8 @@
   let autocompletePosition = $state({ x: 0, y: 0 });
   let autocompleteRef = $state<AutocompleteMenu | null>(null);
   let autocompleteStartPos = $state<number>(-1);
-  let autocompleteType = $state<"tag" | "link">("tag");
+  let autocompleteType = $state<"tag" | "link" | "tagmanage">("tag");
+  let tagManageItems = $state<AutocompleteItem[]>([]);
 
   const autocompleteItems: AutocompleteItem[] = $derived(
     (notesList ?? []).map((n) => ({
@@ -209,6 +210,35 @@
   function applyAutocomplete(item: AutocompleteItem) {
     if (!view || autocompleteStartPos < 0) return;
     const doc = view.state.doc.toString();
+
+    if (autocompleteType === "tagmanage") {
+      const escaped = item.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const tagRe = new RegExp(`\\s*#${escaped}(?![A-Za-z0-9_/-])`, "gi");
+      let newText: string;
+      if (tagRe.test(doc)) {
+        newText = doc.replace(tagRe, "").trim();
+      } else {
+        const lines = doc.split("\n");
+        lines[0] = (lines[0].trimEnd() + " #" + item.label).trimStart();
+        newText = lines.join("\n");
+      }
+      view.dispatch({
+        changes: { from: 0, to: doc.length, insert: newText },
+        selection: { anchor: Math.min(view.state.selection.main.head, newText.length) },
+      });
+      onChange(newText);
+      // Refresh active indicators and keep menu open
+      const activeTags = new Set(
+        (newText.match(/#([A-Za-z0-9_/-]+)/g) ?? []).map((t) => t.slice(1).toLowerCase()),
+      );
+      tagManageItems = tagManageItems.map((t) => ({
+        ...t,
+        secondary: activeTags.has(t.label.toLowerCase()) ? "✓" : undefined,
+      }));
+      autocompleteFilter = "";
+      return;
+    }
+
     const cursorPos = view.state.selection.main.head;
     const before = doc.slice(0, autocompleteStartPos);
     const after = doc.slice(cursorPos);
@@ -282,16 +312,27 @@
           insert = before + "[[]]" + after;
           break;
         case "tag": {
-          const prefix = before.trimEnd() + (before.trimEnd().length > 0 ? " " : "");
-          insert = prefix + "#" + after;
-          const hashPos = prefix.length;
+          // Remove the slash text, keep cursor position, open tag manager
+          insert = before.trimEnd() + (before.trimEnd() && after.trimStart() ? " " : "") + after.trimStart();
+          const cursorAfter = before.trimEnd().length;
+          const currentDoc = doc;
           setTimeout(() => {
             if (!view) return;
-            autocompleteStartPos = hashPos;
-            autocompleteType = "tag";
+            const activeTags = new Set(
+              (currentDoc.match(/#([A-Za-z0-9_/-]+)/g) ?? []).map((t) => t.slice(1).toLowerCase()),
+            );
+            tagManageItems = (notesList ?? [])
+              .filter((n) => n.note_type === "Tag")
+              .map((n) => ({
+                id: n.id,
+                label: n.title,
+                secondary: activeTags.has(n.title.toLowerCase()) ? "✓" : undefined,
+              }));
+            autocompleteStartPos = cursorAfter;
+            autocompleteType = "tagmanage";
             showAutocomplete = true;
             autocompleteFilter = "";
-            const coords = view.coordsAtPos(hashPos + 1);
+            const coords = view.coordsAtPos(Math.min(cursorAfter, view.state.doc.length));
             autocompletePosition = coords
               ? { x: coords.left, y: coords.bottom + 4 }
               : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
@@ -616,7 +657,7 @@
   {#if showAutocomplete}
     <AutocompleteMenu
       bind:this={autocompleteRef}
-      items={autocompleteItems}
+      items={autocompleteType === "tagmanage" ? tagManageItems : autocompleteItems}
       filter={autocompleteFilter}
       position={autocompletePosition}
       onselect={(item) => applyAutocomplete(item)}

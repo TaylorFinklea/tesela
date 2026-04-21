@@ -37,6 +37,7 @@
       id: n.id,
       title: n.title,
       tags: n.metadata.tags,
+      note_type: n.metadata.note_type,
     })),
   );
 
@@ -151,12 +152,14 @@
   }
 
   function handleBlockChange(blockId: string, newRawText: string) {
+    const parsedTags = [...newRawText.matchAll(/#([A-Za-z0-9_/-]+)/g)].map((m) => m[1]);
     blocks = blocks.map((b) =>
       b.id === blockId
         ? {
             ...b,
             raw_text: newRawText,
             text: (newRawText.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
+            tags: parsedTags,
             properties: parseProperties(newRawText),
           }
         : b,
