@@ -90,12 +90,52 @@
     } else if (frontmatter) {
       const lastDash = frontmatter.lastIndexOf("---");
       newFm = frontmatter.slice(0, lastDash) + "mode: document\n---\n";
-      if (drillBlockId) drillOut();
     } else {
       newFm = "---\nmode: document\n---\n";
-      if (drillBlockId) drillOut();
     }
     handleContentChange(`${newFm}${body}`);
+  }
+
+  // When in document mode + drilled in, compute the subtree body and splice context
+  function blocksToText(bs: ParsedBlock[]): string {
+    return bs.map(b => {
+      const indent = "  ".repeat(b.indent_level);
+      const lines = b.raw_text.split("\n");
+      const first = `${indent}- ${lines[0]}`;
+      const rest = lines.slice(1).map(l => `${indent}  ${l}`);
+      return [first, ...rest].join("\n");
+    }).join("\n");
+  }
+
+  const drillSplice = $derived.by(() => {
+    if (!isDocumentMode || !drillBlockId || !note) return null;
+    const allBlocks = parseBlocks(note.id, split.body);
+    const rootIdx = allBlocks.findIndex(b => b.id === drillBlockId);
+    if (rootIdx < 0) return null;
+    const rootIndent = allBlocks[rootIdx].indent_level;
+    const sub: ParsedBlock[] = [];
+    let endIdx = allBlocks.length;
+    for (let i = rootIdx; i < allBlocks.length; i++) {
+      if (i > rootIdx && allBlocks[i].indent_level <= rootIndent) { endIdx = i; break; }
+      sub.push(allBlocks[i]);
+    }
+    return { prefix: allBlocks.slice(0, rootIdx), sub, suffix: allBlocks.slice(endIdx) };
+  });
+
+  const documentBody = $derived.by(() => {
+    if (!isDocumentMode) return split.body;
+    if (!drillSplice) return split.body;
+    return blocksToText(drillSplice.sub) + "\n";
+  });
+
+  function handleDocumentChange(editedBody: string) {
+    if (!drillSplice) {
+      handleContentChange(`${split.frontmatter}${editedBody}`);
+      return;
+    }
+    const pre = drillSplice.prefix.length > 0 ? blocksToText(drillSplice.prefix) + "\n" : "";
+    const suf = drillSplice.suffix.length > 0 ? "\n" + blocksToText(drillSplice.suffix) + "\n" : "\n";
+    handleContentChange(`${split.frontmatter}${pre}${editedBody.replace(/\n$/, "")}${suf}`);
   }
 
   // Split pane derived state
@@ -246,11 +286,13 @@
         </div>
       {:else if note}
         {#if isDocumentMode}
-          <DocumentEditor
-            body={split.body}
-            frontmatter={split.frontmatter}
-            onContentChange={handleContentChange}
-          />
+          {#key drillBlockId}
+            <DocumentEditor
+              body={documentBody}
+              frontmatter={split.frontmatter}
+              onContentChange={handleDocumentChange}
+            />
+          {/key}
         {:else}
           <BlockOutliner
             noteId={note.id}
