@@ -263,8 +263,8 @@
                 <span class="text-[11px] px-2.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">{tag}</span>
               {/each}
             {/if}
-            {#if isTagPage}
-              <span class="text-[11px] px-2.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">Tag</span>
+            {#if note.metadata.note_type}
+              <span class="text-[11px] px-2.5 py-0.5 rounded-full bg-primary/10 text-primary font-medium">{note.metadata.note_type}</span>
             {/if}
           </div>
         {:else}

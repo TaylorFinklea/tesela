@@ -12,6 +12,8 @@
     resolveTagChain,
     getVisibleChoices,
     parseHiddenChoices,
+    updateFrontmatterKey,
+    removeFrontmatterKey,
   } from "$lib/property-registry";
   import type { PropertyDefinition, PropertyRegistry, InheritanceMap } from "$lib/property-registry";
 
@@ -216,6 +218,25 @@
       default: return "text";
     }
   }
+
+  async function convertPageType(newType: "" | "Tag" | "Property") {
+    if (!note) return;
+    let content = note.content;
+    if (!content.startsWith("---")) {
+      content = `---\ntitle: "${note.title}"\n---\n${content}`;
+    }
+    if (newType === "") {
+      content = removeFrontmatterKey(content, "type");
+    } else {
+      content = updateFrontmatterKey(content, "type", `"${newType}"`);
+      if (newType === "Tag" && !content.includes("tag_properties:")) {
+        content = updateFrontmatterKey(content, "tag_properties", "[]");
+      }
+    }
+    const updated = await api.updateNote(noteId, content);
+    queryClient.setQueryData(["note", noteId], updated);
+    queryClient.invalidateQueries({ queryKey: ["notes"] });
+  }
 </script>
 
 {#if collapsed}
@@ -360,12 +381,18 @@
             </div>
           {/if}
 
-          {#if note.metadata.note_type}
-            <div class="mb-2">
-              <div class="text-[10px] text-muted-foreground/50 mb-0.5">Type</div>
-              <div class="text-[11px] text-foreground/70">{note.metadata.note_type}</div>
-            </div>
-          {/if}
+          <div class="mb-2">
+            <div class="text-[10px] text-muted-foreground/50 mb-0.5">Type</div>
+            <select
+              class="w-full text-[11px] bg-muted/60 border border-border/60 rounded px-1.5 py-0.5 text-foreground outline-none focus:border-primary/60 cursor-pointer"
+              value={note.metadata.note_type ?? ""}
+              onchange={(e) => convertPageType((e.target as HTMLSelectElement).value as "" | "Tag" | "Property")}
+            >
+              <option value="">Page</option>
+              <option value="Tag">Tag</option>
+              <option value="Property">Property</option>
+            </select>
+          </div>
 
           {#each customProperties as prop}
             {@const def = propertyRegistry.get(prop.key.toLowerCase())}
@@ -434,7 +461,7 @@
             </div>
           {/each}
 
-          {#if note.metadata.tags.length === 0 && !note.metadata.note_type && customProperties.length === 0}
+          {#if note.metadata.tags.length === 0 && customProperties.length === 0}
             <div class="text-[11px] text-muted-foreground/40 italic">No properties</div>
           {/if}
         </div>
