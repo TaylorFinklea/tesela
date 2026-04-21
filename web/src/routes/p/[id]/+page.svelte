@@ -90,8 +90,10 @@
     } else if (frontmatter) {
       const lastDash = frontmatter.lastIndexOf("---");
       newFm = frontmatter.slice(0, lastDash) + "mode: document\n---\n";
+      if (drillBlockId) drillOut();
     } else {
       newFm = "---\nmode: document\n---\n";
+      if (drillBlockId) drillOut();
     }
     handleContentChange(`${newFm}${body}`);
   }
