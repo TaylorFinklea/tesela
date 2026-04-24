@@ -313,8 +313,9 @@
           break;
         case "tag": {
           // Remove the slash text, keep cursor position, open tag manager
-          insert = before.trimEnd() + (before.trimEnd() && after.trimStart() ? " " : "") + after.trimStart();
-          const cursorAfter = before.trimEnd().length;
+          // Remove only the slash character; preserve newlines in `after` exactly
+          insert = before + after;
+          const cursorAfter = before.length;
           const currentDoc = doc;
           setTimeout(() => {
             if (!view) return;
