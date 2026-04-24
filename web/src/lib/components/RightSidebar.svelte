@@ -219,7 +219,7 @@
     }
   }
 
-  async function convertPageType(newType: "" | "Tag" | "Property") {
+  async function convertPageType(newType: "" | "Tag" | "Property" | "Query") {
     if (!note) return;
     let content = note.content;
     if (!content.startsWith("---")) {
@@ -386,11 +386,12 @@
             <select
               class="w-full text-[11px] bg-muted/60 border border-border/60 rounded px-1.5 py-0.5 text-foreground outline-none focus:border-primary/60 cursor-pointer"
               value={note.metadata.note_type ?? ""}
-              onchange={(e) => convertPageType((e.target as HTMLSelectElement).value as "" | "Tag" | "Property")}
+              onchange={(e) => convertPageType((e.target as HTMLSelectElement).value as "" | "Tag" | "Property" | "Query")}
             >
               <option value="">Page</option>
               <option value="Tag">Tag</option>
               <option value="Property">Property</option>
+              <option value="Query">Query</option>
             </select>
           </div>
 
