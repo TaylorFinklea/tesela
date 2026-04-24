@@ -469,7 +469,11 @@
           <div class="shrink-0 flex items-center gap-1 self-center pr-2 py-1">
             {#each block.tags as tag}
               <span class="group/tag inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary/70 font-medium">
-                {tag}
+                <a
+                  href="/p/{tag.toLowerCase()}"
+                  class="hover:text-primary transition-colors"
+                  onclick={(e) => e.stopPropagation()}
+                >{tag}</a>
                 <!-- svelte-ignore a11y_consider_explicit_label -->
                 <button
                   class="opacity-0 group-hover/tag:opacity-100 leading-none text-primary/40 hover:text-destructive transition-opacity ml-0.5"

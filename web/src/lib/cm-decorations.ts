@@ -4,10 +4,16 @@
  * - [[wiki-links]] as styled link
  * - key:: value as styled property
  */
-import { EditorView, Decoration, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
+import { EditorView, Decoration, WidgetType, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { RangeSetBuilder } from "@codemirror/state";
 
+class EmptyWidget extends WidgetType {
+  toDOM() { return document.createElement("span"); }
+  eq() { return true; }
+}
+
 const tagMark = Decoration.mark({ class: "cm-tesela-tag" });
+const tagHide = Decoration.replace({ widget: new EmptyWidget() });
 const wikiLinkMark = Decoration.mark({ class: "cm-tesela-wikilink" });
 const wikiLinkBracketMark = Decoration.mark({ class: "cm-tesela-wikilink-bracket" });
 const propertyKeyMark = Decoration.mark({ class: "cm-tesela-prop-key" });
@@ -17,17 +23,17 @@ const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
 const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
 const PROPERTY_RE = /^([A-Za-z_][A-Za-z0-9_]*):: (.+)$/gm;
 
-function buildDecorations(view: EditorView): DecorationSet {
+function buildDecorations(view: EditorView, focused: boolean): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
   const doc = view.state.doc.toString();
 
   const decos: Array<{ from: number; to: number; decoration: Decoration }> = [];
 
-  // Tags
+  // Tags: hide when unfocused (pills on right are canonical display), show inline when editing
   TAG_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = TAG_RE.exec(doc)) !== null) {
-    decos.push({ from: m.index, to: m.index + m[0].length, decoration: tagMark });
+    decos.push({ from: m.index, to: m.index + m[0].length, decoration: focused ? tagMark : tagHide });
   }
 
   // Wiki-links
@@ -57,11 +63,11 @@ export const teselaDecorations = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
     constructor(view: EditorView) {
-      this.decorations = buildDecorations(view);
+      this.decorations = buildDecorations(view, view.hasFocus);
     }
     update(update: ViewUpdate) {
-      if (update.docChanged || update.viewportChanged) {
-        this.decorations = buildDecorations(update.view);
+      if (update.docChanged || update.viewportChanged || update.focusChanged) {
+        this.decorations = buildDecorations(update.view, update.view.hasFocus);
       }
     }
   },
