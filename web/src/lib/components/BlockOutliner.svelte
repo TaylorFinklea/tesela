@@ -1,10 +1,12 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
   import { parseBlocks } from "$lib/block-parser";
+  import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
   import { api } from "$lib/api-client";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { Note } from "$lib/types/Note";
   import BlockEditor from "./BlockEditor.svelte";
+  import QueryBlock from "./QueryBlock.svelte";
   import { IconArrowRight } from "@tabler/icons-svelte";
 
   let {
@@ -152,7 +154,10 @@
   }
 
   function handleBlockChange(blockId: string, newRawText: string) {
-    const parsedTags = [...newRawText.matchAll(/#([A-Za-z0-9_/-]+)/g)].map((m) => m[1]);
+    const parsedTags = getBlockTags(newRawText);
+    // Properties parser sees tags:: too; strip it so it doesn't double-display
+    const props = parseProperties(newRawText);
+    delete props.tags;
     blocks = blocks.map((b) =>
       b.id === blockId
         ? {
@@ -160,7 +165,7 @@
             raw_text: newRawText,
             text: (newRawText.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
             tags: parsedTags,
-            properties: parseProperties(newRawText),
+            properties: props,
           }
         : b,
     );
@@ -168,10 +173,7 @@
   }
 
   function removeBlockTag(block: ParsedBlock, tagName: string) {
-    const escaped = tagName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`\\s*#${escaped}(?![A-Za-z0-9_/-])`, "gi");
-    const newText = block.raw_text.replace(re, "").trim();
-    handleBlockChange(block.id, newText);
+    handleBlockChange(block.id, toggleBlockTag(block.raw_text, tagName));
   }
 
   function handleStatusCycle(vi: number) {
@@ -485,6 +487,13 @@
           </div>
         {/if}
       </div>
+
+      <!-- Inline query results (when block has a query:: property) -->
+      {#if block.properties.query}
+        <div style="padding-left: {displayIndent * 24}px;">
+          <QueryBlock {block} />
+        </div>
+      {/if}
     {/each}
   </div>
 {/if}

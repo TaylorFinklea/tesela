@@ -112,6 +112,7 @@
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim, getCM } from "@replit/codemirror-vim";
   import { teselaDecorations, teselaDecorationTheme } from "$lib/cm-decorations";
+  import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
   import { setVimMode } from "$lib/stores/pane-state.svelte";
   import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
@@ -212,25 +213,14 @@
     const doc = view.state.doc.toString();
 
     if (autocompleteType === "tagmanage") {
-      const escaped = item.label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const tagRe = new RegExp(`\\s*#${escaped}(?![A-Za-z0-9_/-])`, "gi");
-      let newText: string;
-      if (tagRe.test(doc)) {
-        newText = doc.replace(tagRe, "").trim();
-      } else {
-        const lines = doc.split("\n");
-        lines[0] = (lines[0].trimEnd() + " #" + item.label).trimStart();
-        newText = lines.join("\n");
-      }
+      const newText = toggleBlockTag(doc, item.label);
       view.dispatch({
         changes: { from: 0, to: doc.length, insert: newText },
         selection: { anchor: Math.min(view.state.selection.main.head, newText.length) },
       });
       onChange(newText);
       // Refresh active indicators and keep menu open
-      const activeTags = new Set(
-        (newText.match(/#([A-Za-z0-9_/-]+)/g) ?? []).map((t) => t.slice(1).toLowerCase()),
-      );
+      const activeTags = new Set(getBlockTags(newText).map((t) => t.toLowerCase()));
       tagManageItems = tagManageItems.map((t) => ({
         ...t,
         secondary: activeTags.has(t.label.toLowerCase()) ? "✓" : undefined,
@@ -283,6 +273,7 @@
       { id: "property", label: "Property", description: "Add key:: value", icon: "⊞", action: () => applySlash("property") },
       { id: "link", label: "Link", description: "Insert [[page link]]", icon: "⟦", action: () => applySlash("link") },
       { id: "date", label: "Date", description: "Insert today's date", icon: "📅", action: () => applySlash("date") },
+      { id: "query", label: "Query", description: "Inline query block (tag:Task status:doing)", icon: "⌕", action: () => applySlash("query") },
     ];
   }
 
@@ -299,9 +290,12 @@
       insert = before.trimEnd() + "\nstatus:: " + command + after;
     } else {
       switch (command) {
-        case "task":
-          insert = before.trimEnd() + (before.length > 0 ? " " : "") + "#Task" + after;
+        case "task": {
+          const cleaned = before + after;
+          const hasTask = getBlockTags(cleaned).some((t) => t.toLowerCase() === "task");
+          insert = hasTask ? cleaned : toggleBlockTag(cleaned, "Task");
           break;
+        }
         case "heading":
           insert = "# " + before.trim() + after;
           break;
@@ -316,12 +310,10 @@
           // Remove only the slash character; preserve newlines in `after` exactly
           insert = before + after;
           const cursorAfter = before.length;
-          const currentDoc = doc;
+          const currentDoc = before + after;
           setTimeout(() => {
             if (!view) return;
-            const activeTags = new Set(
-              (currentDoc.match(/#([A-Za-z0-9_/-]+)/g) ?? []).map((t) => t.slice(1).toLowerCase()),
-            );
+            const activeTags = new Set(getBlockTags(currentDoc).map((t) => t.toLowerCase()));
             tagManageItems = (notesList ?? [])
               .filter((n) => n.note_type === "Tag")
               .map((n) => ({
@@ -344,6 +336,23 @@
           const today = new Date().toISOString().slice(0, 10);
           insert = before + `[[${today}]]` + after;
           break;
+        }
+        case "query": {
+          // Scaffold an inline query block. Cursor lands at end of `tag:` so
+          // the user immediately types a tag name.
+          const cleaned = before.trimEnd();
+          const queryHead = cleaned + "\nquery:: tag:";
+          insert = queryHead + "\nview:: table" + after;
+          view.dispatch({
+            changes: { from: 0, to: doc.length, insert },
+            selection: { anchor: queryHead.length },
+          });
+          onChange(insert);
+          showSlashMenu = false;
+          slashFilter = "";
+          slashStartPos = -1;
+          onSlashCommand?.(command);
+          return;
         }
         default:
           return;

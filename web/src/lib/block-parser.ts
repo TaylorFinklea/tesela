@@ -50,8 +50,25 @@ export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
 }
 
 function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText: string, inherited_tags: string[]): ParsedBlock {
-  const tags = extractTags(rawText);
   const properties = extractProperties(rawText);
+
+  // Merge tags from `tags::` property (new format) and inline `#tag` (legacy).
+  // tags:: owns the slot — remove from properties so the right-sidebar
+  // property pane doesn't double-display it next to the pill UI.
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  if (properties.tags !== undefined) {
+    for (const t of properties.tags.split(",").map((s) => s.trim()).filter((s) => s.length > 0)) {
+      const k = t.toLowerCase();
+      if (!seen.has(k)) { seen.add(k); tags.push(t); }
+    }
+    delete properties.tags;
+  }
+  for (const t of extractTags(rawText)) {
+    const k = t.toLowerCase();
+    if (!seen.has(k)) { seen.add(k); tags.push(t); }
+  }
+
   const firstLine = rawText.split("\n")[0] ?? rawText;
   const text = firstLine.replace(TAG_RE, "").trim();
 

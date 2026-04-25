@@ -1,18 +1,18 @@
 /**
  * CodeMirror 6 decorations for Tesela block content:
- * - #tags as styled pill
+ * - #tags hidden as atomic empty widgets (legacy inline tags from old notes;
+ *   new tags live in the `tags::` block property and never appear inline)
  * - [[wiki-links]] as styled link
  * - key:: value as styled property
  */
 import { EditorView, Decoration, WidgetType, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { RangeSetBuilder } from "@codemirror/state";
+import { RangeSet, RangeSetBuilder } from "@codemirror/state";
 
 class EmptyWidget extends WidgetType {
   toDOM() { return document.createElement("span"); }
   eq() { return true; }
 }
 
-const tagMark = Decoration.mark({ class: "cm-tesela-tag" });
 const tagHide = Decoration.replace({ widget: new EmptyWidget() });
 const wikiLinkMark = Decoration.mark({ class: "cm-tesela-wikilink" });
 const wikiLinkBracketMark = Decoration.mark({ class: "cm-tesela-wikilink-bracket" });
@@ -23,17 +23,20 @@ const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
 const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
 const PROPERTY_RE = /^([A-Za-z_][A-Za-z0-9_]*):: (.+)$/gm;
 
-function buildDecorations(view: EditorView, focused: boolean): DecorationSet {
+type Built = { decorations: DecorationSet; atomicTags: RangeSet<Decoration> };
+
+function buildDecorations(view: EditorView): Built {
   const builder = new RangeSetBuilder<Decoration>();
+  const atomicBuilder = new RangeSetBuilder<Decoration>();
   const doc = view.state.doc.toString();
 
-  const decos: Array<{ from: number; to: number; decoration: Decoration }> = [];
+  const decos: Array<{ from: number; to: number; decoration: Decoration; atomic?: boolean }> = [];
 
-  // Tags: hide when unfocused (pills on right are canonical display), show inline when editing
+  // Tags: always hidden + atomic so cursor jumps over the token as one unit
   TAG_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = TAG_RE.exec(doc)) !== null) {
-    decos.push({ from: m.index, to: m.index + m[0].length, decoration: focused ? tagMark : tagHide });
+    decos.push({ from: m.index, to: m.index + m[0].length, decoration: tagHide, atomic: true });
   }
 
   // Wiki-links
@@ -55,34 +58,35 @@ function buildDecorations(view: EditorView, focused: boolean): DecorationSet {
   decos.sort((a, b) => a.from - b.from || a.to - b.to);
   for (const d of decos) {
     builder.add(d.from, d.to, d.decoration);
+    if (d.atomic) atomicBuilder.add(d.from, d.to, d.decoration);
   }
-  return builder.finish();
+  return { decorations: builder.finish(), atomicTags: atomicBuilder.finish() };
 }
 
 export const teselaDecorations = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
+    atomicTags: RangeSet<Decoration>;
     constructor(view: EditorView) {
-      this.decorations = buildDecorations(view, view.hasFocus);
+      const built = buildDecorations(view);
+      this.decorations = built.decorations;
+      this.atomicTags = built.atomicTags;
     }
     update(update: ViewUpdate) {
-      if (update.docChanged || update.viewportChanged || update.focusChanged) {
-        this.decorations = buildDecorations(update.view, update.view.hasFocus);
+      if (update.docChanged || update.viewportChanged) {
+        const built = buildDecorations(update.view);
+        this.decorations = built.decorations;
+        this.atomicTags = built.atomicTags;
       }
     }
   },
-  { decorations: (v) => v.decorations },
+  {
+    decorations: (v) => v.decorations,
+    provide: (plugin) => EditorView.atomicRanges.of((view) => view.plugin(plugin)?.atomicTags ?? RangeSet.empty),
+  },
 );
 
 export const teselaDecorationTheme = EditorView.theme({
-  ".cm-tesela-tag": {
-    color: "var(--primary)",
-    backgroundColor: "color-mix(in srgb, var(--primary) 10%, transparent)",
-    borderRadius: "4px",
-    padding: "1px 6px",
-    fontSize: "0.88em",
-    fontWeight: "500",
-  },
   ".cm-tesela-wikilink": {
     color: "var(--primary)",
     textDecoration: "underline",

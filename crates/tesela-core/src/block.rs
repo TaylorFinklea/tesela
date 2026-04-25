@@ -98,10 +98,28 @@ fn make_block(
     raw_text: &str,
     inherited_tags: Vec<String>,
 ) -> ParsedBlock {
-    let tags = extract_tags(raw_text);
-    let properties = extract_properties(raw_text);
+    let mut properties = extract_properties(raw_text);
 
-    // Display text = first line with tags stripped
+    // Merge tags from two sources, preserving order, deduplicated:
+    // 1. `tags::` property (new format) — owns this slot, removed from properties so
+    //    the right-sidebar property pane doesn't double-display it next to the pill UI
+    // 2. legacy `#tag` tokens from the raw text
+    let mut seen = std::collections::HashSet::new();
+    let mut tags: Vec<String> = Vec::new();
+    if let Some(tags_value) = properties.remove("tags") {
+        for t in tags_value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            if seen.insert(t.to_string()) {
+                tags.push(t.to_string());
+            }
+        }
+    }
+    for t in extract_tags(raw_text) {
+        if seen.insert(t.clone()) {
+            tags.push(t);
+        }
+    }
+
+    // Display text = first line with inline #tags stripped
     let first_line = raw_text.lines().next().unwrap_or(raw_text);
     let display_text = TAG_RE.replace_all(first_line, "").trim().to_string();
 
@@ -213,6 +231,49 @@ mod tests {
         assert_eq!(blocks[0].tags, vec!["Task"]);
         assert!(blocks[0].inherited_tags.is_empty());
         assert!(blocks[1].tags.is_empty());
+        assert_eq!(blocks[1].inherited_tags, vec!["Task"]);
+    }
+
+    #[test]
+    fn test_parse_block_with_tags_property() {
+        let body = "- Plain content\n  tags:: Task, urgent";
+        let blocks = parse_blocks("test", body);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].tags, vec!["Task", "urgent"]);
+        assert_eq!(blocks[0].text, "Plain content");
+        // tags:: should NOT appear in properties — it owns block.tags
+        assert!(!blocks[0].properties.contains_key("tags"));
+    }
+
+    #[test]
+    fn test_parse_block_merges_tags_property_and_inline() {
+        let body = "- Hybrid #urgent\n  tags:: Task";
+        let blocks = parse_blocks("test", body);
+        // tags:: comes first, inline #urgent appended
+        assert_eq!(blocks[0].tags, vec!["Task", "urgent"]);
+    }
+
+    #[test]
+    fn test_parse_block_tags_property_dedupes() {
+        let body = "- Same #Task\n  tags:: Task, Task, urgent";
+        let blocks = parse_blocks("test", body);
+        assert_eq!(blocks[0].tags, vec!["Task", "urgent"]);
+    }
+
+    #[test]
+    fn test_parse_block_tags_property_with_other_properties() {
+        let body = "- Item\n  tags:: Task\n  status:: doing";
+        let blocks = parse_blocks("test", body);
+        assert_eq!(blocks[0].tags, vec!["Task"]);
+        assert_eq!(blocks[0].properties.get("status"), Some(&"doing".to_string()));
+        assert!(!blocks[0].properties.contains_key("tags"));
+    }
+
+    #[test]
+    fn test_parse_block_tags_property_inherits_to_children() {
+        let body = "- Parent\n  tags:: Task\n  - Child";
+        let blocks = parse_blocks("test", body);
+        assert_eq!(blocks.len(), 2);
         assert_eq!(blocks[1].inherited_tags, vec!["Task"]);
     }
 

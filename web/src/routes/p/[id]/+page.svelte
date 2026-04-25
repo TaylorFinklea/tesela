@@ -6,7 +6,6 @@
   import DocumentEditor from "$lib/components/DocumentEditor.svelte";
   import TagTable from "$lib/components/TagTable.svelte";
   import TagPropertyConfig from "$lib/components/TagPropertyConfig.svelte";
-  import QueryConfig from "$lib/components/QueryConfig.svelte";
   import ViewSwitcher from "$lib/components/ViewSwitcher.svelte";
   import KanbanBoard from "$lib/components/KanbanBoard.svelte";
   import SplitDivider from "$lib/components/SplitDivider.svelte";
@@ -78,8 +77,6 @@
   // Detect if this is a Tag page (show table view)
   const isTagPage = $derived(note?.metadata.note_type === "Tag");
   const isPropertyPage = $derived(note?.metadata.note_type === "Property");
-  const isQueryPage = $derived(note?.metadata.note_type === "Query");
-  const queryTag = $derived((note?.metadata.custom?.query_tag as string) ?? "");
 
   // Document mode: stored as `mode: document` in frontmatter
   const isDocumentMode = $derived(note?.metadata.custom.mode === "document");
@@ -341,27 +338,6 @@
           </div>
         {/if}
 
-        {#if isQueryPage}
-          <div class="mt-6 pt-4 border-t border-border space-y-6">
-            <QueryConfig {note} />
-
-            {#if queryTag}
-              <div>
-                <div class="flex items-center justify-between mb-3">
-                  <h2 class="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-widest">
-                    #{queryTag} Blocks
-                  </h2>
-                  <ViewSwitcher mode={viewMode} onchange={handleViewChange} />
-                </div>
-                {#if viewMode === "kanban"}
-                  <KanbanBoard tagName={queryTag} />
-                {:else}
-                  <TagTable tagName={queryTag} noteId={noteId} />
-                {/if}
-              </div>
-            {/if}
-          </div>
-        {/if}
       {/if}
       </div>
     </div>
