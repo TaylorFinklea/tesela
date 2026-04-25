@@ -7,7 +7,7 @@
   import type { Note } from "$lib/types/Note";
   import BlockEditor from "./BlockEditor.svelte";
   import QueryBlock from "./QueryBlock.svelte";
-  import { IconArrowRight } from "@tabler/icons-svelte";
+  import { IconArrowRight, IconChevronRight, IconChevronDown } from "@tabler/icons-svelte";
 
   let {
     noteId,
@@ -60,6 +60,18 @@
   let focusedIndex = $state<number | null>(null);
   let lastExternalBody = $state(body);
   let lastSentBody = $state(body);
+
+  // Per-block "expand properties" state — controls whether the `key:: value`
+  // continuation lines are visible inside the block's editor. Properties are
+  // canonically displayed in the right sidebar; the editor view is compact by
+  // default and expands via the chevron toggle (Logseq DB pattern).
+  let expandedProps = $state<Set<string>>(new Set());
+  function toggleExpandProps(blockId: string) {
+    const next = new Set(expandedProps);
+    if (next.has(blockId)) next.delete(blockId);
+    else next.add(blockId);
+    expandedProps = next;
+  }
 
   // Drill-in: show only the target block and its descendants
   const drillRootIndent = $derived.by(() => {
@@ -432,7 +444,7 @@
         </button>
 
         <!-- Content -->
-        <div class="flex-1 min-w-0 py-1">
+        <div class="flex-1 min-w-0 py-1 {expandedProps.has(block.id) ? 'show-props' : ''}">
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => { if (focusedIndex === vi) focusedIndex = null; }}
@@ -465,6 +477,23 @@
             statusChoices={statusChoices}
           />
         </div>
+
+        <!-- Property expand toggle (chevron) -->
+        {#if Object.keys(block.properties).length > 0}
+          {@const isExpanded = expandedProps.has(block.id)}
+          <!-- svelte-ignore a11y_consider_explicit_label -->
+          <button
+            class="shrink-0 self-center mr-1 p-1 rounded text-muted-foreground/40 hover:text-primary/80 hover:bg-muted/40 transition-colors"
+            onclick={(e) => { e.stopPropagation(); toggleExpandProps(block.id); }}
+            title={isExpanded ? "Hide properties" : "Show properties"}
+          >
+            {#if isExpanded}
+              <IconChevronDown size={12} stroke={1.5} />
+            {:else}
+              <IconChevronRight size={12} stroke={1.5} />
+            {/if}
+          </button>
+        {/if}
 
         <!-- Tag pills (right side) -->
         {#if block.tags.length > 0}

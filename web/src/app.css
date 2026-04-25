@@ -40,3 +40,11 @@
   ::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 999px; }
   ::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
 }
+
+/* Block property lines: hidden by default, shown when the host block has
+   `.show-props` (toggled by the chevron control on each block row).
+   Bumped specificity (`.cm-line.cm-tesela-prop-line`) because CM6 ships its
+   own `.cm-line { display: block }` which would otherwise win on source-order
+   tiebreak. */
+.cm-line.cm-tesela-prop-line { display: none; }
+.show-props .cm-line.cm-tesela-prop-line { display: block; }

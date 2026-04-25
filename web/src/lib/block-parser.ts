@@ -122,3 +122,30 @@ export function extractWikiLinks(text: string): Array<{ target: string; display:
   }
   return links;
 }
+
+export type TextSegment =
+  | { type: "text"; value: string }
+  | { type: "link"; value: string; href: string };
+
+/** Split text into plain segments and wikilink segments for rendering. */
+export function segmentText(text: string): TextSegment[] {
+  const links = extractWikiLinks(text);
+  if (links.length === 0) return [{ type: "text", value: text }];
+  const out: TextSegment[] = [];
+  let cursor = 0;
+  for (const link of links) {
+    if (link.start > cursor) {
+      out.push({ type: "text", value: text.slice(cursor, link.start) });
+    }
+    out.push({
+      type: "link",
+      value: link.display,
+      href: "/p/" + encodeURIComponent(link.target.toLowerCase()),
+    });
+    cursor = link.end;
+  }
+  if (cursor < text.length) {
+    out.push({ type: "text", value: text.slice(cursor) });
+  }
+  return out;
+}

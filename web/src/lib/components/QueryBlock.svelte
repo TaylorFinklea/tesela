@@ -1,12 +1,17 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
+  import { goto } from "$app/navigation";
   import { api } from "$lib/api-client";
-  import { parseBlocks } from "$lib/block-parser";
+  import { parseBlocks, segmentText } from "$lib/block-parser";
   import { parseQuery, blockMatches } from "$lib/query-language";
   import type { Note } from "$lib/types/Note";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
 
   let { block }: { block: ParsedBlock } = $props();
+
+  function navigateToBlock(noteId: string, blockId: string) {
+    goto(`/p/${noteId}?block=${encodeURIComponent(blockId)}`);
+  }
 
   const queryText = $derived((block.properties.query ?? "").trim());
   const viewMode = $derived((block.properties.view ?? "table").trim().toLowerCase());
@@ -75,11 +80,25 @@
           </div>
           <div class="space-y-1">
             {#each items as m}
-              <a
-                href="/p/{m.noteId}?block={encodeURIComponent(m.block.id)}"
-                class="block p-2 rounded bg-surface border border-border/40 hover:border-primary/40 transition-colors"
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div
+                class="block p-2 rounded bg-surface border border-border/40 hover:border-primary/40 transition-colors cursor-pointer"
+                onclick={() => navigateToBlock(m.noteId, m.block.id)}
               >
-                <div class="text-[12px] text-foreground/80 line-clamp-2">{m.block.text || "(empty)"}</div>
+                <div class="text-[12px] text-foreground/80 line-clamp-2">
+                  {#if m.block.text}
+                    {#each segmentText(m.block.text) as seg}
+                      {#if seg.type === "link"}
+                        <a href={seg.href} class="text-primary/80 underline decoration-primary/30 underline-offset-2 hover:decoration-primary" onclick={(e) => e.stopPropagation()}>{seg.value}</a>
+                      {:else}
+                        <span>{seg.value}</span>
+                      {/if}
+                    {/each}
+                  {:else}
+                    <span class="text-muted-foreground/40">(empty)</span>
+                  {/if}
+                </div>
                 <div class="flex items-center gap-1 mt-1 text-[9px] text-muted-foreground/60">
                   <span>{m.noteTitle}</span>
                   {#if m.block.tags.length > 0}
@@ -87,7 +106,7 @@
                     {#each m.block.tags.slice(0, 2) as t}<span class="text-primary/60">#{t}</span>{/each}
                   {/if}
                 </div>
-              </a>
+              </div>
             {/each}
           </div>
         </div>
@@ -107,15 +126,24 @@
       </thead>
       <tbody>
         {#each matches as m}
-          <tr class="border-t border-border/30 hover:bg-muted/30 transition-colors">
-            <td class="px-2 py-1.5">
-              <a
-                href="/p/{m.noteId}?block={encodeURIComponent(m.block.id)}"
-                class="text-foreground/80 hover:text-primary transition-colors"
-              >{m.block.text || "(empty)"}</a>
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <tr class="border-t border-border/30 hover:bg-muted/30 transition-colors cursor-pointer" onclick={() => navigateToBlock(m.noteId, m.block.id)}>
+            <td class="px-2 py-1.5 text-foreground/80">
+              {#if m.block.text}
+                {#each segmentText(m.block.text) as seg}
+                  {#if seg.type === "link"}
+                    <a href={seg.href} class="text-primary/80 underline decoration-primary/30 underline-offset-2 hover:decoration-primary" onclick={(e) => e.stopPropagation()}>{seg.value}</a>
+                  {:else}
+                    <span>{seg.value}</span>
+                  {/if}
+                {/each}
+              {:else}
+                <span class="text-muted-foreground/40">(empty)</span>
+              {/if}
             </td>
             <td class="px-2 py-1.5 text-muted-foreground/70">
-              <a href="/p/{m.noteId}" class="hover:text-primary transition-colors">{m.noteTitle}</a>
+              <a href="/p/{m.noteId}" class="hover:text-primary transition-colors" onclick={(e) => e.stopPropagation()}>{m.noteTitle}</a>
             </td>
             <td class="px-2 py-1.5">
               <div class="flex flex-wrap gap-0.5">
@@ -125,7 +153,15 @@
               </div>
             </td>
             {#each propColumns as col}
-              <td class="px-2 py-1.5 text-foreground/70">{m.block.properties[col] ?? ""}</td>
+              <td class="px-2 py-1.5 text-foreground/70">
+                {#each segmentText(m.block.properties[col] ?? "") as seg}
+                  {#if seg.type === "link"}
+                    <a href={seg.href} class="text-primary/80 underline decoration-primary/30 underline-offset-2 hover:decoration-primary" onclick={(e) => e.stopPropagation()}>{seg.value}</a>
+                  {:else}
+                    <span>{seg.value}</span>
+                  {/if}
+                {/each}
+              </td>
             {/each}
           </tr>
         {/each}

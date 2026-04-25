@@ -20,6 +20,7 @@ const propertyKeyMark = Decoration.mark({ class: "cm-tesela-prop-key" });
 const propertyValueMark = Decoration.mark({ class: "cm-tesela-prop-value" });
 
 const tagsLineHide = Decoration.line({ attributes: { class: "cm-tesela-tags-line" } });
+const propLineDeco = Decoration.line({ attributes: { class: "cm-tesela-prop-line" } });
 
 const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
 const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
@@ -60,9 +61,16 @@ function buildDecorations(view: EditorView): Built {
     decos.push({ from: m.index + m[0].length - 2, to: m.index + m[0].length, decoration: wikiLinkBracketMark });
   }
 
-  // Properties
+  // Properties: tag the whole line (so it can be hidden by default and toggled
+  // expanded by an outer .show-props class), plus inline mark decorations for
+  // key/value styling when expanded.
   PROPERTY_RE.lastIndex = 0;
   while ((m = PROPERTY_RE.exec(doc)) !== null) {
+    const key = m[1].toLowerCase();
+    // tags:: is handled separately via tagsLineHide; skip here so we don't
+    // double-decorate (and so the always-hidden style takes precedence).
+    if (key === "tags") continue;
+    decos.push({ from: m.index, to: m.index, decoration: propLineDeco });
     const keyEnd = m.index + m[1].length + 2;
     decos.push({ from: m.index, to: keyEnd, decoration: propertyKeyMark });
     decos.push({ from: keyEnd + 1, to: m.index + m[0].length, decoration: propertyValueMark });
