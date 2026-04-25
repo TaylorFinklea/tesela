@@ -213,10 +213,14 @@
     const doc = view.state.doc.toString();
 
     if (autocompleteType === "tagmanage") {
-      const newText = toggleBlockTag(doc, item.label);
+      // Strip the user's typed filter text (between autocompleteStartPos and cursor)
+      // before toggling — otherwise the filter chars end up as block content.
+      const cursorPos = view.state.selection.main.head;
+      const cleaned = doc.slice(0, autocompleteStartPos) + doc.slice(cursorPos);
+      const newText = toggleBlockTag(cleaned, item.label);
       view.dispatch({
         changes: { from: 0, to: doc.length, insert: newText },
-        selection: { anchor: Math.min(view.state.selection.main.head, newText.length) },
+        selection: { anchor: Math.min(autocompleteStartPos, newText.length) },
       });
       onChange(newText);
       // Refresh active indicators and keep menu open
@@ -577,8 +581,10 @@
         }
         // Update autocomplete filter
         if (showAutocomplete && autocompleteStartPos >= 0) {
-          const offset = autocompleteType === "tag" ? 1 : 2; // skip # or [[
-          if (cursorPos <= autocompleteStartPos + offset) {
+          // Skip the trigger characters that come before the filter text:
+          // tag: "#" (1), link: "[[" (2), tagmanage: nothing (0)
+          const offset = autocompleteType === "tag" ? 1 : autocompleteType === "link" ? 2 : 0;
+          if (cursorPos < autocompleteStartPos + offset) {
             showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1;
           } else {
             autocompleteFilter = doc.slice(autocompleteStartPos + offset, cursorPos);

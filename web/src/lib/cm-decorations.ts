@@ -19,9 +19,15 @@ const wikiLinkBracketMark = Decoration.mark({ class: "cm-tesela-wikilink-bracket
 const propertyKeyMark = Decoration.mark({ class: "cm-tesela-prop-key" });
 const propertyValueMark = Decoration.mark({ class: "cm-tesela-prop-value" });
 
+const tagsLineHide = Decoration.line({ attributes: { class: "cm-tesela-tags-line" } });
+
 const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
 const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
 const PROPERTY_RE = /^([A-Za-z_][A-Za-z0-9_]*):: (.+)$/gm;
+// `tags:: ...` lines are managed via pills and the /tag command — hidden from
+// the editor via display:none on the line. CM6 doesn't allow ViewPlugin
+// decorations to span line breaks, so we use a per-line CSS decoration.
+const TAGS_LINE_RE = /^tags:: .+$/gm;
 
 type Built = { decorations: DecorationSet; atomicTags: RangeSet<Decoration> };
 
@@ -37,6 +43,13 @@ function buildDecorations(view: EditorView): Built {
   let m: RegExpExecArray | null;
   while ((m = TAG_RE.exec(doc)) !== null) {
     decos.push({ from: m.index, to: m.index + m[0].length, decoration: tagHide, atomic: true });
+  }
+
+  // tags:: property lines: hide the whole line (canonical display is the pill UI)
+  TAGS_LINE_RE.lastIndex = 0;
+  while ((m = TAGS_LINE_RE.exec(doc)) !== null) {
+    // Line decorations need a zero-width range at line start
+    decos.push({ from: m.index, to: m.index, decoration: tagsLineHide });
   }
 
   // Wiki-links
@@ -87,6 +100,9 @@ export const teselaDecorations = ViewPlugin.fromClass(
 );
 
 export const teselaDecorationTheme = EditorView.theme({
+  ".cm-tesela-tags-line": {
+    display: "none",
+  },
   ".cm-tesela-wikilink": {
     color: "var(--primary)",
     textDecoration: "underline",

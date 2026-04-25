@@ -40,3 +40,7 @@ attachments/
 
 # Superpowers plugin cache
 .superpowers/
+
+# Playwright test artifacts
+.playwright-mcp/
+phase3f-query-block.png

@@ -15,15 +15,23 @@ export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const trimmed = line.trim();
-    if (trimmed === "") continue;
-    const spaces = line.length - line.trimStart().length;
+    const trimStart = line.trimStart();
+    if (trimStart === "") continue;
+    const spaces = line.length - trimStart.length;
     const indent = Math.floor(spaces / 2);
-    if (trimmed.startsWith("- ")) {
+    // Bullet starts a block if the line begins with "- " (with content) OR
+    // equals "-" / "- " exactly (empty-content block, used when tags/properties
+    // live on continuation lines).
+    const trimmedEnd = trimStart.trimEnd();
+    const isBullet = trimStart.startsWith("- ") || trimmedEnd === "-";
+    if (isBullet) {
       if (current) raw.push(current);
-      current = { lineNum: i, indent, text: trimmed.slice(2) };
+      const text = trimStart.startsWith("- ")
+        ? trimStart.slice(2).trimEnd()
+        : "";
+      current = { lineNum: i, indent, text };
     } else if (current) {
-      current.text += "\n" + trimmed;
+      current.text += "\n" + trimStart.trimEnd();
     }
   }
   if (current) raw.push(current);

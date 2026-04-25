@@ -44,22 +44,33 @@ pub fn parse_blocks(note_id: &str, body: &str) -> Vec<ParsedBlock> {
     let mut current: Option<(usize, usize, String)> = None;
 
     for (line_num, line) in body.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        let trim_start = line.trim_start();
+        if trim_start.is_empty() {
             continue;
         }
-        let spaces = line.len() - line.trim_start().len();
+        let spaces = line.len() - trim_start.len();
         let indent = spaces / 2;
 
-        if trimmed.starts_with("- ") {
+        // A bullet starts a block if the line begins with "- " (with content) OR
+        // equals "-" / "- " exactly (an empty-content block, used for blocks
+        // whose tags/properties live on continuation lines).
+        let trimmed_end = trim_start.trim_end();
+        let is_bullet = trim_start.starts_with("- ") || trimmed_end == "-";
+
+        if is_bullet {
             if let Some(b) = current.take() {
                 raw_blocks.push(b);
             }
-            let text = trimmed.strip_prefix("- ").unwrap_or(trimmed).to_string();
+            let text = trim_start
+                .strip_prefix("- ")
+                .or_else(|| trim_start.strip_prefix('-'))
+                .unwrap_or(trim_start)
+                .trim_end()
+                .to_string();
             current = Some((line_num, indent, text));
         } else if let Some((_, _, ref mut text)) = current {
             text.push('\n');
-            text.push_str(trimmed);
+            text.push_str(trim_start.trim_end());
         }
     }
     if let Some(b) = current {
@@ -267,6 +278,29 @@ mod tests {
         assert_eq!(blocks[0].tags, vec!["Task"]);
         assert_eq!(blocks[0].properties.get("status"), Some(&"doing".to_string()));
         assert!(!blocks[0].properties.contains_key("tags"));
+    }
+
+    #[test]
+    fn test_parse_empty_content_block_with_tags_property() {
+        // Empty-content block written as "- " followed by indented tags::
+        let body = "- \n  tags:: Task";
+        let blocks = parse_blocks("test", body);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "");
+        assert_eq!(blocks[0].tags, vec!["Task"]);
+    }
+
+    #[test]
+    fn test_parse_blocks_after_empty_content_block() {
+        // The parser must recognize "- " (with trailing space) as a block
+        // boundary so it doesn't merge with the previous block.
+        let body = "- First\n- \n  tags:: Task\n- Third";
+        let blocks = parse_blocks("test", body);
+        assert_eq!(blocks.len(), 3);
+        assert_eq!(blocks[0].text, "First");
+        assert_eq!(blocks[1].text, "");
+        assert_eq!(blocks[1].tags, vec!["Task"]);
+        assert_eq!(blocks[2].text, "Third");
     }
 
     #[test]
