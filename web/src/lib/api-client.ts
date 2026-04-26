@@ -9,7 +9,10 @@ import type { GraphEdge } from "$lib/types/GraphEdge";
 import type { TypeDefinition } from "$lib/types/TypeDefinition";
 import type { ParsedBlock } from "$lib/types/ParsedBlock";
 
-const BASE_URL = "http://127.0.0.1:7474";
+// Same-origin path; vite dev server proxies `/api/*` → tesela-server at
+// 127.0.0.1:7474. Relative URL means the LAN client (phone) hits whatever
+// host is serving the page, which avoids exposing the Rust API directly.
+const BASE_URL = "/api";
 
 export class ApiError extends Error {
   constructor(

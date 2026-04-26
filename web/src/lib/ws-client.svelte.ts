@@ -11,7 +11,14 @@ type WsEvent =
   | { event: "note_updated"; note: Note }
   | { event: "note_deleted"; id: string };
 
-const WS_URL = "ws://127.0.0.1:7474/ws";
+// Same-origin path; vite dev server proxies `/ws` → tesela-server's WS at
+// 127.0.0.1:7474. Computed at runtime so LAN clients (phones, etc.) connect
+// to whatever host they loaded the page from.
+function wsUrl(): string {
+  if (typeof window === "undefined") return "ws://127.0.0.1:7474/ws";
+  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${window.location.host}/ws`;
+}
 const MIN_RETRY_MS = 1_000;
 const MAX_RETRY_MS = 30_000;
 
@@ -65,7 +72,7 @@ function openConnection() {
   const myId = ++connectionId;
   let ws: WebSocket;
   try {
-    ws = new WebSocket(WS_URL);
+    ws = new WebSocket(wsUrl());
   } catch {
     onSocketClosed(myId);
     return;
