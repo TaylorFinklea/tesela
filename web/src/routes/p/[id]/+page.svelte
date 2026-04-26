@@ -7,6 +7,7 @@
   import TagTable from "$lib/components/TagTable.svelte";
   import TagPropertyConfig from "$lib/components/TagPropertyConfig.svelte";
   import ViewSwitcher from "$lib/components/ViewSwitcher.svelte";
+  import { IconTable, IconLayoutKanban } from "@tabler/icons-svelte";
   import KanbanBoard from "$lib/components/KanbanBoard.svelte";
   import SplitDivider from "$lib/components/SplitDivider.svelte";
   import RightSidebar from "$lib/components/RightSidebar.svelte";
@@ -321,7 +322,14 @@
                 <h2 class="text-[10px] font-medium text-muted-foreground/60 uppercase tracking-widest">
                   #{note.title} Blocks
                 </h2>
-                <ViewSwitcher mode={viewMode} onchange={handleViewChange} />
+                <ViewSwitcher
+                  views={[
+                    { id: "table", label: "Table", Icon: IconTable },
+                    { id: "kanban", label: "Kanban", Icon: IconLayoutKanban },
+                  ]}
+                  active={viewMode}
+                  onChange={handleViewChange}
+                />
               </div>
               {#if !showSplit}
                 {#if viewMode === "kanban"}

@@ -9,6 +9,8 @@
     IconLayoutGrid,
     IconList,
   } from "@tabler/icons-svelte";
+  import TabStrip from "$lib/components/TabStrip.svelte";
+  import ViewSwitcher from "$lib/components/ViewSwitcher.svelte";
   import type { Note } from "$lib/types/Note";
 
   type ViewMode = "table" | "cards" | "list";
@@ -56,8 +58,6 @@
 
   let tabs = $state<Tab[]>(loadTabs());
   let activeIdx = $state<number>(loadActive());
-  let editingTabIdx = $state<number | null>(null);
-  let editingTabName = $state("");
 
   function persist() {
     if (!browser) return;
@@ -178,47 +178,14 @@
 
   <!-- Tab strip + view switcher -->
   <div class="border-b border-border/40 px-6 py-2 flex items-center justify-between gap-3 shrink-0">
-    <div class="flex items-center gap-0.5 flex-wrap min-w-0">
-      {#each tabs as tab, i (i)}
-        {@const active = i === activeIdx}
-        <div class="group/tab inline-flex items-center gap-0.5">
-          {#if editingTabIdx === i}
-            <!-- svelte-ignore a11y_autofocus -->
-            <input
-              autofocus
-              class="text-[12px] bg-surface border border-primary/40 rounded px-2 py-0.5 outline-none w-28"
-              bind:value={editingTabName}
-              onblur={() => { renameTab(i, editingTabName); editingTabIdx = null; }}
-              onkeydown={(e) => {
-                if (e.key === "Enter") { renameTab(i, editingTabName); editingTabIdx = null; }
-                if (e.key === "Escape") { editingTabIdx = null; }
-              }}
-            />
-          {:else}
-            <button
-              class="text-[12px] px-2.5 py-1 rounded transition-all {active ? 'bg-surface text-primary shadow-sm' : 'text-muted-foreground/60 hover:text-foreground/70 hover:bg-muted/30'}"
-              onclick={() => setActiveTab(i)}
-              ondblclick={() => { editingTabIdx = i; editingTabName = tab.name; }}
-              title="Click to switch · double-click to rename"
-            >{tab.name}</button>
-            {#if active && tabs.length > 1}
-              <!-- svelte-ignore a11y_consider_explicit_label -->
-              <button
-                class="opacity-0 group-hover/tab:opacity-100 leading-none text-muted-foreground/40 hover:text-destructive text-[10px] transition-opacity"
-                onclick={() => deleteTab(i)}
-                title="Delete tab"
-              >×</button>
-            {/if}
-          {/if}
-        </div>
-      {/each}
-      <!-- svelte-ignore a11y_consider_explicit_label -->
-      <button
-        class="text-[12px] px-1.5 py-1 rounded text-muted-foreground/40 hover:text-primary hover:bg-muted/30 transition-colors"
-        onclick={addTab}
-        title="Add new tab"
-      >+</button>
-    </div>
+    <TabStrip
+      tabs={tabs}
+      activeIdx={activeIdx}
+      onSelect={setActiveTab}
+      onAdd={addTab}
+      onDelete={deleteTab}
+      onRename={renameTab}
+    />
 
     <div class="flex items-center gap-2 shrink-0">
       <!-- Filter chip -->
@@ -246,20 +213,7 @@
         </button>
       {/if}
 
-      <!-- View switcher -->
-      <div class="flex items-center gap-0.5 bg-muted/40 rounded-md p-0.5">
-        {#each VIEW_META as v}
-          {@const active = v.id === activeTab.view}
-          <!-- svelte-ignore a11y_consider_explicit_label -->
-          <button
-            class="p-1 rounded transition-all {active ? 'bg-surface text-primary shadow-sm' : 'text-muted-foreground/60 hover:text-foreground/70'}"
-            onclick={() => setView(v.id)}
-            title={v.label}
-          >
-            <v.Icon size={12} stroke={1.5} />
-          </button>
-        {/each}
-      </div>
+      <ViewSwitcher views={VIEW_META} active={activeTab.view} onChange={setView} />
     </div>
   </div>
 

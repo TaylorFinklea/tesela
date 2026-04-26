@@ -12,6 +12,7 @@
     IconArrowUp,
     IconArrowDown,
   } from "@tabler/icons-svelte";
+  import ViewSwitcher from "./ViewSwitcher.svelte";
   import type { Note } from "$lib/types/Note";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
 
@@ -128,6 +129,49 @@
     writeBlockProps({ collection: JSON.stringify(updated) });
   }
 
+  // ---- Drag-and-drop reorder ----
+  let dragSourceId = $state<string | null>(null);
+  let dropTargetId = $state<string | null>(null);
+  let dropPos = $state<"before" | "after" | null>(null);
+
+  function handleDragStart(e: DragEvent, id: string) {
+    if (!e.dataTransfer) return;
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", id);
+    dragSourceId = id;
+  }
+  function handleDragOver(e: DragEvent, id: string) {
+    if (!dragSourceId || dragSourceId === id) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const before = (e.clientY - rect.top) < (rect.height / 2);
+    dropTargetId = id;
+    dropPos = before ? "before" : "after";
+  }
+  function handleDrop(e: DragEvent, targetId: string) {
+    e.preventDefault();
+    if (dragSourceId && dragSourceId !== targetId && dropPos) {
+      const next = blockIds.filter((x) => x !== dragSourceId);
+      const targetIdx = next.indexOf(targetId);
+      if (targetIdx >= 0) {
+        const insertAt = dropPos === "before" ? targetIdx : targetIdx + 1;
+        next.splice(insertAt, 0, dragSourceId);
+        writeBlockProps({ collection: JSON.stringify(next) });
+      }
+    }
+    dragSourceId = null; dropTargetId = null; dropPos = null;
+  }
+  function handleDragEnd() {
+    dragSourceId = null; dropTargetId = null; dropPos = null;
+  }
+  function dropEdgeClass(id: string): string {
+    if (dropTargetId !== id) return "";
+    return dropPos === "before"
+      ? "[box-shadow:inset_0_2px_0_0_var(--primary)]"
+      : "[box-shadow:inset_0_-2px_0_0_var(--primary)]";
+  }
+
   function statusIcon(s: string | undefined): string {
     if (s === "done") return "●";
     if (s === "doing" || s === "in-review") return "◐";
@@ -205,19 +249,7 @@
     <div class="text-[10px] text-muted-foreground/50">
       {members.length} {members.length === 1 ? "block" : "blocks"} in collection
     </div>
-    <div class="flex items-center gap-0.5 bg-muted/40 rounded-md p-0.5 shrink-0">
-      {#each VIEW_META as v}
-        {@const active = v.id === viewMode}
-        <!-- svelte-ignore a11y_consider_explicit_label -->
-        <button
-          class="p-1 rounded transition-all {active ? 'bg-surface text-primary shadow-sm' : 'text-muted-foreground/60 hover:text-foreground/70'}"
-          onclick={() => setView(v.id)}
-          title={v.label}
-        >
-          <v.Icon size={12} stroke={1.5} />
-        </button>
-      {/each}
-    </div>
+    <ViewSwitcher views={VIEW_META} active={viewMode} onChange={setView} />
   </div>
 
   {#if members.length === 0 && !addingBlock}
@@ -240,7 +272,14 @@
         {#each members as m, idx (m.block.id)}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <tr class="group/row border-t border-border/30 hover:bg-muted/30 transition-colors cursor-pointer" onclick={() => navigateToBlock(m.noteId, m.block.id)}>
+          <tr
+            class="group/row border-t border-border/30 hover:bg-muted/30 transition-colors cursor-pointer {dropEdgeClass(m.block.id)}"
+            draggable="true"
+            ondragstart={(e) => handleDragStart(e, m.block.id)}
+            ondragover={(e) => handleDragOver(e, m.block.id)}
+            ondrop={(e) => handleDrop(e, m.block.id)}
+            ondragend={handleDragEnd}
+            onclick={() => navigateToBlock(m.noteId, m.block.id)}>
             <td class="px-2 py-1.5 text-foreground/85 font-medium">{@render segmentRender(m.block.text)}</td>
             <td class="px-2 py-1.5 text-muted-foreground/70">
               <a href="/p/{m.noteId}" class="hover:text-primary transition-colors" onclick={(e) => e.stopPropagation()}>{m.noteTitle}</a>
@@ -268,7 +307,12 @@
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="group/row p-3 rounded bg-surface border border-border/40 hover:border-primary/40 transition-colors cursor-pointer flex items-start gap-2"
+          class="group/row p-3 rounded bg-surface border border-border/40 hover:border-primary/40 transition-colors cursor-pointer flex items-start gap-2 {dropEdgeClass(m.block.id)}"
+          draggable="true"
+          ondragstart={(e) => handleDragStart(e, m.block.id)}
+          ondragover={(e) => handleDragOver(e, m.block.id)}
+          ondrop={(e) => handleDrop(e, m.block.id)}
+          ondragend={handleDragEnd}
           onclick={() => navigateToBlock(m.noteId, m.block.id)}
         >
           <span class="text-[14px] font-mono leading-none mt-1 {statusColorClass(status)}">{statusIcon(status)}</span>
@@ -303,7 +347,12 @@
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="group/row flex items-center gap-3 py-1.5 px-2 hover:bg-muted/40 rounded transition-colors cursor-pointer"
+          class="group/row flex items-center gap-3 py-1.5 px-2 hover:bg-muted/40 rounded transition-colors cursor-pointer {dropEdgeClass(m.block.id)}"
+          draggable="true"
+          ondragstart={(e) => handleDragStart(e, m.block.id)}
+          ondragover={(e) => handleDragOver(e, m.block.id)}
+          ondrop={(e) => handleDrop(e, m.block.id)}
+          ondragend={handleDragEnd}
           onclick={() => navigateToBlock(m.noteId, m.block.id)}
         >
           <span class="text-[14px] font-mono leading-none w-3 shrink-0 {statusColorClass(status)}">{statusIcon(status)}</span>
@@ -320,7 +369,15 @@
         {@const status = m.block.properties.status}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="group/row flex items-start py-1 hover:bg-accent/30 rounded transition-colors cursor-pointer" onclick={() => navigateToBlock(m.noteId, m.block.id)}>
+        <div
+          class="group/row flex items-start py-1 hover:bg-accent/30 rounded transition-colors cursor-pointer {dropEdgeClass(m.block.id)}"
+          draggable="true"
+          ondragstart={(e) => handleDragStart(e, m.block.id)}
+          ondragover={(e) => handleDragOver(e, m.block.id)}
+          ondrop={(e) => handleDrop(e, m.block.id)}
+          ondragend={handleDragEnd}
+          onclick={() => navigateToBlock(m.noteId, m.block.id)}
+        >
           <span class="shrink-0 pt-[10px] pl-2 pr-1 {statusColorClass(status)}">
             <span class="block text-[12px] leading-none font-mono w-[14px] text-center">{statusIcon(status)}</span>
           </span>

@@ -106,21 +106,41 @@
     return hiddenChoicesForTags(tags);
   });
 
-  // Extract custom properties from content (key:: value lines)
+  /**
+   * System keys that are managed via dedicated UI on Tag/Property pages
+   * (TagPropertyConfig, PropertyTypeConfig). They live in frontmatter but
+   * shouldn't render as generic edit chips here.
+   */
+  const HIDDEN_PAGE_KEYS = new Set([
+    "extends",
+    "tag_properties",
+    "value_type",
+    "choices",
+    "default",
+    "hide_by_default",
+    "hide_empty",
+    "icon",
+    "color",
+    "title", // standard field, also stored separately
+  ]);
+
+  // Page custom properties — drawn from frontmatter `metadata.custom`. We
+  // explicitly DON'T body-scan, so block-level `key:: value` continuation
+  // lines (query::, view::, etc.) don't pollute the page property pane.
   const customProperties = $derived.by(() => {
     if (!note) return [];
-    const props: { key: string; value: string }[] = [];
-    const lines = note.content.split("\n");
-    for (const line of lines) {
-      const match = line.trim().match(/^([A-Za-z_][A-Za-z0-9_]*):: (.+)$/);
-      if (match) {
-        const key = match[1];
-        if (!props.some((p) => p.key.toLowerCase() === key.toLowerCase())) {
-          props.push({ key, value: match[2] });
-        }
+    const out: { key: string; value: string }[] = [];
+    for (const [key, value] of Object.entries(note.metadata.custom)) {
+      const lower = key.toLowerCase();
+      if (HIDDEN_PAGE_KEYS.has(lower)) continue;
+      if (lower.startsWith("hidden_")) continue; // per-tag hidden choice maps
+      // Only render scalar values; arrays/objects don't have a sensible inline
+      // edit affordance and typically have their own UI.
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        out.push({ key, value: String(value) });
       }
     }
-    return props;
+    return out;
   });
 
   const blockProperties = $derived.by(() => {
@@ -158,21 +178,16 @@
     return [...new Set([...fromApi, ...incomingFromEdges])];
   });
 
-  // Page property save
+  // Page property save — writes to frontmatter via the canonical helper.
   async function savePageProperty(key: string, newValue: string) {
     editingKey = null;
     if (!note || newValue.trim() === "") return;
-    const lines = note.content.split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      const trimmed = lines[i].trim();
-      const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*):: (.+)$/);
-      if (match && match[1].toLowerCase() === key.toLowerCase()) {
-        const indent = lines[i].length - lines[i].trimStart().length;
-        lines[i] = " ".repeat(indent) + `${match[1]}:: ${newValue.trim()}`;
-        break;
-      }
-    }
-    const updated = await api.updateNote(noteId, lines.join("\n"));
+    // Quote the value so it serializes safely (handles spaces, colons, etc.).
+    const serialized = `"${newValue.trim().replace(/"/g, '\\"')}"`;
+    const updated = await api.updateNote(
+      noteId,
+      updateFrontmatterKey(note.content, key, serialized),
+    );
     queryClient.setQueryData(["note", noteId], updated);
   }
 
