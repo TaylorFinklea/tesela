@@ -44,3 +44,5 @@ attachments/
 # Playwright test artifacts
 .playwright-mcp/
 phase3f-*.png
+phase3g-*.png
+logseq-*.png

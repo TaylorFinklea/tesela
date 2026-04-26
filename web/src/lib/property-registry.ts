@@ -34,6 +34,11 @@ export type PropertyDefinition = {
   value_type: PropertyType;
   choices: string[];
   default: string | null;
+  /** If true, hide this property from the block by default — only show when
+   *  the user expands the block's properties via the chevron. */
+  hide_by_default: boolean;
+  /** If true, only render the property line when its value is non-empty. */
+  hide_empty: boolean;
 };
 
 export type PropertyRegistry = Map<string, PropertyDefinition>;
@@ -46,6 +51,8 @@ export function parsePropertyPage(note: Note): PropertyDefinition | null {
     value_type: (c.value_type as PropertyType) || "text",
     choices: Array.isArray(c.choices) ? (c.choices as string[]) : [],
     default: typeof c.default === "string" ? c.default : null,
+    hide_by_default: c.hide_by_default === true,
+    hide_empty: c.hide_empty !== false, // default true
   };
 }
 
@@ -114,6 +121,37 @@ export function resolveTagChain(tagName: string, inheritance: InheritanceMap): s
     current = parent;
   }
   return chain;
+}
+
+/**
+ * Resolves a tag's full property definition list, walking the extends chain
+ * and looking each property name up against the registry of Property pages.
+ * Deduplicated by lowercased property name.
+ */
+export function getTagPropertyDefs(
+  tagName: string,
+  notes: Note[],
+  registry: PropertyRegistry,
+  inheritance: InheritanceMap,
+): PropertyDefinition[] {
+  const seen = new Set<string>();
+  const out: PropertyDefinition[] = [];
+  for (const tag of resolveTagChain(tagName, inheritance)) {
+    const tagPage = notes.find(
+      (n) => n.title.toLowerCase() === tag && n.metadata.note_type === "Tag",
+    );
+    if (!tagPage) continue;
+    const tagProps = tagPage.metadata.custom.tag_properties;
+    if (!Array.isArray(tagProps)) continue;
+    for (const propName of tagProps as string[]) {
+      const def = registry.get(String(propName).toLowerCase());
+      if (def && !seen.has(def.name.toLowerCase())) {
+        seen.add(def.name.toLowerCase());
+        out.push(def);
+      }
+    }
+  }
+  return out;
 }
 
 /**

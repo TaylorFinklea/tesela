@@ -3,4 +3,15 @@
 /**
  * A property definition within a type
  */
-export type PropertyDef = { name: string, value_type: string, values: Array<string> | null, default: string | null, required: boolean, };
+export type PropertyDef = { name: string, value_type: string, values: Array<string> | null, default: string | null, required: boolean, 
+/**
+ * If true, the property is hidden from the block by default. The user
+ * must expand the block's "show properties" affordance (chevron) to see
+ * it. Inspired by Logseq DB's per-tag-property "Hide by default" toggle.
+ */
+hide_by_default: boolean, 
+/**
+ * If true, the property only renders when its value is non-empty. Empty
+ * property lines are suppressed. Defaults to true (most users want this).
+ */
+hide_empty: boolean, };

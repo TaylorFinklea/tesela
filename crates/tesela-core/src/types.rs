@@ -47,10 +47,37 @@ pub struct PropertyDef {
     pub default: Option<String>,
     #[serde(default)]
     pub required: bool,
+    /// If true, the property is hidden from the block by default. The user
+    /// must expand the block's "show properties" affordance (chevron) to see
+    /// it. Inspired by Logseq DB's per-tag-property "Hide by default" toggle.
+    #[serde(default)]
+    pub hide_by_default: bool,
+    /// If true, the property only renders when its value is non-empty. Empty
+    /// property lines are suppressed. Defaults to true (most users want this).
+    #[serde(default = "default_true")]
+    pub hide_empty: bool,
 }
 
 fn default_value_type() -> String {
     "text".to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+impl Default for PropertyDef {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            value_type: default_value_type(),
+            values: None,
+            default: None,
+            required: false,
+            hide_by_default: false,
+            hide_empty: true,
+        }
+    }
 }
 
 /// Container for all type definitions loaded from types.toml
@@ -120,6 +147,8 @@ fn default_types() -> Vec<TypeDefinition> {
                     ]),
                     default: Some("todo".to_string()),
                     required: false,
+                    hide_by_default: false,
+                    hide_empty: true,
                 },
                 PropertyDef {
                     name: "priority".to_string(),
@@ -132,6 +161,8 @@ fn default_types() -> Vec<TypeDefinition> {
                     ]),
                     default: Some("medium".to_string()),
                     required: false,
+                    hide_by_default: false,
+                    hide_empty: true,
                 },
                 PropertyDef {
                     name: "deadline".to_string(),
@@ -139,6 +170,8 @@ fn default_types() -> Vec<TypeDefinition> {
                     values: None,
                     default: None,
                     required: false,
+                    hide_by_default: false,
+                    hide_empty: true,
                 },
                 PropertyDef {
                     name: "scheduled".to_string(),
@@ -146,6 +179,8 @@ fn default_types() -> Vec<TypeDefinition> {
                     values: None,
                     default: None,
                     required: false,
+                    hide_by_default: false,
+                    hide_empty: true,
                 },
                 PropertyDef {
                     name: "effort".to_string(),
@@ -153,6 +188,8 @@ fn default_types() -> Vec<TypeDefinition> {
                     values: None,
                     default: None,
                     required: false,
+                    hide_by_default: false,
+                    hide_empty: true,
                 },
             ],
         },
@@ -174,6 +211,8 @@ fn default_types() -> Vec<TypeDefinition> {
                     ]),
                     default: Some("planning".to_string()),
                     required: false,
+                    hide_by_default: false,
+                    hide_empty: true,
                 },
                 PropertyDef {
                     name: "deadline".to_string(),
@@ -181,6 +220,8 @@ fn default_types() -> Vec<TypeDefinition> {
                     values: None,
                     default: None,
                     required: false,
+                    hide_by_default: false,
+                    hide_empty: true,
                 },
             ],
         },
@@ -196,6 +237,8 @@ fn default_types() -> Vec<TypeDefinition> {
                     values: None,
                     default: None,
                     required: false,
+                    hide_by_default: false,
+                    hide_empty: true,
                 },
                 PropertyDef {
                     name: "team".to_string(),
@@ -203,6 +246,8 @@ fn default_types() -> Vec<TypeDefinition> {
                     values: None,
                     default: None,
                     required: false,
+                    hide_by_default: false,
+                    hide_empty: true,
                 },
             ],
         },

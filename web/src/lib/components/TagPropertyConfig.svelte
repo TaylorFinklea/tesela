@@ -101,6 +101,32 @@
     queryClient.invalidateQueries({ queryKey: ["notes"] });
   }
 
+  /**
+   * Toggle a visibility flag (hide_by_default or hide_empty) on the Property
+   * page's frontmatter. Affects how the property renders on every block that
+   * has a tag using this property.
+   */
+  async function togglePropertyVisibilityFlag(
+    propName: string,
+    flag: "hide_by_default" | "hide_empty",
+    nextValue: boolean,
+  ) {
+    const propPageId = propName.toLowerCase();
+    let propNote;
+    try {
+      propNote = await api.getNote(propPageId);
+    } catch {
+      // Property page doesn't exist yet — skip silently. The property is
+      // only configured if the page exists; toggles are no-ops otherwise.
+      return;
+    }
+    const newContent = updateFrontmatterKey(propNote.content, flag, String(nextValue));
+    await api.updateNote(propPageId, newContent);
+    queryClient.invalidateQueries({ queryKey: ["note", propPageId] });
+    queryClient.invalidateQueries({ queryKey: ["notes"] });
+    queryClient.invalidateQueries({ queryKey: ["type", tagName] });
+  }
+
   async function removeProperty(propName: string) {
     try {
       const note = await api.getNote(noteId);
@@ -236,6 +262,8 @@
         {@const hasChoices = def && (def.value_type === "select" || def.value_type === "multi-select") && def.choices.length > 0}
         {@const isExpanded = expandedProp === prop.name}
         {@const hidden = hiddenChoices[prop.name] ?? hiddenChoices[prop.name.toLowerCase()] ?? []}
+        {@const hideByDefault = def?.hide_by_default ?? false}
+        {@const hideEmpty = def?.hide_empty ?? true}
         <div class="rounded hover:bg-accent/30 group transition-colors">
           <div class="flex items-center justify-between px-2 py-1">
             <div class="flex items-center gap-2">
@@ -246,15 +274,13 @@
               {/if}
             </div>
             <div class="flex items-center gap-1">
-              {#if hasChoices}
-                <button
-                  class="text-[10px] text-muted-foreground/40 hover:text-foreground transition-colors px-1"
-                  title="Hide options for this tag"
-                  onclick={() => { expandedProp = isExpanded ? null : prop.name; }}
-                >
-                  {isExpanded ? "▴" : "▾"}{hidden.length > 0 ? ` ${hidden.length} hidden` : ""}
-                </button>
-              {/if}
+              <button
+                class="text-[10px] text-muted-foreground/40 hover:text-foreground transition-colors px-1"
+                title="Configure visibility & choices"
+                onclick={() => { expandedProp = isExpanded ? null : prop.name; }}
+              >
+                {isExpanded ? "▴" : "▾"}{hasChoices && hidden.length > 0 ? ` ${hidden.length} hidden` : ""}
+              </button>
               <button
                 class="text-[10px] text-muted-foreground/30 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
                 onclick={() => removeProperty(prop.name)}
@@ -263,21 +289,51 @@
               </button>
             </div>
           </div>
-          {#if isExpanded && hasChoices && def}
-            <div class="px-4 pb-2 space-y-0.5">
-              <div class="text-[10px] text-muted-foreground/50 mb-1">Hide choices for #{tagName}:</div>
-              {#each def.choices as choice}
-                {@const isHidden = hidden.some((h) => h.toLowerCase() === choice.toLowerCase())}
-                <label class="flex items-center gap-2 cursor-pointer group/choice">
+          {#if isExpanded}
+            <div class="px-4 pb-2 space-y-2">
+              <!-- Visibility toggles (per-property, applies wherever the property is used) -->
+              <div class="space-y-1">
+                <div class="text-[10px] text-muted-foreground/50">Block visibility</div>
+                <label class="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={isHidden}
+                    checked={hideByDefault}
                     class="w-3 h-3 accent-primary"
-                    onchange={() => toggleHiddenChoice(prop.name, choice, isHidden)}
+                    onchange={() => togglePropertyVisibilityFlag(prop.name, "hide_by_default", !hideByDefault)}
                   />
-                  <span class="text-[11px] {isHidden ? 'line-through text-muted-foreground/40' : ''}">{choice}</span>
+                  <span class="text-[11px]">Hide by default</span>
+                  <span class="text-[10px] text-muted-foreground/40">— always hidden until block is expanded</span>
                 </label>
-              {/each}
+                <label class="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={hideEmpty}
+                    class="w-3 h-3 accent-primary"
+                    onchange={() => togglePropertyVisibilityFlag(prop.name, "hide_empty", !hideEmpty)}
+                  />
+                  <span class="text-[11px]">Hide empty value</span>
+                  <span class="text-[10px] text-muted-foreground/40">— hidden when no value set</span>
+                </label>
+              </div>
+
+              <!-- Choices (only for select-type properties) -->
+              {#if hasChoices && def}
+                <div class="space-y-0.5 pt-1 border-t border-border/30">
+                  <div class="text-[10px] text-muted-foreground/50 mb-1">Hide choices for #{tagName}:</div>
+                  {#each def.choices as choice}
+                    {@const isHidden = hidden.some((h) => h.toLowerCase() === choice.toLowerCase())}
+                    <label class="flex items-center gap-2 cursor-pointer group/choice">
+                      <input
+                        type="checkbox"
+                        checked={isHidden}
+                        class="w-3 h-3 accent-primary"
+                        onchange={() => toggleHiddenChoice(prop.name, choice, isHidden)}
+                      />
+                      <span class="text-[11px] {isHidden ? 'line-through text-muted-foreground/40' : ''}">{choice}</span>
+                    </label>
+                  {/each}
+                </div>
+              {/if}
             </div>
           {/if}
         </div>

@@ -107,11 +107,16 @@
 
 <script lang="ts">
   import { onMount } from "svelte";
-  import { EditorState } from "@codemirror/state";
+  import { Compartment, EditorState } from "@codemirror/state";
   import { keymap } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim, getCM } from "@replit/codemirror-vim";
-  import { teselaDecorations, teselaDecorationTheme } from "$lib/cm-decorations";
+  import {
+    teselaDecorations,
+    teselaDecorationTheme,
+    hiddenPropertyKeysFacet,
+    type HiddenKeysConfig,
+  } from "$lib/cm-decorations";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
   import { setVimMode } from "$lib/stores/pane-state.svelte";
   import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
@@ -148,6 +153,7 @@
     focused,
     noteslist: notesList,
     statusChoices,
+    hiddenKeys,
   }: {
     initialText: string;
     onblur: () => void;
@@ -179,7 +185,12 @@
     focused?: boolean;
     noteslist?: Array<{ id: string; title: string; tags: string[]; note_type?: string | null }>;
     statusChoices?: string[];
+    /** Per-block list of property keys to hide in the editor (computed by
+     *  BlockOutliner from inherited tag-property defs). */
+    hiddenKeys?: HiddenKeysConfig;
   } = $props();
+
+  const hiddenKeysCompartment = new Compartment();
 
   let container: HTMLDivElement;
   let view = $state<EditorView | null>(null);
@@ -379,6 +390,18 @@
     if (focused && view && !view.hasFocus) {
       view.focus();
     }
+  });
+
+  // When the parent updates hiddenKeys (e.g. tag added/removed, tag-property
+  // hide_by_default changed), reconfigure the facet compartment so the
+  // decoration plugin picks up the new value.
+  $effect(() => {
+    if (!view) return;
+    view.dispatch({
+      effects: hiddenKeysCompartment.reconfigure(
+        hiddenPropertyKeysFacet.of(hiddenKeys ?? { hide: new Set(), hideEmpty: new Set() }),
+      ),
+    });
   });
 
   // Keep visualMode flag in sync so j/k vim actions can check it without props.
@@ -610,6 +633,9 @@
         focusBlurHandler,
         teselaDecorations,
         teselaDecorationTheme,
+        hiddenKeysCompartment.of(
+          hiddenPropertyKeysFacet.of(hiddenKeys ?? { hide: new Set(), hideEmpty: new Set() }),
+        ),
         EditorView.lineWrapping,
       ],
     });

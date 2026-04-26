@@ -422,6 +422,7 @@ impl SqliteIndex {
                     values: choices,
                     default: row.get("default_value"),
                     required: false,
+                    ..Default::default()
                 }
             })
             .collect())
@@ -504,6 +505,7 @@ impl SqliteIndex {
                         values: choices_str.and_then(|s| serde_json::from_str(&s).ok()),
                         default: row.get("default_value"),
                         required: false,
+                        ..Default::default()
                     });
                 }
                 None => {
@@ -514,6 +516,7 @@ impl SqliteIndex {
                         values: None,
                         default: None,
                         required: false,
+                        ..Default::default()
                     });
                 }
             }
@@ -563,6 +566,7 @@ impl SqliteIndex {
                             values: choices_str.and_then(|s| serde_json::from_str(&s).ok()),
                             default: pr.get("default_value"),
                             required: false,
+                            ..Default::default()
                         });
                     }
                     None => {
@@ -572,6 +576,7 @@ impl SqliteIndex {
                             values: None,
                             default: None,
                             required: false,
+                            ..Default::default()
                         });
                     }
                 }

@@ -8,6 +8,12 @@
   import BlockEditor from "./BlockEditor.svelte";
   import QueryBlock from "./QueryBlock.svelte";
   import { IconArrowRight, IconChevronRight, IconChevronDown } from "@tabler/icons-svelte";
+  import {
+    buildRegistry,
+    buildInheritanceMap,
+    getTagPropertyDefs,
+  } from "$lib/property-registry";
+  import type { HiddenKeysConfig } from "$lib/cm-decorations";
 
   let {
     noteId,
@@ -29,19 +35,62 @@
     onDrillIn?: (blockId: string) => void;
   } = $props();
 
-  // Fetch notes list for autocomplete
+  // Fetch notes list for autocomplete + tag-property visibility resolution
   const notesForAutocomplete = createQuery(() => ({
     queryKey: ["notes", { limit: 200 }] as const,
     queryFn: () => api.listNotes({ limit: 200 }),
   }));
+  const allNotes = $derived((notesForAutocomplete.data ?? []) as Note[]);
   const notesList = $derived(
-    ((notesForAutocomplete.data ?? []) as Note[]).map((n) => ({
+    allNotes.map((n) => ({
       id: n.id,
       title: n.title,
       tags: n.metadata.tags,
       note_type: n.metadata.note_type,
     })),
   );
+  const propertyRegistry = $derived(buildRegistry(allNotes));
+  const inheritanceMap = $derived(buildInheritanceMap(allNotes));
+
+  /**
+   * Compute the keys to hide in this block's editor based on the block's
+   * inherited tag chain. A key gets `hide_by_default` if any tag-property def
+   * has that flag; same for `hide_empty`.
+   */
+  function hiddenKeysFor(block: ParsedBlock): HiddenKeysConfig {
+    const allTags = [...new Set([...block.tags, ...block.inherited_tags])];
+    const hide = new Set<string>();
+    const hideEmpty = new Set<string>();
+    for (const tag of allTags) {
+      for (const def of getTagPropertyDefs(tag, allNotes, propertyRegistry, inheritanceMap)) {
+        const k = def.name.toLowerCase();
+        if (def.hide_by_default) hide.add(k);
+        if (def.hide_empty) hideEmpty.add(k);
+      }
+    }
+    return { hide, hideEmpty };
+  }
+
+  /**
+   * Whether the block has any hidden property lines that the chevron should
+   * reveal. True when raw_text contains a `key:: value` line (or empty-value
+   * line) whose key is configured as hide_by_default OR (hide_empty + empty).
+   */
+  const HIDDEN_PROBE_RE = /^([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)$/gm;
+  function hasHiddenContent(block: ParsedBlock): boolean {
+    const config = hiddenKeysFor(block);
+    if (config.hide.size === 0 && config.hideEmpty.size === 0) return false;
+    HIDDEN_PROBE_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = HIDDEN_PROBE_RE.exec(block.raw_text)) !== null) {
+      const key = m[1].toLowerCase();
+      if (key === "tags") continue;
+      const value = m[2] ?? "";
+      if (config.hide.has(key)) return true;
+      if (config.hideEmpty.has(key) && value.trim() === "") return true;
+    }
+    return false;
+  }
 
   // Fetch Status property page for dynamic status choices
   const statusPropertyQuery = createQuery(() => ({
@@ -475,11 +524,14 @@
             focused={focusedIndex === vi}
             noteslist={notesList}
             statusChoices={statusChoices}
+            hiddenKeys={hiddenKeysFor(block)}
           />
         </div>
 
-        <!-- Property expand toggle (chevron) -->
-        {#if Object.keys(block.properties).length > 0}
+        <!-- Property expand toggle (chevron) — appears only when there's
+             something hidden to reveal (hide_by_default property OR empty
+             property whose def has hide_empty). -->
+        {#if hasHiddenContent(block)}
           {@const isExpanded = expandedProps.has(block.id)}
           <!-- svelte-ignore a11y_consider_explicit_label -->
           <button
