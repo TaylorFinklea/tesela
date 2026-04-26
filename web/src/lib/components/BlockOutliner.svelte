@@ -520,7 +520,7 @@
       <!-- Inline query results (when block has a query:: property) -->
       {#if block.properties.query}
         <div style="padding-left: {displayIndent * 24}px;">
-          <QueryBlock {block} />
+          <QueryBlock {block} onUpdate={(t) => handleBlockChange(block.id, t)} />
         </div>
       {/if}
     {/each}
