@@ -43,4 +43,4 @@ attachments/
 
 # Playwright test artifacts
 .playwright-mcp/
-phase3f-query-block.png
+phase3f-*.png
