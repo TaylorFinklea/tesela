@@ -7,6 +7,7 @@
   import type { Note } from "$lib/types/Note";
   import BlockEditor from "./BlockEditor.svelte";
   import QueryBlock from "./QueryBlock.svelte";
+  import CollectionBlock from "./CollectionBlock.svelte";
   import { IconArrowRight, IconChevronRight, IconChevronDown } from "@tabler/icons-svelte";
   import {
     buildRegistry,
@@ -596,6 +597,13 @@
       {#if block.properties.query}
         <div style="padding-left: {displayIndent * 24}px;">
           <QueryBlock {block} onUpdate={(t) => handleBlockChange(block.id, t)} />
+        </div>
+      {/if}
+
+      <!-- Inline collection (manual block-ref list) -->
+      {#if block.properties.collection !== undefined}
+        <div style="padding-left: {displayIndent * 24}px;">
+          <CollectionBlock {block} onUpdate={(t) => handleBlockChange(block.id, t)} />
         </div>
       {/if}
     {/each}

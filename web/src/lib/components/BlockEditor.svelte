@@ -295,6 +295,7 @@
       { id: "link", label: "Link", description: "Insert [[page link]]", icon: "⟦", action: () => applySlash("link") },
       { id: "date", label: "Date", description: "Insert today's date", icon: "📅", action: () => applySlash("date") },
       { id: "query", label: "Query", description: "Inline query block (tag:Task status:doing)", icon: "⌕", action: () => applySlash("query") },
+      { id: "collection", label: "Collection", description: "Manual list of block references", icon: "▤", action: () => applySlash("collection") },
     ];
   }
 
@@ -374,6 +375,13 @@
           slashStartPos = -1;
           onSlashCommand?.(command);
           return;
+        }
+        case "collection": {
+          // Scaffold an inline collection block. Empty list to start; user
+          // adds blocks via the "+ Add block" button.
+          const cleaned = before.trimEnd();
+          insert = cleaned + "\ncollection:: []\nview:: cards" + after;
+          break;
         }
         default:
           return;
