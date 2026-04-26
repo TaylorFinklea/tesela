@@ -42,8 +42,18 @@ export function getBlockTags(rawText: string): string[] {
  * present (in either tags:: or as a legacy inline #tag), it's removed from
  * both. If absent, it's appended to the tags:: line (creating the line if
  * needed).
+ *
+ * When ADDING a tag, optional `addPropertyNames` are appended as empty
+ * `name:: ` continuation lines (skipping any names already present on the
+ * block). Caller is expected to filter out hide_by_default-flagged names —
+ * the function doesn't make that decision itself. When REMOVING a tag, the
+ * function does NOT strip property lines (preserves user-entered values).
  */
-export function toggleBlockTag(rawText: string, tagName: string): string {
+export function toggleBlockTag(
+  rawText: string,
+  tagName: string,
+  addPropertyNames: string[] = [],
+): string {
   const lower = tagName.toLowerCase();
   const inlineRe = new RegExp(`\\s*#${escapeRe(tagName)}(?![A-Za-z0-9_/-])`, "gi");
 
@@ -60,7 +70,7 @@ export function toggleBlockTag(rawText: string, tagName: string): string {
   inlineRe.lastIndex = 0;
 
   if (inListIdx >= 0 || hasInline) {
-    // Remove
+    // Remove — DON'T touch property lines
     const stripped = rawText.replace(inlineRe, "");
     const resultLines = stripped.split("\n");
     const newTagsIdx = resultLines.findIndex((l) => TAGS_LINE_RE.test(l));
@@ -75,11 +85,33 @@ export function toggleBlockTag(rawText: string, tagName: string): string {
     return resultLines.join("\n");
   }
 
-  // Add
+  // Add — write tags:: line then auto-append any missing property lines
+  let added: string;
   if (tagsIdx >= 0) {
     const updated = [...lines];
     updated[tagsIdx] = `tags:: ${[...currentList, tagName].join(", ")}`;
-    return updated.join("\n");
+    added = updated.join("\n");
+  } else {
+    added = `${rawText}\ntags:: ${tagName}`;
   }
-  return `${rawText}\ntags:: ${tagName}`;
+
+  if (addPropertyNames.length === 0) return added;
+
+  // Find existing keys (case-insensitive) to skip duplicates.
+  const existingKeyRe = /^([A-Za-z_][A-Za-z0-9_]*)::/gm;
+  const existingKeys = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = existingKeyRe.exec(added)) !== null) {
+    existingKeys.add(m[1].toLowerCase());
+  }
+
+  const toAppend: string[] = [];
+  for (const name of addPropertyNames) {
+    if (!name) continue;
+    if (existingKeys.has(name.toLowerCase())) continue;
+    existingKeys.add(name.toLowerCase());
+    toAppend.push(`${name}:: `);
+  }
+  if (toAppend.length === 0) return added;
+  return `${added}\n${toAppend.join("\n")}`;
 }

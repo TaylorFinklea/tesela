@@ -53,6 +53,17 @@
   const inheritanceMap = $derived(buildInheritanceMap(allNotes));
 
   /**
+   * For a tag being toggled ON via `toggleBlockTag`, return the property names
+   * that should be auto-appended as empty continuation lines. Skips any
+   * property marked `hide_by_default` — those start hidden anyway, no value
+   * to nudge the user toward filling in yet.
+   */
+  function autoFillNamesForTag(tagName: string): string[] {
+    const defs = getTagPropertyDefs(tagName, allNotes, propertyRegistry, inheritanceMap);
+    return defs.filter((d) => !d.hide_by_default).map((d) => d.name);
+  }
+
+  /**
    * Compute the keys to hide in this block's editor based on the block's
    * inherited tag chain. A key gets `hide_by_default` if any tag-property def
    * has that flag; same for `hide_empty`.
@@ -525,6 +536,7 @@
             noteslist={notesList}
             statusChoices={statusChoices}
             hiddenKeys={hiddenKeysFor(block)}
+            autoFillNames={autoFillNamesForTag}
           />
         </div>
 

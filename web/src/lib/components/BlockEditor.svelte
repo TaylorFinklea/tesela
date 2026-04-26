@@ -154,6 +154,7 @@
     noteslist: notesList,
     statusChoices,
     hiddenKeys,
+    autoFillNames,
   }: {
     initialText: string;
     onblur: () => void;
@@ -188,6 +189,10 @@
     /** Per-block list of property keys to hide in the editor (computed by
      *  BlockOutliner from inherited tag-property defs). */
     hiddenKeys?: HiddenKeysConfig;
+    /** Resolves a tag name to its auto-fill property names (visible-by-default
+     *  property defs). Used when toggling a tag ON to append empty `key:: `
+     *  continuation lines for each property. */
+    autoFillNames?: (tagName: string) => string[];
   } = $props();
 
   const hiddenKeysCompartment = new Compartment();
@@ -228,7 +233,8 @@
       // before toggling — otherwise the filter chars end up as block content.
       const cursorPos = view.state.selection.main.head;
       const cleaned = doc.slice(0, autocompleteStartPos) + doc.slice(cursorPos);
-      const newText = toggleBlockTag(cleaned, item.label);
+      const fillNames = autoFillNames?.(item.label) ?? [];
+      const newText = toggleBlockTag(cleaned, item.label, fillNames);
       view.dispatch({
         changes: { from: 0, to: doc.length, insert: newText },
         selection: { anchor: Math.min(autocompleteStartPos, newText.length) },
@@ -308,7 +314,7 @@
         case "task": {
           const cleaned = before + after;
           const hasTask = getBlockTags(cleaned).some((t) => t.toLowerCase() === "task");
-          insert = hasTask ? cleaned : toggleBlockTag(cleaned, "Task");
+          insert = hasTask ? cleaned : toggleBlockTag(cleaned, "Task", autoFillNames?.("Task") ?? []);
           break;
         }
         case "heading":
