@@ -17,6 +17,9 @@
   type ViewMode = "table" | "cards" | "list" | "outline" | "kanban";
   const ALL_VIEWS: ViewMode[] = ["table", "cards", "list", "outline", "kanban"];
 
+  /** A saved view ("tab") — same data source, different lens. */
+  type Tab = { name: string; view: ViewMode; filter?: string };
+
   let { block, onUpdate }: {
     block: ParsedBlock;
     onUpdate?: (newRawText: string) => void;
@@ -27,19 +30,101 @@
   }
 
   const queryText = $derived((block.properties.query ?? "").trim());
-  const viewMode = $derived.by((): ViewMode => {
-    const v = (block.properties.view ?? "table").trim().toLowerCase();
-    return (ALL_VIEWS as string[]).includes(v) ? (v as ViewMode) : "table";
+
+  /**
+   * Parsed tab list. Reads `views::` JSON if present, otherwise synthesizes a
+   * single "All" tab from the legacy `view::` property (or default "table").
+   */
+  const tabs: Tab[] = $derived.by(() => {
+    const viewsRaw = block.properties.views;
+    if (typeof viewsRaw === "string" && viewsRaw.trim().length > 0) {
+      try {
+        const parsed = JSON.parse(viewsRaw);
+        if (Array.isArray(parsed)) {
+          return parsed.map((t, i): Tab => ({
+            name: typeof t?.name === "string" ? t.name : `View ${i + 1}`,
+            view: (ALL_VIEWS as string[]).includes(t?.view) ? t.view : "table",
+            filter: typeof t?.filter === "string" ? t.filter : undefined,
+          }));
+        }
+      } catch { /* fall through to legacy */ }
+    }
+    const legacyView = (block.properties.view ?? "table").trim().toLowerCase();
+    return [{
+      name: "All",
+      view: ((ALL_VIEWS as string[]).includes(legacyView) ? legacyView : "table") as ViewMode,
+    }];
   });
 
-  function setView(next: ViewMode) {
+  const activeIdx = $derived.by(() => {
+    const raw = block.properties.active_view ?? "0";
+    const n = parseInt(raw, 10);
+    if (Number.isNaN(n) || n < 0 || n >= tabs.length) return 0;
+    return n;
+  });
+  const activeTab = $derived(tabs[activeIdx] ?? { name: "All", view: "table" as ViewMode });
+  const viewMode: ViewMode = $derived(activeTab.view);
+
+  /**
+   * Write a multi-property update to the block. Each entry replaces the line
+   * with that key (case-insensitive); pass `null` to remove the line entirely.
+   */
+  function writeBlockProps(updates: Record<string, string | null>) {
     if (!onUpdate) return;
     const lines = block.raw_text.split("\n");
-    const idx = lines.findIndex((l) => /^view:: /.test(l));
-    if (idx >= 0) lines[idx] = `view:: ${next}`;
-    else lines.push(`view:: ${next}`);
+    for (const [key, value] of Object.entries(updates)) {
+      const re = new RegExp(`^${key}::`, "i");
+      const idx = lines.findIndex((l) => re.test(l));
+      if (value === null) {
+        if (idx >= 0) lines.splice(idx, 1);
+      } else if (idx >= 0) {
+        lines[idx] = `${key}:: ${value}`;
+      } else {
+        lines.push(`${key}:: ${value}`);
+      }
+    }
     onUpdate(lines.join("\n"));
   }
+
+  function persistTabs(next: Tab[], nextActive: number) {
+    writeBlockProps({
+      views: JSON.stringify(next),
+      active_view: String(nextActive),
+      view: null, // legacy field becomes redundant once views:: is set
+    });
+  }
+
+  function setView(next: ViewMode) {
+    const updated = tabs.map((t, i) => i === activeIdx ? { ...t, view: next } : t);
+    persistTabs(updated, activeIdx);
+  }
+
+  function setActiveTab(idx: number) {
+    if (idx < 0 || idx >= tabs.length) return;
+    writeBlockProps({ active_view: String(idx) });
+  }
+
+  function addTab() {
+    const next: Tab[] = [...tabs, { name: `View ${tabs.length + 1}`, view: "table" }];
+    persistTabs(next, next.length - 1);
+  }
+
+  function deleteTab(idx: number) {
+    if (tabs.length <= 1) return; // keep at least one tab
+    const next = tabs.filter((_, i) => i !== idx);
+    const newActive = idx <= activeIdx && activeIdx > 0 ? activeIdx - 1 : Math.min(activeIdx, next.length - 1);
+    persistTabs(next, newActive);
+  }
+
+  function renameTab(idx: number, name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const updated = tabs.map((t, i) => i === idx ? { ...t, name: trimmed } : t);
+    persistTabs(updated, activeIdx);
+  }
+
+  let editingTabIdx = $state<number | null>(null);
+  let editingTabName = $state("");
 
   const allNotesQuery = createQuery(() => ({
     queryKey: ["notes", { limit: 500 }] as const,
@@ -47,7 +132,12 @@
     enabled: queryText.length > 0,
   }));
 
-  const parsedQuery = $derived(parseQuery(queryText));
+  // Combine the base query with the active tab's optional filter (intersection).
+  const combinedQueryText = $derived.by(() => {
+    const filter = activeTab.filter?.trim() ?? "";
+    return [queryText, filter].filter((s) => s.length > 0).join(" ");
+  });
+  const parsedQuery = $derived(parseQuery(combinedQueryText));
 
   type Match = { block: ParsedBlock; noteTitle: string; noteId: string };
   const matches: Match[] = $derived.by(() => {
@@ -65,12 +155,15 @@
     return out;
   });
 
-  // Union of all property keys from matched blocks (excluding query/view).
+  // Query block system keys — never expose as table columns.
+  const SYSTEM_KEYS = new Set(["query", "view", "views", "active_view", "collection"]);
+
+  // Union of all property keys from matched blocks (excluding system keys).
   const propColumns = $derived.by(() => {
     const keys = new Set<string>();
     for (const m of matches) {
       for (const k of Object.keys(m.block.properties)) {
-        if (k !== "query" && k !== "view") keys.add(k);
+        if (!SYSTEM_KEYS.has(k.toLowerCase())) keys.add(k);
       }
     }
     return [...keys].sort();
@@ -129,12 +222,53 @@
 {/snippet}
 
 <div class="ml-6 mt-1 mb-3 p-3 rounded-md bg-muted/20 border border-border/40">
-  <!-- View switcher -->
-  <div class="flex items-center justify-between mb-2">
-    <div class="text-[10px] text-muted-foreground/50">
-      {#if queryText}{matches.length} {matches.length === 1 ? "match" : "matches"} · <code class="text-foreground/70">{queryText}</code>{:else}empty query{/if}
+  <!-- Tab strip + view switcher -->
+  <div class="flex items-center justify-between mb-2 gap-2">
+    <!-- Tabs -->
+    <div class="flex items-center gap-0.5 flex-wrap min-w-0">
+      {#each tabs as tab, i (i)}
+        {@const active = i === activeIdx}
+        <div class="group/tab inline-flex items-center gap-0.5">
+          {#if editingTabIdx === i}
+            <!-- svelte-ignore a11y_autofocus -->
+            <input
+              autofocus
+              class="text-[11px] bg-surface border border-primary/40 rounded px-1.5 py-0.5 outline-none w-24"
+              bind:value={editingTabName}
+              onblur={() => { renameTab(i, editingTabName); editingTabIdx = null; }}
+              onkeydown={(e) => {
+                if (e.key === "Enter") { renameTab(i, editingTabName); editingTabIdx = null; }
+                if (e.key === "Escape") { editingTabIdx = null; }
+              }}
+            />
+          {:else}
+            <button
+              class="text-[11px] px-2 py-0.5 rounded transition-all {active ? 'bg-surface text-primary shadow-sm' : 'text-muted-foreground/60 hover:text-foreground/70 hover:bg-muted/30'}"
+              onclick={() => setActiveTab(i)}
+              ondblclick={() => { editingTabIdx = i; editingTabName = tab.name; }}
+              title="Click to switch · double-click to rename"
+            >{tab.name}</button>
+            {#if active && tabs.length > 1}
+              <!-- svelte-ignore a11y_consider_explicit_label -->
+              <button
+                class="opacity-0 group-hover/tab:opacity-100 leading-none text-muted-foreground/40 hover:text-destructive text-[10px] transition-opacity"
+                onclick={() => deleteTab(i)}
+                title="Delete tab"
+              >×</button>
+            {/if}
+          {/if}
+        </div>
+      {/each}
+      <!-- svelte-ignore a11y_consider_explicit_label -->
+      <button
+        class="text-[11px] px-1.5 py-0.5 rounded text-muted-foreground/40 hover:text-primary hover:bg-muted/30 transition-colors"
+        onclick={addTab}
+        title="Add new tab"
+      >+</button>
     </div>
-    <div class="flex items-center gap-0.5 bg-muted/40 rounded-md p-0.5">
+
+    <!-- View switcher (operates on active tab) -->
+    <div class="flex items-center gap-0.5 bg-muted/40 rounded-md p-0.5 shrink-0">
       {#each VIEW_META as v}
         {@const active = v.id === viewMode}
         <!-- svelte-ignore a11y_consider_explicit_label -->
@@ -147,6 +281,17 @@
         </button>
       {/each}
     </div>
+  </div>
+
+  <!-- Match count + query info -->
+  <div class="text-[10px] text-muted-foreground/50 mb-2">
+    {#if queryText}
+      {matches.length} {matches.length === 1 ? "match" : "matches"}
+      · <code class="text-foreground/70">{queryText}</code>
+      {#if activeTab.filter}
+        <span class="text-muted-foreground/40">+</span> <code class="text-foreground/70">{activeTab.filter}</code>
+      {/if}
+    {:else}empty query{/if}
   </div>
 
   {#if !queryText}

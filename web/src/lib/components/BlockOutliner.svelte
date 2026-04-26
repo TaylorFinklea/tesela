@@ -68,9 +68,20 @@
    * inherited tag chain. A key gets `hide_by_default` if any tag-property def
    * has that flag; same for `hide_empty`.
    */
+  // System keys for query/collection blocks. Always hidden by default — the
+  // user manages them through the block's UI (tab strip, view switcher, etc.)
+  // not by editing the raw `key:: value` lines.
+  const SYSTEM_HIDDEN_KEYS: ReadonlySet<string> = new Set([
+    "query",
+    "view",
+    "views",
+    "active_view",
+    "collection",
+  ]);
+
   function hiddenKeysFor(block: ParsedBlock): HiddenKeysConfig {
     const allTags = [...new Set([...block.tags, ...block.inherited_tags])];
-    const hide = new Set<string>();
+    const hide = new Set<string>(SYSTEM_HIDDEN_KEYS);
     const hideEmpty = new Set<string>();
     for (const tag of allTags) {
       for (const def of getTagPropertyDefs(tag, allNotes, propertyRegistry, inheritanceMap)) {
