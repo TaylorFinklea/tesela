@@ -95,6 +95,21 @@
   }
 
   /**
+   * Whether to render the status indicator next to the bullet. Logseq-style:
+   * present when status is set, OR when any tag in the block's chain declares
+   * a `status` property (so a tagged Task block shows an empty placeholder).
+   */
+  function shouldShowStatus(block: ParsedBlock): boolean {
+    if (block.properties.status !== undefined) return true;
+    const tags = [...new Set([...block.tags, ...block.inherited_tags])];
+    for (const tag of tags) {
+      const defs = getTagPropertyDefs(tag, allNotes, propertyRegistry, inheritanceMap);
+      if (defs.some((d) => d.name.toLowerCase() === "status")) return true;
+    }
+    return false;
+  }
+
+  /**
    * Whether the block has any hidden property lines that the chevron should
    * reveal. True when raw_text contains a `key:: value` line (or empty-value
    * line) whose key is configured as hide_by_default OR (hide_empty + empty).
@@ -600,12 +615,27 @@
         <!-- Bullet (always a dot — click to drill in) -->
         <!-- svelte-ignore a11y_consider_explicit_label -->
         <button
-          class="shrink-0 pt-[12px] pl-2 pr-2 cursor-pointer transition-opacity"
+          class="shrink-0 pt-[12px] pl-2 pr-1.5 cursor-pointer transition-opacity"
           onclick={(e) => { e.stopPropagation(); onDrillIn?.(block.id); }}
           title="Drill in"
         >
           <span class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === vi ? 'bg-primary' : 'bg-muted-foreground/40 hover:bg-muted-foreground/80'}"></span>
         </button>
+
+        <!-- Status indicator (Logseq-style: between bullet and text). Only
+             shown when status is set or any tag in the chain declares it. -->
+        {#if shouldShowStatus(block)}
+          <!-- svelte-ignore a11y_consider_explicit_label -->
+          <button
+            class="shrink-0 pt-[10px] pr-1.5 cursor-pointer hover:opacity-100 transition-opacity {block.properties.status ? 'opacity-90' : 'opacity-50'}"
+            onclick={(e) => { e.stopPropagation(); handleStatusCycle(vi); }}
+            title={block.properties.status ? `Status: ${block.properties.status} · click to cycle` : "Click to set status"}
+          >
+            <span class="block text-[12px] leading-none font-mono w-[14px] text-center {block.properties.status ? statusColorClass(block.properties.status) : 'text-muted-foreground/60'}">
+              {block.properties.status ? statusChar(block.properties.status) : "○"}
+            </span>
+          </button>
+        {/if}
 
         <!-- Content -->
         <div class="flex-1 min-w-0 py-1 {expandedProps.has(block.id) ? 'show-props' : ''}">
@@ -645,22 +675,6 @@
             onInsertTemplate={(templateNoteId) => insertTemplateAfter(block.id, templateNoteId)}
           />
         </div>
-
-        <!-- Status icon (right side — Logseq-style). Always visible if
-             status is set; hover-only faint set-status circle otherwise. -->
-        <!-- svelte-ignore a11y_consider_explicit_label -->
-        <button
-          class="shrink-0 self-center mr-1 p-1 rounded transition-opacity
-            {block.properties.status ? 'opacity-90' : 'opacity-0 group-hover:opacity-40'}
-            hover:!opacity-100"
-          onclick={(e) => { e.stopPropagation(); handleStatusCycle(vi); }}
-          title={block.properties.status ? `Status: ${block.properties.status} · click to cycle` : "Set status"}
-        >
-          <span class="block text-[12px] leading-none font-mono w-[14px] text-center
-            {block.properties.status ? statusColorClass(block.properties.status) : 'text-muted-foreground/60'}">
-            {block.properties.status ? statusChar(block.properties.status) : "○"}
-          </span>
-        </button>
 
         <!-- Property expand toggle (chevron) — appears only when there's
              something hidden to reveal (hide_by_default property OR empty
