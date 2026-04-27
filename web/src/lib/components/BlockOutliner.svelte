@@ -277,6 +277,42 @@
     focusedIndex = next;
   }
 
+  /**
+   * Fetch a template note and insert its body as child blocks under the
+   * given parent block. Indents are normalized so the template's outermost
+   * blocks become children of the parent (not preserving template's absolute
+   * indent levels).
+   */
+  async function insertTemplateAfter(parentBlockId: string, templateNoteId: string) {
+    let templateNote: Note;
+    try {
+      templateNote = await api.getNote(templateNoteId);
+    } catch (e) {
+      console.error("Failed to fetch template note:", e);
+      return;
+    }
+    const tplBlocks = parseBlocks(templateNoteId, templateNote.body);
+    if (tplBlocks.length === 0) return;
+    const parentIdx = blocks.findIndex((b) => b.id === parentBlockId);
+    if (parentIdx < 0) return;
+    const parentIndent = blocks[parentIdx].indent_level;
+    const minTplIndent = Math.min(...tplBlocks.map((b) => b.indent_level));
+    const inserted: ParsedBlock[] = tplBlocks.map((tb, i) => ({
+      ...tb,
+      id: `${noteId}:tmpl-${Date.now()}-${i}`,
+      note_id: noteId,
+      // Re-base indent so the template's outermost blocks become children of
+      // the current block. Preserves relative nesting within the template.
+      indent_level: parentIndent + 1 + (tb.indent_level - minTplIndent),
+    }));
+    blocks = [
+      ...blocks.slice(0, parentIdx + 1),
+      ...inserted,
+      ...blocks.slice(parentIdx + 1),
+    ];
+    saveBlocks(blocks);
+  }
+
   function handleEnter(vi: number, textAfterCursor: string = "") {
     const current = visibleBlocks[vi];
     if (!current) return;
@@ -438,6 +474,85 @@
     blockClipboard = sorted.map(vi => ({ ...visibleBlocks[vi]! })).filter(b => b.id);
     exitBlockVisualMode();
   }
+
+  /**
+   * Cycle status across all blocks in the visual selection. The next status
+   * is computed from the FIRST selected block's current status; all selected
+   * blocks then move to that next status (so the operation is idempotent and
+   * predictable, not "each block independently advances").
+   */
+  function bulkCycleStatus() {
+    const sorted = [...visualRange].sort((a, b) => a - b);
+    if (sorted.length === 0) return;
+    const first = visibleBlocks[sorted[0]!];
+    if (!first) return;
+    const current = first.properties.status ?? "";
+    const idx = statusCycle.indexOf(current);
+    const next = statusCycle[(idx + 1) % statusCycle.length] ?? "";
+    const ids = new Set(sorted.map((vi) => visibleBlocks[vi]?.id).filter(Boolean) as string[]);
+    blocks = blocks.map((b) => {
+      if (!ids.has(b.id)) return b;
+      const newRaw = setBlockStatus(b.raw_text, next);
+      const props = parseProperties(newRaw);
+      delete props.tags;
+      return {
+        ...b,
+        raw_text: newRaw,
+        text: (newRaw.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
+        tags: getBlockTags(newRaw),
+        properties: props,
+      };
+    });
+    saveBlocks(blocks);
+    // Stay in visual mode so the user can fire again.
+  }
+
+  /**
+   * Toggle a tag across all blocks in the visual selection. If ANY selected
+   * block already has the tag, this REMOVES it from all (turn-off-bias);
+   * otherwise it ADDS the tag (with auto-fill props) to all that don't have it.
+   */
+  function bulkToggleTag(tagName: string) {
+    const sorted = [...visualRange].sort((a, b) => a - b);
+    if (sorted.length === 0) return;
+    const lower = tagName.toLowerCase();
+    const ids = new Set(sorted.map((vi) => visibleBlocks[vi]?.id).filter(Boolean) as string[]);
+    const fillNames = autoFillNamesForTag(tagName);
+    const anyHas = sorted.some((vi) => {
+      const b = visibleBlocks[vi];
+      return b && getBlockTags(b.raw_text).some((t) => t.toLowerCase() === lower);
+    });
+    blocks = blocks.map((b) => {
+      if (!ids.has(b.id)) return b;
+      const has = getBlockTags(b.raw_text).some((t) => t.toLowerCase() === lower);
+      // anyHas=true → we're removing across the selection; skip blocks that don't have it.
+      // anyHas=false → we're adding; skip blocks that already have it.
+      if (anyHas !== has) return b;
+      const newRaw = toggleBlockTag(b.raw_text, tagName, fillNames);
+      const props = parseProperties(newRaw);
+      delete props.tags;
+      return {
+        ...b,
+        raw_text: newRaw,
+        text: (newRaw.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
+        tags: getBlockTags(newRaw),
+        properties: props,
+      };
+    });
+    saveBlocks(blocks);
+  }
+
+  // Tag-picker overlay state for visual-mode bulk tag toggle.
+  let showBulkTagPicker = $state(false);
+  function openBulkTagPicker() {
+    if (!blockVisualMode) return;
+    showBulkTagPicker = true;
+  }
+  const bulkTagOptions = $derived.by(() => {
+    return allNotes
+      .filter((n) => n.metadata.note_type === "Tag")
+      .map((n) => ({ id: n.id, label: n.title }));
+  });
 </script>
 
 {#if visibleBlocks.length === 0}
@@ -531,7 +646,7 @@
             initialCursorPos={mountHint?.blockId === block.id ? mountHint.pos : undefined}
             startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (focusedIndex === vi && block.raw_text === "")}
             onleader={onLeader}
-            oncyclestatus={() => handleStatusCycle(vi)}
+            oncyclestatus={() => blockVisualMode ? bulkCycleStatus() : handleStatusCycle(vi)}
             ondeleteblock={() => handleDeleteBlock(vi)}
             onyankblock={() => handleYankBlock(vi)}
             onpasteblock={() => handlePasteBlock(vi)}
@@ -543,12 +658,14 @@
             onvisualnav={handleVisualNav}
             onvisualdelete={deleteVisualBlocks}
             onvisualyank={yankVisualBlocks}
+            onbulktagpicker={openBulkTagPicker}
             inVisualMode={blockVisualMode}
             focused={focusedIndex === vi}
             noteslist={notesList}
             statusChoices={statusChoices}
             hiddenKeys={hiddenKeysFor(block)}
             autoFillNames={autoFillNamesForTag}
+            onInsertTemplate={(templateNoteId) => insertTemplateAfter(block.id, templateNoteId)}
           />
         </div>
 
@@ -607,5 +724,36 @@
         </div>
       {/if}
     {/each}
+  </div>
+{/if}
+
+<!-- Bulk tag picker overlay (visual mode bulk-tag op) -->
+{#if showBulkTagPicker}
+  <div
+    class="fixed inset-0 z-50 flex items-start justify-center pt-[20vh] bg-black/30"
+    onclick={() => { showBulkTagPicker = false; }}
+    onkeydown={(e) => { if (e.key === "Escape") { showBulkTagPicker = false; } }}
+    role="dialog"
+    aria-label="Bulk tag picker"
+  >
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="w-72 max-h-[60vh] overflow-y-auto bg-popover border border-border rounded-md shadow-xl p-2"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <div class="text-[11px] text-muted-foreground/60 px-2 py-1 mb-1">
+        Toggle tag on {visualRange.size} blocks
+      </div>
+      {#each bulkTagOptions as opt (opt.id)}
+        <button
+          class="w-full text-left text-[12px] px-2 py-1.5 rounded hover:bg-muted/40 transition-colors"
+          onclick={() => { bulkToggleTag(opt.label); showBulkTagPicker = false; }}
+        >{opt.label}</button>
+      {/each}
+      {#if bulkTagOptions.length === 0}
+        <div class="text-[11px] text-muted-foreground/40 italic px-2 py-1.5">No Tag pages defined</div>
+      {/if}
+    </div>
   </div>
 {/if}

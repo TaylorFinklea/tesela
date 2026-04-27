@@ -23,12 +23,14 @@
     visualNav: ((dir: "up" | "down") => void) | null;
     visualDelete: (() => void) | null;
     visualYank: (() => void) | null;
+    bulkTagPicker: (() => void) | null;
   } = {
     view: null, navigate: null, deleteBlock: null, yankBlock: null,
     pasteBlock: null, newBlockBelow: null, newBlockAbove: null,
     indent: null, leader: null,
     drillIn: null, enterVisualMode: null, exitVisualMode: null,
     visualMode: false, visualNav: null, visualDelete: null, visualYank: null,
+    bulkTagPicker: null,
   };
 
   let _vimActionsRegistered = false;
@@ -102,6 +104,14 @@
 
     Vim.defineAction("drillIntoBlock", () => { vimCtx.drillIn?.(); });
     Vim.mapCommand("<CR>", "action", "drillIntoBlock", {}, { context: "normal" });
+
+    // `T` in block-visual mode opens the bulk tag picker. In normal mode it
+    // no-ops (overrides vim's "find char backward till" — uncommon enough in
+    // an outliner that the trade-off is fine).
+    Vim.defineAction("bulkTagPickerOrNoop", () => {
+      if (vimCtx.visualMode) vimCtx.bulkTagPicker?.();
+    });
+    Vim.mapCommand("T", "action", "bulkTagPickerOrNoop", {}, { context: "normal" });
   }
 </script>
 
@@ -121,6 +131,7 @@
   import { setVimMode } from "$lib/stores/pane-state.svelte";
   import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
+  import DatePicker from "./DatePicker.svelte";
 
   let {
     initialText,
@@ -149,12 +160,14 @@
     onvisualnav: onVisualNav,
     onvisualdelete: onVisualDelete,
     onvisualyank: onVisualYank,
+    onbulktagpicker: onBulkTagPicker,
     inVisualMode,
     focused,
     noteslist: notesList,
     statusChoices,
     hiddenKeys,
     autoFillNames,
+    onInsertTemplate,
   }: {
     initialText: string;
     onblur: () => void;
@@ -182,6 +195,7 @@
     onvisualnav?: (dir: "up" | "down") => void;
     onvisualdelete?: () => void;
     onvisualyank?: () => void;
+    onbulktagpicker?: () => void;
     inVisualMode?: boolean;
     focused?: boolean;
     noteslist?: Array<{ id: string; title: string; tags: string[]; note_type?: string | null }>;
@@ -193,6 +207,10 @@
      *  property defs). Used when toggling a tag ON to append empty `key:: `
      *  continuation lines for each property. */
     autoFillNames?: (tagName: string) => string[];
+    /** Called when /template picks a template — receives the template note's
+     *  ID. The BlockOutliner fetches its body and inserts the parsed blocks as
+     *  children of the current block. */
+    onInsertTemplate?: (templateNoteId: string) => void;
   } = $props();
 
   const hiddenKeysCompartment = new Compartment();
@@ -213,8 +231,14 @@
   let autocompletePosition = $state({ x: 0, y: 0 });
   let autocompleteRef = $state<AutocompleteMenu | null>(null);
   let autocompleteStartPos = $state<number>(-1);
-  let autocompleteType = $state<"tag" | "link" | "tagmanage">("tag");
+  let autocompleteType = $state<"tag" | "link" | "tagmanage" | "templatepick">("tag");
   let tagManageItems = $state<AutocompleteItem[]>([]);
+  let templatePickItems = $state<AutocompleteItem[]>([]);
+
+  // Date picker state
+  let showDatePicker = $state(false);
+  let datePickerPosition = $state({ x: 0, y: 0 });
+  let datePickerCursor = $state<number>(-1); // where to insert the [[YYYY-MM-DD]]
 
   const autocompleteItems: AutocompleteItem[] = $derived(
     (notesList ?? []).map((n) => ({
@@ -247,6 +271,24 @@
         secondary: activeTags.has(t.label.toLowerCase()) ? "✓" : undefined,
       }));
       autocompleteFilter = "";
+      return;
+    }
+
+    if (autocompleteType === "templatepick") {
+      // Strip any filter text the user typed, then dispatch the template
+      // insert up to BlockOutliner. We pass the template note's ID; the parent
+      // is responsible for fetching the body and inserting child blocks.
+      const cursorPos = view.state.selection.main.head;
+      const cleaned = doc.slice(0, autocompleteStartPos) + doc.slice(cursorPos);
+      view.dispatch({
+        changes: { from: 0, to: doc.length, insert: cleaned },
+        selection: { anchor: Math.min(autocompleteStartPos, cleaned.length) },
+      });
+      onChange(cleaned);
+      onInsertTemplate?.(item.id);
+      showAutocomplete = false;
+      autocompleteFilter = "";
+      autocompleteStartPos = -1;
       return;
     }
 
@@ -296,6 +338,7 @@
       { id: "date", label: "Date", description: "Insert today's date", icon: "📅", action: () => applySlash("date") },
       { id: "query", label: "Query", description: "Inline query block (tag:Task status:doing)", icon: "⌕", action: () => applySlash("query") },
       { id: "collection", label: "Collection", description: "Manual list of block references", icon: "▤", action: () => applySlash("collection") },
+      { id: "template", label: "Template", description: "Insert blocks from a #Template page", icon: "⎘", action: () => applySlash("template") },
     ];
   }
 
@@ -355,8 +398,19 @@
           break;
         }
         case "date": {
-          const today = new Date().toISOString().slice(0, 10);
-          insert = before + `[[${today}]]` + after;
+          // Strip the slash text and open the date picker. The picker
+          // dispatches the chosen date as `[[YYYY-MM-DD]]` at the cursor.
+          insert = before + after;
+          const cursorAfter = before.length;
+          setTimeout(() => {
+            if (!view) return;
+            datePickerCursor = cursorAfter;
+            const coords = view.coordsAtPos(Math.min(cursorAfter, view.state.doc.length));
+            datePickerPosition = coords
+              ? { x: coords.left, y: coords.bottom + 4 }
+              : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
+            showDatePicker = true;
+          }, 0);
           break;
         }
         case "query": {
@@ -381,6 +435,31 @@
           // adds blocks via the "+ Add block" button.
           const cleaned = before.trimEnd();
           insert = cleaned + "\ncollection:: []\nview:: cards" + after;
+          break;
+        }
+        case "template": {
+          // Open a picker showing all #Template-tagged notes. Pick one to
+          // insert its body as child blocks (handled by BlockOutliner via
+          // onInsertTemplate callback).
+          insert = before + after;
+          const cursorAfter = before.length;
+          setTimeout(() => {
+            if (!view) return;
+            templatePickItems = (notesList ?? [])
+              .filter((n) => n.tags.some((t) => t.toLowerCase() === "template"))
+              .map((n) => ({
+                id: n.id,
+                label: n.title,
+              }));
+            autocompleteStartPos = cursorAfter;
+            autocompleteType = "templatepick";
+            showAutocomplete = true;
+            autocompleteFilter = "";
+            const coords = view.coordsAtPos(Math.min(cursorAfter, view.state.doc.length));
+            autocompletePosition = coords
+              ? { x: coords.left, y: coords.bottom + 4 }
+              : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
+          }, 0);
           break;
         }
         default:
@@ -440,6 +519,7 @@
     vimCtx.visualNav = onVisualNav ?? null;
     vimCtx.visualDelete = onVisualDelete ?? null;
     vimCtx.visualYank = onVisualYank ?? null;
+    vimCtx.bulkTagPicker = onBulkTagPicker ?? null;
     return () => {
       if (vimCtx.view === view) vimCtx.view = null;
     };
@@ -713,11 +793,35 @@
   {#if showAutocomplete}
     <AutocompleteMenu
       bind:this={autocompleteRef}
-      items={autocompleteType === "tagmanage" ? tagManageItems : autocompleteItems}
+      items={autocompleteType === "tagmanage" ? tagManageItems : autocompleteType === "templatepick" ? templatePickItems : autocompleteItems}
       filter={autocompleteFilter}
       position={autocompletePosition}
       onselect={(item) => applyAutocomplete(item)}
       onclose={() => { showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1; }}
+    />
+  {/if}
+
+  {#if showDatePicker}
+    <DatePicker
+      position={datePickerPosition}
+      onPick={(iso) => {
+        if (view && datePickerCursor >= 0) {
+          const doc = view.state.doc.toString();
+          const before = doc.slice(0, datePickerCursor);
+          const after = doc.slice(datePickerCursor);
+          const inserted = `[[${iso}]]`;
+          const next = before + inserted + after;
+          view.dispatch({
+            changes: { from: 0, to: doc.length, insert: next },
+            selection: { anchor: before.length + inserted.length },
+          });
+          onChange(next);
+          view.focus();
+        }
+        showDatePicker = false;
+        datePickerCursor = -1;
+      }}
+      onClose={() => { showDatePicker = false; datePickerCursor = -1; view?.focus(); }}
     />
   {/if}
 </div>
