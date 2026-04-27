@@ -612,10 +612,12 @@
           {/each}
         {/if}
 
-        <!-- Bullet (always a dot — click to drill in) -->
+        <!-- Bullet (always a dot — click to drill in). pt tuned so the dot
+             centers on the cm-line geometric midpoint at the default editor
+             font-size; verified in the browser. -->
         <!-- svelte-ignore a11y_consider_explicit_label -->
         <button
-          class="shrink-0 pt-[12px] pl-2 pr-1.5 cursor-pointer transition-opacity"
+          class="shrink-0 pt-[14px] pl-2 pr-1.5 cursor-pointer transition-opacity"
           onclick={(e) => { e.stopPropagation(); onDrillIn?.(block.id); }}
           title="Drill in"
         >
