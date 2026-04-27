@@ -1,6 +1,7 @@
 <script lang="ts">
   import { browser } from "$app/environment";
   import { themes, applyTheme, type ThemeId } from "$lib/themes";
+  import { prefs, type BulletStyle } from "$lib/preferences.svelte";
 
   function loadSetting(key: string, fallback: string): string {
     if (!browser) return fallback;
@@ -85,6 +86,21 @@
           </button>
           <span class="text-[13px]">Vim mode</span>
         </label>
+      </section>
+
+      <!-- Outliner -->
+      <section>
+        <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">Outliner</h2>
+        <div class="flex items-center gap-2">
+          <span class="text-[13px] mr-3">Block bullet:</span>
+          {#each [{ id: "dot" as BulletStyle, label: "Dot" }, { id: "arrow" as BulletStyle, label: "Arrow" }] as opt}
+            <button
+              class="px-3 py-1.5 rounded-md text-[12px] transition-all border {prefs.bulletStyle === opt.id ? 'bg-primary/10 text-primary border-primary/20 ring-1 ring-primary/15' : 'text-muted-foreground border-border/50 hover:bg-muted/40 hover:text-foreground'}"
+              onclick={() => prefs.setBulletStyle(opt.id)}
+            >{opt.label}</button>
+          {/each}
+        </div>
+        <p class="text-[11px] text-muted-foreground/40 mt-1.5">Dot = Logseq style. Arrow = explicit drill-in chevron.</p>
       </section>
 
       <!-- Server URL -->

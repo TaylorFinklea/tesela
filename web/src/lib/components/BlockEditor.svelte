@@ -24,13 +24,15 @@
     visualDelete: (() => void) | null;
     visualYank: (() => void) | null;
     bulkTagPicker: (() => void) | null;
+    bulkIndent: ((dir: "indent" | "outdent") => void) | null;
+    toggleFold: (() => void) | null;
   } = {
     view: null, navigate: null, deleteBlock: null, yankBlock: null,
     pasteBlock: null, newBlockBelow: null, newBlockAbove: null,
     indent: null, leader: null,
     drillIn: null, enterVisualMode: null, exitVisualMode: null,
     visualMode: false, visualNav: null, visualDelete: null, visualYank: null,
-    bulkTagPicker: null,
+    bulkTagPicker: null, bulkIndent: null, toggleFold: null,
   };
 
   let _vimActionsRegistered = false;
@@ -83,6 +85,10 @@
       vimCtx.yankBlock?.();
     });
     Vim.mapCommand("yy", "action", "yankBlock", {}, { context: "normal" });
+    // `Y` in visual mode yanks the selected blocks (yankBlock action routes
+    // to visualYank when vimCtx.visualMode is true). vim default `Y` (yank
+    // line) is overridden — outliner blocks are the moral equivalent of lines.
+    Vim.mapCommand("Y", "action", "yankBlock", {}, { context: "normal" });
 
     Vim.defineAction("pasteBlock", () => { vimCtx.pasteBlock?.(); });
     Vim.mapCommand("p", "action", "pasteBlock", {}, { context: "normal" });
@@ -93,10 +99,16 @@
     Vim.defineAction("newBlockAbove", () => { vimCtx.newBlockAbove?.(); });
     Vim.mapCommand("O", "action", "newBlockAbove", {}, { context: "normal" });
 
-    Vim.defineAction("indentBlock", () => { vimCtx.indent?.("indent"); });
+    Vim.defineAction("indentBlock", () => {
+      if (vimCtx.visualMode) { vimCtx.bulkIndent?.("indent"); return; }
+      vimCtx.indent?.("indent");
+    });
     Vim.mapCommand(">>", "action", "indentBlock", {}, { context: "normal" });
 
-    Vim.defineAction("outdentBlock", () => { vimCtx.indent?.("outdent"); });
+    Vim.defineAction("outdentBlock", () => {
+      if (vimCtx.visualMode) { vimCtx.bulkIndent?.("outdent"); return; }
+      vimCtx.indent?.("outdent");
+    });
     Vim.mapCommand("<<", "action", "outdentBlock", {}, { context: "normal" });
 
     Vim.defineAction("blockVisualMode", () => { vimCtx.enterVisualMode?.(); });
@@ -112,6 +124,14 @@
       if (vimCtx.visualMode) vimCtx.bulkTagPicker?.();
     });
     Vim.mapCommand("T", "action", "bulkTagPickerOrNoop", {}, { context: "normal" });
+
+    // Fold / unfold the focused block's subtree. za (toggle) is the standard
+    // vim fold mapping; zc/zo are also accepted as aliases (we don't track
+    // closed-vs-open separately, so all three toggle).
+    Vim.defineAction("toggleFold", () => { vimCtx.toggleFold?.(); });
+    Vim.mapCommand("za", "action", "toggleFold", {}, { context: "normal" });
+    Vim.mapCommand("zc", "action", "toggleFold", {}, { context: "normal" });
+    Vim.mapCommand("zo", "action", "toggleFold", {}, { context: "normal" });
   }
 </script>
 
@@ -161,6 +181,8 @@
     onvisualdelete: onVisualDelete,
     onvisualyank: onVisualYank,
     onbulktagpicker: onBulkTagPicker,
+    onbulkindent: onBulkIndent,
+    ontogglefold: onToggleFold,
     inVisualMode,
     focused,
     noteslist: notesList,
@@ -196,6 +218,8 @@
     onvisualdelete?: () => void;
     onvisualyank?: () => void;
     onbulktagpicker?: () => void;
+    onbulkindent?: (direction: "indent" | "outdent") => void;
+    ontogglefold?: () => void;
     inVisualMode?: boolean;
     focused?: boolean;
     noteslist?: Array<{ id: string; title: string; tags: string[]; note_type?: string | null }>;
@@ -520,6 +544,8 @@
     vimCtx.visualDelete = onVisualDelete ?? null;
     vimCtx.visualYank = onVisualYank ?? null;
     vimCtx.bulkTagPicker = onBulkTagPicker ?? null;
+    vimCtx.bulkIndent = onBulkIndent ?? null;
+    vimCtx.toggleFold = onToggleFold ?? null;
     return () => {
       if (vimCtx.view === view) vimCtx.view = null;
     };

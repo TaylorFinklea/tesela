@@ -15,6 +15,7 @@
     getTagPropertyDefs,
   } from "$lib/property-registry";
   import type { HiddenKeysConfig } from "$lib/cm-decorations";
+  import { prefs } from "$lib/preferences.svelte";
 
   let {
     noteId,
@@ -160,23 +161,86 @@
     expandedProps = next;
   }
 
+  // Per-page fold state: block IDs whose subtree is collapsed. Persisted to
+  // localStorage keyed by noteId so it survives reloads + page switches.
+  function loadFold(id: string): Set<string> {
+    if (typeof localStorage === "undefined") return new Set();
+    const raw = localStorage.getItem(`tesela:fold:${id}`);
+    if (!raw) return new Set();
+    try { return new Set(JSON.parse(raw) as string[]); }
+    catch { return new Set(); }
+  }
+  let collapsedBlocks = $state<Set<string>>(loadFold(noteId));
+  // Reload fold state when navigating between pages.
+  let lastFoldNoteId = noteId;
+  $effect(() => {
+    if (noteId !== lastFoldNoteId) {
+      lastFoldNoteId = noteId;
+      collapsedBlocks = loadFold(noteId);
+    }
+  });
+  function persistFold() {
+    if (typeof localStorage === "undefined") return;
+    localStorage.setItem(`tesela:fold:${noteId}`, JSON.stringify([...collapsedBlocks]));
+  }
+  function toggleFold(blockId: string) {
+    const next = new Set(collapsedBlocks);
+    if (next.has(blockId)) next.delete(blockId);
+    else next.add(blockId);
+    collapsedBlocks = next;
+    persistFold();
+  }
+
   // Drill-in: show only the target block and its descendants
   const drillRootIndent = $derived.by(() => {
     if (!drillBlockId) return 0;
     return blocks.find(b => b.id === drillBlockId)?.indent_level ?? 0;
   });
   const visibleBlocks = $derived.by(() => {
-    if (!drillBlockId) return blocks;
-    const rootIdx = blocks.findIndex(b => b.id === drillBlockId);
-    if (rootIdx < 0) return blocks;
-    const rootIndent = blocks[rootIdx].indent_level;
-    const result: ParsedBlock[] = [];
-    for (let i = rootIdx; i < blocks.length; i++) {
-      if (i > rootIdx && blocks[i].indent_level <= rootIndent) break;
-      result.push(blocks[i]);
+    // Step 1: apply drill-in filter
+    let drilled: ParsedBlock[];
+    if (!drillBlockId) {
+      drilled = blocks;
+    } else {
+      const rootIdx = blocks.findIndex(b => b.id === drillBlockId);
+      if (rootIdx < 0) {
+        drilled = blocks;
+      } else {
+        const rootIndent = blocks[rootIdx].indent_level;
+        const result: ParsedBlock[] = [];
+        for (let i = rootIdx; i < blocks.length; i++) {
+          if (i > rootIdx && blocks[i].indent_level <= rootIndent) break;
+          result.push(blocks[i]);
+        }
+        drilled = result;
+      }
     }
-    return result;
+    // Step 2: hide descendants of any collapsed block. We walk in order and
+    // skip until we hit indent_level ≤ the collapsed parent's level.
+    if (collapsedBlocks.size === 0) return drilled;
+    const out: ParsedBlock[] = [];
+    let hideUntilIndentLte: number | null = null;
+    for (const b of drilled) {
+      if (hideUntilIndentLte !== null) {
+        if (b.indent_level > hideUntilIndentLte) continue;
+        hideUntilIndentLte = null;
+      }
+      out.push(b);
+      if (collapsedBlocks.has(b.id)) hideUntilIndentLte = b.indent_level;
+    }
+    return out;
   });
+
+  /** Whether the visible block at index `vi` has any children — used to
+   *  conditionally render the fold-toggle chevron. A block has children when
+   *  the next *non-collapsed* block in `blocks` (not visibleBlocks) sits at a
+   *  greater indent_level — we check the underlying blocks array so a folded
+   *  block still shows a chevron (so you can unfold it). */
+  function hasChildren(block: ParsedBlock): boolean {
+    const idx = blocks.findIndex(b => b.id === block.id);
+    if (idx < 0 || idx === blocks.length - 1) return false;
+    return blocks[idx + 1].indent_level > block.indent_level;
+  }
 
   // Block-visual mode state
   let blockVisualMode = $state(false);
@@ -217,6 +281,9 @@
     if (s === "done") return "✓";
     if (s === "doing" || s === "in-review") return "◑";
     if (s === "todo") return "○";
+    if (s === "canceled" || s === "cancelled") return "✗";
+    if (s === "blocked") return "⧖";
+    if (s === "paused") return "⏸";
     return "·";
   }
 
@@ -224,6 +291,8 @@
     if (s === "done") return "text-emerald-400/80";
     if (s === "doing" || s === "in-review") return "text-blue-400/80";
     if (s === "todo") return "text-amber-400/80";
+    if (s === "canceled" || s === "cancelled" || s === "blocked") return "text-red-400/70";
+    if (s === "paused") return "text-muted-foreground/70";
     return "text-muted-foreground/60";
   }
 
@@ -523,6 +592,28 @@
   }
 
   /**
+   * Indent / outdent every block in the visual selection. Each block moves
+   * uniformly by ±1 level, clamped at 0. Mirrors single-block `handleIndent`
+   * semantics — children of an indented parent are NOT moved with it (this
+   * matches existing single-indent behavior).
+   */
+  function bulkIndent(direction: "indent" | "outdent") {
+    if (visualRange.size === 0) return;
+    const ids = new Set(
+      [...visualRange]
+        .map((vi) => visibleBlocks[vi]?.id)
+        .filter(Boolean) as string[],
+    );
+    if (ids.size === 0) return;
+    blocks = blocks.map((b) => {
+      if (!ids.has(b.id)) return b;
+      const next = direction === "indent" ? b.indent_level + 1 : Math.max(0, b.indent_level - 1);
+      return next === b.indent_level ? b : { ...b, indent_level: next };
+    });
+    saveBlocks(blocks);
+  }
+
+  /**
    * Toggle a tag across all blocks in the visual selection. If ANY selected
    * block already has the tag, this REMOVES it from all (turn-off-bias);
    * otherwise it ADDS the tag (with auto-fill props) to all that don't have it.
@@ -612,16 +703,40 @@
           {/each}
         {/if}
 
-        <!-- Bullet (always a dot — click to drill in). pt tuned so the dot
-             centers on the cm-line geometric midpoint at the default editor
-             font-size; verified in the browser. -->
+        <!-- Fold chevron — only present when the block has children. Spacer
+             keeps the bullet column aligned across rows. -->
+        {#if hasChildren(block)}
+          <!-- svelte-ignore a11y_consider_explicit_label -->
+          <button
+            class="shrink-0 pt-[12px] pl-1 cursor-pointer text-muted-foreground/40 hover:text-foreground/80 transition-colors {focusedIndex === vi || collapsedBlocks.has(block.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}"
+            onclick={(e) => { e.stopPropagation(); toggleFold(block.id); }}
+            title={collapsedBlocks.has(block.id) ? "Unfold" : "Fold"}
+          >
+            {#if collapsedBlocks.has(block.id)}
+              <IconChevronRight size={11} stroke={2} />
+            {:else}
+              <IconChevronDown size={11} stroke={2} />
+            {/if}
+          </button>
+        {:else}
+          <span class="shrink-0 pl-1 w-[15px]"></span>
+        {/if}
+
+        <!-- Bullet — click to drill in. Two styles via prefs.bulletStyle:
+             "dot" (Logseq-like 5px circle) or "arrow" (chevron). pt tuned
+             so the visual midpoint matches the cm-line geometric midpoint
+             at the editor's default font size. -->
         <!-- svelte-ignore a11y_consider_explicit_label -->
         <button
-          class="shrink-0 pt-[14px] pl-2 pr-1.5 cursor-pointer transition-opacity"
+          class="shrink-0 pl-1 pr-1.5 cursor-pointer transition-opacity {prefs.bulletStyle === 'dot' ? 'pt-[14px]' : 'pt-[10px]'}"
           onclick={(e) => { e.stopPropagation(); onDrillIn?.(block.id); }}
           title="Drill in"
         >
-          <span class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === vi ? 'bg-primary' : 'bg-muted-foreground/40 hover:bg-muted-foreground/80'}"></span>
+          {#if prefs.bulletStyle === "dot"}
+            <span class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === vi ? 'bg-primary' : 'bg-muted-foreground/40 hover:bg-muted-foreground/80'}"></span>
+          {:else}
+            <IconChevronRight size={12} stroke={2} class="transition-colors {focusedIndex === vi ? 'text-primary' : 'text-muted-foreground/40 hover:text-foreground/80'}" />
+          {/if}
         </button>
 
         <!-- Status indicator (Logseq-style: between bullet and text). Only
@@ -668,6 +783,8 @@
             onvisualdelete={deleteVisualBlocks}
             onvisualyank={yankVisualBlocks}
             onbulktagpicker={openBulkTagPicker}
+            onbulkindent={(dir) => bulkIndent(dir)}
+            ontogglefold={() => toggleFold(block.id)}
             inVisualMode={blockVisualMode}
             focused={focusedIndex === vi}
             noteslist={notesList}
