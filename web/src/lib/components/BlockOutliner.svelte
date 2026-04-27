@@ -8,7 +8,7 @@
   import BlockEditor from "./BlockEditor.svelte";
   import QueryBlock from "./QueryBlock.svelte";
   import CollectionBlock from "./CollectionBlock.svelte";
-  import { IconArrowRight, IconChevronRight, IconChevronDown } from "@tabler/icons-svelte";
+  import { IconChevronRight, IconChevronDown } from "@tabler/icons-svelte";
   import {
     buildRegistry,
     buildInheritanceMap,
@@ -597,37 +597,14 @@
           {/each}
         {/if}
 
-        <!-- Bullet / Status icon -->
-        {#if block.properties.status}
-          <!-- svelte-ignore a11y_consider_explicit_label -->
-          <button
-            class="shrink-0 pt-[10px] pl-2 pr-1 cursor-pointer opacity-70 hover:opacity-100 transition-opacity"
-            onclick={(e) => { e.stopPropagation(); handleStatusCycle(vi); }}
-            title="Cycle status ({block.properties.status})"
-          >
-            <span class="block text-[12px] leading-none font-mono w-[14px] text-center {statusColorClass(block.properties.status)}">
-              {statusChar(block.properties.status)}
-            </span>
-          </button>
-        {:else}
-          <!-- svelte-ignore a11y_consider_explicit_label -->
-          <button
-            class="shrink-0 pt-[12px] pl-2 pr-1.5 cursor-default hover:cursor-pointer transition-opacity"
-            onclick={(e) => { e.stopPropagation(); handleStatusCycle(vi); }}
-            title="Set status"
-          >
-            <span class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === vi ? 'bg-primary' : 'bg-muted-foreground/30'}"></span>
-          </button>
-        {/if}
-
-        <!-- Drill-in icon (shows on hover) -->
+        <!-- Bullet (always a dot — click to drill in) -->
         <!-- svelte-ignore a11y_consider_explicit_label -->
         <button
-          class="shrink-0 pt-[11px] px-0.5 opacity-0 group-hover:opacity-30 hover:!opacity-90 transition-opacity"
+          class="shrink-0 pt-[12px] pl-2 pr-2 cursor-pointer transition-opacity"
           onclick={(e) => { e.stopPropagation(); onDrillIn?.(block.id); }}
-          title="Drill in (Enter)"
+          title="Drill in"
         >
-          <IconArrowRight size={11} stroke={1.5} class="text-muted-foreground" />
+          <span class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === vi ? 'bg-primary' : 'bg-muted-foreground/40 hover:bg-muted-foreground/80'}"></span>
         </button>
 
         <!-- Content -->
@@ -668,6 +645,22 @@
             onInsertTemplate={(templateNoteId) => insertTemplateAfter(block.id, templateNoteId)}
           />
         </div>
+
+        <!-- Status icon (right side — Logseq-style). Always visible if
+             status is set; hover-only faint set-status circle otherwise. -->
+        <!-- svelte-ignore a11y_consider_explicit_label -->
+        <button
+          class="shrink-0 self-center mr-1 p-1 rounded transition-opacity
+            {block.properties.status ? 'opacity-90' : 'opacity-0 group-hover:opacity-40'}
+            hover:!opacity-100"
+          onclick={(e) => { e.stopPropagation(); handleStatusCycle(vi); }}
+          title={block.properties.status ? `Status: ${block.properties.status} · click to cycle` : "Set status"}
+        >
+          <span class="block text-[12px] leading-none font-mono w-[14px] text-center
+            {block.properties.status ? statusColorClass(block.properties.status) : 'text-muted-foreground/60'}">
+            {block.properties.status ? statusChar(block.properties.status) : "○"}
+          </span>
+        </button>
 
         <!-- Property expand toggle (chevron) — appears only when there's
              something hidden to reveal (hide_by_default property OR empty

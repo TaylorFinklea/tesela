@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { parseDateInput } from "$lib/date-parser";
 
   let {
     initialDate,
@@ -29,20 +30,36 @@
   }
 
   let selected = $state<Date>(parseISO(initialDate));
-  // The month being viewed (may differ from `selected` after navigating).
   let viewMonth = $state<Date>(new Date(selected.getFullYear(), selected.getMonth(), 1));
+  let nlInput = $state<string>("");
+
+  /** Live parser result. `null` when input is empty or unparseable. */
+  const parsedFromInput = $derived.by(() => {
+    if (!nlInput.trim()) return null;
+    return parseDateInput(nlInput);
+  });
+
+  // When the user types a recognizable phrase, jump the highlighted day +
+  // the visible month to match. Don't fight the user's calendar clicks —
+  // only react when the input actually changes.
+  let lastNlInput = "";
+  $effect(() => {
+    if (nlInput === lastNlInput) return;
+    lastNlInput = nlInput;
+    if (parsedFromInput) {
+      const d = parseISO(parsedFromInput);
+      selected = d;
+      viewMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+    }
+  });
 
   const today = $derived(fmt(new Date()));
 
-  // Build the day grid for the current view month, padded with adjacent-month
-  // days so each row is a full week (Monday-first).
   const grid = $derived.by(() => {
     const first = new Date(viewMonth.getFullYear(), viewMonth.getMonth(), 1);
     const lastDay = new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 0).getDate();
-    // JS Sunday=0; we want Monday=0 → shift by 1.
     const offset = (first.getDay() + 6) % 7;
     const days: { date: Date; inMonth: boolean }[] = [];
-    // Leading days from previous month
     for (let i = offset; i > 0; i--) {
       const d = new Date(first);
       d.setDate(d.getDate() - i);
@@ -51,14 +68,12 @@
     for (let d = 1; d <= lastDay; d++) {
       days.push({ date: new Date(viewMonth.getFullYear(), viewMonth.getMonth(), d), inMonth: true });
     }
-    // Trailing days to fill last week
     while (days.length % 7 !== 0) {
       const last = days[days.length - 1].date;
       const d = new Date(last);
       d.setDate(d.getDate() + 1);
       days.push({ date: d, inMonth: false });
     }
-    // Group into 7-day rows
     const rows: { date: Date; inMonth: boolean }[][] = [];
     for (let i = 0; i < days.length; i += 7) rows.push(days.slice(i, i + 7));
     return rows;
@@ -82,50 +97,76 @@
   }
 
   function handleKey(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      onPick(fmt(selected));
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      onClose();
+      return;
+    }
+    // Arrow keys nav the calendar even when input is focused. The input is
+    // single-line and rarely needs caret-arrow editing; calendar nav is the
+    // higher-value behavior here.
     if (e.key === "ArrowLeft") { e.preventDefault(); move(e.shiftKey ? -7 : -1); }
     else if (e.key === "ArrowRight") { e.preventDefault(); move(e.shiftKey ? 7 : 1); }
     else if (e.key === "ArrowUp") { e.preventDefault(); move(-7); }
     else if (e.key === "ArrowDown") { e.preventDefault(); move(7); }
-    else if (e.key === "Enter") { e.preventDefault(); onPick(fmt(selected)); }
-    else if (e.key === "Escape") { e.preventDefault(); onClose(); }
-    else if (e.key === "t" || e.key === "T") { e.preventDefault(); selected = new Date(); viewMonth = new Date(selected.getFullYear(), selected.getMonth(), 1); }
   }
 
+  let inputEl = $state<HTMLInputElement | null>(null);
   let containerEl = $state<HTMLDivElement | null>(null);
+
   onMount(() => {
-    containerEl?.focus();
+    inputEl?.focus();
   });
 
-  // Re-focus the container if focus drifts (e.g., user clicked a day cell).
-  function refocus() {
-    queueMicrotask(() => containerEl?.focus());
+  // If focus drifts off the dialog (e.g. user clicked a day cell), close.
+  function handleBlur(e: FocusEvent) {
+    const next = e.relatedTarget as Node | null;
+    if (next && containerEl?.contains(next)) return;
+    onClose();
   }
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div
   bind:this={containerEl}
-  tabindex="0"
-  onkeydown={handleKey}
-  onblur={onClose}
   role="dialog"
   aria-label="Date picker"
   class="fixed z-50 bg-popover border border-border rounded-md shadow-xl p-2 outline-none"
   style="left: {position.x}px; top: {position.y}px;"
+  onkeydown={handleKey}
 >
+  <!-- NL input -->
+  <input
+    bind:this={inputEl}
+    bind:value={nlInput}
+    onblur={handleBlur}
+    placeholder="Type: today, fri, in 3 days…"
+    class="w-full text-[12px] px-2 py-1 mb-2 rounded bg-muted/30 border border-border/40
+           text-foreground placeholder:text-muted-foreground/40
+           focus:outline-none focus:border-primary/40
+           {nlInput.trim() && !parsedFromInput ? 'border-destructive/40' : ''}"
+  />
+
   <!-- Header: month nav -->
   <div class="flex items-center justify-between mb-2 px-1">
     <!-- svelte-ignore a11y_consider_explicit_label -->
     <button
       class="text-[12px] px-1.5 text-muted-foreground/60 hover:text-foreground/80 rounded hover:bg-muted/40"
-      onclick={() => { prevMonth(); refocus(); }}
+      onclick={prevMonth}
+      onblur={handleBlur}
       title="Previous month"
     >‹</button>
     <span class="text-[12px] font-medium text-foreground/90">{monthLabel}</span>
     <!-- svelte-ignore a11y_consider_explicit_label -->
     <button
       class="text-[12px] px-1.5 text-muted-foreground/60 hover:text-foreground/80 rounded hover:bg-muted/40"
-      onclick={() => { nextMonth(); refocus(); }}
+      onclick={nextMonth}
+      onblur={handleBlur}
       title="Next month"
     >›</button>
   </div>
@@ -158,6 +199,7 @@
             {!cell.inMonth ? 'text-muted-foreground/30 hover:bg-muted/30' : ''}
           "
           onclick={() => { selected = cell.date; viewMonth = new Date(cell.date.getFullYear(), cell.date.getMonth(), 1); onPick(iso); }}
+          onblur={handleBlur}
           title={iso}
         >{cell.date.getDate()}</button>
       {/each}
@@ -166,6 +208,6 @@
 
   <!-- Footer hint -->
   <div class="text-[10px] text-muted-foreground/40 mt-1.5 px-1 text-center">
-    arrows · enter · t = today · esc
+    type · arrows · enter · esc
   </div>
 </div>
