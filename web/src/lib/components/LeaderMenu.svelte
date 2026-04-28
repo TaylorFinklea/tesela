@@ -53,6 +53,14 @@
       label: "Tasks",
       action: () => { goto("/p/task"); onclose(); },
     },
+    {
+      key: "Y",
+      label: "Yank block to clipboard",
+      action: () => {
+        document.dispatchEvent(new CustomEvent("tesela:yank-clipboard"));
+        onclose();
+      },
+    },
   ];
 
   currentLevel = rootMenu;

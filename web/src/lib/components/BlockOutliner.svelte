@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { parseBlocks } from "$lib/block-parser";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
@@ -423,12 +424,28 @@
     focusedIndex = vi + 1;
   }
 
+  /** Collect the IDs of `block` plus all of its descendants (any blocks
+   *  immediately following at a strictly greater indent_level). */
+  function subtreeIds(block: ParsedBlock): Set<string> {
+    const idx = blocks.findIndex(b => b.id === block.id);
+    if (idx < 0) return new Set([block.id]);
+    const ids = new Set([block.id]);
+    for (let i = idx + 1; i < blocks.length; i++) {
+      if (blocks[i].indent_level <= block.indent_level) break;
+      ids.add(blocks[i].id);
+    }
+    return ids;
+  }
+
   function handleIndent(vi: number, direction: "indent" | "outdent") {
     const block = visibleBlocks[vi];
     if (!block) return;
-    const newLevel = direction === "indent" ? block.indent_level + 1 : Math.max(0, block.indent_level - 1);
-    if (newLevel === block.indent_level) return;
-    blocks = blocks.map(b => b.id === block.id ? { ...b, indent_level: newLevel } : b);
+    // Outdent at root is a no-op; otherwise the parent and all descendants
+    // shift uniformly so subtree relationships are preserved.
+    if (direction === "outdent" && block.indent_level === 0) return;
+    const delta = direction === "indent" ? 1 : -1;
+    const ids = subtreeIds(block);
+    blocks = blocks.map(b => ids.has(b.id) ? { ...b, indent_level: Math.max(0, b.indent_level + delta) } : b);
     saveBlocks(blocks);
   }
 
@@ -476,10 +493,20 @@
     if (visibleBlocks.length <= 1) return;
     const block = visibleBlocks[vi];
     if (!block) return;
-    const prev = Math.max(0, vi - 1);
+    // Vim convention: dd both deletes AND yanks into the register, so a
+    // subsequent p pastes the deleted block.
+    blockClipboard = [{ ...block }];
     blocks = blocks.filter(b => b.id !== block.id);
     saveBlocks(blocks);
-    focusedIndex = Math.min(prev, visibleBlocks.length - 2);
+    // The deleted block's BlockEditor unmounts, firing a blur that
+    // (synchronously) nulls focusedIndex via the per-row handler. Defer the
+    // refocus to a microtask so it lands AFTER the unmount blur. Also clamp
+    // to the new visibleBlocks length.
+    queueMicrotask(() => {
+      const newLen = visibleBlocks.length;
+      if (newLen === 0) focusedIndex = null;
+      else focusedIndex = Math.min(Math.max(0, vi - 1), newLen - 1);
+    });
   }
 
   function handleYankBlock(vi: number) {
@@ -546,6 +573,8 @@
     if (sorted.length === 0) return;
     const ids = new Set(sorted.map(vi => visibleBlocks[vi]?.id).filter(Boolean));
     if (blocks.length - ids.size < 1) return;
+    // Vim convention: visual-mode delete also yanks to the register.
+    blockClipboard = sorted.map(vi => ({ ...visibleBlocks[vi]! })).filter(b => b.id);
     const newFocus = Math.min(sorted[0]!, visibleBlocks.length - 1 - sorted.length);
     blocks = blocks.filter(b => !ids.has(b.id));
     saveBlocks(blocks);
@@ -592,24 +621,22 @@
   }
 
   /**
-   * Indent / outdent every block in the visual selection. Each block moves
-   * uniformly by ±1 level, clamped at 0. Mirrors single-block `handleIndent`
-   * semantics — children of an indented parent are NOT moved with it (this
-   * matches existing single-indent behavior).
+   * Indent / outdent every block in the visual selection AND all their
+   * descendants. Subtree relationships are preserved across the operation;
+   * if a child is also explicitly selected, dedup via Set ensures it only
+   * shifts once. Outdent clamps at 0.
    */
   function bulkIndent(direction: "indent" | "outdent") {
     if (visualRange.size === 0) return;
-    const ids = new Set(
-      [...visualRange]
-        .map((vi) => visibleBlocks[vi]?.id)
-        .filter(Boolean) as string[],
-    );
+    const ids = new Set<string>();
+    for (const vi of visualRange) {
+      const b = visibleBlocks[vi];
+      if (!b) continue;
+      for (const id of subtreeIds(b)) ids.add(id);
+    }
     if (ids.size === 0) return;
-    blocks = blocks.map((b) => {
-      if (!ids.has(b.id)) return b;
-      const next = direction === "indent" ? b.indent_level + 1 : Math.max(0, b.indent_level - 1);
-      return next === b.indent_level ? b : { ...b, indent_level: next };
-    });
+    const delta = direction === "indent" ? 1 : -1;
+    blocks = blocks.map((b) => ids.has(b.id) ? { ...b, indent_level: Math.max(0, b.indent_level + delta) } : b);
     saveBlocks(blocks);
   }
 
@@ -647,6 +674,21 @@
     });
     saveBlocks(blocks);
   }
+
+  // Listen for "leader → Y" → copy focused block's raw_text to OS clipboard.
+  onMount(() => {
+    const handler = async () => {
+      const block = focusedIndex !== null ? visibleBlocks[focusedIndex] : null;
+      if (!block) return;
+      try {
+        await navigator.clipboard.writeText(block.raw_text);
+      } catch (e) {
+        console.warn("[tesela] clipboard write failed", e);
+      }
+    };
+    document.addEventListener("tesela:yank-clipboard", handler);
+    return () => document.removeEventListener("tesela:yank-clipboard", handler);
+  });
 
   // Tag-picker overlay state for visual-mode bulk tag toggle.
   let showBulkTagPicker = $state(false);
