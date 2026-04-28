@@ -86,37 +86,48 @@
     //
     // Non-linewise operator usage (`dw`, `d$`, etc.) still works because we
     // fall through to a minimal text-replace that handles the selected ranges.
-    Vim.defineOperator("delete", (cm: any, args: any, ranges: any) => {
+    // cm-vim's evalInput expands the cursor to a line-wide selection BEFORE
+    // calling the operator (so default operators see `ranges` covering the
+    // whole line). Default operators then RETURN a cursor position, and
+    // cm-vim runs `cm.setCursor(returnVal)` to collapse the selection back.
+    // If we return undefined, the expanded selection stays — and cm-vim's
+    // mode tracker reports "VISUAL" because it sees a multi-char selection.
+    // Returning `oldAnchor` (the original cursor before line-expansion) is
+    // the standard collapse signal.
+    Vim.defineOperator("delete", (cm: any, args: any, ranges: any, oldAnchor: any) => {
       if (args?.linewise) {
         if (vimCtx.visualMode) vimCtx.visualDelete?.();
         else vimCtx.deleteBlock?.();
-        return;
+        return oldAnchor;
       }
       for (let i = ranges.length - 1; i >= 0; i--) {
         cm.replaceRange("", ranges[i].anchor, ranges[i].head);
       }
+      return oldAnchor;
     });
 
-    Vim.defineOperator("yank", (_cm: any, args: any) => {
+    Vim.defineOperator("yank", (_cm: any, args: any, _ranges: any, oldAnchor: any) => {
       if (args?.linewise) {
         if (vimCtx.visualMode) vimCtx.visualYank?.();
         else vimCtx.yankBlock?.();
-        return;
+        return oldAnchor;
       }
       // Non-linewise yank is a no-op here — we don't have access to vim's
       // register controller from this scope. Users wanting partial-line yank
       // can use OS clipboard.
+      return oldAnchor;
     });
 
-    Vim.defineOperator("indent", (_cm: any, args: any) => {
+    Vim.defineOperator("indent", (_cm: any, args: any, _ranges: any, oldAnchor: any) => {
       if (args?.linewise) {
         const dir: "indent" | "outdent" = args.indentRight ? "indent" : "outdent";
         if (vimCtx.visualMode) vimCtx.bulkIndent?.(dir);
         else vimCtx.indent?.(dir);
-        return;
+        return oldAnchor;
       }
       // Non-linewise indent is a no-op — `>w` doesn't make sense for a
       // single-line block.
+      return oldAnchor;
     });
 
     Vim.defineAction("pasteBlock", () => { vimCtx.pasteBlock?.(); });
