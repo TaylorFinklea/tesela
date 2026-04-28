@@ -79,12 +79,15 @@ Daily-driver outliner with Vim. Migrated from Next.js/React to SvelteKit/Svelte 
 - [ ] Global property registry — search existing property pages when adding to a tag
 
 #### Editor Power Features
-- [ ] Visual mode (character + line selection)
+- [x] Visual mode (block-level — V to enter, j/k to extend, d/y/T/J/K)
 - [x] Block merge on Backspace at start of non-empty block
-- [ ] Multi-block selection and operations
-- [ ] `/template` — insert from template pages
-- [ ] `/date` — date picker UI
-- [ ] Block drill-in (focus single block + children)
+- [x] Multi-block selection and operations (visual delete / yank / indent / status / tag)
+- [x] `/template` — insert from template pages
+- [x] `/date` — date picker UI (with Todoist-style natural-language input)
+- [x] Block drill-in (focus single block + children)
+- [x] Block fold / collapse (Phase 3K)
+- [x] Subtree-aware indent (>>, << bring children with parent)
+- [x] Leader Y → OS clipboard (Phase 3K)
 
 #### Polish
 - [ ] Right sidebar: inline property editing (not just display)
@@ -129,6 +132,8 @@ Daily-driver outliner with Vim. Migrated from Next.js/React to SvelteKit/Svelte 
 - [ ] API endpoint integration tests (server routes)
 - [ ] New server endpoints needed for web client: `GET /notes/:id/blocks`, `POST /notes/:id/blocks` (block-level CRUD)
 - [ ] Block merge with property conflict resolution: when both the merged-from and merged-into blocks have properties, show an overlay dialog letting the user choose which properties to keep (rather than naively concatenating duplicate keys)
+- [ ] **Outliner-level undo / redo stack** (`u` / `Ctrl+R` for structural ops). Today vim `u` only undoes in-block CodeMirror history (typing inside a block). Block-level operations — delete, paste, indent, fold, status cycle, tag toggle, bulk visual ops — mutate the `blocks` array in BlockOutliner directly and aren't reversible. Needs an action-log stack (push every structural mutation, replay on undo / redo) wired into Vim's `u` and `Ctrl+R` actions, plus a way for the same stack to feed `Cmd+Z` outside vim. Watch for races with the WebSocket file-watcher reload.
+- [ ] **`dw` / `d$` / etc. integrate with `p` paste** (text-register fidelity). Phase 3K's `delete` operator override no-ops the register-controller side of non-linewise deletes, so deleted text isn't recoverable via `p`. Two viable approaches: (a) populate vim's default register via `vimGlobalState.registerController.pushText` (requires importing a non-public symbol from `@replit/codemirror-vim`, may break across versions), or (b) maintain our own text register alongside `blockClipboard`, and have the `pasteBlock` action prefer block clipboard, falling back to text register inserted at cursor. Pick the approach during design; option (b) is friendlier to upgrades.
 
 ---
 

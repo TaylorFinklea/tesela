@@ -98,25 +98,29 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    // Direct key press — find matching item
     const match = currentLevel.find((m) => m.key === e.key);
     if (match) {
       e.preventDefault();
+      e.stopPropagation();
       handleSelect(match);
       return;
     }
 
     if (e.key === "ArrowDown") {
       e.preventDefault();
+      e.stopPropagation();
       selectedIndex = Math.min(currentLevel.length - 1, selectedIndex + 1);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
+      e.stopPropagation();
       selectedIndex = Math.max(0, selectedIndex - 1);
     } else if (e.key === "Enter" && currentLevel[selectedIndex]) {
       e.preventDefault();
+      e.stopPropagation();
       handleSelect(currentLevel[selectedIndex]);
     } else if (e.key === "Escape" || e.key === "Backspace") {
       e.preventDefault();
+      e.stopPropagation();
       if (breadcrumb.length > 0) {
         breadcrumb = breadcrumb.slice(0, -1);
         // Walk back to parent
@@ -134,8 +138,10 @@
   }
 
   onMount(() => {
-    document.addEventListener("keydown", handleKeydown);
-    return () => document.removeEventListener("keydown", handleKeydown);
+    // Capture phase — beat the focused cm-editor so vim doesn't consume
+    // the keypress (e.g. `f` would enter find-char operator mode).
+    document.addEventListener("keydown", handleKeydown, true);
+    return () => document.removeEventListener("keydown", handleKeydown, true);
   });
 </script>
 
