@@ -35,11 +35,12 @@
     bulkTagPicker: null, bulkIndent: null, toggleFold: null,
   };
 
-  let _vimActionsRegistered = false;
-
+  // We deliberately re-register on every editor mount. Each call unshifts
+  // the mapping to the front of cm-vim's defaultKeymap, ensuring our user
+  // mappings always win over later-registered defaults from cm-vim itself.
+  // The cost is some duplicate entries in the keymap array, but matching is
+  // O(n) and n stays small relative to the default keymap length.
   function initVimActions() {
-    if (_vimActionsRegistered) return;
-    _vimActionsRegistered = true;
 
     Vim.defineAction("moveDownOrNextBlock", () => {
       if (vimCtx.visualMode) { vimCtx.visualNav?.("down"); return; }
@@ -74,21 +75,49 @@
     Vim.defineAction("openLeaderMenu", () => { vimCtx.leader?.(); });
     Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
 
-    Vim.defineAction("deleteBlock", () => {
-      if (vimCtx.visualMode) { vimCtx.visualDelete?.(); return; }
-      vimCtx.deleteBlock?.();
+    // We can't use Vim.mapCommand("dd"/"yy"/">>"/"<<", "action", ...) because
+    // cm-vim's default `d`, `y`, `>`, `<` are operators that match the FIRST
+    // keypress fully, entering operator-pending state. Any user "action"
+    // mapping with context: "normal" gets filtered out at that point (cm-vim
+    // commandMatches: `inputState.operator && command.type == 'action'` and
+    // the context check both reject it). The operator's "press-twice → linewise"
+    // path is the ONLY way the second key is recognized, so we hijack it by
+    // redefining the operators themselves.
+    //
+    // Non-linewise operator usage (`dw`, `d$`, etc.) still works because we
+    // fall through to a minimal text-replace that handles the selected ranges.
+    Vim.defineOperator("delete", (cm: any, args: any, ranges: any) => {
+      if (args?.linewise) {
+        if (vimCtx.visualMode) vimCtx.visualDelete?.();
+        else vimCtx.deleteBlock?.();
+        return;
+      }
+      for (let i = ranges.length - 1; i >= 0; i--) {
+        cm.replaceRange("", ranges[i].anchor, ranges[i].head);
+      }
     });
-    Vim.mapCommand("dd", "action", "deleteBlock", {}, { context: "normal" });
 
-    Vim.defineAction("yankBlock", () => {
-      if (vimCtx.visualMode) { vimCtx.visualYank?.(); return; }
-      vimCtx.yankBlock?.();
+    Vim.defineOperator("yank", (_cm: any, args: any) => {
+      if (args?.linewise) {
+        if (vimCtx.visualMode) vimCtx.visualYank?.();
+        else vimCtx.yankBlock?.();
+        return;
+      }
+      // Non-linewise yank is a no-op here — we don't have access to vim's
+      // register controller from this scope. Users wanting partial-line yank
+      // can use OS clipboard.
     });
-    Vim.mapCommand("yy", "action", "yankBlock", {}, { context: "normal" });
-    // `Y` in visual mode yanks the selected blocks (yankBlock action routes
-    // to visualYank when vimCtx.visualMode is true). vim default `Y` (yank
-    // line) is overridden — outliner blocks are the moral equivalent of lines.
-    Vim.mapCommand("Y", "action", "yankBlock", {}, { context: "normal" });
+
+    Vim.defineOperator("indent", (_cm: any, args: any) => {
+      if (args?.linewise) {
+        const dir: "indent" | "outdent" = args.indentRight ? "indent" : "outdent";
+        if (vimCtx.visualMode) vimCtx.bulkIndent?.(dir);
+        else vimCtx.indent?.(dir);
+        return;
+      }
+      // Non-linewise indent is a no-op — `>w` doesn't make sense for a
+      // single-line block.
+    });
 
     Vim.defineAction("pasteBlock", () => { vimCtx.pasteBlock?.(); });
     Vim.mapCommand("p", "action", "pasteBlock", {}, { context: "normal" });
@@ -99,17 +128,14 @@
     Vim.defineAction("newBlockAbove", () => { vimCtx.newBlockAbove?.(); });
     Vim.mapCommand("O", "action", "newBlockAbove", {}, { context: "normal" });
 
-    Vim.defineAction("indentBlock", () => {
-      if (vimCtx.visualMode) { vimCtx.bulkIndent?.("indent"); return; }
-      vimCtx.indent?.("indent");
+    // `Y` defaults to operatorMotion (yank to line). Our user mapping is
+    // unshifted to the front of the keymap so it wins the iteration. Routes
+    // through yankBlock action which respects block-visual mode.
+    Vim.defineAction("yankBlockSingle", () => {
+      if (vimCtx.visualMode) vimCtx.visualYank?.();
+      else vimCtx.yankBlock?.();
     });
-    Vim.mapCommand(">>", "action", "indentBlock", {}, { context: "normal" });
-
-    Vim.defineAction("outdentBlock", () => {
-      if (vimCtx.visualMode) { vimCtx.bulkIndent?.("outdent"); return; }
-      vimCtx.indent?.("outdent");
-    });
-    Vim.mapCommand("<<", "action", "outdentBlock", {}, { context: "normal" });
+    Vim.mapCommand("Y", "action", "yankBlockSingle", {}, { context: "normal" });
 
     Vim.defineAction("blockVisualMode", () => { vimCtx.enterVisualMode?.(); });
     Vim.mapCommand("V", "action", "blockVisualMode", {}, { context: "normal" });
