@@ -211,7 +211,7 @@
         {showSplit ? `height: ${splitRatio}%` : 'flex: 1 1 0%'};
         {showSplit && activePane === 'outliner' ? 'box-shadow: inset 2px 0 0 0 var(--primary)' : ''}
       "
-      onclick={() => { if (showSplit) setActivePane('outliner'); }}
+      onclick={() => setActivePane('outliner')}
     >
       <!-- Focus Mode header -->
       <div class="max-w-3xl mx-auto px-10 pt-10 pb-4">

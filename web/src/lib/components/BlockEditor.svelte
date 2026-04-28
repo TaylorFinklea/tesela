@@ -526,6 +526,10 @@
     slashFilter = "";
     slashStartPos = -1;
     onSlashCommand?.(command);
+    // Belt-and-braces: ensure cm-editor regains DOM focus after the slash
+    // menu closes. The `focused` prop drives focus too, but the explicit
+    // call avoids any race with overlay teardown.
+    view.focus();
   }
 
   // When parent changes focused prop, programmatically focus/blur CM6

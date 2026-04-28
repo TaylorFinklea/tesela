@@ -1,6 +1,8 @@
 <script lang="ts">
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
+  import { goto } from "$app/navigation";
   import { api } from "$lib/api-client";
+  import { getActiveRegion, setActiveRegion } from "$lib/stores/pane-state.svelte";
   import type { Note } from "$lib/types/Note";
   import type { Link } from "$lib/types/Link";
   import type { GraphEdge } from "$lib/types/GraphEdge";
@@ -32,6 +34,20 @@
   const queryClient = useQueryClient();
 
   let panelContext = $state<"page" | "block">("page");
+
+  // Right sidebar gains "active" treatment when Ctrl+w l focuses the right
+  // region. Click also activates (via root-element onclick).
+  const sidebarFocused = $derived(getActiveRegion() === "right");
+  let rootEl = $state<HTMLElement | undefined>();
+  let selectedNavIndex = $state(0);
+
+  $effect(() => {
+    if (sidebarFocused) {
+      if (rootEl && document.activeElement !== rootEl) rootEl.focus();
+    } else if (rootEl && document.activeElement === rootEl) {
+      rootEl.blur();
+    }
+  });
 
   // Text-editing state for page properties
   let editingKey = $state<string | null>(null);
@@ -234,6 +250,41 @@
     }
   }
 
+  // Flat list of focusable nav targets when the right region is active.
+  // First pass scope: backlinks + forward links (the common navigate-via-
+  // keyboard case). Property-row keyboard editing is out of scope here and
+  // tracked as a follow-up — those rows still respond to mouse/click.
+  const navTargets = $derived.by((): string[] => {
+    const out: string[] = [];
+    for (const src of allBacklinkSources) out.push(`/p/${encodeURIComponent(src.toLowerCase())}`);
+    for (const link of forwardLinks) out.push(`/p/${encodeURIComponent(link.target.toLowerCase())}`);
+    return out;
+  });
+
+  // Keep selection in range as the list size changes (e.g. switching pages).
+  $effect(() => {
+    if (selectedNavIndex >= navTargets.length) selectedNavIndex = Math.max(0, navTargets.length - 1);
+  });
+
+  function handleKeydown(e: KeyboardEvent) {
+    if (!sidebarFocused) return;
+    if (navTargets.length === 0 && e.key !== "Escape") return;
+    if (e.key === "j" || e.key === "ArrowDown") {
+      e.preventDefault();
+      selectedNavIndex = Math.min(navTargets.length - 1, selectedNavIndex + 1);
+    } else if (e.key === "k" || e.key === "ArrowUp") {
+      e.preventDefault();
+      selectedNavIndex = Math.max(0, selectedNavIndex - 1);
+    } else if (e.key === "Enter" && navTargets[selectedNavIndex]) {
+      e.preventDefault();
+      goto(navTargets[selectedNavIndex]);
+      setActiveRegion("main");
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setActiveRegion("main");
+    }
+  }
+
   async function convertPageType(newType: "" | "Tag" | "Property") {
     if (!note) return;
     let content = note.content;
@@ -263,7 +314,15 @@
     >◀</button>
   </div>
 {:else}
-  <div class="w-[200px] bg-surface border-l border-border flex flex-col shrink-0 overflow-y-auto">
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+  <div
+    bind:this={rootEl}
+    class="w-[200px] bg-surface border-l border-border flex flex-col shrink-0 overflow-y-auto outline-none transition-shadow {sidebarFocused ? 'ring-1 ring-primary/20 ring-inset' : ''}"
+    tabindex="0"
+    onfocus={() => setActiveRegion("right")}
+    onclick={() => setActiveRegion("right")}
+    onkeydown={handleKeydown}
+  >
     <!-- Header with pg/blk toggle -->
     <div class="flex items-center justify-between px-4 h-[52px] border-b border-border shrink-0">
       <div class="flex items-center gap-2">
@@ -490,10 +549,11 @@
         {#if allBacklinkSources.length === 0}
           <div class="text-[11px] text-muted-foreground/50 italic">No pages link here</div>
         {:else}
-          {#each allBacklinkSources as source}
+          {#each allBacklinkSources as source, bi}
+            {@const isSelected = sidebarFocused && selectedNavIndex === bi}
             <a
               href="/p/{encodeURIComponent(source.toLowerCase())}"
-              class="block text-[12px] py-1 text-primary/60 hover:text-primary rounded-md px-1 transition-colors"
+              class="block text-[12px] py-1 rounded-md px-1 transition-colors {isSelected ? 'bg-primary/10 text-primary ring-1 ring-primary/20' : 'text-primary/60 hover:text-primary'}"
             >{source}</a>
           {/each}
         {/if}
@@ -507,10 +567,11 @@
         {#if forwardLinks.length === 0}
           <div class="text-[11px] text-muted-foreground/50 italic">No outgoing links</div>
         {:else}
-          {#each forwardLinks as link}
+          {#each forwardLinks as link, fi}
+            {@const isSelected = sidebarFocused && selectedNavIndex === allBacklinkSources.length + fi}
             <a
               href="/p/{encodeURIComponent(link.target.toLowerCase())}"
-              class="block text-[12px] py-1 text-primary/60 hover:text-primary rounded-md px-1 transition-colors"
+              class="block text-[12px] py-1 rounded-md px-1 transition-colors {isSelected ? 'bg-primary/10 text-primary ring-1 ring-primary/20' : 'text-primary/60 hover:text-primary'}"
             >{link.target}</a>
           {/each}
         {/if}

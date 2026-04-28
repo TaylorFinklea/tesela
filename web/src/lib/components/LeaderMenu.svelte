@@ -133,6 +133,10 @@
         selectedIndex = 0;
       } else {
         onclose();
+        // Closing without running an action — restore focus to the
+        // previously focused block. Action-driven exits do their own goto,
+        // and the new page auto-focuses separately.
+        document.dispatchEvent(new CustomEvent("tesela:restore-focus"));
       }
     }
   }

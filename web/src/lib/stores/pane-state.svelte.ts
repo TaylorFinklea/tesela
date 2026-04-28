@@ -1,10 +1,19 @@
 /**
- * Split pane state — Vim-style window management.
- * Transient session state for split open/focus; splitRatio persists to localStorage.
+ * Pane state — Vim-style window management.
+ *
+ * Two layers:
+ *   • `activeRegion` — which of the three top-level layout regions has focus
+ *     (left sidebar, main content, right panel). Driven by `Ctrl+w h/l`.
+ *   • `activePane` — sub-state of the main region. Today only `outliner` vs
+ *     `kanban` (when the kanban split is open). Driven by `Ctrl+w j/k`.
+ *
+ * Transient session state for everything except `splitRatio`, which persists
+ * to localStorage so a user's preferred kanban-split sizing survives reloads.
  */
 import { browser } from "$app/environment";
 
-type ActivePane = "outliner" | "kanban";
+export type Region = "left" | "main" | "right";
+export type MainPane = "outliner" | "kanban";
 
 const RATIO_KEY = "tesela:splitRatio";
 const VIM_KEY = "tesela:vimEnabled";
@@ -32,16 +41,29 @@ function saveRatio(n: number) {
 }
 
 let splitOpen = $state(false);
-let activePane = $state<ActivePane>("outliner");
+let activeRegion = $state<Region>("main");
+let activePane = $state<MainPane>("outliner");
 let splitRatio = $state(loadRatio());
 let ctrlWPending = $state(false);
 let vimMode = $state("NORMAL");
+
+/** Blur any focused cm-editor so cm-vim stops eating keys when we move
+ *  region focus elsewhere. Safe to call from any region transition. */
+function releaseEditorFocus() {
+  if (!browser) return;
+  const active = document.activeElement as HTMLElement | null;
+  if (active && active.closest(".cm-editor")) active.blur();
+}
 
 export function isSplitOpen(): boolean {
   return splitOpen;
 }
 
-export function getActivePane(): ActivePane {
+export function getActiveRegion(): Region {
+  return activeRegion;
+}
+
+export function getActivePane(): MainPane {
   return activePane;
 }
 
@@ -59,6 +81,8 @@ export function openSplit() {
 
 export function closeSplit() {
   splitOpen = false;
+  // Reset the sub-state but preserve activeRegion — closing the split
+  // shouldn't yank focus across regions.
   activePane = "outliner";
 }
 
@@ -67,13 +91,21 @@ export function toggleSplit() {
   else splitOpen = true;
 }
 
-export function setActivePane(pane: ActivePane) {
-  activePane = pane;
-  // Release CM6 focus when moving to kanban so j/k reach the kanban handler
-  if (pane === "kanban" && browser) {
-    const active = document.activeElement as HTMLElement | null;
-    if (active && active.closest(".cm-editor")) active.blur();
+export function setActiveRegion(r: Region) {
+  activeRegion = r;
+  if (r !== "main") {
+    releaseEditorFocus();
+  } else if (browser) {
+    // Returning to main — ask the outliner to refocus its currently
+    // focused block's cm-editor. BlockOutliner listens for this.
+    document.dispatchEvent(new CustomEvent("tesela:restore-focus"));
   }
+}
+
+export function setActivePane(pane: MainPane) {
+  activeRegion = "main";
+  activePane = pane;
+  if (pane === "kanban") releaseEditorFocus();
 }
 
 export function adjustSplitRatio(delta: number) {

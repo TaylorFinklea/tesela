@@ -10,6 +10,10 @@
     isCtrlWPending,
     setCtrlWPending,
     setActivePane,
+    setActiveRegion,
+    getActiveRegion,
+    isSplitOpen,
+    getActivePane,
     toggleSplit,
     closeSplit,
     adjustSplitRatio,
@@ -138,8 +142,34 @@
         e.preventDefault();
         e.stopPropagation();
         switch (e.key) {
-          case "j": setActivePane("kanban"); break;
-          case "k": setActivePane("outliner"); break;
+          case "h": {
+            // Move focus one region to the left in the layout: right → main, main → left.
+            // From left, no-op (already at the leftmost region).
+            const r = getActiveRegion();
+            if (r === "right") setActiveRegion("main");
+            else if (r === "main") setActiveRegion("left");
+            break;
+          }
+          case "l": {
+            // Mirror of h: left → main, main → right.
+            const r = getActiveRegion();
+            if (r === "left") setActiveRegion("main");
+            else if (r === "main") setActiveRegion("right");
+            break;
+          }
+          case "j": {
+            // j only meaningful inside main when the kanban split is open —
+            // moves down from outliner pane to kanban pane.
+            if (getActiveRegion() === "main" && isSplitOpen()) setActivePane("kanban");
+            break;
+          }
+          case "k": {
+            // Mirror of j inside the main split.
+            if (getActiveRegion() === "main" && isSplitOpen() && getActivePane() === "kanban") {
+              setActivePane("outliner");
+            }
+            break;
+          }
           case "s": toggleSplit(); break;
           case "q": closeSplit(); break;
           case "=": setSplitRatio(50); break;

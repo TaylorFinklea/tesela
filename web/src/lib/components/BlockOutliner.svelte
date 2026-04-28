@@ -715,6 +715,24 @@
     return () => document.removeEventListener("tesela:yank-clipboard", handler);
   });
 
+  // Modal-close focus restore: ⌘K / leader-menu / slash menu dispatch this
+  // when they close without navigating, so the cm-editor for the previously
+  // focused block regains DOM focus and j/k routes back here.
+  onMount(() => {
+    const handler = () => {
+      if (focusedIndex === null) return;
+      const idx = focusedIndex;
+      requestAnimationFrame(() => {
+        const cm = document.querySelector<HTMLElement>(
+          `[data-block-vi="${idx}"] .cm-editor .cm-content`,
+        );
+        cm?.focus();
+      });
+    };
+    document.addEventListener("tesela:restore-focus", handler);
+    return () => document.removeEventListener("tesela:restore-focus", handler);
+  });
+
   // Tag-picker overlay state for visual-mode bulk tag toggle.
   let showBulkTagPicker = $state(false);
   function openBulkTagPicker() {
@@ -755,6 +773,7 @@
     {#each visibleBlocks as block, vi (block.id)}
       {@const displayIndent = block.indent_level - drillRootIndent}
       <div
+        data-block-vi={vi}
         class="group flex items-start transition-all relative
           {focusedIndex === vi ? 'bg-accent/40' : ''}
           {visualRange.has(vi) ? 'bg-primary/10 ring-1 ring-primary/20 rounded-md' : ''}"
@@ -825,7 +844,7 @@
         <div class="flex-1 min-w-0 py-1 {expandedProps.has(block.id) ? 'show-props' : ''}">
           <BlockEditor
             initialText={block.raw_text}
-            onblur={() => { if (focusedIndex === vi) focusedIndex = null; }}
+            onblur={() => {}}
             onfocus={() => { focusedIndex = vi; autoFocused = false; }}
             onchange={(text) => handleBlockChange(block.id, text)}
             onnavigate={handleNavigate}

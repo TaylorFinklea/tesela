@@ -232,6 +232,10 @@
     open = false;
     search = "";
     selectedIndex = 0;
+    // Restore focus to the previously focused block. Actions that navigate
+    // (goto) will be no-ops here since the listener tears down on unmount;
+    // the new page's outliner auto-focuses block 0 separately.
+    document.dispatchEvent(new CustomEvent("tesela:restore-focus"));
   }
 
   function handleKeydown(e: KeyboardEvent) {

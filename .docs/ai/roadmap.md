@@ -90,7 +90,11 @@ Daily-driver outliner with Vim. Migrated from Next.js/React to SvelteKit/Svelte 
 - [x] Leader Y → OS clipboard (Phase 3K)
 
 #### Polish
-- [ ] Right sidebar: inline property editing (not just display)
+- [x] Auto-focus first block on page mount (Phase 3L)
+- [x] Esc-in-Normal preserves focused block + cm-editor (Phase 3L)
+- [x] 3-region splits with `Ctrl+w h/j/k/l` (left sidebar / outliner / right panel) (Phase 3L)
+- [x] Modal focus restore: ⌘K / leader-menu / slash-menu close returns focus to last block (Phase 3L)
+- [ ] Right sidebar: inline keyboard property editing (j/k navigates, currently only mouse-clickable)
 - [ ] Right sidebar: toggle between page context and block context (focused block's own properties + a useful place for hidden/icon properties like status)
 - [ ] Right sidebar: pin pages for split view
 - [ ] Empty/loading/error state audit across all views

@@ -5,13 +5,27 @@
   import { api } from "$lib/api-client";
   import { getRecents } from "$lib/stores/recents.svelte";
   import { getFavorites } from "$lib/stores/favorites.svelte";
+  import { getActiveRegion, setActiveRegion } from "$lib/stores/pane-state.svelte";
   import type { Note } from "$lib/types/Note";
   import { IconSun, IconCalendarEvent, IconGraph, IconSettings, IconChevronLeft, IconChevronRight, IconClock, IconFile, IconStar } from "@tabler/icons-svelte";
 
   let { collapsed, onToggle }: { collapsed: boolean; onToggle: () => void } = $props();
   let selectedIndex = $state(-1);
-  let sidebarFocused = $state(false);
+  // Sidebar gains "active" treatment whenever Ctrl+w h focuses the left
+  // region. Click also activates (via onfocus calling setActiveRegion).
+  const sidebarFocused = $derived(getActiveRegion() === "left");
   let sidebarEl = $state<HTMLElement | undefined>(undefined);
+
+  // When the region becomes "left" via Ctrl+w h, programmatically focus the
+  // sidebar container so j/k routes here. When it leaves "left", blur.
+  $effect(() => {
+    if (sidebarFocused) {
+      if (sidebarEl && document.activeElement !== sidebarEl) sidebarEl.focus();
+      if (selectedIndex < 0) selectedIndex = 0;
+    } else if (sidebarEl && document.activeElement === sidebarEl) {
+      sidebarEl.blur();
+    }
+  });
 
   const notesQuery = createQuery(() => ({ queryKey: ["notes", { limit: 200 }] as const, queryFn: () => api.listNotes({ limit: 200 }) }));
   const notes = $derived(notesQuery.data ?? [] as Note[]);
@@ -47,8 +61,8 @@
     if (!sidebarFocused) return;
     if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); selectedIndex = Math.min(allItems.length - 1, selectedIndex + 1); }
     else if (e.key === "k" || e.key === "ArrowUp") { e.preventDefault(); selectedIndex = Math.max(0, selectedIndex - 1); }
-    else if (e.key === "Enter" && allItems[selectedIndex]) { e.preventDefault(); goto(allItems[selectedIndex].path); }
-    else if (e.key === "Escape") { e.preventDefault(); sidebarFocused = false; sidebarEl?.blur(); }
+    else if (e.key === "Enter" && allItems[selectedIndex]) { e.preventDefault(); goto(allItems[selectedIndex].path); setActiveRegion("main"); }
+    else if (e.key === "Escape") { e.preventDefault(); setActiveRegion("main"); }
   }
 </script>
 
@@ -62,10 +76,9 @@
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <div
     bind:this={sidebarEl}
-    class="w-[220px] bg-surface border-r border-border flex flex-col shrink-0 select-none outline-none"
+    class="w-[220px] bg-surface border-r border-border flex flex-col shrink-0 select-none outline-none transition-shadow {sidebarFocused ? 'ring-1 ring-primary/20 ring-inset' : ''}"
     tabindex="0"
-    onfocus={() => { sidebarFocused = true; if (selectedIndex < 0) selectedIndex = 0; }}
-    onblur={() => { sidebarFocused = false; }}
+    onfocus={() => { setActiveRegion("left"); if (selectedIndex < 0) selectedIndex = 0; }}
     onkeydown={handleKeydown}
   >
     <!-- Brand -->
