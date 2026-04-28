@@ -150,6 +150,15 @@
   let lastExternalBody = $state(body);
   let lastSentBody = $state(body);
 
+  // True when focusedIndex was set by the page-mount auto-focus effect, not
+  // by a user action. Suppresses the empty-block→Insert auto-entry below so
+  // landing on a fresh page stays in Normal. Cleared on any user-initiated
+  // focus change (click, new-block creation).
+  let autoFocused = $state(false);
+  // Note IDs we've already auto-focused. Prevents the effect from re-running
+  // mid-session if focusedIndex transiently goes null (e.g. blur on click-away).
+  let lastAutoFocusedNoteId = $state<string | null>(null);
+
   // Per-block "expand properties" state — controls whether the `key:: value`
   // continuation lines are visible inside the block's editor. Properties are
   // canonically displayed in the right sidebar; the editor view is compact by
@@ -260,6 +269,20 @@
     if (body === lastSentBody) return;
     if (focusedIndex === null) {
       blocks = parseBlocks(noteId, body);
+    }
+  });
+
+  // Auto-focus first block on page load + on noteId change. Lands in Normal
+  // mode (autoFocused gates the empty-block→Insert rule below). Re-runs
+  // only when noteId changes — guarded so a transient focusedIndex=null
+  // (e.g. clicking outside) doesn't yank focus back to block 0.
+  $effect(() => {
+    if (lastAutoFocusedNoteId === noteId) return;
+    if (visibleBlocks.length === 0) return;
+    lastAutoFocusedNoteId = noteId;
+    if (focusedIndex === null) {
+      focusedIndex = 0;
+      autoFocused = true;
     }
   });
 
@@ -422,6 +445,7 @@
     }
     saveBlocks(blocks);
     focusedIndex = vi + 1;
+    autoFocused = false;
   }
 
   /** Collect the IDs of `block` plus all of its descendants (any blocks
@@ -547,6 +571,7 @@
     blocks = [...blocks.slice(0, fullIdx), newBlock, ...blocks.slice(fullIdx)];
     saveBlocks(blocks);
     focusedIndex = vi;
+    autoFocused = false;
   }
 
   // Visual mode handlers
@@ -801,16 +826,16 @@
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => { if (focusedIndex === vi) focusedIndex = null; }}
-            onfocus={() => { focusedIndex = vi; }}
+            onfocus={() => { focusedIndex = vi; autoFocused = false; }}
             onchange={(text) => handleBlockChange(block.id, text)}
             onnavigate={handleNavigate}
-            onescape={() => { focusedIndex = null; }}
+            onescape={() => {}}
             onenter={(textAfter: string) => handleEnter(vi, textAfter)}
             onindent={(dir) => handleIndent(vi, dir)}
             onbackspaceempty={() => handleBackspace(vi)}
             onbackspacemerge={(text: string) => handleBackspaceMerge(vi, text)}
             initialCursorPos={mountHint?.blockId === block.id ? mountHint.pos : undefined}
-            startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (focusedIndex === vi && block.raw_text === "")}
+            startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (focusedIndex === vi && block.raw_text === "" && !autoFocused)}
             onleader={onLeader}
             oncyclestatus={() => blockVisualMode ? bulkCycleStatus() : handleStatusCycle(vi)}
             ondeleteblock={() => handleDeleteBlock(vi)}
