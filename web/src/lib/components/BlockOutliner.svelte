@@ -17,6 +17,7 @@
   } from "$lib/property-registry";
   import type { HiddenKeysConfig } from "$lib/cm-decorations";
   import { prefs } from "$lib/preferences.svelte";
+  import { OutlinerHistory, type OutlinerSnapshot } from "$lib/stores/outliner-history.svelte";
 
   let {
     noteId,
@@ -159,6 +160,37 @@
   // mid-session if focusedIndex transiently goes null (e.g. blur on click-away).
   let lastAutoFocusedNoteId = $state<string | null>(null);
 
+  // Outliner-level undo / redo. One stack per BlockOutliner instance; cleared
+  // on noteId change (page nav) and on external body reparse (so stale block
+  // IDs don't survive into a snapshot we later try to restore).
+  const history = new OutlinerHistory();
+
+  function pushUndo(): void {
+    history.push({ blocks, focusedIndex, collapsedBlocks });
+  }
+
+  function applySnapshot(s: OutlinerSnapshot): void {
+    blocks = s.blocks.map((b) => ({ ...b }));
+    focusedIndex = s.focusedIndex;
+    collapsedBlocks = new Set(s.collapsedBlocks);
+    saveBlocks(blocks);   // refreshes lastSentBody so WS echoes don't overwrite
+    persistFold();
+  }
+
+  function undoOutliner(): boolean {
+    const snap = history.popUndo({ blocks, focusedIndex, collapsedBlocks });
+    if (!snap) return false;
+    applySnapshot(snap);
+    return true;
+  }
+
+  function redoOutliner(): boolean {
+    const snap = history.popRedo({ blocks, focusedIndex, collapsedBlocks });
+    if (!snap) return false;
+    applySnapshot(snap);
+    return true;
+  }
+
   // Per-block "expand properties" state — controls whether the `key:: value`
   // continuation lines are visible inside the block's editor. Properties are
   // canonically displayed in the right sidebar; the editor view is compact by
@@ -194,6 +226,7 @@
     localStorage.setItem(`tesela:fold:${noteId}`, JSON.stringify([...collapsedBlocks]));
   }
   function toggleFold(blockId: string) {
+    pushUndo();
     const next = new Set(collapsedBlocks);
     if (next.has(blockId)) next.delete(blockId);
     else next.add(blockId);
@@ -269,7 +302,19 @@
     if (body === lastSentBody) return;
     if (focusedIndex === null) {
       blocks = parseBlocks(noteId, body);
+      // External body change wipes our snapshots — they reference block IDs
+      // that may no longer exist after the reparse.
+      history.clear();
     }
+  });
+
+  // Clear undo/redo on page navigation. Snapshots are page-local: restoring
+  // a snapshot from page A while viewing page B would corrupt B.
+  let lastHistoryNoteId = $state<string | null>(null);
+  $effect(() => {
+    if (lastHistoryNoteId === noteId) return;
+    lastHistoryNoteId = noteId;
+    history.clear();
   });
 
   // Auto-focus first block on page load + on noteId change. Lands in Normal
@@ -365,12 +410,14 @@
   }
 
   function removeBlockTag(block: ParsedBlock, tagName: string) {
+    pushUndo();
     handleBlockChange(block.id, toggleBlockTag(block.raw_text, tagName));
   }
 
   function handleStatusCycle(vi: number) {
     const block = visibleBlocks[vi];
     if (!block) return;
+    pushUndo();
     const current = block.properties.status ?? "";
     const idx = statusCycle.indexOf(current);
     const next = statusCycle[(idx + 1) % statusCycle.length] ?? "";
@@ -403,6 +450,7 @@
     if (tplBlocks.length === 0) return;
     const parentIdx = blocks.findIndex((b) => b.id === parentBlockId);
     if (parentIdx < 0) return;
+    pushUndo();
     const parentIndent = blocks[parentIdx].indent_level;
     const minTplIndent = Math.min(...tplBlocks.map((b) => b.indent_level));
     const inserted: ParsedBlock[] = tplBlocks.map((tb, i) => ({
@@ -426,6 +474,7 @@
     if (!current) return;
     const fullIdx = blocks.findIndex(b => b.id === current.id);
     if (fullIdx < 0) return;
+    pushUndo();
     const newBlock: ParsedBlock = {
       id: `${noteId}:new-${Date.now()}`,
       text: (textAfterCursor.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
@@ -467,6 +516,7 @@
     // Outdent at root is a no-op; otherwise the parent and all descendants
     // shift uniformly so subtree relationships are preserved.
     if (direction === "outdent" && block.indent_level === 0) return;
+    pushUndo();
     const delta = direction === "indent" ? 1 : -1;
     const ids = subtreeIds(block);
     blocks = blocks.map(b => ids.has(b.id) ? { ...b, indent_level: Math.max(0, b.indent_level + delta) } : b);
@@ -476,6 +526,7 @@
   function handleBackspace(vi: number) {
     const block = visibleBlocks[vi];
     if (!block || block.raw_text !== "" || blocks.length <= 1) return;
+    pushUndo();
     blocks = blocks.filter(b => b.id !== block.id);
     saveBlocks(blocks);
     if (focusedIndex !== null && focusedIndex > 0) focusedIndex = focusedIndex - 1;
@@ -489,6 +540,7 @@
     const fullPrevIdx = blocks.findIndex(b => b.id === prev.id);
     const fullCurrIdx = blocks.findIndex(b => b.id === current.id);
     if (fullPrevIdx < 0 || fullCurrIdx < 0) return;
+    pushUndo();
     const mergePos = prev.raw_text.length;
     const mergedText = prev.raw_text + currentText;
     const mergedBlock: ParsedBlock = {
@@ -517,6 +569,7 @@
     if (visibleBlocks.length <= 1) return;
     const block = visibleBlocks[vi];
     if (!block) return;
+    pushUndo();
     // Vim convention: dd both deletes AND yanks into the register, so a
     // subsequent p pastes the deleted block.
     blockClipboard = [{ ...block }];
@@ -544,6 +597,7 @@
     if (!anchor) return;
     const fullIdx = blocks.findIndex(b => b.id === anchor.id);
     if (fullIdx < 0) return;
+    pushUndo();
     const pasted = blockClipboard.map((b, i) => ({
       ...b,
       id: `${noteId}:paste-${Date.now()}-${i}`,
@@ -558,6 +612,7 @@
     if (!current) return;
     const fullIdx = blocks.findIndex(b => b.id === current.id);
     if (fullIdx < 0) return;
+    pushUndo();
     const newBlock: ParsedBlock = {
       id: `${noteId}:new-${Date.now()}`,
       text: "",
@@ -598,6 +653,7 @@
     if (sorted.length === 0) return;
     const ids = new Set(sorted.map(vi => visibleBlocks[vi]?.id).filter(Boolean));
     if (blocks.length - ids.size < 1) return;
+    pushUndo();
     // Vim convention: visual-mode delete also yanks to the register.
     blockClipboard = sorted.map(vi => ({ ...visibleBlocks[vi]! })).filter(b => b.id);
     const newFocus = Math.min(sorted[0]!, visibleBlocks.length - 1 - sorted.length);
@@ -624,6 +680,7 @@
     if (sorted.length === 0) return;
     const first = visibleBlocks[sorted[0]!];
     if (!first) return;
+    pushUndo();
     const current = first.properties.status ?? "";
     const idx = statusCycle.indexOf(current);
     const next = statusCycle[(idx + 1) % statusCycle.length] ?? "";
@@ -660,6 +717,7 @@
       for (const id of subtreeIds(b)) ids.add(id);
     }
     if (ids.size === 0) return;
+    pushUndo();
     const delta = direction === "indent" ? 1 : -1;
     blocks = blocks.map((b) => ids.has(b.id) ? { ...b, indent_level: Math.max(0, b.indent_level + delta) } : b);
     saveBlocks(blocks);
@@ -673,6 +731,7 @@
   function bulkToggleTag(tagName: string) {
     const sorted = [...visualRange].sort((a, b) => a - b);
     if (sorted.length === 0) return;
+    pushUndo();
     const lower = tagName.toLowerCase();
     const ids = new Set(sorted.map((vi) => visibleBlocks[vi]?.id).filter(Boolean) as string[]);
     const fillNames = autoFillNamesForTag(tagName);
@@ -752,6 +811,7 @@
   <div
     class="text-sm text-muted-foreground cursor-text py-2 hover:bg-accent/20 rounded px-2"
     onclick={() => {
+      pushUndo();
       const newBlock: ParsedBlock = {
         id: `${noteId}:new-${Date.now()}`,
         text: "",
@@ -878,6 +938,8 @@
             hiddenKeys={hiddenKeysFor(block)}
             autoFillNames={autoFillNamesForTag}
             onInsertTemplate={(templateNoteId) => insertTemplateAfter(block.id, templateNoteId)}
+            onUndoOutliner={undoOutliner}
+            onRedoOutliner={redoOutliner}
           />
         </div>
 

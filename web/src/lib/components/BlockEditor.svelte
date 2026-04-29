@@ -26,6 +26,8 @@
     bulkTagPicker: (() => void) | null;
     bulkIndent: ((dir: "indent" | "outdent") => void) | null;
     toggleFold: (() => void) | null;
+    undoOutliner: (() => boolean) | null;
+    redoOutliner: (() => boolean) | null;
   } = {
     view: null, navigate: null, deleteBlock: null, yankBlock: null,
     pasteBlock: null, newBlockBelow: null, newBlockAbove: null,
@@ -33,6 +35,7 @@
     drillIn: null, enterVisualMode: null, exitVisualMode: null,
     visualMode: false, visualNav: null, visualDelete: null, visualYank: null,
     bulkTagPicker: null, bulkIndent: null, toggleFold: null,
+    undoOutliner: null, redoOutliner: null,
   };
 
   // We deliberately re-register on every editor mount. Each call unshifts
@@ -169,6 +172,23 @@
     Vim.mapCommand("za", "action", "toggleFold", {}, { context: "normal" });
     Vim.mapCommand("zc", "action", "toggleFold", {}, { context: "normal" });
     Vim.mapCommand("zo", "action", "toggleFold", {}, { context: "normal" });
+
+    // Outliner-level undo / redo. Tries the structural-mutation stack first
+    // (block delete/paste/indent/fold/status/tag/etc); when empty, falls
+    // through to cm-editor's history so intra-block typing-undo still works.
+    // The fall-through means `u` always does *something* in normal mode,
+    // which matches user expectation across both kinds of changes.
+    Vim.defineAction("undoBlockOp", (cm: any) => {
+      const handled = vimCtx.undoOutliner?.() ?? false;
+      if (!handled) cm?.execCommand?.("undo");
+    });
+    Vim.mapCommand("u", "action", "undoBlockOp", {}, { context: "normal" });
+
+    Vim.defineAction("redoBlockOp", (cm: any) => {
+      const handled = vimCtx.redoOutliner?.() ?? false;
+      if (!handled) cm?.execCommand?.("redo");
+    });
+    Vim.mapCommand("<C-r>", "action", "redoBlockOp", {}, { context: "normal" });
   }
 </script>
 
@@ -220,6 +240,8 @@
     onbulktagpicker: onBulkTagPicker,
     onbulkindent: onBulkIndent,
     ontogglefold: onToggleFold,
+    onUndoOutliner,
+    onRedoOutliner,
     inVisualMode,
     focused,
     noteslist: notesList,
@@ -257,6 +279,8 @@
     onbulktagpicker?: () => void;
     onbulkindent?: (direction: "indent" | "outdent") => void;
     ontogglefold?: () => void;
+    onUndoOutliner?: () => boolean;
+    onRedoOutliner?: () => boolean;
     inVisualMode?: boolean;
     focused?: boolean;
     noteslist?: Array<{ id: string; title: string; tags: string[]; note_type?: string | null }>;
@@ -587,6 +611,8 @@
     vimCtx.bulkTagPicker = onBulkTagPicker ?? null;
     vimCtx.bulkIndent = onBulkIndent ?? null;
     vimCtx.toggleFold = onToggleFold ?? null;
+    vimCtx.undoOutliner = onUndoOutliner ?? null;
+    vimCtx.redoOutliner = onRedoOutliner ?? null;
     return () => {
       if (vimCtx.view === view) vimCtx.view = null;
     };
