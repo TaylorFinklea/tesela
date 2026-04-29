@@ -24,6 +24,7 @@
     body,
     frontmatter,
     onContentChange,
+    onCancelAndFlush,
     onleader: onLeader,
     onfocusedblockchange,
     drillBlockId = "",
@@ -33,6 +34,11 @@
     body: string;
     frontmatter: string;
     onContentChange?: (fullContent: string) => void;
+    /** Cancel any pending/in-flight save and PUT immediately. Called from
+     *  `applySnapshot` so undo/redo restored bodies win the race against any
+     *  in-flight pre-undo PUT. Falls back to the debounced `onContentChange`
+     *  path if the parent didn't wire it. */
+    onCancelAndFlush?: (fullContent: string) => void;
     onleader?: () => void;
     onfocusedblockchange?: (block: ParsedBlock | null) => void;
     drillBlockId?: string;
@@ -160,6 +166,12 @@
   // mid-session if focusedIndex transiently goes null (e.g. blur on click-away).
   let lastAutoFocusedNoteId = $state<string | null>(null);
 
+  // True when the most recent focusedIndex change came from undo / redo —
+  // suppresses the empty-block→Insert remount heuristic for one render so
+  // restored empty blocks land in Normal, not Insert. Cleared on any user-
+  // initiated focus change (click, navigate, new-block creation).
+  let restoredFocus = $state(false);
+
   // Outliner-level undo / redo. One stack per BlockOutliner instance; cleared
   // on noteId change (page nav) and on external body reparse (so stale block
   // IDs don't survive into a snapshot we later try to restore).
@@ -172,8 +184,15 @@
   function applySnapshot(s: OutlinerSnapshot): void {
     blocks = s.blocks.map((b) => ({ ...b }));
     focusedIndex = s.focusedIndex;
+    // Suppress the empty-block→Insert remount heuristic for the next render
+    // tick so a redo/undo that lands on an empty block stays in Normal.
+    restoredFocus = true;
     collapsedBlocks = new Set(s.collapsedBlocks);
-    saveBlocks(blocks);   // refreshes lastSentBody so WS echoes don't overwrite
+    // Cancel any in-flight pre-undo PUT and flush the restored body
+    // immediately so the server's WS echo carries the restored state
+    // (not the pre-undo state). Falls through to debounced save if the
+    // parent didn't wire onCancelAndFlush.
+    saveBlocksImmediate(blocks);
     persistFold();
   }
 
@@ -395,7 +414,7 @@
     }
   }
 
-  function saveBlocks(updated: ParsedBlock[]) {
+  function buildFullContent(updated: ParsedBlock[]): { full: string; bodyOnly: string } {
     const bodyLines = updated
       .map((b) => {
         const indent = "  ".repeat(b.indent_level);
@@ -405,8 +424,24 @@
         return [first, ...rest].join("\n");
       })
       .join("\n");
-    lastSentBody = `${bodyLines}\n`;
-    onContentChange?.(`${frontmatter}${bodyLines}\n`);
+    return { full: `${frontmatter}${bodyLines}\n`, bodyOnly: `${bodyLines}\n` };
+  }
+
+  function saveBlocks(updated: ParsedBlock[]) {
+    const { full, bodyOnly } = buildFullContent(updated);
+    lastSentBody = bodyOnly;
+    onContentChange?.(full);
+  }
+
+  /** Like `saveBlocks` but bypasses the debounce — used by `applySnapshot`
+   *  so an outliner-undo cancels any in-flight pre-undo PUT and immediately
+   *  PUTs the restored body. Falls through to the debounced path if the
+   *  parent didn't wire `onCancelAndFlush`. */
+  function saveBlocksImmediate(updated: ParsedBlock[]) {
+    const { full, bodyOnly } = buildFullContent(updated);
+    lastSentBody = bodyOnly;
+    if (onCancelAndFlush) onCancelAndFlush(full);
+    else onContentChange?.(full);
   }
 
   function handleBlockChange(blockId: string, newRawText: string) {
@@ -457,6 +492,7 @@
       ? Math.max(0, focusedIndex - 1)
       : Math.min(visibleBlocks.length - 1, focusedIndex + 1);
     focusedIndex = next;
+    restoredFocus = false;
   }
 
   /**
@@ -522,6 +558,7 @@
     saveBlocks(blocks);
     focusedIndex = vi + 1;
     autoFocused = false;
+    restoredFocus = false;
   }
 
   /** Collect the IDs of `block` plus all of its descendants (any blocks
@@ -654,6 +691,7 @@
     saveBlocks(blocks);
     focusedIndex = vi;
     autoFocused = false;
+    restoredFocus = false;
   }
 
   // Visual mode handlers
@@ -851,6 +889,8 @@
       };
       blocks = [newBlock];
       focusedIndex = 0;
+      autoFocused = false;
+      restoredFocus = false;
     }}
   >
     Click to start writing…
@@ -932,7 +972,7 @@
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => {}}
-            onfocus={() => { focusedIndex = vi; autoFocused = false; }}
+            onfocus={() => { focusedIndex = vi; autoFocused = false; restoredFocus = false; }}
             onchange={(text) => handleBlockChange(block.id, text)}
             onnavigate={handleNavigate}
             onescape={() => {}}
@@ -941,7 +981,7 @@
             onbackspaceempty={() => handleBackspace(vi)}
             onbackspacemerge={(text: string) => handleBackspaceMerge(vi, text)}
             initialCursorPos={mountHint?.blockId === block.id ? mountHint.pos : undefined}
-            startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (focusedIndex === vi && block.raw_text === "" && !autoFocused)}
+            startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (focusedIndex === vi && block.raw_text === "" && !autoFocused && !restoredFocus)}
             onleader={onLeader}
             oncyclestatus={() => blockVisualMode ? bulkCycleStatus() : handleStatusCycle(vi)}
             ondeleteblock={() => handleDeleteBlock(vi)}

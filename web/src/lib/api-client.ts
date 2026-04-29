@@ -43,12 +43,13 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   return (await res.json()) as T;
 }
 
-async function put<T>(path: string, body: unknown): Promise<T> {
+async function put<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const url = `${BASE_URL}${path}`;
   const res = await fetch(url, {
     method: "PUT",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) throw new ApiError(res.status, await res.text(), url);
   return (await res.json()) as T;
@@ -65,8 +66,8 @@ export const api = {
     return get<Note[]>(`/notes${qs ? `?${qs}` : ""}`);
   },
   getNote: (id: string) => get<Note>(`/notes/${encodeURIComponent(id)}`),
-  updateNote: (id: string, content: string) =>
-    put<Note>(`/notes/${encodeURIComponent(id)}`, { content }),
+  updateNote: (id: string, content: string, signal?: AbortSignal) =>
+    put<Note>(`/notes/${encodeURIComponent(id)}`, { content }, signal),
   createNote: (title: string, content: string, tags: string[] = []) =>
     post<Note>("/notes", { title, content, tags }),
   getDailyNote: (date?: string) => {

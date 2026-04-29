@@ -28,7 +28,7 @@
   import { parseBlocks } from "$lib/block-parser";
   import { addRecent } from "$lib/stores/recents.svelte";
   import { goto } from "$app/navigation";
-  import { untrack } from "svelte";
+  import { onDestroy, untrack } from "svelte";
   import { IconTrash, IconStar, IconStarFilled, IconFileText, IconLayoutList } from "@tabler/icons-svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
   import { isFavorite, toggleFavorite } from "$lib/stores/favorites.svelte";
@@ -169,6 +169,8 @@
   }
 
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let inFlightController: AbortController | null = null;
+  let pendingContent: string | null = null;
   let rightSidebarCollapsed = $state(false);
   let focusedBlock = $state<ParsedBlock | null>(null);
 
@@ -186,20 +188,67 @@
   }
 
   function handleContentChange(fullContent: string) {
+    pendingContent = fullContent;
     if (saveTimer) clearTimeout(saveTimer);
     setSaving();
-    saveTimer = setTimeout(async () => {
-      try {
-        const updated = await api.updateNote(noteId, fullContent);
-        queryClient.setQueryData(["note", noteId], updated);
-        setSaved();
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : "Unknown error";
-        setSaveError(msg);
-        console.error("Save failed:", e);
-      }
+    saveTimer = setTimeout(() => {
+      void flushSave();
     }, 500);
   }
+
+  async function flushSave() {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    if (pendingContent === null) return;
+    const content = pendingContent;
+    pendingContent = null;
+    // Cancel any in-flight PUT — its result would race ours.
+    if (inFlightController) inFlightController.abort();
+    const controller = new AbortController();
+    inFlightController = controller;
+    try {
+      const updated = await api.updateNote(noteId, content, controller.signal);
+      if (controller.signal.aborted) return;
+      queryClient.setQueryData(["note", noteId], updated);
+      setSaved();
+    } catch (e) {
+      // An aborted PUT is expected when undo cancels a debounced save.
+      // It must NOT trip the UI into a "save failed" state.
+      if ((e as { name?: string })?.name === "AbortError") return;
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      setSaveError(msg);
+      console.error("Save failed:", e);
+    } finally {
+      if (inFlightController === controller) inFlightController = null;
+    }
+  }
+
+  /**
+   * Cancel any pending or in-flight PUT and immediately PUT `fullContent`.
+   * Called by BlockOutliner from `applySnapshot` so the server's WS echo
+   * carries the restored body, not the pre-undo body. No-op if nothing
+   * needs to change, but the immediate flush is still valuable because the
+   * snapshot's body must reach the server before the next typing burst.
+   */
+  function cancelAndFlush(fullContent: string) {
+    pendingContent = fullContent;
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    if (inFlightController) {
+      inFlightController.abort();
+      inFlightController = null;
+    }
+    void flushSave();
+  }
+
+  onDestroy(() => {
+    if (saveTimer) clearTimeout(saveTimer);
+    if (inFlightController) inFlightController.abort();
+  });
 </script>
 
 <div class="flex-1 flex min-h-0">
@@ -300,6 +349,7 @@
             body={split.body}
             frontmatter={split.frontmatter}
             onContentChange={handleContentChange}
+            onCancelAndFlush={cancelAndFlush}
             onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
             onfocusedblockchange={(b) => { focusedBlock = b; }}
             {drillBlockId}

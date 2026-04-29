@@ -57,6 +57,12 @@
   }
 
   // Save handlers per note
+  // TODO(3M.2): mirror the cancel-and-flush pattern from /p/[id]/+page.svelte
+  // (per-noteId AbortController + cancelAndFlush, wired to BlockOutliner's
+  // onCancelAndFlush prop). Until then, undo on the timeline degrades to the
+  // existing focus-guarded behavior — i.e. an in-flight pre-undo PUT can still
+  // race the restored state if the user blurs immediately after undo. The
+  // common-case undo (focus stays on the block) is unaffected.
   const saveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   function handleContentChange(noteId: string, fullContent: string) {

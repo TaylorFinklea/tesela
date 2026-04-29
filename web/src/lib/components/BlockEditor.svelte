@@ -197,7 +197,7 @@
 
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Annotation, Compartment, EditorState } from "@codemirror/state";
+  import { Annotation, Compartment, EditorState, Transaction } from "@codemirror/state";
 
   // Tags transactions dispatched by the prop→cm6 sync $effect (e.g. when
   // outliner-undo restores blocks[i].body). The updateListener skips these
@@ -610,7 +610,13 @@
     if (initialText !== v.state.doc.toString()) {
       v.dispatch({
         changes: { from: 0, to: v.state.doc.length, insert: initialText },
-        annotations: externalSync.of(true),
+        // `addToHistory: false` excludes this transaction from cm6's per-block
+        // history — so after `u` rewrites the doc, a subsequent local `Cmd+Z`
+        // can't walk back through the just-undone state.
+        annotations: [
+          externalSync.of(true),
+          Transaction.addToHistory.of(false),
+        ],
       });
     }
   });
