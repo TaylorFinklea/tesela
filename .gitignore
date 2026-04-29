@@ -41,6 +41,9 @@ attachments/
 # Superpowers plugin cache
 .superpowers/
 
+# Claude Code runtime artifacts (scheduled task lock, etc.)
+.claude/scheduled_tasks.lock
+
 # Playwright test artifacts
 .playwright-mcp/
 phase3f-*.png
