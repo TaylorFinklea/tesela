@@ -151,8 +151,8 @@ async fn main() -> Result<()> {
     };
     let router = routes::build(app_state);
 
-    let addr = "127.0.0.1:7474";
-    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let addr = std::env::var("TESELA_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:7474".to_string());
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("tesela-server listening on http://{}", addr);
 
     axum::serve(listener, router).await?;
