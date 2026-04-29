@@ -889,8 +889,15 @@
       vimModeOff = () => cm.off("vim-mode-change", modeListener);
     }
 
-    // Focus and optionally enter insert mode for newly created blocks
+    // Focus and optionally enter insert mode for newly created blocks.
+    // Snapshot `startInInsert` BEFORE the rAF — `view.focus()` below fires
+    // the cm-content DOM focus event, which BlockOutliner's per-row onfocus
+    // handler treats as user-initiated and clears `restoredFocus`, causing
+    // a re-read of the prop here to flip from false to true and incorrectly
+    // drop us into Insert on undo/redo restores. The snapshot makes the
+    // decision sticky to mount time.
     if (focused) {
+      const shouldStartInInsert = startInInsert;
       requestAnimationFrame(() => {
         if (!view) return;
         view.focus();
@@ -899,7 +906,7 @@
         if (clampedCursor === undefined) {
           view.dispatch({ selection: { anchor: view.state.doc.length } });
         }
-        if (startInInsert) {
+        if (shouldStartInInsert) {
           const cm2 = getCM(view);
           if (cm2) Vim.handleKey(cm2, "i", "mapping");
         }
