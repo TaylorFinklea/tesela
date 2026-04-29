@@ -28,6 +28,8 @@
     toggleFold: (() => void) | null;
     undoOutliner: (() => boolean) | null;
     redoOutliner: (() => boolean) | null;
+    beginInsertSession: (() => void) | null;
+    endInsertSession: (() => void) | null;
   } = {
     view: null, navigate: null, deleteBlock: null, yankBlock: null,
     pasteBlock: null, newBlockBelow: null, newBlockAbove: null,
@@ -36,6 +38,7 @@
     visualMode: false, visualNav: null, visualDelete: null, visualYank: null,
     bulkTagPicker: null, bulkIndent: null, toggleFold: null,
     undoOutliner: null, redoOutliner: null,
+    beginInsertSession: null, endInsertSession: null,
   };
 
   // We deliberately re-register on every editor mount. Each call unshifts
@@ -194,7 +197,12 @@
 
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Compartment, EditorState } from "@codemirror/state";
+  import { Annotation, Compartment, EditorState } from "@codemirror/state";
+
+  // Tags transactions dispatched by the prop→cm6 sync $effect (e.g. when
+  // outliner-undo restores blocks[i].body). The updateListener skips these
+  // so they don't loop back through onChange as fake user edits.
+  const externalSync = Annotation.define<boolean>();
   import { keymap } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim, getCM } from "@replit/codemirror-vim";
@@ -242,6 +250,8 @@
     ontogglefold: onToggleFold,
     onUndoOutliner,
     onRedoOutliner,
+    onBeginInsertSession,
+    onEndInsertSession,
     inVisualMode,
     focused,
     noteslist: notesList,
@@ -281,6 +291,8 @@
     ontogglefold?: () => void;
     onUndoOutliner?: () => boolean;
     onRedoOutliner?: () => boolean;
+    onBeginInsertSession?: () => void;
+    onEndInsertSession?: () => void;
     inVisualMode?: boolean;
     focused?: boolean;
     noteslist?: Array<{ id: string; title: string; tags: string[]; note_type?: string | null }>;
@@ -589,6 +601,20 @@
   // Keep visualMode flag in sync so j/k vim actions can check it without props.
   $effect(() => { vimCtx.visualMode = inVisualMode ?? false; });
 
+  // Sync external prop changes (outliner-undo, WS reparse) into cm6's doc.
+  // During normal typing the prop already matches cm6's doc by the time
+  // this effect runs, so the equality guard prevents redundant transactions.
+  $effect(() => {
+    const v = view;
+    if (!v) return;
+    if (initialText !== v.state.doc.toString()) {
+      v.dispatch({
+        changes: { from: 0, to: v.state.doc.length, insert: initialText },
+        annotations: externalSync.of(true),
+      });
+    }
+  });
+
   // Keep the global vim context pointing to whichever block is currently focused.
   // This lets the module-level vim actions (registered once) always target the right block.
   $effect(() => {
@@ -613,6 +639,8 @@
     vimCtx.toggleFold = onToggleFold ?? null;
     vimCtx.undoOutliner = onUndoOutliner ?? null;
     vimCtx.redoOutliner = onRedoOutliner ?? null;
+    vimCtx.beginInsertSession = onBeginInsertSession ?? null;
+    vimCtx.endInsertSession = onEndInsertSession ?? null;
     return () => {
       if (vimCtx.view === view) vimCtx.view = null;
     };
@@ -778,6 +806,9 @@
 
     const updateListener = EditorView.updateListener.of((update) => {
       if (update.docChanged) {
+        // Skip echoing back outliner-undo restores — they already wrote the
+        // canonical block.body, so re-firing onChange would corrupt history.
+        if (update.transactions.some((tr) => tr.annotation(externalSync) === true)) return;
         const doc = update.state.doc.toString();
         onChange(doc);
         const cursorPos = update.state.selection.main.head;
@@ -840,7 +871,14 @@
     const cm = getCM(view);
     if (cm) {
       initVimActions();
-      const modeListener = (info: { mode: string }) => { setVimMode(info.mode); };
+      const modeListener = (info: { mode: string }) => {
+        setVimMode(info.mode);
+        // Cache a pre-edit outliner snapshot on Insert entry; clear it on
+        // any other mode (the snapshot is promoted on the first keystroke
+        // by handleBlockChange — see Phase 3M.1 plan).
+        if (info.mode === "insert") vimCtx.beginInsertSession?.();
+        else vimCtx.endInsertSession?.();
+      };
       cm.on("vim-mode-change", modeListener);
       vimModeOff = () => cm.off("vim-mode-change", modeListener);
     }

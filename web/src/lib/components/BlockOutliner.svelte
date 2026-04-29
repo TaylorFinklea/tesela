@@ -191,6 +191,25 @@
     return true;
   }
 
+  // Insert-session promotion. Vim treats an entire insert session (i…Esc) as
+  // one atomic edit for `u`. We mirror that: cache a pre-edit snapshot on
+  // Insert-mode entry, and only commit it to the undo stack on the FIRST
+  // keystroke during that session (in handleBlockChange). Bare `iEsc` with
+  // no typing leaves no trace.
+  let pendingInsertSnapshot: OutlinerSnapshot | null = null;
+
+  function beginInsertSession(): void {
+    pendingInsertSnapshot = {
+      blocks: blocks.map((b) => ({ ...b })),
+      focusedIndex,
+      collapsedBlocks: new Set(collapsedBlocks),
+    };
+  }
+
+  function endInsertSession(): void {
+    pendingInsertSnapshot = null;
+  }
+
   // Per-block "expand properties" state — controls whether the `key:: value`
   // continuation lines are visible inside the block's editor. Properties are
   // canonically displayed in the right sidebar; the editor view is compact by
@@ -391,6 +410,14 @@
   }
 
   function handleBlockChange(blockId: string, newRawText: string) {
+    // First keystroke of an insert session: promote the cached pre-edit
+    // snapshot onto the undo stack. Programmatic callers (status cycle,
+    // tag toggle, etc.) call pushUndo() themselves and aren't in Insert
+    // mode, so pendingInsertSnapshot is null for them — no-op.
+    if (pendingInsertSnapshot) {
+      history.push(pendingInsertSnapshot);
+      pendingInsertSnapshot = null;
+    }
     const parsedTags = getBlockTags(newRawText);
     // Properties parser sees tags:: too; strip it so it doesn't double-display
     const props = parseProperties(newRawText);
@@ -940,6 +967,8 @@
             onInsertTemplate={(templateNoteId) => insertTemplateAfter(block.id, templateNoteId)}
             onUndoOutliner={undoOutliner}
             onRedoOutliner={redoOutliner}
+            onBeginInsertSession={beginInsertSession}
+            onEndInsertSession={endInsertSession}
           />
         </div>
 
