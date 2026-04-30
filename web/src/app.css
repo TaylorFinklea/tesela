@@ -96,9 +96,13 @@
 .show-props .cm-line.cm-tesela-hidden-prop-line { display: block; }
 
 /* === v9 — Columns shell styles (lifted from .docs/designs/v9-columns/columns/v9-styles.css) === */
+/* Establish a 100vh container for the .v9 grid. html/body get h-full from
+ * Tailwind in app.html; this also makes height: 100% on .v9 resolve to the
+ * full viewport height instead of collapsing to content-height. */
+html, body { height: 100%; margin: 0; }
 .v9, .v9 * { box-sizing: border-box; }
 .v9 {
-  height: 100%;
+  height: 100vh;
   background: var(--v9-bg);
   color: var(--v9-ink);
   font-family: var(--v9-sans);
