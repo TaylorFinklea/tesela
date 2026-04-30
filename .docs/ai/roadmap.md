@@ -1,5 +1,48 @@
 # Tesela Roadmap
 
+## Now / Next / Later
+
+Active items. Trim as completed.
+
+### Now
+The web client is feature-complete through Phase 2 (Navigation & Discovery): outliner, Vim, slash commands, leader menu, sidebar, command palette, graph, timeline, tag tables, settings, themes, favorites, search highlighting, tag-table filtering, right-sidebar properties, graph filters. Pick a Phase 3 candidate based on daily-driver need; otherwise drain the Backlog.
+
+### Next — Phase 3 candidates (pick one)
+
+**3A: Type System Depth (Anytype vision)**
+- Kanban view on tag pages (group blocks by a select property like Status).
+- Queries / Sets — saved filters by type + property values, displayed as table/list/kanban.
+- Collections — manual groupings of pages.
+- Node references — property value links to another page (bidirectional).
+- Tag inheritance — `extends` chain (Task → Root Tag), child inherits parent properties.
+- Global property registry — search existing property pages when adding to a tag.
+
+**3B: Editor Power Features**
+- Visual mode in Vim (character + line selection).
+- Block merge on Backspace at start of non-empty block.
+- Multi-block selection and operations.
+- `/template` slash command — insert from template pages.
+- `/date` slash command — date picker UI.
+- Block drill-in — focus on a single block and its children.
+
+**3C: Polish & Edge Cases**
+- Empty/loading/error states for every view (audit).
+- Keyboard shortcuts for favorites (e.g., `f` to toggle).
+- Graph: click node → navigate, drag to reposition.
+- Right sidebar: inline property editing (not just display).
+- Breadcrumb improvements — clickable path segments.
+- Mobile/responsive layout considerations.
+
+### Later
+Rust backlog (parallel work) lives in the Backlog section below — Mechanical and Architectural items are safe for parallel work.
+
+### When Picking Up Work
+1. Read `.docs/ai/current-state.md` and the section above.
+2. `git log --oneline -10` to see recent changes.
+3. Start `tesela-server`: `cargo run -p tesela-server`.
+4. Start web dev server: `pnpm --dir web dev`.
+5. Pick a phase or ask Taylor what to prioritize.
+
 ## What Tesela Is
 
 Keyboard-first note-taking system (org-mode successor). Rust backend + SvelteKit web frontend. Taylor's daily-driver tool — reliability matters more than features.
@@ -143,11 +186,11 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 
 ---
 
-## Backlog (parallel, tiered by model capability)
+## Backlog
 
-<!-- tier3_owner: claude -->
+> Self-contained items any agent can pick up. First agent to start it executes it. Tier hints are advice, not gating.
 
-### Haiku (mechanical, no judgment)
+### Mechanical (Haiku candidates)
 
 - [ ] Replace one-off `regex::Regex::new(r"#[...]")` in `crates/tesela-server/src/routes/notes.rs:179` with cached `INLINE_TAG_RE`
 - [ ] Replace `std::env::current_dir().unwrap()` in `crates/tesela-cli/src/main.rs:196` with `?` + `.context()`
@@ -158,13 +201,13 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [ ] Extract hardcoded server bind address `"127.0.0.1:7474"` into a named constant
 - [ ] Extract hardcoded backup-retention magic numbers into named constants
 
-### Sonnet (some architectural judgment)
+### Architectural (Sonnet candidates)
 
 - [ ] Split `crates/tesela-core/src/db/sqlite.rs` (1126 lines) into db/migrations.rs, db/search.rs, db/links.rs, db/types.rs
 - [ ] Split `crates/tesela-cli/src/main.rs` (826 lines) into `src/commands/` submodule
 - [ ] Extract duplicated backup logic into shared `tesela_core::backup` module
 
-### Opus (design skill, cross-cutting)
+### Cross-cutting (needs Opus to scope)
 
 - [ ] API endpoint integration tests (server routes)
 - [ ] New server endpoints needed for web client: `GET /notes/:id/blocks`, `POST /notes/:id/blocks` (block-level CRUD)
