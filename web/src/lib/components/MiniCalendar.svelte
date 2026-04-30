@@ -3,12 +3,15 @@
   import { goto } from "$app/navigation";
   import { api, ApiError } from "$lib/api-client";
 
-  // Visible month — defaults to today's. State lives here; not yet exposed
-  // for keyboard-driven navigation (that's 9.4).
+  // Visible month — defaults to today's. Phase 9.4 adds keyboard nav.
   const now = new Date();
   let visibleYear = $state(now.getFullYear());
   let visibleMonth = $state(now.getMonth()); // 0-indexed
   let selected = $state<string | null>(null);
+  let rootEl = $state<HTMLElement | undefined>();
+  // `g`-prefix chord state for vim-style `g t` (jump to today).
+  let gPending = $state(false);
+  let gTimer: ReturnType<typeof setTimeout> | null = null;
 
   function pad2(n: number): string {
     return n < 10 ? `0${n}` : `${n}`;
@@ -68,11 +71,8 @@
 
   async function clickDay(iso: string) {
     selected = iso;
-    // Navigate to the daily note for that date. /notes/daily?date=ISO creates
-    // it if missing — same path the 'Today' command uses.
     try {
       const note = await api.getDailyNote(iso);
-      // Daily notes are usually keyed by their ISO date.
       queryClient.invalidateQueries({ queryKey: ["notes"] });
       queryClient.invalidateQueries({ queryKey: ["calendar-marks"] });
       goto(`/p/${encodeURIComponent(note.id)}`);
@@ -103,9 +103,106 @@
   }
 
   const today = todayIso();
+
+  // ----- Phase 9.4: keyboard navigation -----
+
+  /** Move `selected` by `deltaDays` (signed). If selection crosses the month
+   *  boundary, advance/retreat the visible month so the new selection stays
+   *  in view. */
+  function moveSelection(deltaDays: number) {
+    const base = selected ?? today;
+    const [y, m, d] = base.split("-").map(Number);
+    const next = new Date(y, m - 1, d + deltaDays);
+    selected = isoOf(next.getFullYear(), next.getMonth(), next.getDate());
+    // Sync visible month if selection moved out of view.
+    if (next.getFullYear() !== visibleYear || next.getMonth() !== visibleMonth) {
+      visibleYear = next.getFullYear();
+      visibleMonth = next.getMonth();
+    }
+  }
+
+  function clearGPending() {
+    gPending = false;
+    if (gTimer) {
+      clearTimeout(gTimer);
+      gTimer = null;
+    }
+  }
+
+  function handleKeydown(e: KeyboardEvent) {
+    // Don't intercept when a child input/textarea is focused (we don't have any
+    // today, but defensive).
+    const target = e.target as HTMLElement;
+    if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+
+    // `g t` chord — jump to today.
+    if (gPending) {
+      if (e.key === "t") {
+        e.preventDefault();
+        clearGPending();
+        selected = today;
+        const td = new Date(today);
+        visibleYear = td.getFullYear();
+        visibleMonth = td.getMonth();
+        return;
+      }
+      // Any other key cancels the chord.
+      clearGPending();
+    }
+
+    if (e.key === "g") {
+      e.preventDefault();
+      gPending = true;
+      if (gTimer) clearTimeout(gTimer);
+      gTimer = setTimeout(clearGPending, 1500);
+      return;
+    }
+
+    switch (e.key) {
+      case "ArrowLeft":
+      case "h":
+        e.preventDefault();
+        moveSelection(-1);
+        break;
+      case "ArrowRight":
+      case "l":
+        e.preventDefault();
+        moveSelection(1);
+        break;
+      case "ArrowUp":
+      case "k":
+        e.preventDefault();
+        moveSelection(-7);
+        break;
+      case "ArrowDown":
+      case "j":
+        e.preventDefault();
+        moveSelection(7);
+        break;
+      case "PageUp":
+        e.preventDefault();
+        prevMonth();
+        break;
+      case "PageDown":
+        e.preventDefault();
+        nextMonth();
+        break;
+      case "Enter":
+        e.preventDefault();
+        if (selected) clickDay(selected);
+        break;
+    }
+  }
 </script>
 
-<div class="v9-cal">
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div
+  bind:this={rootEl}
+  class="v9-cal"
+  tabindex="0"
+  onkeydown={handleKeydown}
+  style="outline: none;"
+>
   <div class="cal-head">
     <span class="month">{monthName} {visibleYear}</span>
     <span class="nav">

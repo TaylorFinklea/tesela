@@ -210,6 +210,7 @@
     teselaDecorations,
     teselaDecorationTheme,
     hiddenPropertyKeysFacet,
+    primaryTagFacet,
     type HiddenKeysConfig,
   } from "$lib/cm-decorations";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
@@ -259,6 +260,7 @@
     noteslist: notesList,
     statusChoices,
     hiddenKeys,
+    primaryTag,
     autoFillNames,
     onInsertTemplate,
   }: {
@@ -302,6 +304,10 @@
     /** Per-block list of property keys to hide in the editor (computed by
      *  BlockOutliner from inherited tag-property defs). */
     hiddenKeys?: HiddenKeysConfig;
+    /** Phase 9.4 — primary tag (kind) for the kind-glyph badge prefix.
+     *  Comes from `block.tags[0]` in BlockOutliner. `null` for blocks with no
+     *  tag chain (no badge rendered). */
+    primaryTag?: string | null;
     /** Resolves a tag name to its auto-fill property names (visible-by-default
      *  property defs). Used when toggling a tag ON to append empty `key:: `
      *  continuation lines for each property. */
@@ -313,6 +319,7 @@
   } = $props();
 
   const hiddenKeysCompartment = new Compartment();
+  const primaryTagCompartment = new Compartment();
 
   let container: HTMLDivElement;
   let view = $state<EditorView | null>(null);
@@ -629,6 +636,14 @@
     });
   });
 
+  // Phase 9.4 — primary tag for the kind-glyph badge.
+  $effect(() => {
+    if (!view) return;
+    view.dispatch({
+      effects: primaryTagCompartment.reconfigure(primaryTagFacet.of(primaryTag ?? null)),
+    });
+  });
+
   // Keep visualMode flag in sync so j/k vim actions can check it without props.
   $effect(() => { vimCtx.visualMode = inVisualMode ?? false; });
 
@@ -891,6 +906,7 @@
         hiddenKeysCompartment.of(
           hiddenPropertyKeysFacet.of(hiddenKeys ?? { hide: new Set(), hideEmpty: new Set() }),
         ),
+        primaryTagCompartment.of(primaryTagFacet.of(primaryTag ?? null)),
         EditorView.lineWrapping,
       ],
     });

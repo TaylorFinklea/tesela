@@ -6,8 +6,9 @@
   import { getActiveRegion, setActiveRegion } from "$lib/stores/pane-state.svelte";
   import { parseBlocks } from "$lib/block-parser";
   import { widgetFromNote } from "$lib/widget-registry.svelte";
-  import { applyTriage, triageActionForKey } from "$lib/triage.svelte";
+  import { applyTriage, attachToProject, triageActionForKey } from "$lib/triage.svelte";
   import { useQueryClient } from "@tanstack/svelte-query";
+  import ProjectPicker from "./ProjectPicker.svelte";
   import type { Note } from "$lib/types/Note";
   import type { Link } from "$lib/types/Link";
   import type { GraphEdge } from "$lib/types/GraphEdge";
@@ -28,6 +29,9 @@
   let rootEl = $state<HTMLElement | undefined>();
   let selectedIndex = $state(0);
   const queryClient = useQueryClient();
+
+  // Phase 9.4 — Project picker for `p` triage key.
+  let projectPickerRow = $state<Row | null>(null);
 
   const path = $derived(page.url.pathname);
   const noteId = $derived(path.startsWith("/p/") ? decodeURIComponent(path.slice(3)) : "");
@@ -51,6 +55,27 @@
         : Promise.resolve({ groups: [] }),
     enabled: !!widget && widget.query.trim().length > 0,
   }));
+
+  // Phase 9.4 — Project list for `p` triage picker. Only fetched when the
+  // active widget is `inbox` (the only triage surface today).
+  const allNotesQuery = createQuery(() => ({
+    queryKey: ["notes", "all-for-picker"] as const,
+    queryFn: () => api.listNotes({ limit: 500 }),
+    enabled: widget?.id === "inbox",
+  }));
+  const allNotes = $derived((allNotesQuery.data ?? []) as Note[]);
+
+  async function handleProjectSelect(project: Note) {
+    const row = projectPickerRow;
+    projectPickerRow = null;
+    if (!row || !row.blockId || !row.pageId) return;
+    try {
+      const ok = await attachToProject(row.pageId, row.blockId, project.id);
+      if (ok) queryClient.invalidateQueries({ queryKey: ["widget", noteId] });
+    } catch (e) {
+      console.error("Attach to project failed:", e);
+    }
+  }
 
   // ----- /  (Pages) -----
   const notesQuery = createQuery(() => ({
@@ -267,6 +292,9 @@
     ) {
       e.preventDefault();
       void triageRow(flatRows[selectedIndex], e.key);
+    } else if (widget?.id === "inbox" && e.key === "p" && flatRows[selectedIndex]) {
+      e.preventDefault();
+      projectPickerRow = flatRows[selectedIndex];
     }
   }
 </script>
@@ -347,3 +375,11 @@
     {/if}
   </div>
 </div>
+
+{#if projectPickerRow}
+  <ProjectPicker
+    notes={allNotes}
+    onselect={handleProjectSelect}
+    onclose={() => (projectPickerRow = null)}
+  />
+{/if}

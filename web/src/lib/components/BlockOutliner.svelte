@@ -1003,6 +1003,7 @@
             noteslist={notesList}
             statusChoices={statusChoices}
             hiddenKeys={hiddenKeysFor(block)}
+            primaryTag={block.tags[0] ?? block.inherited_tags[0] ?? null}
             autoFillNames={autoFillNamesForTag}
             onInsertTemplate={(templateNoteId) => insertTemplateAfter(block.id, templateNoteId)}
             onUndoOutliner={undoOutliner}

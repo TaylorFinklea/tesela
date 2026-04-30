@@ -15,6 +15,25 @@ class EmptyWidget extends WidgetType {
   eq() { return true; }
 }
 
+/**
+ * Phase 9.4 — kind-glyph badge prepended to the first line of a block whose
+ * primary `tags::` is one of the recognized kinds (Task, Project, Person,
+ * etc.). Color comes from the .kind-badge CSS rules in `app.css`.
+ */
+class KindBadgeWidget extends WidgetType {
+  constructor(public tag: string) { super(); }
+  toDOM() {
+    const el = document.createElement("span");
+    el.className = `kind-badge kind-${this.tag.toLowerCase()}`;
+    el.textContent = this.tag.toUpperCase();
+    el.contentEditable = "false";
+    el.setAttribute("aria-hidden", "true");
+    return el;
+  }
+  eq(other: KindBadgeWidget) { return this.tag === other.tag; }
+  ignoreEvent() { return true; }
+}
+
 const tagHide = Decoration.replace({ widget: new EmptyWidget() });
 const wikiLinkMark = Decoration.mark({ class: "cm-tesela-wikilink" });
 const wikiLinkBracketMark = Decoration.mark({ class: "cm-tesela-wikilink-bracket" });
@@ -52,6 +71,15 @@ export const hiddenPropertyKeysFacet = Facet.define<HiddenKeysConfig, HiddenKeys
   combine: (values) => values[0] ?? EMPTY_HIDDEN_KEYS,
 });
 
+/**
+ * Phase 9.4 — primary tag (kind) of the surrounding block, surfaced via the
+ * outliner's `block.tags[0]`. Drives the kind-glyph badge decoration. `null`
+ * (or absent) means no badge.
+ */
+export const primaryTagFacet = Facet.define<string | null, string | null>({
+  combine: (values) => values[0] ?? null,
+});
+
 type Built = { decorations: DecorationSet; atomicTags: RangeSet<Decoration> };
 
 function buildDecorations(view: EditorView): Built {
@@ -73,6 +101,18 @@ function buildDecorations(view: EditorView): Built {
   TAGS_LINE_RE.lastIndex = 0;
   while ((m = TAGS_LINE_RE.exec(doc)) !== null) {
     decos.push({ from: m.index, to: m.index, decoration: tagsLineHide });
+  }
+  // Phase 9.4 — primary kind glyph badge prefix on the first line. The tag
+  // comes from the parent BlockOutliner via `primaryTagFacet` (the cm6 doc
+  // itself doesn't include `tags::` lines because the block parser pulls
+  // them out before they reach the editor).
+  const primaryTag = view.state.facet(primaryTagFacet);
+  if (primaryTag) {
+    decos.push({
+      from: 0,
+      to: 0,
+      decoration: Decoration.widget({ widget: new KindBadgeWidget(primaryTag), side: -1 }),
+    });
   }
 
   // Wiki-links
@@ -125,10 +165,13 @@ export const teselaDecorations = ViewPlugin.fromClass(
       this.atomicTags = built.atomicTags;
     }
     update(update: ViewUpdate) {
-      const facetChanged =
+      const hiddenChanged =
         update.startState.facet(hiddenPropertyKeysFacet) !==
         update.state.facet(hiddenPropertyKeysFacet);
-      if (update.docChanged || update.viewportChanged || facetChanged) {
+      const primaryChanged =
+        update.startState.facet(primaryTagFacet) !==
+        update.state.facet(primaryTagFacet);
+      if (update.docChanged || update.viewportChanged || hiddenChanged || primaryChanged) {
         const built = buildDecorations(update.view);
         this.decorations = built.decorations;
         this.atomicTags = built.atomicTags;

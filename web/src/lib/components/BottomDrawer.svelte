@@ -207,13 +207,31 @@
     if (!focusedBlock && panelContext === "block") panelContext = "page";
   });
 
+  // Lightweight count-only fetches for the tab badges. Cheap and reactive.
+  const versionsCountQuery = createQuery(() => ({
+    queryKey: ["note-versions", noteId, "count"] as const,
+    queryFn: () => api.listNoteVersions(noteId, 200),
+    enabled: noteId !== "",
+  }));
+  const versionsCount = $derived(versionsCountQuery.data?.length ?? 0);
+
+  const linkedTasksCountQuery = createQuery(() => ({
+    queryKey: ["linked-tasks", noteId, "count"] as const,
+    queryFn: () =>
+      api.executeQuery(`kind:block tag:Task has-link:${noteId}`, null, null),
+    enabled: noteId !== "",
+  }));
+  const linkedTasksCount = $derived(
+    linkedTasksCountQuery.data?.groups?.reduce((acc, g) => acc + g.items.length, 0) ?? 0,
+  );
+
   type TabSpec = { id: BottomTab; label: string; n: number };
   const tabSpecs = $derived<TabSpec[]>([
     { id: "backlinks", label: "Backlinks", n: allBacklinkSources.length },
     { id: "properties", label: "Properties", n: customProperties.length + blockProperties.length },
     { id: "outline", label: "Outline", n: outlineBlocks.length },
-    { id: "history", label: "History", n: 0 },
-    { id: "linkedTasks", label: "Linked tasks", n: 0 },
+    { id: "history", label: "History", n: versionsCount },
+    { id: "linkedTasks", label: "Linked tasks", n: linkedTasksCount },
   ]);
 
   function cycleTab(direction: 1 | -1) {

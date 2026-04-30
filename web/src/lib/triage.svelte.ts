@@ -43,14 +43,27 @@ export async function applyTriage(
 }
 
 /**
- * Insert (or replace) a `status:: <value>` continuation line on the block whose
- * deterministic id is `blockId` (`{pageId}:{lineNumber}`). Pure function — no
- * I/O. Mirrors the line-number addressing the indexer uses.
+ * Insert (or replace) a `status:: <value>` continuation line on the block.
+ * Convenience wrapper around `setBlockProperty`.
  */
 export function setBlockStatus(
   content: string,
   blockId: string,
   action: TriageAction,
+): string {
+  return setBlockProperty(content, blockId, "status", action);
+}
+
+/**
+ * Insert (or replace) a `key:: value` continuation line on the block whose
+ * deterministic id is `blockId` (`{pageId}:{lineNumber}`). Pure function — no
+ * I/O. Mirrors the line-number addressing the indexer uses.
+ */
+export function setBlockProperty(
+  content: string,
+  blockId: string,
+  key: string,
+  value: string,
 ): string {
   // Block id format: `{pageId}:{lineNumber}`. The line number indexes into the
   // body (post-frontmatter). We need the body's line N to find where to insert.
@@ -74,9 +87,10 @@ export function setBlockStatus(
   const indent = targetLine.length - targetLine.trimStart().length;
   const continuationIndent = indent + 2;
 
-  // Look for an existing status:: continuation line within the block.
+  // Look for an existing `key::` continuation line within the block.
+  const re = new RegExp(`^${escapeRegex(key)}::`);
   let cursor = lineNum + 1;
-  let statusLineIdx = -1;
+  let propLineIdx = -1;
   while (cursor < lines.length) {
     const l = lines[cursor];
     const ts = l.trimStart();
@@ -84,20 +98,40 @@ export function setBlockStatus(
       const cur = l.length - ts.length;
       // A new bullet at <= indent ends the block.
       if (ts.startsWith("- ") && cur <= indent) break;
-      if (cur >= continuationIndent && /^status::/.test(ts)) {
-        statusLineIdx = cursor;
+      if (cur >= continuationIndent && re.test(ts)) {
+        propLineIdx = cursor;
         break;
       }
     }
     cursor++;
   }
 
-  const newStatusLine = `${" ".repeat(continuationIndent)}status:: ${action}`;
-  if (statusLineIdx >= 0) {
-    lines[statusLineIdx] = newStatusLine;
+  const newLine = `${" ".repeat(continuationIndent)}${key}:: ${value}`;
+  if (propLineIdx >= 0) {
+    lines[propLineIdx] = newLine;
   } else {
-    lines.splice(lineNum + 1, 0, newStatusLine);
+    lines.splice(lineNum + 1, 0, newLine);
   }
 
   return frontmatter + lines.join("\n");
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Attach a block to a project page by setting `project:: <projectId>`.
+ * Wraps `setBlockProperty` + the API PUT.
+ */
+export async function attachToProject(
+  pageId: string,
+  blockId: string,
+  projectId: string,
+): Promise<boolean> {
+  const note = await api.getNote(pageId);
+  const updated = setBlockProperty(note.content, blockId, "project", projectId);
+  if (updated === note.content) return false;
+  await api.updateNote(pageId, updated);
+  return true;
 }

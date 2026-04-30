@@ -151,13 +151,15 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [x] HistoryDiff.svelte modal — side-by-side diff using local LCS line-diff helper; Restore button issues PUT with historical content
 - [x] LinkedTasksTab.svelte — reuses /search/query with `kind:block tag:Task has-link:<focused-id>`, grouped by status
 
-#### Phase 9.4 — Polish
-- [ ] Dynamic per-view keyboard hints in crumb bar
-- [ ] Mini calendar full keynav + month nav
-- [ ] Focus-pane splits (multiple side-by-side outliners)
-- [ ] Drag-to-rearrange widget rail (or keyboard equivalent)
-- [ ] Block kind glyphs (TASK/PROJECT badge prefix) in focus pane — carried forward from 9.1
-- [ ] Project attachment (`p` triage key in inbox) — carried forward from 9.2
+#### Phase 9.4 — Polish ✓ (mostly)
+- [x] Dynamic per-view keyboard hints in crumb bar — context table by route + widget id
+- [x] Mini calendar keyboard nav — arrows / hjkl / PgUp / PgDn / `g t` (today) / Enter
+- [x] Drag-to-rearrange widget rail — HTML5 drag-drop on rail rows; persists to `tesela:railOrder`
+- [x] Block kind glyphs (TASK/PROJECT badge prefix) in focus pane — `KindBadgeWidget` decoration via new `primaryTagFacet`
+- [x] Project attachment (`p` triage key in inbox) — opens `ProjectPicker` modal, sets `project::` block property
+- [x] Cmd+Z bleed-through fix — when vim is enabled, document-level Cmd+Z is suppressed inside cm-editor (vim's `u` is the canonical undo)
+- [x] Drawer tab badge counts — History tab shows real version count, Linked tasks shows real task count
+- [→] Focus-pane splits (`^w v` / multiple side-by-side outliners) — deferred. Needs full focus-region refactor; ~2-3 hr standalone phase. Logged as v9.5 candidate.
 
 ### Phase 3: Power Features (paused — folded into Phase 9)
 

@@ -115,6 +115,26 @@
       }
     };
 
+    // Phase 9.4 — Cmd+Z bleed-through fix. When vim is enabled, the user's
+    // canonical undo path is `u` in Normal mode, which walks the unified
+    // outliner+insert-session stack (Phase 3M.1). cm6's per-keystroke history
+    // also lives underneath; if Cmd+Z fires inside cm-editor it reaches cm6's
+    // history extension and walks character-level undo, which has been
+    // observed to interact badly with outliner-undo state (memory:
+    // project_post_redesign_followups.md). Suppress it at capture phase when
+    // vim is on. When vim is off we leave Cmd+Z untouched so the platform
+    // shortcut works inside the editor.
+    const cmdZHandler = (e: KeyboardEvent) => {
+      if (!isVimEnabled()) return;
+      const isUndo = (e.metaKey || e.ctrlKey) && !e.altKey && e.key === "z";
+      if (!isUndo) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.(".cm-editor")) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    };
+
     // Ctrl+w chord handler — Vim-style window commands across the four
     // regions: rail / middle / focus / bottom. Capture phase to beat the
     // browser's "close tab" on Ctrl+w.
@@ -187,11 +207,13 @@
     document.addEventListener("keydown", spaceHandler);
     document.addEventListener("keydown", panelHandler);
     document.addEventListener("keydown", ctrlWHandler, true);
+    document.addEventListener("keydown", cmdZHandler, true);
     document.addEventListener("tesela:leader", leaderHandler);
     return () => {
       document.removeEventListener("keydown", spaceHandler);
       document.removeEventListener("keydown", panelHandler);
       document.removeEventListener("keydown", ctrlWHandler, true);
+      document.removeEventListener("keydown", cmdZHandler, true);
       document.removeEventListener("tesela:leader", leaderHandler);
       if (pendingTimer) clearTimeout(pendingTimer);
     };
