@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::note::{Note, NoteId, SearchHit};
-use crate::query::{ParsedQuery, QueryResult};
+use crate::query::{CalendarMarks, ParsedQuery, QueryResult};
 
 #[async_trait]
 pub trait SearchIndex: Send + Sync {
@@ -24,4 +24,10 @@ pub trait SearchIndex: Send + Sync {
         group: Option<&str>,
         sort: Option<&str>,
     ) -> Result<QueryResult>;
+
+    /// Compute calendar markers for the rail's mini calendar (Phase 9.2).
+    /// `from` and `to` are inclusive `YYYY-MM-DD` boundaries (typically the
+    /// first and last day of the visible month). Implementations should be
+    /// cheap — drives the calendar widget's per-day dot rendering.
+    async fn calendar_marks(&self, from: &str, to: &str) -> Result<CalendarMarks>;
 }

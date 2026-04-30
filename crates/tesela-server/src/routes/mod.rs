@@ -1,3 +1,4 @@
+mod calendar;
 mod notes;
 mod search;
 mod search_query;
@@ -33,6 +34,7 @@ pub fn build(state: AppState) -> Router {
         .route("/links", get(notes::get_all_edges))
         .route("/search", get(search::search_notes))
         .route("/search/query", post(search_query::execute))
+        .route("/calendar/marks", get(calendar::marks))
         .route("/tags", get(tags::list_tags))
         .route("/types", get(types::list_types))
         .route("/types/{name}", get(types::get_type))

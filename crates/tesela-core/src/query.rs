@@ -131,6 +131,10 @@ pub struct QueryItem {
     pub primary_tag: Option<String>,
     /// Block-level properties (or page metadata for page rows).
     pub properties: std::collections::HashMap<String, String>,
+    /// `note_type` of the containing page — used by the inbox post-filter to
+    /// exclude blocks from system pages (Tag, Property, Query, Template).
+    /// `None` for plain pages.
+    pub page_note_type: Option<String>,
 }
 
 /// Grouped query result.
@@ -150,6 +154,68 @@ pub struct QueryGroup {
 #[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct QueryResult {
     pub groups: Vec<QueryGroup>,
+}
+
+/// Per-day marker counts surfaced in the rail's mini calendar (Phase 9.2).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+pub struct DayMarkers {
+    /// Blocks with `deadline:: <date>` due that day.
+    pub tasks: u32,
+    /// Blocks with `scheduled:: <date>` on that day.
+    pub events: u32,
+    /// Whether a daily note exists for this date.
+    pub notes: bool,
+}
+
+/// Calendar marks payload — keys are `YYYY-MM-DD` strings.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+pub struct CalendarMarks {
+    pub days: std::collections::HashMap<String, DayMarkers>,
+}
+
+/// Extract the first ISO date (`YYYY-MM-DD`) anywhere in a property value.
+/// Handles bare dates AND wiki-link wrapped (`[[2026-04-15]]`) forms.
+pub fn extract_iso_date(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let n = bytes.len();
+    let mut i = 0usize;
+    while i + 10 <= n {
+        let slice = &bytes[i..i + 10];
+        if slice[4] == b'-'
+            && slice[7] == b'-'
+            && slice[..4].iter().all(|c| c.is_ascii_digit())
+            && slice[5..7].iter().all(|c| c.is_ascii_digit())
+            && slice[8..10].iter().all(|c| c.is_ascii_digit())
+        {
+            return Some(value[i..i + 10].to_string());
+        }
+        i += 1;
+    }
+    None
+}
+
+#[cfg(test)]
+mod date_tests {
+    use super::extract_iso_date;
+    #[test]
+    fn extracts_bare_date() {
+        assert_eq!(extract_iso_date("2026-04-15"), Some("2026-04-15".into()));
+    }
+    #[test]
+    fn extracts_wiki_wrapped() {
+        assert_eq!(
+            extract_iso_date("[[2026-04-15]]Write doc"),
+            Some("2026-04-15".into())
+        );
+    }
+    #[test]
+    fn no_date_returns_none() {
+        assert_eq!(extract_iso_date("low"), None);
+    }
 }
 
 /// Parse a DSL string into a [`ParsedQuery`]. Unrecognized syntax is dropped

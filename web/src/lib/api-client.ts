@@ -9,6 +9,7 @@ import type { GraphEdge } from "$lib/types/GraphEdge";
 import type { TypeDefinition } from "$lib/types/TypeDefinition";
 import type { ParsedBlock } from "$lib/types/ParsedBlock";
 import type { QueryResult } from "$lib/types/QueryResult";
+import type { CalendarMarks } from "$lib/types/CalendarMarks";
 
 // Same-origin path; vite dev server proxies `/api/*` → tesela-server at
 // 127.0.0.1:7474. Relative URL means the LAN client (phone) hits whatever
@@ -81,6 +82,10 @@ export const api = {
   },
   executeQuery: (dsl: string, group?: string | null, sort?: string | null) =>
     post<QueryResult>("/search/query", { dsl, group: group ?? null, sort: sort ?? null }),
+  getCalendarMarks: (from: string, to: string) => {
+    const q = new URLSearchParams({ from, to });
+    return get<CalendarMarks>(`/calendar/marks?${q.toString()}`);
+  },
   deleteNote: (id: string) =>
     fetch(`${BASE_URL}/notes/${encodeURIComponent(id)}`, { method: "DELETE" }),
   getBacklinks: (id: string) =>

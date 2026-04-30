@@ -133,10 +133,13 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [x] ⌘K "New Query" command + `/widget` slash command + rail footer button
 - [→] Block kind glyphs (TASK/PROJECT) in focus pane — deferred to 9.4 (would require restyling cm-decorations away from current "tags hidden" model)
 
-#### Phase 9.2 — Calendar + Inbox Widgets
-- [ ] Mini calendar pinned in rail; tasks (rose) / events (teal) / notes (amber) markers; click-to-jump-to-daily-note
-- [ ] "Event" defined as block with future-dated `scheduled` or `deadline` property
-- [ ] Inbox widget: untriaged definition + triage flow (set-status / move-to-project / archive)
+#### Phase 9.2 — Calendar + Inbox Widgets ✓
+- [x] Mini calendar pinned in rail (`MiniCalendar.svelte`); per-day rose/teal/amber markers from `GET /calendar/marks`; click-to-navigate-to-daily-note (auto-creates if missing); month nav
+- [x] "Event" inferred from `scheduled::` (teal) and "task" from `deadline::` (rose) block properties; ISO date extracted from bare or wiki-wrapped (`[[YYYY-MM-DD]]`) values
+- [x] Inbox widget: post-DSL filter excludes blocks from daily notes + Tag/Property/Query/Template pages via the new `page_note_type` field on `QueryItem`
+- [x] Triage flow: `t/d/x` single-key handlers in middle column when widget is `inbox` — sets `status::` continuation line, PUTs note, row drops out via WS invalidation
+- [x] `note_type` SQL column now populated by `upsert_note` (was previously NULL for all rows; backfilled via `cargo run -p tesela-cli reindex`)
+- [→] Project attachment (`p` triage key) — deferred to 9.4
 
 #### Phase 9.3 — History + Linked Tasks Tabs
 - [ ] Per-note version log in SQLite; PUT writes a version row
@@ -149,6 +152,7 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [ ] Focus-pane splits (multiple side-by-side outliners)
 - [ ] Drag-to-rearrange widget rail (or keyboard equivalent)
 - [ ] Block kind glyphs (TASK/PROJECT badge prefix) in focus pane — carried forward from 9.1
+- [ ] Project attachment (`p` triage key in inbox) — carried forward from 9.2
 
 ### Phase 3: Power Features (paused — folded into Phase 9)
 

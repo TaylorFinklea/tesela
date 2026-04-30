@@ -1,0 +1,103 @@
+/**
+ * Triage flow for the Inbox widget (Phase 9.2). Single-key handlers that fire
+ * when the middle column has focus AND the active widget is `inbox`.
+ *
+ * `t` → set status:: todo
+ * `d` → set status:: doing
+ * `x` → set status:: done (archive — drops out of inbox query)
+ *
+ * Implementation: fetches the focused row's containing note, edits the
+ * referenced block's body to insert/replace `status:: <value>`, PUTs back. The
+ * subsequent WS echo invalidates `["widget", "inbox"]` and the row drops out
+ * of the list.
+ */
+import { api } from "$lib/api-client";
+
+export type TriageAction = "todo" | "doing" | "done";
+
+const ACTIONS: Record<string, TriageAction> = {
+  t: "todo",
+  d: "doing",
+  x: "done",
+};
+
+export function triageActionForKey(key: string): TriageAction | null {
+  return ACTIONS[key.toLowerCase()] ?? null;
+}
+
+/**
+ * Apply a triage action to the block identified by `blockId` inside the note
+ * `pageId`. Returns true if the PUT was issued; false if the block couldn't
+ * be located (e.g. stale row).
+ */
+export async function applyTriage(
+  pageId: string,
+  blockId: string,
+  action: TriageAction,
+): Promise<boolean> {
+  const note = await api.getNote(pageId);
+  const updated = setBlockStatus(note.content, blockId, action);
+  if (updated === note.content) return false;
+  await api.updateNote(pageId, updated);
+  return true;
+}
+
+/**
+ * Insert (or replace) a `status:: <value>` continuation line on the block whose
+ * deterministic id is `blockId` (`{pageId}:{lineNumber}`). Pure function — no
+ * I/O. Mirrors the line-number addressing the indexer uses.
+ */
+export function setBlockStatus(
+  content: string,
+  blockId: string,
+  action: TriageAction,
+): string {
+  // Block id format: `{pageId}:{lineNumber}`. The line number indexes into the
+  // body (post-frontmatter). We need the body's line N to find where to insert.
+  const colonIdx = blockId.lastIndexOf(":");
+  if (colonIdx < 0) return content;
+  const lineNumStr = blockId.slice(colonIdx + 1);
+  const lineNum = Number.parseInt(lineNumStr, 10);
+  if (!Number.isFinite(lineNum)) return content;
+
+  // Split frontmatter from body — same logic as elsewhere.
+  const fmEnd = content.startsWith("---") ? content.indexOf("---", 3) : -1;
+  const splitAt = fmEnd >= 0 ? fmEnd + 3 + (content[fmEnd + 3] === "\n" ? 1 : 0) : 0;
+  const frontmatter = content.slice(0, splitAt);
+  const body = content.slice(splitAt);
+  const lines = body.split("\n");
+  if (lineNum >= lines.length) return content;
+
+  // Find the block's bullet line and its indent. The block continues until the
+  // next line at indent ≤ this one starting with `- `.
+  const targetLine = lines[lineNum];
+  const indent = targetLine.length - targetLine.trimStart().length;
+  const continuationIndent = indent + 2;
+
+  // Look for an existing status:: continuation line within the block.
+  let cursor = lineNum + 1;
+  let statusLineIdx = -1;
+  while (cursor < lines.length) {
+    const l = lines[cursor];
+    const ts = l.trimStart();
+    if (ts.length > 0) {
+      const cur = l.length - ts.length;
+      // A new bullet at <= indent ends the block.
+      if (ts.startsWith("- ") && cur <= indent) break;
+      if (cur >= continuationIndent && /^status::/.test(ts)) {
+        statusLineIdx = cursor;
+        break;
+      }
+    }
+    cursor++;
+  }
+
+  const newStatusLine = `${" ".repeat(continuationIndent)}status:: ${action}`;
+  if (statusLineIdx >= 0) {
+    lines[statusLineIdx] = newStatusLine;
+  } else {
+    lines.splice(lineNum + 1, 0, newStatusLine);
+  }
+
+  return frontmatter + lines.join("\n");
+}

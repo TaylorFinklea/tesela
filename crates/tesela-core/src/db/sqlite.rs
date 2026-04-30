@@ -132,7 +132,7 @@ impl SqliteIndex {
             r#"
             UPDATE notes
             SET title = ?, body = ?, content = ?, path = ?, checksum = ?,
-                modified_at = ?, tags = ?
+                modified_at = ?, tags = ?, note_type = ?
             WHERE id = ?
             "#,
         )
@@ -143,6 +143,7 @@ impl SqliteIndex {
         .bind(&note.checksum)
         .bind(note.modified_at.to_rfc3339())
         .bind(&tags_json)
+        .bind(note.metadata.note_type.as_deref())
         .bind(note.id.as_str())
         .execute(&self.pool)
         .await
@@ -153,8 +154,8 @@ impl SqliteIndex {
             sqlx::query(
                 r#"
                 INSERT INTO notes (
-                    id, title, body, content, path, checksum, created_at, modified_at, tags
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    id, title, body, content, path, checksum, created_at, modified_at, tags, note_type
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#,
             )
             .bind(note.id.as_str())
@@ -166,6 +167,7 @@ impl SqliteIndex {
             .bind(note.created_at.to_rfc3339())
             .bind(note.modified_at.to_rfc3339())
             .bind(&tags_json)
+            .bind(note.metadata.note_type.as_deref())
             .execute(&self.pool)
             .await
             .map_err(|e| db_err("Failed to insert note", e))?;
@@ -736,6 +738,60 @@ impl SearchIndex for SqliteIndex {
         let groups = apply_group(items, group);
         Ok(QueryResult { groups })
     }
+
+    async fn calendar_marks(
+        &self,
+        from: &str,
+        to: &str,
+    ) -> Result<crate::query::CalendarMarks> {
+        use crate::query::{extract_iso_date, CalendarMarks, DayMarkers};
+        use std::collections::HashMap;
+        let mut days: HashMap<String, DayMarkers> = HashMap::new();
+
+        // Block markers: scan block_properties for deadline/scheduled rows whose
+        // values contain an ISO date in the [from, to] range. The values may
+        // be wiki-wrapped (`[[2026-04-15]]`) — `extract_iso_date` handles it.
+        let rows = sqlx::query(
+            r#"SELECT property_name, value FROM block_properties
+               WHERE property_name IN ('deadline', 'scheduled')
+                 AND value IS NOT NULL"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| db_err("Failed to fetch calendar block markers", e))?;
+        for row in &rows {
+            let property_name: String = row.get("property_name");
+            let value: Option<String> = row.try_get("value").ok().flatten();
+            let Some(v) = value else { continue };
+            let Some(date) = extract_iso_date(&v) else { continue };
+            if date.as_str() < from || date.as_str() > to {
+                continue;
+            }
+            let entry = days.entry(date).or_default();
+            match property_name.as_str() {
+                "deadline" => entry.tasks += 1,
+                "scheduled" => entry.events += 1,
+                _ => {}
+            }
+        }
+
+        // Note markers: daily notes use `YYYY-MM-DD` as their id.
+        let note_rows = sqlx::query(
+            r#"SELECT id FROM notes WHERE id >= ? AND id <= ?
+               AND id GLOB '????-??-??'"#,
+        )
+        .bind(from)
+        .bind(to)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| db_err("Failed to fetch calendar note markers", e))?;
+        for row in &note_rows {
+            let id: String = row.get("id");
+            days.entry(id).or_default().notes = true;
+        }
+
+        Ok(CalendarMarks { days })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -761,28 +817,38 @@ impl SqliteIndex {
             .find(|f| f.key == "tag" && f.op == QueryOp::Eq)
             .map(|f| f.value.as_str());
 
-        let candidate_notes: Vec<(String, String, String)> = if let Some(tag) = prefilter_tag {
-            sqlx::query("SELECT id, title, body FROM notes WHERE body LIKE ? OR tags LIKE ?")
+        let candidate_notes: Vec<(String, String, String, Option<String>)> = if let Some(tag) = prefilter_tag {
+            sqlx::query("SELECT id, title, body, note_type FROM notes WHERE body LIKE ? OR tags LIKE ?")
                 .bind(format!("%#{}%", tag))
                 .bind(format!("%\"{}%", tag))
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| db_err("Failed to fetch candidate notes for block query", e))?
                 .into_iter()
-                .map(|row| (row.get("id"), row.get("title"), row.get("body")))
+                .map(|row| (
+                    row.get("id"),
+                    row.get("title"),
+                    row.get("body"),
+                    row.try_get::<Option<String>, _>("note_type").ok().flatten(),
+                ))
                 .collect()
         } else {
-            sqlx::query("SELECT id, title, body FROM notes")
+            sqlx::query("SELECT id, title, body, note_type FROM notes")
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| db_err("Failed to fetch all notes for block query", e))?
                 .into_iter()
-                .map(|row| (row.get("id"), row.get("title"), row.get("body")))
+                .map(|row| (
+                    row.get("id"),
+                    row.get("title"),
+                    row.get("body"),
+                    row.try_get::<Option<String>, _>("note_type").ok().flatten(),
+                ))
                 .collect()
         };
 
         let mut out = Vec::new();
-        for (note_id, note_title, body) in &candidate_notes {
+        for (note_id, note_title, body, page_note_type) in &candidate_notes {
             let blocks = parse_blocks(note_id, body);
             // Refine each block in-memory.
             for (idx, block) in blocks.iter().enumerate() {
@@ -822,6 +888,7 @@ impl SqliteIndex {
                     kind: Kind::Block,
                     primary_tag,
                     properties: block.properties.clone(),
+                    page_note_type: page_note_type.clone(),
                 });
             }
         }
@@ -901,6 +968,7 @@ impl SqliteIndex {
                 kind: Kind::Page,
                 primary_tag: tags.first().cloned(),
                 properties: props,
+                page_note_type: note_type,
             });
         }
         Ok(out)

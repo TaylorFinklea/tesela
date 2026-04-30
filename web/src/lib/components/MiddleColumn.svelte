@@ -6,6 +6,8 @@
   import { getActiveRegion, setActiveRegion } from "$lib/stores/pane-state.svelte";
   import { parseBlocks } from "$lib/block-parser";
   import { widgetFromNote } from "$lib/widget-registry.svelte";
+  import { applyTriage, triageActionForKey } from "$lib/triage.svelte";
+  import { useQueryClient } from "@tanstack/svelte-query";
   import type { Note } from "$lib/types/Note";
   import type { Link } from "$lib/types/Link";
   import type { GraphEdge } from "$lib/types/GraphEdge";
@@ -17,11 +19,15 @@
     href?: string;
     breadcrumb?: string[];
     primaryTag?: string;
+    /** Block + page IDs for triage / drill actions. */
+    blockId?: string;
+    pageId?: string;
   };
 
   const middleFocused = $derived(getActiveRegion() === "middle");
   let rootEl = $state<HTMLElement | undefined>();
   let selectedIndex = $state(0);
+  const queryClient = useQueryClient();
 
   const path = $derived(page.url.pathname);
   const noteId = $derived(path.startsWith("/p/") ? decodeURIComponent(path.slice(3)) : "");
@@ -109,7 +115,21 @@
       href,
       breadcrumb: item.parent_breadcrumb,
       primaryTag: item.primary_tag ?? undefined,
+      blockId: item.block_id ?? undefined,
+      pageId: item.page_id,
     };
+  }
+
+  // Inbox special-case (Phase 9.2): pure DSL can't express "page is type=page"
+  // negation across multiple non-page note_types. Post-filter here using the
+  // `page_note_type` field that the backend populates for block-kind items.
+  const TRIAGED_PAGE_TYPES = new Set(["Tag", "Property", "Query", "Template"]);
+  function isInboxableRow(item: QueryItem): boolean {
+    if (item.kind !== "block") return false;
+    // Daily-note pages have IDs of the form YYYY-MM-DD.
+    if (/^\d{4}-\d{2}-\d{2}$/.test(item.page_id)) return false;
+    if (item.page_note_type && TRIAGED_PAGE_TYPES.has(item.page_note_type)) return false;
+    return true;
   }
 
   type View = {
@@ -125,8 +145,13 @@
   const view = $derived.by((): View => {
     if (isQueryWidget && widget) {
       const result = widgetResultQuery.data;
-      const total = result?.groups?.reduce((acc, g) => acc + g.items.length, 0) ?? 0;
-      const groups = (result?.groups ?? []).map((g) => ({
+      const isInbox = widget.id === "inbox";
+      const filteredGroups = (result?.groups ?? []).map((g) => ({
+        ...g,
+        items: isInbox ? g.items.filter(isInboxableRow) : g.items,
+      }));
+      const total = filteredGroups.reduce((acc, g) => acc + g.items.length, 0);
+      const groups = filteredGroups.map((g) => ({
         key: g.key || "—",
         rows: g.items.map(itemToRow),
       }));
@@ -204,6 +229,22 @@
     }
   });
 
+  async function triageRow(row: Row, key: string): Promise<boolean> {
+    const action = triageActionForKey(key);
+    if (!action || !row.blockId || !row.pageId) return false;
+    try {
+      const ok = await applyTriage(row.pageId, row.blockId, action);
+      if (ok) {
+        // Re-run the query so the row drops out of the inbox list.
+        queryClient.invalidateQueries({ queryKey: ["widget", noteId] });
+      }
+      return ok;
+    } catch (e) {
+      console.error("Triage failed:", e);
+      return false;
+    }
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (!middleFocused) return;
     if (e.key === "j" || e.key === "ArrowDown") {
@@ -219,6 +260,13 @@
     } else if (e.key === "Escape") {
       e.preventDefault();
       setActiveRegion("focus");
+    } else if (
+      widget?.id === "inbox" &&
+      flatRows[selectedIndex] &&
+      triageActionForKey(e.key) !== null
+    ) {
+      e.preventDefault();
+      void triageRow(flatRows[selectedIndex], e.key);
     }
   }
 </script>

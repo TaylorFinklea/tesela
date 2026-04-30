@@ -37,4 +37,10 @@ primary_tag: string | null,
 /**
  * Block-level properties (or page metadata for page rows).
  */
-properties: { [key in string]: string }, };
+properties: { [key in string]: string }, 
+/**
+ * `note_type` of the containing page — used by the inbox post-filter to
+ * exclude blocks from system pages (Tag, Property, Query, Template).
+ * `None` for plain pages.
+ */
+page_note_type: string | null, };

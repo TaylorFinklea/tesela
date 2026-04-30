@@ -5,6 +5,7 @@
   import { api } from "$lib/api-client";
   import { getActiveRegion, setActiveRegion } from "$lib/stores/pane-state.svelte";
   import { parseWidgets, widgetsBySection } from "$lib/widget-registry.svelte";
+  import MiniCalendar from "./MiniCalendar.svelte";
   import type { Note } from "$lib/types/Note";
   import type { Widget, WidgetSection } from "$lib/types/Widget";
 
@@ -138,6 +139,9 @@
     <!-- New widget button -->
     <button class="add" onclick={newQueryWidget} type="button">+ New widget</button>
   </div>
+
+  <!-- Mini calendar (Phase 9.2). Pinned just above the Settings footer. -->
+  <MiniCalendar />
 
   <!-- Settings footer -->
   <div style="border-top: 1px solid var(--v9-line); padding: 6px 6px;">
