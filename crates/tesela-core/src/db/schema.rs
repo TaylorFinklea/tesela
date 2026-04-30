@@ -1,6 +1,6 @@
 //! SQLite schema definitions and migrations for Tesela
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub const CREATE_MIGRATIONS_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -94,5 +94,21 @@ END"#,
         "CREATE INDEX IF NOT EXISTS idx_block_props_value ON block_properties(property_name, value)",
         // Add note_type column to notes table
         "ALTER TABLE notes ADD COLUMN note_type TEXT",
+    ],
+), (
+    "003_note_versions",
+    &[
+        // Per-note edit history. Every PUT writes a row; capped at 200/note.
+        r#"CREATE TABLE IF NOT EXISTS note_versions (
+    id INTEGER PRIMARY KEY,
+    note_id TEXT NOT NULL,
+    version_number INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    prev_content TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE,
+    UNIQUE(note_id, version_number)
+)"#,
+        "CREATE INDEX IF NOT EXISTS idx_note_versions_note ON note_versions(note_id, version_number DESC)",
     ],
 )];

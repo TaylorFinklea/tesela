@@ -120,6 +120,7 @@ pub async fn update_note(
         .get(&note_id)
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Note not found: {}", id)))?;
+    let prev_content = note.content.clone();
     note.content = req.content;
     s.store.update(&note).await?;
     // Re-read to get fresh parsed metadata and checksum
@@ -129,6 +130,17 @@ pub async fn update_note(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Note not found after update: {}", id)))?;
     s.index.reindex(&updated).await?;
+    // Phase 9.3: append a version row. Best-effort — a versioning failure
+    // shouldn't fail the PUT. Cap each note at 200 historical versions.
+    if updated.content != prev_content {
+        if let Err(e) = s
+            .index
+            .record_version(&note_id, Some(&prev_content), &updated.content, 200)
+            .await
+        {
+            tracing::warn!("Failed to record note version: {}", e);
+        }
+    }
     ensure_tag_pages(&s, &updated).await;
     let _ = s.ws_tx.send(WsEvent::NoteUpdated {
         note: updated.clone(),

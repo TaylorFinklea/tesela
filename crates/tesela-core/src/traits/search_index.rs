@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 
 use crate::error::Result;
-use crate::note::{Note, NoteId, SearchHit};
+use crate::note::{Note, NoteId, NoteVersion, SearchHit};
 use crate::query::{CalendarMarks, ParsedQuery, QueryResult};
 
 #[async_trait]
@@ -30,4 +30,22 @@ pub trait SearchIndex: Send + Sync {
     /// first and last day of the visible month). Implementations should be
     /// cheap — drives the calendar widget's per-day dot rendering.
     async fn calendar_marks(&self, from: &str, to: &str) -> Result<CalendarMarks>;
+
+    /// Append a new version row for the given note (Phase 9.3). `prev_content`
+    /// is the pre-PUT content (or `None` for the very first version). The
+    /// implementation assigns the next version_number and prunes oldest beyond
+    /// `cap`.
+    async fn record_version(
+        &self,
+        note_id: &NoteId,
+        prev_content: Option<&str>,
+        new_content: &str,
+        cap: usize,
+    ) -> Result<i64>;
+
+    /// List versions for a note, newest first. `limit` caps the number returned.
+    async fn list_versions(&self, note_id: &NoteId, limit: usize) -> Result<Vec<NoteVersion>>;
+
+    /// Fetch a single version by its primary-key id.
+    async fn get_version(&self, version_id: i64) -> Result<Option<NoteVersion>>;
 }

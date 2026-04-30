@@ -166,6 +166,13 @@ function filterMatches(block: ParsedBlock, f: QueryFilter): boolean {
     if (f.op === "!=") return !allTags.includes(lower);
     return false; // comparison ops not meaningful for tags
   }
+  if (f.key === "has-link") {
+    const needle = `[[${f.value.toLowerCase()}]]`;
+    const present = block.raw_text.toLowerCase().includes(needle);
+    if (f.op === "=") return present;
+    if (f.op === "!=") return !present;
+    return false;
+  }
   if (f.key === "has") {
     const needle = f.value.toLowerCase();
     const present = Object.keys(block.properties).some(

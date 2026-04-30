@@ -10,6 +10,7 @@ import type { TypeDefinition } from "$lib/types/TypeDefinition";
 import type { ParsedBlock } from "$lib/types/ParsedBlock";
 import type { QueryResult } from "$lib/types/QueryResult";
 import type { CalendarMarks } from "$lib/types/CalendarMarks";
+import type { NoteVersion } from "$lib/types/NoteVersion";
 
 // Same-origin path; vite dev server proxies `/api/*` → tesela-server at
 // 127.0.0.1:7474. Relative URL means the LAN client (phone) hits whatever
@@ -86,6 +87,12 @@ export const api = {
     const q = new URLSearchParams({ from, to });
     return get<CalendarMarks>(`/calendar/marks?${q.toString()}`);
   },
+  listNoteVersions: (id: string, limit = 50) => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    return get<NoteVersion[]>(`/notes/${encodeURIComponent(id)}/versions?${q.toString()}`);
+  },
+  getNoteVersion: (id: string, versionId: number) =>
+    get<NoteVersion>(`/notes/${encodeURIComponent(id)}/versions/${versionId}`),
   deleteNote: (id: string) =>
     fetch(`${BASE_URL}/notes/${encodeURIComponent(id)}`, { method: "DELETE" }),
   getBacklinks: (id: string) =>

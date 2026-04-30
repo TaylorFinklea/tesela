@@ -141,10 +141,15 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [x] `note_type` SQL column now populated by `upsert_note` (was previously NULL for all rows; backfilled via `cargo run -p tesela-cli reindex`)
 - [→] Project attachment (`p` triage key) — deferred to 9.4
 
-#### Phase 9.3 — History + Linked Tasks Tabs
-- [ ] Per-note version log in SQLite; PUT writes a version row
-- [ ] History tab: timeline of versions with preview/revert
-- [ ] Linked Tasks tab: backlinks filtered by `kind:task`
+#### Phase 9.3 — History + Linked Tasks Tabs ✓
+- [x] SQLite migration `003_note_versions` (note_id, version_number, content, prev_content, created_at)
+- [x] `SearchIndex::record_version` / `list_versions` / `get_version` trait methods + SqliteIndex impl. Cap at 200 versions per note (prune oldest in same tx).
+- [x] PUT /notes/:id writes a version row before reindex (best-effort; failure logs but doesn't fail the PUT)
+- [x] GET /notes/:id/versions and /notes/:id/versions/:version_id endpoints
+- [x] `has-link:<id>` DSL predicate in both Rust and TS parsers
+- [x] HistoryTab.svelte — timeline list with relative time + +N/−M line counts
+- [x] HistoryDiff.svelte modal — side-by-side diff using local LCS line-diff helper; Restore button issues PUT with historical content
+- [x] LinkedTasksTab.svelte — reuses /search/query with `kind:block tag:Task has-link:<focused-id>`, grouped by status
 
 #### Phase 9.4 — Polish
 - [ ] Dynamic per-view keyboard hints in crumb bar

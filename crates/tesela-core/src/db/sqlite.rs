@@ -739,6 +739,119 @@ impl SearchIndex for SqliteIndex {
         Ok(QueryResult { groups })
     }
 
+    async fn record_version(
+        &self,
+        note_id: &NoteId,
+        prev_content: Option<&str>,
+        new_content: &str,
+        cap: usize,
+    ) -> Result<i64> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| db_err("Failed to begin tx for record_version", e))?;
+
+        // Compute the next version number for this note.
+        let next: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(version_number), 0) + 1 FROM note_versions WHERE note_id = ?",
+        )
+        .bind(note_id.as_str())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| db_err("Failed to compute next version_number", e))?;
+
+        sqlx::query(
+            r#"INSERT INTO note_versions (note_id, version_number, content, prev_content)
+               VALUES (?, ?, ?, ?)"#,
+        )
+        .bind(note_id.as_str())
+        .bind(next)
+        .bind(new_content)
+        .bind(prev_content)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| db_err("Failed to insert note version", e))?;
+
+        // Prune oldest beyond cap. Inline the cap into the SQL since SQLite
+        // doesn't accept LIMIT params on subqueries reliably across versions.
+        if cap > 0 {
+            let prune_sql = format!(
+                r#"DELETE FROM note_versions
+                   WHERE note_id = ?
+                     AND id NOT IN (
+                       SELECT id FROM note_versions
+                       WHERE note_id = ?
+                       ORDER BY version_number DESC
+                       LIMIT {}
+                     )"#,
+                cap
+            );
+            sqlx::query(&prune_sql)
+                .bind(note_id.as_str())
+                .bind(note_id.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| db_err("Failed to prune old note versions", e))?;
+        }
+
+        tx.commit()
+            .await
+            .map_err(|e| db_err("Failed to commit record_version tx", e))?;
+        Ok(next)
+    }
+
+    async fn list_versions(
+        &self,
+        note_id: &NoteId,
+        limit: usize,
+    ) -> Result<Vec<crate::note::NoteVersion>> {
+        use crate::note::NoteVersion;
+        let rows = sqlx::query(
+            r#"SELECT id, note_id, version_number, content, prev_content, created_at
+               FROM note_versions
+               WHERE note_id = ?
+               ORDER BY version_number DESC
+               LIMIT ?"#,
+        )
+        .bind(note_id.as_str())
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| db_err("Failed to list note versions", e))?;
+        Ok(rows
+            .into_iter()
+            .map(|row| NoteVersion {
+                id: row.get("id"),
+                note_id: NoteId::from(row.get::<String, _>("note_id")),
+                version_number: row.get("version_number"),
+                content: row.get("content"),
+                prev_content: row.try_get("prev_content").ok().flatten(),
+                created_at: row.get("created_at"),
+            })
+            .collect())
+    }
+
+    async fn get_version(&self, version_id: i64) -> Result<Option<crate::note::NoteVersion>> {
+        use crate::note::NoteVersion;
+        let row = sqlx::query(
+            r#"SELECT id, note_id, version_number, content, prev_content, created_at
+               FROM note_versions WHERE id = ?"#,
+        )
+        .bind(version_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| db_err("Failed to get note version", e))?;
+        Ok(row.map(|row| NoteVersion {
+            id: row.get("id"),
+            note_id: NoteId::from(row.get::<String, _>("note_id")),
+            version_number: row.get("version_number"),
+            content: row.get("content"),
+            prev_content: row.try_get("prev_content").ok().flatten(),
+            created_at: row.get("created_at"),
+        }))
+    }
+
     async fn calendar_marks(
         &self,
         from: &str,

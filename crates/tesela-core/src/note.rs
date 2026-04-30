@@ -120,6 +120,24 @@ pub struct Attachment {
     pub note_ids: Vec<NoteId>,
 }
 
+/// A historical version of a note. Created on every successful PUT (Phase 9.3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+pub struct NoteVersion {
+    /// Auto-incrementing primary key.
+    pub id: i64,
+    pub note_id: NoteId,
+    /// Per-note monotonically increasing version number (1-based).
+    pub version_number: i64,
+    /// Snapshot of `notes.content` after this PUT.
+    pub content: String,
+    /// What `notes.content` looked like before this PUT (for `+N/-M` diff).
+    pub prev_content: Option<String>,
+    /// ISO timestamp of when the row was written.
+    pub created_at: String,
+}
+
 /// A search result hit
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]

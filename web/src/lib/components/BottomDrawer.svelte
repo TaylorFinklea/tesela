@@ -25,6 +25,8 @@
   import type { Note } from "$lib/types/Note";
   import type { Link } from "$lib/types/Link";
   import type { GraphEdge } from "$lib/types/GraphEdge";
+  import HistoryTab from "./HistoryTab.svelte";
+  import LinkedTasksTab from "./LinkedTasksTab.svelte";
 
   const queryClient = useQueryClient();
 
@@ -475,9 +477,9 @@
         {/each}
       {/if}
     {:else if tab === "history"}
-      <div style="color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">Coming in 9.x</div>
+      <HistoryTab {noteId} />
     {:else if tab === "linkedTasks"}
-      <div style="color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">Coming in 9.x</div>
+      <LinkedTasksTab {noteId} />
     {/if}
   </div>
 </div>

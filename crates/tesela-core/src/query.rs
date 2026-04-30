@@ -391,6 +391,17 @@ fn filter_matches(block: &ParsedBlock, f: &QueryFilter) -> bool {
                 _ => false, // comparison ops not meaningful for tags
             }
         }
+        "has-link" => {
+            // Block contains `[[<value>]]` (case-insensitive) anywhere in raw_text.
+            let needle = format!("[[{}]]", f.value);
+            let raw = block.raw_text.to_ascii_lowercase();
+            let present = raw.contains(&needle.to_ascii_lowercase());
+            match f.op {
+                QueryOp::Eq => present,
+                QueryOp::Ne => !present,
+                _ => false,
+            }
+        }
         "has" => {
             // `has:foo` checks property presence regardless of value.
             let needle = f.value.to_ascii_lowercase();
