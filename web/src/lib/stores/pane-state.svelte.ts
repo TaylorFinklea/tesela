@@ -17,6 +17,7 @@ export type MainPane = "outliner" | "kanban";
 export type BottomTab = "backlinks" | "properties" | "outline" | "history" | "linkedTasks";
 
 const RATIO_KEY = "tesela:splitRatio";
+const VSPLIT_RATIO_KEY = "tesela:vSplitRatio";
 const VIM_KEY = "tesela:vimEnabled";
 const BOTTOM_OPEN_KEY = "tesela:bottomDrawerOpen";
 const BOTTOM_TAB_KEY = "tesela:bottomDrawerTab";
@@ -38,6 +39,28 @@ function saveRatio(n: number) {
   if (!browser) return;
   try {
     localStorage.setItem(RATIO_KEY, String(n));
+  } catch {
+    // ignore
+  }
+}
+
+function loadVSplitRatio(): number {
+  if (!browser) return 50;
+  try {
+    const stored = localStorage.getItem(VSPLIT_RATIO_KEY);
+    if (!stored) return 50;
+    const n = Number(stored);
+    if (Number.isFinite(n) && n >= 20 && n <= 80) return n;
+    return 50;
+  } catch {
+    return 50;
+  }
+}
+
+function saveVSplitRatio(n: number) {
+  if (!browser) return;
+  try {
+    localStorage.setItem(VSPLIT_RATIO_KEY, String(n));
   } catch {
     // ignore
   }
@@ -100,6 +123,16 @@ let vimMode = $state("NORMAL");
 let bottomDrawerOpen = $state(loadBottomOpen());
 let bottomTab = $state<BottomTab>(loadBottomTab());
 
+// Phase 9.5 — vertical (side-by-side) split inside the focus region. Mutex with
+// the kanban (horizontal) split: opening one closes the other. When open, two
+// BlockOutliner instances render side-by-side in the focus pane; each side has
+// independent note + drill state, with the right pane's note tracked via URL
+// query params.
+export type VSplitSide = "left" | "right";
+let vSplitOpen = $state(false);
+let vSplitActiveSide = $state<VSplitSide>("left");
+let vSplitRatio = $state(loadVSplitRatio());
+
 /** Blur any focused cm-editor so cm-vim stops eating keys when we move
  *  region focus elsewhere. Safe to call from any region transition. */
 function releaseEditorFocus() {
@@ -129,6 +162,8 @@ export function isCtrlWPending(): boolean {
 }
 
 export function openSplit() {
+  // Mutex: kanban split and vertical split can't be open simultaneously.
+  if (vSplitOpen) closeVSplit();
   splitOpen = true;
 }
 
@@ -141,7 +176,53 @@ export function closeSplit() {
 
 export function toggleSplit() {
   if (splitOpen) closeSplit();
-  else splitOpen = true;
+  else openSplit();
+}
+
+// ----- Phase 9.5 vertical split -----
+
+export function isVSplitOpen(): boolean {
+  return vSplitOpen;
+}
+
+export function getVSplitActiveSide(): VSplitSide {
+  return vSplitActiveSide;
+}
+
+export function setVSplitActiveSide(side: VSplitSide) {
+  vSplitActiveSide = side;
+  // Switching sides keeps focus in the focus region.
+  activeRegion = "focus";
+}
+
+export function getVSplitRatio(): number {
+  return vSplitRatio;
+}
+
+export function setVSplitRatio(n: number) {
+  const next = Math.max(20, Math.min(80, n));
+  vSplitRatio = next;
+  saveVSplitRatio(next);
+}
+
+export function adjustVSplitRatio(delta: number) {
+  setVSplitRatio(vSplitRatio + delta);
+}
+
+export function openVSplit() {
+  // Mutex with kanban split.
+  if (splitOpen) closeSplit();
+  vSplitOpen = true;
+}
+
+export function closeVSplit() {
+  vSplitOpen = false;
+  vSplitActiveSide = "left";
+}
+
+export function toggleVSplit() {
+  if (vSplitOpen) closeVSplit();
+  else openVSplit();
 }
 
 export function setActiveRegion(r: Region) {

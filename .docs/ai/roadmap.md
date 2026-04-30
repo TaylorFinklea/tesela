@@ -159,7 +159,18 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [x] Project attachment (`p` triage key in inbox) — opens `ProjectPicker` modal, sets `project::` block property
 - [x] Cmd+Z bleed-through fix — when vim is enabled, document-level Cmd+Z is suppressed inside cm-editor (vim's `u` is the canonical undo)
 - [x] Drawer tab badge counts — History tab shows real version count, Linked tasks shows real task count
-- [→] Focus-pane splits (`^w v` / multiple side-by-side outliners) — deferred. Needs full focus-region refactor; ~2-3 hr standalone phase. Logged as v9.5 candidate.
+- [x] Focus-pane vertical splits (`^w v` opens 2 outliners side-by-side) — shipped as Phase 9.5
+
+#### Phase 9.5 — Focus-Pane Vertical Splits ✓
+- [x] vSplit state in `pane-state.svelte.ts` — `vSplitOpen`, `vSplitActiveSide`, `vSplitRatio` (persisted under `tesela:vSplitRatio`); mutex with kanban split
+- [x] `^w v` toggles vsplit; `^w h/l` switches sides when in focus region with vsplit open; `^w q` closes vsplit (falls through to kanban close if vsplit not open); `^w =/+/-` operate on whichever split is active
+- [x] `SplitDivider` extended with `orientation: "horizontal" | "vertical"` prop (col-resize cursor + dx-driven ratio when vertical)
+- [x] `gotoNote` helper in new `active-pane-nav.svelte.ts` — when right pane is the active vsplit side, navigation updates `?right=<id>&rightBlock=<id>` instead of the path
+- [x] `current-block` store bifurcated into `leftFocusedBlock` / `rightFocusedBlock` + `getFocusedBlock()` reads the active side; bottom drawer follows
+- [x] `+page.svelte` refactored: parses `?right=` and `?rightBlock=`; second `noteQuery` for right pane; flexbox row with two `<BlockOutliner>` instances + vertical `<SplitDivider>`; independent debounced save plumbing for right pane (`rightSaveTimer` / `rightInFlightController`); auto-fills `?right=<noteId>` (mirror of left) when vsplit opens with no right param
+- [x] Initial-mount auto-open when URL arrives with `?right=` (page reload / shared link); cleanup-effect strips right query params on close (gated by initial-mount check to avoid race)
+- [x] Rail clicks + ⌘K palette navigation routed through `gotoNote` — modifier-click bypass preserves cmd/ctrl/middle-click new-tab behavior
+- [x] Verified: `^w v` cycle clean; reload with `?right=` restores vsplit; two different notes render side-by-side with independent save/drill state
 
 ### Phase 3: Power Features (paused — folded into Phase 9)
 

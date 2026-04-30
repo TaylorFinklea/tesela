@@ -11,7 +11,11 @@
   import KanbanBoard from "$lib/components/KanbanBoard.svelte";
   import SplitDivider from "$lib/components/SplitDivider.svelte";
   import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
-  import { setFocusedBlock } from "$lib/stores/current-block.svelte";
+  import {
+    setFocusedBlock,
+    setLeftFocusedBlock,
+    setRightFocusedBlock,
+  } from "$lib/stores/current-block.svelte";
   import { getViewMode, setViewMode } from "$lib/stores/tag-view-prefs.svelte";
   import {
     isSplitOpen,
@@ -22,6 +26,13 @@
     closeSplit,
     setSplitRatio,
     isVimEnabled,
+    isVSplitOpen,
+    getVSplitActiveSide,
+    setVSplitActiveSide,
+    getVSplitRatio,
+    setVSplitRatio,
+    closeVSplit,
+    openVSplit,
   } from "$lib/stores/pane-state.svelte";
   import type { Note } from "$lib/types/Note";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
@@ -147,9 +158,85 @@
   const activePane = $derived(getActivePane());
   const splitRatio = $derived(getSplitRatio());
 
+  // Phase 9.5 — vertical split state. The right pane note + drill come from
+  // URL query params (`?right=<id>&rightBlock=<id?>`).
+  const vSplitOpen = $derived(isVSplitOpen());
+  const vSplitActiveSide = $derived(getVSplitActiveSide());
+  const vSplitRatio = $derived(getVSplitRatio());
+  const rightNoteIdParam = $derived(page.url.searchParams.get("right") ?? "");
+  const rightDrillBlockId = $derived(page.url.searchParams.get("rightBlock") ?? "");
+
+  // When vsplit opens without an explicit `?right=`, default to mirroring the
+  // left pane's note. This matches the locked decision: same-note initial
+  // content for split-screen reading of one doc.
+  $effect(() => {
+    if (vSplitOpen && !rightNoteIdParam && noteId) {
+      untrack(() => {
+        const params = new URLSearchParams(page.url.search);
+        params.set("right", noteId);
+        goto(`${page.url.pathname}?${params.toString()}`, { replaceState: true, noScroll: true });
+      });
+    }
+  });
+
+  // If the URL arrives with `?right=` on initial mount (page load / reload /
+  // shared link), open vsplit once. We deliberately DON'T re-open on later
+  // URL changes — closing vsplit immediately strips the URL via the cleanup
+  // effect below, and rerunning open-on-param here would race with cleanup.
+  let initialMountChecked = false;
+  $effect(() => {
+    if (initialMountChecked) return;
+    initialMountChecked = true;
+    if (rightNoteIdParam && !vSplitOpen) {
+      untrack(() => openVSplit());
+    }
+  });
+
+  // When vsplit closes, strip the right query params to keep URLs clean.
+  // Gated on `initialMountChecked` so it doesn't run before the open-on-mount
+  // effect has had a chance to flip vsplit on for URLs that arrive with
+  // `?right=` already present.
+  $effect(() => {
+    if (!initialMountChecked) return;
+    if (!vSplitOpen && (rightNoteIdParam || rightDrillBlockId)) {
+      untrack(() => {
+        const params = new URLSearchParams(page.url.search);
+        params.delete("right");
+        params.delete("rightBlock");
+        const qs = params.toString();
+        goto(`${page.url.pathname}${qs ? `?${qs}` : ""}`, { replaceState: true, noScroll: true });
+      });
+    }
+  });
+
+  // Right-pane note query (only enabled when vsplit is open).
+  const rightNoteQuery = createQuery(() => ({
+    queryKey: ["note", rightNoteIdParam] as const,
+    queryFn: () => api.getNote(rightNoteIdParam),
+    enabled: rightNoteIdParam !== "" && vSplitOpen,
+  }));
+  const rightNote: Note | undefined = $derived(rightNoteQuery.data as Note | undefined);
+  const rightSplit = $derived(splitContent(rightNote?.content ?? ""));
+  const rightDrillBlock = $derived.by((): ParsedBlock | null => {
+    if (!rightDrillBlockId || !rightNote) return null;
+    return parseBlocks(rightNote.id, rightSplit.body).find(b => b.id === rightDrillBlockId) ?? null;
+  });
+
+  function drillIntoRight(blockId: string) {
+    const params = new URLSearchParams(page.url.search);
+    params.set("rightBlock", blockId);
+    goto(`${page.url.pathname}?${params.toString()}`, { replaceState: false, noScroll: true });
+  }
+  function drillOutRight() {
+    const params = new URLSearchParams(page.url.search);
+    params.delete("rightBlock");
+    const qs = params.toString();
+    goto(`${page.url.pathname}${qs ? `?${qs}` : ""}`, { replaceState: false, noScroll: true });
+  }
+
   // Auto-open split on tag pages in kanban mode (with Vim on)
   $effect(() => {
-    if (isTagPage && vimOn && viewMode === "kanban" && !isSplitOpen()) {
+    if (isTagPage && vimOn && viewMode === "kanban" && !isSplitOpen() && !vSplitOpen) {
       untrack(() => openSplit());
     }
   });
@@ -171,6 +258,12 @@
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let inFlightController: AbortController | null = null;
   let pendingContent: string | null = null;
+
+  // Phase 9.5 — right pane has its own debounced save state to avoid
+  // cross-pane PUT collisions when both panes are edited concurrently.
+  let rightSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let rightInFlightController: AbortController | null = null;
+  let rightPendingContent: string | null = null;
 
   async function deleteNote() {
     if (!note) return;
@@ -243,16 +336,68 @@
     void flushSave();
   }
 
+  // ----- Phase 9.5 right-pane save plumbing (mirrors left, scoped to rightNoteIdParam). -----
+
+  function handleRightContentChange(fullContent: string) {
+    rightPendingContent = fullContent;
+    if (rightSaveTimer) clearTimeout(rightSaveTimer);
+    setSaving();
+    rightSaveTimer = setTimeout(() => { void flushRightSave(); }, 500);
+  }
+
+  async function flushRightSave() {
+    if (rightSaveTimer) { clearTimeout(rightSaveTimer); rightSaveTimer = null; }
+    if (rightPendingContent === null) return;
+    if (!rightNoteIdParam) return;
+    const content = rightPendingContent;
+    rightPendingContent = null;
+    if (rightInFlightController) rightInFlightController.abort();
+    const controller = new AbortController();
+    rightInFlightController = controller;
+    try {
+      const updated = await api.updateNote(rightNoteIdParam, content, controller.signal);
+      if (controller.signal.aborted) return;
+      queryClient.setQueryData(["note", rightNoteIdParam], updated);
+      setSaved();
+    } catch (e) {
+      if ((e as { name?: string })?.name === "AbortError") return;
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      setSaveError(msg);
+      console.error("Right-pane save failed:", e);
+    } finally {
+      if (rightInFlightController === controller) rightInFlightController = null;
+    }
+  }
+
+  function cancelAndFlushRight(fullContent: string) {
+    rightPendingContent = fullContent;
+    if (rightSaveTimer) { clearTimeout(rightSaveTimer); rightSaveTimer = null; }
+    if (rightInFlightController) { rightInFlightController.abort(); rightInFlightController = null; }
+    void flushRightSave();
+  }
+
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
     if (inFlightController) inFlightController.abort();
+    if (rightSaveTimer) clearTimeout(rightSaveTimer);
+    if (rightInFlightController) rightInFlightController.abort();
     // Clear the focused-block store so the bottom drawer doesn't keep
     // displaying properties for a block from a now-unmounted page.
     setFocusedBlock(null);
+    setLeftFocusedBlock(null);
+    setRightFocusedBlock(null);
   });
 </script>
 
-<div class="flex-1 flex flex-col min-w-0 h-full">
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="flex-1 flex min-w-0 h-full" style="flex-direction: row;">
+  <!-- Phase 9.5 — left pane (mirrors pre-9.5 single-pane layout). -->
+  <div
+    class="flex flex-col min-w-0 h-full"
+    style="flex-basis: {vSplitOpen ? `${vSplitRatio}%` : '100%'}; flex-grow: 1; flex-shrink: 1; {vSplitOpen && vSplitActiveSide === 'left' ? 'box-shadow: inset 2px 0 0 0 var(--primary);' : ''}"
+    onclick={() => { if (vSplitOpen) setVSplitActiveSide('left'); }}
+  >
     <!-- Note header + outliner + tag config + (inline kanban/table when not split) -->
     <div
       class="overflow-y-auto transition-shadow"
@@ -351,7 +496,7 @@
             onContentChange={handleContentChange}
             onCancelAndFlush={cancelAndFlush}
             onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
-            onfocusedblockchange={(b) => setFocusedBlock(b)}
+            onfocusedblockchange={(b) => setLeftFocusedBlock(b)}
             {drillBlockId}
             onDrillIn={drillInto}
           />
@@ -400,7 +545,7 @@
       </div>
     </div>
 
-    <!-- Split divider + bottom pane -->
+    <!-- Kanban split divider + bottom pane (existing 9.0 behavior) -->
   {#if showSplit && note}
     <SplitDivider onresize={(r: number) => setSplitRatio(r)} />
     <!-- svelte-ignore a11y_click_events_have_key_events -->
@@ -416,6 +561,53 @@
     >
       <div class="flex-1 overflow-y-auto px-4 py-3">
         <KanbanBoard tagName={note.title} focused={activePane === "kanban"} />
+      </div>
+    </div>
+  {/if}
+  </div>  <!-- /left pane -->
+
+  <!-- Phase 9.5 — vertical split divider + right pane. -->
+  {#if vSplitOpen}
+    <SplitDivider orientation="vertical" onresize={(r: number) => setVSplitRatio(r)} />
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="flex flex-col min-w-0 h-full overflow-y-auto transition-shadow"
+      style="flex-basis: {100 - vSplitRatio}%; flex-grow: 1; flex-shrink: 1; {vSplitActiveSide === 'right' ? 'box-shadow: inset 2px 0 0 0 var(--primary);' : ''}"
+      onclick={() => setVSplitActiveSide('right')}
+    >
+      <div class="max-w-3xl mx-auto px-10 pt-10 pb-4 w-full">
+        {#if rightNote}
+          <div class="flex items-center gap-2 text-[12px] text-muted-foreground mb-4">
+            {#if rightDrillBlock}
+              <button onclick={drillOutRight} class="hover:text-primary transition-colors">{rightNote.title}</button>
+              <span>›</span>
+              <span class="text-foreground/70 truncate max-w-[240px]">{rightDrillBlock.text}</span>
+            {:else}
+              <span>{rightNote.title}</span>
+            {/if}
+          </div>
+          <h1 class="font-display text-2xl font-semibold tracking-tight leading-tight mb-6">{rightNote.title}</h1>
+        {:else if rightNoteIdParam && rightNoteQuery.isLoading}
+          <div class="py-8 text-muted-foreground">Loading…</div>
+        {:else if rightNoteQuery.isError}
+          <div class="py-8 text-destructive">Could not load right pane.</div>
+        {/if}
+      </div>
+      <div class="max-w-3xl mx-auto px-10 pb-16 w-full">
+        {#if rightNote}
+          <BlockOutliner
+            noteId={rightNote.id}
+            body={rightSplit.body}
+            frontmatter={rightSplit.frontmatter}
+            onContentChange={handleRightContentChange}
+            onCancelAndFlush={cancelAndFlushRight}
+            onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
+            onfocusedblockchange={(b) => setRightFocusedBlock(b)}
+            drillBlockId={rightDrillBlockId}
+            onDrillIn={drillIntoRight}
+          />
+        {/if}
       </div>
     </div>
   {/if}

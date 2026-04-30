@@ -6,6 +6,7 @@
   import { api } from "$lib/api-client";
   import { getActiveRegion, setActiveRegion } from "$lib/stores/pane-state.svelte";
   import { parseWidgets, widgetsBySection } from "$lib/widget-registry.svelte";
+  import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
   import MiniCalendar from "./MiniCalendar.svelte";
   import type { Note } from "$lib/types/Note";
   import type { Widget, WidgetSection } from "$lib/types/Widget";
@@ -153,7 +154,9 @@
       selectedIndex = Math.max(0, selectedIndex - 1);
     } else if (e.key === "Enter" && flat[selectedIndex]) {
       e.preventDefault();
-      goto(`/p/${encodeURIComponent(flat[selectedIndex].id)}`);
+      // Phase 9.5: route through gotoNote so right-pane navigation respects
+      // the active vsplit side.
+      gotoNote(flat[selectedIndex].id);
       setActiveRegion("focus");
     } else if (e.key === "Escape") {
       e.preventDefault();
@@ -238,6 +241,16 @@
             ondragover={onDragOver}
             ondrop={(e) => onDrop(e, sectionName, w)}
             ondragend={onDragEnd}
+            onclick={(e) => {
+              // Phase 9.5 — route through gotoNote when right pane is active
+              // so the rail click navigates the right pane instead of the path.
+              // Modifier-click (cmd/ctrl/middle) bypasses this so users can
+              // open in new tab as before.
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+              e.preventDefault();
+              gotoNote(w.id);
+              setActiveRegion("focus");
+            }}
           >
             <span class="gl">{glyphChar(w)}</span>
             <span>{w.title}</span>

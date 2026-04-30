@@ -19,6 +19,13 @@
     setSplitRatio,
     isBottomDrawerOpen,
     toggleBottomDrawer,
+    isVSplitOpen,
+    toggleVSplit,
+    closeVSplit,
+    getVSplitActiveSide,
+    setVSplitActiveSide,
+    adjustVSplitRatio,
+    setVSplitRatio,
   } from "$lib/stores/pane-state.svelte";
   import CrumbBar from "$lib/components/CrumbBar.svelte";
   import Rail from "$lib/components/Rail.svelte";
@@ -166,14 +173,22 @@
         switch (e.key) {
           case "h": {
             const r = getActiveRegion();
-            if (r === "focus") setActiveRegion("middle");
+            // Phase 9.5: when vertical split is open and right side is active,
+            // ^w h flips to the left side rather than crossing the region
+            // boundary. Mirrors vim's intra-window navigation.
+            if (r === "focus" && isVSplitOpen() && getVSplitActiveSide() === "right") {
+              setVSplitActiveSide("left");
+            } else if (r === "focus") setActiveRegion("middle");
             else if (r === "middle") setActiveRegion("rail");
             else if (r === "bottom") setActiveRegion("focus");
             break;
           }
           case "l": {
             const r = getActiveRegion();
-            if (r === "rail") setActiveRegion("middle");
+            // Phase 9.5: focus-left → focus-right when vsplit open.
+            if (r === "focus" && isVSplitOpen() && getVSplitActiveSide() === "left") {
+              setVSplitActiveSide("right");
+            } else if (r === "rail") setActiveRegion("middle");
             else if (r === "middle") setActiveRegion("focus");
             break;
           }
@@ -195,10 +210,28 @@
             break;
           }
           case "s": toggleSplit(); break;
-          case "q": closeSplit(); break;
-          case "=": setSplitRatio(50); break;
-          case "+": adjustSplitRatio(-10); break;
-          case "-": adjustSplitRatio(10); break;
+          case "v": toggleVSplit(); break;  // Phase 9.5
+          case "q": {
+            // Phase 9.5: close vsplit first if open; otherwise close kanban.
+            if (isVSplitOpen()) closeVSplit();
+            else closeSplit();
+            break;
+          }
+          case "=": {
+            if (isVSplitOpen()) setVSplitRatio(50);
+            else setSplitRatio(50);
+            break;
+          }
+          case "+": {
+            if (isVSplitOpen()) adjustVSplitRatio(-10);
+            else adjustSplitRatio(-10);
+            break;
+          }
+          case "-": {
+            if (isVSplitOpen()) adjustVSplitRatio(10);
+            else adjustSplitRatio(10);
+            break;
+          }
         }
         clearPending();
       }
