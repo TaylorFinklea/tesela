@@ -3,7 +3,6 @@
   import { onMount } from "svelte";
   import { connect, setHandlers } from "$lib/ws-client.svelte";
   import { goto } from "$app/navigation";
-  import { page } from "$app/state";
   import { pushNavigation, goBack, goForward } from "$lib/stores/navigation.svelte";
   import {
     isVimEnabled,
@@ -18,13 +17,16 @@
     closeSplit,
     adjustSplitRatio,
     setSplitRatio,
+    isBottomDrawerOpen,
+    toggleBottomDrawer,
   } from "$lib/stores/pane-state.svelte";
-  import Sidebar from "$lib/components/Sidebar.svelte";
+  import CrumbBar from "$lib/components/CrumbBar.svelte";
+  import Rail from "$lib/components/Rail.svelte";
+  import MiddleColumn from "$lib/components/MiddleColumn.svelte";
+  import BottomDrawer from "$lib/components/BottomDrawer.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import LeaderMenu from "$lib/components/LeaderMenu.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
-  import { applyTheme } from "$lib/themes";
-  import { browser } from "$app/environment";
   import "../app.css";
 
   let { children } = $props();
@@ -38,13 +40,12 @@
     },
   });
 
-  let sidebarCollapsed = $state(false);
   let showLeaderMenu = $state(false);
+  const drawerOpen = $derived(isBottomDrawerOpen());
 
   onMount(() => {
     connect();
 
-    // Wire WS events to invalidate TanStack Query caches globally
     setHandlers({
       onNoteCreated: () => { queryClient.invalidateQueries({ queryKey: ["notes"] }); },
       onNoteUpdated: (note) => {
@@ -58,13 +59,6 @@
       },
     });
 
-    // Apply saved theme
-    if (browser) {
-      const mode = localStorage.getItem("tesela:mode") ?? "day";
-      applyTheme(mode);
-    }
-
-    // Space leader key — works outside editors AND from Vim normal mode (via custom event)
     const spaceHandler = (e: KeyboardEvent) => {
       if (e.key === " " && !showLeaderMenu) {
         const target = e.target as HTMLElement;
@@ -79,11 +73,10 @@
         }
       }
     };
-    // Listen for leader menu trigger from Vim normal mode inside CM6
     const leaderHandler = () => {
       showLeaderMenu = true;
     };
-    // Global shortcuts (outside editors): 1, [, ], /
+    // Global shortcuts (outside editors): 1, b, [, ], /
     const panelHandler = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
       const isEditing =
@@ -93,7 +86,11 @@
         target.closest(".cm-editor");
       if (isEditing) return;
 
-      if (e.key === "1") { e.preventDefault(); sidebarCollapsed = !sidebarCollapsed; }
+      if (e.key === "1" || e.key === "b") {
+        e.preventDefault();
+        toggleBottomDrawer();
+        return;
+      }
       if (e.key === "[") {
         e.preventDefault();
         const prev = goBack();
@@ -106,13 +103,13 @@
       }
       if (e.key === "/" && !e.metaKey && !e.ctrlKey) {
         e.preventDefault();
-        // Dispatch ⌘K to open command palette
         document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
       }
     };
 
-    // Ctrl+w chord handler — Vim-style window commands.
-    // Capture phase to beat browser's "close tab" on Ctrl+w.
+    // Ctrl+w chord handler — Vim-style window commands across the four
+    // regions: rail / middle / focus / bottom. Capture phase to beat the
+    // browser's "close tab" on Ctrl+w.
     let pendingTimer: ReturnType<typeof setTimeout> | null = null;
     const clearPending = () => {
       setCtrlWPending(false);
@@ -120,10 +117,9 @@
     };
 
     const ctrlWHandler = (e: KeyboardEvent) => {
-      if (showLeaderMenu) return; // leader menu takes priority
+      if (showLeaderMenu) return;
       if (!isVimEnabled()) return;
 
-      // First key: Ctrl+w (lowercase or uppercase)
       if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "w" || e.key === "W")) {
         e.preventDefault();
         e.stopPropagation();
@@ -133,9 +129,7 @@
         return;
       }
 
-      // Second key: dispatch window command
       if (isCtrlWPending()) {
-        // Ignore modifier-only keydowns so user can press Shift to type "+"
         if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") {
           return;
         }
@@ -143,29 +137,31 @@
         e.stopPropagation();
         switch (e.key) {
           case "h": {
-            // Move focus one region to the left in the layout: right → main, main → left.
-            // From left, no-op (already at the leftmost region).
             const r = getActiveRegion();
-            if (r === "right") setActiveRegion("main");
-            else if (r === "main") setActiveRegion("left");
+            if (r === "focus") setActiveRegion("middle");
+            else if (r === "middle") setActiveRegion("rail");
+            else if (r === "bottom") setActiveRegion("focus");
             break;
           }
           case "l": {
-            // Mirror of h: left → main, main → right.
             const r = getActiveRegion();
-            if (r === "left") setActiveRegion("main");
-            else if (r === "main") setActiveRegion("right");
+            if (r === "rail") setActiveRegion("middle");
+            else if (r === "middle") setActiveRegion("focus");
             break;
           }
           case "j": {
-            // j only meaningful inside main when the kanban split is open —
-            // moves down from outliner pane to kanban pane.
-            if (getActiveRegion() === "main" && isSplitOpen()) setActivePane("kanban");
+            const r = getActiveRegion();
+            if (r === "focus") {
+              if (isBottomDrawerOpen()) setActiveRegion("bottom");
+              else if (isSplitOpen()) setActivePane("kanban");
+            }
             break;
           }
           case "k": {
-            // Mirror of j inside the main split.
-            if (getActiveRegion() === "main" && isSplitOpen() && getActivePane() === "kanban") {
+            const r = getActiveRegion();
+            if (r === "bottom") {
+              setActiveRegion("focus");
+            } else if (r === "focus" && isSplitOpen() && getActivePane() === "kanban") {
               setActivePane("outliner");
             }
             break;
@@ -175,7 +171,6 @@
           case "=": setSplitRatio(50); break;
           case "+": adjustSplitRatio(-10); break;
           case "-": adjustSplitRatio(10); break;
-          // Escape or any other key: cancel silently
         }
         clearPending();
       }
@@ -183,7 +178,7 @@
 
     document.addEventListener("keydown", spaceHandler);
     document.addEventListener("keydown", panelHandler);
-    document.addEventListener("keydown", ctrlWHandler, true); // capture phase
+    document.addEventListener("keydown", ctrlWHandler, true);
     document.addEventListener("tesela:leader", leaderHandler);
     return () => {
       document.removeEventListener("keydown", spaceHandler);
@@ -200,13 +195,16 @@
 </svelte:head>
 
 <QueryClientProvider client={queryClient}>
-  <div class="flex flex-col h-screen dark overflow-hidden">
-    <div class="flex flex-1 min-h-0">
-      <Sidebar collapsed={sidebarCollapsed} onToggle={() => (sidebarCollapsed = !sidebarCollapsed)} />
-      <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {@render children()}
-      </main>
-    </div>
+  <div class="v9 dark {drawerOpen ? 'with-bottom' : ''}">
+    <CrumbBar />
+    <Rail />
+    <MiddleColumn />
+    <main class="v9-focus">
+      {@render children()}
+    </main>
+    {#if drawerOpen}
+      <BottomDrawer />
+    {/if}
     <StatusBar />
   </div>
   <CommandPalette />

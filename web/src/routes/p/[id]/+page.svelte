@@ -10,8 +10,8 @@
   import { IconTable, IconLayoutKanban } from "@tabler/icons-svelte";
   import KanbanBoard from "$lib/components/KanbanBoard.svelte";
   import SplitDivider from "$lib/components/SplitDivider.svelte";
-  import RightSidebar from "$lib/components/RightSidebar.svelte";
   import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
+  import { setFocusedBlock } from "$lib/stores/current-block.svelte";
   import { getViewMode, setViewMode } from "$lib/stores/tag-view-prefs.svelte";
   import {
     isSplitOpen,
@@ -171,8 +171,6 @@
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let inFlightController: AbortController | null = null;
   let pendingContent: string | null = null;
-  let rightSidebarCollapsed = $state(false);
-  let focusedBlock = $state<ParsedBlock | null>(null);
 
   async function deleteNote() {
     if (!note) return;
@@ -248,12 +246,14 @@
   onDestroy(() => {
     if (saveTimer) clearTimeout(saveTimer);
     if (inFlightController) inFlightController.abort();
+    // Clear the focused-block store so the bottom drawer doesn't keep
+    // displaying properties for a block from a now-unmounted page.
+    setFocusedBlock(null);
   });
 </script>
 
-<div class="flex-1 flex min-h-0">
-  <div class="flex-1 flex flex-col min-w-0">
-    <!-- Top pane: note header + outliner + tag config + (inline kanban/table when not split) -->
+<div class="flex-1 flex flex-col min-w-0 h-full">
+    <!-- Note header + outliner + tag config + (inline kanban/table when not split) -->
     <div
       class="overflow-y-auto transition-shadow"
       style="
@@ -351,7 +351,7 @@
             onContentChange={handleContentChange}
             onCancelAndFlush={cancelAndFlush}
             onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
-            onfocusedblockchange={(b) => { focusedBlock = b; }}
+            onfocusedblockchange={(b) => setFocusedBlock(b)}
             {drillBlockId}
             onDrillIn={drillInto}
           />
@@ -401,30 +401,22 @@
     </div>
 
     <!-- Split divider + bottom pane -->
-    {#if showSplit && note}
-      <SplitDivider onresize={(r: number) => setSplitRatio(r)} />
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div
-        class="overflow-hidden flex flex-col transition-shadow"
-        style="
-          height: {100 - splitRatio}%;
-          background: var(--surface);
-          {activePane === 'kanban' ? 'box-shadow: inset 2px 0 0 0 var(--primary)' : ''}
-        "
-        onclick={() => setActivePane('kanban')}
-      >
-        <div class="flex-1 overflow-y-auto px-4 py-3">
-          <KanbanBoard tagName={note.title} focused={activePane === "kanban"} />
-        </div>
+  {#if showSplit && note}
+    <SplitDivider onresize={(r: number) => setSplitRatio(r)} />
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="overflow-hidden flex flex-col transition-shadow"
+      style="
+        height: {100 - splitRatio}%;
+        background: var(--surface);
+        {activePane === 'kanban' ? 'box-shadow: inset 2px 0 0 0 var(--primary)' : ''}
+      "
+      onclick={() => setActivePane('kanban')}
+    >
+      <div class="flex-1 overflow-y-auto px-4 py-3">
+        <KanbanBoard tagName={note.title} focused={activePane === "kanban"} />
       </div>
-    {/if}
-  </div>
-
-  <RightSidebar
-    noteId={noteId}
-    collapsed={rightSidebarCollapsed}
-    onToggle={() => (rightSidebarCollapsed = !rightSidebarCollapsed)}
-    {focusedBlock}
-  />
+    </div>
+  {/if}
 </div>

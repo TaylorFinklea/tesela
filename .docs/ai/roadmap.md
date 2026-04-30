@@ -68,11 +68,45 @@ Daily-driver outliner with Vim. Migrated from Next.js/React to SvelteKit/Svelte 
 - [x] Settings page (themes, font size, Vim toggle, server URL, shortcuts reference)
 - [x] 6 themes: Day, Evening, Woven, Tile Grid, Depth Layers, Neon Glow
 
-### Phase 3: Power Features (NEXT)
+### Phase 9: v9 Redesign (IN PROGRESS)
+
+Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night replaces all 6 themes; left+right sidebars become rail+bottom-drawer; rail is the surface for the planned Queries/Sets feature.
+
+#### Phase 9.0 — Columns Shell + Tokyo Night ✓
+- [x] 4-region grid (rail / middle / focus / bottom drawer + crumb + status) in `+layout.svelte`
+- [x] Tokyo Night palette as the only theme; legacy CSS-var aliases route every component automatically
+- [x] JetBrains Mono + Inter Tight typography; Newsreader/Source Sans 3 retired
+- [x] `Ctrl+w h/j/k/l` traverses rail / middle / focus / bottom; `1` and `b` toggle bottom drawer
+- [x] Right sidebar contents (backlinks, properties) ported into bottom drawer tabs; History + Linked Tasks stubbed
+- [x] `themes.ts` deleted; theme picker removed from settings; "Toggle Theme" command removed from ⌘K
+
+#### Phase 9.1 — Saved-Query Widgets (Queries/Sets)
+- [ ] `QuerySpec` data model + executor (system widgets: Today, Tasks, Projects, People, Inbox, Recent, Pinned, Pages)
+- [ ] User-authored saved queries appear as widgets in the rail's Saved section
+- [ ] Block kind glyphs (TASK / PROJECT / etc.) in focus pane
+- [ ] Parent breadcrumb in middle-column list rows
+
+#### Phase 9.2 — Calendar + Inbox Widgets
+- [ ] Mini calendar pinned in rail; tasks (rose) / events (teal) / notes (amber) markers; click-to-jump-to-daily-note
+- [ ] "Event" defined as block with future-dated `scheduled` or `deadline` property
+- [ ] Inbox widget: untriaged definition + triage flow (set-status / move-to-project / archive)
+
+#### Phase 9.3 — History + Linked Tasks Tabs
+- [ ] Per-note version log in SQLite; PUT writes a version row
+- [ ] History tab: timeline of versions with preview/revert
+- [ ] Linked Tasks tab: backlinks filtered by `kind:task`
+
+#### Phase 9.4 — Polish
+- [ ] Dynamic per-view keyboard hints in crumb bar
+- [ ] Mini calendar full keynav + month nav
+- [ ] Focus-pane splits (multiple side-by-side outliners)
+- [ ] Drag-to-rearrange widget rail (or keyboard equivalent)
+
+### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations
 - [x] Kanban view on tag pages (group by select property like Status)
-- [ ] Queries / Sets — saved filters by type + property, displayed as table/list/kanban
+- [→] Queries / Sets — moved into Phase 9.1 (rail widgets ARE the Queries/Sets surface)
 - [ ] Collections — manual page groupings
 - [ ] Node references — property value links to another page (bidirectional)
 - [ ] Tag inheritance — `extends` chain, child inherits parent properties
@@ -94,9 +128,8 @@ Daily-driver outliner with Vim. Migrated from Next.js/React to SvelteKit/Svelte 
 - [x] Esc-in-Normal preserves focused block + cm-editor (Phase 3L)
 - [x] 3-region splits with `Ctrl+w h/j/k/l` (left sidebar / outliner / right panel) (Phase 3L)
 - [x] Modal focus restore: ⌘K / leader-menu / slash-menu close returns focus to last block (Phase 3L)
-- [ ] Right sidebar: inline keyboard property editing (j/k navigates, currently only mouse-clickable)
-- [ ] Right sidebar: toggle between page context and block context (focused block's own properties + a useful place for hidden/icon properties like status)
-- [ ] Right sidebar: pin pages for split view
+- [→] Right sidebar items obsolete — right sidebar replaced by bottom drawer in Phase 9.0
+- [ ] Bottom drawer: inline keyboard property editing for Properties tab (j/k navigates, currently only mouse-clickable)
 - [ ] Empty/loading/error state audit across all views
 - [ ] Graph: drag nodes to reposition
 

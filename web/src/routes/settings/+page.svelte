@@ -1,6 +1,5 @@
 <script lang="ts">
   import { browser } from "$app/environment";
-  import { themes, applyTheme, type ThemeId } from "$lib/themes";
   import { prefs, type BulletStyle } from "$lib/preferences.svelte";
 
   function loadSetting(key: string, fallback: string): string {
@@ -12,7 +11,6 @@
     if (browser) localStorage.setItem(`tesela:${key}`, value);
   }
 
-  let themeId = $state(loadSetting("mode", "day"));
   let fontSize = $state(loadSetting("fontSize", "14"));
   let vimEnabled = $state(loadSetting("vimEnabled", "true"));
   let serverUrl = $state(loadSetting("serverUrl", "http://127.0.0.1:7474"));
@@ -40,22 +38,6 @@
 
   <div class="flex-1 overflow-y-auto">
     <div class="max-w-lg mx-auto py-8 px-6 space-y-8">
-
-      <!-- Theme -->
-      <section>
-        <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">Theme</h2>
-        <div class="grid grid-cols-2 gap-2">
-          {#each themes as t}
-            <button
-              class="text-left px-3 py-2.5 rounded-lg text-[12px] transition-all border {themeId === t.id ? 'bg-primary/10 text-primary border-primary/20 ring-1 ring-primary/15' : 'text-muted-foreground border-border/50 hover:bg-muted/40 hover:text-foreground'}"
-              onclick={() => { themeId = t.id; applyTheme(t.id); }}
-            >
-              <div class="font-medium">{t.name}</div>
-              <div class="text-[10px] mt-0.5 {themeId === t.id ? 'text-primary/60' : 'text-muted-foreground/40'}">{t.description}</div>
-            </button>
-          {/each}
-        </div>
-      </section>
 
       <!-- Font size -->
       <section>
@@ -123,10 +105,11 @@
             ["⌘K", "Command palette"],
             ["Space", "Leader menu (outside editors)"],
             ["/", "Search / filter"],
-            ["1", "Toggle sidebar"],
+            ["1 / b", "Toggle bottom drawer"],
+            ["⌃w h/j/k/l", "Focus rail / bottom / focus / right"],
             ["[  ]", "Navigate back / forward"],
-            ["j / k", "Sidebar: move selection"],
-            ["Enter", "Sidebar: open selected"],
+            ["j / k", "Rail / drawer: move selection"],
+            ["Enter", "Rail / drawer: open selected"],
             ["i", "Vim: Insert mode"],
             ["Esc", "Vim: Normal mode"],
             ["dd", "Vim: Delete block"],

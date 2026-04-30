@@ -6,7 +6,7 @@
   import { api } from "$lib/api-client";
   import { getRecents } from "$lib/stores/recents.svelte";
   import { toggleFavorite } from "$lib/stores/favorites.svelte";
-  import { getTheme, applyTheme } from "$lib/themes";
+  import { toggleBottomDrawer } from "$lib/stores/pane-state.svelte";
   import { buildCommands, matchesQuery, type Command } from "$lib/commands";
   import type { Note } from "$lib/types/Note";
   import type { SearchHit } from "$lib/types/SearchHit";
@@ -18,9 +18,6 @@
 
   const queryClient = useQueryClient();
 
-  // Expose sidebar toggle and theme toggle for commands
-  let onToggleSidebar: (() => void) | undefined = undefined;
-  export function setSidebarToggle(fn: () => void) { onToggleSidebar = fn; }
 
   const notesQuery = createQuery(() => ({
     queryKey: ["notes", { limit: 200 }] as const,
@@ -75,12 +72,7 @@
       close();
       goto(`/p/${encodeURIComponent(note.id)}`);
     },
-    toggleSidebar: () => { onToggleSidebar?.(); close(); },
-    toggleTheme: () => {
-      const current = document.documentElement.getAttribute("data-theme") || "day";
-      applyTheme(current === "day" ? "evening" : "day");
-      close();
-    },
+    toggleBottomDrawer: () => { toggleBottomDrawer(); close(); },
     deleteNote: isNotePage ? () => {
       const confirmed = window.confirm("Delete this note? This cannot be undone.");
       if (confirmed) {

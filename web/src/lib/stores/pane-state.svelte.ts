@@ -2,21 +2,24 @@
  * Pane state — Vim-style window management.
  *
  * Two layers:
- *   • `activeRegion` — which of the three top-level layout regions has focus
- *     (left sidebar, main content, right panel). Driven by `Ctrl+w h/l`.
- *   • `activePane` — sub-state of the main region. Today only `outliner` vs
- *     `kanban` (when the kanban split is open). Driven by `Ctrl+w j/k`.
+ *   • `activeRegion` — which of the four top-level layout regions has focus
+ *     (rail / middle / focus / bottom drawer). Driven by `Ctrl+w h/l/j/k`.
+ *   • `activePane` — sub-state of the focus region. Today only `outliner`
+ *     vs `kanban` (when the kanban split is open inside focus).
  *
- * Transient session state for everything except `splitRatio`, which persists
- * to localStorage so a user's preferred kanban-split sizing survives reloads.
+ * Transient session state for everything except `splitRatio` and
+ * `bottomDrawerOpen` / `bottomTab`, which persist to localStorage.
  */
 import { browser } from "$app/environment";
 
-export type Region = "left" | "main" | "right";
+export type Region = "rail" | "middle" | "focus" | "bottom";
 export type MainPane = "outliner" | "kanban";
+export type BottomTab = "backlinks" | "properties" | "outline" | "history" | "linkedTasks";
 
 const RATIO_KEY = "tesela:splitRatio";
 const VIM_KEY = "tesela:vimEnabled";
+const BOTTOM_OPEN_KEY = "tesela:bottomDrawerOpen";
+const BOTTOM_TAB_KEY = "tesela:bottomDrawerTab";
 
 function loadRatio(): number {
   if (!browser) return 60;
@@ -40,12 +43,62 @@ function saveRatio(n: number) {
   }
 }
 
+function loadBottomOpen(): boolean {
+  if (!browser) return true;
+  try {
+    const stored = localStorage.getItem(BOTTOM_OPEN_KEY);
+    if (stored === null) return true;
+    return stored === "true";
+  } catch {
+    return true;
+  }
+}
+
+function saveBottomOpen(v: boolean) {
+  if (!browser) return;
+  try {
+    localStorage.setItem(BOTTOM_OPEN_KEY, String(v));
+  } catch {
+    // ignore
+  }
+}
+
+const VALID_TABS: ReadonlySet<BottomTab> = new Set([
+  "backlinks",
+  "properties",
+  "outline",
+  "history",
+  "linkedTasks",
+]);
+
+function loadBottomTab(): BottomTab {
+  if (!browser) return "backlinks";
+  try {
+    const stored = localStorage.getItem(BOTTOM_TAB_KEY);
+    if (stored && VALID_TABS.has(stored as BottomTab)) return stored as BottomTab;
+    return "backlinks";
+  } catch {
+    return "backlinks";
+  }
+}
+
+function saveBottomTab(tab: BottomTab) {
+  if (!browser) return;
+  try {
+    localStorage.setItem(BOTTOM_TAB_KEY, tab);
+  } catch {
+    // ignore
+  }
+}
+
 let splitOpen = $state(false);
-let activeRegion = $state<Region>("main");
+let activeRegion = $state<Region>("focus");
 let activePane = $state<MainPane>("outliner");
 let splitRatio = $state(loadRatio());
 let ctrlWPending = $state(false);
 let vimMode = $state("NORMAL");
+let bottomDrawerOpen = $state(loadBottomOpen());
+let bottomTab = $state<BottomTab>(loadBottomTab());
 
 /** Blur any focused cm-editor so cm-vim stops eating keys when we move
  *  region focus elsewhere. Safe to call from any region transition. */
@@ -93,17 +146,17 @@ export function toggleSplit() {
 
 export function setActiveRegion(r: Region) {
   activeRegion = r;
-  if (r !== "main") {
+  if (r !== "focus") {
     releaseEditorFocus();
   } else if (browser) {
-    // Returning to main — ask the outliner to refocus its currently
+    // Returning to focus — ask the outliner to refocus its currently
     // focused block's cm-editor. BlockOutliner listens for this.
     document.dispatchEvent(new CustomEvent("tesela:restore-focus"));
   }
 }
 
 export function setActivePane(pane: MainPane) {
-  activeRegion = "main";
+  activeRegion = "focus";
   activePane = pane;
   if (pane === "kanban") releaseEditorFocus();
 }
@@ -140,4 +193,29 @@ export function isVimEnabled(): boolean {
   } catch {
     return true;
   }
+}
+
+export function isBottomDrawerOpen(): boolean {
+  return bottomDrawerOpen;
+}
+
+export function setBottomDrawerOpen(v: boolean) {
+  bottomDrawerOpen = v;
+  saveBottomOpen(v);
+  if (!v && activeRegion === "bottom") {
+    activeRegion = "focus";
+  }
+}
+
+export function toggleBottomDrawer() {
+  setBottomDrawerOpen(!bottomDrawerOpen);
+}
+
+export function getBottomTab(): BottomTab {
+  return bottomTab;
+}
+
+export function setBottomTab(tab: BottomTab) {
+  bottomTab = tab;
+  saveBottomTab(tab);
 }

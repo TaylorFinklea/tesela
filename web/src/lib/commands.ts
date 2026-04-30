@@ -22,8 +22,7 @@ export function buildCommands(deps: {
   createNote: (title: string) => Promise<void>;
   createType: (title: string) => Promise<void>;
   goToDaily: () => Promise<void>;
-  toggleSidebar: () => void;
-  toggleTheme: () => void;
+  toggleBottomDrawer: () => void;
   deleteNote?: () => void;
   copyNoteLink?: () => void;
   toggleFavorite?: () => void;
@@ -57,21 +56,13 @@ export function buildCommands(deps: {
       action: () => deps.goToDaily(),
     },
     {
-      id: "toggle-theme",
-      label: "Toggle Theme (Day ↔ Evening)",
-      icon: "IconMoon",
+      id: "toggle-bottom-drawer",
+      label: "Toggle Bottom Drawer",
+      icon: "IconLayoutBottombar",
       category: "action",
-      keywords: ["theme", "dark", "light", "mode", "toggle", "day", "evening"],
-      action: () => deps.toggleTheme(),
-    },
-    {
-      id: "toggle-sidebar",
-      label: "Toggle Sidebar",
-      icon: "IconLayoutSidebar",
-      category: "action",
-      shortcut: "1",
-      keywords: ["sidebar", "toggle", "collapse", "expand", "panel"],
-      action: () => deps.toggleSidebar(),
+      shortcut: "b",
+      keywords: ["drawer", "bottom", "toggle", "collapse", "expand", "panel", "backlinks", "properties"],
+      action: () => deps.toggleBottomDrawer(),
     },
 
     // === Navigation ===
@@ -104,7 +95,7 @@ export function buildCommands(deps: {
       label: "Settings",
       icon: "IconSettings",
       category: "navigation",
-      keywords: ["settings", "preferences", "config", "theme"],
+      keywords: ["settings", "preferences", "config"],
       action: () => deps.goto("/settings"),
     },
   ];

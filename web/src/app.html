@@ -5,33 +5,14 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<link rel="preconnect" href="https://fonts.googleapis.com" />
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-		<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+		<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
 		<meta name="text-scale" content="scale" />
 		%sveltekit.head%
 		<script>
 			(function() {
-				var mode = localStorage.getItem('tesela:mode') || 'day';
 				var root = document.documentElement;
-				if (mode === 'evening') root.classList.add('dark');
-				var day = {
-					'--background':'#faf7f2','--foreground':'#2c2824','--surface':'#f3ede4','--surface-2':'#ebe4d8',
-					'--muted':'#e8e0d4','--muted-foreground':'#8a8078','--accent':'#f0e8dc','--accent-foreground':'#2c2824',
-					'--primary':'#c4852c','--primary-foreground':'#faf7f2','--destructive':'#c45a4a','--border':'#e8e0d4',
-					'--ring':'#c4852c','--popover':'#faf7f2','--popover-foreground':'#2c2824',
-					'--block-bg':'#ffffff','--block-border':'#e8e0d4','--block-radius':'8px',
-					'--block-shadow':'0 1px 3px rgba(120,90,50,0.06)','--focus-glow':'0 0 0 3px rgba(196,133,44,0.12)','--thread-border':'#e8e0d4'
-				};
-				var evening = {
-					'--background':'#1e1c24','--foreground':'#e8e0d4','--surface':'#17151c','--surface-2':'#24222c',
-					'--muted':'#2a2830','--muted-foreground':'#9a918a','--accent':'#2a2830','--accent-foreground':'#e8e0d4',
-					'--primary':'#d4a04a','--primary-foreground':'#1e1c24','--destructive':'#d46a5a','--border':'rgba(255,240,210,0.08)',
-					'--ring':'#d4a04a','--popover':'#24222c','--popover-foreground':'#e8e0d4',
-					'--block-bg':'#24222c','--block-border':'rgba(255,240,210,0.06)','--block-radius':'8px',
-					'--block-shadow':'0 1px 3px rgba(0,0,0,0.2)','--focus-glow':'0 0 0 3px rgba(212,160,74,0.15)','--thread-border':'rgba(255,240,210,0.06)'
-				};
-				var v = mode === 'evening' ? evening : day;
-				for (var k in v) root.style.setProperty(k, v[k]);
-				root.setAttribute('data-theme', mode);
+				root.classList.add('dark');
+				root.setAttribute('data-theme', 'tokyo-night');
 			})();
 		</script>
 	</head>
