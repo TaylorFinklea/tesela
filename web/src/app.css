@@ -410,6 +410,28 @@ html, body { height: 100%; margin: 0; }
 .v9-bl .blk .ctype { display: inline-block; font-family: var(--v9-mono); font-size: 9.5px; padding: 0 5px; margin-right: 6px; border-radius: 2px; vertical-align: 1px; text-transform: uppercase; color: var(--v9-bg); font-weight: 700; }
 .v9-bl .blk.k-task .ctype { background: var(--v9-rose); }
 .v9-bl .blk.k-project .ctype { background: var(--v9-indigo); }
+
+/* Kind badge for middle-column rows (Phase 9.1). Same look as `.ctype` but
+ * scoped to `.v9-row` rather than nested block content. */
+.kind-badge {
+  display: inline-block;
+  font-family: var(--v9-mono);
+  font-size: 9.5px;
+  padding: 0 5px;
+  margin-right: 6px;
+  border-radius: 2px;
+  vertical-align: 1px;
+  text-transform: uppercase;
+  color: var(--v9-bg);
+  font-weight: 700;
+  background: var(--v9-ink-faint);
+}
+.kind-badge.kind-task     { background: var(--v9-rose); }
+.kind-badge.kind-project  { background: var(--v9-indigo); }
+.kind-badge.kind-person   { background: var(--v9-plum); }
+.kind-badge.kind-query    { background: var(--v9-sage); }
+.kind-badge.kind-event    { background: var(--v9-teal); }
+.kind-badge.kind-template { background: var(--v9-ochre); color: var(--v9-bg); }
 .v9link { color: var(--v9-amber); background: rgba(255,158,100,0.12); padding: 0 4px; border-radius: 2px; }
 .v9tag { color: var(--v9-sage); }
 

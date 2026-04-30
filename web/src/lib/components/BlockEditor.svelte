@@ -214,6 +214,8 @@
   } from "$lib/cm-decorations";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
   import { setVimMode } from "$lib/stores/pane-state.svelte";
+  import { api } from "$lib/api-client";
+  import { goto } from "$app/navigation";
   import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
   import DatePicker from "./DatePicker.svelte";
@@ -434,6 +436,7 @@
       { id: "link", label: "Link", description: "Insert [[page link]]", icon: "⟦", action: () => applySlash("link") },
       { id: "date", label: "Date", description: "Insert today's date", icon: "📅", action: () => applySlash("date") },
       { id: "query", label: "Query", description: "Inline query block (tag:Task status:doing)", icon: "⌕", action: () => applySlash("query") },
+      { id: "widget", label: "New Widget", description: "Create a saved Query note for the rail", icon: "★", action: () => applySlash("widget") },
       { id: "collection", label: "Collection", description: "Manual list of block references", icon: "▤", action: () => applySlash("collection") },
       { id: "template", label: "Template", description: "Insert blocks from a #Template page", icon: "⎘", action: () => applySlash("template") },
     ];
@@ -525,6 +528,34 @@
           slashFilter = "";
           slashStartPos = -1;
           onSlashCommand?.(command);
+          return;
+        }
+        case "widget": {
+          // Strip the `/widget` text, prompt for a name, then create a Query
+          // note that becomes a saved widget in the rail. Navigates to the
+          // new note for editing the DSL.
+          insert = before + after;
+          view.dispatch({
+            changes: { from: 0, to: doc.length, insert },
+            selection: { anchor: before.length },
+          });
+          onChange(insert);
+          showSlashMenu = false;
+          slashFilter = "";
+          slashStartPos = -1;
+          onSlashCommand?.(command);
+          setTimeout(async () => {
+            const name = window.prompt("New query widget name:");
+            if (!name || !name.trim()) return;
+            const trimmed = name.trim();
+            const content = `---\ntitle: "${trimmed}"\ntype: "Query"\ntags: []\n---\nquery::\nsection:: saved\n`;
+            try {
+              const created = await api.createNote(trimmed, content);
+              goto(`/p/${encodeURIComponent(created.id)}`);
+            } catch (e) {
+              console.error("Failed to create widget:", e);
+            }
+          }, 0);
           return;
         }
         case "collection": {

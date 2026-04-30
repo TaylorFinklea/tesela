@@ -8,6 +8,7 @@ import type { Link } from "$lib/types/Link";
 import type { GraphEdge } from "$lib/types/GraphEdge";
 import type { TypeDefinition } from "$lib/types/TypeDefinition";
 import type { ParsedBlock } from "$lib/types/ParsedBlock";
+import type { QueryResult } from "$lib/types/QueryResult";
 
 // Same-origin path; vite dev server proxies `/api/*` → tesela-server at
 // 127.0.0.1:7474. Relative URL means the LAN client (phone) hits whatever
@@ -78,6 +79,8 @@ export const api = {
     const q = new URLSearchParams({ q: query, limit: String(limit) });
     return get<SearchHit[]>(`/search?${q.toString()}`);
   },
+  executeQuery: (dsl: string, group?: string | null, sort?: string | null) =>
+    post<QueryResult>("/search/query", { dsl, group: group ?? null, sort: sort ?? null }),
   deleteNote: (id: string) =>
     fetch(`${BASE_URL}/notes/${encodeURIComponent(id)}`, { method: "DELETE" }),
   getBacklinks: (id: string) =>

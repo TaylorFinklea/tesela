@@ -3,69 +3,31 @@
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { api } from "$lib/api-client";
-  import { getRecents } from "$lib/stores/recents.svelte";
-  import { getFavorites } from "$lib/stores/favorites.svelte";
   import { getActiveRegion, setActiveRegion } from "$lib/stores/pane-state.svelte";
+  import { parseWidgets, widgetsBySection } from "$lib/widget-registry.svelte";
   import type { Note } from "$lib/types/Note";
-
-  type RailItem = {
-    label: string;
-    href: string;
-    icon: string; // glyph data-icon key
-    badge?: string;
-    match?: (p: string) => boolean;
-  };
+  import type { Widget, WidgetSection } from "$lib/types/Widget";
 
   const railFocused = $derived(getActiveRegion() === "rail");
   let rootEl = $state<HTMLElement | undefined>();
   let selectedIndex = $state(-1);
 
   const notesQuery = createQuery(() => ({
-    queryKey: ["notes", { limit: 200 }] as const,
-    queryFn: () => api.listNotes({ limit: 200 }),
+    queryKey: ["notes", { limit: 500 }] as const,
+    queryFn: () => api.listNotes({ limit: 500 }),
   }));
   const notes = $derived((notesQuery.data ?? []) as Note[]);
+  const widgets = $derived(parseWidgets(notes));
+  const sections = $derived(widgetsBySection(widgets));
+  const flat = $derived<Widget[]>([
+    ...sections.pinned,
+    ...sections.browse,
+    ...sections.saved,
+  ]);
   const currentPath = $derived(page.url.pathname);
 
-  const favoriteNotes: Note[] = $derived(
-    getFavorites()
-      .map((id: string) => notes.find((n) => n.id === id))
-      .filter((n): n is Note => n !== undefined),
-  );
-  const recentNotes: Note[] = $derived(
-    getRecents().slice(0, 5)
-      .map((id: string) => notes.find((n) => n.id === id))
-      .filter((n): n is Note => n !== undefined),
-  );
-
-  const pinned: RailItem[] = [
-    { label: "Today", href: "/daily", icon: "calendar", match: (p) => p === "/daily" },
-    { label: "Pages", href: "/", icon: "cal", match: (p) => p === "/" },
-  ];
-  const browse: RailItem[] = [
-    { label: "Timeline", href: "/timeline", icon: "clock", match: (p) => p === "/timeline" },
-    { label: "Graph", href: "/graph", icon: "query", match: (p) => p === "/graph" },
-    { label: "Properties", href: "/properties", icon: "project", match: (p) => p === "/properties" },
-  ];
-  const saved: RailItem[] = $derived([
-    ...favoriteNotes.map((n): RailItem => ({
-      label: n.title,
-      href: `/p/${encodeURIComponent(n.id)}`,
-      icon: "pin",
-      match: (p) => p === `/p/${encodeURIComponent(n.id)}`,
-    })),
-    ...recentNotes.map((n): RailItem => ({
-      label: n.title,
-      href: `/p/${encodeURIComponent(n.id)}`,
-      icon: "clock",
-      match: (p) => p === `/p/${encodeURIComponent(n.id)}`,
-    })),
-  ]);
-
-  const allItems = $derived<RailItem[]>([...pinned, ...browse, ...saved]);
-
-  function isActive(item: RailItem): boolean {
-    return item.match ? item.match(currentPath) : item.href === currentPath;
+  function isActive(w: Widget): boolean {
+    return currentPath === `/p/${encodeURIComponent(w.id)}`;
   }
 
   $effect(() => {
@@ -81,13 +43,13 @@
     if (!railFocused) return;
     if (e.key === "j" || e.key === "ArrowDown") {
       e.preventDefault();
-      selectedIndex = Math.min(allItems.length - 1, selectedIndex + 1);
+      selectedIndex = Math.min(flat.length - 1, selectedIndex + 1);
     } else if (e.key === "k" || e.key === "ArrowUp") {
       e.preventDefault();
       selectedIndex = Math.max(0, selectedIndex - 1);
-    } else if (e.key === "Enter" && allItems[selectedIndex]) {
+    } else if (e.key === "Enter" && flat[selectedIndex]) {
       e.preventDefault();
-      goto(allItems[selectedIndex].href);
+      goto(`/p/${encodeURIComponent(flat[selectedIndex].id)}`);
       setActiveRegion("focus");
     } else if (e.key === "Escape") {
       e.preventDefault();
@@ -95,10 +57,55 @@
     }
   }
 
-  function rowClass(item: RailItem, idx: number): string {
+  function rowClass(w: Widget, idx: number): string {
     const sel = railFocused && selectedIndex === idx;
-    const active = isActive(item);
+    const active = isActive(w);
     return `w ${active || sel ? "active" : ""}`;
+  }
+
+  // Default kind glyph — lifted from v9-styles.css's `.v9-rail .w[data-icon=...] .gl`
+  // class hooks. Keep the data-icon attribute on the row so the existing CSS
+  // colors the glyph automatically.
+  function dataIcon(w: Widget): string {
+    return w.icon ?? "cal";
+  }
+
+  function glyphChar(w: Widget): string {
+    if (w.title.length === 0) return "?";
+    return w.title[0].toUpperCase();
+  }
+
+  async function newQueryWidget() {
+    // Prompt for a title; create a Query note with empty DSL and navigate.
+    const title = window.prompt("New query name:");
+    if (!title) return;
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    const content = [
+      "---",
+      `title: "${trimmed}"`,
+      `type: "Query"`,
+      "tags: []",
+      "---",
+      "query::",
+      "section:: saved",
+      "",
+    ].join("\n");
+    try {
+      const created = await api.createNote(trimmed, content);
+      goto(`/p/${encodeURIComponent(created.id)}`);
+    } catch (e) {
+      console.error("Failed to create query:", e);
+    }
+  }
+
+  function sectionTitle(name: WidgetSection): string {
+    return name.toUpperCase();
+  }
+
+  // Used by the inline iteration to assign a flat index for keynav.
+  function flatIndexOf(w: Widget): number {
+    return flat.indexOf(w);
   }
 </script>
 
@@ -113,43 +120,26 @@
   style="outline: none;"
 >
   <div class="v9-rail-scroll">
-    <div class="group">Pinned</div>
-    {#each pinned as item, qi}
-      {@const idx = qi}
-      <a href={item.href} class={rowClass(item, idx)} data-icon={item.icon}>
-        <span class="gl">{item.label[0]}</span>
-        <span>{item.label}</span>
-        <span class="badge">{item.badge ?? ""}</span>
-        <span class="caret"></span>
-      </a>
+    {#each ["pinned", "browse", "saved"] as const as sectionName}
+      {#if sections[sectionName].length > 0}
+        <div class="group">{sectionTitle(sectionName)}</div>
+        {#each sections[sectionName] as w (w.id)}
+          {@const idx = flatIndexOf(w)}
+          <a href={`/p/${encodeURIComponent(w.id)}`} class={rowClass(w, idx)} data-icon={dataIcon(w)}>
+            <span class="gl">{glyphChar(w)}</span>
+            <span>{w.title}</span>
+            <span class="badge"></span>
+            <span class="caret"></span>
+          </a>
+        {/each}
+      {/if}
     {/each}
 
-    <div class="group">Browse</div>
-    {#each browse as item, qi}
-      {@const idx = pinned.length + qi}
-      <a href={item.href} class={rowClass(item, idx)} data-icon={item.icon}>
-        <span class="gl">{item.label[0]}</span>
-        <span>{item.label}</span>
-        <span class="badge">{item.badge ?? ""}</span>
-        <span class="caret"></span>
-      </a>
-    {/each}
-
-    {#if saved.length > 0}
-      <div class="group">Saved</div>
-      {#each saved as item, qi}
-        {@const idx = pinned.length + browse.length + qi}
-        <a href={item.href} class={rowClass(item, idx)} data-icon={item.icon}>
-          <span class="gl">{item.label[0]}</span>
-          <span>{item.label}</span>
-          <span class="badge">{item.badge ?? ""}</span>
-          <span class="caret"></span>
-        </a>
-      {/each}
-    {/if}
+    <!-- New widget button -->
+    <button class="add" onclick={newQueryWidget} type="button">+ New widget</button>
   </div>
 
-  <!-- Settings footer (kept simple — full mini-cal is deferred per spec) -->
+  <!-- Settings footer -->
   <div style="border-top: 1px solid var(--v9-line); padding: 6px 6px;">
     <a
       href="/settings"

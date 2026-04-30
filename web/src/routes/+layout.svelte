@@ -27,6 +27,8 @@
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import LeaderMenu from "$lib/components/LeaderMenu.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
+  import { ensureSystemWidgets } from "$lib/system-widgets";
+  import { api } from "$lib/api-client";
   import "../app.css";
 
   let { children } = $props();
@@ -58,6 +60,12 @@
         queryClient.invalidateQueries({ queryKey: ["note", id] });
       },
     });
+
+    // Ensure the 9 system Query widgets exist so the rail is populated on
+    // first run. Idempotent — only creates on 404. Fires-and-forgets; rail
+    // will reactively pick them up via the notes WS invalidation when each
+    // is created.
+    void ensureSystemWidgets(api);
 
     const spaceHandler = (e: KeyboardEvent) => {
       if (e.key === " " && !showLeaderMenu) {

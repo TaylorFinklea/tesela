@@ -1,12 +1,17 @@
 mod notes;
 mod search;
+mod search_query;
 mod tags;
 mod types;
 mod ws;
 
 use std::sync::Arc;
 
-use axum::{http::StatusCode, routing::get, Json, Router};
+use axum::{
+    http::StatusCode,
+    routing::{get, post},
+    Json, Router,
+};
 use serde_json::json;
 use tower_http::cors::CorsLayer;
 
@@ -27,6 +32,7 @@ pub fn build(state: AppState) -> Router {
         .route("/notes/{id}/links", get(notes::get_forward_links))
         .route("/links", get(notes::get_all_edges))
         .route("/search", get(search::search_notes))
+        .route("/search/query", post(search_query::execute))
         .route("/tags", get(tags::list_tags))
         .route("/types", get(types::list_types))
         .route("/types/{name}", get(types::get_type))

@@ -5,17 +5,46 @@
   import { api } from "$lib/api-client";
   import { getActiveRegion, setActiveRegion } from "$lib/stores/pane-state.svelte";
   import { parseBlocks } from "$lib/block-parser";
+  import { widgetFromNote } from "$lib/widget-registry.svelte";
   import type { Note } from "$lib/types/Note";
   import type { Link } from "$lib/types/Link";
   import type { GraphEdge } from "$lib/types/GraphEdge";
+  import type { QueryItem } from "$lib/types/QueryItem";
 
-  type Row = { id: string; label: string; href?: string };
+  type Row = {
+    id: string;
+    label: string;
+    href?: string;
+    breadcrumb?: string[];
+    primaryTag?: string;
+  };
 
   const middleFocused = $derived(getActiveRegion() === "middle");
   let rootEl = $state<HTMLElement | undefined>();
   let selectedIndex = $state(0);
 
   const path = $derived(page.url.pathname);
+  const noteId = $derived(path.startsWith("/p/") ? decodeURIComponent(path.slice(3)) : "");
+
+  // ----- The focused note (we need its metadata to detect Query widgets) -----
+  const noteQuery = createQuery(() => ({
+    queryKey: ["note", noteId] as const,
+    queryFn: () => api.getNote(noteId),
+    enabled: noteId !== "",
+  }));
+  const note: Note | undefined = $derived(noteQuery.data as Note | undefined);
+  const isQueryWidget = $derived(note?.metadata.note_type === "Query");
+  const widget = $derived(note && isQueryWidget ? widgetFromNote(note) : null);
+
+  // ----- Query widget execution -----
+  const widgetResultQuery = createQuery(() => ({
+    queryKey: ["widget", noteId, widget?.query, widget?.group, widget?.sort] as const,
+    queryFn: () =>
+      widget && widget.query.trim().length > 0
+        ? api.executeQuery(widget.query, widget.group, widget.sort)
+        : Promise.resolve({ groups: [] }),
+    enabled: !!widget && widget.query.trim().length > 0,
+  }));
 
   // ----- /  (Pages) -----
   const notesQuery = createQuery(() => ({
@@ -45,17 +74,16 @@
   const dailyBlocks = $derived(dailyNote ? parseBlocks(dailyNote.id, bodyOf(dailyNote)) : []);
   const dailyTopBlocks = $derived(dailyBlocks.filter((b) => b.indent_level === 0));
 
-  // ----- /p/[id] — backlinks of focused note -----
-  const noteId = $derived(path.startsWith("/p/") ? decodeURIComponent(path.slice(3)) : "");
+  // ----- Backlinks fallback for non-Query notes -----
   const backlinksQuery = createQuery(() => ({
     queryKey: ["backlinks", noteId] as const,
     queryFn: () => api.getBacklinks(noteId),
-    enabled: noteId !== "",
+    enabled: noteId !== "" && !isQueryWidget,
   }));
   const edgesQuery = createQuery(() => ({
     queryKey: ["all-edges"] as const,
     queryFn: () => api.getAllEdges(),
-    enabled: noteId !== "",
+    enabled: noteId !== "" && !isQueryWidget,
   }));
   const backlinks: Link[] = $derived((backlinksQuery.data ?? []) as Link[]);
   const edges: GraphEdge[] = $derived((edgesQuery.data ?? []) as GraphEdge[]);
@@ -69,8 +97,54 @@
     return [...new Set([...fromApi, ...incomingFromEdges])];
   });
 
-  // Title + subtitle + rows for the active context.
-  const view = $derived.by((): { title: string; subtitle: string; rows: Row[]; placeholder?: string } => {
+  // Convert a backend QueryItem into a row.
+  function itemToRow(item: QueryItem): Row {
+    const href =
+      item.kind === "block"
+        ? `/p/${encodeURIComponent(item.page_id)}?block=${encodeURIComponent(item.block_id ?? "")}`
+        : `/p/${encodeURIComponent(item.page_id)}`;
+    return {
+      id: item.block_id ?? item.page_id,
+      label: item.text || item.title,
+      href,
+      breadcrumb: item.parent_breadcrumb,
+      primaryTag: item.primary_tag ?? undefined,
+    };
+  }
+
+  type View = {
+    title: string;
+    subtitle: string;
+    /** Either flat rows (legacy nav) OR grouped query result */
+    rows: Row[];
+    groups?: { key: string; rows: Row[] }[];
+    placeholder?: string;
+    error?: string;
+  };
+
+  const view = $derived.by((): View => {
+    if (isQueryWidget && widget) {
+      const result = widgetResultQuery.data;
+      const total = result?.groups?.reduce((acc, g) => acc + g.items.length, 0) ?? 0;
+      const groups = (result?.groups ?? []).map((g) => ({
+        key: g.key || "—",
+        rows: g.items.map(itemToRow),
+      }));
+      // Single-group with empty key → flatten so the rendering branch chooses
+      // the flat path (no group headers shown).
+      const useGroups = !(groups.length === 1 && groups[0].key === "—");
+      return {
+        title: widget.title,
+        subtitle: widget.query
+          ? `${total} ${widget.query.includes("kind:page") ? "pages" : "blocks"}`
+          : "(empty query — edit `query::` in the focus pane)",
+        rows: useGroups ? [] : groups[0]?.rows ?? [],
+        groups: useGroups ? groups : undefined,
+        error: widgetResultQuery.error
+          ? (widgetResultQuery.error as Error).message
+          : undefined,
+      };
+    }
     if (path === "/") {
       return {
         title: "Pages",
@@ -112,8 +186,13 @@
     };
   });
 
+  // Flat row list for keynav, accounting for grouped views.
+  const flatRows = $derived<Row[]>(
+    view.groups ? view.groups.flatMap((g) => g.rows) : view.rows,
+  );
+
   $effect(() => {
-    if (selectedIndex >= view.rows.length) selectedIndex = Math.max(0, view.rows.length - 1);
+    if (selectedIndex >= flatRows.length) selectedIndex = Math.max(0, flatRows.length - 1);
   });
 
   $effect(() => {
@@ -129,13 +208,13 @@
     if (!middleFocused) return;
     if (e.key === "j" || e.key === "ArrowDown") {
       e.preventDefault();
-      selectedIndex = Math.min(view.rows.length - 1, selectedIndex + 1);
+      selectedIndex = Math.min(flatRows.length - 1, selectedIndex + 1);
     } else if (e.key === "k" || e.key === "ArrowUp") {
       e.preventDefault();
       selectedIndex = Math.max(0, selectedIndex - 1);
-    } else if (e.key === "Enter" && view.rows[selectedIndex]?.href) {
+    } else if (e.key === "Enter" && flatRows[selectedIndex]?.href) {
       e.preventDefault();
-      goto(view.rows[selectedIndex].href!);
+      goto(flatRows[selectedIndex].href!);
       setActiveRegion("focus");
     } else if (e.key === "Escape") {
       e.preventDefault();
@@ -159,16 +238,46 @@
     <span class="s">{view.subtitle}</span>
   </div>
   <div class="v9-pane-body">
-    {#if view.placeholder}
+    {#if view.error}
+      <div style="padding: 14px; color: var(--v9-rose); font-family: var(--v9-mono); font-size: 11px;">
+        Query error: {view.error}
+      </div>
+    {:else if view.placeholder}
       <div style="padding: 14px; color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">
         {view.placeholder}
       </div>
-    {:else if view.rows.length === 0}
+    {:else if view.groups}
+      {#each view.groups as g}
+        {#if g.rows.length > 0}
+          <div class="v9-grp">{g.key} <span style="color:var(--v9-ink-faint); margin-left: 6px;">{g.rows.length}</span></div>
+          {#each g.rows as row}
+            {@const ri = flatRows.indexOf(row)}
+            {@const sel = middleFocused && selectedIndex === ri}
+            <a
+              class="v9-row {sel ? 'selected' : ''}"
+              href={row.href ?? "#"}
+              onclick={(e) => { if (row.href) { e.preventDefault(); selectedIndex = ri; goto(row.href); setActiveRegion("focus"); } }}
+            >
+              <span class="marker">{sel ? "▸" : ""}</span>
+              <span class="text">
+                {#if row.primaryTag}
+                  <span class="kind-badge kind-{row.primaryTag.toLowerCase()}">{row.primaryTag}</span>
+                {/if}
+                {row.label}
+              </span>
+            </a>
+            {#if row.breadcrumb && row.breadcrumb.length > 0}
+              <div class="src">↳ {row.breadcrumb.join(" / ")}</div>
+            {/if}
+          {/each}
+        {/if}
+      {/each}
+    {:else if flatRows.length === 0}
       <div style="padding: 14px; color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">
         — empty —
       </div>
     {:else}
-      {#each view.rows as row, ri}
+      {#each flatRows as row, ri}
         {@const sel = middleFocused && selectedIndex === ri}
         <a
           class="v9-row {sel ? 'selected' : ''}"
@@ -176,8 +285,16 @@
           onclick={(e) => { if (row.href) { e.preventDefault(); selectedIndex = ri; goto(row.href); setActiveRegion("focus"); } }}
         >
           <span class="marker">{sel ? "▸" : ""}</span>
-          <span class="text">{row.label}</span>
+          <span class="text">
+            {#if row.primaryTag}
+              <span class="kind-badge kind-{row.primaryTag.toLowerCase()}">{row.primaryTag}</span>
+            {/if}
+            {row.label}
+          </span>
         </a>
+        {#if row.breadcrumb && row.breadcrumb.length > 0}
+          <div class="src">↳ {row.breadcrumb.join(" / ")}</div>
+        {/if}
       {/each}
     {/if}
   </div>

@@ -720,6 +720,282 @@ impl SearchIndex for SqliteIndex {
 
         Ok(count as usize)
     }
+
+    async fn execute_query(
+        &self,
+        query: &crate::query::ParsedQuery,
+        group: Option<&str>,
+        sort: Option<&str>,
+    ) -> Result<crate::query::QueryResult> {
+        use crate::query::{Kind, QueryResult};
+        let mut items = match query.kind {
+            Kind::Block => self.execute_block_query(query).await?,
+            Kind::Page => self.execute_page_query(query).await?,
+        };
+        apply_sort(&mut items, sort);
+        let groups = apply_group(items, group);
+        Ok(QueryResult { groups })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Query execution helpers (Phase 9.1)
+// ---------------------------------------------------------------------------
+
+impl SqliteIndex {
+    /// Execute a `kind:block` query. Strategy: pull a candidate set of notes
+    /// from SQL using the most selective tag filter (or all notes if none),
+    /// parse blocks, then refine in-memory with [`crate::query::block_matches`].
+    async fn execute_block_query(
+        &self,
+        query: &crate::query::ParsedQuery,
+    ) -> Result<Vec<crate::query::QueryItem>> {
+        use crate::block::parse_blocks;
+        use crate::query::{block_matches, Kind, QueryItem, QueryOp};
+
+        // Pick the first positive `tag:` filter as the broad SQL prefilter.
+        // Negative tag filters and other property filters refine in-memory.
+        let prefilter_tag: Option<&str> = query
+            .filters
+            .iter()
+            .find(|f| f.key == "tag" && f.op == QueryOp::Eq)
+            .map(|f| f.value.as_str());
+
+        let candidate_notes: Vec<(String, String, String)> = if let Some(tag) = prefilter_tag {
+            sqlx::query("SELECT id, title, body FROM notes WHERE body LIKE ? OR tags LIKE ?")
+                .bind(format!("%#{}%", tag))
+                .bind(format!("%\"{}%", tag))
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| db_err("Failed to fetch candidate notes for block query", e))?
+                .into_iter()
+                .map(|row| (row.get("id"), row.get("title"), row.get("body")))
+                .collect()
+        } else {
+            sqlx::query("SELECT id, title, body FROM notes")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| db_err("Failed to fetch all notes for block query", e))?
+                .into_iter()
+                .map(|row| (row.get("id"), row.get("title"), row.get("body")))
+                .collect()
+        };
+
+        let mut out = Vec::new();
+        for (note_id, note_title, body) in &candidate_notes {
+            let blocks = parse_blocks(note_id, body);
+            // Refine each block in-memory.
+            for (idx, block) in blocks.iter().enumerate() {
+                if !block_matches(block, query) {
+                    continue;
+                }
+                // Walk back through earlier blocks at lower indent_level to
+                // build the parent breadcrumb. The page title is the first
+                // element; ancestor block texts follow in outer-to-inner order.
+                let mut breadcrumb = vec![note_title.clone()];
+                let mut crumbs = Vec::new();
+                let mut cursor = idx;
+                let target_indent = block.indent_level;
+                while cursor > 0 && target_indent > 0 {
+                    cursor -= 1;
+                    if blocks[cursor].indent_level < target_indent {
+                        crumbs.push(blocks[cursor].text.clone());
+                        if blocks[cursor].indent_level == 0 {
+                            break;
+                        }
+                    }
+                }
+                crumbs.reverse();
+                breadcrumb.extend(crumbs);
+
+                let primary_tag = block.tags.first().cloned();
+                out.push(QueryItem {
+                    block_id: Some(block.id.clone()),
+                    page_id: note_id.clone(),
+                    title: note_title.clone(),
+                    text: if block.text.is_empty() {
+                        block.raw_text.lines().next().unwrap_or("").to_string()
+                    } else {
+                        block.text.clone()
+                    },
+                    parent_breadcrumb: breadcrumb,
+                    kind: Kind::Block,
+                    primary_tag,
+                    properties: block.properties.clone(),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Execute a `kind:page` query. Loads all notes (corpus is small) and
+    /// filters in-memory using the same `block_matches` semantics applied to
+    /// a synthetic "page block" (tags + properties from frontmatter).
+    async fn execute_page_query(
+        &self,
+        query: &crate::query::ParsedQuery,
+    ) -> Result<Vec<crate::query::QueryItem>> {
+        use crate::block::ParsedBlock;
+        use crate::query::{block_matches, Kind, QueryItem};
+        use std::collections::HashMap;
+
+        // SELECT id, title, tags, note_type, plus full content for property parsing.
+        let rows = sqlx::query(
+            "SELECT id, title, tags, note_type, content FROM notes ORDER BY modified_at DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| db_err("Failed to fetch notes for page query", e))?;
+
+        let mut out = Vec::new();
+        for row in &rows {
+            let id: String = row.get("id");
+            let title: String = row.get("title");
+            let tags_json: String = row.get("tags");
+            let note_type: Option<String> = row.try_get("note_type").ok().flatten();
+            let content: String = row.get("content");
+
+            let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+            let mut props: HashMap<String, String> = HashMap::new();
+            // Pull properties from frontmatter — naive line-by-line parse looking
+            // for `key: value` between `---` fences.
+            if let Some(fm) = extract_frontmatter(&content) {
+                for line in fm.lines() {
+                    if let Some((k, v)) = line.split_once(':') {
+                        let k = k.trim();
+                        let v = v.trim().trim_matches('"');
+                        if !k.is_empty() && !v.is_empty() {
+                            // YAML uses `type:`; metadata API exposes it as
+                            // `note_type`. Alias on insert so DSL filters that
+                            // reference `note_type:` resolve correctly.
+                            let canonical = if k == "type" { "note_type" } else { k };
+                            props.insert(canonical.to_string(), v.to_string());
+                        }
+                    }
+                }
+            }
+            if let Some(nt) = &note_type {
+                props.insert("note_type".to_string(), nt.clone());
+            }
+
+            // Synthetic page-block for matcher. inherited_tags is empty for pages.
+            let pseudo = ParsedBlock {
+                id: id.clone(),
+                text: title.clone(),
+                raw_text: title.clone(),
+                tags: tags.clone(),
+                inherited_tags: vec![],
+                properties: props.clone(),
+                indent_level: 0,
+                note_id: id.clone(),
+            };
+            if !block_matches(&pseudo, query) {
+                continue;
+            }
+            out.push(QueryItem {
+                block_id: None,
+                page_id: id.clone(),
+                title: title.clone(),
+                text: title,
+                parent_breadcrumb: vec![],
+                kind: Kind::Page,
+                primary_tag: tags.first().cloned(),
+                properties: props,
+            });
+        }
+        Ok(out)
+    }
+}
+
+/// Extract the YAML frontmatter body (between the two `---` fences) from a
+/// note's full content. Returns `None` if there is no frontmatter.
+fn extract_frontmatter(content: &str) -> Option<&str> {
+    if !content.starts_with("---") {
+        return None;
+    }
+    let after_first = content.get(3..)?.trim_start_matches('\n');
+    let end = after_first.find("\n---")?;
+    Some(&after_first[..end])
+}
+
+/// Sort `items` in place by a comma-separated `key [asc|desc]` list. Property
+/// keys map to the row's `properties` map; `title` and `text` map to the row
+/// fields directly. Unknown keys are ignored.
+fn apply_sort(items: &mut [crate::query::QueryItem], sort: Option<&str>) {
+    let Some(s) = sort else {
+        return;
+    };
+    let mut keys: Vec<(String, bool)> = Vec::new(); // (key, desc)
+    for tok in s.split(',') {
+        let mut parts = tok.split_whitespace();
+        let Some(key) = parts.next() else { continue };
+        let desc = matches!(parts.next(), Some(d) if d.eq_ignore_ascii_case("desc"));
+        keys.push((key.to_ascii_lowercase(), desc));
+    }
+    if keys.is_empty() {
+        return;
+    }
+    items.sort_by(|a, b| {
+        for (k, desc) in &keys {
+            let av = field(a, k);
+            let bv = field(b, k);
+            let ord = av.cmp(&bv);
+            if ord != std::cmp::Ordering::Equal {
+                return if *desc { ord.reverse() } else { ord };
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+}
+
+fn field<'a>(item: &'a crate::query::QueryItem, key: &str) -> String {
+    match key {
+        "title" => item.title.to_ascii_lowercase(),
+        "text" => item.text.to_ascii_lowercase(),
+        other => item
+            .properties
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(other))
+            .map(|(_, v)| v.to_ascii_lowercase())
+            .unwrap_or_default(),
+    }
+}
+
+/// Bucket `items` by a property/metadata key. When `group` is `None`, returns
+/// a single `QueryGroup` with key `""` containing all items.
+fn apply_group(
+    items: Vec<crate::query::QueryItem>,
+    group: Option<&str>,
+) -> Vec<crate::query::QueryGroup> {
+    use crate::query::QueryGroup;
+    use std::collections::BTreeMap;
+
+    let Some(g) = group else {
+        let count = items.len() as u32;
+        return vec![QueryGroup {
+            key: String::new(),
+            count,
+            items,
+        }];
+    };
+    // BTreeMap to keep group order stable across calls.
+    let mut buckets: BTreeMap<String, Vec<crate::query::QueryItem>> = BTreeMap::new();
+    for item in items {
+        let key = item
+            .properties
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(g))
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default();
+        buckets.entry(key).or_default().push(item);
+    }
+    buckets
+        .into_iter()
+        .map(|(key, items)| {
+            let count = items.len() as u32;
+            QueryGroup { key, count, items }
+        })
+        .collect()
 }
 
 #[async_trait]

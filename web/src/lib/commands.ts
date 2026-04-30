@@ -21,6 +21,7 @@ export function buildCommands(deps: {
   goto: (path: string) => void;
   createNote: (title: string) => Promise<void>;
   createType: (title: string) => Promise<void>;
+  createQuery: (title: string) => Promise<void>;
   goToDaily: () => Promise<void>;
   toggleBottomDrawer: () => void;
   deleteNote?: () => void;
@@ -45,6 +46,14 @@ export function buildCommands(deps: {
       category: "action",
       keywords: ["new", "create", "type", "tag"],
       action: () => deps.createType(""),
+    },
+    {
+      id: "new-query",
+      label: "New Query",
+      icon: "IconSearch",
+      category: "action",
+      keywords: ["new", "create", "query", "widget", "filter", "saved", "search"],
+      action: () => deps.createQuery(""),
     },
     {
       id: "daily-note",

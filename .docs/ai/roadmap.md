@@ -123,11 +123,15 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [x] Right sidebar contents (backlinks, properties) ported into bottom drawer tabs; History + Linked Tasks stubbed
 - [x] `themes.ts` deleted; theme picker removed from settings; "Toggle Theme" command removed from ⌘K
 
-#### Phase 9.1 — Saved-Query Widgets (Queries/Sets)
-- [ ] `QuerySpec` data model + executor (system widgets: Today, Tasks, Projects, People, Inbox, Recent, Pinned, Pages)
-- [ ] User-authored saved queries appear as widgets in the rail's Saved section
-- [ ] Block kind glyphs (TASK / PROJECT / etc.) in focus pane
-- [ ] Parent breadcrumb in middle-column list rows
+#### Phase 9.1 — Saved-Query Widgets (Queries/Sets) ✓
+- [x] DSL parser in `tesela-core::query` (Rust + ts-rs export → web/src/lib/types) — supports `kind:` `tag:` `status:` `has:` properties, comparison ops, negation
+- [x] `SearchIndex::execute_query` trait method + `SqliteIndex` impl (block-kind via broad SQL prefilter + in-memory refine; page-kind via frontmatter parse)
+- [x] `POST /search/query` endpoint in tesela-server
+- [x] 9 system widgets (Today, Pages, Tasks, Projects, People, Inbox, Calendar, Recent, Pinned) auto-created on app load
+- [x] User-authored saved queries appear as widgets in the rail's Saved section (rail consumes `note_type: Query` notes via `widget-registry`)
+- [x] Middle column renders grouped query results with parent breadcrumbs and kind badges (`.kind-badge.kind-task` / `kind-project` / etc.)
+- [x] ⌘K "New Query" command + `/widget` slash command + rail footer button
+- [→] Block kind glyphs (TASK/PROJECT) in focus pane — deferred to 9.4 (would require restyling cm-decorations away from current "tags hidden" model)
 
 #### Phase 9.2 — Calendar + Inbox Widgets
 - [ ] Mini calendar pinned in rail; tasks (rose) / events (teal) / notes (amber) markers; click-to-jump-to-daily-note
@@ -144,6 +148,7 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [ ] Mini calendar full keynav + month nav
 - [ ] Focus-pane splits (multiple side-by-side outliners)
 - [ ] Drag-to-rearrange widget rail (or keyboard equivalent)
+- [ ] Block kind glyphs (TASK/PROJECT badge prefix) in focus pane — carried forward from 9.1
 
 ### Phase 3: Power Features (paused — folded into Phase 9)
 

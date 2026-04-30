@@ -67,6 +67,15 @@
       close();
       goto(`/p/${encodeURIComponent(note.id)}`);
     },
+    createQuery: async (title) => {
+      const name = title || search || window.prompt("New query name:") || "";
+      if (!name.trim()) return;
+      const content = `---\ntitle: "${name.trim()}"\ntype: "Query"\ntags: []\n---\nquery::\nsection:: saved\n`;
+      const note = await api.createNote(name.trim(), content);
+      queryClient.invalidateQueries({ queryKey: ["notes"] });
+      close();
+      goto(`/p/${encodeURIComponent(note.id)}`);
+    },
     goToDaily: async () => {
       const note = await api.getDailyNote();
       close();
