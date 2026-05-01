@@ -19,14 +19,14 @@
     setSplitRatio,
     isBottomDrawerOpen,
     toggleBottomDrawer,
-    isVSplitOpen,
-    toggleVSplit,
-    closeVSplit,
     getVSplitActiveSide,
     setVSplitActiveSide,
     adjustVSplitRatio,
     setVSplitRatio,
+    getVimMode,
   } from "$lib/stores/pane-state.svelte";
+  import { goBack as goBackColumn } from "$lib/stores/active-pane-nav.svelte";
+  import { page } from "$app/state";
   import CrumbBar from "$lib/components/CrumbBar.svelte";
   import Rail from "$lib/components/Rail.svelte";
   import MiddleColumn from "$lib/components/MiddleColumn.svelte";
@@ -142,6 +142,24 @@
       }
     };
 
+    // Phase 9.5b: column-view split is open whenever URL has ?back=.
+    const isColumnSplitOpen = () => !!page.url.searchParams.get("back");
+
+    // Phase 9.5b: Esc when right pane is active + vim NORMAL mode collapses
+    // the split (full-screens the left). Vim swallows Esc in INSERT/VISUAL,
+    // so we never see those at this layer; the explicit NORMAL check is
+    // belt-and-suspenders.
+    const escHandler = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (!isColumnSplitOpen()) return;
+      if (getActiveRegion() !== "focus") return;
+      if (getVSplitActiveSide() !== "right") return;
+      if (getVimMode() !== "NORMAL") return;
+      e.preventDefault();
+      e.stopPropagation();
+      goBackColumn();
+    };
+
     // Ctrl+w chord handler — Vim-style window commands across the four
     // regions: rail / middle / focus / bottom. Capture phase to beat the
     // browser's "close tab" on Ctrl+w.
@@ -173,10 +191,8 @@
         switch (e.key) {
           case "h": {
             const r = getActiveRegion();
-            // Phase 9.5: when vertical split is open and right side is active,
-            // ^w h flips to the left side rather than crossing the region
-            // boundary. Mirrors vim's intra-window navigation.
-            if (r === "focus" && isVSplitOpen() && getVSplitActiveSide() === "right") {
+            // Phase 9.5b: focus + column-split shown + right active → flip to left.
+            if (r === "focus" && isColumnSplitOpen() && getVSplitActiveSide() === "right") {
               setVSplitActiveSide("left");
             } else if (r === "focus") setActiveRegion("middle");
             else if (r === "middle") setActiveRegion("rail");
@@ -185,8 +201,8 @@
           }
           case "l": {
             const r = getActiveRegion();
-            // Phase 9.5: focus-left → focus-right when vsplit open.
-            if (r === "focus" && isVSplitOpen() && getVSplitActiveSide() === "left") {
+            // Phase 9.5b: focus + column-split shown + left active → flip to right.
+            if (r === "focus" && isColumnSplitOpen() && getVSplitActiveSide() === "left") {
               setVSplitActiveSide("right");
             } else if (r === "rail") setActiveRegion("middle");
             else if (r === "middle") setActiveRegion("focus");
@@ -210,25 +226,25 @@
             break;
           }
           case "s": toggleSplit(); break;
-          case "v": toggleVSplit(); break;  // Phase 9.5
           case "q": {
-            // Phase 9.5: close vsplit first if open; otherwise close kanban.
-            if (isVSplitOpen()) closeVSplit();
+            // Phase 9.5b: column-split shown → goBack (full-screen left).
+            // Otherwise close kanban.
+            if (isColumnSplitOpen()) goBackColumn();
             else closeSplit();
             break;
           }
           case "=": {
-            if (isVSplitOpen()) setVSplitRatio(50);
+            if (isColumnSplitOpen()) setVSplitRatio(50);
             else setSplitRatio(50);
             break;
           }
           case "+": {
-            if (isVSplitOpen()) adjustVSplitRatio(-10);
+            if (isColumnSplitOpen()) adjustVSplitRatio(-10);
             else adjustSplitRatio(-10);
             break;
           }
           case "-": {
-            if (isVSplitOpen()) adjustVSplitRatio(10);
+            if (isColumnSplitOpen()) adjustVSplitRatio(10);
             else adjustSplitRatio(10);
             break;
           }
@@ -241,12 +257,14 @@
     document.addEventListener("keydown", panelHandler);
     document.addEventListener("keydown", ctrlWHandler, true);
     document.addEventListener("keydown", cmdZHandler, true);
+    document.addEventListener("keydown", escHandler);
     document.addEventListener("tesela:leader", leaderHandler);
     return () => {
       document.removeEventListener("keydown", spaceHandler);
       document.removeEventListener("keydown", panelHandler);
       document.removeEventListener("keydown", ctrlWHandler, true);
       document.removeEventListener("keydown", cmdZHandler, true);
+      document.removeEventListener("keydown", escHandler);
       document.removeEventListener("tesela:leader", leaderHandler);
       if (pendingTimer) clearTimeout(pendingTimer);
     };

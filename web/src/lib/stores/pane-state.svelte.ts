@@ -123,14 +123,12 @@ let vimMode = $state("NORMAL");
 let bottomDrawerOpen = $state(loadBottomOpen());
 let bottomTab = $state<BottomTab>(loadBottomTab());
 
-// Phase 9.5 — vertical (side-by-side) split inside the focus region. Mutex with
-// the kanban (horizontal) split: opening one closes the other. When open, two
-// BlockOutliner instances render side-by-side in the focus pane; each side has
-// independent note + drill state, with the right pane's note tracked via URL
-// query params.
+// Phase 9.5b — column-view navigation. The split is open whenever the URL
+// has `?back=<noteId>`; this store only carries the active side + ratio.
+// All open/close transitions happen via URL navigation through
+// `$lib/stores/active-pane-nav` — no toggle helpers here.
 export type VSplitSide = "left" | "right";
-let vSplitOpen = $state(false);
-let vSplitActiveSide = $state<VSplitSide>("left");
+let vSplitActiveSide = $state<VSplitSide>("right");
 let vSplitRatio = $state(loadVSplitRatio());
 
 /** Blur any focused cm-editor so cm-vim stops eating keys when we move
@@ -162,8 +160,12 @@ export function isCtrlWPending(): boolean {
 }
 
 export function openSplit() {
-  // Mutex: kanban split and vertical split can't be open simultaneously.
-  if (vSplitOpen) closeVSplit();
+  // Kanban-mutex: if the column-view split is shown, drop ?back= via the
+  // nav helper before opening kanban. Dynamic import keeps this module
+  // free of $app/navigation (which can't run in SSR contexts).
+  if (browser) {
+    void import("$lib/stores/active-pane-nav.svelte").then((m) => m.collapseSplit());
+  }
   splitOpen = true;
 }
 
@@ -179,11 +181,7 @@ export function toggleSplit() {
   else openSplit();
 }
 
-// ----- Phase 9.5 vertical split -----
-
-export function isVSplitOpen(): boolean {
-  return vSplitOpen;
-}
+// ----- Phase 9.5b column-view split -----
 
 export function getVSplitActiveSide(): VSplitSide {
   return vSplitActiveSide;
@@ -207,22 +205,6 @@ export function setVSplitRatio(n: number) {
 
 export function adjustVSplitRatio(delta: number) {
   setVSplitRatio(vSplitRatio + delta);
-}
-
-export function openVSplit() {
-  // Mutex with kanban split.
-  if (splitOpen) closeSplit();
-  vSplitOpen = true;
-}
-
-export function closeVSplit() {
-  vSplitOpen = false;
-  vSplitActiveSide = "left";
-}
-
-export function toggleVSplit() {
-  if (vSplitOpen) closeVSplit();
-  else openVSplit();
 }
 
 export function setActiveRegion(r: Region) {

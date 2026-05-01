@@ -217,6 +217,8 @@
   import { setVimMode } from "$lib/stores/pane-state.svelte";
   import { api } from "$lib/api-client";
   import { goto } from "$app/navigation";
+  import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
+  import { getVimMode } from "$lib/stores/pane-state.svelte";
   import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
   import DatePicker from "./DatePicker.svelte";
@@ -714,6 +716,35 @@
     const focusBlurHandler = EditorView.domEventHandlers({
       focus: () => { onFocus?.(); return false; },
       blur: () => { if (!showSlashMenu) onBlur(); return false; },
+      // Phase 9.5b — wiki-link click navigates via gotoNote when vim is in
+      // NORMAL mode. INSERT mode falls through so the click places the cursor.
+      // Modifier-click also falls through so cmd/ctrl+click can open a new tab.
+      mousedown: (e: MouseEvent, v) => {
+        if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return false;
+        if (e.button !== 0) return false;
+        const tgt = e.target as HTMLElement;
+        const linkEl = tgt.closest?.(".cm-tesela-wikilink, .cm-tesela-wikilink-bracket");
+        if (!linkEl) return false;
+        if (getVimMode() !== "NORMAL") return false;
+        const pos = v.posAtCoords({ x: e.clientX, y: e.clientY });
+        if (pos === null) return false;
+        const doc = v.state.doc.toString();
+        for (const m of doc.matchAll(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g)) {
+          const start = m.index ?? -1;
+          if (start < 0) continue;
+          if (pos >= start && pos <= start + m[0].length) {
+            const linkTarget = m[1].trim();
+            if (linkTarget) {
+              e.preventDefault();
+              e.stopPropagation();
+              gotoNote(linkTarget);
+              return true;
+            }
+            break;
+          }
+        }
+        return false;
+      },
     });
 
     const inputHandler = EditorView.inputHandler.of((v, from, _to, inserted) => {

@@ -159,18 +159,17 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [x] Project attachment (`p` triage key in inbox) — opens `ProjectPicker` modal, sets `project::` block property
 - [x] Cmd+Z bleed-through fix — when vim is enabled, document-level Cmd+Z is suppressed inside cm-editor (vim's `u` is the canonical undo)
 - [x] Drawer tab badge counts — History tab shows real version count, Linked tasks shows real task count
-- [x] Focus-pane vertical splits (`^w v` opens 2 outliners side-by-side) — shipped as Phase 9.5
+- [x] Column-view navigation (drilling auto-creates a 2-pane split: previous on left, current on right) — shipped as Phase 9.5b
 
-#### Phase 9.5 — Focus-Pane Vertical Splits ✓
-- [x] vSplit state in `pane-state.svelte.ts` — `vSplitOpen`, `vSplitActiveSide`, `vSplitRatio` (persisted under `tesela:vSplitRatio`); mutex with kanban split
-- [x] `^w v` toggles vsplit; `^w h/l` switches sides when in focus region with vsplit open; `^w q` closes vsplit (falls through to kanban close if vsplit not open); `^w =/+/-` operate on whichever split is active
-- [x] `SplitDivider` extended with `orientation: "horizontal" | "vertical"` prop (col-resize cursor + dx-driven ratio when vertical)
-- [x] `gotoNote` helper in new `active-pane-nav.svelte.ts` — when right pane is the active vsplit side, navigation updates `?right=<id>&rightBlock=<id>` instead of the path
-- [x] `current-block` store bifurcated into `leftFocusedBlock` / `rightFocusedBlock` + `getFocusedBlock()` reads the active side; bottom drawer follows
-- [x] `+page.svelte` refactored: parses `?right=` and `?rightBlock=`; second `noteQuery` for right pane; flexbox row with two `<BlockOutliner>` instances + vertical `<SplitDivider>`; independent debounced save plumbing for right pane (`rightSaveTimer` / `rightInFlightController`); auto-fills `?right=<noteId>` (mirror of left) when vsplit opens with no right param
-- [x] Initial-mount auto-open when URL arrives with `?right=` (page reload / shared link); cleanup-effect strips right query params on close (gated by initial-mount check to avoid race)
-- [x] Rail clicks + ⌘K palette navigation routed through `gotoNote` — modifier-click bypass preserves cmd/ctrl/middle-click new-tab behavior
-- [x] Verified: `^w v` cycle clean; reload with `?right=` restores vsplit; two different notes render side-by-side with independent save/drill state
+#### Phase 9.5b — Column-View Navigation ✓
+- [x] Replaces the explicit `^w v` toggle from 9.5 with auto-split-on-drill. The vision (Finder column view / yazi / Larkline) is "left = where you came from, right = current."
+- [x] Drill rule: source pane content → new left, target → new right, non-source pane is dropped. Every navigation drills (block drill-in, wiki-link click, ⌘K palette, rail click).
+- [x] URL spec: `path = right (current); ?back=<noteId>&backBlock=<id>` for left. URL is the single source of truth — reload preserves both panes; browser back unwinds drills.
+- [x] `gotoNote(target, block?)` in `active-pane-nav.svelte.ts` rewrites the URL per the drill rule and shifts active side to "right" after every drill. New helpers: `goBack()` (full-screen the left, drop right), `collapseSplit()` (drop ?back=, full-screen the right; used for kanban-mutex).
+- [x] `^w v` removed. `^w q` now calls `goBack()` (or falls through to kanban close); Esc when right pane is active + vim NORMAL collapses split. `^w h/l` flips active side when in focus region with split shown.
+- [x] `+page.svelte` swaps roles: path-driven content is now the **right** pane; new `?back=` query drives the **left (back-context)** pane. Save plumbing renamed `right* → back*`. Removed `initialMountChecked` + cleanup-effect race; URL is authoritative.
+- [x] Wiki-link click in cm6 (`BlockEditor.svelte` mousedown handler) navigates via `gotoNote` when vim is in NORMAL mode; INSERT mode falls through so the click places the cursor.
+- [x] Pane-state store slimmed: removed `openVSplit`/`closeVSplit`/`toggleVSplit`/`vSplitOpen` (URL is truth). Kept active-side + ratio. Kanban `openSplit()` calls `collapseSplit()` first when `?back=` is present.
 
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
