@@ -2,7 +2,7 @@
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
   import { onMount } from "svelte";
   import { connect, setHandlers } from "$lib/ws-client.svelte";
-  import { goto } from "$app/navigation";
+  import { beforeNavigate, goto } from "$app/navigation";
   import { pushNavigation, goBack, goForward } from "$lib/stores/navigation.svelte";
   import {
     isVimEnabled,
@@ -25,7 +25,7 @@
     setVSplitRatio,
     getVimMode,
   } from "$lib/stores/pane-state.svelte";
-  import { goBack as goBackColumn } from "$lib/stores/active-pane-nav.svelte";
+  import { goBack as goBackColumn, gotoNote, isInternalNavInFlight } from "$lib/stores/active-pane-nav.svelte";
   import { page } from "$app/state";
   import CrumbBar from "$lib/components/CrumbBar.svelte";
   import Rail from "$lib/components/Rail.svelte";
@@ -51,6 +51,30 @@
 
   let showLeaderMenu = $state(false);
   const drawerOpen = $derived(isBottomDrawerOpen());
+
+  // Phase 9.5b — every internal `<a href="/p/...">` link click drills via
+  // gotoNote so the column-view split appears (left = where you came from,
+  // right = target). This covers rail clicks, middle-column row clicks, and
+  // any future <a> link without each component having to special-case it.
+  // Programmatic `goto()` calls (type === "goto") are skipped to avoid loops
+  // — they're already URL-correct.
+  beforeNavigate(({ from, to, cancel }) => {
+    // Skip our own programmatic gotos (gotoNote/goBack/collapseSplit) — they
+    // already produced the correct URL.
+    if (isInternalNavInFlight()) return;
+    if (!from || !to) return;
+    if (!to.url.pathname.startsWith("/p/")) return;
+    // Same destination — let it through.
+    if (from.url.pathname === to.url.pathname && from.url.search === to.url.search) return;
+    // Caller already constructed a proper drill URL; don't overwrite.
+    if (to.url.searchParams.has("back")) return;
+    // Don't drill from non-/p/ pages (no source-note context).
+    if (!from.url.pathname.startsWith("/p/")) return;
+    cancel();
+    const targetNoteId = decodeURIComponent(to.url.pathname.slice(3));
+    const targetBlock = to.url.searchParams.get("block");
+    gotoNote(targetNoteId, targetBlock);
+  });
 
   onMount(() => {
     connect();

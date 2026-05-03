@@ -34,6 +34,24 @@ function noteIdFromPath(pathname: string): string {
   return decodeURIComponent(pathname.slice(3));
 }
 
+// Suppress the layout's `beforeNavigate` drill interceptor when we're
+// programmatically navigating to a URL we already constructed correctly.
+// SvelteKit reports type === "goto" for both link clicks (via its internal
+// link interceptor) and direct goto() calls, so we use this flag to tell
+// them apart.
+let internalNavInFlight = false;
+
+export function isInternalNavInFlight(): boolean {
+  return internalNavInFlight;
+}
+
+function programmaticGoto(url: string, opts: Parameters<typeof goto>[1]): void {
+  internalNavInFlight = true;
+  void goto(url, opts).finally(() => {
+    internalNavInFlight = false;
+  });
+}
+
 /**
  * Drill from the active pane to a new target. Source = active pane's
  * current content; target promotes to the right; source becomes the new
@@ -71,7 +89,7 @@ export function gotoNote(targetNoteId: string, targetBlockId?: string | null): v
   const qs = params.toString();
   const newPath = `/p/${encodeURIComponent(targetNoteId)}${qs ? `?${qs}` : ""}`;
 
-  goto(newPath, { replaceState: false, noScroll: true });
+  programmaticGoto(newPath, { replaceState: false, noScroll: true });
   // After every drill, focus lands in the right pane.
   setVSplitActiveSide("right");
 }
@@ -87,7 +105,7 @@ export function collapseSplit(): void {
   params.delete("back");
   params.delete("backBlock");
   const qs = params.toString();
-  goto(`${u.pathname}${qs ? `?${qs}` : ""}`, { replaceState: false, noScroll: true });
+  programmaticGoto(`${u.pathname}${qs ? `?${qs}` : ""}`, { replaceState: false, noScroll: true });
   setVSplitActiveSide("right");
 }
 
@@ -103,7 +121,7 @@ export function goBack(): void {
   const params = new URLSearchParams();
   if (backBlock) params.set("block", backBlock);
   const qs = params.toString();
-  goto(`/p/${encodeURIComponent(back)}${qs ? `?${qs}` : ""}`, { replaceState: false, noScroll: true });
+  programmaticGoto(`/p/${encodeURIComponent(back)}${qs ? `?${qs}` : ""}`, { replaceState: false, noScroll: true });
   // Single-pane is semantically "right" — keeps active-side consistent.
   setVSplitActiveSide("right");
 }

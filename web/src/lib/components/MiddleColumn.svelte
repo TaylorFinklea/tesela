@@ -2,16 +2,17 @@
   import { createQuery } from "@tanstack/svelte-query";
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
+  import { untrack } from "svelte";
   import { api } from "$lib/api-client";
   import { getActiveRegion, setActiveRegion } from "$lib/stores/pane-state.svelte";
+  import { getCurrentRailWidget, setCurrentRailWidget } from "$lib/stores/current-rail.svelte";
+  import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
   import { parseBlocks } from "$lib/block-parser";
   import { widgetFromNote } from "$lib/widget-registry.svelte";
   import { applyTriage, attachToProject, triageActionForKey } from "$lib/triage.svelte";
   import { useQueryClient } from "@tanstack/svelte-query";
   import ProjectPicker from "./ProjectPicker.svelte";
   import type { Note } from "$lib/types/Note";
-  import type { Link } from "$lib/types/Link";
-  import type { GraphEdge } from "$lib/types/GraphEdge";
   import type { QueryItem } from "$lib/types/QueryItem";
 
   type Row = {
@@ -36,7 +37,7 @@
   const path = $derived(page.url.pathname);
   const noteId = $derived(path.startsWith("/p/") ? decodeURIComponent(path.slice(3)) : "");
 
-  // ----- The focused note (we need its metadata to detect Query widgets) -----
+  // ----- The focused note (used to detect "is this page a Query widget?") -----
   const noteQuery = createQuery(() => ({
     queryKey: ["note", noteId] as const,
     queryFn: () => api.getNote(noteId),
@@ -44,11 +45,43 @@
   }));
   const note: Note | undefined = $derived(noteQuery.data as Note | undefined);
   const isQueryWidget = $derived(note?.metadata.note_type === "Query");
-  const widget = $derived(note && isQueryWidget ? widgetFromNote(note) : null);
+
+  // ----- Active widget for the middle column -----
+  // Per the column-view metaphor, the middle column always shows the rail
+  // widget the user is currently working *from*. When the focus pane is on
+  // a Query widget, that's the active widget. Otherwise we fall back to the
+  // most-recently-anchored rail widget (persisted in `currentRailWidget`).
+  const currentRail = $derived(getCurrentRailWidget());
+  const activeWidgetId = $derived(isQueryWidget ? noteId : currentRail);
+
+  // Fetch the active widget's note. Skip when it's the same note we already
+  // fetched above (isQueryWidget true).
+  const activeWidgetNoteQuery = createQuery(() => ({
+    queryKey: ["note", activeWidgetId] as const,
+    queryFn: () => api.getNote(activeWidgetId),
+    enabled: activeWidgetId !== "" && !isQueryWidget,
+  }));
+  const activeWidgetNote: Note | undefined = $derived(
+    isQueryWidget ? note : (activeWidgetNoteQuery.data as Note | undefined),
+  );
+  const widget = $derived(
+    activeWidgetNote && activeWidgetNote.metadata.note_type === "Query"
+      ? widgetFromNote(activeWidgetNote)
+      : null,
+  );
+
+  // Anchor the rail widget when the focus pane lands on a Query note. This
+  // is what makes "drill from /p/pages → /p/some-page" keep the Pages list
+  // visible in the middle column.
+  $effect(() => {
+    if (isQueryWidget && noteId) {
+      untrack(() => setCurrentRailWidget(noteId));
+    }
+  });
 
   // ----- Query widget execution -----
   const widgetResultQuery = createQuery(() => ({
-    queryKey: ["widget", noteId, widget?.query, widget?.group, widget?.sort] as const,
+    queryKey: ["widget", activeWidgetId, widget?.query, widget?.group, widget?.sort] as const,
     queryFn: () =>
       widget && widget.query.trim().length > 0
         ? api.executeQuery(widget.query, widget.group, widget.sort)
@@ -71,7 +104,7 @@
     if (!row || !row.blockId || !row.pageId) return;
     try {
       const ok = await attachToProject(row.pageId, row.blockId, project.id);
-      if (ok) queryClient.invalidateQueries({ queryKey: ["widget", noteId] });
+      if (ok) queryClient.invalidateQueries({ queryKey: ["widget", activeWidgetId] });
     } catch (e) {
       console.error("Attach to project failed:", e);
     }
@@ -104,29 +137,6 @@
   }
   const dailyBlocks = $derived(dailyNote ? parseBlocks(dailyNote.id, bodyOf(dailyNote)) : []);
   const dailyTopBlocks = $derived(dailyBlocks.filter((b) => b.indent_level === 0));
-
-  // ----- Backlinks fallback for non-Query notes -----
-  const backlinksQuery = createQuery(() => ({
-    queryKey: ["backlinks", noteId] as const,
-    queryFn: () => api.getBacklinks(noteId),
-    enabled: noteId !== "" && !isQueryWidget,
-  }));
-  const edgesQuery = createQuery(() => ({
-    queryKey: ["all-edges"] as const,
-    queryFn: () => api.getAllEdges(),
-    enabled: noteId !== "" && !isQueryWidget,
-  }));
-  const backlinks: Link[] = $derived((backlinksQuery.data ?? []) as Link[]);
-  const edges: GraphEdge[] = $derived((edgesQuery.data ?? []) as GraphEdge[]);
-  const incomingFromEdges = $derived(
-    edges
-      .filter((e) => e.target.toLowerCase() === noteId.toLowerCase() || e.target === noteId)
-      .map((e) => e.source),
-  );
-  const allBacklinkSources = $derived.by(() => {
-    const fromApi = new Set(backlinks.map((l) => l.target));
-    return [...new Set([...fromApi, ...incomingFromEdges])];
-  });
 
   // Convert a backend QueryItem into a row.
   function itemToRow(item: QueryItem): Row {
@@ -168,7 +178,7 @@
   };
 
   const view = $derived.by((): View => {
-    if (isQueryWidget && widget) {
+    if (widget) {
       const result = widgetResultQuery.data;
       const isInbox = widget.id === "inbox";
       const filteredGroups = (result?.groups ?? []).map((g) => ({
@@ -203,6 +213,7 @@
           id: n.id,
           label: n.title,
           href: `/p/${encodeURIComponent(n.id)}`,
+          pageId: n.id,
         })),
       };
     }
@@ -214,17 +225,8 @@
           id: b.id,
           label: b.text || "(empty)",
           href: dailyNote ? `/p/${encodeURIComponent(dailyNote.id)}?block=${encodeURIComponent(b.id)}` : undefined,
-        })),
-      };
-    }
-    if (path.startsWith("/p/")) {
-      return {
-        title: "Backlinks",
-        subtitle: `${allBacklinkSources.length} pages link here`,
-        rows: allBacklinkSources.map((src) => ({
-          id: src,
-          label: src,
-          href: `/p/${encodeURIComponent(src.toLowerCase())}`,
+          pageId: dailyNote?.id,
+          blockId: b.id,
         })),
       };
     }
@@ -232,7 +234,7 @@
       title: path.replace(/^\//, "") || "—",
       subtitle: "",
       rows: [],
-      placeholder: "No list view in 9.0",
+      placeholder: "No widget selected",
     };
   });
 
@@ -261,13 +263,26 @@
       const ok = await applyTriage(row.pageId, row.blockId, action);
       if (ok) {
         // Re-run the query so the row drops out of the inbox list.
-        queryClient.invalidateQueries({ queryKey: ["widget", noteId] });
+        queryClient.invalidateQueries({ queryKey: ["widget", activeWidgetId] });
       }
       return ok;
     } catch (e) {
       console.error("Triage failed:", e);
       return false;
     }
+  }
+
+  // Phase 9.5b — middle-column row click drills via gotoNote so the
+  // column-view split appears (active widget becomes left back-context, the
+  // clicked target becomes right). Block rows pass the block id; note rows
+  // pass the page id only.
+  function openRow(row: Row) {
+    if (row.pageId) {
+      gotoNote(row.pageId, row.blockId ?? null);
+      return;
+    }
+    // Fallback for rows that only have href (pre-9.5b legacy).
+    if (row.href) goto(row.href);
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -278,9 +293,9 @@
     } else if (e.key === "k" || e.key === "ArrowUp") {
       e.preventDefault();
       selectedIndex = Math.max(0, selectedIndex - 1);
-    } else if (e.key === "Enter" && flatRows[selectedIndex]?.href) {
+    } else if (e.key === "Enter" && flatRows[selectedIndex]) {
       e.preventDefault();
-      goto(flatRows[selectedIndex].href!);
+      openRow(flatRows[selectedIndex]);
       setActiveRegion("focus");
     } else if (e.key === "Escape") {
       e.preventDefault();
@@ -332,7 +347,7 @@
             <a
               class="v9-row {sel ? 'selected' : ''}"
               href={row.href ?? "#"}
-              onclick={(e) => { if (row.href) { e.preventDefault(); selectedIndex = ri; goto(row.href); setActiveRegion("focus"); } }}
+              onclick={(e) => { if (row.href) { e.preventDefault(); selectedIndex = ri; openRow(row); setActiveRegion("focus"); } }}
             >
               <span class="marker">{sel ? "▸" : ""}</span>
               <span class="text">
