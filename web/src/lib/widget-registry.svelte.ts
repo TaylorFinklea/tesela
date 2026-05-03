@@ -18,7 +18,7 @@ import type { Note } from "$lib/types/Note";
 import type { Widget, WidgetSection } from "$lib/types/Widget";
 
 const SYSTEM_WIDGET_IDS: ReadonlySet<string> = new Set([
-  "today",
+  "dailies",
   "tasks",
   "projects",
   "people",

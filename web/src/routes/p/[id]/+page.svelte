@@ -12,6 +12,7 @@
   import SplitDivider from "$lib/components/SplitDivider.svelte";
   import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
   import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
+  import JournalView from "$lib/components/JournalView.svelte";
   import { widgetFromNote } from "$lib/widget-registry.svelte";
   import {
     setFocusedBlock,
@@ -100,6 +101,26 @@
   const isQueryWidget = $derived(note?.metadata.note_type === "Query");
   const widget = $derived(note && isQueryWidget ? widgetFromNote(note) : null);
 
+  // Phase 9.6 — Journal/Daily detection. The page renders the JournalView
+  // (continuous multi-day scroll) when:
+  //   - the note id is the "dailies" anchor, OR
+  //   - the note has the `daily` tag (so /p/<YYYY-MM-DD> works), OR
+  //   - the note has note_type "Daily" (forward-compat).
+  // Drilling into a single block (?block=) opts back into the standard
+  // BlockOutliner so the user can focus on one block without the journal scroll.
+  const isDailyJournal = $derived(
+    !drillBlockId &&
+    (
+      noteId === "dailies" ||
+      note?.metadata.note_type === "Daily" ||
+      (note?.metadata.tags ?? []).includes("daily")
+    ),
+  );
+  function todayIso(): string { return new Date().toISOString().slice(0, 10); }
+  const journalAnchor = $derived(
+    /^\d{4}-\d{2}-\d{2}$/.test(noteId) ? noteId : todayIso(),
+  );
+
   // Document mode: stored as `mode: document` in frontmatter
   const isDocumentMode = $derived(note?.metadata.custom.mode === "document");
 
@@ -187,6 +208,17 @@
   const backSplit = $derived(splitContent(backNote?.content ?? ""));
   const backIsQueryWidget = $derived(backNote?.metadata.note_type === "Query");
   const backWidget = $derived(backNote && backIsQueryWidget ? widgetFromNote(backNote) : null);
+  const backIsDailyJournal = $derived(
+    !backBlockId &&
+    (
+      backNoteId === "dailies" ||
+      backNote?.metadata.note_type === "Daily" ||
+      (backNote?.metadata.tags ?? []).includes("daily")
+    ),
+  );
+  const backJournalAnchor = $derived(
+    /^\d{4}-\d{2}-\d{2}$/.test(backNoteId) ? backNoteId : todayIso(),
+  );
   const backDrillBlock = $derived.by((): ParsedBlock | null => {
     if (!backBlockId || !backNote) return null;
     return parseBlocks(backNote.id, backSplit.body).find(b => b.id === backBlockId) ?? null;
@@ -398,7 +430,11 @@
         {/if}
       </div>
       <div class="max-w-3xl mx-auto px-10 pb-16 w-full">
-        {#if backNote && backIsQueryWidget && backWidget}
+        {#if backNote && backIsDailyJournal}
+          {#key backJournalAnchor}
+            <JournalView anchorDate={backJournalAnchor} />
+          {/key}
+        {:else if backNote && backIsQueryWidget && backWidget}
           <QueryWidgetView widget={backWidget} />
         {:else if backNote}
           <BlockOutliner
@@ -508,7 +544,11 @@
           </div>
         </div>
       {:else if note}
-        {#if isQueryWidget && widget}
+        {#if isDailyJournal}
+          {#key journalAnchor}
+            <JournalView anchorDate={journalAnchor} />
+          {/key}
+        {:else if isQueryWidget && widget}
           <QueryWidgetView {widget} />
         {:else if isDocumentMode}
           {#key drillBlockId}

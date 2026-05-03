@@ -23,9 +23,13 @@ type SystemWidgetSpec = {
 
 export const SYSTEM_WIDGETS: SystemWidgetSpec[] = [
   // Pinned — daily-driver entry points.
+  // The "dailies" widget is a special anchor: clicking it lands on /p/dailies
+  // which renders a Logseq-style continuous journal (today on top, older days
+  // scroll down). The note itself has no body — the JournalView is keyed off
+  // the noteId being "dailies" inside `+page.svelte`. Phase 9.6.
   {
-    id: "today",
-    title: "Today",
+    id: "dailies",
+    title: "Dailies",
     query: "",
     section: "pinned",
     icon: "calendar",

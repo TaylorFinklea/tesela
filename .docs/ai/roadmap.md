@@ -181,6 +181,15 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [x] Wiki-link click in cm6 (`BlockEditor.svelte` mousedown handler) navigates via `gotoNote` when vim is in NORMAL mode; INSERT mode falls through so the click places the cursor.
 - [x] Pane-state store slimmed: removed `openVSplit`/`closeVSplit`/`toggleVSplit`/`vSplitOpen` (URL is truth). Kept active-side + ratio. Kanban `openSplit()` calls `collapseSplit()` first when `?back=` is present.
 
+#### Phase 9.6 — Logseq-style continuous "Dailies" journal ✓
+- [x] Replaced the read-only "Today" Query widget with a "Dailies" anchor: rail label "Dailies", URL `/p/dailies`. Clicking lands on a continuous, editable multi-day journal (today on top, older days below).
+- [x] Both `/p/dailies` and `/p/<YYYY-MM-DD>` (any note tagged `daily`) render the new `JournalView.svelte`. The route just differs in the anchor — page scrolls to today on `/p/dailies`, to the date on `/p/<YYYY-MM-DD>`. Mini-calendar clicks "scroll the journal to that day" exactly per the Logseq model.
+- [x] `JournalView` fetches the latest 500 daily-tagged notes (single API call), sorts descending by date, renders the most recent 30 by default, expands as you scroll past the bottom (IntersectionObserver sentinel + manual "Load older entries" button). Each section is its own `BlockOutliner` with per-noteId debounced save (with `cancelAndFlush`), so edits in any day's section save to that day's file.
+- [x] Today is auto-created if missing (call `getDailyNote()` on first mount); same for the anchor date if the URL named a real `YYYY-MM-DD` but the file didn't exist.
+- [x] Drill-in (`?block=`) on any block opts back into the standard outliner so the user can focus on a single block; the journal scroll is the un-drilled view.
+- [x] Detection in `+page.svelte`: `isDailyJournal = !drillBlockId && (noteId === "dailies" || note_type === "Daily" || tags.includes("daily"))`. Same branch added to the back-pane (column-view left).
+- [x] Files: new `web/src/lib/components/JournalView.svelte`; `web/src/lib/system-widgets.ts` (today → dailies); `web/src/lib/widget-registry.svelte.ts` (system-widget-id set updated); `web/src/routes/p/[id]/+page.svelte` (isDailyJournal branch); `notes/today.md` deleted.
+
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations
