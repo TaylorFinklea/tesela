@@ -362,13 +362,15 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="flex-1 flex min-w-0 h-full" style="flex-direction: row;">
-  <!-- Phase 9.5b — left (back-context) pane: present when ?back= is in URL. -->
+  <!-- Phase 9.5b — left (back-context) pane: present when ?back= is in URL.
+       vSplitRatio is the LEFT pane's percentage (default 30); the right pane
+       gets the remainder. -->
   {#if vSplitShown}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
       class="flex flex-col min-w-0 h-full overflow-y-auto transition-shadow"
-      style="flex-basis: {100 - vSplitRatio}%; flex-grow: 1; flex-shrink: 1; {vSplitActiveSide === 'left' ? 'box-shadow: inset 2px 0 0 0 var(--primary);' : ''}"
+      style="flex-basis: {vSplitRatio}%; flex-grow: 1; flex-shrink: 1; {vSplitActiveSide === 'left' ? 'box-shadow: inset 2px 0 0 0 var(--primary);' : ''}"
       onclick={() => setVSplitActiveSide('left')}
     >
       <div class="max-w-3xl mx-auto px-10 pt-10 pb-4 w-full">
@@ -413,7 +415,7 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     class="flex flex-col min-w-0 h-full"
-    style="flex-basis: {vSplitShown ? `${vSplitRatio}%` : '100%'}; flex-grow: 1; flex-shrink: 1; {vSplitShown && vSplitActiveSide === 'right' ? 'box-shadow: inset 2px 0 0 0 var(--primary);' : ''}"
+    style="flex-basis: {vSplitShown ? `${100 - vSplitRatio}%` : '100%'}; flex-grow: 1; flex-shrink: 1; {vSplitShown && vSplitActiveSide === 'right' ? 'box-shadow: inset 2px 0 0 0 var(--primary);' : ''}"
     onclick={() => { if (vSplitShown) setVSplitActiveSide('right'); }}
   >
     <!-- Note header + outliner + tag config + (inline kanban/table when not split) -->

@@ -191,9 +191,12 @@
         switch (e.key) {
           case "h": {
             const r = getActiveRegion();
-            // Phase 9.5b: focus + column-split shown + right active → flip to left.
-            if (r === "focus" && isColumnSplitOpen() && getVSplitActiveSide() === "right") {
-              setVSplitActiveSide("left");
+            // Phase 9.5b — `^w h` IS "go back" when the column-split is shown:
+            // collapse the right and full-screen the left, regardless of which
+            // side is currently active. Same as `^w q`. Mental model: left pane
+            // is "where I came from"; pressing left = go there.
+            if (r === "focus" && isColumnSplitOpen()) {
+              goBackColumn();
             } else if (r === "focus") setActiveRegion("middle");
             else if (r === "middle") setActiveRegion("rail");
             else if (r === "bottom") setActiveRegion("focus");

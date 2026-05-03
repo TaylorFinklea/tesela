@@ -17,7 +17,10 @@ export type MainPane = "outliner" | "kanban";
 export type BottomTab = "backlinks" | "properties" | "outline" | "history" | "linkedTasks";
 
 const RATIO_KEY = "tesela:splitRatio";
-const VSPLIT_RATIO_KEY = "tesela:vSplitRatio";
+// Phase 9.5b — bumped from `tesela:vSplitRatio` so existing values from the
+// 9.5 toggle-vsplit (where ratio meant the right pane's %) don't carry over;
+// in 9.5b ratio means the LEFT (back-context) pane's % and the default is 30.
+const VSPLIT_RATIO_KEY = "tesela:vSplitRatio:v2";
 const VIM_KEY = "tesela:vimEnabled";
 const BOTTOM_OPEN_KEY = "tesela:bottomDrawerOpen";
 const BOTTOM_TAB_KEY = "tesela:bottomDrawerTab";
@@ -45,15 +48,16 @@ function saveRatio(n: number) {
 }
 
 function loadVSplitRatio(): number {
-  if (!browser) return 50;
+  // Default 30 = left back-pane is 30% wide, right current-pane is 70%.
+  if (!browser) return 30;
   try {
     const stored = localStorage.getItem(VSPLIT_RATIO_KEY);
-    if (!stored) return 50;
+    if (!stored) return 30;
     const n = Number(stored);
     if (Number.isFinite(n) && n >= 20 && n <= 80) return n;
-    return 50;
+    return 30;
   } catch {
-    return 50;
+    return 30;
   }
 }
 
