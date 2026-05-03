@@ -109,16 +109,16 @@ html, body { height: 100%; margin: 0; }
   font-size: 13px;
   line-height: 1.5;
   display: grid;
-  grid-template-columns: 232px 300px 1fr;
+  grid-template-columns: 232px 1fr;
   grid-template-rows: 32px 1fr 24px;
   grid-template-areas:
-    "crumb crumb crumb"
-    "rail middle focus"
-    "status status status";
+    "crumb crumb"
+    "rail focus"
+    "status status";
   position: relative;
 }
 .v9.with-bottom { grid-template-rows: 32px 1fr 220px 24px; grid-template-areas:
-  "crumb crumb crumb" "rail middle focus" "bottom bottom bottom" "status status status"; }
+  "crumb crumb" "rail focus" "bottom bottom" "status status"; }
 
 /* Breadcrumb header */
 .v9-crumb {

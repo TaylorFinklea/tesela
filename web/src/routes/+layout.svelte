@@ -2,7 +2,7 @@
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
   import { onMount } from "svelte";
   import { connect, setHandlers } from "$lib/ws-client.svelte";
-  import { beforeNavigate, goto } from "$app/navigation";
+  import { goto } from "$app/navigation";
   import { pushNavigation, goBack, goForward } from "$lib/stores/navigation.svelte";
   import {
     isVimEnabled,
@@ -25,11 +25,10 @@
     setVSplitRatio,
     getVimMode,
   } from "$lib/stores/pane-state.svelte";
-  import { goBack as goBackColumn, gotoNote, isInternalNavInFlight } from "$lib/stores/active-pane-nav.svelte";
+  import { goBack as goBackColumn } from "$lib/stores/active-pane-nav.svelte";
   import { page } from "$app/state";
   import CrumbBar from "$lib/components/CrumbBar.svelte";
   import Rail from "$lib/components/Rail.svelte";
-  import MiddleColumn from "$lib/components/MiddleColumn.svelte";
   import BottomDrawer from "$lib/components/BottomDrawer.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import LeaderMenu from "$lib/components/LeaderMenu.svelte";
@@ -52,29 +51,10 @@
   let showLeaderMenu = $state(false);
   const drawerOpen = $derived(isBottomDrawerOpen());
 
-  // Phase 9.5b — every internal `<a href="/p/...">` link click drills via
-  // gotoNote so the column-view split appears (left = where you came from,
-  // right = target). This covers rail clicks, middle-column row clicks, and
-  // any future <a> link without each component having to special-case it.
-  // Programmatic `goto()` calls (type === "goto") are skipped to avoid loops
-  // — they're already URL-correct.
-  beforeNavigate(({ from, to, cancel }) => {
-    // Skip our own programmatic gotos (gotoNote/goBack/collapseSplit) — they
-    // already produced the correct URL.
-    if (isInternalNavInFlight()) return;
-    if (!from || !to) return;
-    if (!to.url.pathname.startsWith("/p/")) return;
-    // Same destination — let it through.
-    if (from.url.pathname === to.url.pathname && from.url.search === to.url.search) return;
-    // Caller already constructed a proper drill URL; don't overwrite.
-    if (to.url.searchParams.has("back")) return;
-    // Don't drill from non-/p/ pages (no source-note context).
-    if (!from.url.pathname.startsWith("/p/")) return;
-    cancel();
-    const targetNoteId = decodeURIComponent(to.url.pathname.slice(3));
-    const targetBlock = to.url.searchParams.get("block");
-    gotoNote(targetNoteId, targetBlock);
-  });
+  // Phase 9.5c — drilling is opt-in: only block drill-in, wiki-link click,
+  // and query-result row click call `gotoNote()` (which writes `?back=`).
+  // Rail clicks and ⌘K palette picks are plain SvelteKit navigations that
+  // replace the focus area full-screen. No global drill interceptor.
 
   onMount(() => {
     connect();
@@ -221,8 +201,7 @@
             // is "where I came from"; pressing left = go there.
             if (r === "focus" && isColumnSplitOpen()) {
               goBackColumn();
-            } else if (r === "focus") setActiveRegion("middle");
-            else if (r === "middle") setActiveRegion("rail");
+            } else if (r === "focus") setActiveRegion("rail");
             else if (r === "bottom") setActiveRegion("focus");
             break;
           }
@@ -231,8 +210,7 @@
             // Phase 9.5b: focus + column-split shown + left active → flip to right.
             if (r === "focus" && isColumnSplitOpen() && getVSplitActiveSide() === "left") {
               setVSplitActiveSide("right");
-            } else if (r === "rail") setActiveRegion("middle");
-            else if (r === "middle") setActiveRegion("focus");
+            } else if (r === "rail") setActiveRegion("focus");
             break;
           }
           case "j": {
@@ -306,7 +284,6 @@
   <div class="v9 dark {drawerOpen ? 'with-bottom' : ''}">
     <CrumbBar />
     <Rail />
-    <MiddleColumn />
     <main class="v9-focus">
       {@render children()}
     </main>

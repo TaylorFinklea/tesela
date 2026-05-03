@@ -11,6 +11,8 @@
   import KanbanBoard from "$lib/components/KanbanBoard.svelte";
   import SplitDivider from "$lib/components/SplitDivider.svelte";
   import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
+  import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
+  import { widgetFromNote } from "$lib/widget-registry.svelte";
   import {
     setFocusedBlock,
     setLeftFocusedBlock,
@@ -95,6 +97,8 @@
   // Detect if this is a Tag page (show table view)
   const isTagPage = $derived(note?.metadata.note_type === "Tag");
   const isPropertyPage = $derived(note?.metadata.note_type === "Property");
+  const isQueryWidget = $derived(note?.metadata.note_type === "Query");
+  const widget = $derived(note && isQueryWidget ? widgetFromNote(note) : null);
 
   // Document mode: stored as `mode: document` in frontmatter
   const isDocumentMode = $derived(note?.metadata.custom.mode === "document");
@@ -181,6 +185,8 @@
   }));
   const backNote: Note | undefined = $derived(backNoteQuery.data as Note | undefined);
   const backSplit = $derived(splitContent(backNote?.content ?? ""));
+  const backIsQueryWidget = $derived(backNote?.metadata.note_type === "Query");
+  const backWidget = $derived(backNote && backIsQueryWidget ? widgetFromNote(backNote) : null);
   const backDrillBlock = $derived.by((): ParsedBlock | null => {
     if (!backBlockId || !backNote) return null;
     return parseBlocks(backNote.id, backSplit.body).find(b => b.id === backBlockId) ?? null;
@@ -392,7 +398,9 @@
         {/if}
       </div>
       <div class="max-w-3xl mx-auto px-10 pb-16 w-full">
-        {#if backNote}
+        {#if backNote && backIsQueryWidget && backWidget}
+          <QueryWidgetView widget={backWidget} />
+        {:else if backNote}
           <BlockOutliner
             noteId={backNote.id}
             body={backSplit.body}
@@ -500,7 +508,9 @@
           </div>
         </div>
       {:else if note}
-        {#if isDocumentMode}
+        {#if isQueryWidget && widget}
+          <QueryWidgetView {widget} />
+        {:else if isDocumentMode}
           {#key drillBlockId}
             <DocumentEditor
               body={documentBody}

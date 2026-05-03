@@ -7,7 +7,6 @@
   import { getRecents } from "$lib/stores/recents.svelte";
   import { toggleFavorite } from "$lib/stores/favorites.svelte";
   import { toggleBottomDrawer } from "$lib/stores/pane-state.svelte";
-  import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
   import { buildCommands, matchesQuery, type Command } from "$lib/commands";
   import type { Note } from "$lib/types/Note";
   import type { SearchHit } from "$lib/types/SearchHit";
@@ -133,7 +132,7 @@
             type: "note" as const,
             label: n.title,
             sublabel: n.metadata.tags.length > 0 ? n.metadata.tags.join(", ") : undefined,
-            action: () => { close(); gotoNote(n.id); },
+            action: () => { close(); goto(`/p/${encodeURIComponent(n.id)}`); },
           })),
         });
       }
@@ -200,7 +199,7 @@
             type: "note" as const,
             label: n.title,
             sublabel: n.metadata.tags.length > 0 ? n.metadata.tags.join(", ") : undefined,
-            action: () => { close(); gotoNote(n.id); },
+            action: () => { close(); goto(`/p/${encodeURIComponent(n.id)}`); },
           })),
         });
       }
@@ -216,7 +215,7 @@
             label: h.title,
             sublabel: h.snippet.replace(/<(?!\/?b>)[^>]+>/g, ""),
             htmlSublabel: true,
-            action: () => { close(); gotoNote(h.note_id); },
+            action: () => { close(); goto(`/p/${encodeURIComponent(h.note_id)}`); },
           })),
         });
       }
