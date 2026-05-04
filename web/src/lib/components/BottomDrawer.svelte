@@ -297,9 +297,17 @@
     }
   }
 
-  // Force pg when no focused block
+  // Auto-track focusedBlock: when a block is focused, default to the block
+  // panel (otherwise the user has to click the "view: block" segment to see
+  // their block's status/priority/etc.). When no block is focused, fall
+  // back to page. The user can still click the segment to override.
+  let lastFocusedId = $state<string | null>(null);
   $effect(() => {
-    if (!focusedBlock && panelContext === "block") panelContext = "page";
+    const id = focusedBlock?.id ?? null;
+    if (id !== lastFocusedId) {
+      lastFocusedId = id;
+      panelContext = id ? "block" : "page";
+    }
   });
 
   // Lightweight count-only fetches for the tab badges. Cheap and reactive.
