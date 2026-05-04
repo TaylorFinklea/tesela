@@ -201,8 +201,49 @@
   function advanceProperty(delta: 1 | -1) {
     if (flatProperties.length === 0) return;
     selectedPropertyIndex = (selectedPropertyIndex + delta + flatProperties.length) % flatProperties.length;
-    // Re-focus the drawer root so j/k continue to work.
-    requestAnimationFrame(() => rootEl?.focus());
+    // Re-focus the drawer first (so vim chords / j/k keep working) then
+    // chain into edit mode on the new chip — Logseq-style "Tab save and
+    // continue."
+    requestAnimationFrame(() => {
+      rootEl?.focus();
+      requestAnimationFrame(() => enterEditOnCurrent());
+    });
+  }
+
+  function enterEditOnCurrent() {
+    const prop = flatProperties[selectedPropertyIndex];
+    if (!prop) return;
+    const def = propertyRegistry.get(prop.key.toLowerCase());
+    if (
+      def?.value_type === "select" ||
+      def?.value_type === "multi-select" ||
+      def?.value_type === "date" ||
+      def?.value_type === "checkbox"
+    ) {
+      const chip = rootEl?.querySelector(
+        `[data-prop-index="${selectedPropertyIndex}"][data-prop-context="${panelContext}"]`,
+      );
+      const ctrl = chip?.querySelector("select, input") as HTMLElement | null;
+      ctrl?.focus();
+      return;
+    }
+    if (panelContext === "block") {
+      editingBlockKey = prop.key;
+      editingBlockValue = prop.value;
+    } else {
+      editingKey = prop.key;
+      editingValue = prop.value;
+    }
+    requestAnimationFrame(() => {
+      const chip = rootEl?.querySelector(
+        `[data-prop-index="${selectedPropertyIndex}"][data-prop-context="${panelContext}"]`,
+      );
+      const input = chip?.querySelector("input");
+      if (input instanceof HTMLInputElement) {
+        input.focus();
+        input.select();
+      }
+    });
   }
   function isSelectType(def: PropertyDefinition | undefined): boolean {
     return def?.value_type === "select" || def?.value_type === "multi-select";
@@ -220,11 +261,17 @@
   function handlePageKeydown(e: KeyboardEvent, key: string) {
     if (e.key === "Enter") {
       e.preventDefault();
+      e.stopPropagation();
       savePageProperty(key, editingValue);
     } else if (e.key === "Tab") {
+      // Tab in the input means "commit and advance to next chip"; we
+      // stopPropagation so the drawer's Tab-cycles-tabs handler doesn't
+      // also run during the same bubble.
       e.preventDefault();
+      e.stopPropagation();
       savePageProperty(key, editingValue, true);
     } else if (e.key === "Escape") {
+      e.stopPropagation();
       editingKey = null;
       requestAnimationFrame(() => rootEl?.focus());
     }
@@ -232,11 +279,14 @@
   function handleBlockKeydown(e: KeyboardEvent, key: string) {
     if (e.key === "Enter") {
       e.preventDefault();
+      e.stopPropagation();
       saveBlockProperty(key, editingBlockValue);
     } else if (e.key === "Tab") {
       e.preventDefault();
+      e.stopPropagation();
       saveBlockProperty(key, editingBlockValue, true);
     } else if (e.key === "Escape") {
+      e.stopPropagation();
       editingBlockKey = null;
       requestAnimationFrame(() => rootEl?.focus());
     }
@@ -297,6 +347,9 @@
   function handleKeydown(e: KeyboardEvent) {
     if (!focused) return;
     if (e.key === "Tab") {
+      // While editing a property inline, Tab is "commit + advance" — let the
+      // input's onkeydown handle it (handleBlockKeydown / handlePageKeydown).
+      if (editingKey !== null || editingBlockKey !== null) return;
       e.preventDefault();
       cycleTab(e.shiftKey ? -1 : 1);
       return;
@@ -334,31 +387,7 @@
         }
       } else if (e.key === "Enter" && flatProperties[selectedPropertyIndex]) {
         e.preventDefault();
-        const prop = flatProperties[selectedPropertyIndex];
-        const def = propertyRegistry.get(prop.key.toLowerCase());
-        // Native controls (select/date/checkbox) are always rendered; just
-        // focus them. Text-typed properties toggle into edit mode and
-        // autofocus the input.
-        if (
-          def?.value_type === "select" ||
-          def?.value_type === "multi-select" ||
-          def?.value_type === "date" ||
-          def?.value_type === "checkbox"
-        ) {
-          requestAnimationFrame(() => {
-            const chip = rootEl?.querySelector(
-              `[data-prop-index="${selectedPropertyIndex}"][data-prop-context="${panelContext}"]`,
-            );
-            const ctrl = chip?.querySelector("select, input") as HTMLElement | null;
-            ctrl?.focus();
-          });
-        } else if (panelContext === "block") {
-          editingBlockKey = prop.key;
-          editingBlockValue = prop.value;
-        } else {
-          editingKey = prop.key;
-          editingValue = prop.value;
-        }
+        enterEditOnCurrent();
       }
     }
   }
