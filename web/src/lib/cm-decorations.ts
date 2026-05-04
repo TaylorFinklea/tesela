@@ -15,24 +15,11 @@ class EmptyWidget extends WidgetType {
   eq() { return true; }
 }
 
-/**
- * Phase 9.4 — kind-glyph badge prepended to the first line of a block whose
- * primary `tags::` is one of the recognized kinds (Task, Project, Person,
- * etc.). Color comes from the .kind-badge CSS rules in `app.css`.
- */
-class KindBadgeWidget extends WidgetType {
-  constructor(public tag: string) { super(); }
-  toDOM() {
-    const el = document.createElement("span");
-    el.className = `kind-badge kind-${this.tag.toLowerCase()}`;
-    el.textContent = this.tag.toUpperCase();
-    el.contentEditable = "false";
-    el.setAttribute("aria-hidden", "true");
-    return el;
-  }
-  eq(other: KindBadgeWidget) { return this.tag === other.tag; }
-  ignoreEvent() { return true; }
-}
+// Phase 9.4's inline KindBadgeWidget (the all-caps red TASK / URGENT chip
+// prepended to block-line 0) was removed in 9.7 — the right-side tag pill
+// is the canonical kind indicator now, freeing the left edge of the editor
+// for typing. The `primaryTagFacet` below is kept defined in case another
+// surface (e.g. read-only block reference card) wants the kind inline.
 
 const tagHide = Decoration.replace({ widget: new EmptyWidget() });
 const wikiLinkMark = Decoration.mark({ class: "cm-tesela-wikilink" });
@@ -102,18 +89,12 @@ function buildDecorations(view: EditorView): Built {
   while ((m = TAGS_LINE_RE.exec(doc)) !== null) {
     decos.push({ from: m.index, to: m.index, decoration: tagsLineHide });
   }
-  // Phase 9.4 — primary kind glyph badge prefix on the first line. The tag
-  // comes from the parent BlockOutliner via `primaryTagFacet` (the cm6 doc
-  // itself doesn't include `tags::` lines because the block parser pulls
-  // them out before they reach the editor).
-  const primaryTag = view.state.facet(primaryTagFacet);
-  if (primaryTag) {
-    decos.push({
-      from: 0,
-      to: 0,
-      decoration: Decoration.widget({ widget: new KindBadgeWidget(primaryTag), side: -1 }),
-    });
-  }
+  // Phase 9.7 — the inline kind-glyph badge that used to prepend "TASK" /
+  // "URGENT" to block-line 0 was removed in favor of the standalone tag pill
+  // on the right side of the block. Keeps the editor's left edge clean for
+  // typing. The `primaryTagFacet` and `KindBadgeWidget` are kept around in
+  // case a future surface (e.g. read-only block reference) wants to surface
+  // the kind inline; they're just not wired into the editor decorations now.
 
   // Wiki-links
   WIKI_LINK_RE.lastIndex = 0;
