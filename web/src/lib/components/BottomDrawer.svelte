@@ -116,9 +116,27 @@
     }
     return out;
   });
+  function extractBody(content: string): string {
+    if (!content.startsWith("---")) return content;
+    const end = content.indexOf("---", 3);
+    if (end === -1) return content;
+    const after = content.slice(end + 3);
+    return after.startsWith("\n") ? after.slice(1) : after;
+  }
+
+  // Re-derive block properties from the CURRENT note content, not from the
+  // focused-block store snapshot. The store is set when the user focuses a
+  // block in the editor; if we read its `properties` directly, an
+  // updateBlockProperty save (which only writes the note content + cache)
+  // doesn't refresh the chip values until the user re-focuses the block.
+  // Looking the block up by id in the freshly-parsed note body fixes that.
   const blockProperties = $derived.by(() => {
-    if (!focusedBlock) return [];
-    return Object.entries(focusedBlock.properties).map(([key, value]) => ({ key, value }));
+    if (!focusedBlock || !note) return [];
+    const live = parseBlocks(note.id, extractBody(note.content)).find(
+      (b) => b.id === focusedBlock.id,
+    );
+    const source = live ?? focusedBlock;
+    return Object.entries(source.properties).map(([key, value]) => ({ key, value }));
   });
 
   // Backlinks
@@ -176,16 +194,16 @@
     }
   });
 
-  async function savePageProperty(key: string, newValue: string, advance = false) {
+  async function savePageProperty(key: string, newValue: string) {
     editingKey = null;
     if (note && newValue.trim() !== "") {
       const serialized = `"${newValue.trim().replace(/"/g, '\\"')}"`;
       const updated = await api.updateNote(noteId, updateFrontmatterKey(note.content, key, serialized));
       queryClient.setQueryData(["note", noteId], updated);
     }
-    if (advance) advanceProperty(1);
+    requestAnimationFrame(() => rootEl?.focus());
   }
-  async function saveBlockProperty(key: string, newValue: string, advance = false) {
+  async function saveBlockProperty(key: string, newValue: string) {
     editingBlockKey = null;
     if (focusedBlock && newValue.trim() !== "") {
       await updateBlockProperty({
@@ -196,18 +214,7 @@
         queryClient,
       });
     }
-    if (advance) advanceProperty(1);
-  }
-  function advanceProperty(delta: 1 | -1) {
-    if (flatProperties.length === 0) return;
-    selectedPropertyIndex = (selectedPropertyIndex + delta + flatProperties.length) % flatProperties.length;
-    // Re-focus the drawer first (so vim chords / j/k keep working) then
-    // chain into edit mode on the new chip — Logseq-style "Tab save and
-    // continue."
-    requestAnimationFrame(() => {
-      rootEl?.focus();
-      requestAnimationFrame(() => enterEditOnCurrent());
-    });
+    requestAnimationFrame(() => rootEl?.focus());
   }
 
   function enterEditOnCurrent() {
@@ -258,19 +265,20 @@
       default: return "text";
     }
   }
+  // Inline-input keydown contract:
+  //   Enter  → commit + close edit mode, focus drawer (j/k navigates again)
+  //   Esc    → bail (no save), close edit mode, focus drawer
+  //   Tab    → bail too (don't move-and-advance — the user prefers explicit
+  //            j/k navigation between chips)
+  //   stopPropagation everywhere so the drawer's own Tab-cycles-tabs and
+  //   Enter-enters-edit handlers don't double-fire on the same bubble.
   function handlePageKeydown(e: KeyboardEvent, key: string) {
     if (e.key === "Enter") {
       e.preventDefault();
       e.stopPropagation();
       savePageProperty(key, editingValue);
-    } else if (e.key === "Tab") {
-      // Tab in the input means "commit and advance to next chip"; we
-      // stopPropagation so the drawer's Tab-cycles-tabs handler doesn't
-      // also run during the same bubble.
+    } else if (e.key === "Escape" || e.key === "Tab") {
       e.preventDefault();
-      e.stopPropagation();
-      savePageProperty(key, editingValue, true);
-    } else if (e.key === "Escape") {
       e.stopPropagation();
       editingKey = null;
       requestAnimationFrame(() => rootEl?.focus());
@@ -281,11 +289,8 @@
       e.preventDefault();
       e.stopPropagation();
       saveBlockProperty(key, editingBlockValue);
-    } else if (e.key === "Tab") {
+    } else if (e.key === "Escape" || e.key === "Tab") {
       e.preventDefault();
-      e.stopPropagation();
-      saveBlockProperty(key, editingBlockValue, true);
-    } else if (e.key === "Escape") {
       e.stopPropagation();
       editingBlockKey = null;
       requestAnimationFrame(() => rootEl?.focus());
@@ -508,7 +513,6 @@
                       autofocus
                       type={inputTypeFor(def)}
                       bind:value={editingBlockValue}
-                      onblur={() => saveBlockProperty(prop.key, editingBlockValue)}
                       onkeydown={(e) => handleBlockKeydown(e, prop.key)}
                       style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-amber); font-family: var(--v9-mono); font-size: 11px;"
                     />
@@ -580,7 +584,6 @@
                     autofocus
                     type={inputTypeFor(def)}
                     bind:value={editingValue}
-                    onblur={() => savePageProperty(prop.key, editingValue)}
                     onkeydown={(e) => handlePageKeydown(e, prop.key)}
                     style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-amber); font-family: var(--v9-mono); font-size: 11px;"
                   />
