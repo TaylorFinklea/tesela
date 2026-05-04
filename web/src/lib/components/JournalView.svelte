@@ -163,6 +163,13 @@
       requestAnimationFrame(() => {
         const el = scrollContainer?.querySelector(`[data-daily="${a}"]`) as HTMLElement | null;
         el?.scrollIntoView({ block: "start", behavior: "auto" });
+        // Phase 9.9 — also focus the section's cm-editor so the user can
+        // start typing immediately without a mouse click. Two RAFs because
+        // the cm6 editor mounts on the next tick after the section appears.
+        requestAnimationFrame(() => {
+          const cm = el?.querySelector<HTMLElement>(".cm-editor .cm-content");
+          cm?.focus();
+        });
       });
     });
   });

@@ -110,6 +110,10 @@
     htmlSublabel?: boolean;
     icon?: string;
     shortcut?: string;
+    /** Phase 9.9 — what Enter on this item will do, surfaced in the footer
+     *  (e.g. "Open page", "Run search", "Create note"). Falls back to a
+     *  generic "select" if not set. */
+    actionHint?: string;
     action: () => void;
   };
 
@@ -132,6 +136,7 @@
             type: "note" as const,
             label: n.title,
             sublabel: n.metadata.tags.length > 0 ? n.metadata.tags.join(", ") : undefined,
+            actionHint: "Open page",
             action: () => { close(); goto(`/p/${encodeURIComponent(n.id)}`); },
           })),
         });
@@ -144,6 +149,7 @@
           label: c.label,
           icon: c.icon,
           shortcut: c.shortcut,
+          actionHint: c.label,
           action: c.action,
         })),
       });
@@ -155,6 +161,7 @@
             type: "command" as const,
             label: c.label,
             icon: c.icon,
+            actionHint: c.label,
             action: c.action,
           })),
         });
@@ -173,6 +180,7 @@
             label: c.label,
             icon: c.icon,
             shortcut: c.shortcut,
+            actionHint: c.label,
             action: c.action,
           })),
         });
@@ -184,8 +192,8 @@
         result.push({
           title: "Create",
           items: [
-            { type: "create" as const, label: `Create "${search}"`, icon: "IconFilePlus", action: () => commands.find((c) => c.id === "new-note")?.action() },
-            { type: "create" as const, label: `Create Type "${search}"`, icon: "IconTag", action: () => commands.find((c) => c.id === "new-type")?.action() },
+            { type: "create" as const, label: `Create "${search}"`, icon: "IconFilePlus", actionHint: "Create note", action: () => commands.find((c) => c.id === "new-note")?.action() },
+            { type: "create" as const, label: `Create Type "${search}"`, icon: "IconTag", actionHint: "Create type", action: () => commands.find((c) => c.id === "new-type")?.action() },
           ],
         });
       }
@@ -195,10 +203,11 @@
       if (matchingNotes.length > 0) {
         result.push({
           title: "Notes",
-          items: matchingNotes.slice(0, 10).map((n) => ({
+          items: matchingNotes.slice(0, 10).map((n: Note) => ({
             type: "note" as const,
             label: n.title,
             sublabel: n.metadata.tags.length > 0 ? n.metadata.tags.join(", ") : undefined,
+            actionHint: "Open page",
             action: () => { close(); goto(`/p/${encodeURIComponent(n.id)}`); },
           })),
         });
@@ -215,6 +224,7 @@
             label: h.title,
             sublabel: h.snippet.replace(/<(?!\/?b>)[^>]+>/g, ""),
             htmlSublabel: true,
+            actionHint: "Open match",
             action: () => { close(); goto(`/p/${encodeURIComponent(h.note_id)}`); },
           })),
         });
@@ -242,6 +252,16 @@
   function handleKeydown(e: KeyboardEvent) {
     const down = e.key === "ArrowDown" || (e.ctrlKey && e.key === "j");
     const up = e.key === "ArrowUp" || (e.ctrlKey && e.key === "k");
+    // Phase 9.9 — ⌘1-9 quick-pick. Run the Nth item's action without arrow nav.
+    if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
+      const idx = parseInt(e.key, 10) - 1;
+      if (allItems[idx]) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        allItems[idx].action();
+      }
+      return;
+    }
     if (down) {
       e.preventDefault();
       selectedIndex = Math.min(allItems.length - 1, selectedIndex + 1);
@@ -261,13 +281,18 @@
   onMount(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "k" && (e.metaKey || e.ctrlKey)) {
+        // Phase 9.9 — capture phase + stopImmediatePropagation. Without this,
+        // a focused cm-editor inside JournalView (or any other surface that
+        // wires Cmd+K into its own keymap) can swallow the chord before this
+        // toggle fires.
         e.preventDefault();
+        e.stopImmediatePropagation();
         if (open) close();
         else { open = true; search = ""; selectedIndex = 0; }
       }
     };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
+    document.addEventListener("keydown", handler, true);
+    return () => document.removeEventListener("keydown", handler, true);
   });
 </script>
 
@@ -310,6 +335,11 @@
                 onclick={() => item.action()}
                 onmouseenter={() => (selectedIndex = globalIdx)}
               >
+                {#if globalIdx < 9}
+                  <kbd class="text-[10px] font-mono text-muted-foreground/70 bg-muted/60 px-1.5 py-0.5 rounded shrink-0 w-9 text-center">⌘{globalIdx + 1}</kbd>
+                {:else}
+                  <span class="w-9 shrink-0"></span>
+                {/if}
                 {#if item.type === "create"}
                   <span class="text-primary text-[14px]">+</span>
                 {/if}
@@ -333,7 +363,8 @@
       <!-- Footer hint -->
       <div class="border-t border-border px-4 py-2 flex items-center gap-4 text-[10px] text-muted-foreground">
         <span><kbd class="font-mono bg-muted px-1 py-px rounded">↑↓</kbd> navigate</span>
-        <span><kbd class="font-mono bg-muted px-1 py-px rounded">↵</kbd> select</span>
+        <span><kbd class="font-mono bg-muted px-1 py-px rounded">↵</kbd> {allItems[selectedIndex]?.actionHint ?? "select"}</span>
+        <span><kbd class="font-mono bg-muted px-1 py-px rounded">⌘1-9</kbd> quick-pick</span>
         <span><kbd class="font-mono bg-muted px-1 py-px rounded">esc</kbd> close</span>
       </div>
     </div>

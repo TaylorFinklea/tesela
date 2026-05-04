@@ -93,6 +93,15 @@
     const allTags = [...new Set([...block.tags, ...block.inherited_tags])];
     const hide = new Set<string>(SYSTEM_HIDDEN_KEYS);
     const hideEmpty = new Set<string>();
+    // Phase 9.9 — every `key:: value` line on the block gets the hidden-line
+    // decoration by default. The drawer's Properties tab is the canonical
+    // editing surface; the inline view stays compact. The user reveals a
+    // block's properties via the chevron toggle (or `gp` vim chord) which
+    // adds `.show-props` to the wrapper, and the CSS rule
+    // `.show-props .cm-tesela-hidden-prop-line { display: block }` overrides.
+    for (const key of Object.keys(block.properties)) {
+      hide.add(key.toLowerCase());
+    }
     for (const tag of allTags) {
       for (const def of getTagPropertyDefs(tag, allNotes, propertyRegistry, inheritanceMap)) {
         const k = def.name.toLowerCase();
@@ -499,13 +508,27 @@
     handleBlockChange(block.id, setBlockStatus(block.raw_text, next));
   }
 
-  function handleNavigate(direction: "up" | "down") {
+  function handleNavigate(direction: "up" | "down", count = 1) {
     if (focusedIndex === null) return;
     const next = direction === "up"
-      ? Math.max(0, focusedIndex - 1)
-      : Math.min(visibleBlocks.length - 1, focusedIndex + 1);
+      ? Math.max(0, focusedIndex - count)
+      : Math.min(visibleBlocks.length - 1, focusedIndex + count);
     focusedIndex = next;
     restoredFocus = false;
+    // Phase 9.9 — keep the cursor in view as cross-block j/k advances. Use
+    // `nearest` so the viewport only scrolls when the new block is offscreen.
+    requestAnimationFrame(() => {
+      const el = document.querySelector(`[data-block-vi="${next}"]`);
+      el?.scrollIntoView({ block: "nearest", behavior: "auto" });
+    });
+  }
+
+  // Phase 9.9 — outliner-level half-page jump (vim Ctrl+U / Ctrl+D
+  // convention). Each block is its own cm-editor, so single-block half-page
+  // is meaningless; we jump 10 blocks and let scrollIntoView follow.
+  const PAGE_JUMP_BLOCKS = 10;
+  function handlePageJump(direction: "up" | "down") {
+    handleNavigate(direction, PAGE_JUMP_BLOCKS);
   }
 
   /**
@@ -1035,6 +1058,8 @@
             onbulktagpicker={openBulkTagPicker}
             onbulkindent={(dir) => bulkIndent(dir)}
             ontogglefold={() => toggleFold(block.id)}
+            ontoggleprops={() => toggleExpandProps(block.id)}
+            onpagejump={handlePageJump}
             inVisualMode={blockVisualMode}
             focused={focusedIndex === vi}
             noteslist={notesList}

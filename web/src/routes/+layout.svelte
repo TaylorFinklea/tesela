@@ -19,6 +19,7 @@
     setSplitRatio,
     isBottomDrawerOpen,
     toggleBottomDrawer,
+    setBottomDrawerOpen,
     getVSplitActiveSide,
     setVSplitActiveSide,
     adjustVSplitRatio,
@@ -200,12 +201,14 @@
         switch (e.key) {
           case "h": {
             const r = getActiveRegion();
-            // Phase 9.5b — `^w h` IS "go back" when the column-split is shown:
-            // collapse the right and full-screen the left, regardless of which
-            // side is currently active. Same as `^w q`. Mental model: left pane
-            // is "where I came from"; pressing left = go there.
+            // Phase 9.9 — when column-split is shown:
+            //   right active + ^w h → flip to left pane (move toward "what I came from")
+            //   left active  + ^w h → collapse split (full-screen the left)
+            // The two-step contract: first ^w h moves your focus across the
+            // split; second ^w h drops you out of split mode entirely.
             if (r === "focus" && isColumnSplitOpen()) {
-              goBackColumn();
+              if (getVSplitActiveSide() === "right") setVSplitActiveSide("left");
+              else goBackColumn();
             } else if (r === "focus") setActiveRegion("rail");
             else if (r === "bottom") setActiveRegion("focus");
             break;
@@ -220,9 +223,19 @@
           }
           case "j": {
             const r = getActiveRegion();
+            // Phase 9.9 — `^w j` opens the bottom drawer if closed, then
+            // focuses it. Previously, when the drawer was closed, ^w j fell
+            // through to the kanban-split branch (or did nothing at all),
+            // which contradicted the user's "drop to drawer" mental model.
+            // The kanban path now requires the drawer to already be closed
+            // AND a kanban split to be open AND no column-split.
             if (r === "focus") {
-              if (isBottomDrawerOpen()) setActiveRegion("bottom");
-              else if (isSplitOpen()) setActivePane("kanban");
+              if (isSplitOpen() && getActivePane() !== "kanban") {
+                setActivePane("kanban");
+              } else {
+                if (!isBottomDrawerOpen()) setBottomDrawerOpen(true);
+                setActiveRegion("bottom");
+              }
             }
             break;
           }

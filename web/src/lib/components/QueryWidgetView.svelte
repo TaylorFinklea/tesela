@@ -9,7 +9,7 @@
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
-  import { applyTriage, attachToProject, triageActionForKey } from "$lib/triage.svelte";
+  import { applyTriage, attachToProject, triageActionForKey, setBlockProperty } from "$lib/triage.svelte";
   import ProjectPicker from "./ProjectPicker.svelte";
   import type { Note } from "$lib/types/Note";
   import type { QueryItem } from "$lib/types/QueryItem";
@@ -22,6 +22,8 @@
     primaryTag?: string;
     blockId?: string;
     pageId: string;
+    status?: string;
+    kind: "block" | "page";
   };
 
   let { widget }: { widget: Widget } = $props();
@@ -29,6 +31,47 @@
 
   let projectPickerRow = $state<Row | null>(null);
   let selectedIndex = $state(0);
+  let rootEl = $state<HTMLElement | undefined>();
+
+  // Phase 9.9 — auto-focus the result list on mount so j/k works without
+  // requiring the user to click first.
+  $effect(() => {
+    if (rootEl && document.activeElement !== rootEl) rootEl.focus();
+  });
+
+  // Phase 9.9 — status cycle on `s`. The full Status property choice list
+  // could be richer, but the daily-driver path is the same triage trio.
+  const STATUS_CYCLE = ["todo", "doing", "done"] as const;
+  function nextStatus(current: string | undefined): string {
+    const idx = STATUS_CYCLE.indexOf((current ?? "") as typeof STATUS_CYCLE[number]);
+    return STATUS_CYCLE[(idx + 1) % STATUS_CYCLE.length];
+  }
+  async function cycleRowStatus(row: Row): Promise<void> {
+    if (!row.blockId || row.kind !== "block") return;
+    const next = nextStatus(row.status);
+    try {
+      const note = await api.getNote(row.pageId);
+      const updated = setBlockProperty(note.content, row.blockId, "status", next);
+      if (updated === note.content) return;
+      await api.updateNote(row.pageId, updated);
+      queryClient.invalidateQueries({ queryKey: ["widget", widget.id] });
+      queryClient.invalidateQueries({ queryKey: ["note", row.pageId] });
+    } catch (e) {
+      console.error("Status cycle failed:", e);
+    }
+  }
+  function statusGlyph(status: string | undefined): string {
+    switch (status) {
+      case "todo": return "○";
+      case "doing": return "◑";
+      case "done": return "✓";
+      case "in-review": return "◐";
+      case "backlog": return "·";
+      case "canceled": return "×";
+      case "on-hold": return "❘❘";
+      default: return "·";
+    }
+  }
 
   const widgetResultQuery = createQuery(() => ({
     queryKey: ["widget", widget.id, widget.query, widget.group, widget.sort] as const,
@@ -74,6 +117,8 @@
       primaryTag: item.primary_tag ?? undefined,
       blockId: item.block_id ?? undefined,
       pageId: item.page_id,
+      status: item.properties?.status as string | undefined,
+      kind: item.kind,
     };
   }
 
@@ -138,6 +183,11 @@
     } else if (e.key === "Enter" && flatRows[selectedIndex]) {
       e.preventDefault();
       openRow(flatRows[selectedIndex]);
+    } else if (e.key === "s" && flatRows[selectedIndex]?.kind === "block") {
+      // Phase 9.9 — `s` cycles the highlighted row's status without
+      // leaving the result list.
+      e.preventDefault();
+      void cycleRowStatus(flatRows[selectedIndex]);
     } else if (widget.id === "inbox" && flatRows[selectedIndex] && triageActionForKey(e.key) !== null) {
       e.preventDefault();
       void triageRow(flatRows[selectedIndex], e.key);
@@ -149,7 +199,7 @@
 </script>
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-<div class="qwv" tabindex="0" onkeydown={handleKeydown}>
+<div class="qwv" tabindex="0" bind:this={rootEl} onkeydown={handleKeydown}>
   <div class="qwv-meta">{view.subtitle}</div>
   {#if view.error}
     <div class="qwv-error">Query error: {view.error}</div>
@@ -160,19 +210,29 @@
         {#each g.rows as row}
           {@const ri = flatRows.indexOf(row)}
           {@const sel = selectedIndex === ri}
-          <button
-            class="qwv-row {sel ? 'selected' : ''}"
-            type="button"
-            onclick={() => { selectedIndex = ri; openRow(row); }}
-          >
+          <div class="qwv-row {sel ? 'selected' : ''}">
             <span class="qwv-marker">{sel ? "▸" : ""}</span>
-            <span class="qwv-text">
-              {#if row.primaryTag}
-                <span class="kind-badge kind-{row.primaryTag.toLowerCase()}">{row.primaryTag}</span>
-              {/if}
-              {row.label}
-            </span>
-          </button>
+            {#if row.kind === "block" && (row.status !== undefined || row.primaryTag === "Task")}
+              <button
+                class="qwv-status"
+                type="button"
+                title="Status: {row.status ?? '(none)'} — click to cycle"
+                onclick={(e) => { e.stopPropagation(); selectedIndex = ri; void cycleRowStatus(row); }}
+              >{statusGlyph(row.status)}</button>
+            {/if}
+            <button
+              class="qwv-text-btn"
+              type="button"
+              onclick={() => { selectedIndex = ri; openRow(row); }}
+            >
+              <span class="qwv-text">
+                {#if row.primaryTag}
+                  <span class="kind-badge kind-{row.primaryTag.toLowerCase()}">{row.primaryTag}</span>
+                {/if}
+                {row.label}
+              </span>
+            </button>
+          </div>
           {#if row.breadcrumb && row.breadcrumb.length > 0}
             <div class="qwv-src">↳ {row.breadcrumb.join(" / ")}</div>
           {/if}
@@ -243,7 +303,7 @@
   }
   .qwv-row {
     display: grid;
-    grid-template-columns: 18px 1fr;
+    grid-template-columns: 18px auto 1fr;
     align-items: center;
     gap: 8px;
     padding: 6px 8px;
@@ -252,7 +312,6 @@
     color: var(--foreground);
     font: inherit;
     text-align: left;
-    cursor: pointer;
     border-radius: 4px;
     width: 100%;
   }
@@ -260,6 +319,33 @@
   .qwv-row.selected { background: color-mix(in srgb, var(--primary) 12%, transparent); }
   .qwv-marker { color: var(--primary); font-family: var(--v9-mono); }
   .qwv-text { line-height: 1.5; }
+  .qwv-text-btn {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    width: 100%;
+    min-width: 0;
+  }
+  .qwv-status {
+    background: transparent;
+    border: 1px solid var(--v9-line);
+    color: var(--v9-ink-faint);
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+  }
+  .qwv-status:hover { color: var(--primary); border-color: var(--primary); }
   .qwv-src {
     font-family: var(--v9-mono);
     font-size: 10px;

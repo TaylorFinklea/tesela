@@ -1,6 +1,7 @@
 <script module lang="ts">
   import { EditorView } from "@codemirror/view";
   import { Vim } from "@replit/codemirror-vim";
+  import { gotoNote as moduleGotoNote } from "$lib/stores/active-pane-nav.svelte";
 
   // Shared context always pointing to the currently focused block editor.
   // Vim actions are registered ONCE globally (Vim.defineAction is a singleton
@@ -9,6 +10,7 @@
   const vimCtx: {
     view: EditorView | null;
     navigate: ((dir: "up" | "down") => void) | null;
+    pageJump: ((dir: "up" | "down") => void) | null;
     deleteBlock: (() => void) | null;
     yankBlock: (() => void) | null;
     pasteBlock: (() => void) | null;
@@ -26,17 +28,20 @@
     bulkTagPicker: (() => void) | null;
     bulkIndent: ((dir: "indent" | "outdent") => void) | null;
     toggleFold: (() => void) | null;
+    toggleProps: (() => void) | null;
     undoOutliner: (() => boolean) | null;
     redoOutliner: (() => boolean) | null;
     beginInsertSession: (() => void) | null;
     endInsertSession: (() => void) | null;
   } = {
-    view: null, navigate: null, deleteBlock: null, yankBlock: null,
+    view: null, navigate: null, pageJump: null,
+    deleteBlock: null, yankBlock: null,
     pasteBlock: null, newBlockBelow: null, newBlockAbove: null,
     indent: null, leader: null,
     drillIn: null, enterVisualMode: null, exitVisualMode: null,
     visualMode: false, visualNav: null, visualDelete: null, visualYank: null,
     bulkTagPicker: null, bulkIndent: null, toggleFold: null,
+    toggleProps: null,
     undoOutliner: null, redoOutliner: null,
     beginInsertSession: null, endInsertSession: null,
   };
@@ -80,6 +85,36 @@
 
     Vim.defineAction("openLeaderMenu", () => { vimCtx.leader?.(); });
     Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
+
+    // Phase 9.9 — Ctrl+U / Ctrl+D as outliner page-jump (10 blocks).
+    Vim.defineAction("pageJumpDown", () => { vimCtx.pageJump?.("down"); });
+    Vim.mapCommand("<C-d>", "action", "pageJumpDown", {}, { context: "normal" });
+    Vim.defineAction("pageJumpUp", () => { vimCtx.pageJump?.("up"); });
+    Vim.mapCommand("<C-u>", "action", "pageJumpUp", {}, { context: "normal" });
+
+    // Phase 9.9 — `gd` follows the wiki-link the cursor is in (NORMAL mode).
+    // No-op if cursor isn't inside a `[[...]]` span. Mirrors the mousedown
+    // handler below at line ~755 but driven by cursor position.
+    Vim.defineAction("followWikiLink", () => {
+      const v = vimCtx.view;
+      if (!v) return;
+      const pos = v.state.selection.main.head;
+      const doc = v.state.doc.toString();
+      for (const m of doc.matchAll(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g)) {
+        const start = m.index ?? -1;
+        if (start < 0) continue;
+        if (pos >= start && pos <= start + m[0].length) {
+          const target = m[1].trim();
+          if (target) moduleGotoNote(target);
+          return;
+        }
+      }
+    });
+    Vim.mapCommand("gd", "action", "followWikiLink", {}, { context: "normal" });
+
+    // Phase 9.9 — `gp` toggles the focused block's inline-properties panel.
+    Vim.defineAction("toggleBlockProps", () => { vimCtx.toggleProps?.(); });
+    Vim.mapCommand("gp", "action", "toggleBlockProps", {}, { context: "normal" });
 
     // We can't use Vim.mapCommand("dd"/"yy"/">>"/"<<", "action", ...) because
     // cm-vim's default `d`, `y`, `>`, `<` are operators that match the FIRST
@@ -253,6 +288,8 @@
     onbulktagpicker: onBulkTagPicker,
     onbulkindent: onBulkIndent,
     ontogglefold: onToggleFold,
+    ontoggleprops: onToggleProps,
+    onpagejump: onPageJump,
     onUndoOutliner,
     onRedoOutliner,
     onBeginInsertSession,
@@ -295,6 +332,8 @@
     onbulktagpicker?: () => void;
     onbulkindent?: (direction: "indent" | "outdent") => void;
     ontogglefold?: () => void;
+    ontoggleprops?: () => void;
+    onpagejump?: (direction: "up" | "down") => void;
     onUndoOutliner?: () => boolean;
     onRedoOutliner?: () => boolean;
     onBeginInsertSession?: () => void;
@@ -691,6 +730,8 @@
     vimCtx.bulkTagPicker = onBulkTagPicker ?? null;
     vimCtx.bulkIndent = onBulkIndent ?? null;
     vimCtx.toggleFold = onToggleFold ?? null;
+    vimCtx.toggleProps = onToggleProps ?? null;
+    vimCtx.pageJump = onPageJump ?? null;
     vimCtx.undoOutliner = onUndoOutliner ?? null;
     vimCtx.redoOutliner = onRedoOutliner ?? null;
     vimCtx.beginInsertSession = onBeginInsertSession ?? null;

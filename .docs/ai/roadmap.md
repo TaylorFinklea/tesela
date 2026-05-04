@@ -204,6 +204,20 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [x] **Highlight matching characters**: `highlightRuns(label, positions)` splits the label into `{ ch, match }` runs; matched chars render in `<strong class="text-primary font-semibold">` so the user sees why a result matched.
 - [x] Files: new `web/src/lib/fuzzy.ts` (scorer + highlight helper); `web/src/lib/components/AutocompleteMenu.svelte` (fuzzy filter, recency sort, highlight rendering).
 
+#### Phase 9.9 — Daily-driver keyboard ergonomics ✓
+- [x] **Cross-block j/k auto-scrolls** — `BlockOutliner.handleNavigate` now does `scrollIntoView({ block: "nearest" })` on the new block after focus advances. Cursor stays in viewport during multi-block navigation.
+- [x] **Ctrl+U / Ctrl+D as outliner page-jump** — vim chord registered in BlockEditor + new `pageJump` callback in `vimCtx`; jumps 10 blocks per press through the same handleNavigate path so scroll-into-view follows.
+- [x] **`^w h` flips active side when split open** — first `^w h` swaps right→left, second `^w h` collapses (full-screen left). Prior behavior collapsed unconditionally. Mirrors `^w l`'s flip-to-right.
+- [x] **`^w j` opens drawer if closed** — previously dropped to drawer only when it was already open. Now ensures the drawer is open and focused. Kanban-split path now requires drawer to be already open AND a kanban split AND no column-split.
+- [x] **`/p/dailies` auto-focuses today** — JournalView's anchor effect, after `scrollIntoView`, also `.focus()`s the cm-content of the anchored daily so the user can type immediately.
+- [x] **`gd` follows wiki-link at cursor (NORMAL mode)** — new vim action in BlockEditor scans for `[[...]]` containing the cursor position and calls `gotoNote(target)`. No-op if cursor isn't inside a wiki-link span.
+- [x] **⌘K hardened** — capture-phase + `stopImmediatePropagation` so cm-editor focus on /p/dailies (or any future surface that wires Cmd+K into its keymap) can't swallow the toggle.
+- [x] **⌘1-9 quick-pick + action-label hint** — palette items 1-9 get a `⌘N` badge prefix; pressing the chord runs the Nth item's action without arrow nav. Footer shows the selected item's `actionHint` ("Open page", "Run search", "Create note", etc.).
+- [x] **Inline properties hidden by default with per-block toggle** — `hiddenKeysFor` now adds every `block.properties` key to the hide set unconditionally. The per-block chevron toggle (already wired) reveals via `.show-props` ancestor. New `gp` vim chord toggles the focused block's expansion state.
+- [x] **Query-result row actions** — `QueryWidgetView` auto-focuses on mount so j/k just works. Block-kind rows (Task / typed) show a status glyph button; clicking the glyph (or pressing `s`) cycles status (todo → doing → done) without leaving the list. Reuses `setBlockProperty` from `triage.svelte.ts`.
+- [x] Files: `web/src/lib/components/BlockOutliner.svelte` (handleNavigate scroll + handlePageJump + ontoggleprops wiring + hiddenKeysFor); `web/src/lib/components/BlockEditor.svelte` (vim Ctrl+U/D, gd, gp; vimCtx pageJump/toggleProps; module-import gotoNote); `web/src/routes/+layout.svelte` (`^w h` flip + `^w j` drawer-opens path); `web/src/lib/components/JournalView.svelte` (today auto-focus); `web/src/lib/components/CommandPalette.svelte` (capture-phase ⌘K, ⌘1-9, action hint badges, footer); `web/src/lib/components/QueryWidgetView.svelte` (auto-focus, status glyph, `s` cycle).
+- [x] Deferred to Phase 10.x: query-row `/`-command picker; in-place row edit; tasks kanban + filter views rebuild; spacemacs-style space menu redesign; per-page vs. global History scope refactor.
+
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations
