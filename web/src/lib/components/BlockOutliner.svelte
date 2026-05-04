@@ -338,12 +338,25 @@
     if (body === lastExternalBody) return;
     lastExternalBody = body;
     if (body === lastSentBody) return;
+    const reparsed = parseBlocks(noteId, body);
     if (focusedIndex === null) {
-      blocks = parseBlocks(noteId, body);
-      // External body change wipes our snapshots — they reference block IDs
-      // that may no longer exist after the reparse.
+      blocks = reparsed;
       history.clear();
+      return;
     }
+    // Phase 9.7 — when a block is focused, we used to skip the reparse to
+    // avoid yanking the user mid-typing. That made drawer-driven property
+    // edits invisible in the outliner until the user re-focused. Preserve
+    // focus by block id instead: if the focused block still exists in the
+    // reparsed list, swap blocks in place.
+    const focusedId = blocks[focusedIndex]?.id;
+    const newIdx = focusedId ? reparsed.findIndex((b) => b.id === focusedId) : -1;
+    if (newIdx === -1) return; // focused block vanished — keep current state
+    blocks = reparsed;
+    if (newIdx !== focusedIndex) focusedIndex = newIdx;
+    // External body change wipes our snapshots — they reference block IDs
+    // that may no longer exist after the reparse.
+    history.clear();
   });
 
   // Clear undo/redo on page navigation. Snapshots are page-local: restoring
