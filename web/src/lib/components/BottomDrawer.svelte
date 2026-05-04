@@ -162,23 +162,47 @@
   let editingBlockKey = $state<string | null>(null);
   let editingBlockValue = $state("");
 
-  async function savePageProperty(key: string, newValue: string) {
+  // Phase 9.7 — keyboard nav for the Properties tab. j/k cycles through
+  // `flatProperties` (the current panel's list — block or page), Enter opens
+  // edit mode for the selected chip, Tab commits + advances. Tag chips on
+  // the page panel are display-only and not part of the navigation.
+  let selectedPropertyIndex = $state(0);
+  const flatProperties = $derived(
+    panelContext === "block" ? blockProperties : customProperties,
+  );
+  $effect(() => {
+    if (selectedPropertyIndex >= flatProperties.length) {
+      selectedPropertyIndex = Math.max(0, flatProperties.length - 1);
+    }
+  });
+
+  async function savePageProperty(key: string, newValue: string, advance = false) {
     editingKey = null;
-    if (!note || newValue.trim() === "") return;
-    const serialized = `"${newValue.trim().replace(/"/g, '\\"')}"`;
-    const updated = await api.updateNote(noteId, updateFrontmatterKey(note.content, key, serialized));
-    queryClient.setQueryData(["note", noteId], updated);
+    if (note && newValue.trim() !== "") {
+      const serialized = `"${newValue.trim().replace(/"/g, '\\"')}"`;
+      const updated = await api.updateNote(noteId, updateFrontmatterKey(note.content, key, serialized));
+      queryClient.setQueryData(["note", noteId], updated);
+    }
+    if (advance) advanceProperty(1);
   }
-  async function saveBlockProperty(key: string, newValue: string) {
+  async function saveBlockProperty(key: string, newValue: string, advance = false) {
     editingBlockKey = null;
-    if (!focusedBlock || newValue.trim() === "") return;
-    await updateBlockProperty({
-      block: focusedBlock,
-      propKey: key,
-      value: newValue.trim(),
-      tagName: note?.metadata.note_type === "Tag" ? (note.title ?? "") : "",
-      queryClient,
-    });
+    if (focusedBlock && newValue.trim() !== "") {
+      await updateBlockProperty({
+        block: focusedBlock,
+        propKey: key,
+        value: newValue.trim(),
+        tagName: note?.metadata.note_type === "Tag" ? (note.title ?? "") : "",
+        queryClient,
+      });
+    }
+    if (advance) advanceProperty(1);
+  }
+  function advanceProperty(delta: 1 | -1) {
+    if (flatProperties.length === 0) return;
+    selectedPropertyIndex = (selectedPropertyIndex + delta + flatProperties.length) % flatProperties.length;
+    // Re-focus the drawer root so j/k continue to work.
+    requestAnimationFrame(() => rootEl?.focus());
   }
   function isSelectType(def: PropertyDefinition | undefined): boolean {
     return def?.value_type === "select" || def?.value_type === "multi-select";
@@ -194,12 +218,28 @@
     }
   }
   function handlePageKeydown(e: KeyboardEvent, key: string) {
-    if (e.key === "Enter") { e.preventDefault(); savePageProperty(key, editingValue); }
-    else if (e.key === "Escape") { editingKey = null; }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      savePageProperty(key, editingValue);
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      savePageProperty(key, editingValue, true);
+    } else if (e.key === "Escape") {
+      editingKey = null;
+      requestAnimationFrame(() => rootEl?.focus());
+    }
   }
   function handleBlockKeydown(e: KeyboardEvent, key: string) {
-    if (e.key === "Enter") { e.preventDefault(); saveBlockProperty(key, editingBlockValue); }
-    else if (e.key === "Escape") { editingBlockKey = null; }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveBlockProperty(key, editingBlockValue);
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      saveBlockProperty(key, editingBlockValue, true);
+    } else if (e.key === "Escape") {
+      editingBlockKey = null;
+      requestAnimationFrame(() => rootEl?.focus());
+    }
   }
 
   // Force pg when no focused block
@@ -279,6 +319,47 @@
         goto(`/p/${encodeURIComponent(src.toLowerCase())}`);
         setActiveRegion("focus");
       }
+    } else if (tab === "properties") {
+      // While editing an inline input, that input owns its keys (handlePage/BlockKeydown).
+      if (editingKey !== null || editingBlockKey !== null) return;
+      if (e.key === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        if (flatProperties.length > 0) {
+          selectedPropertyIndex = Math.min(flatProperties.length - 1, selectedPropertyIndex + 1);
+        }
+      } else if (e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (flatProperties.length > 0) {
+          selectedPropertyIndex = Math.max(0, selectedPropertyIndex - 1);
+        }
+      } else if (e.key === "Enter" && flatProperties[selectedPropertyIndex]) {
+        e.preventDefault();
+        const prop = flatProperties[selectedPropertyIndex];
+        const def = propertyRegistry.get(prop.key.toLowerCase());
+        // Native controls (select/date/checkbox) are always rendered; just
+        // focus them. Text-typed properties toggle into edit mode and
+        // autofocus the input.
+        if (
+          def?.value_type === "select" ||
+          def?.value_type === "multi-select" ||
+          def?.value_type === "date" ||
+          def?.value_type === "checkbox"
+        ) {
+          requestAnimationFrame(() => {
+            const chip = rootEl?.querySelector(
+              `[data-prop-index="${selectedPropertyIndex}"][data-prop-context="${panelContext}"]`,
+            );
+            const ctrl = chip?.querySelector("select, input") as HTMLElement | null;
+            ctrl?.focus();
+          });
+        } else if (panelContext === "block") {
+          editingBlockKey = prop.key;
+          editingBlockValue = prop.value;
+        } else {
+          editingKey = prop.key;
+          editingValue = prop.value;
+        }
+      }
     }
   }
 
@@ -356,10 +437,15 @@
         {#if focusedBlock}
           {#if blockProperties.length > 0}
             <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-              {#each blockProperties as prop}
+              {#each blockProperties as prop, pi}
                 {@const def = propertyRegistry.get(prop.key.toLowerCase())}
                 {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, blockHiddenChoices) : []}
-                <span class="pchip">
+                {@const propSelected = focused && tab === "properties" && panelContext === "block" && selectedPropertyIndex === pi}
+                <span
+                  class="pchip {propSelected ? 'selected' : ''}"
+                  data-prop-index={pi}
+                  data-prop-context="block"
+                >
                   <span class="k">{prop.key}</span>
                   {#if def?.value_type === "checkbox"}
                     <input
@@ -423,10 +509,15 @@
                 </a>
               {/each}
             {/if}
-            {#each customProperties as prop}
+            {#each customProperties as prop, pi}
               {@const def = propertyRegistry.get(prop.key.toLowerCase())}
               {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, hiddenChoices) : []}
-              <span class="pchip">
+              {@const propSelected = focused && tab === "properties" && panelContext === "page" && selectedPropertyIndex === pi}
+              <span
+                class="pchip {propSelected ? 'selected' : ''}"
+                data-prop-index={pi}
+                data-prop-context="page"
+              >
                 <span class="k">{prop.key}</span>
                 {#if def?.value_type === "checkbox"}
                   <input

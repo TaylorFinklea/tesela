@@ -120,6 +120,9 @@
     if (s.inFlight) s.inFlight.abort();
     const controller = new AbortController();
     s.inFlight = controller;
+    // Phase 9.7 — optimistic pre-set so undo/cancelAndFlush wins WS-echo races.
+    const cached = queryClient.getQueryData<Note>(["note", noteId]);
+    if (cached) queryClient.setQueryData(["note", noteId], { ...cached, content });
     try {
       const updated = await api.updateNote(noteId, content, controller.signal);
       if (controller.signal.aborted) return;

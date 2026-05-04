@@ -92,6 +92,16 @@ export function gotoNote(targetNoteId: string, targetBlockId?: string | null): v
   programmaticGoto(newPath, { replaceState: false, noScroll: true });
   // After every drill, focus lands in the right pane.
   setVSplitActiveSide("right");
+  // Phase 9.7 — explicitly move DOM focus to the new right pane's cm-editor.
+  // Without this, the cm-editor that was focused before the drill keeps DOM
+  // focus, so vim chords go to the wrong pane.
+  requestAnimationFrame(() => {
+    requestAnimationFrame(() => {
+      document.dispatchEvent(
+        new CustomEvent("tesela:focus-pane", { detail: { side: "right" } }),
+      );
+    });
+  });
 }
 
 /**

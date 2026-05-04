@@ -497,3 +497,6 @@ html, body { height: 100%; margin: 0; }
 .v9-bl-card .src .lbl { color: var(--v9-ink-2); }
 .v9-bl-card .snip { color: var(--v9-ink-2); font-size: 12px; }
 .v9-bl-card .snip em { font-style: normal; font-weight: 600; color: var(--v9-amber-2); background: rgba(255,158,100,0.18); padding: 0 3px; border-radius: 2px; }
+
+/* Phase 9.7 — keyboard-selected property chip in the bottom drawer. */
+.v9-bottom .pchip.selected { box-shadow: inset 0 0 0 1px var(--v9-amber); border-color: var(--v9-amber); }

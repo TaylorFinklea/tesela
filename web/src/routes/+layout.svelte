@@ -137,13 +137,18 @@
     // shortcut works inside the editor.
     const cmdZHandler = (e: KeyboardEvent) => {
       if (!isVimEnabled()) return;
-      const isUndo = (e.metaKey || e.ctrlKey) && !e.altKey && e.key === "z";
+      const isUndo = (e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "z" || e.key === "Z");
       if (!isUndo) return;
       const target = e.target as HTMLElement | null;
-      if (target?.closest?.(".cm-editor")) {
-        e.preventDefault();
-        e.stopPropagation();
-      }
+      if (!target?.closest?.(".cm-editor")) return;
+      // Phase 9.7 — fully suppress cm6's character-level undo and route to
+      // the unified outliner+insert-session stack via a custom event so
+      // Cmd+Z behaves like the vim `u` (and Cmd+Shift+Z like `Ctrl+R`).
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      const ev = e.shiftKey ? "tesela:outliner-redo" : "tesela:outliner-undo";
+      document.dispatchEvent(new CustomEvent(ev));
     };
 
     // Phase 9.5b: column-view split is open whenever URL has ?back=.
@@ -258,12 +263,32 @@
       }
     };
 
+    // Phase 9.7 — focus the target pane's first cm-editor after gotoNote
+    // emits this event. Without this, the cm-editor that was focused before
+    // the drill keeps DOM focus, so vim chords go to the wrong pane.
+    const focusPaneHandler = (e: Event) => {
+      const side = ((e as CustomEvent).detail?.side as "left" | "right") ?? "right";
+      const active = document.activeElement;
+      if (
+        active instanceof HTMLElement &&
+        active.classList.contains("cm-content") &&
+        !active.closest(`[data-pane="${side}"]`)
+      ) {
+        active.blur();
+      }
+      const target = document.querySelector(
+        `[data-pane="${side}"] .cm-editor .cm-content`,
+      );
+      if (target instanceof HTMLElement) target.focus();
+    };
+
     document.addEventListener("keydown", spaceHandler);
     document.addEventListener("keydown", panelHandler);
     document.addEventListener("keydown", ctrlWHandler, true);
     document.addEventListener("keydown", cmdZHandler, true);
     document.addEventListener("keydown", escHandler);
     document.addEventListener("tesela:leader", leaderHandler);
+    document.addEventListener("tesela:focus-pane", focusPaneHandler);
     return () => {
       document.removeEventListener("keydown", spaceHandler);
       document.removeEventListener("keydown", panelHandler);
@@ -271,6 +296,7 @@
       document.removeEventListener("keydown", cmdZHandler, true);
       document.removeEventListener("keydown", escHandler);
       document.removeEventListener("tesela:leader", leaderHandler);
+      document.removeEventListener("tesela:focus-pane", focusPaneHandler);
       if (pendingTimer) clearTimeout(pendingTimer);
     };
   });

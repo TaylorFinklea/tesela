@@ -857,6 +857,30 @@
     return () => document.removeEventListener("tesela:restore-focus", handler);
   });
 
+  let rootEl = $state<HTMLDivElement | undefined>();
+
+  // Phase 9.7 — Cmd+Z / Cmd+Shift+Z inside cm-editors route here so the
+  // unified outliner+insert-session undo stack drives the redo cycle, not
+  // cm6's per-keystroke history. Only respond when this outliner contains
+  // the currently focused element — there may be multiple BlockOutliner
+  // instances on screen (column-view split or JournalView).
+  onMount(() => {
+    const handles = (fn: () => boolean) => () => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement)) return;
+      if (!rootEl?.contains(active)) return;
+      fn();
+    };
+    const undoHandler = handles(undoOutliner);
+    const redoHandler = handles(redoOutliner);
+    document.addEventListener("tesela:outliner-undo", undoHandler);
+    document.addEventListener("tesela:outliner-redo", redoHandler);
+    return () => {
+      document.removeEventListener("tesela:outliner-undo", undoHandler);
+      document.removeEventListener("tesela:outliner-redo", redoHandler);
+    };
+  });
+
   // Tag-picker overlay state for visual-mode bulk tag toggle.
   let showBulkTagPicker = $state(false);
   function openBulkTagPicker() {
@@ -896,7 +920,7 @@
     Click to start writing…
   </div>
 {:else}
-  <div class="space-y-0">
+  <div class="space-y-0" bind:this={rootEl}>
     {#each visibleBlocks as block, vi (block.id)}
       {@const displayIndent = block.indent_level - drillRootIndent}
       <div

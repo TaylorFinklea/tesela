@@ -307,6 +307,12 @@
     if (inFlightController) inFlightController.abort();
     const controller = new AbortController();
     inFlightController = controller;
+    // Phase 9.7 — optimistic cache update BEFORE the network round-trip so
+    // any WS echo from a prior PUT (e.g. when an undo cancels-and-flushes
+    // a pending save) can't race us and overwrite the cache with stale
+    // pre-undo body. The post-await setQueryData below still wins for
+    // server-side derived fields (modified time, etc.).
+    if (note) queryClient.setQueryData(["note", noteId], { ...note, content });
     try {
       const updated = await api.updateNote(noteId, content, controller.signal);
       if (controller.signal.aborted) return;
@@ -362,6 +368,8 @@
     if (backInFlightController) backInFlightController.abort();
     const controller = new AbortController();
     backInFlightController = controller;
+    // Phase 9.7 — optimistic pre-set; see flushSave for rationale.
+    if (backNote) queryClient.setQueryData(["note", backNoteId], { ...backNote, content });
     try {
       const updated = await api.updateNote(backNoteId, content, controller.signal);
       if (controller.signal.aborted) return;
@@ -409,7 +417,8 @@
     <div
       class="flex flex-col min-w-0 h-full overflow-y-auto transition-shadow"
       style="flex-basis: {vSplitRatio}%; flex-grow: 1; flex-shrink: 1; {vSplitActiveSide === 'left' ? 'box-shadow: inset 2px 0 0 0 var(--primary);' : ''}"
-      onclick={() => setVSplitActiveSide('left')}
+      data-pane="left"
+      onclickcapture={() => setVSplitActiveSide('left')}
     >
       <div class="max-w-3xl mx-auto px-10 pt-10 pb-4 w-full">
         {#if backNote}
@@ -460,7 +469,8 @@
   <div
     class="flex flex-col min-w-0 h-full"
     style="flex-basis: {vSplitShown ? `${100 - vSplitRatio}%` : '100%'}; flex-grow: 1; flex-shrink: 1; {vSplitShown && vSplitActiveSide === 'right' ? 'box-shadow: inset 2px 0 0 0 var(--primary);' : ''}"
-    onclick={() => { if (vSplitShown) setVSplitActiveSide('right'); }}
+    data-pane="right"
+    onclickcapture={() => { if (vSplitShown) setVSplitActiveSide('right'); }}
   >
     <!-- Note header + outliner + tag config + (inline kanban/table when not split) -->
     <div
