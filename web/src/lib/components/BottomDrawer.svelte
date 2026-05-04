@@ -478,7 +478,7 @@
       {#if panelContext === "block"}
         {#if focusedBlock}
           {#if blockProperties.length > 0}
-            <div style="display: flex; flex-wrap: wrap; gap: 6px;">
+            <div class="props-list">
               {#each blockProperties as prop, pi}
                 {@const def = propertyRegistry.get(prop.key.toLowerCase())}
                 {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, blockHiddenChoices) : []}
