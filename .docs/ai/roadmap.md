@@ -198,6 +198,12 @@ Full redesign vision: `.docs/ai/phases/v9-redesign-vision.md`. Tokyo Night repla
 - [x] **Keyboard-driven Properties tab**: `BottomDrawer` adds `selectedPropertyIndex` state and a `flatProperties` derivation (block-context list when a block is focused, page-context list otherwise). j/k cycles, Enter on a text-typed property toggles into inline edit (existing autofocus + onblur flow), Enter on select/multi-select/date/checkbox focuses the native control. Tab inside the inline input commits via `savePageProperty/saveBlockProperty(..., advance=true)` and advances to the next chip. Visual: `.pchip.selected` adds an amber inset shadow + border.
 - [x] Files: `web/src/routes/p/[id]/+page.svelte` (data-pane markers, onclickcapture, optimistic flushSave); `web/src/lib/stores/active-pane-nav.svelte.ts` (focus-pane dispatch); `web/src/routes/+layout.svelte` (focusPaneHandler, harder cmdZHandler with outliner-undo dispatch); `web/src/lib/components/BlockOutliner.svelte` (rootEl bind, undo/redo event listeners); `web/src/lib/components/BottomDrawer.svelte` (keyboard nav for Properties tab, Tab commit-and-advance); `web/src/lib/components/JournalView.svelte` (optimistic pre-set in flushSave); `web/src/app.css` (`.pchip.selected` style).
 
+#### Phase 9.8 — Fuzzy autocomplete + recency ranking ✓
+- [x] **Fuzzy match** in `AutocompleteMenu.svelte`: substring filter replaced with a tiered fuzzy scorer (prefix > word-start > substring > subsequence, with position penalties). Used for both `[[` (wiki-link) and `#` (tag) pickers since both pass through the same component. Typing `[[ph` now returns `Phase3GQA, Phase3GDQA, Phase3IQA, Phase3FQA` (prefix matches first); `[[dud` returns `dude` (substring) then `Scheduled / ScheduledItem` (subsequence).
+- [x] **Recency tie-break**: same-score items sort by recency rank from `getRecents()`. When the filter is empty, the full list is sorted by recency so the user's recent notes are at the top.
+- [x] **Highlight matching characters**: `highlightRuns(label, positions)` splits the label into `{ ch, match }` runs; matched chars render in `<strong class="text-primary font-semibold">` so the user sees why a result matched.
+- [x] Files: new `web/src/lib/fuzzy.ts` (scorer + highlight helper); `web/src/lib/components/AutocompleteMenu.svelte` (fuzzy filter, recency sort, highlight rendering).
+
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations
