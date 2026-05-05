@@ -21,6 +21,14 @@
     label: string;
     action?: () => void;
     children?: ChordNode[];
+    /**
+     * Phase 10.2 follow-up — optional vim/keymap equivalent rendered as a
+     * faint right-aligned chip. Used to advertise the NORMAL-mode shortcut
+     * for the same action (e.g. `gp` for "Toggle props"), so the leader
+     * menu doubles as a discovery surface for the keyboard shortcuts.
+     * Free-form string — render as-is in a kbd chip.
+     */
+    vimChord?: string;
   };
 </script>
 
@@ -109,6 +117,9 @@
       <div class="chord-row" onclick={() => handleSelect(node)}>
         <kbd class="chord-key">{node.key}</kbd>
         <span class="chord-label">{node.label}</span>
+        {#if node.vimChord}
+          <kbd class="chord-vim" title="Vim NORMAL equivalent">{node.vimChord}</kbd>
+        {/if}
         {#if node.children}
           <span class="chord-more">›</span>
         {/if}
@@ -177,5 +188,17 @@
     font-weight: 600;
   }
   .chord-label { color: var(--foreground); flex: 1; }
+  .chord-vim {
+    display: inline-block;
+    padding: 1px 5px;
+    background: transparent;
+    color: var(--v9-ink-faint);
+    border: 1px solid var(--v9-line);
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 500;
+    opacity: 0.85;
+  }
   .chord-more { color: var(--v9-ink-faint); font-size: 11px; }
 </style>

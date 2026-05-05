@@ -273,6 +273,13 @@ After 10.1's row chord menu, the user asked to apply the chord-leader treatment 
 - [x] **Page-action dispatch.** `tesela:page-action` mirrors header icon-button actions (favorite / doc-mode / delete) so they're reachable from any keyboard mode. Handler lives in the note `+page.svelte`.
 - [x] Files: `web/src/lib/components/ChordMenu.svelte` (new); `web/src/routes/+layout.svelte` (leaderTree, altLeaderHandler, ChordMenu render); `web/src/lib/components/BlockOutliner.svelte` (tesela:block-action listener); `web/src/routes/p/[id]/+page.svelte` (tesela:page-action listener); deleted `web/src/lib/components/LeaderMenu.svelte`.
 
+#### Phase 10.2 follow-up — vim-equivalent chips in chord menu ✓
+- [x] **`vimChord?: string` on `ChordNode`.** Renders as a faint right-aligned kbd chip on the menu row. Annotated existing tree where there's a NORMAL-mode equivalent: `b d` ⏎, `b f` za, `b p` gp, `b s` ⌘⏎, `b D` dd, `b y` yy, `f n` ⌘K, `s s` ⌘K, `T` b, `w h/l/j/k/q` ⌃w h/l/j/k/q. Doubles the menu as a chord-discovery surface.
+- [x] Files: `web/src/lib/components/ChordMenu.svelte` (vimChord field + chip render + .chord-vim CSS); `web/src/routes/+layout.svelte` (annotations).
+
+#### Phase 10.2 deferred (saved to memory `project_leader_menu_vision.md`):
+- [ ] **User-configurable leader tree.** A `~/.tesela/leader.config.{json,toml,ts}` (TBD format) that the user edits to add / remove / rename / re-key entries. Hardcoded tree becomes the merged-in default. Implies an action registry mapping stable IDs (`block.cycleStatus`, `page.toggleFavorite`, etc.) → handlers, so configs reference IDs instead of inline functions.
+
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations
