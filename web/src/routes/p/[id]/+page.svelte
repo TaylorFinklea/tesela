@@ -40,7 +40,7 @@
   import { parseBlocks } from "$lib/block-parser";
   import { addRecent } from "$lib/stores/recents.svelte";
   import { goto } from "$app/navigation";
-  import { onDestroy, untrack } from "svelte";
+  import { onDestroy, onMount, untrack } from "svelte";
   import { IconTrash, IconStar, IconStarFilled, IconFileText, IconLayoutList } from "@tabler/icons-svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
   import { isFavorite, toggleFavorite } from "$lib/stores/favorites.svelte";
@@ -402,6 +402,24 @@
     setFocusedBlock(null);
     setLeftFocusedBlock(null);
     setRightFocusedBlock(null);
+  });
+
+  // Phase 10.2 — leader-menu "page" submenu dispatches `tesela:page-action`.
+  // Each note-page mount listens; the SAME page is the canonical handler
+  // because there's only one /p/[id] route mounted at a time. Mirrors the
+  // header icon-button actions (favorite / doc-mode / delete) so they're
+  // reachable from any keyboard mode.
+  onMount(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { kind?: string };
+      switch (detail?.kind) {
+        case "favorite":  toggleFavorite(noteId); break;
+        case "docMode":   toggleDocumentMode(); break;
+        case "delete":    void deleteNote(); break;
+      }
+    };
+    document.addEventListener("tesela:page-action", handler);
+    return () => document.removeEventListener("tesela:page-action", handler);
   });
 </script>
 

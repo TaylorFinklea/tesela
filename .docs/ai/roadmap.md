@@ -263,6 +263,16 @@ The flat slash menu (arrow + Enter or filter-typing) felt sluggish for daily-dri
 - [x] The existing `SlashMenu.svelte` component is untouched — still used inside `BlockEditor.svelte` for inline `/` commands (template / date / tag / etc.).
 - [x] Files: `web/src/lib/components/QueryWidgetView.svelte` (chordOpen state, buildChords tree, inline popover render + CSS).
 
+### Phase 10.2 — Unified spacemacs-style leader chord menu ✓
+After 10.1's row chord menu, the user asked to apply the chord-leader treatment app-wide and combine it with the existing Space leader (which had limited commands and only worked from NORMAL mode).
+
+- [x] **Generic `ChordMenu.svelte` component** — accepts a tree of `ChordNode { key, label, action?, children? }`. Single-key chords descend or run; Esc/Backspace ascends; click-outside closes. Capture-phase keydown listener so cm-vim doesn't consume the keys. Replaces the deleted `LeaderMenu.svelte`.
+- [x] **Unified leader tree.** Top-level groups: `f` File (new/daily/favorite/delete), `b` Block (drill/fold/props/cycle-status/delete/yank), `p` Page (favorite/doc-mode/delete), `s` Search (palette), `g` Go to (home/daily/tasks/inbox/calendar/pages), `w` Window (h/l/j/k/q for pane-nav from any mode), plus `T` Toggle drawer and `y` Yank to clipboard at root.
+- [x] **`Ctrl+,` alt-trigger from INSERT mode.** New capture-phase keydown handler in `+layout.svelte` opens the same chord tree from anywhere — including inside cm-editor INSERT mode where `Space` would just type a space. User explicitly asked for this so they don't have to Esc out before reaching for the menu.
+- [x] **Block-action dispatch.** "Block" submenu commands dispatch `tesela:block-action` events with `{ kind }`. `BlockOutliner` listens; only the outliner whose `rootEl.contains(document.activeElement)` runs (mirrors the existing `tesela:outliner-undo` filter). Handles drillIn / foldToggle / propsToggle / statusCycle / delete / yank.
+- [x] **Page-action dispatch.** `tesela:page-action` mirrors header icon-button actions (favorite / doc-mode / delete) so they're reachable from any keyboard mode. Handler lives in the note `+page.svelte`.
+- [x] Files: `web/src/lib/components/ChordMenu.svelte` (new); `web/src/routes/+layout.svelte` (leaderTree, altLeaderHandler, ChordMenu render); `web/src/lib/components/BlockOutliner.svelte` (tesela:block-action listener); `web/src/routes/p/[id]/+page.svelte` (tesela:page-action listener); deleted `web/src/lib/components/LeaderMenu.svelte`.
+
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations

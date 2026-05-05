@@ -958,6 +958,37 @@
     };
   });
 
+  // Phase 10.2 — leader-menu "block" submenu dispatches `tesela:block-action`
+  // events. Multiple BlockOutliner instances may be mounted at once (column-
+  // view split, JournalView with N daily sections), so we gate by checking
+  // whether `rootEl` contains the current `document.activeElement` —
+  // ChordMenu doesn't steal focus, so the cm-content of the originally
+  // focused block stays the activeElement at action-fire time. Mirrors the
+  // existing pattern used for tesela:outliner-undo.
+  onMount(() => {
+    const handler = (e: Event) => {
+      const active = document.activeElement;
+      if (!(active instanceof HTMLElement)) return;
+      if (!rootEl?.contains(active)) return;
+      const detail = (e as CustomEvent).detail as { kind?: string };
+      const kind = detail?.kind;
+      if (!kind || focusedIndex === null) return;
+      const vi = focusedIndex;
+      const block = visibleBlocks[vi];
+      if (!block) return;
+      switch (kind) {
+        case "drillIn":      onDrillIn?.(block.id); break;
+        case "foldToggle":   toggleFold(block.id); break;
+        case "propsToggle":  toggleExpandProps(block.id); break;
+        case "statusCycle":  handleStatusCycle(vi); break;
+        case "delete":       handleDeleteBlock(vi); break;
+        case "yank":         handleYankBlock(vi); break;
+      }
+    };
+    document.addEventListener("tesela:block-action", handler);
+    return () => document.removeEventListener("tesela:block-action", handler);
+  });
+
   // Tag-picker overlay state for visual-mode bulk tag toggle.
   let showBulkTagPicker = $state(false);
   function openBulkTagPicker() {

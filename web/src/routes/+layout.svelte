@@ -32,7 +32,7 @@
   import Rail from "$lib/components/Rail.svelte";
   import BottomDrawer from "$lib/components/BottomDrawer.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
-  import LeaderMenu from "$lib/components/LeaderMenu.svelte";
+  import ChordMenu, { type ChordNode } from "$lib/components/ChordMenu.svelte";
   import StatusBar from "$lib/components/StatusBar.svelte";
   import { ensureSystemWidgets } from "$lib/system-widgets";
   import { api } from "$lib/api-client";
@@ -51,6 +51,67 @@
 
   let showLeaderMenu = $state(false);
   const drawerOpen = $derived(isBottomDrawerOpen());
+
+  // Phase 10.2 — unified spacemacs-style leader chord tree. Block actions
+  // dispatch `tesela:block-action` events that the focused BlockOutliner
+  // listens for; page actions dispatch `tesela:page-action`. The trigger
+  // path is opaque to the menu — `Space` from NORMAL mode and `Ctrl+,`
+  // from any mode (works inside cm-editor INSERT) both open the same tree.
+  const triggerCmdK = () =>
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }));
+  const emitBlock = (kind: string) =>
+    document.dispatchEvent(new CustomEvent("tesela:block-action", { detail: { kind } }));
+  const emitPage = (kind: string) =>
+    document.dispatchEvent(new CustomEvent("tesela:page-action", { detail: { kind } }));
+  const openDaily = async () => {
+    try {
+      const note = await api.getDailyNote();
+      goto(`/p/${encodeURIComponent(note.id)}`);
+    } catch (e) { console.error("Failed to open daily:", e); }
+  };
+
+  const leaderTree: ChordNode[] = [
+    { key: "f", label: "File", children: [
+      { key: "n", label: "New note", action: triggerCmdK },
+      { key: "d", label: "Daily", action: openDaily },
+      { key: "f", label: "Toggle favorite", action: () => emitPage("favorite") },
+      { key: "D", label: "Delete current", action: () => emitPage("delete") },
+    ]},
+    { key: "b", label: "Block", children: [
+      { key: "d", label: "Drill in", action: () => emitBlock("drillIn") },
+      { key: "f", label: "Fold/unfold", action: () => emitBlock("foldToggle") },
+      { key: "p", label: "Toggle props", action: () => emitBlock("propsToggle") },
+      { key: "s", label: "Cycle status (+ Task tag)", action: () => emitBlock("statusCycle") },
+      { key: "D", label: "Delete block", action: () => emitBlock("delete") },
+      { key: "y", label: "Yank block", action: () => emitBlock("yank") },
+    ]},
+    { key: "p", label: "Page", children: [
+      { key: "f", label: "Toggle favorite", action: () => emitPage("favorite") },
+      { key: "m", label: "Toggle doc mode", action: () => emitPage("docMode") },
+      { key: "D", label: "Delete page", action: () => emitPage("delete") },
+    ]},
+    { key: "s", label: "Search", children: [
+      { key: "s", label: "Search palette (⌘K)", action: triggerCmdK },
+    ]},
+    { key: "g", label: "Go to", children: [
+      { key: "h", label: "Home", action: () => goto("/") },
+      { key: "d", label: "Daily", action: openDaily },
+      { key: "t", label: "Tasks", action: () => goto("/p/tasks") },
+      { key: "i", label: "Inbox", action: () => goto("/p/inbox") },
+      { key: "c", label: "Calendar", action: () => goto("/p/calendar") },
+      { key: "p", label: "Pages", action: () => goto("/p/pages") },
+    ]},
+    { key: "w", label: "Window", children: [
+      { key: "h", label: "Left pane",  action: () => { setVSplitActiveSide("left"); setActiveRegion("focus"); } },
+      { key: "l", label: "Right pane", action: () => { setVSplitActiveSide("right"); setActiveRegion("focus"); } },
+      { key: "j", label: "Drawer",     action: () => { setBottomDrawerOpen(true); setActiveRegion("bottom"); } },
+      { key: "k", label: "Focus",      action: () => setActiveRegion("focus") },
+      { key: "q", label: "Close split", action: () => goBackColumn() },
+    ]},
+    { key: "T", label: "Toggle drawer", action: toggleBottomDrawer },
+    { key: "y", label: "Yank to clipboard",
+      action: () => document.dispatchEvent(new CustomEvent("tesela:yank-clipboard")) },
+  ];
 
   // Phase 9.5c — drilling is opt-in: only block drill-in, wiki-link click,
   // and query-result row click call `gotoNote()` (which writes `?back=`).
@@ -92,6 +153,19 @@
           showLeaderMenu = true;
         }
       }
+    };
+
+    // Phase 10.2 — INSERT-mode-friendly alt-trigger for the leader menu.
+    // `Ctrl+,` (comma) opens the chord tree from anywhere, including inside
+    // a cm-editor in INSERT mode where `Space` would just type a space.
+    // Capture phase + stopImmediatePropagation so cm6 / cm-vim never see it.
+    const altLeaderHandler = (e: KeyboardEvent) => {
+      if (showLeaderMenu) return;
+      if (!e.ctrlKey || e.key !== ",") return;
+      if (e.metaKey || e.altKey) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      showLeaderMenu = true;
     };
     const leaderHandler = () => {
       showLeaderMenu = true;
@@ -301,6 +375,7 @@
     };
 
     document.addEventListener("keydown", spaceHandler);
+    document.addEventListener("keydown", altLeaderHandler, true);
     document.addEventListener("keydown", panelHandler);
     document.addEventListener("keydown", ctrlWHandler, true);
     document.addEventListener("keydown", cmdZHandler, true);
@@ -309,6 +384,7 @@
     document.addEventListener("tesela:focus-pane", focusPaneHandler);
     return () => {
       document.removeEventListener("keydown", spaceHandler);
+      document.removeEventListener("keydown", altLeaderHandler, true);
       document.removeEventListener("keydown", panelHandler);
       document.removeEventListener("keydown", ctrlWHandler, true);
       document.removeEventListener("keydown", cmdZHandler, true);
@@ -338,6 +414,6 @@
   </div>
   <CommandPalette />
   {#if showLeaderMenu}
-    <LeaderMenu onclose={() => (showLeaderMenu = false)} />
+    <ChordMenu tree={leaderTree} onclose={() => (showLeaderMenu = false)} />
   {/if}
 </QueryClientProvider>
