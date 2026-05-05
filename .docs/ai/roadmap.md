@@ -251,6 +251,12 @@ After 10.1 dogfooding, the user surfaced two issues with the Cmd+Enter task-crea
 - [x] **Dailies lands on a trailing empty block, not the front of the first block.** JournalView's `ensureTrailingEmpty(noteId)` checks today's body — if the last non-blank line isn't already a bare `- ` bullet, it PUTs a new content with `- \n` appended. The anchor-scroll/focus effect then targets the LAST `.cm-editor .cm-content` in today's section (instead of the first), so the cursor lands on the empty bullet ready to type. After the PUT, the effect's "scrolled-for-anchor" flag resets so the focus re-fires once the new block lands in the DOM.
 - [x] Files: `web/src/lib/components/JournalView.svelte` (ensureTrailingEmpty helper + focus effect targets last cm-editor + post-PUT flag reset).
 
+#### Phase 10.1 follow-up #3 — slash + edit conflicts ✓
+Two friction items the user surfaced after testing the previous bundle:
+- [x] **`e` no longer reverts the title mid-edit.** Pressing `e` while the rename input was focused was bubbling up to QWV's `onkeydown`, which re-ran `startEditRow(row)` → `editingValue = row.label` → wiped what the user had typed. Fix: `handleKeydown` returns immediately when `editingRowId !== null` so the input owns its own keys.
+- [x] **`/` on /p/tasks opens the slash menu, not the command palette.** The global `panelHandler` in `+layout.svelte` mapped `/` → dispatch `Cmd+K` to open the palette as a "search" shortcut. It checked target.tagName for INPUT/TEXTAREA/cm-editor but treated the QWV root as a plain element, so the palette stole the keystroke. Fix: extend the panelHandler's "is editing" guard to also bail when target is inside `.qwv` — QueryWidgetView owns its own keyboard scope (`j/k`, `/`, `e`, `s`).
+- [x] Files: `web/src/lib/components/QueryWidgetView.svelte` (edit-mode key gate); `web/src/routes/+layout.svelte` (panelHandler `.qwv` opt-out).
+
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations

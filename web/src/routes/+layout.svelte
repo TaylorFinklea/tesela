@@ -103,7 +103,12 @@
         target.tagName === "INPUT" ||
         target.tagName === "TEXTAREA" ||
         target.isContentEditable ||
-        target.closest(".cm-editor");
+        target.closest(".cm-editor") ||
+        // Phase 10.1 follow-up — QueryWidgetView (rendered for /p/tasks etc.)
+        // owns its own keyboard scope: `j/k`, `/` (slash menu), `e` (rename),
+        // `s` (cycle status). Treat the QWV root the same as an editor so
+        // these chords don't bubble into the global panel/palette handlers.
+        target.closest(".qwv");
       if (isEditing) return;
 
       if (e.key === "1" || e.key === "b") {

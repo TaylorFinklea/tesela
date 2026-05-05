@@ -288,6 +288,12 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
+    // Phase 10.1 follow-up — when an inline rename input is active, all
+    // keys belong to the input (Enter / Esc are handled there directly,
+    // typing chars go via bind:value). Without this guard, the `e`
+    // shortcut bubbles up from the input and re-runs `startEditRow` →
+    // `editingValue = row.label` → the user's in-progress text reverts.
+    if (editingRowId !== null) return;
     if (slashOpen) {
       // Forward arrow / Enter / Esc to the SlashMenu; let other keys
       // (alphanumerics) accumulate into `slashFilter` so the user can
