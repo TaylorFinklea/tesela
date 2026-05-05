@@ -247,6 +247,10 @@ After 10.1 dogfooding, the user surfaced two issues with the Cmd+Enter task-crea
 - [ ] **Edit-revert in QueryWidgetView** — user reports `e`+Enter edit "times out and reverts" intermittently. Couldn't reproduce in MCP test (typed "dudbar"+Enter saved cleanly to disk and UI). Parked until user re-reports with a reproducer; the fix probably involves an optimistic `setQueryData` on the widget cache so any refetch race can't show stale data.
 - [x] Files: `web/src/lib/components/BlockEditor.svelte` (Enter handler keeps continuation on first-line split); `web/src/lib/components/BlockOutliner.svelte` (handleStatusCycle auto-tags Task).
 
+#### Phase 10.1 follow-up #2 — dailies trailing-empty focus ✓
+- [x] **Dailies lands on a trailing empty block, not the front of the first block.** JournalView's `ensureTrailingEmpty(noteId)` checks today's body — if the last non-blank line isn't already a bare `- ` bullet, it PUTs a new content with `- \n` appended. The anchor-scroll/focus effect then targets the LAST `.cm-editor .cm-content` in today's section (instead of the first), so the cursor lands on the empty bullet ready to type. After the PUT, the effect's "scrolled-for-anchor" flag resets so the focus re-fires once the new block lands in the DOM.
+- [x] Files: `web/src/lib/components/JournalView.svelte` (ensureTrailingEmpty helper + focus effect targets last cm-editor + post-PUT flag reset).
+
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations

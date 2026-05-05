@@ -42,7 +42,10 @@
   );
 
   // Make sure both today and the anchor are present even if the file doesn't
-  // exist on disk yet. This fires once per (anchor, today) combo.
+  // exist on disk yet. Also ensures today ends with an empty trailing bullet
+  // block so the auto-focus path always lands on a "ready to type" block
+  // instead of the front of an existing block. This fires once per
+  // (anchor, today) combo.
   let ensuredFor = $state<string>("");
   $effect(() => {
     const need = `${anchorDate}|${todayStr}`;
@@ -57,13 +60,44 @@
       if (!haveAnchor && anchorDate !== todayStr && /^\d{4}-\d{2}-\d{2}$/.test(anchorDate)) {
         tasks.push(api.getDailyNote(anchorDate));
       }
-      if (tasks.length > 0) {
-        Promise.all(tasks)
-          .then(() => queryClient.invalidateQueries({ queryKey: ["notes"] }))
-          .catch((e) => console.error("Failed to ensure dailies:", e));
-      }
+      Promise.all(tasks)
+        .then(() => ensureTrailingEmpty(todayStr))
+        .then((didChange) => {
+          if (tasks.length > 0 || didChange) {
+            queryClient.invalidateQueries({ queryKey: ["notes"] });
+            // Re-arm the anchor scroll/focus effect so it re-runs after the
+            // new trailing block lands in the DOM. Without this, the focus
+            // path raced the PUT and landed on the previous last block
+            // (e.g. "dude") instead of the newly appended empty bullet.
+            scrolledForAnchor = "";
+          }
+        })
+        .catch((e) => console.error("Failed to ensure dailies:", e));
     });
   });
+
+  /**
+   * Append a `- ` empty bullet block at end of today's body if the body
+   * doesn't already end with one. Returns true when disk was modified so
+   * the caller can invalidate the notes query.
+   *
+   * "Trailing empty bullet" detection: the LAST non-blank line of the body
+   * is `-` or `- ` (whitespace only after the dash). This keeps us from
+   * pinging disk every page load when the user already left a trailing
+   * empty block from a previous session.
+   */
+  async function ensureTrailingEmpty(noteId: string): Promise<boolean> {
+    const note = await api.getNote(noteId);
+    const body = (note.body ?? "").replace(/\n+$/, "");
+    const lastLine = body.split("\n").pop() ?? "";
+    if (/^\s*-\s*$/.test(lastLine)) return false;
+    const newBody = (body.length > 0 ? body + "\n" : "") + "- \n";
+    const fmEnd = note.content.startsWith("---") ? note.content.indexOf("---", 3) : -1;
+    const splitAt = fmEnd >= 0 ? fmEnd + 3 + (note.content[fmEnd + 3] === "\n" ? 1 : 0) : 0;
+    const newContent = note.content.slice(0, splitAt) + newBody;
+    await api.updateNote(noteId, newContent);
+    return true;
+  }
 
   // Visible window — start with 30 most recent, expand on scroll.
   const PAGE = 30;
@@ -167,7 +201,12 @@
         // start typing immediately without a mouse click. Two RAFs because
         // the cm6 editor mounts on the next tick after the section appears.
         requestAnimationFrame(() => {
-          const cm = el?.querySelector<HTMLElement>(".cm-editor .cm-content");
+          // Phase 10.1 follow-up — focus the LAST cm-editor in today's
+          // section (the trailing empty bullet that `ensureTrailingEmpty`
+          // guarantees). Landing at the end means the user can type new
+          // entries without overwriting the start of an existing block.
+          const cms = el?.querySelectorAll<HTMLElement>(".cm-editor .cm-content");
+          const cm = cms?.[cms.length - 1];
           if (!cm) return;
           cm.focus();
           // Phase 9.9 follow-up #2 — DOM .focus() alone leaves cm-vim in
