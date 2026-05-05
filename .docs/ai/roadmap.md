@@ -240,6 +240,13 @@ Brought row-level affordances to query widgets (Tasks, Inbox, etc.) so the user 
 - [x] Verified end-to-end via Chrome DevTools MCP: `e` rename → disk update; `/` → menu opens with 6 commands; ArrowDown ×4 + Enter on Mark done → status flips to done on disk and row drops out of `-status:done` filter.
 - [ ] Deferred: keyboard chord for "drill in split" (e.g. `^d` on row); status-cycle key in slash menu (currently the `s` shortcut still works on the row, but slash menu has fixed Mark todo/doing/done).
 
+#### Phase 10.1 follow-up — daily-driver task creation ✓
+After 10.1 dogfooding, the user surfaced two issues with the Cmd+Enter task-creation flow on dailies:
+- [x] **Enter no longer drags continuation lines onto the new block.** Cmd+Enter cycles status (appends `status:: <next>` continuation), then pressing Enter at end of the bullet line was using `doc.sliceString(cursor)` which returned `\nstatus:: <value>` — the whole continuation became the new block's `raw_text`, leaving the original block bare. Fix in `BlockEditor.svelte`'s Enter handler: when the cursor is on the FIRST line of a multi-line block (cursor ≤ first `\n`), keep the continuation tail with the current block; only split the first line. Multi-line content edits past the first line keep the old split-at-cursor behavior.
+- [x] **Cmd+Enter auto-tags as `Task`.** User's mental model is "Cmd+Enter creates a task". Previously it only cycled status, so new daily blocks never appeared in `/p/tasks` (which filters on `tag:Task`). Now `handleStatusCycle` also calls `toggleBlockTag(raw, "Task", autoFillNamesForTag("Task"))` if the block has no tag yet AND we're cycling into a non-empty status — so the user gets `status:: <next>`, `tags:: Task`, plus the Task tag-properties auto-filled (Priority/Deadline/Scheduled blanks). Cycling back to empty status leaves tags intact.
+- [ ] **Edit-revert in QueryWidgetView** — user reports `e`+Enter edit "times out and reverts" intermittently. Couldn't reproduce in MCP test (typed "dudbar"+Enter saved cleanly to disk and UI). Parked until user re-reports with a reproducer; the fix probably involves an optimistic `setQueryData` on the widget cache so any refetch race can't show stale data.
+- [x] Files: `web/src/lib/components/BlockEditor.svelte` (Enter handler keeps continuation on first-line split); `web/src/lib/components/BlockOutliner.svelte` (handleStatusCycle auto-tags Task).
+
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations

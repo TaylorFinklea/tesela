@@ -947,11 +947,32 @@
             return true;
           }
           if (onEnter) {
+            const doc = v.state.doc.toString();
             const cursor = v.state.selection.main.head;
-            const textBefore = v.state.doc.sliceString(0, cursor);
-            const textAfter = v.state.doc.sliceString(cursor);
-            if (textAfter) onChange(textBefore);
-            onEnter(textAfter);
+            const firstNl = doc.indexOf("\n");
+            const cursorOnFirstLine = firstNl === -1 || cursor <= firstNl;
+            // Phase 10.1 follow-up — when a block has continuation lines
+            // (status:: / tags:: / etc. — anything indented after the bullet
+            // line) and the user presses Enter on the FIRST line, keep
+            // those continuation lines with the CURRENT block. The previous
+            // implementation split at cursor unconditionally, so cycling
+            // status with Cmd+Enter and then pressing Enter pulled the
+            // `status:: doing` line down onto the new (empty) block. Multi-
+            // line content edits (cursor past first line) keep the old
+            // split-at-cursor behavior.
+            if (cursorOnFirstLine && firstNl !== -1) {
+              const firstLine = doc.slice(0, firstNl);
+              const continuation = doc.slice(firstNl); // includes leading \n
+              const beforeCursor = firstLine.slice(0, cursor);
+              const afterCursor = firstLine.slice(cursor);
+              onChange(beforeCursor + continuation);
+              onEnter(afterCursor);
+            } else {
+              const textBefore = doc.slice(0, cursor);
+              const textAfter = doc.slice(cursor);
+              if (textAfter) onChange(textBefore);
+              onEnter(textAfter);
+            }
             return true;
           }
           return false;

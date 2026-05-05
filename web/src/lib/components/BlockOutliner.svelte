@@ -535,7 +535,18 @@
     const current = block.properties.status ?? "";
     const idx = statusCycle.indexOf(current);
     const next = statusCycle[(idx + 1) % statusCycle.length] ?? "";
-    handleBlockChange(block.id, setBlockStatus(block.raw_text, next));
+    // Phase 10.1 follow-up — Cmd+Enter is "make this a task" in the user's
+    // model. If the block has no tag yet AND we're cycling INTO a non-empty
+    // status (i.e. promoting it to tracked work), auto-add `tags:: Task` so
+    // the block shows up in /p/tasks. Cycling back to empty status leaves
+    // the existing tag set alone.
+    let nextRaw = setBlockStatus(block.raw_text, next);
+    const hasAnyTag = block.tags.length > 0;
+    if (!hasAnyTag && next !== "") {
+      const fillNames = autoFillNamesForTag("Task");
+      nextRaw = toggleBlockTag(nextRaw, "Task", fillNames);
+    }
+    handleBlockChange(block.id, nextRaw);
   }
 
   function handleNavigate(direction: "up" | "down", count = 1) {
