@@ -53,44 +53,67 @@
   // O(n) and n stays small relative to the default keymap length.
   function initVimActions() {
 
+    // Phase 9.9 follow-up — j/k navigate by VISUAL line (not logical line),
+    // so a long wrapped paragraph advances per-row instead of jumping to the
+    // next paragraph. Matches the arrow-key behavior the user already had.
+    // Also skips lines that the cm-decorations layer has hidden via
+    // `display: none` (collapsed properties / `tags::` line). We probe
+    // candidate positions with `view.moveVertically` and only commit the
+    // dispatch when we land on a visible line; if no visible line is
+    // reachable, we return false so the caller can cross-block.
+    function lineElementAt(v: EditorView, pos: number): HTMLElement | null {
+      const dom = v.domAtPos(pos);
+      let node: Node | null = dom?.node ?? null;
+      while (node && !(node instanceof HTMLElement && node.classList.contains("cm-line"))) {
+        node = node.parentNode;
+      }
+      return node instanceof HTMLElement ? node : null;
+    }
+    function isHiddenLine(el: HTMLElement | null): boolean {
+      if (!el) return false;
+      return el.classList.contains("cm-tesela-hidden-prop-line")
+        || el.classList.contains("cm-tesela-tags-line");
+    }
+    function visualLineMove(forward: boolean): boolean {
+      const v = vimCtx.view;
+      if (!v) return false;
+      const beforeRange = v.state.selection.main;
+      const beforeCoords = v.coordsAtPos(beforeRange.head);
+      let candidate = beforeRange;
+      for (let i = 0; i < 64; i++) {
+        const next = v.moveVertically(candidate, forward);
+        if (next.head === candidate.head) break; // hit edge of doc
+        candidate = next;
+        if (!isHiddenLine(lineElementAt(v, next.head))) {
+          v.dispatch({ selection: candidate });
+          const afterCoords = v.coordsAtPos(candidate.head);
+          if (!beforeCoords || !afterCoords) return true;
+          return Math.abs(afterCoords.top - beforeCoords.top) > 1;
+        }
+      }
+      return false;
+    }
+
     Vim.defineAction("moveDownOrNextBlock", () => {
       if (vimCtx.visualMode) { vimCtx.visualNav?.("down"); return; }
-      const v = vimCtx.view;
-      if (!v) return;
-      const s = v.state;
-      const line = s.doc.lineAt(s.selection.main.head);
-      if (line.number === s.doc.lines) {
-        vimCtx.navigate?.("down");
-      } else {
-        const next = s.doc.line(line.number + 1);
-        v.dispatch({ selection: { anchor: Math.min(next.from + (s.selection.main.head - line.from), next.to) } });
-      }
+      if (!visualLineMove(true)) vimCtx.navigate?.("down");
     });
     Vim.mapCommand("j", "action", "moveDownOrNextBlock", {}, { context: "normal" });
 
     Vim.defineAction("moveUpOrPrevBlock", () => {
       if (vimCtx.visualMode) { vimCtx.visualNav?.("up"); return; }
-      const v = vimCtx.view;
-      if (!v) return;
-      const s = v.state;
-      const line = s.doc.lineAt(s.selection.main.head);
-      if (line.number === 1) {
-        vimCtx.navigate?.("up");
-      } else {
-        const prev = s.doc.line(line.number - 1);
-        v.dispatch({ selection: { anchor: Math.min(prev.from + (s.selection.main.head - line.from), prev.to) } });
-      }
+      if (!visualLineMove(false)) vimCtx.navigate?.("up");
     });
     Vim.mapCommand("k", "action", "moveUpOrPrevBlock", {}, { context: "normal" });
 
     Vim.defineAction("openLeaderMenu", () => { vimCtx.leader?.(); });
     Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
 
-    // Phase 9.9 — Ctrl+U / Ctrl+D as outliner page-jump (10 blocks).
-    Vim.defineAction("pageJumpDown", () => { vimCtx.pageJump?.("down"); });
-    Vim.mapCommand("<C-d>", "action", "pageJumpDown", {}, { context: "normal" });
-    Vim.defineAction("pageJumpUp", () => { vimCtx.pageJump?.("up"); });
-    Vim.mapCommand("<C-u>", "action", "pageJumpUp", {}, { context: "normal" });
+    // Phase 9.9 — Ctrl+U / Ctrl+D as outliner page-jump are wired via the
+    // cm6-level blockKeymap below (component script), not through vim
+    // mapCommand. Reason: cm6's standardKeymap binds `Ctrl-d` to
+    // `deleteCharForward` on macOS at a precedence that wins over cm-vim's
+    // domEventHandlers, so a Vim.mapCommand entry never gets a chance.
 
     // Phase 9.9 — `gd` follows the wiki-link the cursor is in (NORMAL mode).
     // No-op if cursor isn't inside a `[[...]]` span. Mirrors the mousedown
@@ -658,10 +681,20 @@
     view.focus();
   }
 
-  // When parent changes focused prop, programmatically focus/blur CM6
+  // When parent changes focused prop, programmatically focus/blur CM6.
+  // Phase 9.9 follow-up — also honor `startInInsert` post-mount: the parent
+  // may flip `focused` to true AFTER our initial mount (e.g. the auto-focus
+  // effect that runs once visibleBlocks settle), and the onMount path's
+  // `if (focused)` block won't re-fire. Without this, ?fresh=1 notes land
+  // with cm-content focused but stuck in NORMAL.
+  let appliedAutoInsert = $state(false);
   $effect(() => {
-    if (focused && view && !view.hasFocus) {
-      view.focus();
+    if (!focused || !view) return;
+    if (!view.hasFocus) view.focus();
+    if (startInInsert && !appliedAutoInsert) {
+      appliedAutoInsert = true;
+      const cm = getCM(view);
+      if (cm) Vim.handleKey(cm, "i", "mapping");
     }
   });
 
@@ -873,8 +906,17 @@
         run: (v) => {
           if (showSlashMenu) return slashMenuRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowUp" })) ?? false;
           if (showAutocomplete) return autocompleteRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowUp" })) ?? false;
-          const line = v.state.doc.lineAt(v.state.selection.main.head);
-          if (line.number === 1) { onNavigate?.("up"); return true; }
+          // Phase 9.9 follow-up — cross-block when no visual line above.
+          // Compares y-coord before/after a synthetic cursorLineUp, which
+          // respects wrapped lines. Returning false yields to cm6's default
+          // ArrowUp (visual-line up); we only intercept at the top edge.
+          const before = v.coordsAtPos(v.state.selection.main.head);
+          const probe = v.moveVertically(v.state.selection.main, false);
+          const after = v.coordsAtPos(probe.head);
+          if (!before || !after || Math.abs(after.top - before.top) <= 1) {
+            onNavigate?.("up");
+            return true;
+          }
           return false;
         },
       },
@@ -883,8 +925,13 @@
         run: (v) => {
           if (showSlashMenu) return slashMenuRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowDown" })) ?? false;
           if (showAutocomplete) return autocompleteRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowDown" })) ?? false;
-          const line = v.state.doc.lineAt(v.state.selection.main.head);
-          if (line.number === v.state.doc.lines) { onNavigate?.("down"); return true; }
+          const before = v.coordsAtPos(v.state.selection.main.head);
+          const probe = v.moveVertically(v.state.selection.main, true);
+          const after = v.coordsAtPos(probe.head);
+          if (!before || !after || Math.abs(after.top - before.top) <= 1) {
+            onNavigate?.("down");
+            return true;
+          }
           return false;
         },
       },
@@ -913,6 +960,35 @@
       { key: "Mod-Enter", run: () => { if (onCycleStatus) { onCycleStatus(); return true; } return false; } },
       { key: "Tab", run: () => { if (onIndent) { onIndent("indent"); return true; } return false; } },
       { key: "Shift-Tab", run: () => { if (onIndent) { onIndent("outdent"); return true; } return false; } },
+      // Phase 9.9 follow-up — Ctrl+U / Ctrl+D as outliner page-jump in vim
+      // NORMAL mode. Routed through blockKeymap (cm6 level) instead of vim
+      // mapCommand because cm6's standardKeymap on macOS catches Ctrl+D as
+      // `deleteCharForward` BEFORE cm-vim's domEventHandlers can intercept.
+      // In INSERT mode we yield (return false) so cm-vim's default insert-mode
+      // bindings (`<C-d>` = decrease indent, `<C-u>` = delete to line start)
+      // still apply.
+      {
+        key: "Ctrl-d",
+        run: (v) => {
+          const cm = getCM(v);
+          const vs = cm?.state?.vim as { insertMode?: boolean } | undefined;
+          if (vs?.insertMode) return false;
+          if (!onPageJump) return false;
+          onPageJump("down");
+          return true;
+        },
+      },
+      {
+        key: "Ctrl-u",
+        run: (v) => {
+          const cm = getCM(v);
+          const vs = cm?.state?.vim as { insertMode?: boolean } | undefined;
+          if (vs?.insertMode) return false;
+          if (!onPageJump) return false;
+          onPageJump("up");
+          return true;
+        },
+      },
       {
         key: "Backspace",
         run: (v) => {

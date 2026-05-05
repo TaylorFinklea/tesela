@@ -165,6 +165,10 @@
   let focusedIndex = $state<number | null>(null);
   let lastExternalBody = $state(body);
   let lastSentBody = $state(body);
+  // Track which note `lastExternalBody`/`lastSentBody` belong to so the
+  // body-sync effect can distinguish a real noteId change (always replace)
+  // from a same-note body update (preserve focus by block id).
+  let lastBodyNoteId = $state(noteId);
 
   // True when focusedIndex was set by the page-mount auto-focus effect, not
   // by a user action. Suppresses the empty-block→Insert auto-entry below so
@@ -344,8 +348,26 @@
   });
 
   $effect(() => {
-    if (body === lastExternalBody) return;
+    const noteChanged = noteId !== lastBodyNoteId;
+    if (!noteChanged && body === lastExternalBody) return;
     lastExternalBody = body;
+    lastBodyNoteId = noteId;
+    if (noteChanged) {
+      // Phase 9.9 follow-up — when noteId changes (page nav within same
+      // BlockOutliner instance, e.g. drilling via gd or Esc-back), every
+      // old block id has the previous note's prefix and won't exist in the
+      // new body. The "preserve focus by id" branch below would always hit
+      // its newIdx === -1 early-return and leave `blocks` stale, so the
+      // user sees the wrong note's content. Reset everything for the new
+      // note instead.
+      blocks = parseBlocks(noteId, body);
+      lastSentBody = body;
+      focusedIndex = null;
+      autoFocused = false;
+      restoredFocus = false;
+      history.clear();
+      return;
+    }
     if (body === lastSentBody) return;
     const reparsed = parseBlocks(noteId, body);
     if (focusedIndex === null) {
@@ -381,13 +403,21 @@
   // mode (autoFocused gates the empty-block→Insert rule below). Re-runs
   // only when noteId changes — guarded so a transient focusedIndex=null
   // (e.g. clicking outside) doesn't yank focus back to block 0.
+  //
+  // Phase 9.9 follow-up — when the URL has `?fresh=1` (set by the command
+  // palette right after creating a brand-new note), suppress the autoFocused
+  // gate so the single empty seed block enters INSERT mode automatically.
+  // The user typed Cmd+K → "Create" → expected to keep typing immediately;
+  // they shouldn't have to press `i` first.
   $effect(() => {
     if (lastAutoFocusedNoteId === noteId) return;
     if (visibleBlocks.length === 0) return;
     lastAutoFocusedNoteId = noteId;
     if (focusedIndex === null) {
       focusedIndex = 0;
-      autoFocused = true;
+      const isFresh = typeof window !== "undefined" &&
+        new URL(window.location.href).searchParams.get("fresh") === "1";
+      autoFocused = !isFresh;
     }
   });
 

@@ -52,11 +52,19 @@
     createNote: async (title) => {
       const name = title || search;
       if (!name) return;
-      const content = `---\ntitle: "${name}"\ntags: []\n---\n`;
+      // Phase 9.9 follow-up — seed the body with a single empty block so the
+      // BlockOutliner has something to render and auto-focus on mount.
+      // Without this, an empty body falls into the "Click to start writing…"
+      // placeholder which requires a mouse click before typing.
+      const content = `---\ntitle: "${name}"\ntags: []\n---\n- \n`;
       const note = await api.createNote(name, content);
       queryClient.invalidateQueries({ queryKey: ["notes"] });
+      // Pass `?fresh=1` so the destination BlockOutliner enters INSERT on the
+      // single empty block instead of staying NORMAL. Same path the user
+      // would take pressing `i` after landing — we just front-run it for
+      // notes the palette knows are brand-new.
       close();
-      goto(`/p/${encodeURIComponent(note.id)}`);
+      goto(`/p/${encodeURIComponent(note.id)}?fresh=1`);
     },
     createType: async (title) => {
       const name = title || search;
@@ -239,6 +247,22 @@
 
   $effect(() => { search; selectedIndex = 0; });
 
+  // Phase 9.9 follow-up — bind the input so we can explicitly focus it when
+  // the palette opens. The HTML `autofocus` attribute is unreliable inside
+  // a modal that mounts inside a Svelte `{#if open}` block (Chrome won't
+  // re-honor autofocus on every show), and without keyboard focus the
+  // palette swallows nothing — Esc/typing all bypass it.
+  let inputRef = $state<HTMLInputElement | undefined>();
+  $effect(() => {
+    if (!open || !inputRef) return;
+    // Two RAFs: first lets the modal node settle into the DOM, second lets
+    // the cm-editor's blur handler fire before we steal focus.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      inputRef?.focus();
+      inputRef?.select();
+    }));
+  });
+
   function close() {
     open = false;
     search = "";
@@ -289,6 +313,16 @@
         e.stopImmediatePropagation();
         if (open) close();
         else { open = true; search = ""; selectedIndex = 0; }
+        return;
+      }
+      // Phase 9.9 follow-up — Escape closes the palette even when focus has
+      // wandered (e.g. the user clicked outside the input but inside the
+      // modal). Capture-phase so cm-editors below can't swallow it.
+      if (open && e.key === "Escape") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (search) search = "";
+        else close();
       }
     };
     document.addEventListener("keydown", handler, true);
@@ -307,12 +341,12 @@
       <div class="flex items-center gap-3 px-4 py-3 border-b border-border">
         <IconSearch size={16} stroke={1.5} class="text-muted-foreground shrink-0" />
         <input
+          bind:this={inputRef}
           type="text"
           placeholder="Search commands, notes, or content…"
           bind:value={search}
           onkeydown={handleKeydown}
           class="w-full text-[14px] bg-transparent outline-none placeholder:text-muted-foreground/50"
-          autofocus
         />
         <kbd class="text-[10px] font-mono text-muted-foreground bg-muted px-1.5 py-0.5 rounded shrink-0">esc</kbd>
       </div>

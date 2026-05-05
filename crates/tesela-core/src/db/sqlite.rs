@@ -931,8 +931,13 @@ impl SqliteIndex {
             .map(|f| f.value.as_str());
 
         let candidate_notes: Vec<(String, String, String, Option<String>)> = if let Some(tag) = prefilter_tag {
+            // Pre-filter is intentionally over-inclusive — `block_matches`
+            // refines below. `body LIKE '%<tag>%'` catches both legacy
+            // `#<tag>` inline syntax AND the `tags:: <tag>` continuation-line
+            // syntax used by block-level tags (e.g. projects.md where the
+            // block has `tags:: Task` but the note frontmatter does not).
             sqlx::query("SELECT id, title, body, note_type FROM notes WHERE body LIKE ? OR tags LIKE ?")
-                .bind(format!("%#{}%", tag))
+                .bind(format!("%{}%", tag))
                 .bind(format!("%\"{}%", tag))
                 .fetch_all(&self.pool)
                 .await
