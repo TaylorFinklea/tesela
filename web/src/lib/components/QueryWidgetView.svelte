@@ -18,7 +18,6 @@
     deleteBlock as removeBlockFromContent,
   } from "$lib/triage.svelte";
   import ProjectPicker from "./ProjectPicker.svelte";
-  import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
   import type { Note } from "$lib/types/Note";
   import type { QueryItem } from "$lib/types/QueryItem";
   import type { Widget } from "$lib/types/Widget";
@@ -219,14 +218,14 @@
     }
   }
 
-  // Phase 10.1 — slash menu on highlighted row. Opens anchored to the
-  // row's DOM position. Commands are contextual: block-kind rows get
-  // status / drill / edit / delete; page-kind rows get open / drill /
-  // delete. Reuses the existing `SlashMenu.svelte` component.
-  let slashOpen = $state(false);
-  let slashFilter = $state("");
-  let slashPos = $state({ x: 0, y: 0 });
-  let slashMenuRef = $state<SlashMenu | null>(null);
+  // Phase 10.1 follow-up #4 — leader-style chord menu on highlighted row.
+  // `/` opens the menu; each visible key is a single-letter chord that
+  // directly runs an action (no arrow-nav, no filter typing). Mirrors the
+  // emacs/spacemacs/neovim leader-key UX. Position is anchored under the
+  // selected row so the user always knows which row the chord targets.
+  type RowChord = { key: string; label: string; action: () => void };
+  let chordOpen = $state(false);
+  let chordPos = $state({ x: 0, y: 0 });
 
   async function deleteRow(row: Row): Promise<void> {
     if (!row.blockId || row.kind !== "block") return;
@@ -256,35 +255,32 @@
     }
   }
 
-  function buildSlashCommands(row: Row): SlashCommand[] {
+  function buildChords(row: Row): RowChord[] {
     if (row.kind === "block") {
       return [
-        { id: "edit", label: "Edit text", description: "Rename this block in place", icon: "✎",
-          action: () => startEditRow(row) },
-        { id: "drill", label: "Open in split", description: "Drill into this block (column-view)", icon: "→",
-          action: () => openRow(row) },
-        { id: "todo", label: "Mark todo", description: "Set status :: todo", icon: "○",
-          action: () => void setRowStatus(row, "todo") },
-        { id: "doing", label: "Mark doing", description: "Set status :: doing", icon: "◑",
-          action: () => void setRowStatus(row, "doing") },
-        { id: "done", label: "Mark done", description: "Set status :: done", icon: "✓",
-          action: () => void setRowStatus(row, "done") },
-        { id: "delete", label: "Delete block", description: "Remove from source page", icon: "🗑",
-          action: () => void deleteRow(row) },
+        { key: "e", label: "Edit text",      action: () => startEditRow(row) },
+        { key: "o", label: "Open in split",  action: () => openRow(row) },
+        { key: "t", label: "Mark todo",      action: () => void setRowStatus(row, "todo") },
+        { key: "i", label: "Mark doing",     action: () => void setRowStatus(row, "doing") },
+        { key: "d", label: "Mark done",      action: () => void setRowStatus(row, "done") },
+        { key: "b", label: "Mark backlog",   action: () => void setRowStatus(row, "backlog") },
+        { key: "x", label: "Delete block",   action: () => void deleteRow(row) },
       ];
     }
     return [
-      { id: "drill", label: "Open in split", description: "Drill into this page (column-view)", icon: "→",
-        action: () => openRow(row) },
+      { key: "o", label: "Open in split",    action: () => openRow(row) },
     ];
   }
 
-  function openSlashAtRow(row: Row): void {
+  function openChordAtRow(row: Row): void {
     const rowEl = rootEl?.querySelector(`[data-row-id="${CSS.escape(row.id)}"]`) as HTMLElement | null;
     const rect = rowEl?.getBoundingClientRect();
-    slashPos = rect ? { x: rect.left + 24, y: rect.bottom + 4 } : { x: 200, y: 200 };
-    slashFilter = "";
-    slashOpen = true;
+    chordPos = rect ? { x: rect.left + 24, y: rect.bottom + 4 } : { x: 200, y: 200 };
+    chordOpen = true;
+  }
+  function closeChord(): void {
+    chordOpen = false;
+    rootEl?.focus();
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -294,17 +290,26 @@
     // shortcut bubbles up from the input and re-runs `startEditRow` →
     // `editingValue = row.label` → the user's in-progress text reverts.
     if (editingRowId !== null) return;
-    if (slashOpen) {
-      // Forward arrow / Enter / Esc to the SlashMenu; let other keys
-      // (alphanumerics) accumulate into `slashFilter` so the user can
-      // type to narrow the menu.
-      if (slashMenuRef?.handleKeydown(e)) return;
-      if (e.key === "Backspace") {
+    if (chordOpen) {
+      // Leader-chord menu: every typed key is either an action (matched by
+      // its `key`) or Esc to close. No arrow nav, no filter — chords run
+      // immediately, mirroring spacemacs/which-key.
+      if (e.key === "Escape") {
         e.preventDefault();
-        slashFilter = slashFilter.slice(0, -1);
+        closeChord();
+        return;
+      }
+      const row = flatRows[selectedIndex];
+      if (!row) { closeChord(); return; }
+      const match = buildChords(row).find((c) => c.key === e.key);
+      if (match) {
+        e.preventDefault();
+        e.stopPropagation();
+        chordOpen = false;
+        match.action();
       } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+        // Unknown chord key — swallow so it doesn't bubble into qwv nav.
         e.preventDefault();
-        slashFilter += e.key;
       }
       return;
     }
@@ -327,9 +332,9 @@
       e.preventDefault();
       startEditRow(flatRows[selectedIndex]);
     } else if (e.key === "/" && flatRows[selectedIndex]) {
-      // Phase 10.1 — `/` opens the slash menu anchored to the highlighted row.
+      // Phase 10.1 — `/` opens the leader-chord menu anchored to the row.
       e.preventDefault();
-      openSlashAtRow(flatRows[selectedIndex]);
+      openChordAtRow(flatRows[selectedIndex]);
     } else if (widget.id === "inbox" && flatRows[selectedIndex] && triageActionForKey(e.key) !== null) {
       e.preventDefault();
       void triageRow(flatRows[selectedIndex], e.key);
@@ -438,14 +443,29 @@
   {/if}
 </div>
 
-{#if slashOpen && flatRows[selectedIndex]}
-  <SlashMenu
-    bind:this={slashMenuRef}
-    commands={buildSlashCommands(flatRows[selectedIndex])}
-    filter={slashFilter}
-    position={slashPos}
-    onclose={() => { slashOpen = false; slashFilter = ""; rootEl?.focus(); }}
-  />
+{#if chordOpen && flatRows[selectedIndex]}
+  {@const chords = buildChords(flatRows[selectedIndex])}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="qwv-chord-overlay"
+    onclick={closeChord}
+  ></div>
+  <div
+    class="qwv-chord"
+    style="left: {chordPos.x}px; top: {chordPos.y}px"
+    role="menu"
+  >
+    <div class="qwv-chord-head">/</div>
+    {#each chords as c (c.key)}
+      <!-- svelte-ignore a11y_click_events_have_key_events -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="qwv-chord-row" onclick={() => { chordOpen = false; c.action(); }}>
+        <kbd class="qwv-chord-key">{c.key}</kbd>
+        <span class="qwv-chord-label">{c.label}</span>
+      </div>
+    {/each}
+  </div>
 {/if}
 
 {#if projectPickerRow}
@@ -541,6 +561,56 @@
     border-radius: 3px;
     outline: none;
   }
+  .qwv-chord-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 49;
+  }
+  .qwv-chord {
+    position: fixed;
+    z-index: 50;
+    min-width: 180px;
+    background: var(--popover, var(--v9-bg-2));
+    color: var(--popover-foreground, var(--foreground));
+    border: 1px solid var(--border, var(--v9-line));
+    border-radius: 6px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);
+    padding: 4px;
+    font-family: var(--v9-mono);
+    font-size: 12px;
+  }
+  .qwv-chord-head {
+    padding: 4px 8px 6px;
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--v9-ink-faint);
+    letter-spacing: 0.08em;
+    border-bottom: 1px solid var(--v9-line);
+    margin-bottom: 4px;
+  }
+  .qwv-chord-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  .qwv-chord-row:hover { background: color-mix(in srgb, var(--primary) 10%, transparent); }
+  .qwv-chord-key {
+    display: inline-block;
+    min-width: 18px;
+    padding: 1px 5px;
+    text-align: center;
+    background: var(--v9-bg-3, color-mix(in srgb, var(--foreground) 8%, transparent));
+    color: var(--primary);
+    border: 1px solid var(--v9-line);
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 600;
+  }
+  .qwv-chord-label { color: var(--foreground); }
   .qwv-src {
     font-family: var(--v9-mono);
     font-size: 10px;

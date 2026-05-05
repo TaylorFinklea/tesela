@@ -257,6 +257,12 @@ Two friction items the user surfaced after testing the previous bundle:
 - [x] **`/` on /p/tasks opens the slash menu, not the command palette.** The global `panelHandler` in `+layout.svelte` mapped `/` → dispatch `Cmd+K` to open the palette as a "search" shortcut. It checked target.tagName for INPUT/TEXTAREA/cm-editor but treated the QWV root as a plain element, so the palette stole the keystroke. Fix: extend the panelHandler's "is editing" guard to also bail when target is inside `.qwv` — QueryWidgetView owns its own keyboard scope (`j/k`, `/`, `e`, `s`).
 - [x] Files: `web/src/lib/components/QueryWidgetView.svelte` (edit-mode key gate); `web/src/routes/+layout.svelte` (panelHandler `.qwv` opt-out).
 
+#### Phase 10.1 follow-up #4 — leader-chord row menu ✓
+The flat slash menu (arrow + Enter or filter-typing) felt sluggish for daily-driver use. User asked for spacemacs/which-key style: `/d` directly marks done, no nav.
+- [x] **Replace QWV slash menu with leader-chord menu.** Each row chord is a single keystroke that runs immediately. For block-kind rows: `e` Edit text, `o` Open in split, `t` Mark todo, `i` Mark doing, `d` Mark done, `b` Mark backlog, `x` Delete block. Page-kind rows: `o` Open. The popover anchors under the highlighted row so the user always sees which row will be acted on. Esc or click-outside closes. Unknown letters are swallowed (so they don't bubble back into qwv nav).
+- [x] The existing `SlashMenu.svelte` component is untouched — still used inside `BlockEditor.svelte` for inline `/` commands (template / date / tag / etc.).
+- [x] Files: `web/src/lib/components/QueryWidgetView.svelte` (chordOpen state, buildChords tree, inline popover render + CSS).
+
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations
