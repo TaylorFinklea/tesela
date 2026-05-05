@@ -121,6 +121,75 @@ function escapeRegex(s: string): string {
 }
 
 /**
+ * Replace a block's first-line text. Preserves the bullet (`- `), indent,
+ * and any inline `#tags` or property-style content already on the first
+ * line; if `newText` already contains hashtags, those win. Continuation
+ * lines (indented properties / sub-paragraphs) are untouched. Pure — no I/O.
+ *
+ * Used by Phase 10.1's in-place row edit in the query widget. Same line-
+ * number addressing as `setBlockProperty`, so callers compose them freely.
+ */
+export function setBlockText(
+  content: string,
+  blockId: string,
+  newText: string,
+): string {
+  const colonIdx = blockId.lastIndexOf(":");
+  if (colonIdx < 0) return content;
+  const lineNum = Number.parseInt(blockId.slice(colonIdx + 1), 10);
+  if (!Number.isFinite(lineNum)) return content;
+
+  const fmEnd = content.startsWith("---") ? content.indexOf("---", 3) : -1;
+  const splitAt = fmEnd >= 0 ? fmEnd + 3 + (content[fmEnd + 3] === "\n" ? 1 : 0) : 0;
+  const frontmatter = content.slice(0, splitAt);
+  const body = content.slice(splitAt);
+  const lines = body.split("\n");
+  if (lineNum >= lines.length) return content;
+
+  const targetLine = lines[lineNum];
+  const indent = targetLine.length - targetLine.trimStart().length;
+  // Reconstruct as `<indent>- <newText>`. Newlines in newText would corrupt
+  // the body shape; collapse them into spaces.
+  const safe = newText.replace(/\r?\n/g, " ").trim();
+  lines[lineNum] = `${" ".repeat(indent)}- ${safe}`;
+  return frontmatter + lines.join("\n");
+}
+
+/**
+ * Remove a block (bullet line + all continuation/child lines under it).
+ * The block ends at the next line whose indent is `<= indent` and that
+ * starts with a bullet (`- `). Pure — no I/O.
+ *
+ * Used by Phase 10.1's slash-menu "Delete" command on query rows.
+ */
+export function deleteBlock(content: string, blockId: string): string {
+  const colonIdx = blockId.lastIndexOf(":");
+  if (colonIdx < 0) return content;
+  const lineNum = Number.parseInt(blockId.slice(colonIdx + 1), 10);
+  if (!Number.isFinite(lineNum)) return content;
+
+  const fmEnd = content.startsWith("---") ? content.indexOf("---", 3) : -1;
+  const splitAt = fmEnd >= 0 ? fmEnd + 3 + (content[fmEnd + 3] === "\n" ? 1 : 0) : 0;
+  const frontmatter = content.slice(0, splitAt);
+  const body = content.slice(splitAt);
+  const lines = body.split("\n");
+  if (lineNum >= lines.length) return content;
+
+  const targetLine = lines[lineNum];
+  const indent = targetLine.length - targetLine.trimStart().length;
+  let end = lines.length;
+  for (let i = lineNum + 1; i < lines.length; i++) {
+    const l = lines[i];
+    const ts = l.trimStart();
+    if (ts.length === 0) continue; // blank line — keep walking
+    const cur = l.length - ts.length;
+    if (ts.startsWith("- ") && cur <= indent) { end = i; break; }
+  }
+  lines.splice(lineNum, end - lineNum);
+  return frontmatter + lines.join("\n");
+}
+
+/**
  * Attach a block to a project page by setting `project:: <projectId>`.
  * Wraps `setBlockProperty` + the API PUT.
  */

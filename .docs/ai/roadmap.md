@@ -230,6 +230,16 @@ After 9.9 dogfooding, the user surfaced 8 follow-on bugs. All fixed; #8 (gp) and
 - [x] **#7 — j/k skips collapsed property lines.** Combined with #5 fix: `visualLineMove` iterates candidate positions and only commits the dispatch when the candidate's `.cm-line` element doesn't carry `.cm-tesela-hidden-prop-line` (or `.cm-tesela-tags-line`). If no visible target exists in the editor, the function returns false and the caller cross-blocks.
 - [x] Files: `web/src/lib/components/BlockOutliner.svelte` (noteId-change reset; `?fresh=1` autoFocused gate); `web/src/lib/components/BlockEditor.svelte` (Ctrl+U/D in blockKeymap; visual-line `j`/`k` + hidden-line skipping; ArrowDown/Up updated to match; post-mount `startInInsert` effect); `web/src/lib/components/CommandPalette.svelte` (input bind + focus-on-open effect; doc-level Esc; `?fresh=1` on createNote); `crates/tesela-core/src/db/sqlite.rs` (block-query SQL pre-filter relaxed).
 
+#### Phase 10.1 — Query-row in-place edit + slash menu ✓
+Brought row-level affordances to query widgets (Tasks, Inbox, etc.) so the user doesn't have to drill into the source page to triage.
+- [x] **`e` opens in-place edit on highlighted row.** Inline `<input>` swaps in for the row text; Enter saves via the new `setBlockText(content, blockId, newText)` helper + `api.updateNote`; Esc bails. Saves invalidate both the widget query and the underlying `note` query so the outliner reflects the edit immediately.
+- [x] **`/` opens slash menu anchored to highlighted row.** Reuses the existing `SlashMenu.svelte`. Block-kind rows get six commands: Edit text, Open in split, Mark todo / doing / done, Delete block. Page-kind rows get just Open in split. Filtering: typing alphanumerics narrows; arrow keys + Enter / Esc forwarded from QWV's onkeydown to the menu.
+- [x] **`setBlockText` + `deleteBlock` helpers in `triage.svelte.ts`.** Same line-number addressing as `setBlockProperty` so the three compose. `setBlockText` preserves indent + bullet + continuation lines; `deleteBlock` walks until the next bullet at `<= indent` and splices the slice.
+- [x] **JournalView lands in INSERT.** Calling `.focus()` on cm-content alone wasn't enough — cm6's internal `.cm-focused` lagged and vim stayed NORMAL. Now we dispatch a synthetic `i` keydown on cm-content after focus, which both syncs cm6's focus state and enters INSERT so the user can type immediately on /p/dailies. (Caught during dogfooding the 9.9 follow-up bundle.)
+- [x] Files: `web/src/lib/triage.svelte.ts` (setBlockText + deleteBlock); `web/src/lib/components/QueryWidgetView.svelte` (in-place edit, slash menu, key forwarding, edit-input CSS); `web/src/lib/components/JournalView.svelte` (synthetic 'i' for vim INSERT).
+- [x] Verified end-to-end via Chrome DevTools MCP: `e` rename → disk update; `/` → menu opens with 6 commands; ArrowDown ×4 + Enter on Mark done → status flips to done on disk and row drops out of `-status:done` filter.
+- [ ] Deferred: keyboard chord for "drill in split" (e.g. `^d` on row); status-cycle key in slash menu (currently the `s` shortcut still works on the row, but slash menu has fixed Mark todo/doing/done).
+
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations

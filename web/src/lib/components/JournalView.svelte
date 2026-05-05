@@ -168,7 +168,20 @@
         // the cm6 editor mounts on the next tick after the section appears.
         requestAnimationFrame(() => {
           const cm = el?.querySelector<HTMLElement>(".cm-editor .cm-content");
-          cm?.focus();
+          if (!cm) return;
+          cm.focus();
+          // Phase 9.9 follow-up #2 — DOM .focus() alone leaves cm-vim in
+          // NORMAL with cm-editor's `.cm-focused` class lagging until the
+          // next real keystroke. Dispatch a synthetic `i` keydown so vim
+          // enters INSERT and the user can type immediately. We dispatch
+          // through cm-content (the contenteditable) so cm-vim's keydown
+          // handler — registered via domEventHandlers — sees it.
+          requestAnimationFrame(() => {
+            cm.dispatchEvent(new KeyboardEvent("keydown", {
+              key: "i", code: "KeyI",
+              bubbles: true, cancelable: true,
+            }));
+          });
         });
       });
     });

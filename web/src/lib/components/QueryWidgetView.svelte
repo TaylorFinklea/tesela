@@ -9,8 +9,16 @@
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
-  import { applyTriage, attachToProject, triageActionForKey, setBlockProperty } from "$lib/triage.svelte";
+  import {
+    applyTriage,
+    attachToProject,
+    triageActionForKey,
+    setBlockProperty,
+    setBlockText,
+    deleteBlock as removeBlockFromContent,
+  } from "$lib/triage.svelte";
   import ProjectPicker from "./ProjectPicker.svelte";
+  import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
   import type { Note } from "$lib/types/Note";
   import type { QueryItem } from "$lib/types/QueryItem";
   import type { Widget } from "$lib/types/Widget";
@@ -173,7 +181,127 @@
     }
   }
 
+  // Phase 10.1 — in-place edit. `e` swaps the highlighted row's text into
+  // an inline input; Enter saves via `setBlockText`+`updateNote`, Esc bails.
+  // Saves invalidate both the widget query and the underlying note query so
+  // the outliner picks up the new text without a full reload.
+  let editingRowId = $state<string | null>(null);
+  let editingValue = $state("");
+  let editInputRef = $state<HTMLInputElement | undefined>();
+
+  function startEditRow(row: Row): void {
+    if (row.kind !== "block" || !row.blockId) return;
+    editingRowId = row.id;
+    editingValue = row.label;
+    requestAnimationFrame(() => { editInputRef?.focus(); editInputRef?.select(); });
+  }
+  function cancelEditRow(): void {
+    editingRowId = null;
+    editingValue = "";
+    rootEl?.focus();
+  }
+  async function commitEditRow(row: Row): Promise<void> {
+    const newText = editingValue;
+    editingRowId = null;
+    editingValue = "";
+    rootEl?.focus();
+    if (!row.blockId || row.kind !== "block") return;
+    if (newText === row.label) return;
+    try {
+      const note = await api.getNote(row.pageId);
+      const updated = setBlockText(note.content, row.blockId, newText);
+      if (updated === note.content) return;
+      await api.updateNote(row.pageId, updated);
+      queryClient.invalidateQueries({ queryKey: ["widget", widget.id] });
+      queryClient.invalidateQueries({ queryKey: ["note", row.pageId] });
+    } catch (err) {
+      console.error("Edit row save failed:", err);
+    }
+  }
+
+  // Phase 10.1 — slash menu on highlighted row. Opens anchored to the
+  // row's DOM position. Commands are contextual: block-kind rows get
+  // status / drill / edit / delete; page-kind rows get open / drill /
+  // delete. Reuses the existing `SlashMenu.svelte` component.
+  let slashOpen = $state(false);
+  let slashFilter = $state("");
+  let slashPos = $state({ x: 0, y: 0 });
+  let slashMenuRef = $state<SlashMenu | null>(null);
+
+  async function deleteRow(row: Row): Promise<void> {
+    if (!row.blockId || row.kind !== "block") return;
+    if (!window.confirm(`Delete "${row.label}"? This cannot be undone.`)) return;
+    try {
+      const note = await api.getNote(row.pageId);
+      const updated = removeBlockFromContent(note.content, row.blockId);
+      if (updated === note.content) return;
+      await api.updateNote(row.pageId, updated);
+      queryClient.invalidateQueries({ queryKey: ["widget", widget.id] });
+      queryClient.invalidateQueries({ queryKey: ["note", row.pageId] });
+    } catch (err) {
+      console.error("Delete row failed:", err);
+    }
+  }
+  async function setRowStatus(row: Row, status: string): Promise<void> {
+    if (!row.blockId || row.kind !== "block") return;
+    try {
+      const note = await api.getNote(row.pageId);
+      const updated = setBlockProperty(note.content, row.blockId, "status", status);
+      if (updated === note.content) return;
+      await api.updateNote(row.pageId, updated);
+      queryClient.invalidateQueries({ queryKey: ["widget", widget.id] });
+      queryClient.invalidateQueries({ queryKey: ["note", row.pageId] });
+    } catch (err) {
+      console.error("Set status failed:", err);
+    }
+  }
+
+  function buildSlashCommands(row: Row): SlashCommand[] {
+    if (row.kind === "block") {
+      return [
+        { id: "edit", label: "Edit text", description: "Rename this block in place", icon: "✎",
+          action: () => startEditRow(row) },
+        { id: "drill", label: "Open in split", description: "Drill into this block (column-view)", icon: "→",
+          action: () => openRow(row) },
+        { id: "todo", label: "Mark todo", description: "Set status :: todo", icon: "○",
+          action: () => void setRowStatus(row, "todo") },
+        { id: "doing", label: "Mark doing", description: "Set status :: doing", icon: "◑",
+          action: () => void setRowStatus(row, "doing") },
+        { id: "done", label: "Mark done", description: "Set status :: done", icon: "✓",
+          action: () => void setRowStatus(row, "done") },
+        { id: "delete", label: "Delete block", description: "Remove from source page", icon: "🗑",
+          action: () => void deleteRow(row) },
+      ];
+    }
+    return [
+      { id: "drill", label: "Open in split", description: "Drill into this page (column-view)", icon: "→",
+        action: () => openRow(row) },
+    ];
+  }
+
+  function openSlashAtRow(row: Row): void {
+    const rowEl = rootEl?.querySelector(`[data-row-id="${CSS.escape(row.id)}"]`) as HTMLElement | null;
+    const rect = rowEl?.getBoundingClientRect();
+    slashPos = rect ? { x: rect.left + 24, y: rect.bottom + 4 } : { x: 200, y: 200 };
+    slashFilter = "";
+    slashOpen = true;
+  }
+
   function handleKeydown(e: KeyboardEvent) {
+    if (slashOpen) {
+      // Forward arrow / Enter / Esc to the SlashMenu; let other keys
+      // (alphanumerics) accumulate into `slashFilter` so the user can
+      // type to narrow the menu.
+      if (slashMenuRef?.handleKeydown(e)) return;
+      if (e.key === "Backspace") {
+        e.preventDefault();
+        slashFilter = slashFilter.slice(0, -1);
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        slashFilter += e.key;
+      }
+      return;
+    }
     if (e.key === "j" || e.key === "ArrowDown") {
       e.preventDefault();
       selectedIndex = Math.min(flatRows.length - 1, selectedIndex + 1);
@@ -188,6 +316,14 @@
       // leaving the result list.
       e.preventDefault();
       void cycleRowStatus(flatRows[selectedIndex]);
+    } else if (e.key === "e" && flatRows[selectedIndex]?.kind === "block") {
+      // Phase 10.1 — `e` opens in-place edit on the highlighted row.
+      e.preventDefault();
+      startEditRow(flatRows[selectedIndex]);
+    } else if (e.key === "/" && flatRows[selectedIndex]) {
+      // Phase 10.1 — `/` opens the slash menu anchored to the highlighted row.
+      e.preventDefault();
+      openSlashAtRow(flatRows[selectedIndex]);
     } else if (widget.id === "inbox" && flatRows[selectedIndex] && triageActionForKey(e.key) !== null) {
       e.preventDefault();
       void triageRow(flatRows[selectedIndex], e.key);
@@ -210,7 +346,8 @@
         {#each g.rows as row}
           {@const ri = flatRows.indexOf(row)}
           {@const sel = selectedIndex === ri}
-          <div class="qwv-row {sel ? 'selected' : ''}">
+          {@const editing = editingRowId === row.id}
+          <div class="qwv-row {sel ? 'selected' : ''}" data-row-id={row.id}>
             <span class="qwv-marker">{sel ? "▸" : ""}</span>
             {#if row.kind === "block" && (row.status !== undefined || row.primaryTag === "Task")}
               <button
@@ -220,18 +357,32 @@
                 onclick={(e) => { e.stopPropagation(); selectedIndex = ri; void cycleRowStatus(row); }}
               >{statusGlyph(row.status)}</button>
             {/if}
-            <button
-              class="qwv-text-btn"
-              type="button"
-              onclick={() => { selectedIndex = ri; openRow(row); }}
-            >
-              <span class="qwv-text">
-                {#if row.primaryTag}
-                  <span class="kind-badge kind-{row.primaryTag.toLowerCase()}">{row.primaryTag}</span>
-                {/if}
-                {row.label}
-              </span>
-            </button>
+            {#if editing}
+              <input
+                bind:this={editInputRef}
+                class="qwv-edit-input"
+                type="text"
+                bind:value={editingValue}
+                onkeydown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); void commitEditRow(row); }
+                  else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancelEditRow(); }
+                }}
+                onblur={() => { if (editingRowId === row.id) void commitEditRow(row); }}
+              />
+            {:else}
+              <button
+                class="qwv-text-btn"
+                type="button"
+                onclick={() => { selectedIndex = ri; openRow(row); }}
+              >
+                <span class="qwv-text">
+                  {#if row.primaryTag}
+                    <span class="kind-badge kind-{row.primaryTag.toLowerCase()}">{row.primaryTag}</span>
+                  {/if}
+                  {row.label}
+                </span>
+              </button>
+            {/if}
           </div>
           {#if row.breadcrumb && row.breadcrumb.length > 0}
             <div class="qwv-src">↳ {row.breadcrumb.join(" / ")}</div>
@@ -244,25 +395,52 @@
   {:else}
     {#each flatRows as row, ri}
       {@const sel = selectedIndex === ri}
-      <button
-        class="qwv-row {sel ? 'selected' : ''}"
-        type="button"
-        onclick={() => { selectedIndex = ri; openRow(row); }}
-      >
+      {@const editing = editingRowId === row.id}
+      <div class="qwv-row {sel ? 'selected' : ''}" data-row-id={row.id}>
         <span class="qwv-marker">{sel ? "▸" : ""}</span>
-        <span class="qwv-text">
-          {#if row.primaryTag}
-            <span class="kind-badge kind-{row.primaryTag.toLowerCase()}">{row.primaryTag}</span>
-          {/if}
-          {row.label}
-        </span>
-      </button>
+        {#if editing}
+          <input
+            bind:this={editInputRef}
+            class="qwv-edit-input"
+            type="text"
+            bind:value={editingValue}
+            onkeydown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); void commitEditRow(row); }
+              else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); cancelEditRow(); }
+            }}
+            onblur={() => { if (editingRowId === row.id) void commitEditRow(row); }}
+          />
+        {:else}
+          <button
+            class="qwv-text-btn"
+            type="button"
+            onclick={() => { selectedIndex = ri; openRow(row); }}
+          >
+            <span class="qwv-text">
+              {#if row.primaryTag}
+                <span class="kind-badge kind-{row.primaryTag.toLowerCase()}">{row.primaryTag}</span>
+              {/if}
+              {row.label}
+            </span>
+          </button>
+        {/if}
+      </div>
       {#if row.breadcrumb && row.breadcrumb.length > 0}
         <div class="qwv-src">↳ {row.breadcrumb.join(" / ")}</div>
       {/if}
     {/each}
   {/if}
 </div>
+
+{#if slashOpen && flatRows[selectedIndex]}
+  <SlashMenu
+    bind:this={slashMenuRef}
+    commands={buildSlashCommands(flatRows[selectedIndex])}
+    filter={slashFilter}
+    position={slashPos}
+    onclose={() => { slashOpen = false; slashFilter = ""; rootEl?.focus(); }}
+  />
+{/if}
 
 {#if projectPickerRow}
   <ProjectPicker
@@ -346,6 +524,17 @@
     padding: 0;
   }
   .qwv-status:hover { color: var(--primary); border-color: var(--primary); }
+  .qwv-edit-input {
+    flex: 1;
+    background: var(--v9-bg-2);
+    border: 1px solid var(--primary);
+    color: var(--foreground);
+    font: inherit;
+    line-height: 1.5;
+    padding: 2px 6px;
+    border-radius: 3px;
+    outline: none;
+  }
   .qwv-src {
     font-family: var(--v9-mono);
     font-size: 10px;
