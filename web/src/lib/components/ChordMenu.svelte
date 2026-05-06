@@ -22,13 +22,15 @@
     action?: () => void;
     children?: ChordNode[];
     /**
-     * Phase 10.2 follow-up — optional vim/keymap equivalent rendered as a
-     * faint right-aligned chip. Used to advertise the NORMAL-mode shortcut
-     * for the same action (e.g. `gp` for "Toggle props"), so the leader
-     * menu doubles as a discovery surface for the keyboard shortcuts.
-     * Free-form string — render as-is in a kbd chip.
+     * Phase 10.2 follow-up — optional alternative-path hint rendered as a
+     * faint right-aligned chip. Used to advertise the alternative way to
+     * reach the same action: a vim NORMAL chord (e.g. `gp` for "Toggle
+     * props"), a global keyboard shortcut (e.g. `⌘K` for "Search palette"),
+     * or a destination URL (e.g. `/p/tasks` for "Go to Tasks"). Free-form
+     * string — render as-is in a kbd chip. Doubles the menu as a discovery
+     * surface for whatever path the user might prefer next time.
      */
-    vimChord?: string;
+    hint?: string;
   };
 </script>
 
@@ -117,8 +119,8 @@
       <div class="chord-row" onclick={() => handleSelect(node)}>
         <kbd class="chord-key">{node.key}</kbd>
         <span class="chord-label">{node.label}</span>
-        {#if node.vimChord}
-          <kbd class="chord-vim" title="Vim NORMAL equivalent">{node.vimChord}</kbd>
+        {#if node.hint}
+          <kbd class="chord-hint" title="Alternative path">{node.hint}</kbd>
         {/if}
         {#if node.children}
           <span class="chord-more">›</span>
@@ -188,7 +190,7 @@
     font-weight: 600;
   }
   .chord-label { color: var(--foreground); flex: 1; }
-  .chord-vim {
+  .chord-hint {
     display: inline-block;
     padding: 1px 5px;
     background: transparent;
@@ -199,6 +201,10 @@
     font-size: 10px;
     font-weight: 500;
     opacity: 0.85;
+    max-width: 14ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .chord-more { color: var(--v9-ink-faint); font-size: 11px; }
 </style>
