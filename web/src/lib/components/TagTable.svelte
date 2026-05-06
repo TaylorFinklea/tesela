@@ -59,6 +59,10 @@
       default: null,
       hide_by_default: def?.hide_by_default ?? false,
       hide_empty: def?.hide_empty ?? true,
+      chip_icon: def?.chip_icon ?? null,
+      chip_label_mode: def?.chip_label_mode ?? null,
+      chip_short_label: def?.chip_short_label ?? null,
+      chip_value_format: def?.chip_value_format ?? null,
     };
     return getVisibleChoices(fakeDef, hiddenChoices);
   }

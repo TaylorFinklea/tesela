@@ -15,7 +15,9 @@
     buildInheritanceMap,
     getTagPropertyDefs,
     resolveTagChain,
+    type PropertyDefinition,
   } from "$lib/property-registry";
+  import DisplayChip from "./DisplayChip.svelte";
   import type { HiddenKeysConfig } from "$lib/cm-decorations";
   import { prefs } from "$lib/preferences.svelte";
   import { OutlinerHistory, type OutlinerSnapshot } from "$lib/stores/outliner-history.svelte";
@@ -100,10 +102,10 @@
    * an empty string value are skipped entirely so the block stays
    * compact when a property is unset.
    */
-  function displayChipsFor(block: ParsedBlock): Array<{ key: string; value: string; type: string }> {
+  function displayChipsFor(block: ParsedBlock): Array<{ key: string; value: string; def: PropertyDefinition }> {
     const allTags = [...new Set([...block.tags, ...block.inherited_tags])];
     const seen = new Set<string>();
-    const out: Array<{ key: string; value: string; type: string }> = [];
+    const out: Array<{ key: string; value: string; def: PropertyDefinition }> = [];
     for (const tag of allTags) {
       for (const ancestor of resolveTagChain(tag, inheritanceMap)) {
         const tagPage = allNotes.find(
@@ -119,33 +121,12 @@
           const value = block.properties[k];
           if (!value || !value.trim()) continue;
           const def = propertyRegistry.get(k);
-          out.push({ key: k, value, type: def?.value_type ?? "text" });
+          if (!def) continue;
+          out.push({ key: k, value, def });
         }
       }
     }
     return out;
-  }
-
-  /**
-   * Render a property value into the short, glanceable form used by a
-   * display chip. Strips wiki-link wrappers from dates so "[[2026-05-13]]"
-   * becomes "May 13" (or "May 13, 2026" for non-current years). Other
-   * types fall through to the raw value.
-   */
-  function formatChipValue(value: string, type: string): string {
-    const v = value.trim();
-    if (type === "date") {
-      const m = v.match(/^\[\[(\d{4})-(\d{2})-(\d{2})\]\]$/) || v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-      if (m) {
-        const [_, y, mo, d] = m;
-        const date = new Date(Number(y), Number(mo) - 1, Number(d));
-        const month = date.toLocaleString("en-US", { month: "short" });
-        const day = Number(d);
-        const thisYear = new Date().getFullYear();
-        return Number(y) === thisYear ? `${month} ${day}` : `${month} ${day}, ${y}`;
-      }
-    }
-    return v.length > 24 ? v.slice(0, 23) + "…" : v;
   }
 
   /**
@@ -1234,13 +1215,7 @@
           {@const chips = displayChipsFor(block)}
           <div class="shrink-0 flex items-center gap-1 self-center pr-1 py-1">
             {#each chips as chip}
-              <span
-                class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-muted/40 text-muted-foreground/90 font-medium"
-                title="{chip.key}: {chip.value}"
-              >
-                <span class="text-muted-foreground/50">{chip.key}</span>
-                <span>{formatChipValue(chip.value, chip.type)}</span>
-              </span>
+              <DisplayChip propKey={chip.key} value={chip.value} def={chip.def} />
             {/each}
           </div>
         {/if}

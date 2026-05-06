@@ -29,6 +29,15 @@ export const PROPERTY_TYPE_LABELS: Record<PropertyType, string> = {
   object: "Object",
 };
 
+/**
+ * Phase 10.6 — chip-display config. Lives on the Property page so every
+ * surface that pins this property as a chip (per-tag `display_chips`) gets
+ * the same visualization. `null` for any field means "use the derived
+ * default" — an icon-set property defaults to icon-only label mode, etc.
+ */
+export type ChipLabelMode = "full" | "short" | "icon" | "none";
+export type ChipValueFormat = "value" | "month-day" | "iso" | "bars" | "truncate";
+
 export type PropertyDefinition = {
   name: string;
   value_type: PropertyType;
@@ -39,6 +48,18 @@ export type PropertyDefinition = {
   hide_by_default: boolean;
   /** If true, only render the property line when its value is non-empty. */
   hide_empty: boolean;
+  /** Tabler icon name (`"calendar"`, `"clock"`, …) or raw emoji (`"📅"`).
+   *  Resolved at render time by `icon-registry.resolveChipIcon`. */
+  chip_icon: string | null;
+  /** How to label this property in chip form. Default: `"icon"` if
+   *  `chip_icon` is set, else `"full"`. */
+  chip_label_mode: ChipLabelMode | null;
+  /** Used when `chip_label_mode === "short"`; falls back to first 4 chars
+   *  of property name. */
+  chip_short_label: string | null;
+  /** How to render the value. Type-aware (date → month-day; select → bars
+   *  / value; etc). `null` means use the type's default. */
+  chip_value_format: ChipValueFormat | null;
 };
 
 export type PropertyRegistry = Map<string, PropertyDefinition>;
@@ -46,6 +67,8 @@ export type PropertyRegistry = Map<string, PropertyDefinition>;
 export function parsePropertyPage(note: Note): PropertyDefinition | null {
   if (note.metadata.note_type !== "Property") return null;
   const c = note.metadata.custom;
+  const labelMode = typeof c.chip_label_mode === "string" ? c.chip_label_mode as ChipLabelMode : null;
+  const valueFormat = typeof c.chip_value_format === "string" ? c.chip_value_format as ChipValueFormat : null;
   return {
     name: note.title,
     value_type: (c.value_type as PropertyType) || "text",
@@ -53,6 +76,10 @@ export function parsePropertyPage(note: Note): PropertyDefinition | null {
     default: typeof c.default === "string" ? c.default : null,
     hide_by_default: c.hide_by_default === true,
     hide_empty: c.hide_empty !== false, // default true
+    chip_icon: typeof c.chip_icon === "string" ? c.chip_icon : null,
+    chip_label_mode: labelMode,
+    chip_short_label: typeof c.chip_short_label === "string" ? c.chip_short_label : null,
+    chip_value_format: valueFormat,
   };
 }
 
