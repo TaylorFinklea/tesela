@@ -22,6 +22,20 @@
     action?: () => void;
     children?: ChordNode[];
     /**
+     * Phase 10.4 — switch the popover into single-text-input mode when this
+     * leaf is selected. Used by `/p` for text/number/url-typed properties:
+     * the user picks the property key from a chord submenu, then types the
+     * value directly in the popover. Enter calls `onSubmit(value)` and
+     * closes; Esc backs up to the parent chord level so the user can pick a
+     * different key without retyping `/p`.
+     */
+    input?: {
+      placeholder?: string;
+      /** Pre-filled value (e.g. existing property value when re-editing). */
+      initial?: string;
+      onSubmit: (value: string) => void;
+    };
+    /**
      * Phase 10.2 follow-up — optional alternative-path hint rendered as a
      * faint right-aligned chip. Used to advertise the alternative way to
      * reach the same action: a vim NORMAL chord (e.g. `gp` for "Toggle
@@ -69,6 +83,17 @@
   } = $props();
 
   let breadcrumb = $state<string[]>(initialPath);
+  /**
+   * Phase 10.4 — when set, the popover is in single-input mode. `node` is
+   * the leaf the user selected (we keep a reference so we can read its
+   * `onSubmit` and label for the breadcrumb). `value` is the live text
+   * input. Esc clears `inputNode` and returns to the chord-list view at
+   * the same `breadcrumb` level so the user can pick a different leaf.
+   */
+  let inputNode = $state<ChordNode | null>(null);
+  let inputValue = $state("");
+  let inputEl = $state<HTMLInputElement | null>(null);
+
   let currentLevel = $derived.by((): ChordNode[] => {
     let level = tree;
     for (const name of breadcrumb) {
@@ -82,6 +107,11 @@
   function handleSelect(node: ChordNode) {
     if (node.children) {
       breadcrumb = [...breadcrumb, node.label];
+    } else if (node.input) {
+      inputNode = node;
+      inputValue = node.input.initial ?? "";
+      // Focus the input next tick — it's not yet in the DOM when this fires.
+      setTimeout(() => inputEl?.focus(), 0);
     } else if (node.action) {
       node.action();
       onclose();
@@ -89,6 +119,11 @@
   }
 
   function ascend() {
+    if (inputNode) {
+      inputNode = null;
+      inputValue = "";
+      return;
+    }
     if (breadcrumb.length > 0) {
       breadcrumb = breadcrumb.slice(0, -1);
     } else {
@@ -96,11 +131,30 @@
     }
   }
 
+  function commitInput() {
+    if (!inputNode?.input) return;
+    inputNode.input.onSubmit(inputValue);
+    onclose();
+  }
+
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape" || e.key === "Backspace") {
+    if (e.key === "Escape" || (e.key === "Backspace" && !inputNode)) {
       e.preventDefault();
       e.stopPropagation();
       ascend();
+      return;
+    }
+    if (inputNode) {
+      // In input mode: let the input handle most keys. Capture only Enter
+      // (commit) here. Backspace is delegated to the input field for
+      // intra-value editing — Esc is the back-up affordance instead.
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        commitInput();
+        return;
+      }
+      // All other keys flow to the <input> normally — do NOT swallow.
       return;
     }
     // Match by exact key (case-sensitive) — Shift+letter is a different chord.
@@ -141,23 +195,45 @@
       <span class="chord-sep">›</span>
       <span class="chord-crumb">{crumb}</span>
     {/each}
+    {#if inputNode}
+      <span class="chord-sep">›</span>
+      <span class="chord-crumb">{inputNode.label}</span>
+    {/if}
   </div>
-  <div class="chord-list">
-    {#each currentLevel as node (node.key)}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="chord-row" onclick={() => handleSelect(node)}>
-        <kbd class="chord-key">{node.key}</kbd>
-        <span class="chord-label">{node.label}</span>
-        {#if node.hint}
-          <kbd class="chord-hint" title="Alternative path">{node.hint}</kbd>
-        {/if}
-        {#if node.children}
-          <span class="chord-more">›</span>
-        {/if}
+  {#if inputNode}
+    <div class="chord-input-wrap">
+      <input
+        bind:this={inputEl}
+        bind:value={inputValue}
+        class="chord-input"
+        type="text"
+        placeholder={inputNode.input?.placeholder ?? ""}
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div class="chord-input-help">
+        <kbd class="chord-key">↵</kbd> set
+        <kbd class="chord-key">Esc</kbd> back
       </div>
-    {/each}
-  </div>
+    </div>
+  {:else}
+    <div class="chord-list">
+      {#each currentLevel as node (node.key)}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div class="chord-row" onclick={() => handleSelect(node)}>
+          <kbd class="chord-key">{node.key}</kbd>
+          <span class="chord-label">{node.label}</span>
+          {#if node.hint}
+            <kbd class="chord-hint" title="Alternative path">{node.hint}</kbd>
+          {/if}
+          {#if node.children || node.input}
+            <span class="chord-more">›</span>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -247,4 +323,23 @@
     white-space: nowrap;
   }
   .chord-more { color: var(--v9-ink-faint); font-size: 11px; }
+  .chord-input-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 4px;
+  }
+  .chord-input {
+    width: 100%;
+    padding: 6px 8px;
+    background: var(--background, var(--v9-bg-1));
+    color: var(--foreground);
+    border: 1px solid var(--primary);
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+  }
+  .chord-input:focus { border-color: var(--primary); box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 25%, transparent); }
+  .chord-input-help { display: flex; gap: 8px; align-items: center; padding: 0 4px; color: var(--v9-ink-faint); font-size: 10px; }
 </style>

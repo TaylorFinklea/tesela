@@ -89,6 +89,25 @@
     "collection",
   ]);
 
+  /**
+   * Phase 10.4 — full property defs for the block's tag chain. Used to drive
+   * the in-block `/p` chord submenu (key picker → value entry) so the user
+   * can edit properties without leaving the editor flow. Walks all tags
+   * (direct + inherited), dedupes by lowercased property name.
+   */
+  function propertyDefsFor(block: ParsedBlock) {
+    const allTags = [...new Set([...block.tags, ...block.inherited_tags])];
+    const seen = new Set<string>();
+    const out = [];
+    for (const tag of allTags) {
+      for (const def of getTagPropertyDefs(tag, allNotes, propertyRegistry, inheritanceMap)) {
+        const k = def.name.toLowerCase();
+        if (!seen.has(k)) { seen.add(k); out.push(def); }
+      }
+    }
+    return out;
+  }
+
   function hiddenKeysFor(block: ParsedBlock): HiddenKeysConfig {
     const allTags = [...new Set([...block.tags, ...block.inherited_tags])];
     const hide = new Set<string>(SYSTEM_HIDDEN_KEYS);
@@ -1139,6 +1158,7 @@
             hiddenKeys={hiddenKeysFor(block)}
             primaryTag={block.tags[0] ?? block.inherited_tags[0] ?? null}
             autoFillNames={autoFillNamesForTag}
+            propertyDefs={propertyDefsFor(block)}
             onInsertTemplate={(templateNoteId) => insertTemplateAfter(block.id, templateNoteId)}
             onUndoOutliner={undoOutliner}
             onRedoOutliner={redoOutliner}

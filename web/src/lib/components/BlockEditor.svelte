@@ -274,6 +274,7 @@
     type HiddenKeysConfig,
   } from "$lib/cm-decorations";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
+  import type { PropertyDefinition } from "$lib/property-registry";
   import { setVimMode } from "$lib/stores/pane-state.svelte";
   import { api } from "$lib/api-client";
   import { goto } from "$app/navigation";
@@ -326,6 +327,7 @@
     hiddenKeys,
     primaryTag,
     autoFillNames,
+    propertyDefs,
     onInsertTemplate,
   }: {
     initialText: string;
@@ -378,6 +380,11 @@
      *  property defs). Used when toggling a tag ON to append empty `key:: `
      *  continuation lines for each property. */
     autoFillNames?: (tagName: string) => string[];
+    /** Phase 10.4 — full PropertyDefinition list for this block's tag chain.
+     *  Drives the `/p` chord submenu so the user can pick a real property key
+     *  (with type-aware value entry) instead of editing literal `key:: value`
+     *  text. Empty when the block has no tagged properties. */
+    propertyDefs?: PropertyDefinition[];
     /** Called when /template picks a template — receives the template note's
      *  ID. The BlockOutliner fetches its body and inserts the parsed blocks as
      *  children of the current block. */
@@ -410,6 +417,13 @@
   let showDatePicker = $state(false);
   let datePickerPosition = $state({ x: 0, y: 0 });
   let datePickerCursor = $state<number>(-1); // where to insert the [[YYYY-MM-DD]]
+  /**
+   * Phase 10.4 — when set, the date picker writes a `\n<key>:: [[YYYY-MM-DD]]`
+   * continuation onto the block (driven by `/p` → date-typed property)
+   * instead of inserting `[[YYYY-MM-DD]]` at the cursor (the standard `/d`
+   * flow). Cleared on close.
+   */
+  let datePickerPropertyKey = $state<string | null>(null);
 
   const autocompleteItems: AutocompleteItem[] = $derived(
     (notesList ?? []).map((n) => ({
@@ -526,6 +540,125 @@
       return "?"; // unreachable — 9 digits + 26 letters covers any realistic count
     });
   }
+
+  /**
+   * Pick a single unique chord key for `label`, mutating `used`. Walks the
+   * label's letters in order, falls back to digits 1-9. Returns `?` if all
+   * letter+digit slots are taken (effectively unreachable for normal inputs).
+   * Used by the `/p` Property submenu where each call needs to honor keys
+   * already claimed by sibling rows.
+   */
+  function pickChordKey(label: string, used: Set<string>): string {
+    const lower = label.toLowerCase();
+    for (const ch of lower) {
+      if (/[a-z]/.test(ch) && !used.has(ch)) { used.add(ch); return ch; }
+    }
+    for (let i = 1; i <= 9; i++) {
+      const k = String(i);
+      if (!used.has(k)) { used.add(k); return k; }
+    }
+    return "?";
+  }
+
+  /**
+   * Phase 10.4 — write a `key:: value` continuation onto the current block,
+   * cleaning up the `/`-trigger text the same way `applySlash` does. Used by
+   * the new `/p` chord submenu so each property pick lands a real key/value
+   * pair instead of forcing the user into the bottom props panel.
+   */
+  /**
+   * Open the DatePicker bound to a property key. The `/p…` slash-trigger
+   * text is stripped immediately so the chord-close path (which resets
+   * `slashStartPos`) doesn't strand a stray ` /` in the doc. Picking a date
+   * then writes a `\n<key>:: [[YYYY-MM-DD]]` continuation. Anchored at the
+   * caret coords (same as the standard `/d` flow).
+   */
+  function openDatePickerForProperty(key: string) {
+    if (!view || slashStartPos < 0) return;
+    const doc = view.state.doc.toString();
+    const cursorPos = view.state.selection.main.head;
+    const cleaned = doc.slice(0, slashStartPos).trimEnd() + doc.slice(cursorPos);
+    const insertPos = doc.slice(0, slashStartPos).trimEnd().length;
+    view.dispatch({
+      changes: { from: 0, to: doc.length, insert: cleaned },
+      selection: { anchor: insertPos },
+    });
+    onChange(cleaned);
+    showSlashMenu = false;
+    datePickerPropertyKey = key;
+    datePickerCursor = insertPos;
+    const coords = view.coordsAtPos(Math.min(insertPos, view.state.doc.length));
+    datePickerPosition = coords
+      ? { x: coords.left, y: coords.bottom + 4 }
+      : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
+    showDatePicker = true;
+  }
+
+  function writePropertyContinuation(key: string, value: string) {
+    if (!view || slashStartPos < 0) return;
+    const doc = view.state.doc.toString();
+    const cursorPos = view.state.selection.main.head;
+    const before = doc.slice(0, slashStartPos);
+    const after = doc.slice(cursorPos);
+    const insert = before.trimEnd() + `\n${key}:: ${value}` + after;
+    view.dispatch({
+      changes: { from: 0, to: doc.length, insert },
+      selection: { anchor: insert.length - after.length },
+    });
+    onChange(insert);
+    showSlashMenu = false;
+    slashStartPos = -1;
+    view.focus();
+  }
+  /**
+   * Phase 10.4 — build the `/p` Property chord submenu from the block's
+   * tag-property defs. Each def becomes one row; type drives value entry:
+   *   - select / multi-select: chord submenu of choices
+   *   - checkbox: chord submenu (t/f)
+   *   - date: opens DatePicker bound to this property key
+   *   - text / number / url / email / phone (and unknown): inline input
+   *     mode in the popover (Enter commits)
+   * When no defs are available (block has no tagged properties), returns a
+   * single "Manual" leaf that falls back to the original literal `key::
+   * value` insertion so the user can still scaffold a property by hand.
+   */
+  function getPropertyChildren(): ChordNode[] {
+    const defs = propertyDefs ?? [];
+    if (defs.length === 0) {
+      return [
+        { key: "k", label: "Manual key:: value", action: () => applySlash("property"), hint: "key:: value" },
+      ];
+    }
+    const usedKeys = new Set<string>();
+    return defs.map((def) => {
+      const k = pickChordKey(def.name, usedKeys);
+      const node: ChordNode = { key: k, label: def.name, hint: def.value_type };
+      if (def.value_type === "select" || def.value_type === "multi-select") {
+        const childUsed = new Set<string>();
+        node.children = def.choices.map((c) => ({
+          key: pickChordKey(c, childUsed),
+          label: c,
+          action: () => writePropertyContinuation(def.name, c),
+          hint: `${def.name}:: ${c}`,
+        }));
+      } else if (def.value_type === "checkbox") {
+        node.children = [
+          { key: "t", label: "true",  action: () => writePropertyContinuation(def.name, "true") },
+          { key: "f", label: "false", action: () => writePropertyContinuation(def.name, "false") },
+        ];
+      } else if (def.value_type === "date") {
+        node.action = () => openDatePickerForProperty(def.name);
+      } else {
+        node.input = {
+          placeholder: `${def.name} value`,
+          initial: def.default ?? "",
+          onSubmit: (v) => writePropertyContinuation(def.name, v.trim()),
+        };
+      }
+      return node;
+    });
+  }
+
   function getSlashTree(): ChordNode[] {
     const choices = statusChoices ?? ["todo", "doing", "done"];
     const keys = assignStatusKeys(choices);
@@ -535,12 +668,13 @@
       action: () => applySlash(s),
       hint: `status:: ${s}`,
     }));
+    const propertyChildren = getPropertyChildren();
     return [
       { key: "t", label: "Task",         action: () => applySlash("task"),       hint: "tags:: Task" },
       { key: "T", label: "Tag picker",   action: () => applySlash("tag"),        hint: "#" },
       { key: "s", label: "Status",       children: statusChildren },
       { key: "h", label: "Heading",      action: () => applySlash("heading") },
-      { key: "p", label: "Property",     action: () => applySlash("property"),   hint: "key:: value" },
+      { key: "p", label: "Property",     children: propertyChildren },
       { key: "l", label: "Link",         action: () => applySlash("link"),       hint: "[[ ]]" },
       { key: "d", label: "Date",         action: () => applySlash("date") },
       { key: "q", label: "Query",        action: () => applySlash("query") },
@@ -1245,22 +1379,40 @@
       position={datePickerPosition}
       onPick={(iso) => {
         if (view && datePickerCursor >= 0) {
-          const doc = view.state.doc.toString();
-          const before = doc.slice(0, datePickerCursor);
-          const after = doc.slice(datePickerCursor);
-          const inserted = `[[${iso}]]`;
-          const next = before + inserted + after;
-          view.dispatch({
-            changes: { from: 0, to: doc.length, insert: next },
-            selection: { anchor: before.length + inserted.length },
-          });
-          onChange(next);
+          if (datePickerPropertyKey) {
+            // Phase 10.4 — date-typed property write: `\n<key>:: [[YYYY-MM-DD]]`
+            // appended to the block. The `/p` slash trigger was already
+            // stripped in `openDatePickerForProperty`; `datePickerCursor`
+            // points at the position where we left the cursor (end of the
+            // cleaned line).
+            const doc = view.state.doc.toString();
+            const before = doc.slice(0, datePickerCursor);
+            const after = doc.slice(datePickerCursor);
+            const next = before.trimEnd() + `\n${datePickerPropertyKey}:: [[${iso}]]` + after;
+            view.dispatch({
+              changes: { from: 0, to: doc.length, insert: next },
+              selection: { anchor: next.length - after.length },
+            });
+            onChange(next);
+          } else {
+            const doc = view.state.doc.toString();
+            const before = doc.slice(0, datePickerCursor);
+            const after = doc.slice(datePickerCursor);
+            const inserted = `[[${iso}]]`;
+            const next = before + inserted + after;
+            view.dispatch({
+              changes: { from: 0, to: doc.length, insert: next },
+              selection: { anchor: before.length + inserted.length },
+            });
+            onChange(next);
+          }
           view.focus();
         }
         showDatePicker = false;
         datePickerCursor = -1;
+        datePickerPropertyKey = null;
       }}
-      onClose={() => { showDatePicker = false; datePickerCursor = -1; view?.focus(); }}
+      onClose={() => { showDatePicker = false; datePickerCursor = -1; datePickerPropertyKey = null; view?.focus(); }}
     />
   {/if}
 </div>
