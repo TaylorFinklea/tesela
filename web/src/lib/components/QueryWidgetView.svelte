@@ -18,6 +18,11 @@
     deleteBlock as removeBlockFromContent,
   } from "$lib/triage.svelte";
   import ProjectPicker from "./ProjectPicker.svelte";
+  import ViewSwitcher from "./ViewSwitcher.svelte";
+  import KanbanBoard from "./KanbanBoard.svelte";
+  import { IconTable, IconLayoutKanban } from "@tabler/icons-svelte";
+  import { parseQuery } from "$lib/query-language";
+  import { getViewMode, setViewMode } from "$lib/stores/tag-view-prefs.svelte";
   import type { Note } from "$lib/types/Note";
   import type { QueryItem } from "$lib/types/QueryItem";
   import type { Widget } from "$lib/types/Widget";
@@ -35,6 +40,40 @@
 
   let { widget }: { widget: Widget } = $props();
   const queryClient = useQueryClient();
+
+  /**
+   * Phase 11 — view mode (table / kanban). Default comes from the Query
+   * note's `view::` directive; user toggles persist in localStorage keyed
+   * by widget id (reusing the same prefs store the Tag-page kanban uses).
+   * The localStorage value wins so a user's toggle survives reloads even
+   * if the Query note doesn't carry `view:: kanban`.
+   */
+  const widgetView: "table" | "kanban" = $derived.by(() => {
+    const stored = getViewMode(widget.id);
+    if (stored === "kanban" || stored === "table") return stored;
+    return widget.view === "kanban" ? "kanban" : "table";
+  });
+
+  /**
+   * Pull the first positive `tag:X` filter out of the query DSL — that's
+   * the tag whose blocks the kanban renders. Returns null when the query
+   * isn't tag-scoped (e.g. `kind:page note_type:Project`); the kanban
+   * view falls back to the table list in that case.
+   */
+  const inferredKanbanTag: string | null = $derived.by(() => {
+    if (!widget.query) return null;
+    try {
+      const parsed = parseQuery(widget.query);
+      const tagFilter = parsed.filters.find((f) => f.key === "tag" && f.op === "=");
+      return tagFilter ? tagFilter.value : null;
+    } catch { return null; }
+  });
+
+  const showKanban = $derived(widgetView === "kanban" && inferredKanbanTag !== null);
+
+  function handleViewChange(mode: string) {
+    if (mode === "table" || mode === "kanban") setViewMode(widget.id, mode);
+  }
 
   let projectPickerRow = $state<Row | null>(null);
   let selectedIndex = $state(0);
@@ -347,8 +386,22 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <div class="qwv" tabindex="0" bind:this={rootEl} onkeydown={handleKeydown}>
-  <div class="qwv-meta">{view.subtitle}</div>
-  {#if view.error}
+  <div class="qwv-header">
+    <div class="qwv-meta">{view.subtitle}</div>
+    {#if inferredKanbanTag}
+      <ViewSwitcher
+        views={[
+          { id: "table",  label: "Table",  Icon: IconTable },
+          { id: "kanban", label: "Kanban", Icon: IconLayoutKanban },
+        ]}
+        active={widgetView}
+        onChange={handleViewChange}
+      />
+    {/if}
+  </div>
+  {#if showKanban && inferredKanbanTag}
+    <KanbanBoard tagName={inferredKanbanTag} />
+  {:else if view.error}
     <div class="qwv-error">Query error: {view.error}</div>
   {:else if view.groups}
     {#each view.groups as g}
@@ -483,11 +536,17 @@
     flex-direction: column;
     gap: 2px;
   }
+  .qwv-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 8px;
+  }
   .qwv-meta {
     font-family: var(--v9-mono);
     font-size: 11px;
     color: var(--v9-ink-faint);
-    margin-bottom: 8px;
   }
   .qwv-error { color: var(--v9-rose); font-family: var(--v9-mono); font-size: 12px; padding: 12px 0; }
   .qwv-empty { color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 12px; padding: 12px 0; }

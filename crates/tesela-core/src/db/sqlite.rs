@@ -599,11 +599,15 @@ impl SqliteIndex {
     pub async fn get_typed_blocks(&self, tag_name: &str) -> Result<Vec<crate::block::ParsedBlock>> {
         use sqlx::Row;
 
-        // Find notes containing #TagName in body text (inline tags)
-        // OR in frontmatter tags array
+        // Find notes containing the tag name anywhere in body text (matches
+        // inline `#TagName` AND `tags:: TagName` continuation syntax) OR in
+        // frontmatter tags array. Phase 11 — relaxed from `%#TagName%` to
+        // `%TagName%` so blocks tagged via the canonical `tags::` continuation
+        // line (rather than the legacy `#tag` token) are included. The
+        // `block.tags.iter().any(...)` check below filters precisely.
         let notes =
             sqlx::query("SELECT id, title, body FROM notes WHERE body LIKE ? OR tags LIKE ?")
-                .bind(format!("%#{}%", tag_name))
+                .bind(format!("%{}%", tag_name))
                 .bind(format!("%\"{}%", tag_name))
                 .fetch_all(&self.pool)
                 .await

@@ -25,6 +25,13 @@ export type Widget = {
   /** Which rail section this widget belongs to */
   section: WidgetSection;
   /**
+   * Phase 11 — view mode hint from the Query note's `view::` directive.
+   * `"kanban"` flips the QWV render to a board grouped by status (or
+   * whatever the query's `group::` resolves to). `null` (or any other
+   * value) renders the default grouped row list.
+   */
+  view: string | null;
+  /**
    * Marker for system-defined widgets that should be re-created on first load
    * if the user deleted them. User-authored widgets have `system: false`.
    */

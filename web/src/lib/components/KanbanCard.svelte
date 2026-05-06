@@ -2,11 +2,14 @@
   import { IconArrowsExchange } from "@tabler/icons-svelte";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { PropertyDef } from "$lib/types/PropertyDef";
+  import type { PropertyRegistry } from "$lib/property-registry";
+  import DisplayChip from "./DisplayChip.svelte";
 
   let {
     block,
     properties,
     groupByProp,
+    propertyRegistry,
     isFocused = false,
     ondragstart,
     onmoverequest,
@@ -14,22 +17,36 @@
     block: ParsedBlock;
     properties: PropertyDef[];
     groupByProp: string;
+    /**
+     * Phase 11 — passed in by `KanbanBoard` so each card can render its
+     * non-group-by properties via the same `<DisplayChip>` system used
+     * inline on blocks (calendar icon for deadline, flag bars for
+     * priority, etc). Falls back to a crude text badge for any property
+     * not in the registry, so unconfigured tags still get something.
+     */
+    propertyRegistry: PropertyRegistry;
     isFocused?: boolean;
     ondragstart: (e: DragEvent, block: ParsedBlock) => void;
     onmoverequest: (block: ParsedBlock, event: MouseEvent) => void;
   } = $props();
 
-  // Show up to 3 non-group-by properties that have values
-  const badges = $derived.by(() => {
+  /**
+   * Pair each non-group-by property with its block value AND its registry
+   * def. Defs come from the registry built off all notes; if a def is
+   * missing the chip falls back to plain text rendering. Skip when value
+   * is empty so the card stays compact.
+   */
+  const chipRows = $derived.by(() => {
+    const groupKey = groupByProp.toLowerCase();
     return properties
-      .filter((p) => p.name.toLowerCase() !== groupByProp.toLowerCase())
-      .map((p) => ({
-        name: p.name,
-        value: block.properties[p.name] ?? block.properties[p.name.toLowerCase()] ?? "",
-        valueType: p.value_type,
-      }))
-      .filter((b) => b.value !== "")
-      .slice(0, 3);
+      .filter((p) => p.name.toLowerCase() !== groupKey)
+      .map((p) => {
+        const value = block.properties[p.name] ?? block.properties[p.name.toLowerCase()] ?? "";
+        const def = propertyRegistry.get(p.name.toLowerCase());
+        return { propKey: p.name.toLowerCase(), value, def };
+      })
+      .filter((r) => r.value.trim() !== "")
+      .slice(0, 4);
   });
 
   function handleDragStart(e: DragEvent) {
@@ -64,15 +81,18 @@
     </button>
   </div>
 
-  {#if badges.length > 0}
+  {#if chipRows.length > 0}
     <div class="flex flex-wrap gap-1 mt-2">
-      {#each badges as badge}
-        <span
-          class="text-[10px] px-1.5 py-0.5 rounded-full"
-          style="background: color-mix(in srgb, var(--primary) 8%, transparent); color: var(--muted-foreground)"
-        >
-          {badge.value}
-        </span>
+      {#each chipRows as row}
+        {#if row.def}
+          <DisplayChip propKey={row.propKey} value={row.value} def={row.def} />
+        {:else}
+          <span
+            class="text-[10px] px-1.5 py-0.5 rounded-full"
+            style="background: color-mix(in srgb, var(--primary) 8%, transparent); color: var(--muted-foreground)"
+            title="{row.propKey}: {row.value}"
+          >{row.value}</span>
+        {/if}
       {/each}
     </div>
   {/if}

@@ -72,6 +72,7 @@ export function widgetFromNote(note: Note): Widget {
     icon,
     color,
     section,
+    view: fm("view"),
     system: SYSTEM_WIDGET_IDS.has(note.id),
   };
 }

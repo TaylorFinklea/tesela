@@ -5,8 +5,10 @@
   import { updateBlockProperty, clearBlockProperty } from "$lib/property-update";
   import { getGroupByProp, setGroupByProp } from "$lib/stores/tag-view-prefs.svelte";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
+  import type { Note } from "$lib/types/Note";
   import type { TypeDefinition } from "$lib/types/TypeDefinition";
   import type { PropertyDef } from "$lib/types/PropertyDef";
+  import { buildRegistry } from "$lib/property-registry";
   import KanbanCard from "./KanbanCard.svelte";
   import KanbanColumnPicker from "./KanbanColumnPicker.svelte";
 
@@ -23,6 +25,15 @@
     queryKey: ["typed-blocks", tagName] as const,
     queryFn: () => api.getTypedBlocks(tagName),
   }));
+
+  // Phase 11 — property registry powers card chip rendering. Reuses the
+  // same buildRegistry that BlockOutliner uses inline so cards inherit any
+  // chip_icon / chip_value_format config from the Property pages.
+  const allNotesQuery = createQuery(() => ({
+    queryKey: ["notes", { limit: 500 }] as const,
+    queryFn: () => api.listNotes({ limit: 500 }),
+  }));
+  const propertyRegistry = $derived(buildRegistry((allNotesQuery.data ?? []) as Note[]));
 
   const typeDef: TypeDefinition | undefined = $derived(typeQuery.data as TypeDefinition | undefined);
   const blocks: ParsedBlock[] = $derived((blocksQuery.data ?? []) as ParsedBlock[]);
@@ -321,6 +332,7 @@
                 {block}
                 properties={typeDef?.properties ?? []}
                 groupByProp={groupByPropName}
+                {propertyRegistry}
                 isFocused={isCardFocused}
                 ondragstart={handleCardDragStart}
                 onmoverequest={handleMoveRequest}
