@@ -115,3 +115,29 @@ export function toggleBlockTag(
   if (toAppend.length === 0) return added;
   return `${added}\n${toAppend.join("\n")}`;
 }
+
+/**
+ * Phase 10.5 — upsert a `key:: value` continuation line on a block. If a
+ * line with the same key (case-insensitive) already exists below the first
+ * line, replace its value in place; otherwise append a new continuation.
+ * The persisted key is always lowercase to match the canonical storage
+ * convention used by `property-update.ts` and the bottom drawer.
+ *
+ * Routing all `/p` chord-menu writes through this function (instead of the
+ * pre-10.5 raw-append path) means the user can edit the same property
+ * repeatedly without piling up duplicate `deadline::` rows in the doc.
+ * The drawer reads the same lines, so both surfaces stay in lock-step.
+ */
+const UPSERT_PROP_RE = /^([A-Za-z_][A-Za-z0-9_]*):: ?(.*)$/;
+export function upsertBlockProperty(rawText: string, key: string, value: string): string {
+  const k = key.toLowerCase();
+  const lines = rawText.split("\n");
+  for (let i = 1; i < lines.length; i++) {
+    const m = lines[i].match(UPSERT_PROP_RE);
+    if (m && m[1].toLowerCase() === k) {
+      lines[i] = `${k}:: ${value}`;
+      return lines.join("\n");
+    }
+  }
+  return rawText.replace(/\s+$/, "") + `\n${k}:: ${value}`;
+}

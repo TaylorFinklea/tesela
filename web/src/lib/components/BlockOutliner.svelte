@@ -14,6 +14,7 @@
     buildRegistry,
     buildInheritanceMap,
     getTagPropertyDefs,
+    resolveTagChain,
   } from "$lib/property-registry";
   import type { HiddenKeysConfig } from "$lib/cm-decorations";
   import { prefs } from "$lib/preferences.svelte";
@@ -88,6 +89,64 @@
     "active_view",
     "collection",
   ]);
+
+  /**
+   * Phase 10.5 — for each block, return the ordered list of property keys
+   * its tags want surfaced as inline chips. Walks `display_chips` from
+   * each tag page (direct + inherited) and dedupes by key. Empty array
+   * means "no chips" (block falls back to plain prose + tag pills only).
+   *
+   * Pair with `block.properties[key]` to render — chips with no value or
+   * an empty string value are skipped entirely so the block stays
+   * compact when a property is unset.
+   */
+  function displayChipsFor(block: ParsedBlock): Array<{ key: string; value: string; type: string }> {
+    const allTags = [...new Set([...block.tags, ...block.inherited_tags])];
+    const seen = new Set<string>();
+    const out: Array<{ key: string; value: string; type: string }> = [];
+    for (const tag of allTags) {
+      for (const ancestor of resolveTagChain(tag, inheritanceMap)) {
+        const tagPage = allNotes.find(
+          (n) => n.title.toLowerCase() === ancestor && n.metadata.note_type === "Tag",
+        );
+        if (!tagPage) continue;
+        const chipsRaw = tagPage.metadata.custom.display_chips;
+        if (!Array.isArray(chipsRaw)) continue;
+        for (const rawKey of chipsRaw as string[]) {
+          const k = String(rawKey).toLowerCase();
+          if (seen.has(k)) continue;
+          seen.add(k);
+          const value = block.properties[k];
+          if (!value || !value.trim()) continue;
+          const def = propertyRegistry.get(k);
+          out.push({ key: k, value, type: def?.value_type ?? "text" });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Render a property value into the short, glanceable form used by a
+   * display chip. Strips wiki-link wrappers from dates so "[[2026-05-13]]"
+   * becomes "May 13" (or "May 13, 2026" for non-current years). Other
+   * types fall through to the raw value.
+   */
+  function formatChipValue(value: string, type: string): string {
+    const v = value.trim();
+    if (type === "date") {
+      const m = v.match(/^\[\[(\d{4})-(\d{2})-(\d{2})\]\]$/) || v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (m) {
+        const [_, y, mo, d] = m;
+        const date = new Date(Number(y), Number(mo) - 1, Number(d));
+        const month = date.toLocaleString("en-US", { month: "short" });
+        const day = Number(d);
+        const thisYear = new Date().getFullYear();
+        return Number(y) === thisYear ? `${month} ${day}` : `${month} ${day}, ${y}`;
+      }
+    }
+    return v.length > 24 ? v.slice(0, 23) + "…" : v;
+  }
 
   /**
    * Phase 10.4 — full property defs for the block's tag chain. Used to drive
@@ -261,17 +320,12 @@
     pendingInsertSnapshot = null;
   }
 
-  // Per-block "expand properties" state — controls whether the `key:: value`
-  // continuation lines are visible inside the block's editor. Properties are
-  // canonically displayed in the right sidebar; the editor view is compact by
-  // default and expands via the chevron toggle (Logseq DB pattern).
-  let expandedProps = $state<Set<string>>(new Set());
-  function toggleExpandProps(blockId: string) {
-    const next = new Set(expandedProps);
-    if (next.has(blockId)) next.delete(blockId);
-    else next.add(blockId);
-    expandedProps = next;
-  }
+  // Phase 10.5 — `key:: value` continuation lines are unconditionally
+  // hidden in the cm-editor; the bottom drawer (and configurable per-tag
+  // chips) are the canonical display surfaces. The earlier per-block
+  // `expandedProps` state and chevron toggle were removed in favor of
+  // "always hidden inline." Files on disk still contain the property
+  // lines as plain Markdown — only the editor's render is compacted.
 
   // Per-page fold state: block IDs whose subtree is collapsed. Persisted to
   // localStorage keyed by noteId so it survives reloads + page switches.
@@ -998,7 +1052,11 @@
       switch (kind) {
         case "drillIn":      onDrillIn?.(block.id); break;
         case "foldToggle":   toggleFold(block.id); break;
-        case "propsToggle":  toggleExpandProps(block.id); break;
+        // Phase 10.5 — propsToggle no longer toggles inline rendering
+        // (properties are always hidden inline now). The Space p leader
+        // entry was removed; this case stays as a no-op so older
+        // dispatches (cached emit calls, plugin code) don't error.
+        case "propsToggle":  break;
         case "statusCycle":  handleStatusCycle(vi); break;
         case "delete":       handleDeleteBlock(vi); break;
         case "yank":         handleYankBlock(vi); break;
@@ -1119,7 +1177,7 @@
         {/if}
 
         <!-- Content -->
-        <div class="flex-1 min-w-0 py-1 {expandedProps.has(block.id) ? 'show-props' : ''}">
+        <div class="flex-1 min-w-0 py-1">
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => {}}
@@ -1149,7 +1207,7 @@
             onbulktagpicker={openBulkTagPicker}
             onbulkindent={(dir) => bulkIndent(dir)}
             ontogglefold={() => toggleFold(block.id)}
-            ontoggleprops={() => toggleExpandProps(block.id)}
+            ontoggleprops={() => {}}
             onpagejump={handlePageJump}
             inVisualMode={blockVisualMode}
             focused={focusedIndex === vi}
@@ -1167,23 +1225,24 @@
           />
         </div>
 
-        <!-- Property expand toggle (chevron) — appears only when there's
-             something hidden to reveal (hide_by_default property OR empty
-             property whose def has hide_empty). -->
-        {#if hasHiddenContent(block)}
-          {@const isExpanded = expandedProps.has(block.id)}
-          <!-- svelte-ignore a11y_consider_explicit_label -->
-          <button
-            class="shrink-0 self-center mr-1 p-1 rounded text-muted-foreground/40 hover:text-primary/80 hover:bg-muted/40 transition-colors"
-            onclick={(e) => { e.stopPropagation(); toggleExpandProps(block.id); }}
-            title={isExpanded ? "Hide properties" : "Show properties"}
-          >
-            {#if isExpanded}
-              <IconChevronDown size={12} stroke={1.5} />
-            {:else}
-              <IconChevronRight size={12} stroke={1.5} />
-            {/if}
-          </button>
+        <!-- Display chips (right side, before tags) — Phase 10.5
+             configurable per-tag pills surfacing selected property values
+             (deadline, priority, …). Drawn from each tag's `display_chips`
+             frontmatter array; values come from the block's parsed
+             properties. Skipped entirely when value is empty/unset. -->
+        {#if displayChipsFor(block).length > 0}
+          {@const chips = displayChipsFor(block)}
+          <div class="shrink-0 flex items-center gap-1 self-center pr-1 py-1">
+            {#each chips as chip}
+              <span
+                class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-muted/40 text-muted-foreground/90 font-medium"
+                title="{chip.key}: {chip.value}"
+              >
+                <span class="text-muted-foreground/50">{chip.key}</span>
+                <span>{formatChipValue(chip.value, chip.type)}</span>
+              </span>
+            {/each}
+          </div>
         {/if}
 
         <!-- Tag pills (right side) -->

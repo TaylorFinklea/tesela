@@ -273,7 +273,7 @@
     primaryTagFacet,
     type HiddenKeysConfig,
   } from "$lib/cm-decorations";
-  import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
+  import { toggleBlockTag, getBlockTags, upsertBlockProperty } from "$lib/block-tags";
   import type { PropertyDefinition } from "$lib/property-registry";
   import { setVimMode } from "$lib/stores/pane-state.svelte";
   import { api } from "$lib/api-client";
@@ -568,26 +568,28 @@
    */
   /**
    * Open the DatePicker bound to a property key. The `/p…` slash-trigger
-   * text is stripped immediately so the chord-close path (which resets
-   * `slashStartPos`) doesn't strand a stray ` /` in the doc. Picking a date
-   * then writes a `\n<key>:: [[YYYY-MM-DD]]` continuation. Anchored at the
-   * caret coords (same as the standard `/d` flow).
+   * text is stripped immediately (so the chord-close path doesn't strand
+   * a `/`); picking a date then upserts the property via
+   * `upsertBlockProperty` — same write path as the chord-leaf flow.
    */
   function openDatePickerForProperty(key: string) {
     if (!view || slashStartPos < 0) return;
     const doc = view.state.doc.toString();
     const cursorPos = view.state.selection.main.head;
-    const cleaned = doc.slice(0, slashStartPos).trimEnd() + doc.slice(cursorPos);
-    const insertPos = doc.slice(0, slashStartPos).trimEnd().length;
+    let triggerStart = slashStartPos;
+    while (triggerStart > 0 && (doc[triggerStart - 1] === " " || doc[triggerStart - 1] === "\t")) {
+      triggerStart--;
+    }
+    const cleaned = doc.slice(0, triggerStart) + doc.slice(cursorPos);
     view.dispatch({
       changes: { from: 0, to: doc.length, insert: cleaned },
-      selection: { anchor: insertPos },
+      selection: { anchor: triggerStart },
     });
     onChange(cleaned);
     showSlashMenu = false;
     datePickerPropertyKey = key;
-    datePickerCursor = insertPos;
-    const coords = view.coordsAtPos(Math.min(insertPos, view.state.doc.length));
+    datePickerCursor = triggerStart;
+    const coords = view.coordsAtPos(Math.min(triggerStart, view.state.doc.length));
     datePickerPosition = coords
       ? { x: coords.left, y: coords.bottom + 4 }
       : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
@@ -595,26 +597,30 @@
   }
 
   /**
-   * Phase 10.4 — write a `<key>:: <value>` continuation onto the current
-   * block, stripping the `/p…` trigger text. The key is lowercased to match
-   * the persisted storage convention (`property-update.ts`); Property page
-   * titles preserve display case (e.g. `Description`) but the on-disk form
-   * is lowercase (`description::`). Without this, `/pe` would write a
-   * stray `Description::` line distinct from the existing `description::`
-   * line and the props drawer would show both as siblings.
+   * Phase 10.5 — upsert a property on the block: strip the `/p…` trigger
+   * text, then either replace the existing `<key>:: …` continuation line
+   * or append a new one. Keys persist as lowercase. Routing through
+   * `upsertBlockProperty` (instead of raw append) is what keeps the doc
+   * and the bottom drawer in lock-step — both surfaces edit the same line.
    */
   function writePropertyContinuation(key: string, value: string) {
     if (!view || slashStartPos < 0) return;
     const doc = view.state.doc.toString();
     const cursorPos = view.state.selection.main.head;
-    const before = doc.slice(0, slashStartPos);
-    const after = doc.slice(cursorPos);
-    const insert = before.trimEnd() + `\n${key.toLowerCase()}:: ${value}` + after;
+    // Drop the `/p…` chars and any horizontal whitespace immediately
+    // preceding the slash so the trigger doesn't leave a trailing space
+    // on the block-content line.
+    let triggerStart = slashStartPos;
+    while (triggerStart > 0 && (doc[triggerStart - 1] === " " || doc[triggerStart - 1] === "\t")) {
+      triggerStart--;
+    }
+    const cleaned = doc.slice(0, triggerStart) + doc.slice(cursorPos);
+    const next = upsertBlockProperty(cleaned, key, value);
     view.dispatch({
-      changes: { from: 0, to: doc.length, insert },
-      selection: { anchor: insert.length - after.length },
+      changes: { from: 0, to: doc.length, insert: next },
+      selection: { anchor: triggerStart },
     });
-    onChange(insert);
+    onChange(next);
     showSlashMenu = false;
     slashStartPos = -1;
     view.focus();
@@ -1389,18 +1395,14 @@
       onPick={(iso) => {
         if (view && datePickerCursor >= 0) {
           if (datePickerPropertyKey) {
-            // Phase 10.4 — date-typed property write: `\n<key>:: [[YYYY-MM-DD]]`
-            // appended to the block. The `/p` slash trigger was already
-            // stripped in `openDatePickerForProperty`; `datePickerCursor`
-            // points at the position where we left the cursor (end of the
-            // cleaned line).
+            // Phase 10.5 — date-typed property: upsert via the same helper
+            // the chord-leaf path uses, so picking a date for an existing
+            // `deadline::` line replaces it instead of duplicating.
             const doc = view.state.doc.toString();
-            const before = doc.slice(0, datePickerCursor);
-            const after = doc.slice(datePickerCursor);
-            const next = before.trimEnd() + `\n${datePickerPropertyKey.toLowerCase()}:: [[${iso}]]` + after;
+            const next = upsertBlockProperty(doc, datePickerPropertyKey, `[[${iso}]]`);
             view.dispatch({
               changes: { from: 0, to: doc.length, insert: next },
-              selection: { anchor: next.length - after.length },
+              selection: { anchor: datePickerCursor },
             });
             onChange(next);
           } else {

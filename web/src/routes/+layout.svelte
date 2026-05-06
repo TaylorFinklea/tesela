@@ -81,7 +81,6 @@
     { key: "b", label: "Block", children: [
       { key: "d", label: "Drill in",                  action: () => emitBlock("drillIn"),     hint: "⏎" },
       { key: "f", label: "Fold/unfold",               action: () => emitBlock("foldToggle"),  hint: "za" },
-      { key: "p", label: "Toggle props",              action: () => emitBlock("propsToggle"), hint: "gp" },
       { key: "s", label: "Cycle status (+ Task tag)", action: () => emitBlock("statusCycle"), hint: "⌘⏎" },
       { key: "D", label: "Delete block",              action: () => emitBlock("delete"),      hint: "dd" },
       { key: "y", label: "Yank block",                action: () => emitBlock("yank"),        hint: "yy" },
