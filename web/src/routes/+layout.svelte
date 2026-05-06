@@ -50,6 +50,7 @@
   });
 
   let showLeaderMenu = $state(false);
+  let leaderInitialPath = $state<string[]>([]);
   const drawerOpen = $derived(isBottomDrawerOpen());
 
   // Phase 10.2 — unified spacemacs-style leader chord tree. Block actions
@@ -94,12 +95,13 @@
       { key: "s", label: "Search palette",    action: triggerCmdK,                       hint: "⌘K" },
     ]},
     { key: "g", label: "Go to", children: [
-      { key: "h", label: "Home",              action: () => goto("/"),               hint: "/" },
-      { key: "d", label: "Daily",             action: openDaily,                     hint: "/p/<today>" },
-      { key: "t", label: "Tasks",             action: () => goto("/p/tasks"),        hint: "/p/tasks" },
-      { key: "i", label: "Inbox",             action: () => goto("/p/inbox"),        hint: "/p/inbox" },
-      { key: "c", label: "Calendar",          action: () => goto("/p/calendar"),     hint: "/p/calendar" },
-      { key: "p", label: "Pages",             action: () => goto("/p/pages"),        hint: "/p/pages" },
+      { key: "h", label: "Home",              action: () => goto("/"),                                              hint: "/" },
+      { key: "d", label: "Daily",             action: openDaily,                                                    hint: "/p/<today>" },
+      { key: "t", label: "Tasks",             action: () => goto("/p/tasks"),                                       hint: "/p/tasks" },
+      { key: "i", label: "Inbox",             action: () => goto("/p/inbox"),                                       hint: "/p/inbox" },
+      { key: "c", label: "Calendar",          action: () => goto("/p/calendar"),                                    hint: "/p/calendar" },
+      { key: "p", label: "Pages",             action: () => goto("/p/pages"),                                       hint: "/p/pages" },
+      { key: "f", label: "Follow wiki link",  action: () => emitBlock("followWiki"),                                hint: "[[ at ▌" },
     ]},
     { key: "w", label: "Window", children: [
       { key: "h", label: "Left pane",         action: () => { setVSplitActiveSide("left"); setActiveRegion("focus"); }, hint: "⌃w h" },
@@ -165,6 +167,18 @@
       if (e.metaKey || e.altKey) return;
       e.preventDefault();
       e.stopImmediatePropagation();
+      leaderInitialPath = [];
+      showLeaderMenu = true;
+    };
+
+    // Phase 10.2 follow-up — `g` in vim NORMAL opens the leader menu pre-
+    // descended into "Go to". BlockEditor's cm6 keymap dispatches this
+    // event after checking vim mode. Also reachable programmatically by
+    // any caller that wants to open at a specific sub-tree.
+    const openLeaderAtHandler = (e: Event) => {
+      if (showLeaderMenu) return;
+      const detail = (e as CustomEvent).detail as { path?: string[] };
+      leaderInitialPath = detail?.path ?? [];
       showLeaderMenu = true;
     };
     const leaderHandler = () => {
@@ -376,6 +390,7 @@
 
     document.addEventListener("keydown", spaceHandler);
     document.addEventListener("keydown", altLeaderHandler, true);
+    document.addEventListener("tesela:open-leader-at", openLeaderAtHandler);
     document.addEventListener("keydown", panelHandler);
     document.addEventListener("keydown", ctrlWHandler, true);
     document.addEventListener("keydown", cmdZHandler, true);
@@ -385,6 +400,7 @@
     return () => {
       document.removeEventListener("keydown", spaceHandler);
       document.removeEventListener("keydown", altLeaderHandler, true);
+      document.removeEventListener("tesela:open-leader-at", openLeaderAtHandler);
       document.removeEventListener("keydown", panelHandler);
       document.removeEventListener("keydown", ctrlWHandler, true);
       document.removeEventListener("keydown", cmdZHandler, true);
@@ -414,6 +430,10 @@
   </div>
   <CommandPalette />
   {#if showLeaderMenu}
-    <ChordMenu tree={leaderTree} onclose={() => (showLeaderMenu = false)} />
+    <ChordMenu
+      tree={leaderTree}
+      initialPath={leaderInitialPath}
+      onclose={() => { showLeaderMenu = false; leaderInitialPath = []; }}
+    />
   {/if}
 </QueryClientProvider>

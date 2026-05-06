@@ -115,9 +115,16 @@
     // `deleteCharForward` on macOS at a precedence that wins over cm-vim's
     // domEventHandlers, so a Vim.mapCommand entry never gets a chance.
 
-    // Phase 9.9 — `gd` follows the wiki-link the cursor is in (NORMAL mode).
-    // No-op if cursor isn't inside a `[[...]]` span. Mirrors the mousedown
-    // handler below at line ~755 but driven by cursor position.
+    // Phase 10.2 follow-up — `g` is now a leader prefix that opens the
+    // chord menu pre-descended into "Go to". The previous `gd`
+    // (followWikiLink) and `gp` (toggleProps) two-key chords are folded
+    // into the popup as `g f` and `Space b p` respectively. The cm6
+    // keymap below intercepts the bare `g` in NORMAL and dispatches
+    // `tesela:open-leader-at` — see `blockKeymap` further down.
+    //
+    // The `followWikiLink` action body is preserved as a vim action for
+    // any caller that still wants to invoke wiki-follow programmatically
+    // (e.g. the chord menu's `g f` entry, via tesela:block-action).
     Vim.defineAction("followWikiLink", () => {
       const v = vimCtx.view;
       if (!v) return;
@@ -133,11 +140,6 @@
         }
       }
     });
-    Vim.mapCommand("gd", "action", "followWikiLink", {}, { context: "normal" });
-
-    // Phase 9.9 — `gp` toggles the focused block's inline-properties panel.
-    Vim.defineAction("toggleBlockProps", () => { vimCtx.toggleProps?.(); });
-    Vim.mapCommand("gp", "action", "toggleBlockProps", {}, { context: "normal" });
 
     // We can't use Vim.mapCommand("dd"/"yy"/">>"/"<<", "action", ...) because
     // cm-vim's default `d`, `y`, `>`, `<` are operators that match the FIRST
@@ -1010,6 +1012,21 @@
           return true;
         },
       },
+      // Phase 10.2 follow-up — `g` in NORMAL mode opens the leader chord
+      // menu pre-descended into "Go to". Routed via cm6 keymap (Prec.high
+      // by extension order) so it pre-empts cm-vim's `g`-prefix state. In
+      // INSERT/VISUAL we return false so the user can still type `g` or
+      // run vim's visual `g` operators.
+      {
+        key: "g",
+        run: (v) => {
+          const cm = getCM(v);
+          const vs = cm?.state?.vim as { insertMode?: boolean; visualMode?: boolean } | undefined;
+          if (vs?.insertMode || vs?.visualMode) return false;
+          document.dispatchEvent(new CustomEvent("tesela:open-leader-at", { detail: { path: ["Go to"] } }));
+          return true;
+        },
+      },
       {
         key: "Backspace",
         run: (v) => {
@@ -1134,6 +1151,31 @@
       view?.destroy();
       view = null;
     };
+  });
+
+  // Phase 10.2 follow-up — leader-menu `g f` (Follow wiki link) dispatches
+  // `tesela:block-action` with kind=`followWiki`. Only the BlockEditor
+  // whose cm6 view actually has DOM focus runs the cursor-position scan;
+  // others ignore the event. Mirrors the existing `gd` vim action body.
+  onMount(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { kind?: string };
+      if (detail?.kind !== "followWiki") return;
+      if (!view || !focused) return;
+      const pos = view.state.selection.main.head;
+      const doc = view.state.doc.toString();
+      for (const m of doc.matchAll(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g)) {
+        const start = m.index ?? -1;
+        if (start < 0) continue;
+        if (pos >= start && pos <= start + m[0].length) {
+          const target = m[1].trim();
+          if (target) gotoNote(target);
+          return;
+        }
+      }
+    };
+    document.addEventListener("tesela:block-action", handler);
+    return () => document.removeEventListener("tesela:block-action", handler);
   });
 </script>
 

@@ -40,12 +40,20 @@
   let {
     tree,
     onclose,
+    initialPath = [],
   }: {
     tree: ChordNode[];
     onclose: () => void;
+    /**
+     * Phase 10.2 follow-up — open the menu pre-descended into a specific
+     * sub-tree. Pass an array of group labels matching `ChordNode.label`
+     * (e.g. `["Go to"]`). Used by the `g` chord shortcut so the user lands
+     * in the Go-to submenu without typing `Space g` first.
+     */
+    initialPath?: string[];
   } = $props();
 
-  let breadcrumb = $state<string[]>([]);
+  let breadcrumb = $state<string[]>(initialPath);
   let currentLevel = $derived.by((): ChordNode[] => {
     let level = tree;
     for (const name of breadcrumb) {

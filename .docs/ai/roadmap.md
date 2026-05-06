@@ -280,6 +280,14 @@ After 10.1's row chord menu, the user asked to apply the chord-leader treatment 
 - [x] CSS: `.chord-hint` truncates with ellipsis at `max-width: 14ch` so longer paths don't push the layout.
 - [x] Files: `web/src/lib/components/ChordMenu.svelte` (hint field + chip render + .chord-hint CSS); `web/src/routes/+layout.svelte` (annotations).
 
+#### Phase 10.2 follow-up #2 — `g` as Go-to prefix (vim+spacemacs pattern) ✓
+- [x] **`g` in vim NORMAL opens the leader chord menu pre-descended into "Go to".** cm6 keymap binding (registered before cm-vim's keymap by extension order) captures `g`, dispatches `tesela:open-leader-at` with `path: ["Go to"]`. The menu lands on the submenu with breadcrumb visible. INSERT/VISUAL modes yield so `g`-prefixed visual operators and inserting the literal letter `g` still work.
+- [x] **`gd` → Daily, `gt` → Tasks, `gi` → Inbox, `gc` → Calendar, `gh` → Home, `gp` → Pages** as a natural consequence: each is `g` + the matching first-letter chord in the popup. URL hint chips visible on each row.
+- [x] **Wiki-follow rebound to `g f`.** Previous `gd` (Phase 9.9 wiki-follow chord) folded into the popup as `f` Follow wiki link with hint `[[ at ▌`. The action body lives in BlockEditor under `tesela:block-action` listener with kind=`followWiki`; only the editor whose view is currently focused responds.
+- [x] **Toggle props (was `gp`) moves to `Space b p` / `Ctrl+, b p`.** No longer a `g`-prefixed chord (since `g p` is now Pages). Still reachable via the unified leader menu's Block submenu.
+- [x] `ChordMenu` component gains an `initialPath?: string[]` prop so any caller can open the menu pre-descended into a sub-tree (used by `g` here, but also available for future `t` / `b` etc. prefixes).
+- [x] Files: `web/src/lib/components/ChordMenu.svelte` (initialPath prop); `web/src/routes/+layout.svelte` (leaderInitialPath state, openLeaderAtHandler, `g f` Go-to entry); `web/src/lib/components/BlockEditor.svelte` (cm6 `g` keymap binding, removed Vim.mapCommand for gd/gp, new tesela:block-action `followWiki` listener).
+
 #### Phase 10.2 deferred (saved to memory `project_leader_menu_vision.md`):
 - [ ] **User-configurable leader tree.** A `~/.tesela/leader.config.{json,toml,ts}` (TBD format) that the user edits to add / remove / rename / re-key entries. Hardcoded tree becomes the merged-in default. Implies an action registry mapping stable IDs (`block.cycleStatus`, `page.toggleFavorite`, etc.) → handlers, so configs reference IDs instead of inline functions.
 
