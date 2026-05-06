@@ -265,6 +265,22 @@
       default: return "text";
     }
   }
+  /**
+   * Phase 10.5 — date-property values are persisted as `[[YYYY-MM-DD]]`
+   * wiki-links (so they show in the daily-page backlink calendar). HTML
+   * `<input type="date">` only accepts the bare `YYYY-MM-DD` form, so the
+   * drawer needs to strip the brackets when reading and re-wrap when
+   * writing. This pair was the missing piece behind "drawer date input
+   * was empty even though the chip showed Apr 15."
+   */
+  function stripDateBrackets(v: string): string {
+    const m = v.trim().match(/^\[\[(\d{4}-\d{2}-\d{2})\]\]$/);
+    return m ? m[1] : v.trim();
+  }
+  function wrapDateBrackets(v: string): string {
+    if (!v) return "";
+    return /^\d{4}-\d{2}-\d{2}$/.test(v) ? `[[${v}]]` : v;
+  }
   // Inline-input keydown contract:
   //   Enter  → commit + close edit mode, focus drawer (j/k navigates again)
   //   Esc    → bail (no save), close edit mode, focus drawer
@@ -511,8 +527,8 @@
                   {:else if def?.value_type === "date"}
                     <input
                       type="date"
-                      value={prop.value}
-                      onchange={(e) => saveBlockProperty(prop.key, (e.target as HTMLInputElement).value)}
+                      value={stripDateBrackets(prop.value)}
+                      onchange={(e) => saveBlockProperty(prop.key, wrapDateBrackets((e.target as HTMLInputElement).value))}
                       style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-line); font-family: var(--v9-mono); font-size: 11px;"
                     />
                   {:else if editingBlockKey === prop.key}
@@ -582,8 +598,8 @@
                 {:else if def?.value_type === "date"}
                   <input
                     type="date"
-                    value={prop.value}
-                    onchange={(e) => savePageProperty(prop.key, (e.target as HTMLInputElement).value)}
+                    value={stripDateBrackets(prop.value)}
+                    onchange={(e) => savePageProperty(prop.key, wrapDateBrackets((e.target as HTMLInputElement).value))}
                     style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-line); font-family: var(--v9-mono); font-size: 11px;"
                   />
                 {:else if editingKey === prop.key}
