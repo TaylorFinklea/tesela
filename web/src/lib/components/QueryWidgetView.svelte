@@ -329,6 +329,7 @@
     // shortcut bubbles up from the input and re-runs `startEditRow` →
     // `editingValue = row.label` → the user's in-progress text reverts.
     if (editingRowId !== null) return;
+    if (showKanban) return;
     if (chordOpen) {
       // Leader-chord menu: every typed key is either an action (matched by
       // its `key`) or Esc to close. No arrow nav, no filter — chords run
@@ -400,7 +401,7 @@
     {/if}
   </div>
   {#if showKanban && inferredKanbanTag}
-    <KanbanBoard tagName={inferredKanbanTag} />
+    <KanbanBoard tagName={inferredKanbanTag} focused={true} />
   {:else if view.error}
     <div class="qwv-error">Query error: {view.error}</div>
   {:else if view.groups}
