@@ -594,13 +594,22 @@
     showDatePicker = true;
   }
 
+  /**
+   * Phase 10.4 — write a `<key>:: <value>` continuation onto the current
+   * block, stripping the `/p…` trigger text. The key is lowercased to match
+   * the persisted storage convention (`property-update.ts`); Property page
+   * titles preserve display case (e.g. `Description`) but the on-disk form
+   * is lowercase (`description::`). Without this, `/pe` would write a
+   * stray `Description::` line distinct from the existing `description::`
+   * line and the props drawer would show both as siblings.
+   */
   function writePropertyContinuation(key: string, value: string) {
     if (!view || slashStartPos < 0) return;
     const doc = view.state.doc.toString();
     const cursorPos = view.state.selection.main.head;
     const before = doc.slice(0, slashStartPos);
     const after = doc.slice(cursorPos);
-    const insert = before.trimEnd() + `\n${key}:: ${value}` + after;
+    const insert = before.trimEnd() + `\n${key.toLowerCase()}:: ${value}` + after;
     view.dispatch({
       changes: { from: 0, to: doc.length, insert },
       selection: { anchor: insert.length - after.length },
@@ -1388,7 +1397,7 @@
             const doc = view.state.doc.toString();
             const before = doc.slice(0, datePickerCursor);
             const after = doc.slice(datePickerCursor);
-            const next = before.trimEnd() + `\n${datePickerPropertyKey}:: [[${iso}]]` + after;
+            const next = before.trimEnd() + `\n${datePickerPropertyKey.toLowerCase()}:: [[${iso}]]` + after;
             view.dispatch({
               changes: { from: 0, to: doc.length, insert: next },
               selection: { anchor: next.length - after.length },
