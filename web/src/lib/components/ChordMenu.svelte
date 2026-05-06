@@ -41,6 +41,8 @@
     tree,
     onclose,
     initialPath = [],
+    position,
+    headLabel = "SPC",
   }: {
     tree: ChordNode[];
     onclose: () => void;
@@ -51,6 +53,19 @@
      * in the Go-to submenu without typing `Space g` first.
      */
     initialPath?: string[];
+    /**
+     * Phase 10.3 — anchor the popover at a fixed cursor position instead
+     * of the centered modal placement. Used by the in-block `/` slash menu
+     * which opens at the typing caret. When omitted (default), the menu
+     * renders centered at top: 30% (the global leader presentation).
+     */
+    position?: { x: number; y: number };
+    /**
+     * Prefix label shown in the breadcrumb header. Defaults to `SPC` for
+     * the global leader; set to `/` for the in-block slash menu so the
+     * user sees the trigger that opened it.
+     */
+    headLabel?: string;
   } = $props();
 
   let breadcrumb = $state<string[]>(initialPath);
@@ -96,11 +111,14 @@
       handleSelect(match);
       return;
     }
-    // Swallow other single-char keys so they don't bubble (e.g. into vim).
-    if (e.key.length === 1 && !e.metaKey) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
+    // Swallow EVERY other keystroke while the menu is open — modal behavior.
+    // Without this, arrows would still move the cm-editor caret behind the
+    // popover, vim chords like `dd` would still execute, etc. Modifier keys
+    // alone (Shift/Ctrl/Alt) are harmless to swallow — they have no effect
+    // until paired with another key. Cmd+letter combos are intentionally
+    // swallowed too: the user must Esc out before invoking ⌘K from here.
+    e.preventDefault();
+    e.stopPropagation();
   }
 
   onMount(() => {
@@ -112,9 +130,13 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="chord-overlay" onclick={onclose}></div>
-<div class="chord-pop" role="menu">
+<div
+  class="chord-pop {position ? 'chord-pop--anchored' : ''}"
+  role="menu"
+  style={position ? `left: ${position.x}px; top: ${position.y}px;` : undefined}
+>
   <div class="chord-head">
-    <span class="chord-prefix">SPC</span>
+    <span class="chord-prefix">{headLabel}</span>
     {#each breadcrumb as crumb}
       <span class="chord-sep">›</span>
       <span class="chord-crumb">{crumb}</span>
@@ -156,6 +178,16 @@
     padding: 6px;
     font-family: var(--v9-mono);
     font-size: 12px;
+  }
+  /* Phase 10.3 — cursor-anchored mode (slash menu in cm-editor). The inline
+     `style` overrides set left/top from caret coords; we drop the centering
+     transform and tighten the min-width so the popover sits flush to the
+     typing position. */
+  .chord-pop.chord-pop--anchored {
+    top: auto;
+    left: auto;
+    transform: none;
+    min-width: 220px;
   }
   .chord-head {
     display: flex;

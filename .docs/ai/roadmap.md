@@ -291,6 +291,16 @@ After 10.1's row chord menu, the user asked to apply the chord-leader treatment 
 #### Phase 10.2 deferred (saved to memory `project_leader_menu_vision.md`):
 - [ ] **User-configurable leader tree.** A `~/.tesela/leader.config.{json,toml,ts}` (TBD format) that the user edits to add / remove / rename / re-key entries. Hardcoded tree becomes the merged-in default. Implies an action registry mapping stable IDs (`block.cycleStatus`, `page.toggleFavorite`, etc.) → handlers, so configs reference IDs instead of inline functions.
 
+### Phase 10.3 — In-block `/` slash menu → chord-leader style ✓
+The last bounded action surface still using filter+arrow-nav joins the chord pattern.
+
+- [x] **`ChordMenu` extended** with optional `position?: { x, y }` (cursor-anchored mode — overrides centered modal) and `headLabel?: string` (defaults `SPC`; slash menu sets it to `/`). Capture-phase keydown handler now swallows ALL keys when the menu is open (modal behavior) so arrows / vim chords / Cmd+letter combos can't leak through to the cm-editor behind the popover.
+- [x] **In-block `/` opens chord popover anchored to caret.** Single-letter chords run actions immediately — `/t` Task, `/T` Tag picker, `/h` Heading, `/p` Property, `/l` Link, `/d` Date, `/q` Query, `/w` Widget, `/c` Collection, `/m` Template. `/s` descends into a Status submenu.
+- [x] **Status submenu auto-resolves key collisions.** `assignStatusKeys()` walks each choice's letters and picks the first unclaimed one (with `doing` → `i` and `in-review` → `r` aliases pre-mapped). Falls back to digits 1-9 if all letters are taken. Handles arbitrary user-configured choices like `notes/status.md`'s `["backlog", "todo", "doing", "in-review", "done", "canceled", "on-hold", "dude"]` without dup-key crashes.
+- [x] **Hint chips** on Task (`tags:: Task`), Tag picker (`#`), Property (`key:: value`), Link (`[[ ]]`), and each status row (`status:: <choice>`).
+- [x] **`SlashMenu.svelte` deleted** — both callers (QWV row chord at 10.1, BlockEditor `/` at 10.3) now use ChordMenu. `AutocompleteMenu.svelte` stays for unbounded surfaces (`#` tag autocomplete, `[[` wiki-link autocomplete).
+- [x] Files: `web/src/lib/components/ChordMenu.svelte` (position + headLabel props, modal key swallowing); `web/src/lib/components/BlockEditor.svelte` (getSlashTree, assignStatusKeys, ChordMenu render at slashPosition, removed slashFilter/slashMenuRef/SlashCommand and the keymap branches that forwarded keys to slashMenuRef); deleted `web/src/lib/components/SlashMenu.svelte`.
+
 ### Phase 3: Power Features (paused — folded into Phase 9)
 
 #### Anytype-Style Types & Relations

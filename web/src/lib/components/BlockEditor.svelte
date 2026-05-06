@@ -279,7 +279,7 @@
   import { goto } from "$app/navigation";
   import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
   import { getVimMode } from "$lib/stores/pane-state.svelte";
-  import SlashMenu, { type SlashCommand } from "./SlashMenu.svelte";
+  import ChordMenu, { type ChordNode } from "./ChordMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
   import DatePicker from "./DatePicker.svelte";
 
@@ -390,11 +390,10 @@
   let container: HTMLDivElement;
   let view = $state<EditorView | null>(null);
 
-  // Slash menu state
+  // Slash menu state — Phase 10.3: chord-leader popover via ChordMenu.
+  // No filter/typing-narrow; single-letter chords run actions immediately.
   let showSlashMenu = $state(false);
-  let slashFilter = $state("");
   let slashPosition = $state({ x: 0, y: 0 });
-  let slashMenuRef = $state<SlashMenu | null>(null);
   let slashStartPos = $state<number>(-1);
 
   // Autocomplete state (for # tags and [[ wiki-links)
@@ -491,27 +490,63 @@
     return "☐";
   }
 
-  function getSlashCommands(): SlashCommand[] {
+  /**
+   * Phase 10.3 — chord-leader tree for the in-block `/` menu. Each leaf
+   * fires `applySlash(<id>)`, which preserves the existing per-command
+   * logic (tag toggle / heading / property / link / date / query /
+   * widget / collection / template). One submenu (`s` Status) keys off
+   * the dynamically-loaded `statusChoices`.
+   *
+   * Chord assignments — keep first-letter intuitive where possible:
+   *   t Task         T Tag picker     s Status (sub)
+   *   h Heading      p Property       l Link    d Date
+   *   q Query        w Widget         c Collection   m Template
+   */
+  /**
+   * Assign unique single-character chord keys to a list of choices. For
+   * each choice, try preferred-letter aliases first ("doing"→`i` for
+   * in-progress, "in-review"→`r`), then walk the choice's letters in
+   * order and pick the first one not yet claimed. Falls back to digits
+   * 1-9 when the choice has no unclaimed letters. The user's Status
+   * property choices come from a config file (`notes/status.md`) so
+   * collisions like {done, dude} are entirely possible.
+   */
+  function assignStatusKeys(choices: string[]): string[] {
+    const used = new Set<string>();
+    const aliases: Record<string, string> = { doing: "i", "in-review": "r" };
+    return choices.map((c) => {
+      const lower = c.toLowerCase();
+      const candidates: string[] = [];
+      if (aliases[lower]) candidates.push(aliases[lower]);
+      for (const ch of lower) if (/[a-z]/.test(ch)) candidates.push(ch);
+      for (let i = 1; i <= 9; i++) candidates.push(String(i));
+      for (const k of candidates) {
+        if (!used.has(k)) { used.add(k); return k; }
+      }
+      return "?"; // unreachable — 9 digits + 26 letters covers any realistic count
+    });
+  }
+  function getSlashTree(): ChordNode[] {
     const choices = statusChoices ?? ["todo", "doing", "done"];
-    const statusItems: SlashCommand[] = choices.map((s) => ({
-      id: s,
+    const keys = assignStatusKeys(choices);
+    const statusChildren: ChordNode[] = choices.map((s, i) => ({
+      key: keys[i],
       label: s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, " "),
-      description: `Set status:: ${s}`,
-      icon: statusIcon(s),
       action: () => applySlash(s),
+      hint: `status:: ${s}`,
     }));
     return [
-      { id: "task", label: "Task", description: "Add #Task tag", icon: "☑", action: () => applySlash("task") },
-      { id: "tag", label: "Tag", description: "Add a tag to this block", icon: "#", action: () => applySlash("tag") },
-      ...statusItems,
-      { id: "heading", label: "Heading", description: "Convert to heading", icon: "#", action: () => applySlash("heading") },
-      { id: "property", label: "Property", description: "Add key:: value", icon: "⊞", action: () => applySlash("property") },
-      { id: "link", label: "Link", description: "Insert [[page link]]", icon: "⟦", action: () => applySlash("link") },
-      { id: "date", label: "Date", description: "Insert today's date", icon: "📅", action: () => applySlash("date") },
-      { id: "query", label: "Query", description: "Inline query block (tag:Task status:doing)", icon: "⌕", action: () => applySlash("query") },
-      { id: "widget", label: "New Widget", description: "Create a saved Query note for the rail", icon: "★", action: () => applySlash("widget") },
-      { id: "collection", label: "Collection", description: "Manual list of block references", icon: "▤", action: () => applySlash("collection") },
-      { id: "template", label: "Template", description: "Insert blocks from a #Template page", icon: "⎘", action: () => applySlash("template") },
+      { key: "t", label: "Task",         action: () => applySlash("task"),       hint: "tags:: Task" },
+      { key: "T", label: "Tag picker",   action: () => applySlash("tag"),        hint: "#" },
+      { key: "s", label: "Status",       children: statusChildren },
+      { key: "h", label: "Heading",      action: () => applySlash("heading") },
+      { key: "p", label: "Property",     action: () => applySlash("property"),   hint: "key:: value" },
+      { key: "l", label: "Link",         action: () => applySlash("link"),       hint: "[[ ]]" },
+      { key: "d", label: "Date",         action: () => applySlash("date") },
+      { key: "q", label: "Query",        action: () => applySlash("query") },
+      { key: "w", label: "New widget",   action: () => applySlash("widget") },
+      { key: "c", label: "Collection",   action: () => applySlash("collection") },
+      { key: "m", label: "Template",     action: () => applySlash("template") },
     ];
   }
 
@@ -598,7 +633,6 @@
           });
           onChange(insert);
           showSlashMenu = false;
-          slashFilter = "";
           slashStartPos = -1;
           onSlashCommand?.(command);
           return;
@@ -614,7 +648,6 @@
           });
           onChange(insert);
           showSlashMenu = false;
-          slashFilter = "";
           slashStartPos = -1;
           onSlashCommand?.(command);
           setTimeout(async () => {
@@ -674,7 +707,6 @@
     });
     onChange(insert);
     showSlashMenu = false;
-    slashFilter = "";
     slashStartPos = -1;
     onSlashCommand?.(command);
     // Belt-and-braces: ensure cm-editor regains DOM focus after the slash
@@ -834,7 +866,6 @@
             if (!view) return;
             slashStartPos = from;
             showSlashMenu = true;
-            slashFilter = "";
             const coords = view.coordsAtPos(from + 1);
             if (coords) {
               slashPosition = { x: coords.left, y: coords.bottom + 4 };
@@ -891,7 +922,10 @@
       {
         key: "Escape",
         run: (v) => {
-          if (showSlashMenu) { showSlashMenu = false; slashFilter = ""; slashStartPos = -1; return true; }
+          // Phase 10.3 — slash menu is a ChordMenu now; it handles Esc at
+          // capture phase before this runs, so we don't need a `showSlashMenu`
+          // branch here. Autocomplete (#, [[) still uses the older filter
+          // component and is handled below.
           if (showAutocomplete) { showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1; return true; }
           if (inVisualMode) { onExitVisualMode?.(); return true; }
           // Let vim handle Escape when in insert/visual mode so it can transition to normal.
@@ -906,7 +940,6 @@
       {
         key: "ArrowUp",
         run: (v) => {
-          if (showSlashMenu) return slashMenuRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowUp" })) ?? false;
           if (showAutocomplete) return autocompleteRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowUp" })) ?? false;
           // Phase 9.9 follow-up — cross-block when no visual line above.
           // Compares y-coord before/after a synthetic cursorLineUp, which
@@ -925,7 +958,6 @@
       {
         key: "ArrowDown",
         run: (v) => {
-          if (showSlashMenu) return slashMenuRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowDown" })) ?? false;
           if (showAutocomplete) return autocompleteRef?.handleKeydown(new KeyboardEvent("keydown", { key: "ArrowDown" })) ?? false;
           const before = v.coordsAtPos(v.state.selection.main.head);
           const probe = v.moveVertically(v.state.selection.main, true);
@@ -940,10 +972,8 @@
       {
         key: "Enter",
         run: (v) => {
-          if (showSlashMenu) {
-            slashMenuRef?.handleKeydown(new KeyboardEvent("keydown", { key: "Enter" }));
-            return true;
-          }
+          // Phase 10.3 — slash menu is a ChordMenu now; chord matching
+          // happens at capture phase. No Enter forwarding needed.
           if (showAutocomplete) {
             autocompleteRef?.handleKeydown(new KeyboardEvent("keydown", { key: "Enter" }));
             return true;
@@ -1050,13 +1080,14 @@
         const doc = update.state.doc.toString();
         onChange(doc);
         const cursorPos = update.state.selection.main.head;
-        // Update slash filter
-        if (showSlashMenu && slashStartPos >= 0) {
-          if (cursorPos <= slashStartPos) {
-            showSlashMenu = false; slashFilter = ""; slashStartPos = -1;
-          } else {
-            slashFilter = doc.slice(slashStartPos + 1, cursorPos);
-          }
+        // Phase 10.3 — chord menu doesn't have a filter to update. We
+        // still close the menu if the cursor backs up past the `/` (e.g.
+        // user manually deletes it). All single-char keys are otherwise
+        // swallowed by ChordMenu's capture-phase handler so typing past
+        // the `/` shouldn't happen — but be defensive.
+        if (showSlashMenu && slashStartPos >= 0 && cursorPos <= slashStartPos) {
+          showSlashMenu = false;
+          slashStartPos = -1;
         }
         // Update autocomplete filter
         if (showAutocomplete && autocompleteStartPos >= 0) {
@@ -1183,12 +1214,18 @@
   <div bind:this={container} class="text-sm leading-relaxed min-h-[24px]"></div>
 
   {#if showSlashMenu}
-    <SlashMenu
-      bind:this={slashMenuRef}
-      commands={getSlashCommands()}
-      filter={slashFilter}
+    <ChordMenu
+      tree={getSlashTree()}
       position={slashPosition}
-      onclose={() => { showSlashMenu = false; slashFilter = ""; slashStartPos = -1; }}
+      headLabel="/"
+      onclose={() => {
+        showSlashMenu = false;
+        slashStartPos = -1;
+        // Restore DOM focus to the cm-editor so the user keeps typing
+        // wherever they left off — ChordMenu doesn't take focus, but the
+        // overlay click can blur as a side-effect on some browsers.
+        view?.focus();
+      }}
     />
   {/if}
 
