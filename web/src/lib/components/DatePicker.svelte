@@ -96,6 +96,11 @@
     viewMonth = new Date(viewMonth.getFullYear(), viewMonth.getMonth() + 1, 1);
   }
 
+  // Two focus modes: input (typing natural language) vs grid (vim-style
+  // calendar nav). Tab toggles. Letters like h/j/k/l would conflict with
+  // typing into the NL input, so they only act as nav in grid mode.
+  let focusMode = $state<"input" | "grid">("input");
+
   function handleKey(e: KeyboardEvent) {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -104,16 +109,43 @@
     }
     if (e.key === "Escape") {
       e.preventDefault();
+      if (focusMode === "grid") {
+        focusMode = "input";
+        requestAnimationFrame(() => inputEl?.focus());
+        return;
+      }
       onClose();
+      return;
+    }
+    if (e.key === "Tab") {
+      e.preventDefault();
+      if (e.shiftKey) {
+        focusMode = "input";
+        requestAnimationFrame(() => inputEl?.focus());
+      } else {
+        focusMode = "grid";
+        // Focus the container directly — the browser blurs the input with
+        // relatedTarget=containerEl, which handleBlur recognizes as
+        // in-dialog and doesn't trigger onClose. Calling inputEl.blur()
+        // first would set relatedTarget=null and close the dialog.
+        containerEl?.focus();
+      }
       return;
     }
     // Arrow keys nav the calendar even when input is focused. The input is
     // single-line and rarely needs caret-arrow editing; calendar nav is the
     // higher-value behavior here.
-    if (e.key === "ArrowLeft") { e.preventDefault(); move(e.shiftKey ? -7 : -1); }
-    else if (e.key === "ArrowRight") { e.preventDefault(); move(e.shiftKey ? 7 : 1); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); move(-7); }
-    else if (e.key === "ArrowDown") { e.preventDefault(); move(7); }
+    if (e.key === "ArrowLeft") { e.preventDefault(); move(e.shiftKey ? -7 : -1); return; }
+    if (e.key === "ArrowRight") { e.preventDefault(); move(e.shiftKey ? 7 : 1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); move(-7); return; }
+    if (e.key === "ArrowDown") { e.preventDefault(); move(7); return; }
+    // hjkl only in grid mode (else they'd type into the NL input).
+    if (focusMode === "grid") {
+      if (e.key === "h") { e.preventDefault(); move(e.shiftKey ? -7 : -1); return; }
+      if (e.key === "l") { e.preventDefault(); move(e.shiftKey ? 7 : 1); return; }
+      if (e.key === "k") { e.preventDefault(); move(-7); return; }
+      if (e.key === "j") { e.preventDefault(); move(7); return; }
+    }
   }
 
   let inputEl = $state<HTMLInputElement | null>(null);
@@ -136,6 +168,7 @@
   bind:this={containerEl}
   role="dialog"
   aria-label="Date picker"
+  tabindex="-1"
   class="fixed z-50 bg-popover border border-border rounded-md shadow-xl p-2 outline-none"
   style="left: {position.x}px; top: {position.y}px;"
   onkeydown={handleKey}
@@ -206,8 +239,13 @@
     {/each}
   </div>
 
-  <!-- Footer hint -->
+  <!-- Footer hint — adapts to focus mode so the user always sees the keys
+       that are live right now. -->
   <div class="text-[10px] text-muted-foreground/40 mt-1.5 px-1 text-center">
-    type · arrows · enter · esc
+    {#if focusMode === "grid"}
+      hjkl/arrows · enter · esc · S-tab → input
+    {:else}
+      type · arrows · tab → grid · enter · esc
+    {/if}
   </div>
 </div>

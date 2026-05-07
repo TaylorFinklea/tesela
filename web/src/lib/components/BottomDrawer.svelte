@@ -27,6 +27,7 @@
   import type { GraphEdge } from "$lib/types/GraphEdge";
   import HistoryTab from "./HistoryTab.svelte";
   import LinkedTasksTab from "./LinkedTasksTab.svelte";
+  import DatePicker from "./DatePicker.svelte";
 
   const queryClient = useQueryClient();
 
@@ -362,9 +363,38 @@
       pickerOpen = true;
     } else if (def.value_type === "checkbox") {
       toggleCheckboxValue();
+    } else if (def.value_type === "date") {
+      const el = rootEl?.querySelector(
+        `[data-prop-index="${selectedPropertyIndex}"][data-prop-context="${panelContext}"]`,
+      ) as HTMLElement | null;
+      openDateEditor(prop.key, el);
     } else {
       enterEditOnCurrent();
     }
+  }
+
+  // Date-editor popup state. Reuses the existing DatePicker (NL input +
+  // calendar grid) so the user gets natural-language entry plus keyboard
+  // grid nav with Tab → hjkl. Anchored to the focused property's chip.
+  let dateEditPropKey = $state<string | null>(null);
+  let dateEditPosition = $state({ x: 0, y: 0 });
+
+  function openDateEditor(propKey: string, anchorEl: HTMLElement | null) {
+    if (anchorEl) {
+      const rect = anchorEl.getBoundingClientRect();
+      dateEditPosition = { x: rect.left, y: rect.bottom + 4 };
+    } else {
+      dateEditPosition = { x: 200, y: 200 };
+    }
+    dateEditPropKey = propKey;
+  }
+
+  function commitDateEditor(iso: string) {
+    if (!dateEditPropKey) return;
+    const wrapped = wrapDateBrackets(iso);
+    if (panelContext === "block") void saveBlockProperty(dateEditPropKey, wrapped);
+    else void savePageProperty(dateEditPropKey, wrapped);
+    dateEditPropKey = null;
   }
 
   function commitPickerValue(propKey: string, choice: string) {
@@ -460,6 +490,15 @@
       const choices = getVisibleChoices(def, hidden);
       pickerHighlightIdx = Math.max(0, choices.indexOf(prop.value));
       pickerOpen = true;
+    } else if (def?.value_type === "date") {
+      // Auto-open the date editor anchored to the new chip so the user
+      // can refine the auto-defaulted today's date.
+      requestAnimationFrame(() => {
+        const el = rootEl?.querySelector(
+          `[data-prop-index="${idx}"][data-prop-context="${panelContext}"]`,
+        ) as HTMLElement | null;
+        openDateEditor(prop.key, el);
+      });
     }
     pendingAddedKey = null;
   });
@@ -864,12 +903,19 @@
                       <span class="caret">▾</span>
                     </button>
                   {:else if def?.value_type === "date"}
-                    <input
-                      type="date"
-                      value={stripDateBrackets(prop.value)}
-                      onchange={(e) => saveBlockProperty(prop.key, wrapDateBrackets((e.target as HTMLInputElement).value))}
-                      style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-line); font-family: var(--v9-mono); font-size: 11px;"
-                    />
+                    <button
+                      class="value-chip"
+                      type="button"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        selectedPropertyIndex = pi;
+                        const anchor = (e.currentTarget as HTMLElement).closest(".pchip") as HTMLElement | null;
+                        openDateEditor(prop.key, anchor);
+                      }}
+                    >
+                      <span>{stripDateBrackets(prop.value) || "—"}</span>
+                      <span class="caret">▾</span>
+                    </button>
                   {:else if editingBlockKey === prop.key}
                     <!-- svelte-ignore a11y_autofocus -->
                     <input
@@ -1014,12 +1060,19 @@
                       <span class="caret">▾</span>
                     </button>
                   {:else if def?.value_type === "date"}
-                    <input
-                      type="date"
-                      value={stripDateBrackets(prop.value)}
-                      onchange={(e) => savePageProperty(prop.key, wrapDateBrackets((e.target as HTMLInputElement).value))}
-                      style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-line); font-family: var(--v9-mono); font-size: 11px;"
-                    />
+                    <button
+                      class="value-chip"
+                      type="button"
+                      onclick={(e) => {
+                        e.stopPropagation();
+                        selectedPropertyIndex = pi;
+                        const anchor = (e.currentTarget as HTMLElement).closest(".pchip") as HTMLElement | null;
+                        openDateEditor(prop.key, anchor);
+                      }}
+                    >
+                      <span>{stripDateBrackets(prop.value) || "—"}</span>
+                      <span class="caret">▾</span>
+                    </button>
                   {:else if editingKey === prop.key}
                     <!-- svelte-ignore a11y_autofocus -->
                     <input
@@ -1143,3 +1196,13 @@
     {/if}
   </div>
 </div>
+
+{#if dateEditPropKey}
+  {@const editingProp = flatProperties.find((p) => p.key === dateEditPropKey)}
+  <DatePicker
+    initialDate={editingProp ? stripDateBrackets(editingProp.value) || undefined : undefined}
+    position={dateEditPosition}
+    onPick={commitDateEditor}
+    onClose={() => (dateEditPropKey = null)}
+  />
+{/if}
