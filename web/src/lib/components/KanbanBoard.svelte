@@ -169,6 +169,43 @@
     focusedCardIndex = Math.min(focusedCardIndex, Math.max(0, cards.length - 1));
   }
 
+  // Shift+H/L move helper. Drops the focused card into the column at
+  // `targetIdx` and parks `pendingFocusBlockId` so the effect below can
+  // resolve the card's actual landing index once the typed-blocks query
+  // refetches. Block order in a column follows source-file order (not
+  // append-to-end), so we cannot guess the index up-front.
+  let pendingFocusBlockId = $state<string | null>(null);
+
+  async function moveFocusedCardToColumn(block: ParsedBlock, targetIdx: number) {
+    if (!groupByPropName) return;
+    const targetCol = columnNames[targetIdx];
+    pendingFocusBlockId = block.id;
+    focusedColIndex = targetIdx;
+    try {
+      if (targetCol === "__unset__") {
+        await clearBlockProperty({ block, propKey: groupByPropName, tagName, queryClient });
+      } else {
+        await updateBlockProperty({ block, propKey: groupByPropName, value: targetCol, tagName, queryClient });
+      }
+    } catch (err) {
+      console.error("Failed to move card:", err);
+      pendingFocusBlockId = null;
+    }
+  }
+
+  // Resolve the cursor onto the moved card once the refetch surfaces its
+  // new position. Re-runs whenever groupedBlocks changes; clears the
+  // pending id once the card is found so we don't keep pinning focus.
+  $effect(() => {
+    if (!pendingFocusBlockId) return;
+    const cards = groupedBlocks.get(columnNames[focusedColIndex]) ?? [];
+    const idx = cards.findIndex((c) => c.id === pendingFocusBlockId);
+    if (idx >= 0) {
+      focusedCardIndex = idx;
+      pendingFocusBlockId = null;
+    }
+  });
+
   function handleKanbanKeydown(e: KeyboardEvent) {
     if (!focused) return;
     if (movePickerBlock) return; // picker handles its own keys
@@ -232,6 +269,20 @@
           }
           movePickerBlock = block;
         }
+        break;
+      }
+      case "H": {
+        // Shift+H: move focused card to previous column.
+        e.preventDefault();
+        const card = currentCards[focusedCardIndex];
+        if (card && focusedColIndex > 0) void moveFocusedCardToColumn(card, focusedColIndex - 1);
+        break;
+      }
+      case "L": {
+        // Shift+L: move focused card to next column.
+        e.preventDefault();
+        const card = currentCards[focusedCardIndex];
+        if (card && focusedColIndex < cols.length - 1) void moveFocusedCardToColumn(card, focusedColIndex + 1);
         break;
       }
       case "i": {
