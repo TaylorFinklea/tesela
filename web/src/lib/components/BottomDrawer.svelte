@@ -373,6 +373,97 @@
     pickerOpen = false;
   }
 
+  // ── Add-property picker ──────────────────────────────────────────
+  // Lists tag_properties from the block's (or page's) resolved tag chain
+  // that aren't yet set, so the user can add a new property without
+  // leaving the drawer. Only addable types (select / multi-select / date
+  // / checkbox) appear in v1; text-like types are still added by typing
+  // `key:: value` in the editor.
+  let addPickerOpen = $state(false);
+  let addPickerHighlightIdx = $state(0);
+  let pendingAddedKey = $state<string | null>(null);
+
+  function tagPropertiesFromTags(tags: string[]): string[] {
+    const resolved = new Set<string>();
+    for (const t of tags) for (const r of resolveTagChain(t, inheritanceMap)) resolved.add(r);
+    const out = new Set<string>();
+    for (const tagName of resolved) {
+      const tagPage = allNotes.find(
+        (n) => n.title.toLowerCase() === tagName && n.metadata.note_type === "Tag",
+      );
+      if (!tagPage) continue;
+      const tp = tagPage.metadata.custom["tag_properties"];
+      if (Array.isArray(tp)) for (const p of tp) if (typeof p === "string") out.add(p);
+    }
+    return [...out];
+  }
+
+  const ADDABLE_TYPES = new Set(["select", "multi-select", "date", "checkbox"]);
+
+  const availableProperties = $derived.by(() => {
+    let candidates: string[] = [];
+    let alreadySet: Set<string>;
+    if (panelContext === "block") {
+      if (!focusedBlock) return [];
+      const direct = focusedBlock.tags;
+      const inherited = focusedBlock.inherited_tags ?? [];
+      candidates = tagPropertiesFromTags([...new Set([...direct, ...inherited])]);
+      alreadySet = new Set(blockProperties.map((p) => p.key.toLowerCase()));
+    } else {
+      if (!note) return [];
+      candidates = tagPropertiesFromTags(note.metadata.tags);
+      alreadySet = new Set(customProperties.map((p) => p.key.toLowerCase()));
+    }
+    return candidates.filter((p) => {
+      if (alreadySet.has(p.toLowerCase())) return false;
+      const def = propertyRegistry.get(p.toLowerCase());
+      return def && ADDABLE_TYPES.has(def.value_type);
+    });
+  });
+
+  function todayIsoLocal(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
+  async function addProperty(key: string) {
+    const def = propertyRegistry.get(key.toLowerCase());
+    if (!def) return;
+    let initialValue = "";
+    if (def.value_type === "select" || def.value_type === "multi-select") {
+      const hidden = panelContext === "block" ? blockHiddenChoices : hiddenChoices;
+      const choices = getVisibleChoices(def, hidden);
+      initialValue = choices[0] ?? "";
+    } else if (def.value_type === "date") {
+      initialValue = `[[${todayIsoLocal()}]]`;
+    } else if (def.value_type === "checkbox") {
+      initialValue = "false";
+    }
+    if (!initialValue) return;
+    if (panelContext === "block") await saveBlockProperty(key, initialValue);
+    else await savePageProperty(key, initialValue);
+    addPickerOpen = false;
+    pendingAddedKey = key;
+  }
+
+  // After save+refetch, focus the newly-added property and (for selects)
+  // pop its picker so the user can refine the auto-defaulted value.
+  $effect(() => {
+    if (!pendingAddedKey) return;
+    const idx = flatProperties.findIndex((p) => p.key.toLowerCase() === pendingAddedKey!.toLowerCase());
+    if (idx < 0) return;
+    selectedPropertyIndex = idx;
+    const prop = flatProperties[idx];
+    const def = propertyRegistry.get(prop.key.toLowerCase());
+    if (def && (def.value_type === "select" || def.value_type === "multi-select")) {
+      const hidden = panelContext === "block" ? blockHiddenChoices : hiddenChoices;
+      const choices = getVisibleChoices(def, hidden);
+      pickerHighlightIdx = Math.max(0, choices.indexOf(prop.value));
+      pickerOpen = true;
+    }
+    pendingAddedKey = null;
+  });
+
   function clearCurrentProperty() {
     const prop = flatProperties[selectedPropertyIndex];
     if (!prop) return;
@@ -547,6 +638,39 @@
       const isSelect = def?.value_type === "select" || def?.value_type === "multi-select";
       const isCheckbox = def?.value_type === "checkbox";
 
+      // ADD-PICKER MODE — choosing which property to add.
+      if (addPickerOpen) {
+        const props = availableProperties;
+        if (e.key === "Escape") { e.preventDefault(); addPickerOpen = false; return; }
+        if (e.key === "j" || e.key === "ArrowDown") {
+          e.preventDefault();
+          addPickerHighlightIdx = Math.min(props.length - 1, addPickerHighlightIdx + 1);
+          return;
+        }
+        if (e.key === "k" || e.key === "ArrowUp") {
+          e.preventDefault();
+          addPickerHighlightIdx = Math.max(0, addPickerHighlightIdx - 1);
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const key = props[addPickerHighlightIdx];
+          if (key) void addProperty(key);
+          return;
+        }
+        const addChords = deriveValueChords(props);
+        const matched = [...addChords.entries()].find(([, ch]) => ch === e.key)?.[0];
+        if (matched) {
+          e.preventDefault();
+          void addProperty(matched);
+          return;
+        }
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+        }
+        return;
+      }
+
       // PICKER MODE — when a select picker is open, all keys belong to it.
       if (pickerOpen && def && isSelect) {
         const choices = getVisibleChoices(def, panelContext === "block" ? blockHiddenChoices : hiddenChoices);
@@ -616,6 +740,13 @@
       } else if (e.key === "x") {
         e.preventDefault();
         clearCurrentProperty();
+      } else if (e.key === "N" && availableProperties.length > 0) {
+        // Capital N: open the add-property picker. Lowercase letters are
+        // reserved for property chord activation, so we use the shifted
+        // form for this meta-action.
+        e.preventDefault();
+        addPickerHighlightIdx = 0;
+        addPickerOpen = true;
       } else {
         // Property-chord activation: jump to the named property AND open
         // its picker / edit. Two-keystroke edits with the value chord
@@ -777,7 +908,64 @@
                   </div>
                 {/if}
               {/each}
+              {#if availableProperties.length > 0}
+                <button
+                  class="add-prop-row"
+                  type="button"
+                  onclick={(e) => { e.stopPropagation(); addPickerHighlightIdx = 0; addPickerOpen = !addPickerOpen; }}
+                >
+                  <kbd class="prop-chord">N</kbd>
+                  <span class="add-label">+ Add property</span>
+                </button>
+                {#if addPickerOpen}
+                  {@const addChords = deriveValueChords(availableProperties)}
+                  <div class="picker-popover">
+                    {#each availableProperties as candidate, ci}
+                      {@const ch = addChords.get(candidate)}
+                      {@const isHL = ci === addPickerHighlightIdx}
+                      <!-- svelte-ignore a11y_no_static_element_interactions -->
+                      <!-- svelte-ignore a11y_click_events_have_key_events -->
+                      <div
+                        class="picker-row {isHL ? 'hl' : ''}"
+                        onclick={() => void addProperty(candidate)}
+                        onmouseenter={() => (addPickerHighlightIdx = ci)}
+                      >
+                        <kbd class="val-chord">{ch ?? "·"}</kbd>
+                        <span class="picker-label">{candidate}</span>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              {/if}
             </div>
+          {:else if availableProperties.length > 0}
+            <button
+              class="add-prop-row"
+              type="button"
+              onclick={(e) => { e.stopPropagation(); addPickerHighlightIdx = 0; addPickerOpen = !addPickerOpen; }}
+            >
+              <kbd class="prop-chord">N</kbd>
+              <span class="add-label">+ Add property</span>
+            </button>
+            {#if addPickerOpen}
+              {@const addChords = deriveValueChords(availableProperties)}
+              <div class="picker-popover">
+                {#each availableProperties as candidate, ci}
+                  {@const ch = addChords.get(candidate)}
+                  {@const isHL = ci === addPickerHighlightIdx}
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                  <div
+                    class="picker-row {isHL ? 'hl' : ''}"
+                    onclick={() => void addProperty(candidate)}
+                    onmouseenter={() => (addPickerHighlightIdx = ci)}
+                  >
+                    <kbd class="val-chord">{ch ?? "·"}</kbd>
+                    <span class="picker-label">{candidate}</span>
+                  </div>
+                {/each}
+              </div>
+            {/if}
           {:else}
             <div style="color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">No block properties</div>
           {/if}
@@ -786,72 +974,151 @@
         {/if}
       {:else}
         {#if note}
-          <div style="display: flex; flex-wrap: wrap; gap: 6px;">
-            {#if note.metadata.tags.length > 0}
+          {#if note.metadata.tags.length > 0}
+            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px;">
               {#each note.metadata.tags as tagName}
                 <a class="pchip" href="/p/{encodeURIComponent(tagName)}">
                   <span class="k">tag</span><span class="v">{tagName}</span>
                 </a>
               {/each}
-            {/if}
-            {#each customProperties as prop, pi}
-              {@const def = propertyRegistry.get(prop.key.toLowerCase())}
-              {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, hiddenChoices) : []}
-              {@const propSelected = focused && tab === "properties" && panelContext === "page" && selectedPropertyIndex === pi}
-              <span
-                class="pchip {propSelected ? 'selected' : ''}"
-                data-prop-index={pi}
-                data-prop-context="page"
-              >
-                <span class="k">{prop.key}</span>
-                {#if def?.value_type === "checkbox"}
-                  <input
-                    type="checkbox"
-                    checked={prop.value === "true" || prop.value === "yes"}
-                    onchange={(e) => savePageProperty(prop.key, (e.target as HTMLInputElement).checked ? "true" : "false")}
-                  />
-                {:else if isSelectType(def)}
-                  <select
-                    value={prop.value}
-                    onchange={(e) => savePageProperty(prop.key, (e.target as HTMLSelectElement).value)}
-                    style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-line); font-family: var(--v9-mono); font-size: 11px;"
-                  >
-                    {#if !visibleChoices.includes(prop.value)}
-                      <option value={prop.value}>{prop.value}</option>
-                    {/if}
-                    {#each visibleChoices as choice}
-                      <option value={choice}>{choice}</option>
+            </div>
+          {/if}
+          {#if customProperties.length > 0}
+            <div class="props-list">
+              {#each customProperties as prop, pi}
+                {@const def = propertyRegistry.get(prop.key.toLowerCase())}
+                {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, hiddenChoices) : []}
+                {@const propSelected = focused && tab === "properties" && panelContext === "page" && selectedPropertyIndex === pi}
+                {@const propChord = propertyChords.get(prop.key)}
+                {@const valChords = visibleChoices.length > 0 ? deriveValueChords(visibleChoices) : new Map()}
+                <span
+                  class="pchip {propSelected ? 'selected' : ''}"
+                  data-prop-index={pi}
+                  data-prop-context="page"
+                >
+                  {#if propChord}<kbd class="prop-chord">{propChord}</kbd>{/if}
+                  <span class="k">{prop.key}</span>
+                  {#if def?.value_type === "checkbox"}
+                    <input
+                      type="checkbox"
+                      checked={prop.value === "true" || prop.value === "yes"}
+                      onchange={(e) => savePageProperty(prop.key, (e.target as HTMLInputElement).checked ? "true" : "false")}
+                    />
+                  {:else if isSelectType(def)}
+                    <button
+                      class="value-chip"
+                      type="button"
+                      onclick={(e) => { e.stopPropagation(); selectedPropertyIndex = pi; if (propSelected && pickerOpen) pickerOpen = false; else openPickerForCurrent(); }}
+                    >
+                      <span>{prop.value || "—"}</span>
+                      <span class="caret">▾</span>
+                    </button>
+                  {:else if def?.value_type === "date"}
+                    <input
+                      type="date"
+                      value={stripDateBrackets(prop.value)}
+                      onchange={(e) => savePageProperty(prop.key, wrapDateBrackets((e.target as HTMLInputElement).value))}
+                      style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-line); font-family: var(--v9-mono); font-size: 11px;"
+                    />
+                  {:else if editingKey === prop.key}
+                    <!-- svelte-ignore a11y_autofocus -->
+                    <input
+                      autofocus
+                      type={inputTypeFor(def)}
+                      bind:value={editingValue}
+                      onkeydown={(e) => handlePageKeydown(e, prop.key)}
+                      style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-amber); font-family: var(--v9-mono); font-size: 11px;"
+                    />
+                  {:else}
+                    <span
+                      class="v"
+                      style="cursor: text;"
+                      onclick={(e) => { e.stopPropagation(); editingKey = prop.key; editingValue = prop.value; }}
+                    >{prop.value}</span>
+                  {/if}
+                </span>
+                {#if propSelected && pickerOpen && isSelectType(def) && visibleChoices.length > 0}
+                  <div class="picker-popover">
+                    {#each visibleChoices as choice, ci}
+                      {@const ch = valChords.get(choice)}
+                      {@const isCurrent = choice === prop.value}
+                      {@const isHL = ci === pickerHighlightIdx}
+                      <!-- svelte-ignore a11y_no_static_element_interactions -->
+                      <!-- svelte-ignore a11y_click_events_have_key_events -->
+                      <div
+                        class="picker-row {isHL ? 'hl' : ''}"
+                        onclick={() => commitPickerValue(prop.key, choice)}
+                        onmouseenter={() => (pickerHighlightIdx = ci)}
+                      >
+                        <kbd class="val-chord">{ch ?? "·"}</kbd>
+                        <span class="picker-label">{choice}</span>
+                        {#if isCurrent}<span class="picker-check">✓</span>{/if}
+                      </div>
                     {/each}
-                  </select>
-                {:else if def?.value_type === "date"}
-                  <input
-                    type="date"
-                    value={stripDateBrackets(prop.value)}
-                    onchange={(e) => savePageProperty(prop.key, wrapDateBrackets((e.target as HTMLInputElement).value))}
-                    style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-line); font-family: var(--v9-mono); font-size: 11px;"
-                  />
-                {:else if editingKey === prop.key}
-                  <!-- svelte-ignore a11y_autofocus -->
-                  <input
-                    autofocus
-                    type={inputTypeFor(def)}
-                    bind:value={editingValue}
-                    onkeydown={(e) => handlePageKeydown(e, prop.key)}
-                    style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-amber); font-family: var(--v9-mono); font-size: 11px;"
-                  />
-                {:else}
-                  <span
-                    class="v"
-                    style="cursor: text;"
-                    onclick={(e) => { e.stopPropagation(); editingKey = prop.key; editingValue = prop.value; }}
-                  >{prop.value}</span>
+                  </div>
                 {/if}
-              </span>
-            {/each}
-            {#if note.metadata.tags.length === 0 && customProperties.length === 0}
-              <div style="color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">No page properties</div>
+              {/each}
+              {#if availableProperties.length > 0}
+                <button
+                  class="add-prop-row"
+                  type="button"
+                  onclick={(e) => { e.stopPropagation(); addPickerHighlightIdx = 0; addPickerOpen = !addPickerOpen; }}
+                >
+                  <kbd class="prop-chord">N</kbd>
+                  <span class="add-label">+ Add property</span>
+                </button>
+                {#if addPickerOpen}
+                  {@const addChords = deriveValueChords(availableProperties)}
+                  <div class="picker-popover">
+                    {#each availableProperties as candidate, ci}
+                      {@const ch = addChords.get(candidate)}
+                      {@const isHL = ci === addPickerHighlightIdx}
+                      <!-- svelte-ignore a11y_no_static_element_interactions -->
+                      <!-- svelte-ignore a11y_click_events_have_key_events -->
+                      <div
+                        class="picker-row {isHL ? 'hl' : ''}"
+                        onclick={() => void addProperty(candidate)}
+                        onmouseenter={() => (addPickerHighlightIdx = ci)}
+                      >
+                        <kbd class="val-chord">{ch ?? "·"}</kbd>
+                        <span class="picker-label">{candidate}</span>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              {/if}
+            </div>
+          {:else if availableProperties.length > 0}
+            <button
+              class="add-prop-row"
+              type="button"
+              onclick={(e) => { e.stopPropagation(); addPickerHighlightIdx = 0; addPickerOpen = !addPickerOpen; }}
+            >
+              <kbd class="prop-chord">N</kbd>
+              <span class="add-label">+ Add property</span>
+            </button>
+            {#if addPickerOpen}
+              {@const addChords = deriveValueChords(availableProperties)}
+              <div class="picker-popover">
+                {#each availableProperties as candidate, ci}
+                  {@const ch = addChords.get(candidate)}
+                  {@const isHL = ci === addPickerHighlightIdx}
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                  <div
+                    class="picker-row {isHL ? 'hl' : ''}"
+                    onclick={() => void addProperty(candidate)}
+                    onmouseenter={() => (addPickerHighlightIdx = ci)}
+                  >
+                    <kbd class="val-chord">{ch ?? "·"}</kbd>
+                    <span class="picker-label">{candidate}</span>
+                  </div>
+                {/each}
+              </div>
             {/if}
-          </div>
+          {:else if note.metadata.tags.length === 0}
+            <div style="color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">No page properties</div>
+          {/if}
         {:else}
           <div style="color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">Loading…</div>
         {/if}

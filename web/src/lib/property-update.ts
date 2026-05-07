@@ -42,7 +42,7 @@ export async function updateBlockProperty(params: {
         updated = true;
         break;
       }
-      const propMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*):: (.+)$/);
+      const propMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)$/);
       if (propMatch && propMatch[1].toLowerCase() === key) {
         const indent = lines[i].length - lines[i].trimStart().length;
         lines[i] = " ".repeat(indent) + `${propMatch[1]}:: ${value}`;
@@ -91,7 +91,7 @@ export async function clearBlockProperty(params: {
       if (trimmed.startsWith("- ") || (trimmed === "" && i > 0)) {
         break; // property not found in this block
       }
-      const propMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*):: (.+)$/);
+      const propMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)$/);
       if (propMatch && propMatch[1].toLowerCase() === key) {
         lines.splice(i, 1);
         break;

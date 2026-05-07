@@ -583,3 +583,25 @@ html, body { height: 100%; margin: 0; }
   color: var(--v9-amber);
 }
 .v9-bottom .picker-row .picker-check { color: var(--v9-amber); }
+
+/* "+ Add property" affordance at the bottom of the props list. Same
+   columnar grid as the property rows so the chord chip lines up. */
+.v9-bottom .add-prop-row {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  margin-top: 4px;
+  background: transparent;
+  border: 1px dashed var(--v9-line);
+  border-radius: 3px;
+  color: var(--v9-ink-faint);
+  font-family: var(--v9-mono);
+  font-size: 11px;
+  cursor: pointer;
+  text-align: left;
+}
+.v9-bottom .add-prop-row:hover { color: var(--v9-amber); border-color: var(--v9-amber); }
+.v9-bottom .add-prop-row .prop-chord { color: var(--v9-ink-faint); }
+.v9-bottom .add-prop-row:hover .prop-chord { color: var(--v9-amber); border-color: var(--v9-amber); }

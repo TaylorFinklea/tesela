@@ -5,7 +5,7 @@
 import type { ParsedBlock } from "$lib/types/ParsedBlock";
 
 const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
-const PROPERTY_RE = /([A-Za-z_][A-Za-z0-9_]*):: (.+)/g;
+const PROPERTY_RE = /([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)/g;
 const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
 
 export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
