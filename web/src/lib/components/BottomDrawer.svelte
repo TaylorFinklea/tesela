@@ -382,7 +382,16 @@
   function openDateEditor(propKey: string, anchorEl: HTMLElement | null) {
     if (anchorEl) {
       const rect = anchorEl.getBoundingClientRect();
-      dateEditPosition = { x: rect.left, y: rect.bottom + 4 };
+      // Estimate the picker's footprint so we can flip it above when the
+      // anchor is too close to the bottom edge (the drawer hugs the bottom
+      // of the viewport, so this is the common case).
+      const PICKER_W = 280;
+      const PICKER_H = 340;
+      const margin = 8;
+      const fitsBelow = rect.bottom + PICKER_H + margin <= window.innerHeight;
+      const y = fitsBelow ? rect.bottom + 4 : Math.max(margin, rect.top - PICKER_H - 4);
+      const x = Math.min(rect.left, window.innerWidth - PICKER_W - margin);
+      dateEditPosition = { x: Math.max(margin, x), y };
     } else {
       dateEditPosition = { x: 200, y: 200 };
     }
