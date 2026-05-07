@@ -33,6 +33,13 @@ The web client is feature-complete through Phase 2 (Navigation & Discovery): out
 - Breadcrumb improvements — clickable path segments.
 - Mobile/responsive layout considerations.
 
+**3D: Task Management Depth (Apple Reminders / Todoist parity) — promote sooner**
+The user is daily-driving Tesela for tasks; three threads need to ship soon so the system can compete with Apple Reminders / Todoist while preserving the database-first foundation. Detailed scope in **Phase 12** below.
+- **Apple Reminders bidirectional sync (priority)** — lets the user lean on iOS location-based reminders, Watch, and Siri while editing in Tesela.
+- **Recurring tasks & events** — rrule-subset on `deadline::` / `scheduled::`; auto-roll on completion.
+- **Notifications** — desktop + push for deadlines, scheduled times, recurring rolls.
+- **Task hierarchy** — subtasks, dependencies, project rollups.
+
 ### Later
 Rust backlog (parallel work) lives in the Backlog section below — Mechanical and Architectural items are safe for parallel work.
 
@@ -331,6 +338,66 @@ The last bounded action surface still using filter+arrow-nav joins the chord pat
 - [ ] Bottom drawer: inline keyboard property editing for Properties tab (j/k navigates, currently only mouse-clickable)
 - [ ] Empty/loading/error state audit across all views
 - [ ] Graph: drag nodes to reposition
+
+### Phase 12 — Task Management Depth (promoted: Apple Reminders sync, recurring, notifications)
+
+Added 2026-05-07. Tesela is the user's daily-driver task manager; this phase rounds out the surface so it stands on its own against Apple Reminders / Todoist. Apple Reminders sync is the unlock that brings iOS automations (geofencing, Siri, Watch) without giving up file-first editing.
+
+#### 12.1 — Apple Reminders bidirectional sync (HIGH PRIORITY)
+
+Bridge Tesela Task blocks ↔ Apple Reminders items so the user can:
+- Add a Task in Tesela → it appears in Reminders → triggers iOS location-based reminders, Watch surface, Siri.
+- Tick a Reminder on iPhone → status flips to `done` in Tesela on next sync.
+- Use Reminders' geofencing automations ("remind me at home") on Tesela tasks, while editing/searching/linking remains in Tesela.
+
+Sketch:
+- **macOS bridge**: native EventKit access via a Swift helper (or extend `tesela-server` with a small Objective-C/Swift FFI module). Web client never talks to EventKit directly.
+- **Identity**: store the Reminders `EKCalendarItem.calendarItemIdentifier` on the block as a property `apple_reminder_id::`. Stable across syncs, missing on Tesela-only blocks until first push.
+- **Property mapping**: `status::done` ↔ `completed`, `deadline::` ↔ `dueDateComponents`, `priority::` ↔ `priority` (low/med/high → 9/5/1), `scheduled::` ↔ alarm time, block text ↔ `title`. Optional `reminder_location::` property carries geofence rules round-trip.
+- **Conflict resolution**: last-write-wins per field, with a `synced_at::` timestamp on the block. Property-level diffing so editing a deadline in Tesela doesn't clobber a tick on iOS.
+- **Sync trigger**: file-watcher diff → push; EventKit notification → pull → apply. Periodic full-reconcile on app start.
+- **Per-list mapping**: user picks which Reminders list mirrors the Task tag (default to a `Tesela` list created on first run).
+
+Out of scope for v1: shared lists, attachments, sub-reminders, multi-account, Reminders categories outside Tasks.
+
+#### 12.2 — Recurring tasks & events
+
+`recurring::` block property storing an rrule-subset string. On `status:: done`, the engine auto-creates the next occurrence and may move the original to a `completed_at::` archive. Forms:
+- `recurring:: daily`
+- `recurring:: weekly` (same DOW), `recurring:: every 2 weeks`
+- `recurring:: monthly` (same DOM, clamped), `recurring:: every 3 months`
+- `recurring:: weekdays`, `recurring:: weekends`
+- `recurring:: every monday, wednesday, friday`
+- `recurring:: yearly` (anniversary)
+
+Backend: recurrence engine in `tesela-core` (RFC 5545 rrule subset). Frontend: NL parser recognizes "every monday", "weekly"; DatePicker shows a "repeat" sub-row; chip displays "May 8 · weekly". Mirrors Apple Reminders' recurrence shape so 12.1 sync round-trips correctly.
+
+#### 12.3 — Notifications
+
+Desktop + optional web push for:
+- Deadline approaching (configurable lead time per property; defaults: 1h for `deadline`, 5m for `scheduled`)
+- Scheduled time fires
+- Recurring task rolled to today
+- (Stretch) Linked-block changes from another device or agent
+
+Implementation:
+- Web `Notification` API + service worker registration
+- `tesela-server` publishes an event stream over the existing WebSocket; web client subscribes and schedules `Notification.show()` per event
+- Settings: per-property rules (Tasks → 1h before `deadline`), per-tag overrides
+- Apple-side: when 12.1 ships, Reminders' own notifications cover iOS; desktop notifications stay Tesela-native
+
+#### 12.4 — Task hierarchy
+
+- **Subtasks**: already nest implicitly. Surface a "X of Y subtasks done" rollup chip on parent Task blocks; `Cmd+Enter` on parent opens a quick-add for a child.
+- **Dependencies**: `blocks::` / `blocked_by::` properties (block-link references). When the last blocker flips to `done`, dependent's status auto-cycles to `todo`. Visualizer: a small lock icon on chips of blocked tasks.
+- **Project rollup**: tag-table summary row shows `done/total` counts and earliest unmet `deadline` per Project tag. Drives the dashboard view of "what's open this week."
+
+#### Sequencing
+
+1. **12.2 Recurring** ships first — it's purely local, exercises the property + chip system, and is a prerequisite for 12.1 round-tripping recurring Reminders.
+2. **12.3 Notifications** ships second — wires the WS event stream + Notification API; small surface, big perceived value.
+3. **12.1 Apple Reminders sync** ships third — biggest scope, needs Swift FFI work; depends on stable `recurring::` semantics from 12.2.
+4. **12.4 Hierarchy** rolls in alongside 12.1 as polish.
 
 ### Phase 4: Distribution
 
