@@ -48,6 +48,21 @@
   }));
   const note: Note | undefined = $derived(noteQuery.data as Note | undefined);
 
+  // When a block from a different source note is focused (e.g., viewing /p/tasks
+  // query page but focusing a block from phase3gqa.md), fetch the block's source
+  // note separately. If focusedBlock.note_id === noteId (block from the current page),
+  // reuse the main note to avoid double-fetching.
+  const blockSourceNoteQuery = createQuery(() => ({
+    queryKey: ["note", focusedBlock?.note_id ?? ""] as const,
+    queryFn: () => api.getNote(focusedBlock!.note_id),
+    enabled: !!focusedBlock && focusedBlock.note_id !== noteId,
+  }));
+  const blockSourceNote: Note | undefined = $derived(
+    focusedBlock && focusedBlock.note_id === noteId
+      ? note
+      : (blockSourceNoteQuery.data as Note | undefined),
+  );
+
   const allNotesQuery = createQuery(() => ({
     queryKey: ["notes", { limit: 500 }] as const,
     queryFn: () => api.listNotes({ limit: 500 }),
@@ -124,15 +139,24 @@
     return after.startsWith("\n") ? after.slice(1) : after;
   }
 
-  // Re-derive block properties from the CURRENT note content, not from the
+  // Re-derive block properties from the block's SOURCE note content, not from the
   // focused-block store snapshot. The store is set when the user focuses a
   // block in the editor; if we read its `properties` directly, an
   // updateBlockProperty save (which only writes the note content + cache)
   // doesn't refresh the chip values until the user re-focuses the block.
-  // Looking the block up by id in the freshly-parsed note body fixes that.
+  // Looking the block up by id in the freshly-parsed source note body fixes that.
+  // blockSourceNote is fetched from focusedBlock.note_id and handles the case
+  // where a Query page is viewed but a block from a different source note is focused.
   const blockProperties = $derived.by(() => {
-    if (!focusedBlock || !note) return [];
-    const live = parseBlocks(note.id, extractBody(note.content)).find(
+    if (!focusedBlock) return [];
+    const sourceNote = blockSourceNote;
+    if (!sourceNote) {
+      // Source note hasn't loaded yet — fall back to the snapshot. This is rare
+      // (only the first render before the query resolves) and matches the
+      // pre-fix behavior.
+      return Object.entries(focusedBlock.properties).map(([key, value]) => ({ key, value }));
+    }
+    const live = parseBlocks(sourceNote.id, extractBody(sourceNote.content)).find(
       (b) => b.id === focusedBlock.id,
     );
     const source = live ?? focusedBlock;
