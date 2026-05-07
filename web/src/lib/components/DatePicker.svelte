@@ -4,14 +4,17 @@
 
   let {
     initialDate,
+    initialTime,
     position,
     onPick,
     onClose,
   }: {
     /** ISO date string `YYYY-MM-DD`. Defaults to today. */
     initialDate?: string;
+    /** Optional 24-hour `HH:mm`. */
+    initialTime?: string | null;
     position: { x: number; y: number };
-    onPick: (iso: string) => void;
+    onPick: (iso: string, time: string | null) => void;
     onClose: () => void;
   } = $props();
 
@@ -32,6 +35,11 @@
   let selected = $state<Date>(parseISO(initialDate));
   let viewMonth = $state<Date>(new Date(selected.getFullYear(), selected.getMonth(), 1));
   let nlInput = $state<string>("");
+  // Optional 24-hour `HH:mm` part of the value. The user can either type
+  // it as part of the NL input ("fri at 10am", "tom 14:30") or edit the
+  // time field below the calendar directly. `null` means no time set
+  // (date-only) — that's the default.
+  let selectedTime = $state<string | null>(initialTime ?? null);
 
   /** Live parser result. `null` when input is empty or unparseable. */
   const parsedFromInput = $derived.by(() => {
@@ -47,9 +55,12 @@
     if (nlInput === lastNlInput) return;
     lastNlInput = nlInput;
     if (parsedFromInput) {
-      const d = parseISO(parsedFromInput);
+      const d = parseISO(parsedFromInput.date);
       selected = d;
       viewMonth = new Date(d.getFullYear(), d.getMonth(), 1);
+      // Only overwrite time when the user actually typed one; preserve
+      // the existing selection when their NL is date-only.
+      if (parsedFromInput.time !== null) selectedTime = parsedFromInput.time;
     }
   });
 
@@ -104,7 +115,7 @@
   function handleKey(e: KeyboardEvent) {
     if (e.key === "Enter") {
       e.preventDefault();
-      onPick(fmt(selected));
+      onPick(fmt(selected), selectedTime);
       return;
     }
     if (e.key === "Escape") {
@@ -231,12 +242,37 @@
             {!isSelected && cell.inMonth ? 'text-foreground/85 hover:bg-muted/40' : ''}
             {!cell.inMonth ? 'text-muted-foreground/30 hover:bg-muted/30' : ''}
           "
-          onclick={() => { selected = cell.date; viewMonth = new Date(cell.date.getFullYear(), cell.date.getMonth(), 1); onPick(iso); }}
+          onclick={() => { selected = cell.date; viewMonth = new Date(cell.date.getFullYear(), cell.date.getMonth(), 1); onPick(iso, selectedTime); }}
           onblur={handleBlur}
           title={iso}
         >{cell.date.getDate()}</button>
       {/each}
     {/each}
+  </div>
+
+  <!-- Time field — optional 24-hour HH:mm. Empty input means date-only.
+       The NL input above also recognizes "fri at 10am" / "tom 14:30" and
+       fills this in; this field is the explicit edit/clear escape hatch. -->
+  <div class="flex items-center gap-2 mt-2 px-1">
+    <span class="text-[10px] text-muted-foreground/50 uppercase tracking-wider">time</span>
+    <input
+      type="time"
+      value={selectedTime ?? ""}
+      onchange={(e) => {
+        const v = (e.target as HTMLInputElement).value;
+        selectedTime = v ? v : null;
+      }}
+      class="flex-1 text-[12px] px-2 py-0.5 rounded bg-muted/30 border border-border/40
+             text-foreground focus:outline-none focus:border-primary/40"
+    />
+    {#if selectedTime}
+      <!-- svelte-ignore a11y_consider_explicit_label -->
+      <button
+        class="text-[10px] text-muted-foreground/50 hover:text-foreground/70 px-1.5 py-0.5"
+        onclick={() => (selectedTime = null)}
+        title="Clear time"
+      >×</button>
+    {/if}
   </div>
 
   <!-- Footer hint — adapts to focus mode so the user always sees the keys

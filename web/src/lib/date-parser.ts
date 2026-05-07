@@ -64,10 +64,56 @@ function soonestWeekday(base: Date, target: number): Date {
   return addDays(base, delta);
 }
 
-export function parseDateInput(input: string, today: Date = new Date()): string | null {
-  const s = input.trim().toLowerCase();
-  if (!s) return null;
+export type ParsedDateTime = { date: string; time: string | null };
 
+// Trailing time matcher: optional "at " prefix, hours, optional :minutes,
+// optional am/pm. Anchored to end-of-string. We only TREAT a tail as time
+// when it has either a colon, an am/pm marker, OR was preceded by "at" —
+// otherwise "fri 10" is ambiguous and we leave it for the date parser.
+const TRAILING_TIME_RE = /(?:^|\s)(at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i;
+
+function extractTime(s: string): { time: string | null; rest: string } {
+  if (s === "noon") return { time: "12:00", rest: "today" };
+  if (s === "midnight") return { time: "00:00", rest: "today" };
+
+  const m = s.match(TRAILING_TIME_RE);
+  if (!m) return { time: null, rest: s };
+
+  const hasAt = !!m[1];
+  const hasColon = m[3] !== undefined;
+  const hasAmPm = !!m[4];
+  if (!hasAt && !hasColon && !hasAmPm) return { time: null, rest: s };
+
+  let h = Number(m[2]);
+  const mins = m[3] ? Number(m[3]) : 0;
+  const ampm = m[4]?.toLowerCase();
+  if (ampm === "pm" && h < 12) h += 12;
+  if (ampm === "am" && h === 12) h = 0;
+  if (h < 0 || h > 23 || mins < 0 || mins > 59) return { time: null, rest: s };
+
+  const time = `${String(h).padStart(2, "0")}:${String(mins).padStart(2, "0")}`;
+  const rest = s.slice(0, m.index! + (m[0].startsWith(" ") ? 0 : 0)).trim();
+  return { time, rest: rest || "today" };
+}
+
+/**
+ * Parse a natural-language date+time phrase. Returns date and optional
+ * 24-hour time, or null on failure. Time-only input ("noon", "10am")
+ * defaults the date to today.
+ */
+export function parseDateInput(input: string, today: Date = new Date()): ParsedDateTime | null {
+  const raw = input.trim().toLowerCase();
+  if (!raw) return null;
+
+  const { time, rest } = extractTime(raw);
+  const s = rest;
+
+  const datePart = parseDatePart(s, today);
+  if (datePart === null) return null;
+  return { date: datePart, time };
+}
+
+function parseDatePart(s: string, today: Date): string | null {
   if (s === "today" || s === "tod") return fmt(today);
   if (s === "tomorrow" || s === "tom" || s === "tmrw") return fmt(addDays(today, 1));
   if (s === "yesterday" || s === "yes" || s === "yest") return fmt(addDays(today, -1));

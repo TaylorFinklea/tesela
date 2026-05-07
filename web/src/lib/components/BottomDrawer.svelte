@@ -398,11 +398,11 @@
     dateEditPropKey = propKey;
   }
 
-  function commitDateEditor(iso: string) {
+  function commitDateEditor(iso: string, time: string | null) {
     if (!dateEditPropKey) return;
-    const wrapped = wrapDateBrackets(iso);
-    if (panelContext === "block") void saveBlockProperty(dateEditPropKey, wrapped);
-    else void savePageProperty(dateEditPropKey, wrapped);
+    const stored = formatDateValue(iso, time);
+    if (panelContext === "block") void saveBlockProperty(dateEditPropKey, stored);
+    else void savePageProperty(dateEditPropKey, stored);
     dateEditPropKey = null;
   }
 
@@ -552,6 +552,34 @@
   function wrapDateBrackets(v: string): string {
     if (!v) return "";
     return /^\d{4}-\d{2}-\d{2}$/.test(v) ? `[[${v}]]` : v;
+  }
+  /**
+   * Date properties optionally carry a time. Storage format:
+   *   `[[YYYY-MM-DD]]`            (date only)
+   *   `[[YYYY-MM-DD]] HH:mm`      (with 24-hour time)
+   * Both halves round-trip through these helpers.
+   */
+  function parseDateValue(v: string): { date: string; time: string | null } {
+    const m = v.trim().match(/^\[\[(\d{4}-\d{2}-\d{2})\]\](?:\s+(\d{2}:\d{2}))?$/);
+    if (!m) return { date: v.trim(), time: null };
+    return { date: m[1], time: m[2] ?? null };
+  }
+  function formatDateValue(date: string, time: string | null): string {
+    if (!date) return "";
+    const wrapped = /^\d{4}-\d{2}-\d{2}$/.test(date) ? `[[${date}]]` : date;
+    return time ? `${wrapped} ${time}` : wrapped;
+  }
+  function format12h(time: string): string {
+    const [hStr, mStr] = time.split(":");
+    let h = Number(hStr);
+    const ampm = h >= 12 ? "PM" : "AM";
+    h = h % 12 || 12;
+    return `${h}:${mStr} ${ampm}`;
+  }
+  function displayDateValue(v: string): string {
+    const { date, time } = parseDateValue(v);
+    if (!date) return "—";
+    return time ? `${date} · ${format12h(time)}` : date;
   }
   // Inline-input keydown contract:
   //   Enter  → commit + close edit mode, focus drawer (j/k navigates again)
@@ -922,7 +950,7 @@
                         openDateEditor(prop.key, anchor);
                       }}
                     >
-                      <span>{stripDateBrackets(prop.value) || "—"}</span>
+                      <span>{displayDateValue(prop.value)}</span>
                       <span class="caret">▾</span>
                     </button>
                   {:else if editingBlockKey === prop.key}
@@ -1079,7 +1107,7 @@
                         openDateEditor(prop.key, anchor);
                       }}
                     >
-                      <span>{stripDateBrackets(prop.value) || "—"}</span>
+                      <span>{displayDateValue(prop.value)}</span>
                       <span class="caret">▾</span>
                     </button>
                   {:else if editingKey === prop.key}
@@ -1208,8 +1236,10 @@
 
 {#if dateEditPropKey}
   {@const editingProp = flatProperties.find((p) => p.key === dateEditPropKey)}
+  {@const parsed = editingProp ? parseDateValue(editingProp.value) : { date: "", time: null }}
   <DatePicker
-    initialDate={editingProp ? stripDateBrackets(editingProp.value) || undefined : undefined}
+    initialDate={parsed.date || undefined}
+    initialTime={parsed.time}
     position={dateEditPosition}
     onPick={commitDateEditor}
     onClose={() => (dateEditPropKey = null)}
