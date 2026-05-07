@@ -9,6 +9,8 @@
   import type { TypeDefinition } from "$lib/types/TypeDefinition";
   import type { PropertyDef } from "$lib/types/PropertyDef";
   import { buildRegistry } from "$lib/property-registry";
+  import { setFocusedBlock } from "$lib/stores/current-block.svelte";
+  import { setBottomDrawerOpen, setActiveRegion, setBottomTab } from "$lib/stores/pane-state.svelte";
   import KanbanCard from "./KanbanCard.svelte";
   import KanbanColumnPicker from "./KanbanColumnPicker.svelte";
 
@@ -230,6 +232,20 @@
           }
           movePickerBlock = block;
         }
+        break;
+      }
+      case "i": {
+        // Open BottomDrawer for the focused card so the user can edit its
+        // properties (deadline, priority, status, …) without leaving the
+        // board. The drawer is a singleton fed by `current-block.svelte`,
+        // so the same flow as BlockOutliner's `onfocusedblockchange`.
+        e.preventDefault();
+        const card = currentCards[focusedCardIndex];
+        if (!card) break;
+        setFocusedBlock(card);
+        setBottomDrawerOpen(true);
+        setActiveRegion("bottom");
+        setBottomTab("properties");
         break;
       }
     }
