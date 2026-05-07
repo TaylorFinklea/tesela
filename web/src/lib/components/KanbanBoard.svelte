@@ -10,7 +10,7 @@
   import type { PropertyDef } from "$lib/types/PropertyDef";
   import { buildRegistry } from "$lib/property-registry";
   import { setFocusedBlock } from "$lib/stores/current-block.svelte";
-  import { setBottomDrawerOpen, setActiveRegion, setBottomTab } from "$lib/stores/pane-state.svelte";
+  import { setBottomDrawerOpen, setActiveRegion, setBottomTab, getActiveRegion } from "$lib/stores/pane-state.svelte";
   import KanbanCard from "./KanbanCard.svelte";
   import KanbanColumnPicker from "./KanbanColumnPicker.svelte";
 
@@ -208,6 +208,11 @@
 
   function handleKanbanKeydown(e: KeyboardEvent) {
     if (!focused) return;
+    // Region gate: when focus has moved to the drawer (`bottom`) or rail,
+    // those panes own the keys. Without this, j/k/Enter etc. fire here at
+    // the same time as the drawer's handler, causing double-actions like
+    // drilling into a card while trying to commit a property edit.
+    if (getActiveRegion() !== "focus") return;
     if (movePickerBlock) return; // picker handles its own keys
 
     const target = e.target;
