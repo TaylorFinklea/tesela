@@ -505,8 +505,81 @@ html, body { height: 100%; margin: 0; }
    column so values line up vertically. The chips inherit `.pchip` styles
    (border, padding, font); we just override layout. */
 .v9-bottom .props-list { display: flex; flex-direction: column; gap: 4px; align-items: stretch; }
-.v9-bottom .props-list .pchip { display: grid; grid-template-columns: 110px 1fr; align-items: center; gap: 8px; padding: 4px 10px; }
+.v9-bottom .props-list .pchip { display: grid; grid-template-columns: 18px 92px 1fr; align-items: center; gap: 6px; padding: 4px 10px; }
 .v9-bottom .props-list .pchip .k { color: var(--v9-ink-faint); }
 .v9-bottom .props-list .pchip .v { color: var(--v9-ink); justify-self: start; }
 .v9-bottom .props-list .pchip select,
 .v9-bottom .props-list .pchip input { justify-self: stretch; max-width: 320px; }
+
+/* Chord letter chip leading the row. Visually small and dim until the
+   property is selected (then it picks up the amber accent). */
+.v9-bottom .props-list .pchip .prop-chord {
+  font-family: var(--v9-mono);
+  font-size: 9px;
+  font-weight: 600;
+  text-align: center;
+  padding: 1px 0;
+  border-radius: 3px;
+  background: var(--v9-bg-3);
+  border: 1px solid var(--v9-line);
+  color: var(--v9-ink-faint);
+  min-width: 16px;
+}
+.v9-bottom .props-list .pchip.selected .prop-chord { color: var(--v9-amber); border-color: var(--v9-amber); }
+
+/* Click-to-open value chip replacing the inline <select>. */
+.v9-bottom .props-list .pchip .value-chip {
+  justify-self: stretch;
+  max-width: 320px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  background: var(--v9-bg-3);
+  border: 1px solid var(--v9-line);
+  border-radius: 3px;
+  color: var(--v9-ink);
+  font-family: var(--v9-mono);
+  font-size: 11px;
+  cursor: pointer;
+  text-align: left;
+}
+.v9-bottom .props-list .pchip .value-chip .caret { color: var(--v9-ink-faint); font-size: 9px; margin-left: auto; }
+.v9-bottom .props-list .pchip .value-chip:hover { border-color: var(--v9-amber); }
+
+/* Inline-expanded picker rendered directly under the property row. */
+.v9-bottom .picker-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 6px 132px;        /* align under the value column */
+  padding: 4px;
+  border: 1px solid var(--v9-line);
+  border-radius: 4px;
+  background: var(--v9-bg-2);
+  max-width: 320px;
+  font-family: var(--v9-mono);
+  font-size: 11px;
+}
+.v9-bottom .picker-row {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+  color: var(--v9-ink);
+}
+.v9-bottom .picker-row.hl { background: color-mix(in srgb, var(--v9-amber) 12%, transparent); }
+.v9-bottom .picker-row .val-chord {
+  font-size: 9px;
+  font-weight: 600;
+  text-align: center;
+  padding: 1px 0;
+  border-radius: 3px;
+  background: var(--v9-bg-3);
+  border: 1px solid var(--v9-line);
+  color: var(--v9-amber);
+}
+.v9-bottom .picker-row .picker-check { color: var(--v9-amber); }

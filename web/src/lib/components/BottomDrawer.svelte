@@ -305,6 +305,74 @@
     else void savePageProperty(prop.key, next);
   }
 
+  // ── Chord-letter machinery ───────────────────────────────────────
+  // Each property gets a single-letter "jump" chord; each select choice
+  // gets a single-letter "commit" chord. First non-reserved letter of the
+  // name wins; on collision we walk the next letters. Reserved keys are
+  // the navigation keys the drawer already owns so chords never shadow
+  // j/k/h/l/x/g/G/Enter/Space/Esc/Tab.
+  const RESERVED_DRAWER_KEYS = new Set([
+    "j", "k", "h", "l", "x", "g", "G", "Enter", " ", "Escape", "Tab",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+  ]);
+  function pickChord(name: string, used: Set<string>): string | null {
+    for (const ch of name.toLowerCase()) {
+      if (!/^[a-z]$/.test(ch)) continue;
+      if (RESERVED_DRAWER_KEYS.has(ch)) continue;
+      if (used.has(ch)) continue;
+      used.add(ch);
+      return ch;
+    }
+    return null;
+  }
+  function deriveValueChords(choices: string[]): Map<string, string> {
+    const used = new Set<string>();
+    const map = new Map<string, string>();
+    for (const c of choices) {
+      const ch = pickChord(c, used);
+      if (ch) map.set(c, ch);
+    }
+    return map;
+  }
+  const propertyChords: Map<string, string> = $derived.by(() => {
+    const used = new Set<string>();
+    const map = new Map<string, string>();
+    for (const p of flatProperties) {
+      const ch = pickChord(p.key, used);
+      if (ch) map.set(p.key, ch);
+    }
+    return map;
+  });
+
+  // ── Picker state ─────────────────────────────────────────────────
+  // The Linear-style inline picker. When `pickerOpen`, a list of choices
+  // is rendered below the focused property's chip. Letter chord, j/k +
+  // Enter, or click commits a value.
+  let pickerOpen = $state(false);
+  let pickerHighlightIdx = $state(0);
+
+  function openPickerForCurrent() {
+    const prop = flatProperties[selectedPropertyIndex];
+    if (!prop) return;
+    const def = propertyRegistry.get(prop.key.toLowerCase());
+    if (!def) return;
+    if (def.value_type === "select" || def.value_type === "multi-select") {
+      const choices = getVisibleChoices(def, panelContext === "block" ? blockHiddenChoices : hiddenChoices);
+      pickerHighlightIdx = Math.max(0, choices.indexOf(prop.value));
+      pickerOpen = true;
+    } else if (def.value_type === "checkbox") {
+      toggleCheckboxValue();
+    } else {
+      enterEditOnCurrent();
+    }
+  }
+
+  function commitPickerValue(propKey: string, choice: string) {
+    if (panelContext === "block") void saveBlockProperty(propKey, choice);
+    else void savePageProperty(propKey, choice);
+    pickerOpen = false;
+  }
+
   function clearCurrentProperty() {
     const prop = flatProperties[selectedPropertyIndex];
     if (!prop) return;
@@ -479,28 +547,66 @@
       const isSelect = def?.value_type === "select" || def?.value_type === "multi-select";
       const isCheckbox = def?.value_type === "checkbox";
 
+      // PICKER MODE — when a select picker is open, all keys belong to it.
+      if (pickerOpen && def && isSelect) {
+        const choices = getVisibleChoices(def, panelContext === "block" ? blockHiddenChoices : hiddenChoices);
+        if (e.key === "Escape") { e.preventDefault(); pickerOpen = false; return; }
+        if (e.key === "j" || e.key === "ArrowDown") {
+          e.preventDefault();
+          pickerHighlightIdx = Math.min(choices.length - 1, pickerHighlightIdx + 1);
+          return;
+        }
+        if (e.key === "k" || e.key === "ArrowUp") {
+          e.preventDefault();
+          pickerHighlightIdx = Math.max(0, pickerHighlightIdx - 1);
+          return;
+        }
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const choice = choices[pickerHighlightIdx];
+          if (choice && prop) commitPickerValue(prop.key, choice);
+          return;
+        }
+        // Letter chord → commit that choice directly.
+        const valChords = deriveValueChords(choices);
+        const matched = [...valChords.entries()].find(([, ch]) => ch === e.key)?.[0];
+        if (matched && prop) {
+          e.preventDefault();
+          commitPickerValue(prop.key, matched);
+          return;
+        }
+        // Swallow unmatched letters to avoid leaking to the leader handler.
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          e.preventDefault();
+        }
+        return;
+      }
+
+      // NAV MODE — list of properties.
       if (e.key === "j" || e.key === "ArrowDown") {
         e.preventDefault();
         if (flatProperties.length > 0) {
           selectedPropertyIndex = Math.min(flatProperties.length - 1, selectedPropertyIndex + 1);
         }
+        pickerOpen = false;
       } else if (e.key === "k" || e.key === "ArrowUp") {
         e.preventDefault();
         if (flatProperties.length > 0) {
           selectedPropertyIndex = Math.max(0, selectedPropertyIndex - 1);
         }
+        pickerOpen = false;
       } else if (e.key === "g") {
         e.preventDefault();
         selectedPropertyIndex = 0;
+        pickerOpen = false;
       } else if (e.key === "G") {
         e.preventDefault();
         selectedPropertyIndex = Math.max(0, flatProperties.length - 1);
-      } else if (e.key === " ") {
-        // Space: cycle for select, toggle for checkbox, fall through to inline-edit otherwise.
+        pickerOpen = false;
+      } else if (e.key === " " || e.key === "Enter") {
+        // Open the picker for the current property (or toggle checkbox / inline-edit text).
         e.preventDefault();
-        if (isSelect) cycleSelectValue(e.shiftKey ? -1 : 1);
-        else if (isCheckbox) toggleCheckboxValue();
-        else if (prop) enterEditOnCurrent();
+        if (prop) openPickerForCurrent();
       } else if (e.key === "l" && isSelect) {
         e.preventDefault();
         cycleSelectValue(1);
@@ -510,9 +616,16 @@
       } else if (e.key === "x") {
         e.preventDefault();
         clearCurrentProperty();
-      } else if (e.key === "Enter" && prop) {
-        e.preventDefault();
-        enterEditOnCurrent();
+      } else {
+        // Property-chord activation: jump to the named property AND open
+        // its picker / edit. Two-keystroke edits with the value chord
+        // (e.g. `s` then `D` = status:done).
+        const matchedIdx = flatProperties.findIndex((p) => propertyChords.get(p.key) === e.key);
+        if (matchedIdx >= 0) {
+          e.preventDefault();
+          selectedPropertyIndex = matchedIdx;
+          openPickerForCurrent();
+        }
       }
     }
   }
@@ -595,11 +708,14 @@
                 {@const def = propertyRegistry.get(prop.key.toLowerCase())}
                 {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, blockHiddenChoices) : []}
                 {@const propSelected = focused && tab === "properties" && panelContext === "block" && selectedPropertyIndex === pi}
+                {@const propChord = propertyChords.get(prop.key)}
+                {@const valChords = visibleChoices.length > 0 ? deriveValueChords(visibleChoices) : new Map()}
                 <span
                   class="pchip {propSelected ? 'selected' : ''}"
                   data-prop-index={pi}
                   data-prop-context="block"
                 >
+                  {#if propChord}<kbd class="prop-chord">{propChord}</kbd>{/if}
                   <span class="k">{prop.key}</span>
                   {#if def?.value_type === "checkbox"}
                     <input
@@ -608,18 +724,14 @@
                       onchange={(e) => saveBlockProperty(prop.key, (e.target as HTMLInputElement).checked ? "true" : "false")}
                     />
                   {:else if isSelectType(def)}
-                    <select
-                      value={prop.value}
-                      onchange={(e) => saveBlockProperty(prop.key, (e.target as HTMLSelectElement).value)}
-                      style="background: var(--v9-bg-3); color: var(--v9-ink); border: 1px solid var(--v9-line); font-family: var(--v9-mono); font-size: 11px;"
+                    <button
+                      class="value-chip"
+                      type="button"
+                      onclick={(e) => { e.stopPropagation(); selectedPropertyIndex = pi; if (propSelected && pickerOpen) pickerOpen = false; else openPickerForCurrent(); }}
                     >
-                      {#if !visibleChoices.includes(prop.value)}
-                        <option value={prop.value}>{prop.value}</option>
-                      {/if}
-                      {#each visibleChoices as choice}
-                        <option value={choice}>{choice}</option>
-                      {/each}
-                    </select>
+                      <span>{prop.value || "—"}</span>
+                      <span class="caret">▾</span>
+                    </button>
                   {:else if def?.value_type === "date"}
                     <input
                       type="date"
@@ -644,6 +756,26 @@
                     >{prop.value}</span>
                   {/if}
                 </span>
+                {#if propSelected && pickerOpen && isSelectType(def) && visibleChoices.length > 0}
+                  <div class="picker-popover">
+                    {#each visibleChoices as choice, ci}
+                      {@const ch = valChords.get(choice)}
+                      {@const isCurrent = choice === prop.value}
+                      {@const isHL = ci === pickerHighlightIdx}
+                      <!-- svelte-ignore a11y_no_static_element_interactions -->
+                      <!-- svelte-ignore a11y_click_events_have_key_events -->
+                      <div
+                        class="picker-row {isHL ? 'hl' : ''}"
+                        onclick={() => commitPickerValue(prop.key, choice)}
+                        onmouseenter={() => (pickerHighlightIdx = ci)}
+                      >
+                        <kbd class="val-chord">{ch ?? "·"}</kbd>
+                        <span class="picker-label">{choice}</span>
+                        {#if isCurrent}<span class="picker-check">✓</span>{/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
               {/each}
             </div>
           {:else}
