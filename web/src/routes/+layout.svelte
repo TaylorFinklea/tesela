@@ -142,18 +142,22 @@
     void ensureSystemWidgets(api);
 
     const spaceHandler = (e: KeyboardEvent) => {
-      if (e.key === " " && !showLeaderMenu) {
-        const target = e.target as HTMLElement;
-        const isEditing =
-          target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.tagName === "SELECT" ||
-          target.isContentEditable ||
-          target.closest(".cm-editor");
-        if (!isEditing) {
-          e.preventDefault();
-          showLeaderMenu = true;
-        }
+      if (e.key !== " " || showLeaderMenu) return;
+      // Region gate: drawer / rail / middle own Space when active. Without
+      // this, Space on the drawer wrapper (a tabindex=0 div) opens the
+      // leader menu instead of letting the drawer's own keydown handler
+      // run its cycle/toggle/edit action.
+      if (getActiveRegion() !== "focus") return;
+      const target = e.target as HTMLElement;
+      const isEditing =
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.tagName === "SELECT" ||
+        target.isContentEditable ||
+        target.closest(".cm-editor");
+      if (!isEditing) {
+        e.preventDefault();
+        showLeaderMenu = true;
       }
     };
 

@@ -12,7 +12,7 @@
   } from "$lib/stores/pane-state.svelte";
   import { getFocusedBlock } from "$lib/stores/current-block.svelte";
   import { parseBlocks } from "$lib/block-parser";
-  import { updateBlockProperty } from "$lib/property-update";
+  import { updateBlockProperty, clearBlockProperty } from "$lib/property-update";
   import {
     buildRegistry,
     buildInheritanceMap,
@@ -252,6 +252,47 @@
       }
     });
   }
+  // Vim-like one-keystroke editors. `Space` (or h/l) cycles a select's
+  // value in NAV mode; `x` clears a block property; `Space` toggles a
+  // checkbox. Keeps the drawer keyboard-only — no need to focus the inner
+  // <select> or open a popup just to flip a status.
+  function cycleSelectValue(direction: 1 | -1) {
+    const prop = flatProperties[selectedPropertyIndex];
+    if (!prop) return;
+    const def = propertyRegistry.get(prop.key.toLowerCase());
+    if (!def || (def.value_type !== "select" && def.value_type !== "multi-select")) return;
+    const hidden = panelContext === "block" ? blockHiddenChoices : hiddenChoices;
+    const choices = getVisibleChoices(def, hidden);
+    if (choices.length === 0) return;
+    const currentIdx = choices.indexOf(prop.value);
+    const nextIdx = ((currentIdx + direction) % choices.length + choices.length) % choices.length;
+    const nextVal = choices[nextIdx];
+    if (panelContext === "block") void saveBlockProperty(prop.key, nextVal);
+    else void savePageProperty(prop.key, nextVal);
+  }
+
+  function toggleCheckboxValue() {
+    const prop = flatProperties[selectedPropertyIndex];
+    if (!prop) return;
+    const def = propertyRegistry.get(prop.key.toLowerCase());
+    if (def?.value_type !== "checkbox") return;
+    const next = prop.value === "true" ? "false" : "true";
+    if (panelContext === "block") void saveBlockProperty(prop.key, next);
+    else void savePageProperty(prop.key, next);
+  }
+
+  function clearCurrentProperty() {
+    const prop = flatProperties[selectedPropertyIndex];
+    if (!prop) return;
+    if (panelContext !== "block" || !focusedBlock) return;
+    void clearBlockProperty({
+      block: focusedBlock,
+      propKey: prop.key,
+      tagName: note?.metadata.note_type === "Tag" ? (note.title ?? "") : "",
+      queryClient,
+    });
+  }
+
   function isSelectType(def: PropertyDefinition | undefined): boolean {
     return def?.value_type === "select" || def?.value_type === "multi-select";
   }
@@ -409,6 +450,11 @@
     } else if (tab === "properties") {
       // While editing an inline input, that input owns its keys (handlePage/BlockKeydown).
       if (editingKey !== null || editingBlockKey !== null) return;
+      const prop = flatProperties[selectedPropertyIndex];
+      const def = prop ? propertyRegistry.get(prop.key.toLowerCase()) : undefined;
+      const isSelect = def?.value_type === "select" || def?.value_type === "multi-select";
+      const isCheckbox = def?.value_type === "checkbox";
+
       if (e.key === "j" || e.key === "ArrowDown") {
         e.preventDefault();
         if (flatProperties.length > 0) {
@@ -419,7 +465,28 @@
         if (flatProperties.length > 0) {
           selectedPropertyIndex = Math.max(0, selectedPropertyIndex - 1);
         }
-      } else if (e.key === "Enter" && flatProperties[selectedPropertyIndex]) {
+      } else if (e.key === "g") {
+        e.preventDefault();
+        selectedPropertyIndex = 0;
+      } else if (e.key === "G") {
+        e.preventDefault();
+        selectedPropertyIndex = Math.max(0, flatProperties.length - 1);
+      } else if (e.key === " ") {
+        // Space: cycle for select, toggle for checkbox, fall through to inline-edit otherwise.
+        e.preventDefault();
+        if (isSelect) cycleSelectValue(e.shiftKey ? -1 : 1);
+        else if (isCheckbox) toggleCheckboxValue();
+        else if (prop) enterEditOnCurrent();
+      } else if (e.key === "l" && isSelect) {
+        e.preventDefault();
+        cycleSelectValue(1);
+      } else if (e.key === "h" && isSelect) {
+        e.preventDefault();
+        cycleSelectValue(-1);
+      } else if (e.key === "x") {
+        e.preventDefault();
+        clearCurrentProperty();
+      } else if (e.key === "Enter" && prop) {
         e.preventDefault();
         enterEditOnCurrent();
       }
