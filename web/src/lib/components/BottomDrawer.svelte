@@ -385,6 +385,11 @@
     }
     if (e.key === "Escape") {
       e.preventDefault();
+      // Blur whatever is focused inside the drawer (e.g. a `<select>` the
+      // user opened to edit a property). Without this, document focus stays
+      // on the drawer element and continues consuming keys via native
+      // typeahead even though the active region has flipped back to "focus".
+      (document.activeElement as HTMLElement | null)?.blur();
       setActiveRegion("focus");
       return;
     }

@@ -147,6 +147,7 @@
         const isEditing =
           target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
           target.isContentEditable ||
           target.closest(".cm-editor");
         if (!isEditing) {
