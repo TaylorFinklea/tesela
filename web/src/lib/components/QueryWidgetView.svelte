@@ -10,6 +10,11 @@
   import { api } from "$lib/api-client";
   import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
   import { setFocusedBlock } from "$lib/stores/current-block.svelte";
+  import {
+    setBottomDrawerOpen,
+    setActiveRegion,
+    setBottomTab,
+  } from "$lib/stores/pane-state.svelte";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import {
     applyTriage,
@@ -389,6 +394,16 @@
     } else if (e.key === "Enter" && flatRows[selectedIndex]) {
       e.preventDefault();
       openRow(flatRows[selectedIndex]);
+    } else if (e.key === "i" && flatRows[selectedIndex]?.kind === "block") {
+      // Mirrors Kanban's `i` — push the selected block to the drawer and
+      // focus it, so the user can edit properties without leaving the table.
+      e.preventDefault();
+      const stub = rowToStub(flatRows[selectedIndex]);
+      if (!stub) return;
+      setFocusedBlock(stub);
+      setBottomDrawerOpen(true);
+      setActiveRegion("bottom");
+      setBottomTab("properties");
     } else if (e.key === "s" && flatRows[selectedIndex]?.kind === "block") {
       // Phase 9.9 — `s` cycles the highlighted row's status without
       // leaving the result list.
