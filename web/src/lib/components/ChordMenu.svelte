@@ -124,14 +124,37 @@
     return level;
   });
 
-  let filteredLevel = $derived.by((): ChordNode[] => {
-    if (!searchOpen || !searchValue.trim()) return currentLevel;
-    const q = searchValue.toLowerCase();
-    return currentLevel.filter((n) => n.label.toLowerCase().includes(q));
+  /**
+   * Recursive flattening for search mode. Walks every descendant of the
+   * current breadcrumb level so typing "dude" surfaces `Status › Dude`
+   * (a value buried two levels deep), not just top-level matches. Each
+   * entry carries its parent path so we can render a "Path › Label"
+   * label and, on select, descend into groups or fire leaf actions
+   * directly (skipping intermediate breadcrumb hops).
+   */
+  type FlatEntry = { node: ChordNode; path: string[]; fullLabel: string };
+  function flattenForSearch(level: ChordNode[], path: string[] = []): FlatEntry[] {
+    const out: FlatEntry[] = [];
+    for (const node of level) {
+      const fullLabel = path.length === 0 ? node.label : `${path.join(" › ")} › ${node.label}`;
+      out.push({ node, path: [...path], fullLabel });
+      if (node.children) out.push(...flattenForSearch(node.children, [...path, node.label]));
+    }
+    return out;
+  }
+  let allEntries = $derived.by((): FlatEntry[] => {
+    if (!searchOpen) return [];
+    return flattenForSearch(currentLevel);
+  });
+  let filteredEntries = $derived.by((): FlatEntry[] => {
+    if (!searchOpen) return [];
+    const q = searchValue.trim().toLowerCase();
+    if (!q) return allEntries;
+    return allEntries.filter((e) => e.fullLabel.toLowerCase().includes(q));
   });
   // Clamp the highlight when the filter narrows.
   $effect(() => {
-    if (searchIdx >= filteredLevel.length) searchIdx = Math.max(0, filteredLevel.length - 1);
+    if (searchIdx >= filteredEntries.length) searchIdx = Math.max(0, filteredEntries.length - 1);
   });
 
   function handleSelect(node: ChordNode) {
@@ -145,6 +168,33 @@
     } else if (node.action) {
       node.action();
       onclose();
+    }
+    // Selection always exits search mode so the user sees the post-action
+    // state (descended chord level / popover closed). Idempotent if search
+    // was never opened.
+    if (searchOpen) {
+      searchOpen = false;
+      searchValue = "";
+      searchIdx = 0;
+    }
+  }
+  /**
+   * Phase 12.2 — selection target for a flattened search entry. For groups
+   * we descend the breadcrumb to the entry's parent path before opening
+   * the group, so the resulting view matches what the user expects (e.g.
+   * search "Status" and select → land inside Status's value list, not at
+   * the top level with the breadcrumb out of sync). For leaves we just
+   * fire the action; the breadcrumb stays where it was since the menu
+   * closes either way.
+   */
+  function handleSelectEntry(entry: FlatEntry) {
+    if (entry.node.children) {
+      breadcrumb = [...breadcrumb, ...entry.path, entry.node.label];
+      searchOpen = false;
+      searchValue = "";
+      searchIdx = 0;
+    } else {
+      handleSelect(entry.node);
     }
   }
 
@@ -204,25 +254,25 @@
       // Cmd+1..Cmd+9 quick-select Nth filtered match.
       if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
         const i = Number(e.key) - 1;
-        const node = filteredLevel[i];
-        if (node) {
+        const entry = filteredEntries[i];
+        if (entry) {
           e.preventDefault();
           e.stopPropagation();
-          handleSelect(node);
+          handleSelectEntry(entry);
         }
         return;
       }
       if (e.key === "Enter") {
         e.preventDefault();
         e.stopPropagation();
-        const node = filteredLevel[searchIdx];
-        if (node) handleSelect(node);
+        const entry = filteredEntries[searchIdx];
+        if (entry) handleSelectEntry(entry);
         return;
       }
       if (e.key === "ArrowDown" || (e.key === "j" && (e.metaKey || e.ctrlKey))) {
         e.preventDefault();
         e.stopPropagation();
-        searchIdx = Math.min(filteredLevel.length - 1, searchIdx + 1);
+        searchIdx = Math.min(filteredEntries.length - 1, searchIdx + 1);
         return;
       }
       if (e.key === "ArrowUp" || (e.key === "k" && (e.metaKey || e.ctrlKey))) {
@@ -319,28 +369,33 @@
       </div>
     </div>
     <div class="chord-list">
-      {#each filteredLevel as node, idx (node.key + ":" + node.label)}
+      {#each filteredEntries as entry, idx (entry.path.join("/") + "/" + entry.node.label)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
           class="chord-row {idx === searchIdx ? 'chord-row--selected' : ''}"
-          onclick={() => handleSelect(node)}
+          onclick={() => handleSelectEntry(entry)}
         >
           {#if idx < 9}
             <kbd class="chord-key">⌘{idx + 1}</kbd>
           {:else}
-            <kbd class="chord-key">{node.key}</kbd>
+            <kbd class="chord-key">{entry.node.key}</kbd>
           {/if}
-          <span class="chord-label">{node.label}</span>
-          {#if node.hint}
-            <kbd class="chord-hint" title="Alternative path">{node.hint}</kbd>
+          <span class="chord-label">
+            {#if entry.path.length > 0}
+              <span class="chord-path">{entry.path.join(" › ")} ›</span>
+            {/if}
+            {entry.node.label}
+          </span>
+          {#if entry.node.hint}
+            <kbd class="chord-hint" title="Alternative path">{entry.node.hint}</kbd>
           {/if}
-          {#if node.children || node.input}
+          {#if entry.node.children || entry.node.input}
             <span class="chord-more">›</span>
           {/if}
         </div>
       {/each}
-      {#if filteredLevel.length === 0}
+      {#if filteredEntries.length === 0}
         <div class="chord-empty">No matches</div>
       {/if}
     </div>
@@ -430,6 +485,11 @@
   }
   .chord-row:hover { background: color-mix(in srgb, var(--primary) 12%, transparent); }
   .chord-row--selected { background: color-mix(in srgb, var(--primary) 18%, transparent); }
+  .chord-path {
+    color: var(--v9-ink-faint);
+    font-size: 11px;
+    margin-right: 4px;
+  }
   .chord-empty {
     padding: 6px 8px;
     color: var(--v9-ink-faint);
