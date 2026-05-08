@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { parseDateInput } from "$lib/date-parser";
+  import { parseDateAndRecurrenceInput, parseRecurrenceInput } from "$lib/date-parser";
 
   let {
     initialDate,
     initialTime,
+    initialRecurrence,
     position,
     onPick,
     onClose,
@@ -13,8 +14,13 @@
     initialDate?: string;
     /** Optional 24-hour `HH:mm`. */
     initialTime?: string | null;
+    /** Canonical recurrence string (e.g. `"monthly"`, `"every 2 weeks"`)
+     *  or `null` for non-recurring. */
+    initialRecurrence?: string | null;
     position: { x: number; y: number };
-    onPick: (iso: string, time: string | null) => void;
+    /** Phase 12.2 — recurrence is the third tuple element. `null` means
+     *  "non-recurring" (and clears any existing `recurring::`). */
+    onPick: (iso: string, time: string | null, recurrence: string | null) => void;
     onClose: () => void;
   } = $props();
 
@@ -40,11 +46,26 @@
   // time field below the calendar directly. `null` means no time set
   // (date-only) — that's the default.
   let selectedTime = $state<string | null>(initialTime ?? null);
+  // Phase 12.2 — canonical recurrence string (or null for non-recurring).
+  // Buttons set this to one of the presets; the custom input round-trips
+  // through `parseRecurrenceInput` so only valid values land here.
+  let selectedRecurrence = $state<string | null>(initialRecurrence ?? null);
+  // Custom recurrence input — only visible when the "custom" chord is on
+  // or the current selectedRecurrence isn't one of the preset chips.
+  const PRESETS = ["daily", "weekly", "monthly", "yearly", "weekdays"] as const;
+  let customRecurrenceOpen = $state<boolean>(
+    !!initialRecurrence && !(PRESETS as readonly string[]).includes(initialRecurrence),
+  );
+  let customRecurrenceInput = $state<string>(
+    initialRecurrence && !(PRESETS as readonly string[]).includes(initialRecurrence)
+      ? initialRecurrence
+      : "",
+  );
 
   /** Live parser result. `null` when input is empty or unparseable. */
   const parsedFromInput = $derived.by(() => {
     if (!nlInput.trim()) return null;
-    return parseDateInput(nlInput);
+    return parseDateAndRecurrenceInput(nlInput);
   });
 
   // When the user types a recognizable phrase, jump the highlighted day +
@@ -61,6 +82,17 @@
       // Only overwrite time when the user actually typed one; preserve
       // the existing selection when their NL is date-only.
       if (parsedFromInput.time !== null) selectedTime = parsedFromInput.time;
+      // Same shape for recurrence — only adopt when the user typed a tail
+      // ("fri weekly" → recurrence=weekly).
+      if (parsedFromInput.recurrence !== null) {
+        selectedRecurrence = parsedFromInput.recurrence;
+        if (!(PRESETS as readonly string[]).includes(parsedFromInput.recurrence)) {
+          customRecurrenceOpen = true;
+          customRecurrenceInput = parsedFromInput.recurrence;
+        } else {
+          customRecurrenceOpen = false;
+        }
+      }
     }
   });
 
@@ -115,7 +147,7 @@
   function handleKey(e: KeyboardEvent) {
     if (e.key === "Enter") {
       e.preventDefault();
-      onPick(fmt(selected), selectedTime);
+      onPick(fmt(selected), selectedTime, selectedRecurrence);
       return;
     }
     if (e.key === "Escape") {
@@ -242,7 +274,7 @@
             {!isSelected && cell.inMonth ? 'text-foreground/85 hover:bg-muted/40' : ''}
             {!cell.inMonth ? 'text-muted-foreground/30 hover:bg-muted/30' : ''}
           "
-          onclick={() => { selected = cell.date; viewMonth = new Date(cell.date.getFullYear(), cell.date.getMonth(), 1); onPick(iso, selectedTime); }}
+          onclick={() => { selected = cell.date; viewMonth = new Date(cell.date.getFullYear(), cell.date.getMonth(), 1); onPick(iso, selectedTime, selectedRecurrence); }}
           onblur={handleBlur}
           title={iso}
         >{cell.date.getDate()}</button>
@@ -274,6 +306,60 @@
       >×</button>
     {/if}
   </div>
+
+  <!-- Recurrence sub-row — Phase 12.2. Picks the canonical string we'll
+       store on `recurring::`. `none` clears it; `custom` reveals a text
+       field that runs through `parseRecurrenceInput` (e.g. "every 3 weeks"). -->
+  <div class="flex items-center gap-1 mt-2 px-1 flex-wrap">
+    <span class="text-[10px] text-muted-foreground/50 uppercase tracking-wider mr-1">repeat</span>
+    {#each [
+      { label: "none", value: null },
+      { label: "daily", value: "daily" },
+      { label: "weekly", value: "weekly" },
+      { label: "monthly", value: "monthly" },
+      { label: "yearly", value: "yearly" },
+      { label: "weekdays", value: "weekdays" },
+    ] as opt}
+      {@const active = selectedRecurrence === opt.value && !customRecurrenceOpen}
+      <!-- svelte-ignore a11y_consider_explicit_label -->
+      <button
+        class="text-[10px] px-1.5 py-0.5 rounded border transition-colors
+               {active ? 'bg-primary text-primary-foreground border-primary' : 'border-border/40 text-foreground/70 hover:bg-muted/40'}"
+        onclick={() => { selectedRecurrence = opt.value; customRecurrenceOpen = false; }}
+        onblur={handleBlur}
+      >{opt.label}</button>
+    {/each}
+    <!-- svelte-ignore a11y_consider_explicit_label -->
+    <button
+      class="text-[10px] px-1.5 py-0.5 rounded border transition-colors
+             {customRecurrenceOpen ? 'bg-primary text-primary-foreground border-primary' : 'border-border/40 text-foreground/70 hover:bg-muted/40'}"
+      onclick={() => {
+        customRecurrenceOpen = !customRecurrenceOpen;
+        if (customRecurrenceOpen && customRecurrenceInput) {
+          const rec = parseRecurrenceInput(customRecurrenceInput);
+          if (rec) selectedRecurrence = rec;
+        }
+      }}
+      onblur={handleBlur}
+    >custom</button>
+  </div>
+
+  {#if customRecurrenceOpen}
+    {@const customParse = parseRecurrenceInput(customRecurrenceInput)}
+    <input
+      bind:value={customRecurrenceInput}
+      onblur={handleBlur}
+      placeholder='e.g. "every 3 weeks"'
+      class="w-full text-[12px] px-2 py-1 mt-1 rounded bg-muted/30 border
+             text-foreground placeholder:text-muted-foreground/40
+             focus:outline-none focus:border-primary/40
+             {customRecurrenceInput.trim() && !customParse ? 'border-destructive/40' : 'border-border/40'}"
+      oninput={() => {
+        const rec = parseRecurrenceInput(customRecurrenceInput);
+        selectedRecurrence = rec;
+      }}
+    />
+  {/if}
 
   <!-- Footer hint — adapts to focus mode so the user always sees the keys
        that are live right now. -->

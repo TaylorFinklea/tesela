@@ -386,7 +386,9 @@
       // anchor is too close to the bottom edge (the drawer hugs the bottom
       // of the viewport, so this is the common case).
       const PICKER_W = 280;
-      const PICKER_H = 340;
+      // Phase 12.2 added the repeat sub-row + optional custom input,
+      // pushing the picker taller. Estimated worst case (custom open).
+      const PICKER_H = 400;
       const margin = 8;
       const fitsBelow = rect.bottom + PICKER_H + margin <= window.innerHeight;
       const y = fitsBelow ? rect.bottom + 4 : Math.max(margin, rect.top - PICKER_H - 4);
@@ -398,11 +400,27 @@
     dateEditPropKey = propKey;
   }
 
-  function commitDateEditor(iso: string, time: string | null) {
+  function commitDateEditor(iso: string, time: string | null, recurrence: string | null) {
     if (!dateEditPropKey) return;
     const stored = formatDateValue(iso, time);
     if (panelContext === "block") void saveBlockProperty(dateEditPropKey, stored);
     else void savePageProperty(dateEditPropKey, stored);
+    // Phase 12.2 — when the picker emits a recurrence, sync `recurring::`
+    // on the same block. Null = explicit "none" → clear if it existed.
+    // Page-level recurrence is out of scope for v1.
+    if (panelContext === "block" && focusedBlock) {
+      const existing = blockProperties.find((p) => p.key.toLowerCase() === "recurring");
+      if (recurrence !== null) {
+        void saveBlockProperty("recurring", recurrence);
+      } else if (existing) {
+        void clearBlockProperty({
+          block: focusedBlock,
+          propKey: "recurring",
+          tagName: note?.metadata.note_type === "Tag" ? (note.title ?? "") : "",
+          queryClient,
+        });
+      }
+    }
     dateEditPropKey = null;
   }
 
@@ -1237,9 +1255,13 @@
 {#if dateEditPropKey}
   {@const editingProp = flatProperties.find((p) => p.key === dateEditPropKey)}
   {@const parsed = editingProp ? parseDateValue(editingProp.value) : { date: "", time: null }}
+  {@const existingRecur = panelContext === "block"
+    ? blockProperties.find((p) => p.key.toLowerCase() === "recurring")?.value ?? null
+    : null}
   <DatePicker
     initialDate={parsed.date || undefined}
     initialTime={parsed.time}
+    initialRecurrence={existingRecur}
     position={dateEditPosition}
     onPick={commitDateEditor}
     onClose={() => (dateEditPropKey = null)}

@@ -1392,14 +1392,19 @@
   {#if showDatePicker}
     <DatePicker
       position={datePickerPosition}
-      onPick={(iso) => {
+      onPick={(iso, _time, recurrence) => {
         if (view && datePickerCursor >= 0) {
           if (datePickerPropertyKey) {
             // Phase 10.5 — date-typed property: upsert via the same helper
             // the chord-leaf path uses, so picking a date for an existing
             // `deadline::` line replaces it instead of duplicating.
+            // Phase 12.2 — when the picker emits a recurrence, also upsert
+            // `recurring::` so a single keystroke commits both properties.
             const doc = view.state.doc.toString();
-            const next = upsertBlockProperty(doc, datePickerPropertyKey, `[[${iso}]]`);
+            let next = upsertBlockProperty(doc, datePickerPropertyKey, `[[${iso}]]`);
+            if (recurrence !== null) {
+              next = upsertBlockProperty(next, "recurring", recurrence);
+            }
             view.dispatch({
               changes: { from: 0, to: doc.length, insert: next },
               selection: { anchor: datePickerCursor },

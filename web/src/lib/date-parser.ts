@@ -65,6 +65,72 @@ function soonestWeekday(base: Date, target: number): Date {
 }
 
 export type ParsedDateTime = { date: string; time: string | null };
+export type ParsedDateTimeRecurrence = ParsedDateTime & { recurrence: string | null };
+
+/**
+ * Parse a recurrence phrase. Returns the canonical string we store in
+ * `recurring::` (e.g. `"monthly"`, `"every 2 weeks"`, `"weekdays"`) or
+ * `null` if unrecognized. The Rust side (`tesela-core::recurrence`) is
+ * the source of truth — this mirror is only used so the picker can show
+ * "valid" feedback before round-tripping through the server.
+ */
+export function parseRecurrenceInput(input: string): string | null {
+  const s = input.trim().toLowerCase().replace(/\s+/g, " ");
+  if (!s) return null;
+  if (s === "daily" || s === "every day") return "daily";
+  if (s === "weekly" || s === "every week") return "weekly";
+  if (s === "monthly" || s === "every month") return "monthly";
+  if (s === "yearly" || s === "annually" || s === "every year") return "yearly";
+  if (s === "weekdays") return "weekdays";
+
+  const everyN = s.match(/^every\s+(\d+)\s+(day|days|week|weeks|month|months|year|years)$/);
+  if (everyN) {
+    const n = Number(everyN[1]);
+    if (!Number.isFinite(n) || n < 1) return null;
+    const unit = everyN[2].endsWith("s") ? everyN[2] : `${everyN[2]}s`;
+    if (n === 1) {
+      if (unit === "days") return "daily";
+      if (unit === "weeks") return "weekly";
+      if (unit === "months") return "monthly";
+      if (unit === "years") return "yearly";
+    }
+    return `every ${n} ${unit}`;
+  }
+  return null;
+}
+
+/**
+ * Trailing recurrence matcher for the DatePicker NL input. Allows phrases
+ * like `"fri weekly"` or `"may 1 every 2 weeks"` — strips the recurrence
+ * tail off, leaving the rest for `parseDateInput`. Returns the canonical
+ * recurrence string and the remainder (or both nulls if no tail matched).
+ */
+const TRAILING_RECUR_RE = /\s+(daily|weekly|monthly|yearly|annually|weekdays|every\s+\d+\s+(?:days?|weeks?|months?|years?)|every\s+(?:day|week|month|year))$/i;
+function extractRecurrence(s: string): { recurrence: string | null; rest: string } {
+  const m = s.match(TRAILING_RECUR_RE);
+  if (!m) return { recurrence: null, rest: s };
+  const tail = m[1].toLowerCase();
+  const rec = parseRecurrenceInput(tail);
+  if (!rec) return { recurrence: null, rest: s };
+  return { recurrence: rec, rest: s.slice(0, m.index!).trim() };
+}
+
+/**
+ * Parse a natural-language phrase that may contain date + time + recurrence.
+ * Recurrence and time are independent — either, both, or neither may be
+ * present. Returns null only when the date portion is unrecognized.
+ */
+export function parseDateAndRecurrenceInput(
+  input: string,
+  today: Date = new Date(),
+): ParsedDateTimeRecurrence | null {
+  const raw = input.trim().toLowerCase();
+  if (!raw) return null;
+  const recExtracted = extractRecurrence(raw);
+  const parsed = parseDateInput(recExtracted.rest, today);
+  if (!parsed) return null;
+  return { ...parsed, recurrence: recExtracted.recurrence };
+}
 
 // Trailing time matcher: optional "at " prefix, hours, optional :minutes,
 // optional am/pm. Anchored to end-of-string. We only TREAT a tail as time

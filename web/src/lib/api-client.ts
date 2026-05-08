@@ -104,4 +104,11 @@ export const api = {
     get<TypeDefinition>(`/types/${encodeURIComponent(name)}`),
   getTypedBlocks: (typeName: string) =>
     get<ParsedBlock[]>(`/types/${encodeURIComponent(typeName)}/blocks`),
+  /** Phase 12.2 — fired when status flips to done. Server is responsible
+   *  for deciding whether the block actually has a recurring rule. */
+  recurBump: (blockId: string) =>
+    post<{ bumped: boolean; next_deadline: string | null }>(
+      "/blocks/recur-bump",
+      { block_id: blockId },
+    ),
 };
