@@ -206,6 +206,16 @@
     }
   });
 
+  // Phase 12.2 — push the currently-focused card to the drawer's focused-block
+  // store on every grid-nav step, so the drawer (when open) tracks the highlight
+  // without requiring a separate `i` press. Mirrors BlockOutliner's
+  // `onfocusedblockchange` behavior.
+  function syncFocusedCardToDrawer() {
+    const cardsAtCol = groupedBlocks.get(columnNames[focusedColIndex]) ?? [];
+    const card = cardsAtCol[focusedCardIndex] ?? null;
+    setFocusedBlock(card);
+  }
+
   function handleKanbanKeydown(e: KeyboardEvent) {
     if (!focused) return;
     // Region gate: when focus has moved to the drawer (`bottom`) or rail,
@@ -233,28 +243,34 @@
       case "j":
         e.preventDefault();
         focusedCardIndex = Math.min(Math.max(0, currentCards.length - 1), focusedCardIndex + 1);
+        syncFocusedCardToDrawer();
         break;
       case "k":
         e.preventDefault();
         focusedCardIndex = Math.max(0, focusedCardIndex - 1);
+        syncFocusedCardToDrawer();
         break;
       case "h":
         e.preventDefault();
         focusedColIndex = Math.max(0, focusedColIndex - 1);
         clampCardIndex();
+        syncFocusedCardToDrawer();
         break;
       case "l":
         e.preventDefault();
         focusedColIndex = Math.min(cols.length - 1, focusedColIndex + 1);
         clampCardIndex();
+        syncFocusedCardToDrawer();
         break;
       case "G":
         e.preventDefault();
         focusedCardIndex = Math.max(0, currentCards.length - 1);
+        syncFocusedCardToDrawer();
         break;
       case "g":
         e.preventDefault();
         focusedCardIndex = 0;
+        syncFocusedCardToDrawer();
         break;
       case "Enter": {
         e.preventDefault();

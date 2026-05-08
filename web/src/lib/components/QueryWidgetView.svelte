@@ -9,6 +9,8 @@
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
+  import { setFocusedBlock } from "$lib/stores/current-block.svelte";
+  import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import {
     applyTriage,
     attachToProject,
@@ -322,6 +324,29 @@
     rootEl?.focus();
   }
 
+  // Phase 12.2 — push the currently-selected row to the drawer's focused-block
+  // store on every nav step. Constructs a stub `ParsedBlock` with the row's id
+  // + page id; the drawer's existing live-resolve path (`blockSourceNote`)
+  // re-parses the source note to surface real properties, so this stub is just
+  // the routing key.
+  function rowToStub(row: Row): ParsedBlock | null {
+    if (row.kind !== "block" || !row.blockId) return null;
+    return {
+      id: row.blockId,
+      note_id: row.pageId,
+      text: row.label,
+      raw_text: row.label,
+      tags: row.primaryTag ? [row.primaryTag] : [],
+      inherited_tags: [],
+      properties: row.status ? { status: row.status } : {},
+      indent_level: 0,
+    };
+  }
+  function syncSelectedRowToDrawer() {
+    const row = flatRows[selectedIndex];
+    setFocusedBlock(row ? rowToStub(row) : null);
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     // Phase 10.1 follow-up — when an inline rename input is active, all
     // keys belong to the input (Enter / Esc are handled there directly,
@@ -356,9 +381,11 @@
     if (e.key === "j" || e.key === "ArrowDown") {
       e.preventDefault();
       selectedIndex = Math.min(flatRows.length - 1, selectedIndex + 1);
+      syncSelectedRowToDrawer();
     } else if (e.key === "k" || e.key === "ArrowUp") {
       e.preventDefault();
       selectedIndex = Math.max(0, selectedIndex - 1);
+      syncSelectedRowToDrawer();
     } else if (e.key === "Enter" && flatRows[selectedIndex]) {
       e.preventDefault();
       openRow(flatRows[selectedIndex]);
