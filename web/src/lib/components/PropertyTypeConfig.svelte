@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { useQueryClient } from "@tanstack/svelte-query";
+  import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import type { Note } from "$lib/types/Note";
   import {
@@ -7,12 +7,23 @@
     updateFrontmatterKey,
     removeFrontmatterKey,
     serializeStringArray,
+    buildRegistry,
   } from "$lib/property-registry";
   import type { PropertyType } from "$lib/property-registry";
 
   let { note }: { note: Note } = $props();
 
   const queryClient = useQueryClient();
+
+  // For conflict detection, fetch all notes to see what other property
+  // pages have claimed. Reused query key so we share cache with other
+  // surfaces (BottomDrawer, BlockEditor, etc.).
+  const allNotesQuery = createQuery(() => ({
+    queryKey: ["notes", { limit: 500 }] as const,
+    queryFn: () => api.listNotes({ limit: 500 }),
+  }));
+  const allNotes = $derived((allNotesQuery.data ?? []) as Note[]);
+  const propertyRegistry = $derived(buildRegistry(allNotes));
 
   const ALL_TYPES: PropertyType[] = [
     "text", "number", "select", "multi-select",
@@ -28,6 +39,114 @@
   let addingChoice = $state(false);
   let editingChoiceIdx = $state<number | null>(null);
   let editingChoiceValue = $state("");
+
+  // ── Chord-key config ──────────────────────────────────────────────
+  // Property page declares `chord_key:` (single letter) and, for select
+  // properties, `value_chord_keys: { choice: letter, ... }`. Both honor
+  // case (Shift+T is a different chord from t). Conflict detection
+  // walks the registry and surfaces the other property's name when two
+  // pages declare the same letter.
+  const chordKey = $derived<string>(
+    typeof note.metadata.custom.chord_key === "string"
+      ? note.metadata.custom.chord_key as string
+      : "",
+  );
+  const valueChordKeys = $derived<Record<string, string>>(
+    note.metadata.custom.value_chord_keys && typeof note.metadata.custom.value_chord_keys === "object"
+      ? note.metadata.custom.value_chord_keys as Record<string, string>
+      : {},
+  );
+  const chordKeyConflict = $derived(chordConflict(chordKey || null));
+
+  // Returns the name of another property whose declared chord_key equals
+  // `letter`, ignoring this page's own self-collision. `null` if free.
+  function chordConflict(letter: string | null): string | null {
+    if (!letter) return null;
+    const ownName = note.title.toLowerCase();
+    for (const [name, def] of propertyRegistry) {
+      if (name === ownName) continue;
+      if (def.chord_key === letter) return def.name;
+    }
+    return null;
+  }
+
+  // Capture-mode state — when true, the next keystroke replaces the chord
+  // key (instead of typing into a normal text input). Mirrors how editor
+  // shortcut configurators work; avoids the user having to type their key
+  // and then dismiss a popover separately.
+  let capturingChordFor = $state<string | null>(null); // null | "" (top-level) | "<choice>"
+
+  function startCapture(target: string) {
+    capturingChordFor = target;
+  }
+
+  async function captureKey(e: KeyboardEvent) {
+    if (capturingChordFor === null) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      capturingChordFor = null;
+      return;
+    }
+    // Single printable letter only. Shift+letter passes through as the
+    // capital letter; modifier-only keys (Shift, Ctrl, …) are ignored.
+    if (e.key.length !== 1 || !/^[A-Za-z]$/.test(e.key)) {
+      e.preventDefault();
+      return;
+    }
+    e.preventDefault();
+    const letter = e.key;
+    const target = capturingChordFor;
+    capturingChordFor = null;
+    if (target === "") {
+      await saveChordKey(letter);
+    } else {
+      await saveValueChordKey(target, letter);
+    }
+  }
+
+  async function saveChordKey(letter: string | null) {
+    let updated: string;
+    if (letter === null || letter === "") {
+      updated = removeFrontmatterKey(note.content, "chord_key");
+    } else {
+      updated = updateFrontmatterKey(note.content, "chord_key", `"${letter}"`);
+    }
+    await api.updateNote(note.id, updated);
+    queryClient.invalidateQueries({ queryKey: ["note", note.id] });
+    queryClient.invalidateQueries({ queryKey: ["notes"] });
+  }
+
+  /** Inline YAML object serializer for `value_chord_keys`. Quotes choice
+   *  keys when they contain hyphens or other YAML-significant chars; the
+   *  letter values are always quoted to avoid YAML interpreting `n` as
+   *  null or `y` as true. */
+  function serializeValueChordKeys(map: Record<string, string>): string {
+    const entries = Object.entries(map);
+    if (entries.length === 0) return "{}";
+    const pairs = entries.map(([k, v]) => {
+      const safeKey = /^[A-Za-z_][A-Za-z0-9_]*$/.test(k) ? k : `"${k}"`;
+      return `${safeKey}: "${v}"`;
+    });
+    return `{ ${pairs.join(", ")} }`;
+  }
+
+  async function saveValueChordKey(choice: string, letter: string | null) {
+    const next: Record<string, string> = { ...valueChordKeys };
+    if (letter === null || letter === "") {
+      delete next[choice];
+    } else {
+      next[choice] = letter;
+    }
+    let updated: string;
+    if (Object.keys(next).length === 0) {
+      updated = removeFrontmatterKey(note.content, "value_chord_keys");
+    } else {
+      updated = updateFrontmatterKey(note.content, "value_chord_keys", serializeValueChordKeys(next));
+    }
+    await api.updateNote(note.id, updated);
+    queryClient.invalidateQueries({ queryKey: ["note", note.id] });
+    queryClient.invalidateQueries({ queryKey: ["notes"] });
+  }
 
   async function setValueType(type: PropertyType) {
     let updated = updateFrontmatterKey(note.content, "value_type", `"${type}"`);
@@ -79,6 +198,8 @@
   }
 </script>
 
+<svelte:window onkeydown={captureKey} />
+
 <div class="space-y-4">
   <div>
     <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">
@@ -95,6 +216,44 @@
           {PROPERTY_TYPE_LABELS[t]}
         </button>
       {/each}
+    </div>
+  </div>
+
+  <!-- Chord key for the property itself. Click to capture; Esc to cancel.
+       Conflict warning shown inline when another property page declares
+       the same letter. -->
+  <div>
+    <div class="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-[0.12em] mb-2">
+      Chord key
+    </div>
+    <div class="flex items-center gap-2">
+      {#if capturingChordFor === ""}
+        <span class="inline-flex items-center px-2 py-0.5 rounded border border-primary/60 bg-primary/10 text-primary text-[11px] font-mono">
+          press a letter…
+        </span>
+        <span class="text-[10px] text-muted-foreground/50">esc to cancel</span>
+      {:else if chordKey}
+        <kbd class="px-1.5 py-0.5 rounded border border-border bg-muted/40 text-[11px] font-mono font-semibold text-primary">{chordKey}</kbd>
+        <button
+          class="text-[10px] text-muted-foreground/50 hover:text-foreground/70"
+          onclick={() => startCapture("")}
+        >change</button>
+        <button
+          class="text-[10px] text-muted-foreground/40 hover:text-destructive"
+          onclick={() => saveChordKey(null)}
+        >clear</button>
+      {:else}
+        <button
+          class="text-[11px] px-2 py-0.5 rounded border border-dashed border-border/60 text-muted-foreground/60 hover:text-foreground hover:border-border"
+          onclick={() => startCapture("")}
+        >+ set chord</button>
+      {/if}
+      {#if chordKeyConflict}
+        <span
+          class="text-[10px] px-1.5 py-0.5 rounded border border-destructive/40 bg-destructive/10 text-destructive"
+          title="Property page '{chordKeyConflict}' also declares chord_key: '{chordKey}'. The chord menu will fall back to first-letter for whichever property loads later."
+        >taken by {chordKeyConflict}</span>
+      {/if}
     </div>
   </div>
 
@@ -129,6 +288,22 @@
                   class="flex-1 text-[12px] px-2 py-0.5 rounded bg-muted/30 cursor-text hover:bg-muted/60 transition-colors"
                   onclick={() => startEditChoice(idx)}
                 >{choice}</span>
+              {/if}
+              <!-- Per-choice chord. Click to capture; click again to clear. -->
+              {#if capturingChordFor === choice}
+                <span class="text-[10px] px-1.5 py-0.5 rounded border border-primary/60 bg-primary/10 text-primary font-mono">press…</span>
+              {:else if valueChordKeys[choice.toLowerCase()]}
+                <button
+                  class="px-1.5 py-0.5 rounded border border-border bg-muted/40 text-[11px] font-mono font-semibold text-primary hover:border-primary/60 transition-colors"
+                  onclick={() => startCapture(choice.toLowerCase())}
+                  title="Click to change. Esc to cancel."
+                >{valueChordKeys[choice.toLowerCase()]}</button>
+              {:else}
+                <button
+                  class="text-[10px] px-1.5 py-0.5 rounded border border-dashed border-border/40 text-muted-foreground/40 hover:text-foreground/70 hover:border-border transition-colors"
+                  onclick={() => startCapture(choice.toLowerCase())}
+                  title="Set a chord key for this option"
+                >set</button>
               {/if}
               <button
                 class="text-[11px] text-muted-foreground/30 hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
