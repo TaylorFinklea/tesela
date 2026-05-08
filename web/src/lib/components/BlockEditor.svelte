@@ -276,6 +276,12 @@
   import { toggleBlockTag, getBlockTags, upsertBlockProperty } from "$lib/block-tags";
   import type { PropertyDefinition } from "$lib/property-registry";
   import { assignChords } from "$lib/chord-keys";
+
+  // `i` is reserved as the chord-menu's filter trigger (see ChordMenu).
+  // Reserving here keeps the assigner from handing it out to any node, so
+  // pressing `i` always opens search regardless of which menu the user is
+  // in or what tag-properties they've defined.
+  const SLASH_RESERVED: ReadonlySet<string> = new Set(["i"]);
   import { setVimMode } from "$lib/stores/pane-state.svelte";
   import { api } from "$lib/api-client";
   import { goto } from "$app/navigation";
@@ -634,6 +640,7 @@
           name: c,
           preferred: def.value_chord_keys[c.toLowerCase()] ?? null,
         })),
+        { reserved: SLASH_RESERVED },
       );
       node.children = def.choices.map((c, i) => {
         const a = valueAssignments[i];
@@ -672,6 +679,7 @@
     }
     const assignments = assignChords(
       defs.map((d) => ({ name: d.name, preferred: d.chord_key })),
+      { reserved: SLASH_RESERVED },
     );
     return defs.map((def, i) => {
       const a = assignments[i];
@@ -717,7 +725,7 @@
       ...builtins.map((b) => ({ name: b.label, preferred: b.key })),
       ...defs.map((d) => ({ name: d.name, preferred: d.chord_key })),
     ];
-    const all = assignChords(items);
+    const all = assignChords(items, { reserved: SLASH_RESERVED });
 
     const builtinNodes: ChordNode[] = builtins.map((b, i) => ({ ...b, key: all[i].key }));
     const propNodes: ChordNode[] = defs.map((def, i) => {

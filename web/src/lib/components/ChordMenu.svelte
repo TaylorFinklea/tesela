@@ -101,6 +101,19 @@
   let inputValue = $state("");
   let inputEl = $state<HTMLInputElement | null>(null);
 
+  /**
+   * Phase 12.2 — search/filter mode. Pressing `i` (reserved at chord
+   * assignment time so it never doubles as a chord key) opens a search
+   * input that filters the current level's nodes by label substring.
+   * Filtered results get Cmd+1..Cmd+9 quick-select shortcuts; j/k still
+   * navigate; Enter commits the highlighted match. Esc backs out to chord
+   * mode at the same level.
+   */
+  let searchOpen = $state(false);
+  let searchValue = $state("");
+  let searchIdx = $state(0);
+  let searchEl = $state<HTMLInputElement | null>(null);
+
   let currentLevel = $derived.by((): ChordNode[] => {
     let level = tree;
     for (const name of breadcrumb) {
@@ -109,6 +122,16 @@
       else break;
     }
     return level;
+  });
+
+  let filteredLevel = $derived.by((): ChordNode[] => {
+    if (!searchOpen || !searchValue.trim()) return currentLevel;
+    const q = searchValue.toLowerCase();
+    return currentLevel.filter((n) => n.label.toLowerCase().includes(q));
+  });
+  // Clamp the highlight when the filter narrows.
+  $effect(() => {
+    if (searchIdx >= filteredLevel.length) searchIdx = Math.max(0, filteredLevel.length - 1);
   });
 
   function handleSelect(node: ChordNode) {
@@ -131,11 +154,24 @@
       inputValue = "";
       return;
     }
+    if (searchOpen) {
+      searchOpen = false;
+      searchValue = "";
+      searchIdx = 0;
+      return;
+    }
     if (breadcrumb.length > 0) {
       breadcrumb = breadcrumb.slice(0, -1);
     } else {
       onclose();
     }
+  }
+
+  function openSearch() {
+    searchOpen = true;
+    searchValue = "";
+    searchIdx = 0;
+    setTimeout(() => searchEl?.focus(), 0);
   }
 
   function commitInput() {
@@ -145,7 +181,7 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Escape" || (e.key === "Backspace" && !inputNode)) {
+    if (e.key === "Escape" || (e.key === "Backspace" && !inputNode && !searchOpen)) {
       e.preventDefault();
       e.stopPropagation();
       ascend();
@@ -162,6 +198,48 @@
         return;
       }
       // All other keys flow to the <input> normally — do NOT swallow.
+      return;
+    }
+    if (searchOpen) {
+      // Cmd+1..Cmd+9 quick-select Nth filtered match.
+      if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
+        const i = Number(e.key) - 1;
+        const node = filteredLevel[i];
+        if (node) {
+          e.preventDefault();
+          e.stopPropagation();
+          handleSelect(node);
+        }
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        e.stopPropagation();
+        const node = filteredLevel[searchIdx];
+        if (node) handleSelect(node);
+        return;
+      }
+      if (e.key === "ArrowDown" || (e.key === "j" && (e.metaKey || e.ctrlKey))) {
+        e.preventDefault();
+        e.stopPropagation();
+        searchIdx = Math.min(filteredLevel.length - 1, searchIdx + 1);
+        return;
+      }
+      if (e.key === "ArrowUp" || (e.key === "k" && (e.metaKey || e.ctrlKey))) {
+        e.preventDefault();
+        e.stopPropagation();
+        searchIdx = Math.max(0, searchIdx - 1);
+        return;
+      }
+      // All other keys flow to the search <input> for typing.
+      return;
+    }
+    // `i` opens search/filter mode. Reserved at chord-assignment time so no
+    // chord node ever owns this letter.
+    if (e.key === "i") {
+      e.preventDefault();
+      e.stopPropagation();
+      openSearch();
       return;
     }
     // Match by exact key (case-sensitive) — Shift+letter is a different chord.
@@ -223,6 +301,49 @@
         <kbd class="chord-key">Esc</kbd> back
       </div>
     </div>
+  {:else if searchOpen}
+    <div class="chord-input-wrap">
+      <input
+        bind:this={searchEl}
+        bind:value={searchValue}
+        class="chord-input"
+        type="text"
+        placeholder="Filter…"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <div class="chord-input-help">
+        <kbd class="chord-key">↵</kbd> select
+        <kbd class="chord-key">⌘1-9</kbd> jump
+        <kbd class="chord-key">Esc</kbd> back
+      </div>
+    </div>
+    <div class="chord-list">
+      {#each filteredLevel as node, idx (node.key + ":" + node.label)}
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="chord-row {idx === searchIdx ? 'chord-row--selected' : ''}"
+          onclick={() => handleSelect(node)}
+        >
+          {#if idx < 9}
+            <kbd class="chord-key">⌘{idx + 1}</kbd>
+          {:else}
+            <kbd class="chord-key">{node.key}</kbd>
+          {/if}
+          <span class="chord-label">{node.label}</span>
+          {#if node.hint}
+            <kbd class="chord-hint" title="Alternative path">{node.hint}</kbd>
+          {/if}
+          {#if node.children || node.input}
+            <span class="chord-more">›</span>
+          {/if}
+        </div>
+      {/each}
+      {#if filteredLevel.length === 0}
+        <div class="chord-empty">No matches</div>
+      {/if}
+    </div>
   {:else}
     <div class="chord-list">
       {#each currentLevel as node (node.key)}
@@ -245,6 +366,9 @@
           {/if}
         </div>
       {/each}
+      <div class="chord-search-hint">
+        <kbd class="chord-key">i</kbd> filter
+      </div>
     </div>
   {/if}
 </div>
@@ -305,6 +429,23 @@
     cursor: pointer;
   }
   .chord-row:hover { background: color-mix(in srgb, var(--primary) 12%, transparent); }
+  .chord-row--selected { background: color-mix(in srgb, var(--primary) 18%, transparent); }
+  .chord-empty {
+    padding: 6px 8px;
+    color: var(--v9-ink-faint);
+    font-style: italic;
+  }
+  .chord-search-hint {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px 0;
+    border-top: 1px solid var(--v9-line);
+    margin-top: 4px;
+    color: var(--v9-ink-faint);
+    font-size: 10px;
+  }
   .chord-key {
     display: inline-block;
     min-width: 20px;
