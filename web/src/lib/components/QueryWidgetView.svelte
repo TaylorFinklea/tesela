@@ -14,6 +14,7 @@
     setBottomDrawerOpen,
     setActiveRegion,
     setBottomTab,
+    getActiveRegion,
   } from "$lib/stores/pane-state.svelte";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import {
@@ -90,6 +91,18 @@
   // requiring the user to click first.
   $effect(() => {
     if (rootEl && document.activeElement !== rootEl) rootEl.focus();
+  });
+
+  // Phase 12.2 — when the active region flips back to "focus" (e.g. user hit
+  // Escape from the BottomDrawer), restore DOM focus to this list. The
+  // drawer's Escape handler only changes the region store; without this,
+  // focus stays on whatever the drawer blurred and j/k don't reach our
+  // div-bound keyhandler.
+  $effect(() => {
+    const region = getActiveRegion();
+    if (region === "focus" && rootEl && document.activeElement !== rootEl) {
+      rootEl.focus();
+    }
   });
 
   // Phase 9.9 — status cycle on `s`. The full Status property choice list
