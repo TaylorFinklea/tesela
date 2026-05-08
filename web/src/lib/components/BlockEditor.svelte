@@ -275,6 +275,7 @@
   } from "$lib/cm-decorations";
   import { toggleBlockTag, getBlockTags, upsertBlockProperty } from "$lib/block-tags";
   import type { PropertyDefinition } from "$lib/property-registry";
+  import { assignChords } from "$lib/chord-keys";
   import { setVimMode } from "$lib/stores/pane-state.svelte";
   import { api } from "$lib/api-client";
   import { goto } from "$app/navigation";
@@ -542,25 +543,6 @@
   }
 
   /**
-   * Pick a single unique chord key for `label`, mutating `used`. Walks the
-   * label's letters in order, falls back to digits 1-9. Returns `?` if all
-   * letter+digit slots are taken (effectively unreachable for normal inputs).
-   * Used by the `/p` Property submenu where each call needs to honor keys
-   * already claimed by sibling rows.
-   */
-  function pickChordKey(label: string, used: Set<string>): string {
-    const lower = label.toLowerCase();
-    for (const ch of lower) {
-      if (/[a-z]/.test(ch) && !used.has(ch)) { used.add(ch); return ch; }
-    }
-    for (let i = 1; i <= 9; i++) {
-      const k = String(i);
-      if (!used.has(k)) { used.add(k); return k; }
-    }
-    return "?";
-  }
-
-  /**
    * Phase 10.4 — write a `key:: value` continuation onto the current block,
    * cleaning up the `/`-trigger text the same way `applySlash` does. Used by
    * the new `/p` chord submenu so each property pick lands a real key/value
@@ -637,6 +619,50 @@
    * single "Manual" leaf that falls back to the original literal `key::
    * value` insertion so the user can still scaffold a property by hand.
    */
+  /**
+   * Phase 12.2 — build a value-submenu (or leaf action) for one property.
+   * Pure factory: assumes the caller already picked the parent's chord key.
+   * For select / multi-select properties, value chord keys honor the
+   * property page's `value_chord_keys:` map first (with conflict detection
+   * via `assignChords`), then fall back to first-letter.
+   */
+  function buildPropertyNode(def: PropertyDefinition, parentKey: string): ChordNode {
+    const node: ChordNode = { key: parentKey, label: def.name, hint: def.value_type };
+    if (def.value_type === "select" || def.value_type === "multi-select") {
+      const valueAssignments = assignChords(
+        def.choices.map((c) => ({
+          name: c,
+          preferred: def.value_chord_keys[c.toLowerCase()] ?? null,
+        })),
+      );
+      node.children = def.choices.map((c, i) => {
+        const a = valueAssignments[i];
+        const child: ChordNode = {
+          key: a.key,
+          label: c,
+          action: () => writePropertyContinuation(def.name, c),
+          hint: `${def.name}:: ${c}`,
+        };
+        if (a.conflictWith) child.conflictWith = a.conflictWith;
+        return child;
+      });
+    } else if (def.value_type === "checkbox") {
+      node.children = [
+        { key: "t", label: "true",  action: () => writePropertyContinuation(def.name, "true") },
+        { key: "f", label: "false", action: () => writePropertyContinuation(def.name, "false") },
+      ];
+    } else if (def.value_type === "date") {
+      node.action = () => openDatePickerForProperty(def.name);
+    } else {
+      node.input = {
+        placeholder: `${def.name} value`,
+        initial: def.default ?? "",
+        onSubmit: (v) => writePropertyContinuation(def.name, v.trim()),
+      };
+    }
+    return node;
+  }
+
   function getPropertyChildren(): ChordNode[] {
     const defs = propertyDefs ?? [];
     if (defs.length === 0) {
@@ -644,59 +670,80 @@
         { key: "k", label: "Manual key:: value", action: () => applySlash("property"), hint: "key:: value" },
       ];
     }
-    const usedKeys = new Set<string>();
-    return defs.map((def) => {
-      const k = pickChordKey(def.name, usedKeys);
-      const node: ChordNode = { key: k, label: def.name, hint: def.value_type };
-      if (def.value_type === "select" || def.value_type === "multi-select") {
-        const childUsed = new Set<string>();
-        node.children = def.choices.map((c) => ({
-          key: pickChordKey(c, childUsed),
-          label: c,
-          action: () => writePropertyContinuation(def.name, c),
-          hint: `${def.name}:: ${c}`,
-        }));
-      } else if (def.value_type === "checkbox") {
-        node.children = [
-          { key: "t", label: "true",  action: () => writePropertyContinuation(def.name, "true") },
-          { key: "f", label: "false", action: () => writePropertyContinuation(def.name, "false") },
-        ];
-      } else if (def.value_type === "date") {
-        node.action = () => openDatePickerForProperty(def.name);
-      } else {
-        node.input = {
-          placeholder: `${def.name} value`,
-          initial: def.default ?? "",
-          onSubmit: (v) => writePropertyContinuation(def.name, v.trim()),
-        };
-      }
+    const assignments = assignChords(
+      defs.map((d) => ({ name: d.name, preferred: d.chord_key })),
+    );
+    return defs.map((def, i) => {
+      const a = assignments[i];
+      const node = buildPropertyNode(def, a.key);
+      if (a.conflictWith) node.conflictWith = a.conflictWith;
       return node;
     });
   }
 
   function getSlashTree(): ChordNode[] {
+    // Phase 12.2 — slash tree is one flat list:
+    //   1. Built-in insertion verbs (Task, Tag, Heading, Link, Date, …) with
+    //      hard-coded chord keys.
+    //   2. Hoisted tag-properties for the focused block (Status, Priority,
+    //      Deadline, …) so the user picks them in one chord rather than
+    //      `/p > X`. Their preferred key comes from the Property page's
+    //      `chord_key:`; collisions with built-ins fall back to first-letter
+    //      and surface a "taken by …" warning in the menu.
+    //   3. `/p` "All properties" — discovery surface for every property in
+    //      the registry, including ones not on this block's tags.
+    //   4. Hardcoded `/s Status` ONLY when the block has no tag-properties,
+    //      so untagged blocks still get a one-chord status setter.
+    const defs = propertyDefs ?? [];
     const choices = statusChoices ?? ["todo", "doing", "done"];
-    const keys = assignStatusKeys(choices);
-    const statusChildren: ChordNode[] = choices.map((s, i) => ({
-      key: keys[i],
-      label: s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, " "),
-      action: () => applySlash(s),
-      hint: `status:: ${s}`,
-    }));
-    const propertyChildren = getPropertyChildren();
-    return [
+
+    const builtins: ChordNode[] = [
       { key: "t", label: "Task",         action: () => applySlash("task"),       hint: "tags:: Task" },
       { key: "T", label: "Tag picker",   action: () => applySlash("tag"),        hint: "#" },
-      { key: "s", label: "Status",       children: statusChildren },
       { key: "h", label: "Heading",      action: () => applySlash("heading") },
-      { key: "p", label: "Property",     children: propertyChildren },
       { key: "l", label: "Link",         action: () => applySlash("link"),       hint: "[[ ]]" },
       { key: "d", label: "Date",         action: () => applySlash("date") },
       { key: "q", label: "Query",        action: () => applySlash("query") },
       { key: "w", label: "New widget",   action: () => applySlash("widget") },
       { key: "c", label: "Collection",   action: () => applySlash("collection") },
       { key: "m", label: "Template",     action: () => applySlash("template") },
+      { key: "p", label: "All properties", children: getPropertyChildren() },
     ];
+
+    // Single assignChords pass with builtins pre-claimed so a tag-property
+    // declaring `chord_key: t` (would shadow Task) loses gracefully and gets
+    // a "taken by Task" warning in the rendered menu.
+    const items = [
+      ...builtins.map((b) => ({ name: b.label, preferred: b.key })),
+      ...defs.map((d) => ({ name: d.name, preferred: d.chord_key })),
+    ];
+    const all = assignChords(items);
+
+    const builtinNodes: ChordNode[] = builtins.map((b, i) => ({ ...b, key: all[i].key }));
+    const propNodes: ChordNode[] = defs.map((def, i) => {
+      const a = all[builtins.length + i];
+      const node = buildPropertyNode(def, a.key);
+      if (a.conflictWith) node.conflictWith = a.conflictWith;
+      return node;
+    });
+
+    // Untagged-block fallback: keep the legacy `/s Status` so plain blocks
+    // (without #Task) can still set a status quickly. When the block IS
+    // tagged, Status appears in propNodes and this fallback is skipped.
+    const fallbackStatus: ChordNode[] = defs.length === 0
+      ? [{
+          key: "s",
+          label: "Status",
+          children: choices.map((s, i) => ({
+            key: assignStatusKeys(choices)[i],
+            label: s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, " "),
+            action: () => applySlash(s),
+            hint: `status:: ${s}`,
+          })),
+        }]
+      : [];
+
+    return [...builtinNodes, ...propNodes, ...fallbackStatus];
   }
 
   function applySlash(command: string) {

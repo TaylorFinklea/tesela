@@ -45,6 +45,13 @@
      * surface for whatever path the user might prefer next time.
      */
     hint?: string;
+    /**
+     * Phase 12.2 — when this node's preferred chord_key was already claimed
+     * by a sibling, the assigner falls back to first-letter and records the
+     * collision here. Surfaced as a small "taken by X" warning so the user
+     * knows to fix the property page's `chord_key:` declaration.
+     */
+    conflictWith?: string;
   };
 </script>
 
@@ -227,6 +234,12 @@
           {#if node.hint}
             <kbd class="chord-hint" title="Alternative path">{node.hint}</kbd>
           {/if}
+          {#if node.conflictWith}
+            <span
+              class="chord-conflict"
+              title="Preferred chord key was already claimed by '{node.conflictWith}'. Edit one of the property pages' chord_key: to resolve."
+            >taken by {node.conflictWith}</span>
+          {/if}
           {#if node.children || node.input}
             <span class="chord-more">›</span>
           {/if}
@@ -306,6 +319,17 @@
     font-weight: 600;
   }
   .chord-label { color: var(--foreground); flex: 1; }
+  .chord-conflict {
+    display: inline-block;
+    padding: 1px 5px;
+    background: color-mix(in srgb, var(--destructive, #c75) 14%, transparent);
+    color: var(--destructive, #c75);
+    border: 1px solid color-mix(in srgb, var(--destructive, #c75) 35%, transparent);
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 500;
+  }
   .chord-hint {
     display: inline-block;
     padding: 1px 5px;

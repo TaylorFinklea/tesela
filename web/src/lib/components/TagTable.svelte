@@ -63,6 +63,8 @@
       chip_label_mode: def?.chip_label_mode ?? null,
       chip_short_label: def?.chip_short_label ?? null,
       chip_value_format: def?.chip_value_format ?? null,
+      chord_key: def?.chord_key ?? null,
+      value_chord_keys: def?.value_chord_keys ?? {},
     };
     return getVisibleChoices(fakeDef, hiddenChoices);
   }

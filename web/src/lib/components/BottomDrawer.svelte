@@ -22,6 +22,7 @@
     updateFrontmatterKey,
   } from "$lib/property-registry";
   import type { PropertyDefinition, PropertyRegistry, InheritanceMap } from "$lib/property-registry";
+  import { assignChords } from "$lib/chord-keys";
   import type { Note } from "$lib/types/Note";
   import type { Link } from "$lib/types/Link";
   import type { GraphEdge } from "$lib/types/GraphEdge";
@@ -307,40 +308,50 @@
   }
 
   // ── Chord-letter machinery ───────────────────────────────────────
-  // Each property gets a single-letter "jump" chord; each select choice
-  // gets a single-letter "commit" chord. First non-reserved letter of the
-  // name wins; on collision we walk the next letters. Reserved keys are
-  // the navigation keys the drawer already owns so chords never shadow
-  // j/k/h/l/x/g/G/Enter/Space/Esc/Tab.
-  const RESERVED_DRAWER_KEYS = new Set([
-    "j", "k", "h", "l", "x", "g", "G", "Enter", " ", "Escape", "Tab",
-    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+  // Phase 12.2 — chord assignment now goes through `assignChords` so the
+  // drawer, slash menu, and any future surface land on the same letters
+  // for the same property. Property pages declare `chord_key:` (and
+  // `value_chord_keys:` for select choices); the helper resolves
+  // collisions and tags conflicts so the chord menu can warn.
+  const RESERVED_DRAWER_KEYS: ReadonlySet<string> = new Set([
+    "j", "k", "h", "l", "x", "g",
   ]);
-  function pickChord(name: string, used: Set<string>): string | null {
-    for (const ch of name.toLowerCase()) {
-      if (!/^[a-z]$/.test(ch)) continue;
-      if (RESERVED_DRAWER_KEYS.has(ch)) continue;
-      if (used.has(ch)) continue;
-      used.add(ch);
-      return ch;
-    }
-    return null;
-  }
-  function deriveValueChords(choices: string[]): Map<string, string> {
-    const used = new Set<string>();
+  function deriveValueChords(choices: string[], def?: PropertyDefinition): Map<string, string> {
+    const items = choices.map((c) => ({
+      name: c,
+      preferred: def?.value_chord_keys[c.toLowerCase()] ?? null,
+    }));
     const map = new Map<string, string>();
-    for (const c of choices) {
-      const ch = pickChord(c, used);
-      if (ch) map.set(c, ch);
+    for (const a of assignChords(items, { reserved: RESERVED_DRAWER_KEYS })) {
+      map.set(a.name, a.key);
+    }
+    return map;
+  }
+  /**
+   * Phase 12.2 — chord assignment for the add-property picker. Each name
+   * looks up its declared `chord_key:` from the registry; collisions fall
+   * back to first-letter. Distinct from `deriveValueChords` (which works
+   * within one property's choice list).
+   */
+  function derivePropertyChords(names: string[]): Map<string, string> {
+    const items = names.map((n) => ({
+      name: n,
+      preferred: propertyRegistry.get(n.toLowerCase())?.chord_key ?? null,
+    }));
+    const map = new Map<string, string>();
+    for (const a of assignChords(items, { reserved: RESERVED_DRAWER_KEYS })) {
+      map.set(a.name, a.key);
     }
     return map;
   }
   const propertyChords: Map<string, string> = $derived.by(() => {
-    const used = new Set<string>();
+    const items = flatProperties.map((p) => ({
+      name: p.key,
+      preferred: propertyRegistry.get(p.key.toLowerCase())?.chord_key ?? null,
+    }));
     const map = new Map<string, string>();
-    for (const p of flatProperties) {
-      const ch = pickChord(p.key, used);
-      if (ch) map.set(p.key, ch);
+    for (const a of assignChords(items, { reserved: RESERVED_DRAWER_KEYS })) {
+      map.set(a.name, a.key);
     }
     return map;
   });
@@ -752,7 +763,7 @@
           if (key) void addProperty(key);
           return;
         }
-        const addChords = deriveValueChords(props);
+        const addChords = derivePropertyChords(props);
         const matched = [...addChords.entries()].find(([, ch]) => ch === e.key)?.[0];
         if (matched) {
           e.preventDefault();
@@ -786,7 +797,7 @@
           return;
         }
         // Letter chord → commit that choice directly.
-        const valChords = deriveValueChords(choices);
+        const valChords = deriveValueChords(choices, def);
         const matched = [...valChords.entries()].find(([, ch]) => ch === e.key)?.[0];
         if (matched && prop) {
           e.preventDefault();
@@ -934,7 +945,7 @@
                 {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, blockHiddenChoices) : []}
                 {@const propSelected = focused && tab === "properties" && panelContext === "block" && selectedPropertyIndex === pi}
                 {@const propChord = propertyChords.get(prop.key)}
-                {@const valChords = visibleChoices.length > 0 ? deriveValueChords(visibleChoices) : new Map()}
+                {@const valChords = visibleChoices.length > 0 ? deriveValueChords(visibleChoices, def) : new Map()}
                 <span
                   class="pchip {propSelected ? 'selected' : ''}"
                   data-prop-index={pi}
@@ -1019,7 +1030,7 @@
                   <span class="add-label">+ Add property</span>
                 </button>
                 {#if addPickerOpen}
-                  {@const addChords = deriveValueChords(availableProperties)}
+                  {@const addChords = derivePropertyChords(availableProperties)}
                   <div class="picker-popover">
                     {#each availableProperties as candidate, ci}
                       {@const ch = addChords.get(candidate)}
@@ -1049,7 +1060,7 @@
               <span class="add-label">+ Add property</span>
             </button>
             {#if addPickerOpen}
-              {@const addChords = deriveValueChords(availableProperties)}
+              {@const addChords = derivePropertyChords(availableProperties)}
               <div class="picker-popover">
                 {#each availableProperties as candidate, ci}
                   {@const ch = addChords.get(candidate)}
@@ -1091,7 +1102,7 @@
                 {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, hiddenChoices) : []}
                 {@const propSelected = focused && tab === "properties" && panelContext === "page" && selectedPropertyIndex === pi}
                 {@const propChord = propertyChords.get(prop.key)}
-                {@const valChords = visibleChoices.length > 0 ? deriveValueChords(visibleChoices) : new Map()}
+                {@const valChords = visibleChoices.length > 0 ? deriveValueChords(visibleChoices, def) : new Map()}
                 <span
                   class="pchip {propSelected ? 'selected' : ''}"
                   data-prop-index={pi}
@@ -1176,7 +1187,7 @@
                   <span class="add-label">+ Add property</span>
                 </button>
                 {#if addPickerOpen}
-                  {@const addChords = deriveValueChords(availableProperties)}
+                  {@const addChords = derivePropertyChords(availableProperties)}
                   <div class="picker-popover">
                     {#each availableProperties as candidate, ci}
                       {@const ch = addChords.get(candidate)}
@@ -1206,7 +1217,7 @@
               <span class="add-label">+ Add property</span>
             </button>
             {#if addPickerOpen}
-              {@const addChords = deriveValueChords(availableProperties)}
+              {@const addChords = derivePropertyChords(availableProperties)}
               <div class="picker-popover">
                 {#each availableProperties as candidate, ci}
                   {@const ch = addChords.get(candidate)}

@@ -60,6 +60,17 @@ export type PropertyDefinition = {
   /** How to render the value. Type-aware (date → month-day; select → bars
    *  / value; etc). `null` means use the type's default. */
   chip_value_format: ChipValueFormat | null;
+  /** Phase 12.2 — preferred single-letter chord key for this property,
+   *  honored across the slash menu, BottomDrawer, and any other chord
+   *  surface. When omitted, falls back to first-letter assignment. When
+   *  declared but already claimed by an earlier sibling, the conflict is
+   *  surfaced in the chord menu so the user knows to renamekey or
+   *  rename one of the colliding properties. */
+  chord_key: string | null;
+  /** Per-choice canonical chord keys (for `select` / `multi-select`).
+   *  Same fallback + conflict semantics as `chord_key`, but for the value
+   *  submenu. Frontmatter shape: `value_chord_keys: { backlog: b, todo: t }`. */
+  value_chord_keys: Record<string, string>;
 };
 
 export type PropertyRegistry = Map<string, PropertyDefinition>;
@@ -69,6 +80,23 @@ export function parsePropertyPage(note: Note): PropertyDefinition | null {
   const c = note.metadata.custom;
   const labelMode = typeof c.chip_label_mode === "string" ? c.chip_label_mode as ChipLabelMode : null;
   const valueFormat = typeof c.chip_value_format === "string" ? c.chip_value_format as ChipValueFormat : null;
+  // chord_key is single-letter; coerce to the first letter of whatever
+  // string the user typed (so "S" / "status" / "s" all read as "s") and
+  // lowercase it, since the chord menu compares lowercase keys.
+  const chordKeyRaw = typeof c.chord_key === "string" ? c.chord_key : null;
+  const chordKey = chordKeyRaw && chordKeyRaw.length > 0 ? chordKeyRaw[0].toLowerCase() : null;
+  // value_chord_keys is `{ choice: letter }` — coerce each value to a
+  // single lowercase letter and drop any non-letter entries so a typo
+  // doesn't strand a choice with a broken chord.
+  const valueChordKeys: Record<string, string> = {};
+  const vck = c.value_chord_keys;
+  if (vck && typeof vck === "object" && !Array.isArray(vck)) {
+    for (const [k, v] of Object.entries(vck as Record<string, unknown>)) {
+      if (typeof v !== "string" || v.length === 0) continue;
+      const ch = v[0].toLowerCase();
+      if (/[a-z]/.test(ch)) valueChordKeys[k.toLowerCase()] = ch;
+    }
+  }
   return {
     name: note.title,
     value_type: (c.value_type as PropertyType) || "text",
@@ -80,6 +108,8 @@ export function parsePropertyPage(note: Note): PropertyDefinition | null {
     chip_label_mode: labelMode,
     chip_short_label: typeof c.chip_short_label === "string" ? c.chip_short_label : null,
     chip_value_format: valueFormat,
+    chord_key: chordKey,
+    value_chord_keys: valueChordKeys,
   };
 }
 
