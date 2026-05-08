@@ -19,3 +19,29 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono.workspace = true
 regex.workspace = true
+
+# Phase 12.1 — Apple Reminders bidirectional sync. EventKit is a macOS/iOS
+# framework, so the FFI is gated behind cfg(target_os = "macos"). Linux/
+# Windows builds compile a no-op stub that returns "unsupported platform"
+# from the sync endpoint.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSArray",
+    "NSCalendar",
+    "NSDate",
+    "NSError",
+    "NSObject",
+    "NSPredicate",
+    "NSString",
+    "NSUUID",
+] }
+objc2-event-kit = { version = "0.3", features = [
+    "EKAlarm",
+    "EKCalendar",
+    "EKCalendarItem",
+    "EKEventStore",
+    "EKReminder",
+    "EKTypes",
+] }
+block2 = "0.6"
