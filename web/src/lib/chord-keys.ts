@@ -65,6 +65,34 @@ export function assignChords(items: ChordItem[], opts: ChordOptions = {}): Chord
 
 const EMPTY: ReadonlySet<string> = new Set();
 
+/**
+ * Well-known reserved keys per chord surface. Exposed so config UIs can
+ * warn the user when they declare a chord that would be ignored at one of
+ * these surfaces. Keep these in sync with their owning components:
+ *   - SLASH_RESERVED_CHORDS: `i` is the chord menu's filter trigger (see
+ *     ChordMenu.svelte). Property pages declaring `chord_key: i` will
+ *     fall through silently in the slash menu.
+ *   - DRAWER_RESERVED_CHORDS: BottomDrawer nav keys (j/k/h/l/x/g). A
+ *     value_chord_keys entry using one of these would shadow nav.
+ *   - BUILTIN_SLASH_CHORDS: hard-coded chord keys for the slash menu's
+ *     non-property verbs (Task, Heading, …). A property declaring one
+ *     of these as its chord_key collides with the verb at the top level.
+ */
+export const SLASH_RESERVED_CHORDS: ReadonlySet<string> = new Set(["i"]);
+export const DRAWER_RESERVED_CHORDS: ReadonlySet<string> = new Set(["j", "k", "h", "l", "x", "g"]);
+export const BUILTIN_SLASH_CHORDS: ReadonlyMap<string, string> = new Map([
+  ["t", "Task"],
+  ["T", "Tag picker"],
+  ["h", "Heading"],
+  ["l", "Link"],
+  ["d", "Date"],
+  ["q", "Query"],
+  ["w", "New widget"],
+  ["c", "Collection"],
+  ["m", "Template"],
+  ["p", "All properties"],
+]);
+
 function pickFallback(label: string, taken: Map<string, string>, reserved: ReadonlySet<string>, ownerName: string): string {
   const lower = label.toLowerCase();
   for (const ch of lower) {

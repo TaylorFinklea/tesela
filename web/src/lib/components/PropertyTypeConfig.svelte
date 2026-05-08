@@ -10,6 +10,11 @@
     buildRegistry,
   } from "$lib/property-registry";
   import type { PropertyType } from "$lib/property-registry";
+  import {
+    SLASH_RESERVED_CHORDS,
+    DRAWER_RESERVED_CHORDS,
+    BUILTIN_SLASH_CHORDS,
+  } from "$lib/chord-keys";
 
   let { note }: { note: Note } = $props();
 
@@ -56,16 +61,57 @@
       ? note.metadata.custom.value_chord_keys as Record<string, string>
       : {},
   );
-  const chordKeyConflict = $derived(chordConflict(chordKey || null));
+  const chordKeyIssue = $derived(checkPropertyChord(chordKey || null));
 
-  // Returns the name of another property whose declared chord_key equals
-  // `letter`, ignoring this page's own self-collision. `null` if free.
-  function chordConflict(letter: string | null): string | null {
+  /**
+   * Reasons a chord_key declaration would silently fail. Surfaced inline
+   * so the user knows why their pick won't take effect.
+   */
+  type ChordIssue =
+    | { kind: "reserved"; surface: "slash" | "drawer"; reason: string }
+    | { kind: "builtin"; verb: string }
+    | { kind: "property"; otherName: string };
+
+  function checkPropertyChord(letter: string | null): ChordIssue | null {
     if (!letter) return null;
+    if (SLASH_RESERVED_CHORDS.has(letter)) {
+      return {
+        kind: "reserved",
+        surface: "slash",
+        reason: "The slash menu uses this key to open its filter input — no chord can claim it.",
+      };
+    }
+    const verb = BUILTIN_SLASH_CHORDS.get(letter);
+    if (verb) return { kind: "builtin", verb };
     const ownName = note.title.toLowerCase();
     for (const [name, def] of propertyRegistry) {
       if (name === ownName) continue;
-      if (def.chord_key === letter) return def.name;
+      if (def.chord_key === letter) return { kind: "property", otherName: def.name };
+    }
+    return null;
+  }
+
+  /**
+   * For per-choice value chords. Conflicts with the drawer's reserved nav
+   * keys would break j/k/h/l/x/g navigation. We don't check against the
+   * builtin slash verbs here — value chords only fire inside a value
+   * submenu (where `t` for Task is irrelevant).
+   */
+  type ValueChordIssue =
+    | { kind: "reserved"; reason: string }
+    | { kind: "duplicate"; otherChoice: string };
+
+  function checkValueChord(choice: string, letter: string | null): ValueChordIssue | null {
+    if (!letter) return null;
+    if (DRAWER_RESERVED_CHORDS.has(letter)) {
+      return {
+        kind: "reserved",
+        reason: "The bottom drawer reserves this key for nav (j/k/h/l/x/g). Pick another letter.",
+      };
+    }
+    for (const [otherChoice, otherLetter] of Object.entries(valueChordKeys)) {
+      if (otherChoice === choice.toLowerCase()) continue;
+      if (otherLetter === letter) return { kind: "duplicate", otherChoice };
     }
     return null;
   }
@@ -248,11 +294,23 @@
           onclick={() => startCapture("")}
         >+ set chord</button>
       {/if}
-      {#if chordKeyConflict}
-        <span
-          class="text-[10px] px-1.5 py-0.5 rounded border border-destructive/40 bg-destructive/10 text-destructive"
-          title="Property page '{chordKeyConflict}' also declares chord_key: '{chordKey}'. The chord menu will fall back to first-letter for whichever property loads later."
-        >taken by {chordKeyConflict}</span>
+      {#if chordKeyIssue}
+        {#if chordKeyIssue.kind === "reserved"}
+          <span
+            class="text-[10px] px-1.5 py-0.5 rounded border border-destructive/40 bg-destructive/10 text-destructive"
+            title={chordKeyIssue.reason}
+          >reserved · won't fire</span>
+        {:else if chordKeyIssue.kind === "builtin"}
+          <span
+            class="text-[10px] px-1.5 py-0.5 rounded border border-destructive/40 bg-destructive/10 text-destructive"
+            title="The slash menu's built-in '{chordKeyIssue.verb}' verb owns this key. Your property will fall back to first-letter at the top level."
+          >taken by {chordKeyIssue.verb} (builtin)</span>
+        {:else}
+          <span
+            class="text-[10px] px-1.5 py-0.5 rounded border border-destructive/40 bg-destructive/10 text-destructive"
+            title="Property page '{chordKeyIssue.otherName}' also declares chord_key: '{chordKey}'. The chord menu will fall back to first-letter for whichever property loads later."
+          >taken by {chordKeyIssue.otherName}</span>
+        {/if}
       {/if}
     </div>
   </div>
@@ -290,14 +348,20 @@
                 >{choice}</span>
               {/if}
               <!-- Per-choice chord. Click to capture; click again to clear. -->
-              {#if capturingChordFor === choice}
+              {#if capturingChordFor === choice.toLowerCase()}
                 <span class="text-[10px] px-1.5 py-0.5 rounded border border-primary/60 bg-primary/10 text-primary font-mono">press…</span>
               {:else if valueChordKeys[choice.toLowerCase()]}
+                {@const vIssue = checkValueChord(choice, valueChordKeys[choice.toLowerCase()])}
                 <button
-                  class="px-1.5 py-0.5 rounded border border-border bg-muted/40 text-[11px] font-mono font-semibold text-primary hover:border-primary/60 transition-colors"
+                  class="px-1.5 py-0.5 rounded border {vIssue ? 'border-destructive/40 bg-destructive/10 text-destructive' : 'border-border bg-muted/40 text-primary'} text-[11px] font-mono font-semibold hover:border-primary/60 transition-colors"
                   onclick={() => startCapture(choice.toLowerCase())}
-                  title="Click to change. Esc to cancel."
+                  title={vIssue ? (vIssue.kind === "reserved" ? vIssue.reason : `Same chord as '${vIssue.otherChoice}'.`) : "Click to change. Esc to cancel."}
                 >{valueChordKeys[choice.toLowerCase()]}</button>
+                {#if vIssue}
+                  <span class="text-[10px] text-destructive/80">
+                    {vIssue.kind === "reserved" ? "reserved" : `dupe: ${vIssue.otherChoice}`}
+                  </span>
+                {/if}
               {:else}
                 <button
                   class="text-[10px] px-1.5 py-0.5 rounded border border-dashed border-border/40 text-muted-foreground/40 hover:text-foreground/70 hover:border-border transition-colors"
