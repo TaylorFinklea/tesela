@@ -8,6 +8,7 @@ pub mod indexer;
 pub mod link;
 pub mod note;
 pub mod query;
+pub mod recurrence;
 pub mod regex_cache;
 pub mod storage;
 pub mod tag;
