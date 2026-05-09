@@ -350,15 +350,43 @@ Bridge Tesela Task blocks ↔ Apple Reminders items so the user can:
 - Tick a Reminder on iPhone → status flips to `done` in Tesela on next sync.
 - Use Reminders' geofencing automations ("remind me at home") on Tesela tasks, while editing/searching/linking remains in Tesela.
 
-Sketch:
-- **macOS bridge**: native EventKit access via a Swift helper (or extend `tesela-server` with a small Objective-C/Swift FFI module). Web client never talks to EventKit directly.
-- **Identity**: store the Reminders `EKCalendarItem.calendarItemIdentifier` on the block as a property `apple_reminder_id::`. Stable across syncs, missing on Tesela-only blocks until first push.
-- **Property mapping**: `status::done` ↔ `completed`, `deadline::` ↔ `dueDateComponents`, `priority::` ↔ `priority` (low/med/high → 9/5/1), `scheduled::` ↔ alarm time, block text ↔ `title`. Optional `reminder_location::` property carries geofence rules round-trip.
-- **Conflict resolution**: last-write-wins per field, with a `synced_at::` timestamp on the block. Property-level diffing so editing a deadline in Tesela doesn't clobber a tick on iOS.
-- **Sync trigger**: file-watcher diff → push; EventKit notification → pull → apply. Periodic full-reconcile on app start.
-- **Per-list mapping**: user picks which Reminders list mirrors the Task tag (default to a `Tesela` list created on first run).
+Architecture (shipped):
+- **macOS bridge**: `tesela-server/src/reminders/darwin.rs` uses `objc2-event-kit` directly. Web client never talks to EventKit; all interaction goes through `/sync/reminders/{push,pull}` and the combined `/sync/reminders` route.
+- **Identity**: `apple_reminder_id::` on the block stores `EKCalendarItem.calendarItemIdentifier`. Missing identifier → recreate on next push.
+- **Conflict gate**: `apple_reminder_synced_at::` (RFC 3339 UTC) is written on every successful push and pull. On pull, we only overwrite Tesela when `EKReminder.lastModifiedDate > synced_at` — i.e. the user actually touched it in Reminders.app since our last sync. Otherwise Tesela keeps its value.
+- **Combined sync ordering**: pull-then-push. If the user only edited Tesela, pull no-ops and push writes Tesela → EK. If the user only edited in Reminders.app, pull writes EK → Tesela first, then push reaffirms. Concurrent edits: EK wins per field (documented limitation).
+- **Calendar setup**: "Tesela" list auto-created on the Source that owns `defaultCalendarForNewReminders` — the only reliable way to find a writable Source for reminder-type calendars (CalDAV servers may host events but not reminders).
 
-Out of scope for v1: shared lists, attachments, sub-reminders, multi-account, Reminders categories outside Tasks.
+##### 12.1 slice 1 — push (✅ shipped, commit `7bf1560`)
+
+Tesela → Reminders only.
+- Eligible: any Task block with a parseable `deadline::` (date or `[[YYYY-MM-DD]]`, optionally with trailing time).
+- Property mapping: block text → `title`; `status:: done` → `completed`; `deadline::` → `dueDateComponents` (date-only); `priority:: critical|high|medium|low` → `1|1|5|9`; no priority → `0`.
+- Idempotent: first push returns `created`, subsequent pushes return `updated` for the same blocks via the stored identifier.
+- POST `/sync/reminders/push` returns `{ created, updated, synced, errors }`.
+
+##### 12.1 slice 2 — pull + combined sync (✅ shipped, commit `0ed74b5`)
+
+Reminders → Tesela, plus a "Sync now" UI surface.
+- POST `/sync/reminders/pull` walks the Tesela calendar, diffs each reminder against its matching block, gates on the `lastModifiedDate > synced_at` rule, writes back.
+- Pulled fields: title (preserves inline `#tags` by re-appending them after the new text), status (`completed` ↔ `done`/`todo`), deadline (date only), priority (1-4 → high, 5 → medium, 6-9 → low).
+- POST `/sync/reminders` does pull-then-push and returns `{ pull, push }`.
+- UI: `Cmd+K → "Sync Apple Reminders"` and **Settings → Apple Reminders → Sync now** both call the combined endpoint and show a toast outcome.
+- Orphans (reminders with no matching Tesela block) are reported but not imported — slice 3 territory.
+
+##### 12.1 slice 3 — round-trip fidelity & ergonomics (next)
+
+Closing the gaps that slice 2 left open. Roughly priority order:
+
+1. **Time-of-day round-trip**. Today `deadline:: [[YYYY-MM-DD]] HH:MM` parses (after the slice-2 follow-up fix) but the time is dropped on push (date-only `dueDateComponents`) and never restored on pull. Map the optional time component to `dueDateComponents.{hour,minute}` and write the full `HH:MM` back on pull when EK has one. Also: `scheduled::` → `EKAlarm.relativeOffset` so iOS notifies at the scheduled time without the user duplicating data.
+2. **Geofencing (`reminder_location::`)**. Write/read `EKReminder.alarms[].structuredLocation` so Reminders' "remind me at home/work" automations attach to a Tesela block and survive sync. Store as `reminder_location:: <name> @ <lat>,<lng> (radius=<m>) on:arrive|on:leave`.
+3. **Per-list mapping**. Today everything lives in the auto-created "Tesela" calendar. Let the user point a Tesela tag (e.g. `#work`, `#groceries`) at an existing Reminders list so Tesela tasks land in the same buckets the user already has on iOS. Frontmatter on the tag page: `apple_reminder_list:: "Work"`.
+4. **Periodic / event-driven sync**. Right now sync is manual (button or curl). Add: (a) sync on tesela-server startup; (b) debounced sync when a relevant block is edited locally; (c) `EKEventStore` change notifications → pull on the foreground side. Goal: the user shouldn't have to think about pressing the button.
+5. **Orphan handling**. Today `pull` reports orphan EKReminder ids without acting on them. Decide policy: import as a new Tesela Task with a configurable parent (e.g. `#inbox`)? Skip with a one-time toast? Surface them in a Settings list with "import" / "ignore" actions.
+6. **Recurring round-trip**. Phase 12.2 already lets Tesela auto-bump `deadline::` on `status:: done`. Slice 3 maps `recurring::` ↔ `EKRecurrenceRule` so a recurring Tesela task creates a recurring Reminder, and ticking the Reminder on iPhone fires the same auto-bump on pull.
+7. **UI affordances**. Show last-sync time and outcome in Settings (currently only the toast). Surface `apple_reminder_id::` and `apple_reminder_synced_at::` in the BottomDrawer's "system properties" group rather than the user-facing property list.
+
+Out of scope still: shared lists, attachments, sub-reminders (12.4 handles Tesela-side hierarchy first), multi-account, Reminders categories outside Tasks.
 
 #### 12.2 — Recurring tasks & events
 

@@ -177,13 +177,15 @@ fn is_task(block: &ParsedBlock) -> bool {
 
 fn parse_iso_date_brackets(s: &str) -> Option<NaiveDate> {
     let trimmed = s.trim();
-    let inner = trimmed
+    // Take the first whitespace-delimited token first so a trailing
+    // time component (e.g. `[[2026-05-08]] 10:00`) doesn't keep the
+    // suffix-strip from matching `]]`.
+    let first = trimmed.split_whitespace().next().unwrap_or(trimmed);
+    let inner = first
         .strip_prefix("[[")
         .and_then(|s| s.strip_suffix("]]"))
-        .unwrap_or(trimmed);
-    // Strip trailing time component if present (e.g. `2026-05-08 10:00`).
-    let date_part = inner.split_whitespace().next().unwrap_or(inner);
-    NaiveDate::parse_from_str(date_part, "%Y-%m-%d").ok()
+        .unwrap_or(first);
+    NaiveDate::parse_from_str(inner, "%Y-%m-%d").ok()
 }
 
 fn priority_for(s: Option<&str>) -> u8 {
