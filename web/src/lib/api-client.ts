@@ -116,6 +116,7 @@ export const api = {
   remindersPush: () => post<RemindersPushOutcome>("/sync/reminders/push", {}),
   remindersPull: () => post<RemindersPullOutcome>("/sync/reminders/pull", {}),
   remindersSync: () => post<RemindersSyncOutcome>("/sync/reminders", {}),
+  remindersStatus: () => get<RemindersLastSync>("/sync/reminders/status"),
 };
 
 export interface RemindersPushOutcome {
@@ -132,4 +133,10 @@ export interface RemindersPullOutcome {
 export interface RemindersSyncOutcome {
   pull: RemindersPullOutcome;
   push: RemindersPushOutcome;
+}
+export interface RemindersLastSync {
+  at: string | null;
+  trigger: string | null;
+  outcome: RemindersSyncOutcome | null;
+  error: string | null;
 }

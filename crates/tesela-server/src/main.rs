@@ -20,6 +20,7 @@ use tesela_core::{
     types::TypeRegistry,
 };
 
+use reminders::auto::AutoSync;
 use state::{AppState, WsEvent};
 
 #[tokio::main]
@@ -132,8 +133,9 @@ async fn main() -> Result<()> {
 
     // Bridge NoteEvents from the Indexer to WsEvents for WebSocket clients
     let ws_tx_bridge = ws_tx.clone();
+    let note_event_tx_for_ws = note_event_tx.clone();
     tokio::spawn(async move {
-        let mut rx = note_event_tx.subscribe();
+        let mut rx = note_event_tx_for_ws.subscribe();
         while let Ok(event) = rx.recv().await {
             let ws_event = match event {
                 NoteEvent::Created(note) => WsEvent::NoteCreated { note },
@@ -144,11 +146,25 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Phase 12.1 slice 3.4 — Apple Reminders auto-sync triggers.
+    // The triggers (startup, periodic, debounced edit-driven) are
+    // no-ops on non-macOS. The shared `AutoSync` also services manual
+    // sync calls so the Settings UI's "last synced" line covers all
+    // sources uniformly.
+    let auto_sync = Arc::new(AutoSync::new());
+    let store_for_auto: Arc<dyn NoteStore> = Arc::clone(&store) as Arc<dyn NoteStore>;
+    reminders::auto::start_triggers(
+        Arc::clone(&auto_sync),
+        store_for_auto,
+        note_event_tx.clone(),
+    );
+
     let app_state = AppState {
         store,
         index,
         ws_tx,
         type_registry,
+        auto_sync,
     };
     let router = routes::build(app_state);
 

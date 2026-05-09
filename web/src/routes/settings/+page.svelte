@@ -1,8 +1,10 @@
 <script lang="ts">
   import { browser } from "$app/environment";
+  import { onMount } from "svelte";
   import { useQueryClient } from "@tanstack/svelte-query";
   import { prefs, type BulletStyle } from "$lib/preferences.svelte";
   import { runRemindersSync } from "$lib/reminders-sync";
+  import { api, type RemindersLastSync } from "$lib/api-client";
 
   function loadSetting(key: string, fallback: string): string {
     if (!browser) return fallback;
@@ -18,12 +20,59 @@
   let serverUrl = $state(loadSetting("serverUrl", "http://127.0.0.1:7474"));
 
   let syncing = $state(false);
+  let lastSync = $state<RemindersLastSync | null>(null);
   const queryClient = useQueryClient();
+
+  async function refreshLastSync() {
+    try { lastSync = await api.remindersStatus(); }
+    catch { /* server not reachable; leave as-is */ }
+  }
   async function syncRemindersNow() {
     if (syncing) return;
     syncing = true;
-    try { await runRemindersSync(queryClient); }
-    finally { syncing = false; }
+    try {
+      await runRemindersSync(queryClient);
+      await refreshLastSync();
+    } finally { syncing = false; }
+  }
+
+  onMount(() => {
+    void refreshLastSync();
+    // Refresh every 15s so the auto-sync triggers reflect in the UI
+    // without needing a page reload. Cheap call; just reads in-memory
+    // state on the server.
+    const id = setInterval(refreshLastSync, 15_000);
+    return () => clearInterval(id);
+  });
+
+  function formatRelative(iso: string | null): string {
+    if (!iso) return "never";
+    const then = new Date(iso).getTime();
+    const now = Date.now();
+    const sec = Math.max(0, Math.round((now - then) / 1000));
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.round(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.round(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    return new Date(iso).toLocaleString();
+  }
+
+  function summarizeOutcome(s: RemindersLastSync | null): string {
+    if (!s) return "";
+    if (s.error) return `error: ${s.error}`;
+    if (!s.outcome) return "";
+    const o = s.outcome;
+    const created = o.push.created.length;
+    const updated = o.push.updated.length;
+    const pulled = o.pull.updated.length;
+    const errs = o.pull.errors.length + o.push.errors.length;
+    const parts: string[] = [];
+    if (created > 0) parts.push(`${created} new`);
+    if (updated > 0) parts.push(`${updated} pushed`);
+    if (pulled > 0) parts.push(`${pulled} pulled`);
+    if (errs > 0) parts.push(`${errs} error${errs === 1 ? "" : "s"}`);
+    return parts.length === 0 ? "no changes" : parts.join(", ");
   }
 
   function handleFontSizeChange(value: string) {
@@ -118,7 +167,24 @@
         >
           {syncing ? "Syncing…" : "Sync now"}
         </button>
-        <p class="text-[11px] text-muted-foreground/40 mt-1.5">macOS only. Pulls changes from Reminders.app then pushes Tesela tasks with deadlines.</p>
+        {#if lastSync}
+          <div class="mt-2 text-[11px] text-muted-foreground/70 leading-relaxed">
+            {#if lastSync.at}
+              <div>
+                Last synced <span class="text-foreground/80">{formatRelative(lastSync.at)}</span>
+                {#if lastSync.trigger}
+                  via <span class="text-foreground/80">{lastSync.trigger}</span>
+                {/if}
+                {#if summarizeOutcome(lastSync)}
+                  · <span class={lastSync.error ? "text-red-400" : "text-foreground/80"}>{summarizeOutcome(lastSync)}</span>
+                {/if}
+              </div>
+            {:else}
+              <div>Has not synced yet — startup trigger fires 10s after server boot, then every 5 minutes.</div>
+            {/if}
+          </div>
+        {/if}
+        <p class="text-[11px] text-muted-foreground/40 mt-1.5">macOS only. Auto-syncs on server start, every 5 minutes, and 30 seconds after edits. Pulls changes from Reminders.app then pushes Tesela tasks with deadlines.</p>
       </section>
 
       <!-- Keyboard shortcuts reference -->

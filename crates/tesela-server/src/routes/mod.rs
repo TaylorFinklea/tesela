@@ -40,6 +40,7 @@ pub fn build(state: AppState) -> Router {
         .route("/sync/reminders/push", post(sync::push))
         .route("/sync/reminders/pull", post(sync::pull))
         .route("/sync/reminders", post(sync::sync))
+        .route("/sync/reminders/status", get(sync::status))
         .route("/search", get(search::search_notes))
         .route("/search/query", post(search_query::execute))
         .route("/calendar/marks", get(calendar::marks))

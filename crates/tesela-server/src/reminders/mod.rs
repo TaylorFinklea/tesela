@@ -98,6 +98,8 @@ mod darwin;
 #[cfg(target_os = "macos")]
 pub use darwin::{pull_all, push_all, sync_all};
 
+pub mod auto;
+
 #[cfg(not(target_os = "macos"))]
 pub async fn push_all(
     _store: std::sync::Arc<dyn tesela_core::traits::note_store::NoteStore>,
