@@ -111,4 +111,25 @@ export const api = {
       "/blocks/recur-bump",
       { block_id: blockId },
     ),
+  /** Phase 12.1 — Apple Reminders sync (macOS only). The combined
+   *  `remindersSync` is what the "Sync now" UI button hits. */
+  remindersPush: () => post<RemindersPushOutcome>("/sync/reminders/push", {}),
+  remindersPull: () => post<RemindersPullOutcome>("/sync/reminders/pull", {}),
+  remindersSync: () => post<RemindersSyncOutcome>("/sync/reminders", {}),
 };
+
+export interface RemindersPushOutcome {
+  created: string[];
+  updated: string[];
+  synced: string[];
+  errors: { block_id: string; message: string }[];
+}
+export interface RemindersPullOutcome {
+  updated: string[];
+  orphans: string[];
+  errors: { reminder_id: string; message: string }[];
+}
+export interface RemindersSyncOutcome {
+  pull: RemindersPullOutcome;
+  push: RemindersPushOutcome;
+}

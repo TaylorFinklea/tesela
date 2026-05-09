@@ -36,6 +36,7 @@
   import StatusBar from "$lib/components/StatusBar.svelte";
   import { ensureSystemWidgets } from "$lib/system-widgets";
   import { api } from "$lib/api-client";
+  import { getToast, clearToast } from "$lib/stores/toast.svelte";
   import "../app.css";
 
   let { children } = $props();
@@ -52,6 +53,7 @@
   let showLeaderMenu = $state(false);
   let leaderInitialPath = $state<string[]>([]);
   const drawerOpen = $derived(isBottomDrawerOpen());
+  const activeToast = $derived(getToast());
 
   // Phase 10.2 — unified spacemacs-style leader chord tree. Block actions
   // dispatch `tesela:block-action` events that the focused BlockOutliner
@@ -440,4 +442,45 @@
       onclose={() => { showLeaderMenu = false; leaderInitialPath = []; }}
     />
   {/if}
+  {#if activeToast}
+    <!-- svelte-ignore a11y_click_events_have_key_events -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="fixed bottom-6 right-6 z-50 max-w-md rounded-lg border px-4 py-2.5 text-[13px] shadow-lg cursor-pointer transition-opacity tesela-toast tesela-toast-{activeToast.tone}"
+      onclick={clearToast}
+    >
+      {activeToast.message}
+    </div>
+  {/if}
 </QueryClientProvider>
+
+<style>
+  .tesela-toast {
+    backdrop-filter: blur(8px);
+    animation: tesela-toast-in 0.18s ease-out;
+  }
+  .tesela-toast-info {
+    background: hsl(var(--popover) / 0.95);
+    border-color: hsl(var(--border));
+    color: hsl(var(--popover-foreground));
+  }
+  .tesela-toast-success {
+    background: hsl(142 70% 35% / 0.95);
+    border-color: hsl(142 70% 45%);
+    color: white;
+  }
+  .tesela-toast-warn {
+    background: hsl(38 92% 45% / 0.95);
+    border-color: hsl(38 92% 55%);
+    color: white;
+  }
+  .tesela-toast-error {
+    background: hsl(0 75% 50% / 0.95);
+    border-color: hsl(0 75% 60%);
+    color: white;
+  }
+  @keyframes tesela-toast-in {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+</style>

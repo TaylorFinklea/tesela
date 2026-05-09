@@ -1,26 +1,27 @@
 //! macOS EventKit bridge for Apple Reminders sync.
 //!
-//! v1 scope: smoke test + permission flow + Tesela calendar create/find.
-//! The block-iteration / writeback / property mapping lands in the next
-//! slice once we've validated the FFI and permission UX work end-to-end.
+//! v2 scope: push (Tesela → Reminders), pull (Reminders → Tesela), and
+//! a combined `sync_all` that does pull-then-push so external edits
+//! aren't clobbered by an immediate push.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2_event_kit::{
     EKCalendar, EKEntityType, EKEventStore, EKReminder, EKSourceType,
 };
-use objc2_foundation::{NSArray, NSCalendar, NSCalendarUnit, NSDateComponents, NSString};
+use objc2_foundation::{NSArray, NSCalendar, NSCalendarUnit, NSDate, NSDateComponents, NSString};
 
 use tesela_core::block::{parse_blocks, ParsedBlock};
 use tesela_core::storage::markdown::parse_frontmatter;
 use tesela_core::traits::note_store::NoteStore;
 
-use super::{PushError, PushOutcome};
+use super::{PullError, PullOutcome, PushError, PushOutcome, SyncOutcome};
 
 /// Entry point — called from the `POST /api/sync/reminders/push` route.
 ///
@@ -49,17 +50,23 @@ pub async fn push_all(store: Arc<dyn NoteStore>) -> Result<PushOutcome> {
         let mut plan = PushPlan::default();
         for cand in candidates {
             match unsafe { push_one(&event_store, &calendar, &cand) } {
-                Ok(SyncEffect::Created { reminder_id }) => {
+                Ok(effect) => {
+                    let synced_at = Utc::now().to_rfc3339();
+                    let (reminder_id, was_created) = match effect {
+                        SyncEffect::Created { reminder_id } => (reminder_id, true),
+                        SyncEffect::Updated { reminder_id } => (reminder_id, false),
+                    };
                     plan.writebacks.push(Writeback {
                         note_id: cand.note_id.clone(),
                         block_id: cand.block_id.clone(),
                         reminder_id,
+                        synced_at,
                     });
-                    plan.outcome.created.push(cand.block_id.clone());
-                    plan.outcome.synced.push(cand.block_id);
-                }
-                Ok(SyncEffect::Updated) => {
-                    plan.outcome.updated.push(cand.block_id.clone());
+                    if was_created {
+                        plan.outcome.created.push(cand.block_id.clone());
+                    } else {
+                        plan.outcome.updated.push(cand.block_id.clone());
+                    }
                     plan.outcome.synced.push(cand.block_id);
                 }
                 Err(e) => plan.outcome.errors.push(PushError {
@@ -91,11 +98,12 @@ struct Writeback {
     note_id: String,
     block_id: String,
     reminder_id: String,
+    synced_at: String,
 }
 
 enum SyncEffect {
     Created { reminder_id: String },
-    Updated,
+    Updated { reminder_id: String },
 }
 
 struct Candidate {
@@ -188,7 +196,6 @@ fn priority_for(s: Option<&str>) -> u8 {
 }
 
 async fn apply_writebacks(store: &Arc<dyn NoteStore>, items: &[Writeback]) -> Result<()> {
-    use std::collections::HashMap;
     let mut by_note: HashMap<&str, Vec<&Writeback>> = HashMap::new();
     for wb in items {
         by_note.entry(wb.note_id.as_str()).or_default().push(wb);
@@ -209,6 +216,13 @@ async fn apply_writebacks(store: &Arc<dyn NoteStore>, items: &[Writeback]) -> Re
                 &wb.block_id,
                 "apple_reminder_id",
                 &wb.reminder_id,
+            );
+            note.content = upsert_block_property(
+                &note.content,
+                note_id,
+                &wb.block_id,
+                "apple_reminder_synced_at",
+                &wb.synced_at,
             );
         }
         store
@@ -332,12 +346,11 @@ unsafe fn push_one(
         .saveReminder_commit_error(&reminder, true)
         .map_err(|nserr| anyhow!("save reminder: {}", nserr.localizedDescription()))?;
 
-    let was_new = cand.existing_reminder_id.is_none();
-    if was_new {
-        let id = reminder.calendarItemIdentifier().to_string();
+    let id = reminder.calendarItemIdentifier().to_string();
+    if cand.existing_reminder_id.is_none() {
         Ok(SyncEffect::Created { reminder_id: id })
     } else {
-        Ok(SyncEffect::Updated)
+        Ok(SyncEffect::Updated { reminder_id: id })
     }
 }
 
@@ -461,5 +474,442 @@ unsafe fn find_or_create_tesela_calendar(
         .saveCalendar_commit_error(&new_cal, true)
         .map_err(|nserr| anyhow!("save Tesela calendar: {}", nserr.localizedDescription()))?;
     Ok(new_cal)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Pull (Reminders → Tesela)
+// ─────────────────────────────────────────────────────────────────────
+
+/// Pull all reminders in the Tesela calendar back into Tesela. Walks
+/// every reminder, looks up its matching block via the
+/// `apple_reminder_id::` property, and writes back any field that's
+/// drifted (status, deadline, priority, title) — gated on the EK
+/// `lastModifiedDate` being newer than the block's
+/// `apple_reminder_synced_at::`.
+pub async fn pull_all(store: Arc<dyn NoteStore>) -> Result<PullOutcome> {
+    request_access().await?;
+
+    let snapshots = fetch_reminders().await?;
+    if snapshots.is_empty() {
+        return Ok(PullOutcome::default());
+    }
+
+    let index = collect_block_index(&store).await?;
+    let mut outcome = PullOutcome::default();
+    let mut writebacks: Vec<PullWriteback> = Vec::new();
+
+    for snap in snapshots {
+        match index.get(&snap.reminder_id) {
+            Some(block) => {
+                let diff = compute_diff(&snap, block);
+                if diff.is_empty() {
+                    continue;
+                }
+                writebacks.push(PullWriteback {
+                    note_id: block.note_id.clone(),
+                    block_id: block.block_id.clone(),
+                    diff,
+                    synced_at: Utc::now().to_rfc3339(),
+                });
+                outcome.updated.push(block.block_id.clone());
+            }
+            None => outcome.orphans.push(snap.reminder_id.clone()),
+        }
+    }
+
+    if let Err(e) = apply_pull_writebacks(&store, &writebacks).await {
+        // Surface the error per-block so partial progress is still
+        // recorded. The note write may have partly succeeded for some
+        // notes before failing; rather than guess we attribute the
+        // error to every block in the failing batch.
+        for wb in &writebacks {
+            outcome.errors.push(PullError {
+                reminder_id: wb.block_id.clone(),
+                message: e.to_string(),
+            });
+        }
+    }
+
+    Ok(outcome)
+}
+
+/// Combined pull-then-push. The "Sync now" button hits this so external
+/// edits flow back into Tesela before any push could clobber them.
+pub async fn sync_all(store: Arc<dyn NoteStore>) -> Result<SyncOutcome> {
+    let pull = pull_all(Arc::clone(&store)).await.unwrap_or_else(|e| {
+        // If the pull half fails, surface as a single error and let
+        // push run anyway — losing one direction is better than losing
+        // both.
+        let mut o = PullOutcome::default();
+        o.errors.push(PullError {
+            reminder_id: String::new(),
+            message: format!("pull failed: {e}"),
+        });
+        o
+    });
+    let push = push_all(store).await?;
+    Ok(SyncOutcome { pull, push })
+}
+
+#[derive(Default)]
+struct PullDiff {
+    title: Option<String>,
+    status: Option<String>,
+    deadline: Option<NaiveDate>,
+    priority: Option<String>,
+}
+
+impl PullDiff {
+    fn is_empty(&self) -> bool {
+        self.title.is_none()
+            && self.status.is_none()
+            && self.deadline.is_none()
+            && self.priority.is_none()
+    }
+}
+
+struct PullWriteback {
+    note_id: String,
+    block_id: String,
+    diff: PullDiff,
+    synced_at: String,
+}
+
+struct ReminderSnapshot {
+    reminder_id: String,
+    title: String,
+    completed: bool,
+    due_date: Option<NaiveDate>,
+    priority: u8,
+    /// EK `lastModifiedDate` as Unix millis — used to decide whether the
+    /// reminder has been touched since our last sync.
+    last_modified_unix_ms: Option<i64>,
+}
+
+struct BlockRef {
+    note_id: String,
+    block_id: String,
+    title: String,
+    status: Option<String>,
+    deadline: Option<NaiveDate>,
+    priority_str: Option<String>,
+    synced_at_unix_ms: Option<i64>,
+}
+
+async fn collect_block_index(
+    store: &Arc<dyn NoteStore>,
+) -> Result<HashMap<String, BlockRef>> {
+    let notes = store
+        .list(None, usize::MAX, 0)
+        .await
+        .map_err(|e| anyhow!("list notes: {e}"))?;
+    let mut idx = HashMap::new();
+    for note in notes {
+        let body = extract_body(&note.content);
+        let blocks = parse_blocks(note.id.as_str(), &body);
+        for block in blocks {
+            let Some(rid) = block
+                .properties
+                .get("apple_reminder_id")
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let synced_at_unix_ms = block
+                .properties
+                .get("apple_reminder_synced_at")
+                .and_then(|s| DateTime::parse_from_rfc3339(s.trim()).ok())
+                .map(|dt| dt.timestamp_millis());
+            idx.insert(
+                rid,
+                BlockRef {
+                    note_id: note.id.to_string(),
+                    block_id: block.id.clone(),
+                    title: block.text.clone(),
+                    status: block.properties.get("status").cloned(),
+                    deadline: block
+                        .properties
+                        .get("deadline")
+                        .and_then(|s| parse_iso_date_brackets(s)),
+                    priority_str: block.properties.get("priority").cloned(),
+                    synced_at_unix_ms,
+                },
+            );
+        }
+    }
+    Ok(idx)
+}
+
+fn compute_diff(snap: &ReminderSnapshot, block: &BlockRef) -> PullDiff {
+    let mut diff = PullDiff::default();
+
+    // Conflict gate: if EK hasn't been touched since our last sync, the
+    // EK side has nothing newer to offer — Tesela's value (which may have
+    // diverged via local edits) wins by default.
+    if let (Some(synced), Some(modified)) =
+        (block.synced_at_unix_ms, snap.last_modified_unix_ms)
+    {
+        if modified <= synced {
+            return diff;
+        }
+    }
+
+    if !snap.title.is_empty() && snap.title != block.title {
+        diff.title = Some(snap.title.clone());
+    }
+
+    let target_status = if snap.completed { "done" } else { "todo" };
+    if block.status.as_deref() != Some(target_status) {
+        diff.status = Some(target_status.to_string());
+    }
+
+    // Only sync the deadline EK→Tesela when EK has a value. Don't
+    // clear Tesela deadlines from the pull side — that would be
+    // surprising and there's no clean way to delete a property line in
+    // upsert_block_property right now.
+    if let Some(due) = snap.due_date {
+        if Some(due) != block.deadline {
+            diff.deadline = Some(due);
+        }
+    }
+
+    let target_priority = match snap.priority {
+        1..=4 => Some("high"),
+        5 => Some("medium"),
+        6..=9 => Some("low"),
+        _ => None,
+    };
+    if let Some(target) = target_priority {
+        if block.priority_str.as_deref() != Some(target) {
+            diff.priority = Some(target.to_string());
+        }
+    }
+
+    diff
+}
+
+async fn apply_pull_writebacks(
+    store: &Arc<dyn NoteStore>,
+    items: &[PullWriteback],
+) -> Result<()> {
+    let mut by_note: HashMap<&str, Vec<&PullWriteback>> = HashMap::new();
+    for wb in items {
+        by_note.entry(wb.note_id.as_str()).or_default().push(wb);
+    }
+    for (note_id, writebacks) in by_note {
+        let id = tesela_core::note::NoteId::new(note_id);
+        let Some(mut note) = store
+            .get(&id)
+            .await
+            .map_err(|e| anyhow!("get {note_id}: {e}"))?
+        else {
+            continue;
+        };
+        for wb in writebacks {
+            if let Some(new_title) = &wb.diff.title {
+                note.content = set_block_text(&note.content, note_id, &wb.block_id, new_title);
+            }
+            if let Some(status) = &wb.diff.status {
+                note.content = upsert_block_property(
+                    &note.content,
+                    note_id,
+                    &wb.block_id,
+                    "status",
+                    status,
+                );
+            }
+            if let Some(deadline) = wb.diff.deadline {
+                note.content = upsert_block_property(
+                    &note.content,
+                    note_id,
+                    &wb.block_id,
+                    "deadline",
+                    &format!("[[{}]]", deadline.format("%Y-%m-%d")),
+                );
+            }
+            if let Some(priority) = &wb.diff.priority {
+                note.content = upsert_block_property(
+                    &note.content,
+                    note_id,
+                    &wb.block_id,
+                    "priority",
+                    priority,
+                );
+            }
+            note.content = upsert_block_property(
+                &note.content,
+                note_id,
+                &wb.block_id,
+                "apple_reminder_synced_at",
+                &wb.synced_at,
+            );
+        }
+        store
+            .update(&note)
+            .await
+            .map_err(|e| anyhow!("update {note_id}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Rewrite the start line of a block to display `new_text`. Inline
+/// `#tag` tokens on the line are preserved by re-appending them after
+/// the new text — Tesela's `block.text` is the line with tags stripped,
+/// so a naive overwrite would silently lose the tag.
+fn set_block_text(content: &str, note_id: &str, block_id: &str, new_text: &str) -> String {
+    let Some((fm, body)) = split_frontmatter(content) else {
+        return content.to_string();
+    };
+    let blocks = parse_blocks(note_id, body);
+    let Some(target) = blocks.iter().find(|b| b.id == block_id) else {
+        return content.to_string();
+    };
+    let block_start_idx: usize = target
+        .id
+        .rsplit_once(':')
+        .and_then(|(_, n)| n.parse().ok())
+        .unwrap_or(0);
+
+    let mut lines: Vec<String> = body.lines().map(|s| s.to_string()).collect();
+    if block_start_idx >= lines.len() {
+        return content.to_string();
+    }
+    let line = lines[block_start_idx].clone();
+    let Some(bullet_pos) = line.find("- ") else {
+        return content.to_string();
+    };
+    let prefix = &line[..bullet_pos + 2];
+    let body_part = &line[bullet_pos + 2..];
+    let inline_tags: Vec<&str> = body_part
+        .split_whitespace()
+        .filter(|w| w.starts_with('#'))
+        .collect();
+    let mut rebuilt = format!("{prefix}{new_text}");
+    for tag in inline_tags {
+        rebuilt.push(' ');
+        rebuilt.push_str(tag);
+    }
+    lines[block_start_idx] = rebuilt;
+    let new_body = lines.join("\n");
+    format!("{fm}{new_body}")
+}
+
+async fn fetch_reminders() -> Result<Vec<ReminderSnapshot>> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<Result<Vec<ReminderSnapshot>, String>>();
+    let tx = std::sync::Mutex::new(Some(tx));
+
+    tokio::task::spawn_blocking(move || {
+        let event_store = unsafe { EKEventStore::new() };
+        let calendar = match unsafe { find_or_create_tesela_calendar(&event_store) } {
+            Ok(c) => c,
+            Err(e) => {
+                if let Some(s) = tx.lock().unwrap().take() {
+                    let _ = s.send(Err(format!("calendar lookup: {e}")));
+                }
+                return;
+            }
+        };
+
+        // Wrap our single calendar in an NSArray for the predicate.
+        let cal_array = NSArray::from_retained_slice(&[calendar]);
+        let predicate =
+            unsafe { event_store.predicateForRemindersInCalendars(Some(&cal_array)) };
+
+        let block = block2::RcBlock::new(
+            move |reminders_ptr: *mut NSArray<EKReminder>| {
+                let mut snapshots = Vec::new();
+                if !reminders_ptr.is_null() {
+                    let reminders: &NSArray<EKReminder> = unsafe { &*reminders_ptr };
+                    for rem in reminders.iter() {
+                        snapshots.push(unsafe { snapshot_reminder(&rem) });
+                    }
+                }
+                if let Some(s) = tx.lock().unwrap().take() {
+                    let _ = s.send(Ok(snapshots));
+                }
+            },
+        );
+
+        // The completion handler is held by EventKit until it fires. We
+        // forget the RcBlock so it isn't dropped when this scope exits;
+        // the heap-allocated block remains alive for EventKit.
+        unsafe {
+            let _request = event_store
+                .fetchRemindersMatchingPredicate_completion(&predicate, &block);
+        }
+        std::mem::forget(block);
+    });
+
+    let snapshots = tokio::time::timeout(Duration::from_secs(60), rx)
+        .await
+        .map_err(|_| anyhow!("timed out fetching reminders"))?
+        .map_err(|_| anyhow!("fetch channel dropped"))?
+        .map_err(|e| anyhow!("EventKit fetch: {e}"))?;
+
+    Ok(snapshots)
+}
+
+unsafe fn snapshot_reminder(rem: &EKReminder) -> ReminderSnapshot {
+    let reminder_id = rem.calendarItemIdentifier().to_string();
+    let title = rem
+        .title()
+        .map(|t| t.to_string())
+        .unwrap_or_default();
+    let completed = rem.isCompleted();
+    let priority = rem.priority() as u8;
+    let due_date = rem.dueDateComponents().and_then(|dc| {
+        let y = dc.year();
+        let m = dc.month();
+        let d = dc.day();
+        // NSDateComponents uses a sentinel (NSDateComponentUndefined =
+        // NSIntegerMax) when a field isn't set. A negative or zero day
+        // is also a "no date" signal; treat anything that doesn't make
+        // a valid Gregorian date as None.
+        if y > 0 && m > 0 && d > 0 {
+            NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32)
+        } else {
+            None
+        }
+    });
+    let last_modified_unix_ms = rem.lastModifiedDate().map(|d| ns_date_to_unix_ms(&d));
+
+    ReminderSnapshot {
+        reminder_id,
+        title,
+        completed,
+        due_date,
+        priority,
+        last_modified_unix_ms,
+    }
+}
+
+/// `NSDate` is seconds since the macOS reference date (2001-01-01
+/// 00:00 UTC). Convert to Unix epoch millis so we can compare against
+/// `chrono::DateTime::timestamp_millis()`.
+fn ns_date_to_unix_ms(d: &NSDate) -> i64 {
+    let mac_ref_seconds = d.timeIntervalSinceReferenceDate();
+    let unix_ref_seconds = 978_307_200.0_f64; // 2001-01-01T00:00:00Z in unix time
+    ((mac_ref_seconds + unix_ref_seconds) * 1000.0) as i64
+}
+
+/// Helpers from EKReminder's superclass (EKCalendarItem) and EKObject
+/// that the generated bindings don't surface directly on the
+/// `EKReminder` type.
+#[allow(non_snake_case)]
+trait EKReminderExt {
+    unsafe fn title(&self) -> Option<Retained<NSString>>;
+    unsafe fn lastModifiedDate(&self) -> Option<Retained<NSDate>>;
+}
+#[allow(non_snake_case)]
+impl EKReminderExt for EKReminder {
+    unsafe fn title(&self) -> Option<Retained<NSString>> {
+        use objc2::msg_send;
+        unsafe { msg_send![self, title] }
+    }
+    unsafe fn lastModifiedDate(&self) -> Option<Retained<NSDate>> {
+        use objc2::msg_send;
+        unsafe { msg_send![self, lastModifiedDate] }
+    }
 }
 

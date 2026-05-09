@@ -38,6 +38,8 @@ pub fn build(state: AppState) -> Router {
         .route("/links", get(notes::get_all_edges))
         .route("/blocks/recur-bump", post(notes::recur_bump))
         .route("/sync/reminders/push", post(sync::push))
+        .route("/sync/reminders/pull", post(sync::pull))
+        .route("/sync/reminders", post(sync::sync))
         .route("/search", get(search::search_notes))
         .route("/search/query", post(search_query::execute))
         .route("/calendar/marks", get(calendar::marks))

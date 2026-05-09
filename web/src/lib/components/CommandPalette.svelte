@@ -7,6 +7,7 @@
   import { getRecents } from "$lib/stores/recents.svelte";
   import { toggleFavorite } from "$lib/stores/favorites.svelte";
   import { toggleBottomDrawer } from "$lib/stores/pane-state.svelte";
+  import { runRemindersSync } from "$lib/reminders-sync";
   import { buildCommands, matchesQuery, type Command } from "$lib/commands";
   import type { Note } from "$lib/types/Note";
   import type { SearchHit } from "$lib/types/SearchHit";
@@ -90,6 +91,10 @@
       goto(`/p/${encodeURIComponent(note.id)}`);
     },
     toggleBottomDrawer: () => { toggleBottomDrawer(); close(); },
+    syncReminders: async () => {
+      close();
+      await runRemindersSync(queryClient);
+    },
     deleteNote: isNotePage ? () => {
       const confirmed = window.confirm("Delete this note? This cannot be undone.");
       if (confirmed) {

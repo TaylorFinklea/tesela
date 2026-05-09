@@ -24,6 +24,7 @@ export function buildCommands(deps: {
   createQuery: (title: string) => Promise<void>;
   goToDaily: () => Promise<void>;
   toggleBottomDrawer: () => void;
+  syncReminders?: () => Promise<void>;
   deleteNote?: () => void;
   copyNoteLink?: () => void;
   toggleFavorite?: () => void;
@@ -73,6 +74,14 @@ export function buildCommands(deps: {
       keywords: ["drawer", "bottom", "toggle", "collapse", "expand", "panel", "backlinks", "properties"],
       action: () => deps.toggleBottomDrawer(),
     },
+    ...(deps.syncReminders ? [{
+      id: "sync-reminders",
+      label: "Sync Apple Reminders",
+      icon: "IconRefresh",
+      category: "action" as const,
+      keywords: ["sync", "apple", "reminders", "push", "pull", "ios", "macos"],
+      action: () => deps.syncReminders!(),
+    }] : []),
 
     // === Navigation ===
     {

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { browser } from "$app/environment";
+  import { useQueryClient } from "@tanstack/svelte-query";
   import { prefs, type BulletStyle } from "$lib/preferences.svelte";
+  import { runRemindersSync } from "$lib/reminders-sync";
 
   function loadSetting(key: string, fallback: string): string {
     if (!browser) return fallback;
@@ -14,6 +16,15 @@
   let fontSize = $state(loadSetting("fontSize", "14"));
   let vimEnabled = $state(loadSetting("vimEnabled", "true"));
   let serverUrl = $state(loadSetting("serverUrl", "http://127.0.0.1:7474"));
+
+  let syncing = $state(false);
+  const queryClient = useQueryClient();
+  async function syncRemindersNow() {
+    if (syncing) return;
+    syncing = true;
+    try { await runRemindersSync(queryClient); }
+    finally { syncing = false; }
+  }
 
   function handleFontSizeChange(value: string) {
     fontSize = value;
@@ -95,6 +106,19 @@
           class="w-full text-[13px] bg-muted/50 rounded-md px-3 py-2 text-foreground/90 font-mono outline-none border border-transparent focus:border-ring/30 transition-colors"
         />
         <p class="text-[11px] text-muted-foreground/40 mt-1.5">Restart required after changing</p>
+      </section>
+
+      <!-- Apple Reminders sync -->
+      <section>
+        <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">Apple Reminders</h2>
+        <button
+          class="px-3 py-1.5 rounded-md text-[12px] border border-border/50 hover:bg-muted/40 hover:text-foreground transition-colors disabled:opacity-50 disabled:cursor-progress"
+          disabled={syncing}
+          onclick={syncRemindersNow}
+        >
+          {syncing ? "Syncing…" : "Sync now"}
+        </button>
+        <p class="text-[11px] text-muted-foreground/40 mt-1.5">macOS only. Pulls changes from Reminders.app then pushes Tesela tasks with deadlines.</p>
       </section>
 
       <!-- Keyboard shortcuts reference -->
