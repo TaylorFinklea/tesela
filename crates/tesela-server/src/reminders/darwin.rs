@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2_event_kit::{
@@ -110,10 +110,61 @@ struct Candidate {
     note_id: String,
     block_id: String,
     title: String,
-    deadline: NaiveDate,
+    deadline: Deadline,
     priority: u8,
     completed: bool,
     existing_reminder_id: Option<String>,
+}
+
+/// A `deadline::` value is a date with an optional time component.
+/// Slice 3.1 round-trips both — push writes `dueDateComponents.hour`/
+/// `minute` when present and pull reads them back into the same shape.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct Deadline {
+    date: NaiveDate,
+    time: Option<NaiveTime>,
+}
+
+impl Deadline {
+    /// Format for round-trip into the `deadline::` property. Mirrors
+    /// what the user types: `[[YYYY-MM-DD]]` or `[[YYYY-MM-DD]] HH:MM`.
+    fn format_property(&self) -> String {
+        match self.time {
+            Some(t) => format!("[[{}]] {}", self.date.format("%Y-%m-%d"), t.format("%H:%M")),
+            None => format!("[[{}]]", self.date.format("%Y-%m-%d")),
+        }
+    }
+}
+
+/// Parse a `deadline::` value into a date + optional time. Accepts:
+///   - `[[YYYY-MM-DD]]` / `YYYY-MM-DD`
+///   - `[[YYYY-MM-DD]] HH:MM` / `YYYY-MM-DD HH:MM`
+///   - `[[YYYY-MM-DD]] H:MM AM/PM` (12-hour form, case-insensitive)
+fn parse_deadline(s: &str) -> Option<Deadline> {
+    let trimmed = s.trim();
+    let mut parts = trimmed.splitn(2, char::is_whitespace);
+    let date_part = parts.next()?;
+    let time_part = parts.next().map(str::trim);
+
+    let date_str = date_part
+        .strip_prefix("[[")
+        .and_then(|s| s.strip_suffix("]]"))
+        .unwrap_or(date_part);
+    let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
+
+    let time = time_part.and_then(parse_time_component);
+    Some(Deadline { date, time })
+}
+
+fn parse_time_component(t: &str) -> Option<NaiveTime> {
+    let t = t.trim();
+    if t.is_empty() {
+        return None;
+    }
+    NaiveTime::parse_from_str(t, "%H:%M")
+        .or_else(|_| NaiveTime::parse_from_str(t, "%I:%M %p"))
+        .or_else(|_| NaiveTime::parse_from_str(&t.to_uppercase(), "%I:%M %p"))
+        .ok()
 }
 
 async fn collect_candidates(store: &Arc<dyn NoteStore>) -> Result<Vec<Candidate>> {
@@ -132,7 +183,7 @@ async fn collect_candidates(store: &Arc<dyn NoteStore>) -> Result<Vec<Candidate>
             let Some(deadline_raw) = block.properties.get("deadline") else {
                 continue;
             };
-            let Some(deadline) = parse_iso_date_brackets(deadline_raw) else {
+            let Some(deadline) = parse_deadline(deadline_raw) else {
                 continue;
             };
             out.push(Candidate {
@@ -173,19 +224,6 @@ fn is_task(block: &ParsedBlock) -> bool {
         .iter()
         .chain(block.inherited_tags.iter())
         .any(|t| t.eq_ignore_ascii_case("task"))
-}
-
-fn parse_iso_date_brackets(s: &str) -> Option<NaiveDate> {
-    let trimmed = s.trim();
-    // Take the first whitespace-delimited token first so a trailing
-    // time component (e.g. `[[2026-05-08]] 10:00`) doesn't keep the
-    // suffix-strip from matching `]]`.
-    let first = trimmed.split_whitespace().next().unwrap_or(trimmed);
-    let inner = first
-        .strip_prefix("[[")
-        .and_then(|s| s.strip_suffix("]]"))
-        .unwrap_or(first);
-    NaiveDate::parse_from_str(inner, "%Y-%m-%d").ok()
 }
 
 fn priority_for(s: Option<&str>) -> u8 {
@@ -356,12 +394,18 @@ unsafe fn push_one(
     }
 }
 
-fn date_components(date: NaiveDate) -> Retained<NSDateComponents> {
-    use chrono::Datelike;
+fn date_components(d: Deadline) -> Retained<NSDateComponents> {
+    use chrono::{Datelike, Timelike};
     let dc = NSDateComponents::new();
-    dc.setYear(date.year() as isize);
-    dc.setMonth(date.month() as isize);
-    dc.setDay(date.day() as isize);
+    dc.setYear(d.date.year() as isize);
+    dc.setMonth(d.date.month() as isize);
+    dc.setDay(d.date.day() as isize);
+    if let Some(t) = d.time {
+        dc.setHour(t.hour() as isize);
+        dc.setMinute(t.minute() as isize);
+    }
+    // Touched to keep the explicit imports warning-free; both APIs are
+    // used elsewhere in this module via the FFI layer.
     let _ = NSCalendar::currentCalendar();
     let _ = NSCalendarUnit::Year;
     dc
@@ -557,7 +601,7 @@ pub async fn sync_all(store: Arc<dyn NoteStore>) -> Result<SyncOutcome> {
 struct PullDiff {
     title: Option<String>,
     status: Option<String>,
-    deadline: Option<NaiveDate>,
+    deadline: Option<Deadline>,
     priority: Option<String>,
 }
 
@@ -581,7 +625,7 @@ struct ReminderSnapshot {
     reminder_id: String,
     title: String,
     completed: bool,
-    due_date: Option<NaiveDate>,
+    due_deadline: Option<Deadline>,
     priority: u8,
     /// EK `lastModifiedDate` as Unix millis — used to decide whether the
     /// reminder has been touched since our last sync.
@@ -593,7 +637,7 @@ struct BlockRef {
     block_id: String,
     title: String,
     status: Option<String>,
-    deadline: Option<NaiveDate>,
+    deadline: Option<Deadline>,
     priority_str: Option<String>,
     synced_at_unix_ms: Option<i64>,
 }
@@ -633,7 +677,7 @@ async fn collect_block_index(
                     deadline: block
                         .properties
                         .get("deadline")
-                        .and_then(|s| parse_iso_date_brackets(s)),
+                        .and_then(|s| parse_deadline(s)),
                     priority_str: block.properties.get("priority").cloned(),
                     synced_at_unix_ms,
                 },
@@ -670,7 +714,7 @@ fn compute_diff(snap: &ReminderSnapshot, block: &BlockRef) -> PullDiff {
     // clear Tesela deadlines from the pull side — that would be
     // surprising and there's no clean way to delete a property line in
     // upsert_block_property right now.
-    if let Some(due) = snap.due_date {
+    if let Some(due) = snap.due_deadline {
         if Some(due) != block.deadline {
             diff.deadline = Some(due);
         }
@@ -727,7 +771,7 @@ async fn apply_pull_writebacks(
                     note_id,
                     &wb.block_id,
                     "deadline",
-                    &format!("[[{}]]", deadline.format("%Y-%m-%d")),
+                    &deadline.format_property(),
                 );
             }
             if let Some(priority) = &wb.diff.priority {
@@ -860,7 +904,7 @@ unsafe fn snapshot_reminder(rem: &EKReminder) -> ReminderSnapshot {
         .unwrap_or_default();
     let completed = rem.isCompleted();
     let priority = rem.priority() as u8;
-    let due_date = rem.dueDateComponents().and_then(|dc| {
+    let due_deadline = rem.dueDateComponents().and_then(|dc| {
         let y = dc.year();
         let m = dc.month();
         let d = dc.day();
@@ -869,7 +913,19 @@ unsafe fn snapshot_reminder(rem: &EKReminder) -> ReminderSnapshot {
         // is also a "no date" signal; treat anything that doesn't make
         // a valid Gregorian date as None.
         if y > 0 && m > 0 && d > 0 {
-            NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32)
+            let date = NaiveDate::from_ymd_opt(y as i32, m as u32, d as u32)?;
+            // Hour/minute may be NSDateComponentUndefined (== NSIntegerMax)
+            // when the user picked a date-only reminder. Bound-check
+            // before constructing a NaiveTime — the sentinel is way
+            // outside 0..24 / 0..60.
+            let h = dc.hour();
+            let mn = dc.minute();
+            let time = if (0..24).contains(&h) && (0..60).contains(&mn) {
+                NaiveTime::from_hms_opt(h as u32, mn as u32, 0)
+            } else {
+                None
+            };
+            Some(Deadline { date, time })
         } else {
             None
         }
@@ -880,7 +936,7 @@ unsafe fn snapshot_reminder(rem: &EKReminder) -> ReminderSnapshot {
         reminder_id,
         title,
         completed,
-        due_date,
+        due_deadline,
         priority,
         last_modified_unix_ms,
     }
@@ -912,6 +968,76 @@ impl EKReminderExt for EKReminder {
     unsafe fn lastModifiedDate(&self) -> Option<Retained<NSDate>> {
         use objc2::msg_send;
         unsafe { msg_send![self, lastModifiedDate] }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn date(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+    fn time(h: u32, mn: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, mn, 0).unwrap()
+    }
+
+    #[test]
+    fn parse_deadline_bracketed_date_only() {
+        assert_eq!(
+            parse_deadline("[[2026-05-08]]"),
+            Some(Deadline { date: date(2026, 5, 8), time: None })
+        );
+    }
+
+    #[test]
+    fn parse_deadline_bracketed_with_24h_time() {
+        // The bug we shipped 12.1 with — `]] 10:00` made the suffix-strip
+        // miss because it ran on the whole trimmed string. Now we
+        // tokenize first.
+        assert_eq!(
+            parse_deadline("[[2026-05-08]] 10:00"),
+            Some(Deadline { date: date(2026, 5, 8), time: Some(time(10, 0)) })
+        );
+    }
+
+    #[test]
+    fn parse_deadline_unbracketed() {
+        assert_eq!(
+            parse_deadline("2026-05-08"),
+            Some(Deadline { date: date(2026, 5, 8), time: None })
+        );
+        assert_eq!(
+            parse_deadline("2026-05-08 14:30"),
+            Some(Deadline { date: date(2026, 5, 8), time: Some(time(14, 30)) })
+        );
+    }
+
+    #[test]
+    fn parse_deadline_12h_am_pm() {
+        assert_eq!(
+            parse_deadline("[[2026-05-08]] 9:30 AM"),
+            Some(Deadline { date: date(2026, 5, 8), time: Some(time(9, 30)) })
+        );
+        assert_eq!(
+            parse_deadline("[[2026-05-08]] 9:30 pm"),
+            Some(Deadline { date: date(2026, 5, 8), time: Some(time(21, 30)) })
+        );
+    }
+
+    #[test]
+    fn parse_deadline_garbage_returns_none() {
+        assert_eq!(parse_deadline(""), None);
+        assert_eq!(parse_deadline("nonsense"), None);
+        assert_eq!(parse_deadline("[[2026-13-99]]"), None);
+    }
+
+    #[test]
+    fn deadline_format_round_trip() {
+        let date_only = Deadline { date: date(2026, 5, 8), time: None };
+        assert_eq!(date_only.format_property(), "[[2026-05-08]]");
+        let with_time = Deadline { date: date(2026, 5, 8), time: Some(time(10, 0)) };
+        assert_eq!(with_time.format_property(), "[[2026-05-08]] 10:00");
     }
 }
 
