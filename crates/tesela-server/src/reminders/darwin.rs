@@ -12,12 +12,15 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
+use objc2::AnyThread;
 use objc2_event_kit::{
-    EKCalendar, EKEntityType, EKEventStore, EKReminder, EKSourceType,
+    EKCalendar, EKEntityType, EKEventStore, EKRecurrenceDayOfWeek, EKRecurrenceFrequency,
+    EKRecurrenceRule, EKReminder, EKSourceType, EKWeekday,
 };
 use objc2_foundation::{NSArray, NSCalendar, NSCalendarUnit, NSDate, NSDateComponents, NSString};
 
 use tesela_core::block::{parse_blocks, ParsedBlock};
+use tesela_core::recurrence::{self, Recurrence};
 use tesela_core::storage::markdown::parse_frontmatter;
 use tesela_core::traits::note_store::NoteStore;
 
@@ -114,6 +117,7 @@ struct Candidate {
     priority: u8,
     completed: bool,
     existing_reminder_id: Option<String>,
+    recurrence: Option<Recurrence>,
 }
 
 /// A `deadline::` value is a date with an optional time component.
@@ -186,6 +190,10 @@ async fn collect_candidates(store: &Arc<dyn NoteStore>) -> Result<Vec<Candidate>
             let Some(deadline) = parse_deadline(deadline_raw) else {
                 continue;
             };
+            let recurrence = block
+                .properties
+                .get("recurring")
+                .and_then(|s| recurrence::parse(s));
             out.push(Candidate {
                 note_id: note.id.to_string(),
                 block_id: block.id.clone(),
@@ -202,6 +210,7 @@ async fn collect_candidates(store: &Arc<dyn NoteStore>) -> Result<Vec<Candidate>
                     .get("apple_reminder_id")
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty()),
+                recurrence,
             });
         }
     }
@@ -382,6 +391,17 @@ unsafe fn push_one(
     reminder.setCompleted(cand.completed);
     reminder.setDueDateComponents(Some(&date_components(cand.deadline)));
 
+    // Recurrence: replace any existing rules with the one derived from
+    // the block's `recurring::` property. EK accepts an array but
+    // Tesela's model is a single rule per block, so we always set
+    // exactly zero or one rule.
+    let rules: Vec<Retained<EKRecurrenceRule>> = cand
+        .recurrence
+        .map(|r| vec![build_recurrence_rule(r)])
+        .unwrap_or_default();
+    let rules_array = NSArray::from_retained_slice(&rules);
+    reminder.setRecurrenceRules(Some(&rules_array));
+
     event_store
         .saveReminder_commit_error(&reminder, true)
         .map_err(|nserr| anyhow!("save reminder: {}", nserr.localizedDescription()))?;
@@ -391,6 +411,140 @@ unsafe fn push_one(
         Ok(SyncEffect::Created { reminder_id: id })
     } else {
         Ok(SyncEffect::Updated { reminder_id: id })
+    }
+}
+
+/// Build an `EKRecurrenceRule` from Tesela's `Recurrence` enum.
+///
+/// Mapping:
+/// - `Daily` / `EveryNDays(N)` → frequency=Daily, interval=1 / N
+/// - `Weekly{N}` → frequency=Weekly, interval=N
+/// - `Monthly{N}` / `Yearly{N}` → analogous
+/// - `Weekdays` → frequency=Weekly, interval=1, daysOfTheWeek=[Mon..Fri]
+fn build_recurrence_rule(rec: Recurrence) -> Retained<EKRecurrenceRule> {
+    unsafe {
+        match rec {
+            Recurrence::Daily => simple_rule(EKRecurrenceFrequency::Daily, 1),
+            Recurrence::EveryNDays(n) => simple_rule(EKRecurrenceFrequency::Daily, n as isize),
+            Recurrence::Weekly { interval } => {
+                simple_rule(EKRecurrenceFrequency::Weekly, interval as isize)
+            }
+            Recurrence::Monthly { interval } => {
+                simple_rule(EKRecurrenceFrequency::Monthly, interval as isize)
+            }
+            Recurrence::Yearly { interval } => {
+                simple_rule(EKRecurrenceFrequency::Yearly, interval as isize)
+            }
+            Recurrence::Weekdays => weekdays_rule(),
+        }
+    }
+}
+
+unsafe fn simple_rule(
+    freq: EKRecurrenceFrequency,
+    interval: isize,
+) -> Retained<EKRecurrenceRule> {
+    let alloc = EKRecurrenceRule::alloc();
+    unsafe { EKRecurrenceRule::initRecurrenceWithFrequency_interval_end(alloc, freq, interval, None) }
+}
+
+unsafe fn weekdays_rule() -> Retained<EKRecurrenceRule> {
+    let days = [
+        EKWeekday::Monday,
+        EKWeekday::Tuesday,
+        EKWeekday::Wednesday,
+        EKWeekday::Thursday,
+        EKWeekday::Friday,
+    ]
+    .iter()
+    .map(|w| unsafe { EKRecurrenceDayOfWeek::dayOfWeek(*w) })
+    .collect::<Vec<_>>();
+    let arr: Retained<NSArray<EKRecurrenceDayOfWeek>> = NSArray::from_retained_slice(&days);
+    let alloc = EKRecurrenceRule::alloc();
+    unsafe {
+        EKRecurrenceRule::initRecurrenceWithFrequency_interval_daysOfTheWeek_daysOfTheMonth_monthsOfTheYear_weeksOfTheYear_daysOfTheYear_setPositions_end(
+            alloc,
+            EKRecurrenceFrequency::Weekly,
+            1,
+            Some(&arr),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+}
+
+/// Read an `EKReminder`'s recurrence rules and project back into the
+/// Tesela `Recurrence` model. Returns the first rule only — Tesela
+/// supports one rule per block (matching what Reminders.app actually
+/// surfaces in its UI). Returns `None` for rules we can't represent
+/// (BYDAY sets we haven't added yet, end-conditions, etc.) so we don't
+/// over-eagerly write garbage back to the block.
+unsafe fn snapshot_recurrence(rem: &EKReminder) -> Option<Recurrence> {
+    let rules = unsafe { rem.recurrenceRules() }?;
+    let rule = rules.iter().next()?;
+    let freq = unsafe { rule.frequency() };
+    let interval_raw = unsafe { rule.interval() };
+    if interval_raw <= 0 {
+        return None;
+    }
+    let interval = interval_raw as u32;
+
+    // Detect the weekdays pattern: Weekly + interval=1 +
+    // daysOfTheWeek == {Mon, Tue, Wed, Thu, Fri}.
+    if freq == EKRecurrenceFrequency::Weekly && interval == 1 {
+        if let Some(arr) = unsafe { rule.daysOfTheWeek() } {
+            let mut days: Vec<isize> = arr
+                .iter()
+                .map(|d| unsafe { d.dayOfTheWeek() }.0)
+                .collect();
+            days.sort();
+            if days == [
+                EKWeekday::Monday.0,
+                EKWeekday::Tuesday.0,
+                EKWeekday::Wednesday.0,
+                EKWeekday::Thursday.0,
+                EKWeekday::Friday.0,
+            ] {
+                return Some(Recurrence::Weekdays);
+            }
+            // Any other BYDAY pattern is out of scope for v1.
+            return None;
+        }
+    }
+
+    match freq {
+        EKRecurrenceFrequency::Daily => {
+            if interval == 1 {
+                Some(Recurrence::Daily)
+            } else {
+                Some(Recurrence::EveryNDays(interval))
+            }
+        }
+        EKRecurrenceFrequency::Weekly => Some(Recurrence::Weekly { interval }),
+        EKRecurrenceFrequency::Monthly => Some(Recurrence::Monthly { interval }),
+        EKRecurrenceFrequency::Yearly => Some(Recurrence::Yearly { interval }),
+        _ => None,
+    }
+}
+
+/// Canonical `recurring::` value for a `Recurrence`. Used when writing
+/// EK→Tesela on pull. Picks the shortest equivalent phrasing so a fresh
+/// pull gives `weekly` rather than `every 1 weeks`.
+fn recurrence_to_canonical(rec: Recurrence) -> String {
+    match rec {
+        Recurrence::Daily => "daily".into(),
+        Recurrence::EveryNDays(n) => format!("every {n} days"),
+        Recurrence::Weekly { interval: 1 } => "weekly".into(),
+        Recurrence::Weekly { interval } => format!("every {interval} weeks"),
+        Recurrence::Monthly { interval: 1 } => "monthly".into(),
+        Recurrence::Monthly { interval } => format!("every {interval} months"),
+        Recurrence::Yearly { interval: 1 } => "yearly".into(),
+        Recurrence::Yearly { interval } => format!("every {interval} years"),
+        Recurrence::Weekdays => "weekdays".into(),
     }
 }
 
@@ -603,6 +757,7 @@ struct PullDiff {
     status: Option<String>,
     deadline: Option<Deadline>,
     priority: Option<String>,
+    recurring: Option<String>,
 }
 
 impl PullDiff {
@@ -611,6 +766,7 @@ impl PullDiff {
             && self.status.is_none()
             && self.deadline.is_none()
             && self.priority.is_none()
+            && self.recurring.is_none()
     }
 }
 
@@ -627,6 +783,7 @@ struct ReminderSnapshot {
     completed: bool,
     due_deadline: Option<Deadline>,
     priority: u8,
+    recurrence: Option<Recurrence>,
     /// EK `lastModifiedDate` as Unix millis — used to decide whether the
     /// reminder has been touched since our last sync.
     last_modified_unix_ms: Option<i64>,
@@ -639,6 +796,9 @@ struct BlockRef {
     status: Option<String>,
     deadline: Option<Deadline>,
     priority_str: Option<String>,
+    /// Parsed Tesela-side recurrence — used for diff comparison so a
+    /// user typing `every 1 week` doesn't flap with `weekly` from EK.
+    recurrence: Option<Recurrence>,
     synced_at_unix_ms: Option<i64>,
 }
 
@@ -679,6 +839,10 @@ async fn collect_block_index(
                         .get("deadline")
                         .and_then(|s| parse_deadline(s)),
                     priority_str: block.properties.get("priority").cloned(),
+                    recurrence: block
+                        .properties
+                        .get("recurring")
+                        .and_then(|s| recurrence::parse(s)),
                     synced_at_unix_ms,
                 },
             );
@@ -732,6 +896,17 @@ fn compute_diff(snap: &ReminderSnapshot, block: &BlockRef) -> PullDiff {
         }
     }
 
+    // Recurrence: compare parsed values so user phrasing
+    // (`every 1 week` vs `weekly`) doesn't flap. Only write back when
+    // EK has a recurrence — clearing a Tesela-side `recurring::` from
+    // the pull side is intentionally out of scope (same logic as
+    // deadline; can't cleanly delete a property line).
+    if let Some(ek_rec) = snap.recurrence {
+        if block.recurrence != Some(ek_rec) {
+            diff.recurring = Some(recurrence_to_canonical(ek_rec));
+        }
+    }
+
     diff
 }
 
@@ -781,6 +956,15 @@ async fn apply_pull_writebacks(
                     &wb.block_id,
                     "priority",
                     priority,
+                );
+            }
+            if let Some(recurring) = &wb.diff.recurring {
+                note.content = upsert_block_property(
+                    &note.content,
+                    note_id,
+                    &wb.block_id,
+                    "recurring",
+                    recurring,
                 );
             }
             note.content = upsert_block_property(
@@ -931,6 +1115,7 @@ unsafe fn snapshot_reminder(rem: &EKReminder) -> ReminderSnapshot {
         }
     });
     let last_modified_unix_ms = rem.lastModifiedDate().map(|d| ns_date_to_unix_ms(&d));
+    let recurrence = unsafe { snapshot_recurrence(rem) };
 
     ReminderSnapshot {
         reminder_id,
@@ -938,6 +1123,7 @@ unsafe fn snapshot_reminder(rem: &EKReminder) -> ReminderSnapshot {
         completed,
         due_deadline,
         priority,
+        recurrence,
         last_modified_unix_ms,
     }
 }
@@ -1038,6 +1224,41 @@ mod tests {
         assert_eq!(date_only.format_property(), "[[2026-05-08]]");
         let with_time = Deadline { date: date(2026, 5, 8), time: Some(time(10, 0)) };
         assert_eq!(with_time.format_property(), "[[2026-05-08]] 10:00");
+    }
+
+    #[test]
+    fn recurrence_canonical_picks_shortest_phrasing() {
+        // Pulled values should round-trip into the user-friendly forms,
+        // not the long "every 1 week" variants — those would flap on
+        // every sync if the user typed a shorter form locally.
+        assert_eq!(recurrence_to_canonical(Recurrence::Daily), "daily");
+        assert_eq!(recurrence_to_canonical(Recurrence::Weekly { interval: 1 }), "weekly");
+        assert_eq!(recurrence_to_canonical(Recurrence::Weekly { interval: 2 }), "every 2 weeks");
+        assert_eq!(recurrence_to_canonical(Recurrence::Monthly { interval: 1 }), "monthly");
+        assert_eq!(recurrence_to_canonical(Recurrence::Yearly { interval: 1 }), "yearly");
+        assert_eq!(recurrence_to_canonical(Recurrence::EveryNDays(3)), "every 3 days");
+        assert_eq!(recurrence_to_canonical(Recurrence::Weekdays), "weekdays");
+    }
+
+    #[test]
+    fn recurrence_canonical_round_trips_through_parse() {
+        // Every output of recurrence_to_canonical must parse back to the
+        // same Recurrence — otherwise the diff would never converge.
+        let cases = [
+            Recurrence::Daily,
+            Recurrence::Weekly { interval: 1 },
+            Recurrence::Weekly { interval: 3 },
+            Recurrence::Monthly { interval: 1 },
+            Recurrence::Yearly { interval: 1 },
+            Recurrence::EveryNDays(5),
+            Recurrence::Weekdays,
+        ];
+        for c in cases {
+            let s = recurrence_to_canonical(c);
+            let parsed = recurrence::parse(&s)
+                .unwrap_or_else(|| panic!("canonical form should re-parse: {s:?}"));
+            assert_eq!(parsed, c, "round-trip mismatch for {s:?}");
+        }
     }
 }
 
