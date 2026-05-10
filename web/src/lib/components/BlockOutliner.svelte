@@ -1,3 +1,18 @@
+<script module lang="ts">
+  // Phase 12.X — singleton "last-active outliner" so the journal view can
+  // dispatch a single `tesela:restore-focus` and have only the outliner
+  // the user was actually editing in respond. Without this, every
+  // BlockOutliner instance on the page restores focus and the last one in
+  // DOM order wins — visibly snapping the user to the bottom-most day.
+  let lastActiveOutliner: HTMLElement | null = null;
+  export function setLastActiveOutliner(el: HTMLElement | null) {
+    lastActiveOutliner = el;
+  }
+  export function isLastActiveOutliner(el: HTMLElement | null): boolean {
+    return !!el && el === lastActiveOutliner;
+  }
+</script>
+
 <script lang="ts">
   import { onMount } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
@@ -659,8 +674,15 @@
     restoredFocus = false;
     // Phase 9.9 — keep the cursor in view as cross-block j/k advances. Use
     // `nearest` so the viewport only scrolls when the new block is offscreen.
+    // Phase 12.X — scope the query to THIS outliner's root. The journal
+    // view stacks multiple BlockOutliners (one per day) and each one uses
+    // its own `data-block-vi` index 0..N. A document-level `querySelector`
+    // would match the *first* `[data-block-vi="${next}"]` in DOM order
+    // (the topmost day's block), so j/k from any later day would scroll
+    // the viewport up to that day instead of advancing within the
+    // current day's outliner.
     requestAnimationFrame(() => {
-      const el = document.querySelector(`[data-block-vi="${next}"]`);
+      const el = rootEl?.querySelector(`[data-block-vi="${next}"]`);
       el?.scrollIntoView({ block: "nearest", behavior: "auto" });
     });
   }
@@ -1019,13 +1041,17 @@
 
   // Modal-close focus restore: ⌘K / leader-menu / slash menu dispatch this
   // when they close without navigating, so the cm-editor for the previously
-  // focused block regains DOM focus and j/k routes back here.
+  // focused block regains DOM focus and j/k routes back here. Scope the
+  // query to this outliner's root, and only respond if THIS outliner was
+  // the most recently active one — otherwise every BlockOutliner on the
+  // journal page would race to refocus and the bottom-most one would win.
   onMount(() => {
     const handler = () => {
       if (focusedIndex === null) return;
+      if (!rootEl || !isLastActiveOutliner(rootEl)) return;
       const idx = focusedIndex;
       requestAnimationFrame(() => {
-        const cm = document.querySelector<HTMLElement>(
+        const cm = rootEl?.querySelector<HTMLElement>(
           `[data-block-vi="${idx}"] .cm-editor .cm-content`,
         );
         cm?.focus();
@@ -1209,7 +1235,7 @@
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => {}}
-            onfocus={() => { focusedIndex = vi; autoFocused = false; restoredFocus = false; }}
+            onfocus={() => { focusedIndex = vi; autoFocused = false; restoredFocus = false; setLastActiveOutliner(rootEl ?? null); }}
             onchange={(text) => handleBlockChange(block.id, text)}
             onnavigate={handleNavigate}
             onescape={() => {}}
