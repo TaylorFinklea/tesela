@@ -89,13 +89,26 @@ enum Commands {
         /// Note ID or title
         query: String,
     },
-    /// Export a note
-    Export {
+    /// Export a single note as html / text / markdown
+    ExportNote {
         /// Note ID or title
         query: String,
         /// Format: html, text, markdown
         #[arg(short, long, default_value = "markdown")]
         format: String,
+    },
+    /// Export the entire mosaic as a portable markdown directory
+    Export {
+        /// Output directory (will be created)
+        out: PathBuf,
+        /// `full` (round-trippable, all property:: lines kept) or
+        /// `portable` (lossy — strips Tesela-internal properties for
+        /// Obsidian/Logseq compatibility). Default: full.
+        #[arg(long, default_value = "full")]
+        mode: String,
+        /// Also copy the `attachments/` directory (default: skip).
+        #[arg(long)]
+        attachments: bool,
     },
     /// Back up the mosaic to a timestamped, manifest-validated archive
     Backup {
@@ -407,7 +420,53 @@ async fn cmd_links(ctx: &Ctx, query: String) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_export(ctx: &Ctx, query: String, format: String) -> Result<()> {
+fn cmd_export_mosaic(mosaic: &Path, out: PathBuf, mode: String, attachments: bool) -> Result<()> {
+    use tesela_core::export::markdown::{export_mosaic, ExportOptions, MarkdownMode};
+    let mode = match mode.as_str() {
+        "full" => MarkdownMode::Full,
+        "portable" => MarkdownMode::Portable,
+        other => anyhow::bail!("Unknown export mode: {}. Use `full` or `portable`.", other),
+    };
+    let outcome = export_mosaic(
+        mosaic,
+        &out,
+        &ExportOptions {
+            mode,
+            include_attachments: attachments,
+        },
+    )?;
+    println!(
+        "Exported {} note{} ({} mode) → {}",
+        outcome.note_count,
+        if outcome.note_count == 1 { "" } else { "s" },
+        match mode {
+            MarkdownMode::Full => "full",
+            MarkdownMode::Portable => "portable",
+        },
+        out.display()
+    );
+    if attachments {
+        println!(
+            "Attachments: {} file{}",
+            outcome.attachment_count,
+            if outcome.attachment_count == 1 { "" } else { "s" }
+        );
+    }
+    if matches!(mode, MarkdownMode::Portable) {
+        println!(
+            "Stripped {} Tesela-internal propert{} (see README.md in the export root)",
+            outcome.stripped_property_count,
+            if outcome.stripped_property_count == 1 {
+                "y"
+            } else {
+                "ies"
+            }
+        );
+    }
+    Ok(())
+}
+
+async fn cmd_export_note(ctx: &Ctx, query: String, format: String) -> Result<()> {
     let note = resolve_note(ctx, &query).await?;
 
     let fmt = match format.as_str() {
@@ -880,6 +939,15 @@ async fn main() -> Result<()> {
         return cmd_backup_prune(&mosaic, output, dry_run).await;
     }
 
+    if let Commands::Export {
+        out,
+        mode,
+        attachments,
+    } = cli.command
+    {
+        return cmd_export_mosaic(&mosaic, out, mode, attachments);
+    }
+
     // Handle restore — needs mosaic path but not a full Ctx
     if let Commands::Restore {
         source,
@@ -908,6 +976,7 @@ async fn main() -> Result<()> {
         | Commands::BackupList { .. }
         | Commands::BackupPrune { .. }
         | Commands::Restore { .. }
+        | Commands::Export { .. }
         | Commands::ImportLogseq { .. } => unreachable!(),
         Commands::New {
             title,
@@ -920,7 +989,7 @@ async fn main() -> Result<()> {
         Commands::Search { query, limit } => cmd_search(&ctx, query, limit).await?,
         Commands::Daily { date } => cmd_daily(&ctx, date).await?,
         Commands::Links { query } => cmd_links(&ctx, query).await?,
-        Commands::Export { query, format } => cmd_export(&ctx, query, format).await?,
+        Commands::ExportNote { query, format } => cmd_export_note(&ctx, query, format).await?,
         Commands::Reindex => cmd_reindex(&ctx).await?,
         Commands::Tui => {
             let exe_dir = std::env::current_exe()

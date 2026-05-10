@@ -1,4 +1,15 @@
 //! Note export functionality for Tesela
+//!
+//! Two layers:
+//! - **Single-note export** (this file): `export_note(note, ExportFormat)`
+//!   produces a string in the requested format. Used by `tesela export-note`.
+//! - **Mosaic export** (`markdown` submodule): walks the entire mosaic and
+//!   writes a portable directory tree. Two modes — `full` (round-trippable
+//!   back into a Tesela mosaic byte-exact) and `portable` (lossy, strips
+//!   Tesela-specific properties so the output opens cleanly in Obsidian
+//!   or Logseq).
+
+pub mod markdown;
 
 use crate::note::Note;
 use pulldown_cmark::{html, Parser};

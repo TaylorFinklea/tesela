@@ -148,10 +148,44 @@ fn test_export_markdown() {
         .success();
 
     tesela(&tmp)
-        .args(["export", "Export Test", "--format", "markdown"])
+        .args(["export-note", "Export Test", "--format", "markdown"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Export Test"));
+}
+
+#[test]
+fn test_export_mosaic_full() {
+    let tmp = TempDir::new().unwrap();
+    init_mosaic(&tmp);
+
+    tesela(&tmp)
+        .args(["new", "FullModeNote", "--content", "hello world"])
+        .assert()
+        .success();
+
+    let out = tmp.path().join("export-out");
+    tesela(&tmp)
+        .args([
+            "export",
+            out.to_str().unwrap(),
+            "--mode",
+            "full",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("full mode"));
+
+    // The exported notes/ directory should contain the note we just created.
+    let mut found = false;
+    for entry in std::fs::read_dir(out.join("notes")).unwrap() {
+        let entry = entry.unwrap();
+        let body = std::fs::read_to_string(entry.path()).unwrap();
+        if body.contains("hello world") {
+            found = true;
+        }
+    }
+    assert!(found, "expected exported notes/ to contain the new note");
 }
 
 #[test]
