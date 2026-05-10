@@ -302,10 +302,14 @@
 </div>
 
 <style>
-  .journal { display: flex; flex-direction: column; gap: 64px; padding-block: 16px; }
+  .journal { display: flex; flex-direction: column; gap: 28px; padding-block: 16px; }
   .journal-meta { font-family: var(--v9-mono); font-size: 11px; color: var(--v9-ink-faint); padding: 12px 0; }
-  .day { padding-bottom: 24px; border-bottom: 1px solid var(--v9-line); }
-  .day-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 20px; }
+  /* Line above the date, à la Logseq's daily journal — divider sits in
+     the gap, date title immediately follows. First section has no rule
+     so the page doesn't open with a stray top border. */
+  .day { padding-top: 14px; border-top: 1px solid var(--v9-line); }
+  .day:first-child { border-top: 0; padding-top: 0; }
+  .day-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
   .day-title { font-family: var(--v9-display, var(--v9-sans)); font-size: 18px; font-weight: 600; letter-spacing: -0.01em; color: var(--foreground); }
   .day.is-today .day-title { color: var(--primary); }
   .day-pill { font-size: 10px; padding: 2px 8px; border-radius: 9999px; background: var(--primary); color: var(--primary-foreground); font-weight: 500; }
