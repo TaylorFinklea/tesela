@@ -1286,6 +1286,7 @@
             onbackspacemerge={(text: string) => handleBackspaceMerge(vi, text)}
             initialCursorPos={mountHint?.blockId === block.id ? mountHint.pos : undefined}
             startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (focusedIndex === vi && block.raw_text === "" && !autoFocused && !restoredFocus)}
+            autofocused={autoFocused}
             onleader={onLeader}
             oncyclestatus={() => blockVisualMode ? bulkCycleStatus() : handleStatusCycle(vi)}
             ondeleteblock={() => handleDeleteBlock(vi)}

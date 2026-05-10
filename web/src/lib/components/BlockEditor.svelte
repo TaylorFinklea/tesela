@@ -304,6 +304,7 @@
     onbackspacemerge: onBackspaceMerge,
     initialCursorPos,
     startininsert: startInInsert,
+    autofocused: autoFocused = false,
     onslashcommand: onSlashCommand,
     onleader: onLeader,
     ondeleteblock: onDeleteBlock,
@@ -349,6 +350,7 @@
     onbackspacemerge?: (text: string) => void;
     initialCursorPos?: number;
     startininsert?: boolean;
+    autofocused?: boolean;
     onslashcommand?: (command: string) => void;
     onleader?: () => void;
     ondeleteblock?: () => void;
@@ -928,7 +930,16 @@
   let appliedAutoInsert = $state(false);
   $effect(() => {
     if (!focused || !view) return;
-    if (!view.hasFocus) view.focus();
+    // Only grab DOM focus when the parent's intent is "user is here now"
+    // (handleNavigate, click, cross-day arm). The auto-focus effect on
+    // mount sets focusedIndex but keeps autoFocused=true to indicate
+    // "decorative only — don't steal keyboard focus." Without this gate,
+    // every BlockOutliner in a journal stack races to .focus() on mount,
+    // chains a focus DOM event through the inline onfocus handler that
+    // flips autoFocused=false, which then triggers the auto-INSERT path
+    // below for any empty block — landing the user in INSERT before
+    // they've pressed a key.
+    if (!view.hasFocus && !autoFocused) view.focus();
     if (startInInsert && !appliedAutoInsert) {
       appliedAutoInsert = true;
       const cm = getCM(view);
