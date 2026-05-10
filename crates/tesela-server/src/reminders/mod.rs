@@ -54,6 +54,11 @@ pub struct PushOutcome {
     /// Block ids the sync touched. Same as created ∪ updated when the
     /// sync ran cleanly.
     pub synced: Vec<String>,
+    /// Block ids whose `apple_reminder_id::` no longer resolves in EK.
+    /// Sync stamps `apple_reminder_orphan:: true` and skips them on
+    /// subsequent pushes until the user clears the flag.
+    #[serde(default)]
+    pub orphans: Vec<String>,
     /// Per-block error messages — non-fatal failures so partial progress
     /// is still recorded.
     pub errors: Vec<PushError>,

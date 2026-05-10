@@ -53,11 +53,22 @@ pub async fn push_all(store: Arc<dyn NoteStore>) -> Result<PushOutcome> {
         let mut plan = PushPlan::default();
         for cand in candidates {
             match unsafe { push_one(&event_store, &calendar, &cand) } {
+                Ok(SyncEffect::Orphaned) => {
+                    // The block had `apple_reminder_id::` but EK has no
+                    // matching item — sync stamps the orphan flag so
+                    // future pushes skip until the user clears it.
+                    plan.orphans.push(OrphanWriteback {
+                        note_id: cand.note_id.clone(),
+                        block_id: cand.block_id.clone(),
+                    });
+                    plan.outcome.orphans.push(cand.block_id);
+                }
                 Ok(effect) => {
                     let synced_at = Utc::now().to_rfc3339();
                     let (reminder_id, was_created) = match effect {
                         SyncEffect::Created { reminder_id } => (reminder_id, true),
                         SyncEffect::Updated { reminder_id } => (reminder_id, false),
+                        SyncEffect::Orphaned => unreachable!(),
                     };
                     plan.writebacks.push(Writeback {
                         note_id: cand.note_id.clone(),
@@ -88,6 +99,7 @@ pub async fn push_all(store: Arc<dyn NoteStore>) -> Result<PushOutcome> {
     // shift. New `apple_reminder_id::` lines get appended to the block's
     // continuation region.
     apply_writebacks(&store, &outcome.writebacks).await?;
+    apply_orphan_writebacks(&store, &outcome.orphans).await?;
     Ok(outcome.outcome)
 }
 
@@ -95,6 +107,7 @@ pub async fn push_all(store: Arc<dyn NoteStore>) -> Result<PushOutcome> {
 struct PushPlan {
     outcome: PushOutcome,
     writebacks: Vec<Writeback>,
+    orphans: Vec<OrphanWriteback>,
 }
 
 struct Writeback {
@@ -104,9 +117,18 @@ struct Writeback {
     synced_at: String,
 }
 
+struct OrphanWriteback {
+    note_id: String,
+    block_id: String,
+}
+
 enum SyncEffect {
     Created { reminder_id: String },
     Updated { reminder_id: String },
+    /// `apple_reminder_id::` was set on the block but EventKit no longer
+    /// has a matching item. Don't create a new reminder; let the caller
+    /// stamp `apple_reminder_orphan:: true` so future pushes skip it.
+    Orphaned,
 }
 
 struct Candidate {
@@ -118,6 +140,13 @@ struct Candidate {
     completed: bool,
     existing_reminder_id: Option<String>,
     recurrence: Option<Recurrence>,
+    /// Phase 12.1 slice 3 — name of the EK calendar to push into.
+    /// `None` means "Tesela" (the auto-managed default).
+    list_name: Option<String>,
+    /// Phase 12.1 slice 3 — title to attach as `EKStructuredLocation`
+    /// (no CLLocation in v1; user can long-press in Reminders.app to
+    /// pin a real geofence).
+    location: Option<String>,
 }
 
 /// A `deadline::` value is a date with an optional time component.
@@ -194,6 +223,18 @@ async fn collect_candidates(store: &Arc<dyn NoteStore>) -> Result<Vec<Candidate>
                 .properties
                 .get("recurring")
                 .and_then(|s| recurrence::parse(s));
+            // Skip orphan-marked blocks — once a reminder is gone in EK,
+            // pushing it again would just create a duplicate that the user
+            // doesn't expect. They have to clear `apple_reminder_orphan::`
+            // manually to opt back in.
+            let orphan = block
+                .properties
+                .get("apple_reminder_orphan")
+                .map(|s| s.trim().eq_ignore_ascii_case("true"))
+                .unwrap_or(false);
+            if orphan {
+                continue;
+            }
             out.push(Candidate {
                 note_id: note.id.to_string(),
                 block_id: block.id.clone(),
@@ -211,6 +252,16 @@ async fn collect_candidates(store: &Arc<dyn NoteStore>) -> Result<Vec<Candidate>
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty()),
                 recurrence,
+                list_name: block
+                    .properties
+                    .get("apple_reminder_list")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
+                location: block
+                    .properties
+                    .get("reminder_location")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty()),
             });
         }
     }
@@ -272,6 +323,47 @@ async fn apply_writebacks(store: &Arc<dyn NoteStore>, items: &[Writeback]) -> Re
                 &wb.block_id,
                 "apple_reminder_synced_at",
                 &wb.synced_at,
+            );
+        }
+        store
+            .update(&note)
+            .await
+            .map_err(|e| anyhow!("update {note_id}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Stamp `apple_reminder_orphan:: true` on each orphan-flagged block.
+/// Same shape as `apply_writebacks` but writes a single property and
+/// is run after the regular writebacks so a single PUT carries both.
+async fn apply_orphan_writebacks(
+    store: &Arc<dyn NoteStore>,
+    items: &[OrphanWriteback],
+) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let mut by_note: std::collections::HashMap<&str, Vec<&OrphanWriteback>> =
+        std::collections::HashMap::new();
+    for o in items {
+        by_note.entry(&o.note_id).or_default().push(o);
+    }
+    for (note_id, group) in by_note {
+        let id = tesela_core::note::NoteId::new(note_id);
+        let Some(mut note) = store
+            .get(&id)
+            .await
+            .map_err(|e| anyhow!("get {note_id}: {e}"))?
+        else {
+            continue;
+        };
+        for o in group {
+            note.content = upsert_block_property(
+                &note.content,
+                note_id,
+                &o.block_id,
+                "apple_reminder_orphan",
+                "true",
             );
         }
         store
@@ -366,30 +458,58 @@ fn split_frontmatter(content: &str) -> Option<(String, &str)> {
 
 unsafe fn push_one(
     event_store: &EKEventStore,
-    calendar: &EKCalendar,
+    default_calendar: &EKCalendar,
     cand: &Candidate,
 ) -> Result<SyncEffect> {
+    // Orphan detection: lookup-by-id missing → don't create a new
+    // reminder (would duplicate). Surface as Orphaned and let the
+    // caller stamp the orphan flag.
+    let mut became_orphan = false;
     let reminder = if let Some(existing_id) = &cand.existing_reminder_id {
         let id_ns = NSString::from_str(existing_id);
         match event_store.calendarItemWithIdentifier(&id_ns) {
-            Some(item) => {
-                // Returned as EKCalendarItem; downcast via Retained.
-                Retained::downcast::<EKReminder>(item).map_err(|_| {
-                    anyhow!("calendar item {existing_id} is not an EKReminder")
-                })?
+            Some(item) => Retained::downcast::<EKReminder>(item)
+                .map_err(|_| anyhow!("calendar item {existing_id} is not an EKReminder"))?,
+            None => {
+                became_orphan = true;
+                EKReminder::reminderWithEventStore(event_store)
             }
-            None => EKReminder::reminderWithEventStore(event_store),
         }
     } else {
         EKReminder::reminderWithEventStore(event_store)
     };
 
+    if became_orphan {
+        return Ok(SyncEffect::Orphaned);
+    }
+
     let title = NSString::from_str(&cand.title);
     reminder.setTitle(Some(&title));
-    reminder.setCalendar(Some(calendar));
+
+    // Per-list mapping: `apple_reminder_list:: Errands` puts the reminder
+    // in a calendar named "Errands"; missing list falls back to Tesela.
+    let target_cal_opt: Option<Retained<EKCalendar>> = cand.list_name.as_deref().and_then(|name| {
+        match find_or_create_calendar_by_name(event_store, name) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                tracing::warn!("falling back to default calendar: {}", e);
+                None
+            }
+        }
+    });
+    let target_cal: &EKCalendar = target_cal_opt.as_deref().unwrap_or(default_calendar);
+    reminder.setCalendar(Some(target_cal));
+
     reminder.setPriority(cand.priority as usize);
     reminder.setCompleted(cand.completed);
     reminder.setDueDateComponents(Some(&date_components(cand.deadline)));
+
+    // Geofencing v1: plain `EKCalendarItem.location` string. Reminders.app
+    // shows the text and offers a long-press to upgrade to a real
+    // geofence; this avoids the heavier EKStructuredLocation/CLLocation
+    // FFI surface for the v1 push.
+    let loc_ns_opt = cand.location.as_deref().map(NSString::from_str);
+    reminder.setLocation(loc_ns_opt.as_deref());
 
     // Recurrence: replace any existing rules with the one derived from
     // the block's `recurring::` property. EK accepts an array but
@@ -412,6 +532,49 @@ unsafe fn push_one(
     } else {
         Ok(SyncEffect::Updated { reminder_id: id })
     }
+}
+
+/// Like `find_or_create_tesela_calendar` but takes an arbitrary name.
+/// Used by the per-list mapping to push into "Errands", "Work", etc.
+unsafe fn find_or_create_calendar_by_name(
+    event_store: &EKEventStore,
+    name: &str,
+) -> Result<Retained<EKCalendar>> {
+    let target = NSString::from_str(name);
+    let calendars: Retained<NSArray<EKCalendar>> =
+        event_store.calendarsForEntityType(EKEntityType::Reminder);
+    for cal in calendars.iter() {
+        if cal.title().isEqualToString(&target) {
+            return Ok(cal);
+        }
+    }
+    let source = if let Some(default_cal) = event_store.defaultCalendarForNewReminders() {
+        default_cal
+            .source()
+            .ok_or_else(|| anyhow!("default reminders calendar has no source"))?
+    } else {
+        let sources = event_store.sources();
+        let mut chosen = None;
+        for src in sources.iter() {
+            let st = src.sourceType();
+            if matches!(
+                st,
+                EKSourceType::Local | EKSourceType::CalDAV | EKSourceType::MobileMe
+            ) {
+                chosen = Some(src);
+                break;
+            }
+        }
+        chosen.ok_or_else(|| anyhow!("no writable EventKit source for reminders"))?
+    };
+    let new_cal: Retained<EKCalendar> =
+        EKCalendar::calendarForEntityType_eventStore(EKEntityType::Reminder, event_store);
+    new_cal.setTitle(&target);
+    new_cal.setSource(Some(&source));
+    event_store
+        .saveCalendar_commit_error(&new_cal, true)
+        .map_err(|nserr| anyhow!("save calendar {}: {}", name, nserr.localizedDescription()))?;
+    Ok(new_cal)
 }
 
 /// Build an `EKRecurrenceRule` from Tesela's `Recurrence` enum.

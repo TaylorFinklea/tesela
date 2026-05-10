@@ -379,12 +379,12 @@ Reminders → Tesela, plus a "Sync now" UI surface.
 Closing the gaps that slice 2 left open. Status as of 2026-05-09:
 
 1. ✅ **Time-of-day round-trip** (commit `8928131`). `deadline::` now carries an optional `HH:MM` (24h or 12h with AM/PM); push writes `dueDateComponents.{hour,minute}` and pull rebuilds the full timestamp. New `Deadline` struct + 7 unit tests.
-2. **Geofencing (`reminder_location::`)** — deferred. Write/read `EKReminder.alarms[].structuredLocation` so Reminders' "remind me at home/work" automations attach to a Tesela block and survive sync. Store as `reminder_location:: <name> @ <lat>,<lng> (radius=<m>) on:arrive|on:leave`.
-3. **Per-list mapping** — deferred. Today everything lives in the auto-created "Tesela" calendar. Let the user point a Tesela tag (e.g. `#work`, `#groceries`) at an existing Reminders list. Frontmatter on the tag page: `apple_reminder_list:: "Work"`.
-4. ✅ **Auto-sync** (commit `<this-slice>`). New `reminders::auto` module owning a single `Mutex` so triggers serialize cleanly. Three triggers fire `sync_all`: (a) **startup** — 10s after server boot; (b) **interval** — every 5 minutes; (c) **edit-driven** — debounced 30s after the indexer's `NoteEvent` stream goes quiet. Each call records into a shared `LastSync` exposed at `GET /sync/reminders/status`; the manual `Sync now` button also routes through `AutoSync` so the Settings UI shows a single unified "last synced N minutes ago via <trigger>" line. EKEventStore change-notification observer (true push from EK side) deferred — needs a CFRunLoop and the 5-minute interval covers the user-visible gap.
-5. **Orphan handling** — deferred. Today `pull` reports orphan EKReminder ids without acting on them. Decide policy: import as a new Tesela Task with a configurable parent (e.g. `#inbox`)? Skip with a one-time toast? Surface them in a Settings list with "import" / "ignore" actions.
+2. ✅ **Geofencing (`reminder_location::`)** — push side, title-only. Block property `reminder_location:: <name>` (e.g. `Trader Joes`) attaches via `EKCalendarItem.location`; Reminders.app shows the string and offers a long-press to upgrade it to a real geofence. CLLocation + arrive/leave proximity (full RFC 5545 / EKAlarm.structuredLocation surface) deferred — title-only covers the common "remind me at the grocery store" case.
+3. ✅ **Per-list mapping** — push side. `apple_reminder_list:: <name>` on a block routes its push into the named Reminders list (creating it on the user's default source if missing). Untagged blocks still go to the auto-managed `Tesela` calendar. Pull still walks Tesela only — cross-list pull (rebuilding Tesela blocks from arbitrary Reminders lists) is a v2 feature.
+4. ✅ **Auto-sync** (commit `797a8a0`). New `reminders::auto` module owning a single `Mutex` so triggers serialize cleanly. Three triggers fire `sync_all`: (a) **startup** — 10s after server boot; (b) **interval** — every 5 minutes; (c) **edit-driven** — debounced 30s after the indexer's `NoteEvent` stream goes quiet. Each call records into a shared `LastSync` exposed at `GET /sync/reminders/status`; the manual `Sync now` button also routes through `AutoSync` so the Settings UI shows a single unified "last synced N minutes ago via <trigger>" line. EKEventStore change-notification observer (true push from EK side) deferred — needs a CFRunLoop and the 5-minute interval covers the user-visible gap.
+5. ✅ **Orphan handling** — push side. When `apple_reminder_id::` no longer resolves in EventKit (the Reminder was deleted in Reminders.app), sync stamps `apple_reminder_orphan:: true` on the block and skips it on subsequent pushes until the user clears the flag. Avoids the duplicate-create that would otherwise happen each sync. Pull still ignores reminders that have no matching Tesela block — "import as Task" is a v2 affordance.
 6. ✅ **Recurring round-trip** (commit `01a5a63`). `recurring::` ↔ `EKRecurrenceRule` both directions. `Daily / EveryNDays / Weekly / Monthly / Yearly / Weekdays` all round-trip. Diff compares parsed values (so `every 1 week` doesn't flap with `weekly`). BYDAY sets beyond `Weekdays` and end-conditions (`until` / `count`) still deferred — same constraint as Phase 12.2's recurrence engine.
-7. ✅ **UI affordances** (commit `<this-slice>` together with auto-sync). Settings → Apple Reminders shows last-sync time, trigger, and outcome counts (e.g. "Synced 3m ago via interval · 2 pushed"). Surfacing `apple_reminder_id::` / `apple_reminder_synced_at::` in a "system properties" drawer group is still TODO — they currently render alongside user properties.
+7. ✅ **UI affordances** (commit `797a8a0` together with auto-sync). Settings → Apple Reminders shows last-sync time, trigger, and outcome counts (e.g. "Synced 3m ago via interval · 2 pushed"). Surfacing `apple_reminder_id::` / `apple_reminder_synced_at::` in a "system properties" drawer group is still TODO — they currently render alongside user properties.
 
 Out of scope still: shared lists, attachments, sub-reminders (12.4 handles Tesela-side hierarchy first), multi-account, Reminders categories outside Tasks.
 
@@ -402,25 +402,28 @@ Backend: pure `tesela_core::recurrence` (`parse` + `next_after`) with day-of-mon
 
 Deferred to 12.2.x: BYDAY sets like `every monday, wednesday, friday`; `until` / `count` end conditions; "skip this occurrence"; recurring on `scheduled::` instead of `deadline::`; `weekends` keyword.
 
-#### 12.3 — Notifications
+#### 12.3 — Notifications ✅ shipped
 
-Desktop + optional web push for:
-- Deadline approaching (configurable lead time per property; defaults: 1h for `deadline`, 5m for `scheduled`)
-- Scheduled time fires
-- Recurring task rolled to today
-- (Stretch) Linked-block changes from another device or agent
+Desktop notifications + always-on toast fallback for three event kinds:
+- **Deadline approaching** — fires once per (block, deadline) when within the configured lead time (default 1h before deadline). Open Task blocks only.
+- **Scheduled time fires** — fires when `scheduled::` time-of-day is reached.
+- **Recurring task rolled to next** — fires when `apply_post_save_bumps` advances a recurring task on a `status:: done` flip.
 
-Implementation:
-- Web `Notification` API + service worker registration
-- `tesela-server` publishes an event stream over the existing WebSocket; web client subscribes and schedules `Notification.show()` per event
-- Settings: per-property rules (Tasks → 1h before `deadline`), per-tag overrides
-- Apple-side: when 12.1 ships, Reminders' own notifications cover iOS; desktop notifications stay Tesela-native
+Backend: new `notifications` module on `tesela-server` runs a 60-second tokio interval that walks all notes, parses task blocks, and emits `WsEvent::DeadlineApproaching` / `ScheduledFires` / `RecurringRolled`. Dedupe by `(block_id, kind, deadline_iso)` so the same window doesn't re-trigger every minute (an in-memory `HashSet`; restarts reset, which we accept). Bare-date deadlines anchor to 9 AM local; explicit `HH:MM` honored.
 
-#### 12.4 — Task hierarchy
+Frontend: `web/src/lib/notifications.ts` owns the dispatch — toast always fires, browser `Notification` only when permission granted. Permission is requested lazily on the first Settings toggle so we don't pop a prompt at boot. Per-kind mute checkboxes in Settings (deadline / scheduled / recurring), each persisted to localStorage. Notification clicks navigate to the source note.
 
-- **Subtasks**: already nest implicitly. Surface a "X of Y subtasks done" rollup chip on parent Task blocks; `Cmd+Enter` on parent opens a quick-add for a child.
-- **Dependencies**: `blocks::` / `blocked_by::` properties (block-link references). When the last blocker flips to `done`, dependent's status auto-cycles to `todo`. Visualizer: a small lock icon on chips of blocked tasks.
-- **Project rollup**: tag-table summary row shows `done/total` counts and earliest unmet `deadline` per Project tag. Drives the dashboard view of "what's open this week."
+Live-verified 2026-05-09 by setting a deadline 30 minutes ahead and watching the WS event arrive on the next scanner tick.
+
+Out of v1: configurable lead time (currently fixed 1h / 0m), per-property overrides via tag config, web push via service worker (works only when tab open today), in-app linked-block change events.
+
+#### 12.4 — Task hierarchy ✅ shipped (subtasks + same-note deps)
+
+- ✅ **Subtask rollup chip**: `BlockOutliner` walks each block's direct children (one indent deeper) and renders a small `X/Y` pill ahead of the property chips when any child has `status::`. Green when complete, neutral otherwise. Purely visual — no markdown footprint. `Cmd+Enter` quick-add for a child task is still TODO.
+- ✅ **Dependencies — `blocked_by::`**: same-note refs only. When `update_note` detects a flipped-to-done block, `apply_dependency_cycles` walks the same note for any `status:: backlog` block whose `blocked_by::` references include the just-done block, then auto-flips it to `todo` if all blockers are now done. Cross-note dependency walking deferred — requires a reverse-index pass per save. Lock pill renders on chips of blocked tasks (amber, with the `lock` icon).
+- **Project rollup row** — deferred. Per-tag summary chip ("5/12 done · earliest May 18") would live on tag pages. Today the kanban already gives per-status counts, so this is a nice-to-have rather than a daily-driver gap.
+
+Live-verified 2026-05-09: backlog task auto-flipped to `todo` the moment its blocker's PUT carried `status:: done`.
 
 #### Sequencing
 
