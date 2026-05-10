@@ -10,6 +10,8 @@ path = "src/main.rs"
 [dependencies]
 tesela-core = { path = "../tesela-core" }
 tesela-plugins = { path = "../tesela-plugins" }
+tesela-backup = { path = "../tesela-backup" }
+tempfile = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 anyhow = { workspace = true }

@@ -322,6 +322,39 @@ impl SqliteIndex {
         Ok(())
     }
 
+    /// Take a consistent snapshot of the database into `target` via
+    /// SQLite's `VACUUM INTO`. Unlike a raw `fs::copy` of `tesela.db`,
+    /// this is safe while the database is open in WAL mode — `VACUUM
+    /// INTO` produces a self-contained, fully-merged copy. Used by the
+    /// backup pipeline.
+    pub async fn vacuum_into(&self, target: &std::path::Path) -> Result<()> {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| TeselaError::Database {
+                message: format!("create snapshot parent dir: {}", e),
+                source: None,
+            })?;
+        }
+        if target.exists() {
+            std::fs::remove_file(target).map_err(|e| TeselaError::Database {
+                message: format!("clear existing snapshot {}: {}", target.display(), e),
+                source: None,
+            })?;
+        }
+        let target_str = target
+            .to_str()
+            .ok_or_else(|| TeselaError::Database {
+                message: format!("snapshot path is not valid UTF-8: {}", target.display()),
+                source: None,
+            })?
+            .replace('\'', "''");
+        let stmt = format!("VACUUM INTO '{}'", target_str);
+        sqlx::query(&stmt)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| db_err("VACUUM INTO failed", e))?;
+        Ok(())
+    }
+
     /// Rebuild the entire index from a slice of notes.
     ///
     /// This is used when the database is lost or out of sync with the filesystem.

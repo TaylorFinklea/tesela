@@ -97,11 +97,38 @@ enum Commands {
         #[arg(short, long, default_value = "markdown")]
         format: String,
     },
-    /// Back up the notes directory to a timestamped archive
+    /// Back up the mosaic to a timestamped, manifest-validated archive
     Backup {
-        /// Output directory for backups (defaults to .tesela/backups/)
+        /// External output directory (defaults to <mosaic>/.tesela/backups/)
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Skip the post-write round-trip validation. Off by default —
+        /// validation is the whole point of the new backup pipeline.
+        #[arg(long)]
+        no_validate: bool,
+        /// Skip GFS retention pruning (keeps every prior backup).
+        #[arg(long)]
+        no_prune: bool,
+    },
+    /// Re-run round-trip validation on an existing backup
+    BackupVerify {
+        /// Path to the backup directory (e.g. `.tesela/backups/backup-...`)
+        path: PathBuf,
+    },
+    /// List backups under a destination root
+    BackupList {
+        /// Destination root (defaults to <mosaic>/.tesela/backups/)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Apply GFS retention manually
+    BackupPrune {
+        /// Destination root (defaults to <mosaic>/.tesela/backups/)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Show what would be deleted without removing anything
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Import notes from a LogSeq graph
     ImportLogseq {
@@ -112,16 +139,18 @@ enum Commands {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Restore notes from a backup
+    /// Restore a mosaic from a backup
     Restore {
         /// Backup directory to restore from (e.g., .tesela/backups/backup-20260404-120000)
         source: PathBuf,
-        /// Overwrite existing notes (default: skip existing)
+        /// Replace the current mosaic instead of creating a sibling.
+        /// The current mosaic is renamed to `<root>.before-restore-<timestamp>`
+        /// before the restore writes — never silently destroyed.
         #[arg(long)]
-        overwrite: bool,
-        /// Dry run — show what would be restored without writing
+        in_place: bool,
+        /// Allow restoring a backup written by a newer Tesela than this binary
         #[arg(long)]
-        dry_run: bool,
+        allow_newer: bool,
     },
     /// Rebuild the search index
     Reindex,
@@ -375,201 +404,198 @@ async fn cmd_export(ctx: &Ctx, query: String, format: String) -> Result<()> {
     Ok(())
 }
 
-async fn cmd_backup(mosaic: &Path, output: Option<PathBuf>) -> Result<()> {
-    let notes_dir = mosaic.join("notes");
-    if !notes_dir.exists() {
-        anyhow::bail!("Notes directory not found: {}", notes_dir.display());
+async fn cmd_backup(
+    mosaic: &Path,
+    output: Option<PathBuf>,
+    validate: bool,
+    prune: bool,
+) -> Result<()> {
+    if !mosaic.join("notes").exists() {
+        anyhow::bail!("Notes directory not found in {}", mosaic.display());
     }
 
-    let backup_root = output.unwrap_or_else(|| mosaic.join(".tesela").join("backups"));
-    std::fs::create_dir_all(&backup_root).with_context(|| {
-        format!(
-            "Failed to create backup directory: {}",
-            backup_root.display()
-        )
-    })?;
-
-    let timestamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let backup_dir = backup_root.join(format!("backup-{}", timestamp));
-
-    // Copy notes/ recursively
-    copy_dir_recursive(&notes_dir, &backup_dir)?;
-
-    // Also copy .tesela/tesela.db as a snapshot
+    // Pre-stage the SQLite snapshot. `VACUUM INTO` is consistent under
+    // WAL even with concurrent writers (e.g. a running tesela-server),
+    // so we don't need to take down anything. The snapshot lives in a
+    // tempfile that we hand off to tesela-backup as an "extra file".
+    let mut extra_files = Vec::new();
     let db_path = mosaic.join(".tesela").join("tesela.db");
-    if db_path.exists() {
-        let db_dest = backup_dir.join("tesela.db");
-        std::fs::copy(&db_path, &db_dest)
-            .with_context(|| format!("Failed to copy database: {}", db_path.display()))?;
-    }
+    let _snapshot_holder = if db_path.exists() {
+        let snapshot = tempfile::Builder::new()
+            .prefix("tesela-vacuum-")
+            .suffix(".db")
+            .tempfile()
+            .context("failed to create vacuum tempfile")?;
+        let snap_path = snapshot.path().to_path_buf();
+        let index = tesela_core::db::SqliteIndex::open(&db_path)
+            .await
+            .context("open SQLite for vacuum snapshot")?;
+        index
+            .vacuum_into(&snap_path)
+            .await
+            .context("VACUUM INTO snapshot")?;
+        extra_files.push((".tesela/tesela.db".to_string(), snap_path));
+        Some(snapshot)
+    } else {
+        None
+    };
 
-    // Count files
-    let file_count = count_files_recursive(&backup_dir);
+    let destination = match output {
+        Some(path) => tesela_backup::Destination::External { path },
+        None => tesela_backup::Destination::Local,
+    };
+
+    let outcome = tesela_backup::backup(
+        mosaic,
+        tesela_backup::BackupOptions {
+            destination,
+            validate,
+            extra_files,
+            retention: if prune {
+                Some(tesela_backup::GfsPolicy::default())
+            } else {
+                None
+            },
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
 
     println!(
         "Backup complete: {} ({} files)",
-        backup_dir.display(),
-        file_count
+        outcome.path.display(),
+        outcome.manifest.files.len()
     );
-
-    // Clean old backups (keep last 10)
-    let mut backups: Vec<_> = std::fs::read_dir(&backup_root)?
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_name().to_string_lossy().starts_with("backup-"))
-        .collect();
-    backups.sort_by_key(|e| e.file_name());
-    if backups.len() > 10 {
-        let to_remove = backups.len() - 10;
-        for entry in backups.into_iter().take(to_remove) {
-            if let Err(e) = std::fs::remove_dir_all(entry.path()) {
-                tracing::warn!(
-                    "Failed to clean old backup {}: {}",
-                    entry.path().display(),
-                    e
-                );
-            }
+    if let Some(v) = &outcome.manifest.validated {
+        if v.ok {
+            println!(
+                "Validated: round-trip OK in {} ms",
+                v.elapsed_ms
+            );
+        } else {
+            println!(
+                "Validated: FAILED — {}",
+                v.note.as_deref().unwrap_or("unknown")
+            );
         }
+    } else {
+        println!("Validation skipped (--no-validate)");
+    }
+    if !outcome.pruned.removed.is_empty() {
+        println!(
+            "Pruned {} old backup(s) per GFS retention",
+            outcome.pruned.removed.len()
+        );
     }
 
     Ok(())
 }
 
-fn count_files_recursive(dir: &std::path::Path) -> usize {
-    let mut count = 0;
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                count += count_files_recursive(&path);
-            } else {
-                count += 1;
-            }
-        }
+async fn cmd_backup_verify(path: &Path) -> Result<()> {
+    let status = tesela_backup::verify(path).map_err(|e| anyhow::anyhow!("{}", e))?;
+    if status.ok {
+        println!(
+            "Verified: round-trip OK in {} ms ({})",
+            status.elapsed_ms,
+            status.checked_at.format("%Y-%m-%d %H:%M:%S")
+        );
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "Verification FAILED: {}",
+            status.note.unwrap_or_else(|| "unknown".to_string())
+        );
     }
-    count
 }
 
-async fn cmd_restore(mosaic: &Path, source: PathBuf, overwrite: bool, dry_run: bool) -> Result<()> {
-    let notes_dir = mosaic.join("notes");
-
-    // Verify source exists and looks like a backup
-    if !source.exists() {
-        anyhow::bail!("Backup directory not found: {}", source.display());
+async fn cmd_backup_list(mosaic: &Path, output: Option<PathBuf>) -> Result<()> {
+    let root = output.unwrap_or_else(|| mosaic.join(".tesela").join("backups"));
+    let backups = tesela_backup::list(&root).map_err(|e| anyhow::anyhow!("{}", e))?;
+    if backups.is_empty() {
+        println!("No backups found in {}", root.display());
+        return Ok(());
     }
-
-    // Find notes in the backup (could be a flat dir or have a notes/ subdir)
-    let backup_notes = if source.join("notes").exists() {
-        source.join("notes")
-    } else {
-        // Assume the backup dir itself contains .md files
-        source.clone()
-    };
-
-    if !backup_notes.exists() {
-        anyhow::bail!("No notes found in backup: {}", backup_notes.display());
+    println!(
+        "{:<32} {:<25} {:>8} {}",
+        "name", "created", "files", "validated"
+    );
+    for (path, manifest) in backups {
+        let name = path
+            .file_name()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let validated = match &manifest.validated {
+            Some(v) if v.ok => "OK",
+            Some(_) => "FAIL",
+            None => "—",
+        };
+        println!(
+            "{:<32} {:<25} {:>8} {}",
+            name,
+            manifest.created_at.format("%Y-%m-%d %H:%M:%S"),
+            manifest.files.len(),
+            validated
+        );
     }
+    Ok(())
+}
 
-    let _ = std::fs::create_dir_all(&notes_dir);
-
-    let mut restored = 0;
-    let mut skipped = 0;
-    let mut overwritten = 0;
-
-    restore_dir_recursive(
-        &backup_notes,
-        &notes_dir,
-        overwrite,
-        dry_run,
-        &mut restored,
-        &mut skipped,
-        &mut overwritten,
-    )?;
-
+async fn cmd_backup_prune(mosaic: &Path, output: Option<PathBuf>, dry_run: bool) -> Result<()> {
+    let root = output.unwrap_or_else(|| mosaic.join(".tesela").join("backups"));
+    let outcome = tesela_backup::prune_gfs(&root, tesela_backup::GfsPolicy::default(), dry_run)
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
     if dry_run {
-        println!("Dry run complete:");
+        println!(
+            "Dry run: would keep {}, would remove {}",
+            outcome.kept.len(),
+            outcome.removed.len()
+        );
     } else {
-        println!("Restore complete:");
+        println!(
+            "Kept {} backup(s); removed {}",
+            outcome.kept.len(),
+            outcome.removed.len()
+        );
     }
-    println!("  Restored: {} files", restored);
-    println!("  Skipped (existing): {} files", skipped);
-    if overwrite {
-        println!("  Overwritten: {} files", overwritten);
+    for path in &outcome.removed {
+        println!(
+            "  {} {}",
+            if dry_run { "would remove" } else { "removed" },
+            path.display()
+        );
     }
-
-    // Restore database if present
-    let backup_db = source.join("tesela.db");
-    if backup_db.exists() {
-        let target_db = mosaic.join(".tesela").join("tesela.db");
-        if dry_run {
-            println!("  Would restore database: {}", backup_db.display());
-        } else {
-            std::fs::copy(&backup_db, &target_db).with_context(|| {
-                format!("Failed to restore database from {}", backup_db.display())
-            })?;
-            println!("  Database restored");
-        }
-    }
-
-    if !dry_run {
-        println!("\nRestart tesela-server to reindex restored notes.");
-    }
-
     Ok(())
 }
 
-fn restore_dir_recursive(
-    src: &std::path::Path,
-    dst: &std::path::Path,
-    overwrite: bool,
-    dry_run: bool,
-    restored: &mut usize,
-    skipped: &mut usize,
-    overwritten: &mut usize,
+async fn cmd_restore(
+    mosaic: &Path,
+    source: PathBuf,
+    in_place: bool,
+    allow_newer: bool,
 ) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
-            restore_dir_recursive(
-                &src_path,
-                &dst_path,
-                overwrite,
-                dry_run,
-                restored,
-                skipped,
-                overwritten,
-            )?;
-        } else {
-            if dst_path.exists() && !overwrite {
-                *skipped += 1;
-                continue;
-            }
-            if dst_path.exists() && overwrite {
-                *overwritten += 1;
-            }
-            if !dry_run {
-                std::fs::copy(&src_path, &dst_path)?;
-            }
-            *restored += 1;
-        }
-    }
-    Ok(())
-}
+    let outcome = tesela_backup::restore(
+        &source,
+        mosaic,
+        tesela_backup::RestoreOptions {
+            in_place,
+            target_override: None,
+            allow_newer,
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("{}", e))?;
 
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            std::fs::copy(&src_path, &dst_path)?;
-        }
+    println!("Restored to {}", outcome.target.display());
+    if let Some(prev) = &outcome.renamed_previous {
+        println!(
+            "Previous mosaic preserved at {} (you can rm -rf when satisfied)",
+            prev.display()
+        );
     }
+    println!(
+        "Manifest: {} files, written {}",
+        outcome.manifest.files.len(),
+        outcome.manifest.created_at.format("%Y-%m-%d %H:%M:%S")
+    );
+    println!("\nRestart tesela-server to reindex if needed.");
     Ok(())
 }
 
@@ -760,18 +786,35 @@ async fn main() -> Result<()> {
     }
 
     // Handle backup — needs mosaic path but not a full Ctx
-    if let Commands::Backup { output } = cli.command {
-        return cmd_backup(&mosaic, output).await;
+    if let Commands::Backup {
+        output,
+        no_validate,
+        no_prune,
+    } = cli.command
+    {
+        return cmd_backup(&mosaic, output, !no_validate, !no_prune).await;
+    }
+
+    if let Commands::BackupVerify { path } = &cli.command {
+        return cmd_backup_verify(path).await;
+    }
+
+    if let Commands::BackupList { output } = cli.command {
+        return cmd_backup_list(&mosaic, output).await;
+    }
+
+    if let Commands::BackupPrune { output, dry_run } = cli.command {
+        return cmd_backup_prune(&mosaic, output, dry_run).await;
     }
 
     // Handle restore — needs mosaic path but not a full Ctx
     if let Commands::Restore {
         source,
-        overwrite,
-        dry_run,
+        in_place,
+        allow_newer,
     } = cli.command
     {
-        return cmd_restore(&mosaic, source, overwrite, dry_run).await;
+        return cmd_restore(&mosaic, source, in_place, allow_newer).await;
     }
 
     // Handle LogSeq import — needs mosaic path but not a full Ctx
@@ -787,6 +830,9 @@ async fn main() -> Result<()> {
         | Commands::Install
         | Commands::Uninstall
         | Commands::Backup { .. }
+        | Commands::BackupVerify { .. }
+        | Commands::BackupList { .. }
+        | Commands::BackupPrune { .. }
         | Commands::Restore { .. }
         | Commands::ImportLogseq { .. } => unreachable!(),
         Commands::New {
