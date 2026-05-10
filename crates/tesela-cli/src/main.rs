@@ -6,6 +6,7 @@ use tesela_core::traits::plugin::PluginRegistry;
 
 mod import_logseq;
 mod import_obsidian;
+mod import_org;
 use tesela_core::{
     config::Config,
     daily::DailyNoteConfig,
@@ -173,6 +174,15 @@ enum Commands {
     /// Import notes from an Obsidian vault
     ImportObsidian {
         /// Path to the vault root
+        #[arg(long)]
+        source: PathBuf,
+        /// Dry run — show what would be imported without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Import notes from a directory of `.org` files (e.g. an org-roam vault)
+    ImportOrg {
+        /// Path to a single `.org` file or a directory containing them
         #[arg(long)]
         source: PathBuf,
         /// Dry run — show what would be imported without writing
@@ -977,6 +987,10 @@ async fn main() -> Result<()> {
         return import_obsidian::run(&mosaic, source, dry_run).await;
     }
 
+    if let Commands::ImportOrg { source, dry_run } = cli.command {
+        return import_org::run(&mosaic, source, dry_run).await;
+    }
+
     let ctx = Ctx::new(mosaic).await?;
 
     match cli.command {
@@ -992,7 +1006,8 @@ async fn main() -> Result<()> {
         | Commands::Restore { .. }
         | Commands::Export { .. }
         | Commands::ImportLogseq { .. }
-        | Commands::ImportObsidian { .. } => unreachable!(),
+        | Commands::ImportObsidian { .. }
+        | Commands::ImportOrg { .. } => unreachable!(),
         Commands::New {
             title,
             tags,
