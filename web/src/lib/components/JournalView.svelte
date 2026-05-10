@@ -27,7 +27,16 @@
 
   const queryClient = useQueryClient();
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  // Use the user's LOCAL date — toISOString() is UTC, so in evening PST
+  // it would already roll over to the next day's daily and surface as
+  // "Today" before the user's wall-clock midnight.
+  const todayStr = (() => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  })();
 
   const notesQuery = createQuery(() => ({
     queryKey: ["notes", { tag: "daily", limit: 500 }] as const,
@@ -230,9 +239,23 @@
   // Phase 12.X — when a day's BlockOutliner runs out of room (j on its
   // last block, k on its first), it dispatches `tesela:cross-outliner-nav`.
   // Hop to the sibling day and focus its first/last cm-content. We focus
-  // by clicking-equivalent: dispatch `focus()` on the cm-content; the
-  // editor's onFocus handler wires vimCtx → next j/k targets the new
-  // outliner cleanly.
+  // by dispatching `focus()` on the cm-content; the editor's onFocus
+  // handler wires vimCtx so the next j/k targets the new outliner.
+  //
+  // Empty stub days (`ensureTrailingEmpty` only ran for today) have zero
+  // cm-content rendered. We don't want to silently skip those — the user
+  // might be trying to land on an empty day to start writing. So when a
+  // sibling has no cm-content, we fire ensureTrailingEmpty for that day's
+  // note id and retry on the next animation frame once the WS update has
+  // re-rendered it.
+  function focusCmInDay(day: HTMLElement, direction: "up" | "down"): boolean {
+    const cms = day.querySelectorAll<HTMLElement>(".cm-editor .cm-content");
+    if (cms.length === 0) return false;
+    const cm = direction === "down" ? cms[0] : cms[cms.length - 1];
+    cm.scrollIntoView({ block: "nearest", behavior: "auto" });
+    cm.focus();
+    return true;
+  }
   $effect(() => {
     const root = scrollContainer;
     if (!root) return;
@@ -244,22 +267,29 @@
       const days = [...root.querySelectorAll(".day")];
       const idx = days.indexOf(sourceDay as HTMLElement);
       if (idx < 0) return;
-      // Walk siblings until we find one with a focusable cm-content. Empty
-      // days (no blocks rendered) are skipped — the user shouldn't have to
-      // press j twice to skip a stub.
       const step = direction === "down" ? 1 : -1;
-      for (let i = idx + step; i >= 0 && i < days.length; i += step) {
-        const target = days[i] as HTMLElement;
-        const cms = target.querySelectorAll<HTMLElement>(".cm-editor .cm-content");
-        if (cms.length === 0) continue;
-        const cm = direction === "down" ? cms[0] : cms[cms.length - 1];
-        cm.scrollIntoView({ block: "nearest", behavior: "auto" });
-        cm.focus();
+      const nextIdx = idx + step;
+      if (nextIdx < 0) return; // ran off the top
+      if (nextIdx >= days.length) {
+        if (direction === "down" && hasMore) loadMore();
         return;
       }
-      // If we ran off the end and infinite-scroll still has more days,
-      // ask for a page; the next event hop will catch it once mounted.
-      if (direction === "down" && hasMore) loadMore();
+      const target = days[nextIdx] as HTMLElement;
+      if (focusCmInDay(target, direction)) return;
+      // Empty target — backfill a trailing empty bullet so it has a
+      // landing spot, then focus once the re-render mounts the cm-editor.
+      const dailyId = target.getAttribute("data-daily");
+      if (!dailyId) return;
+      void ensureTrailingEmpty(dailyId).then(() => {
+        const tryFocus = (attempts: number) => {
+          if (focusCmInDay(target, direction)) return;
+          if (attempts <= 0) return;
+          requestAnimationFrame(() => tryFocus(attempts - 1));
+        };
+        // Up to ~30 frames (~500ms) for the WS round-trip to refresh the
+        // section's BlockOutliner with the newly-added empty bullet.
+        requestAnimationFrame(() => tryFocus(30));
+      });
     };
     root.addEventListener("tesela:cross-outliner-nav", handler);
     return () => root.removeEventListener("tesela:cross-outliner-nav", handler);
