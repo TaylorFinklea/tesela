@@ -128,7 +128,8 @@ pub async fn update_note(
     // flipped to `done` in this PUT and bump its deadline before saving.
     // Single-source-of-truth so all three web write paths (KanbanBoard,
     // BottomDrawer, BlockOutliner status cycle) trigger consistently.
-    note.content = apply_post_save_bumps(&prev_content, &req.content);
+    let (new_content, bumps) = apply_post_save_bumps_with_info(&prev_content, &req.content, &id);
+    note.content = new_content;
     s.store.update(&note).await?;
     // Re-read to get fresh parsed metadata and checksum
     let updated = s
@@ -152,6 +153,16 @@ pub async fn update_note(
     let _ = s.ws_tx.send(WsEvent::NoteUpdated {
         note: updated.clone(),
     });
+    // Phase 12.3 — fire RecurringRolled per bumped block so the client
+    // can surface "rolled to next month" notifications.
+    for info in bumps {
+        let _ = s.ws_tx.send(WsEvent::RecurringRolled {
+            block_id: info.block_id,
+            title: info.title,
+            note_id: id.clone(),
+            next_deadline: info.next_deadline,
+        });
+    }
     Ok(Json(updated))
 }
 
@@ -297,15 +308,63 @@ pub fn try_bump_block(content: &str, block_id: &str) -> Option<(String, String)>
 /// Done in a loop: each bump re-parses, so subsequent bumps in the same
 /// PUT see fresh line numbers. Bumps the same block at most once per call
 /// (after a bump, that block's status is `todo`, so it no longer matches).
-pub fn apply_post_save_bumps(prev: &str, next: &str) -> String {
+/// Detect any block whose status flipped to `done` in this PUT and bump
+/// its deadline before saving. Returns (rewritten_content, bumps) so the
+/// caller can fire `WsEvent::RecurringRolled` for each. `note_id` is used
+/// to rewrite block ids in the returned `BumpInfo`s to `<note_id>:<line>`.
+pub fn apply_post_save_bumps_with_info(
+    prev: &str,
+    next: &str,
+    note_id: &str,
+) -> (String, Vec<BumpInfo>) {
     let flipped = detect_status_flips_to_done(prev, next);
     let mut content = next.to_string();
+    let mut bumps = Vec::new();
     for block_id in flipped {
-        if let Some((bumped, _)) = try_bump_block(&content, &block_id) {
+        // try_bump_block uses the note-id prefix from `block_id` and parses
+        // body blocks against that prefix. Our block_id here came from a
+        // `__diff__` parse, so try_bump_block will still find a match
+        // because it re-parses with the same prefix.
+        if let Some((bumped, next_iso)) = try_bump_block(&content, &block_id) {
+            // Resolve the bumped block's title from the freshly-parsed
+            // content. Re-parse to get the title — the line number may
+            // have changed if `last_completed::` was inserted.
+            let title = title_for_block(&bumped, &block_id).unwrap_or_default();
             content = bumped;
+            // Rewrite the block id from `__diff__:N` to `<note_id>:N`
+            // so the WS event carries a useful pointer.
+            let line = block_id.rsplit_once(':').map(|(_, l)| l).unwrap_or("0");
+            let real_block_id = format!("{}:{}", note_id, line);
+            bumps.push(BumpInfo {
+                block_id: real_block_id,
+                title,
+                next_deadline: next_iso,
+            });
         }
     }
-    content
+    (content, bumps)
+}
+
+#[derive(Debug, Clone)]
+pub struct BumpInfo {
+    pub block_id: String,
+    pub title: String,
+    pub next_deadline: String,
+}
+
+fn title_for_block(content: &str, block_id: &str) -> Option<String> {
+    let (note_id_str, _) = block_id.rsplit_once(':')?;
+    let (_meta, body) = parse_frontmatter(content).ok()?;
+    let blocks = parse_blocks(note_id_str, &body);
+    let block = blocks.iter().find(|b| b.id == block_id)?;
+    Some(
+        block
+            .text
+            .split_whitespace()
+            .filter(|tok| !tok.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 /// Block ids whose `status` was missing/non-done in `prev` and is `done`

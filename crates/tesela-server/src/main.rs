@@ -1,4 +1,5 @@
 mod error;
+mod notifications;
 mod reminders;
 mod routes;
 mod state;
@@ -158,6 +159,12 @@ async fn main() -> Result<()> {
         store_for_auto,
         note_event_tx.clone(),
     );
+
+    // Phase 12.3 — periodic deadline/scheduled scanner. Fires WS events
+    // that the web client converts to desktop notifications.
+    let notifier = Arc::new(notifications::Notifier::new());
+    let store_for_notify: Arc<dyn NoteStore> = Arc::clone(&store) as Arc<dyn NoteStore>;
+    notifications::start(Arc::clone(&notifier), store_for_notify, ws_tx.clone());
 
     let app_state = AppState {
         store,

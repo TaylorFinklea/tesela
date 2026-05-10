@@ -6,10 +6,36 @@
  */
 import type { Note } from "$lib/types/Note";
 
+export type DeadlineApproachingEvent = {
+  event: "deadline_approaching";
+  block_id: string;
+  title: string;
+  note_id: string;
+  deadline_iso: string;
+  lead_minutes: number;
+};
+export type ScheduledFiresEvent = {
+  event: "scheduled_fires";
+  block_id: string;
+  title: string;
+  note_id: string;
+  scheduled_iso: string;
+};
+export type RecurringRolledEvent = {
+  event: "recurring_rolled";
+  block_id: string;
+  title: string;
+  note_id: string;
+  next_deadline: string;
+};
+
 type WsEvent =
   | { event: "note_created"; note: Note }
   | { event: "note_updated"; note: Note }
-  | { event: "note_deleted"; id: string };
+  | { event: "note_deleted"; id: string }
+  | DeadlineApproachingEvent
+  | ScheduledFiresEvent
+  | RecurringRolledEvent;
 
 // Same-origin path; vite dev server proxies `/ws` → tesela-server's WS at
 // 127.0.0.1:7474. Computed at runtime so LAN clients (phones, etc.) connect
@@ -39,15 +65,24 @@ export function getConnected() {
 let onNoteCreated: ((note: Note) => void) | null = null;
 let onNoteUpdated: ((note: Note) => void) | null = null;
 let onNoteDeleted: ((id: string) => void) | null = null;
+let onDeadlineApproaching: ((e: DeadlineApproachingEvent) => void) | null = null;
+let onScheduledFires: ((e: ScheduledFiresEvent) => void) | null = null;
+let onRecurringRolled: ((e: RecurringRolledEvent) => void) | null = null;
 
 export function setHandlers(handlers: {
   onNoteCreated?: (note: Note) => void;
   onNoteUpdated?: (note: Note) => void;
   onNoteDeleted?: (id: string) => void;
+  onDeadlineApproaching?: (e: DeadlineApproachingEvent) => void;
+  onScheduledFires?: (e: ScheduledFiresEvent) => void;
+  onRecurringRolled?: (e: RecurringRolledEvent) => void;
 }) {
   onNoteCreated = handlers.onNoteCreated ?? null;
   onNoteUpdated = handlers.onNoteUpdated ?? null;
   onNoteDeleted = handlers.onNoteDeleted ?? null;
+  onDeadlineApproaching = handlers.onDeadlineApproaching ?? null;
+  onScheduledFires = handlers.onScheduledFires ?? null;
+  onRecurringRolled = handlers.onRecurringRolled ?? null;
 }
 
 export function connect() {
@@ -137,6 +172,15 @@ function handleMessage(raw: unknown) {
       break;
     case "note_deleted":
       onNoteDeleted?.(event.id);
+      break;
+    case "deadline_approaching":
+      onDeadlineApproaching?.(event);
+      break;
+    case "scheduled_fires":
+      onScheduledFires?.(event);
+      break;
+    case "recurring_rolled":
+      onRecurringRolled?.(event);
       break;
   }
 }

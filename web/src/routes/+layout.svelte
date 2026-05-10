@@ -2,6 +2,11 @@
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
   import { onMount } from "svelte";
   import { connect, setHandlers } from "$lib/ws-client.svelte";
+  import {
+    handleDeadlineApproaching,
+    handleScheduledFires,
+    handleRecurringRolled,
+  } from "$lib/notifications";
   import { goto } from "$app/navigation";
   import { pushNavigation, goBack, goForward } from "$lib/stores/navigation.svelte";
   import {
@@ -135,6 +140,9 @@
         queryClient.invalidateQueries({ queryKey: ["notes"] });
         queryClient.invalidateQueries({ queryKey: ["note", id] });
       },
+      onDeadlineApproaching: handleDeadlineApproaching,
+      onScheduledFires: handleScheduledFires,
+      onRecurringRolled: handleRecurringRolled,
     });
 
     // Ensure the 9 system Query widgets exist so the rail is populated on
