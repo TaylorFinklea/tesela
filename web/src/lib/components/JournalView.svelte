@@ -226,6 +226,45 @@
     });
   });
 
+  // ----- Cross-day j/k -----
+  // Phase 12.X — when a day's BlockOutliner runs out of room (j on its
+  // last block, k on its first), it dispatches `tesela:cross-outliner-nav`.
+  // Hop to the sibling day and focus its first/last cm-content. We focus
+  // by clicking-equivalent: dispatch `focus()` on the cm-content; the
+  // editor's onFocus handler wires vimCtx → next j/k targets the new
+  // outliner cleanly.
+  $effect(() => {
+    const root = scrollContainer;
+    if (!root) return;
+    const handler = (ev: Event) => {
+      const direction = (ev as CustomEvent).detail?.direction as "up" | "down" | undefined;
+      if (direction !== "up" && direction !== "down") return;
+      const sourceDay = (ev.target as HTMLElement | null)?.closest?.(".day");
+      if (!sourceDay) return;
+      const days = [...root.querySelectorAll(".day")];
+      const idx = days.indexOf(sourceDay as HTMLElement);
+      if (idx < 0) return;
+      // Walk siblings until we find one with a focusable cm-content. Empty
+      // days (no blocks rendered) are skipped — the user shouldn't have to
+      // press j twice to skip a stub.
+      const step = direction === "down" ? 1 : -1;
+      for (let i = idx + step; i >= 0 && i < days.length; i += step) {
+        const target = days[i] as HTMLElement;
+        const cms = target.querySelectorAll<HTMLElement>(".cm-editor .cm-content");
+        if (cms.length === 0) continue;
+        const cm = direction === "down" ? cms[0] : cms[cms.length - 1];
+        cm.scrollIntoView({ block: "nearest", behavior: "auto" });
+        cm.focus();
+        return;
+      }
+      // If we ran off the end and infinite-scroll still has more days,
+      // ask for a page; the next event hop will catch it once mounted.
+      if (direction === "down" && hasMore) loadMore();
+    };
+    root.addEventListener("tesela:cross-outliner-nav", handler);
+    return () => root.removeEventListener("tesela:cross-outliner-nav", handler);
+  });
+
   // ----- Infinite scroll: sentinel intersection -----
 
   let sentinel = $state<HTMLElement | undefined>();

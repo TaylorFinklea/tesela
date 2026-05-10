@@ -667,6 +667,24 @@
 
   function handleNavigate(direction: "up" | "down", count = 1) {
     if (focusedIndex === null) return;
+    const atTopEdge = direction === "up" && focusedIndex === 0;
+    const atBottomEdge =
+      direction === "down" && focusedIndex === visibleBlocks.length - 1;
+    // Phase 12.X — at the outliner's edge, hand off to the parent (e.g.
+    // JournalView) so j/k can cross day boundaries. The parent decides
+    // which sibling outliner to focus; if no listener handles it, focus
+    // simply stays put.
+    if (atTopEdge || atBottomEdge) {
+      if (rootEl) {
+        rootEl.dispatchEvent(
+          new CustomEvent("tesela:cross-outliner-nav", {
+            detail: { direction },
+            bubbles: true,
+          }),
+        );
+      }
+      return;
+    }
     const next = direction === "up"
       ? Math.max(0, focusedIndex - count)
       : Math.min(visibleBlocks.length - 1, focusedIndex + count);
