@@ -99,9 +99,15 @@ enum Commands {
     },
     /// Back up the mosaic to a timestamped, manifest-validated archive
     Backup {
-        /// External output directory (defaults to <mosaic>/.tesela/backups/)
+        /// External output directory (defaults to <mosaic>/.tesela/backups/).
+        /// When set, the backup is encrypted with the mosaic's age identity
+        /// (run `tesela backup-keygen` first if one doesn't exist yet).
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Force encryption on local backups too (default: encrypt only when
+        /// `--output` points outside the mosaic).
+        #[arg(long)]
+        encrypt: bool,
         /// Skip the post-write round-trip validation. Off by default —
         /// validation is the whole point of the new backup pipeline.
         #[arg(long)]
@@ -110,6 +116,8 @@ enum Commands {
         #[arg(long)]
         no_prune: bool,
     },
+    /// Generate and store an age keypair for this mosaic in the macOS Keychain
+    BackupKeygen,
     /// Re-run round-trip validation on an existing backup
     BackupVerify {
         /// Path to the backup directory (e.g. `.tesela/backups/backup-...`)
@@ -407,6 +415,7 @@ async fn cmd_export(ctx: &Ctx, query: String, format: String) -> Result<()> {
 async fn cmd_backup(
     mosaic: &Path,
     output: Option<PathBuf>,
+    force_encrypt: bool,
     validate: bool,
     prune: bool,
 ) -> Result<()> {
@@ -440,9 +449,24 @@ async fn cmd_backup(
         None
     };
 
-    let destination = match output {
-        Some(path) => tesela_backup::Destination::External { path },
-        None => tesela_backup::Destination::Local,
+    let (destination, encrypt_default) = match output {
+        Some(path) => (tesela_backup::Destination::External { path }, true),
+        None => (tesela_backup::Destination::Local, false),
+    };
+    let should_encrypt = force_encrypt || encrypt_default;
+    let encryption = if should_encrypt {
+        let identity = tesela_backup::encrypt::load_identity_for_mosaic(mosaic)
+            .map_err(|e| anyhow::anyhow!("{}", e))?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no age identity in Keychain for this mosaic. Run `tesela backup-keygen` first."
+                )
+            })?;
+        tesela_backup::ManifestEncryption::Age {
+            recipient: identity.to_public().to_string(),
+        }
+    } else {
+        tesela_backup::ManifestEncryption::None
     };
 
     let outcome = tesela_backup::backup(
@@ -456,6 +480,7 @@ async fn cmd_backup(
             } else {
                 None
             },
+            encryption,
         },
     )
     .map_err(|e| anyhow::anyhow!("{}", e))?;
@@ -487,6 +512,16 @@ async fn cmd_backup(
         );
     }
 
+    Ok(())
+}
+
+fn cmd_backup_keygen(mosaic: &Path) -> Result<()> {
+    let recipient =
+        tesela_backup::encrypt::keygen_for_mosaic(mosaic).map_err(|e| anyhow::anyhow!("{}", e))?;
+    println!("Generated age identity for {}", mosaic.display());
+    println!("Stored in Keychain (service=tesela-backup, account={})", mosaic.display());
+    println!("Public recipient: {}", recipient);
+    println!("\nFuture `tesela backup --output <path>` runs will encrypt to this recipient.");
     Ok(())
 }
 
@@ -788,11 +823,16 @@ async fn main() -> Result<()> {
     // Handle backup — needs mosaic path but not a full Ctx
     if let Commands::Backup {
         output,
+        encrypt,
         no_validate,
         no_prune,
     } = cli.command
     {
-        return cmd_backup(&mosaic, output, !no_validate, !no_prune).await;
+        return cmd_backup(&mosaic, output, encrypt, !no_validate, !no_prune).await;
+    }
+
+    if matches!(cli.command, Commands::BackupKeygen) {
+        return cmd_backup_keygen(&mosaic);
     }
 
     if let Commands::BackupVerify { path } = &cli.command {
@@ -830,6 +870,7 @@ async fn main() -> Result<()> {
         | Commands::Install
         | Commands::Uninstall
         | Commands::Backup { .. }
+        | Commands::BackupKeygen
         | Commands::BackupVerify { .. }
         | Commands::BackupList { .. }
         | Commands::BackupPrune { .. }

@@ -37,7 +37,7 @@ pub fn roundtrip(backup_root: &Path, manifest: &Manifest) -> Result<ValidationSt
 fn run_roundtrip(backup_root: &Path, manifest: &Manifest) -> Result<()> {
     let temp = TempDir::new()?;
     let target = temp.path().join("restored");
-    unpack_to_mosaic(backup_root, &target, &manifest.files)?;
+    unpack_to_mosaic(backup_root, &target, manifest)?;
     // Belt-and-braces: re-verify every restored file's SHA matches the
     // manifest. unpack_to_mosaic already does this for the source side;
     // this confirms the *destination* side is also correct (catches a

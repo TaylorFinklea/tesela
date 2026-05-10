@@ -30,6 +30,7 @@ use tempfile::TempDir;
 
 pub mod archive;
 pub mod destination;
+pub mod encrypt;
 pub mod error;
 pub mod manifest;
 pub mod retention;
@@ -57,6 +58,11 @@ pub struct BackupOptions {
     /// `Some(GfsPolicy::default())` for the standard 7/4/6 cadence,
     /// or `None` to skip pruning (e.g. during tests).
     pub retention: Option<GfsPolicy>,
+    /// Encryption mode. `None` (default) writes plaintext on disk.
+    /// `Age { recipient }` runs each captured file through `age` after
+    /// packing. The manifest records the recipient so restore knows
+    /// which Keychain identity to fetch.
+    pub encryption: ManifestEncryption,
 }
 
 impl Default for BackupOptions {
@@ -66,6 +72,7 @@ impl Default for BackupOptions {
             validate: true,
             extra_files: Vec::new(),
             retention: Some(GfsPolicy::default()),
+            encryption: ManifestEncryption::None,
         }
     }
 }
@@ -108,9 +115,17 @@ pub fn backup(mosaic_root: &Path, opts: BackupOptions) -> Result<BackupOutcome> 
     let mut manifest = Manifest::new(
         mosaic_root.to_path_buf(),
         opts.destination.manifest_record(),
-        ManifestEncryption::None,
+        opts.encryption.clone(),
     );
     manifest.files = entries;
+
+    // Encrypt after packing + recording plaintext SHA in the manifest.
+    // The manifest itself stays plaintext on disk so `backup-list` and
+    // `backup-verify` can read metadata without unlocking the keychain.
+    if let ManifestEncryption::Age { recipient } = &opts.encryption {
+        encrypt::encrypt_staging(&staging_root, recipient)?;
+    }
+
     manifest.write(&staging_root)?;
 
     destination::promote_atomic(&staging_root, &final_path)?;
@@ -233,7 +248,7 @@ pub fn restore(
         )));
     }
 
-    archive::unpack_to_mosaic(backup_root, &target, &manifest.files)?;
+    archive::unpack_to_mosaic(backup_root, &target, &manifest)?;
 
     Ok(RestoreOutcome {
         manifest,
@@ -349,6 +364,7 @@ mod tests {
                 validate: true,
                 extra_files: Vec::new(),
                 retention: None,
+                encryption: ManifestEncryption::None,
             },
         )
         .unwrap();
@@ -418,6 +434,59 @@ mod tests {
             BackupError::ChecksumMismatch { .. } => {}
             other => panic!("expected ChecksumMismatch, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn backup_with_encryption_round_trips() {
+        let identity = age::x25519::Identity::generate();
+        let recipient = identity.to_public().to_string();
+
+        let temp = TempDir::new().unwrap();
+        let mosaic = temp.path().join("encrypted-source");
+        make_fixture_mosaic(&mosaic).unwrap();
+
+        let outcome = backup(
+            &mosaic,
+            BackupOptions {
+                destination: Destination::Local,
+                validate: false, // would consult real Keychain otherwise
+                extra_files: Vec::new(),
+                retention: None,
+                encryption: ManifestEncryption::Age {
+                    recipient: recipient.clone(),
+                },
+            },
+        )
+        .unwrap();
+
+        // Plain notes file must be gone; .age sibling must be present.
+        assert!(!outcome.path.join("notes/2026-05-10.md").exists());
+        assert!(outcome.path.join("notes/2026-05-10.md.age").exists());
+        // Manifest stays plaintext for `backup-list` readability.
+        assert!(outcome.path.join("manifest.json").exists());
+
+        // Round-trip restore with the in-memory identity override.
+        encrypt::TEST_IDENTITY_OVERRIDE.with(|cell| {
+            *cell.borrow_mut() = Some(identity.clone());
+        });
+
+        let restored = restore(
+            &outcome.path,
+            &mosaic,
+            RestoreOptions {
+                target_override: Some(temp.path().join("restored-encrypted")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        encrypt::TEST_IDENTITY_OVERRIDE.with(|cell| {
+            *cell.borrow_mut() = None;
+        });
+
+        let plain =
+            std::fs::read_to_string(restored.target.join("notes/2026-05-10.md")).unwrap();
+        assert!(plain.contains("hello"));
     }
 
     #[test]

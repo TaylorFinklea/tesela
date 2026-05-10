@@ -1,9 +1,11 @@
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
+use crate::encrypt;
 use crate::error::{BackupError, Result};
-use crate::manifest::{sha256_file, FileEntry};
+use crate::manifest::{sha256_file, FileEntry, Manifest, ManifestEncryption};
 
 /// Subpaths inside a mosaic that we capture in a backup. Anything else is
 /// either rebuildable (the SQLite DB cache) or transient (.tesela/.lock,
@@ -96,28 +98,51 @@ pub fn add_extra_file(staging: &Path, rel: &str, source: &Path) -> Result<FileEn
 }
 
 /// Restore a backup directory's captured files into a target mosaic root.
-/// Verifies each file's SHA-256 against the manifest as it copies.
-pub fn unpack_to_mosaic(
-    backup_root: &Path,
-    target_root: &Path,
-    files: &[FileEntry],
-) -> Result<()> {
+/// Verifies each file's SHA-256 against the manifest as it copies. When
+/// the manifest says the backup is encrypted, decrypts in-memory and
+/// SHA-checks the plaintext.
+pub fn unpack_to_mosaic(backup_root: &Path, target_root: &Path, manifest: &Manifest) -> Result<()> {
     fs::create_dir_all(target_root)?;
-    for entry in files {
-        let src = backup_root.join(&entry.path);
+
+    let identity = match &manifest.encryption {
+        ManifestEncryption::None => None,
+        ManifestEncryption::Age { .. } => Some(encrypt::identity_for_manifest(manifest)?),
+    };
+
+    for entry in &manifest.files {
         let dst = target_root.join(&entry.path);
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
         }
-        let (actual_sha, _) = sha256_file(&src)?;
-        if actual_sha != entry.sha256 {
-            return Err(BackupError::ChecksumMismatch {
-                path: entry.path.clone(),
-                expected: entry.sha256.clone(),
-                actual: actual_sha,
-            });
+        match &manifest.encryption {
+            ManifestEncryption::None => {
+                let src = backup_root.join(&entry.path);
+                let (actual_sha, _) = sha256_file(&src)?;
+                if actual_sha != entry.sha256 {
+                    return Err(BackupError::ChecksumMismatch {
+                        path: entry.path.clone(),
+                        expected: entry.sha256.clone(),
+                        actual: actual_sha,
+                    });
+                }
+                fs::copy(&src, &dst)?;
+            }
+            ManifestEncryption::Age { .. } => {
+                let identity = identity.as_ref().expect("identity loaded above");
+                let plaintext = encrypt::decrypt_file_bytes(backup_root, &entry.path, identity)?;
+                let mut hasher = Sha256::new();
+                hasher.update(&plaintext);
+                let actual_sha = format!("{:x}", hasher.finalize());
+                if actual_sha != entry.sha256 {
+                    return Err(BackupError::ChecksumMismatch {
+                        path: entry.path.clone(),
+                        expected: entry.sha256.clone(),
+                        actual: actual_sha,
+                    });
+                }
+                fs::write(&dst, &plaintext)?;
+            }
         }
-        fs::copy(&src, &dst)?;
     }
     Ok(())
 }
