@@ -129,6 +129,11 @@ pub async fn update_note(
     // Single-source-of-truth so all three web write paths (KanbanBoard,
     // BottomDrawer, BlockOutliner status cycle) trigger consistently.
     let (new_content, bumps) = apply_post_save_bumps_with_info(&prev_content, &req.content, &id);
+    // Phase 12.4 — same-note dependency unblock: if a block's blocker just
+    // flipped to done and the block is currently `backlog`, advance it to
+    // `todo`. Cross-note dependencies are out of v1 scope; users can
+    // manually unblock or wait for the dependent's own save to re-evaluate.
+    let (new_content, unblocked) = apply_dependency_cycles(&prev_content, &new_content, &id);
     note.content = new_content;
     s.store.update(&note).await?;
     // Re-read to get fresh parsed metadata and checksum
@@ -162,6 +167,9 @@ pub async fn update_note(
             note_id: id.clone(),
             next_deadline: info.next_deadline,
         });
+    }
+    if !unblocked.is_empty() {
+        tracing::debug!("dependency cycles: unblocked {} block(s) in note {}", unblocked.len(), id);
     }
     Ok(Json(updated))
 }
@@ -410,6 +418,127 @@ fn detect_status_flips_to_done(prev: &str, next: &str) -> Vec<String> {
         }
     }
     flipped
+}
+
+/// Phase 12.4 — same-note dependency unblock. After the bumps applied,
+/// look for blocks that became unblocked because one of their blockers
+/// just flipped to `done` *in this PUT*. If a block's status is `backlog`
+/// and no remaining blocker is incomplete, advance it to `todo`.
+///
+/// Returns the rewritten content + the list of unblocked block ids so
+/// the caller can log them. Cross-note dependency walking is deferred —
+/// users with cross-note `blocked_by::` will see the unblock take effect
+/// the next time the dependent's own note is re-saved (or they manually
+/// edit it). v1.1 will add a reverse-index walk for cross-note unblock.
+pub fn apply_dependency_cycles(
+    prev: &str,
+    next: &str,
+    note_id: &str,
+) -> (String, Vec<String>) {
+    let flipped_to_done = detect_status_flips_to_done(prev, next);
+    if flipped_to_done.is_empty() {
+        return (next.to_string(), Vec::new());
+    }
+
+    // Map __diff__ ids → real note_id ids so the dependency check can match
+    // `<note_id>:<line>` references inside `blocked_by::` values verbatim.
+    let just_done: std::collections::HashSet<String> = flipped_to_done
+        .iter()
+        .filter_map(|id| id.rsplit_once(':').map(|(_, l)| format!("{}:{}", note_id, l)))
+        .collect();
+
+    let (_meta, body) = match parse_frontmatter(next) {
+        Ok(b) => b,
+        Err(_) => return (next.to_string(), Vec::new()),
+    };
+    let blocks = parse_blocks(note_id, &body);
+    let block_index: std::collections::HashMap<&str, &tesela_core::block::ParsedBlock> =
+        blocks.iter().map(|b| (b.id.as_str(), b)).collect();
+
+    let mut to_unblock: Vec<(String, usize)> = Vec::new();
+    for block in &blocks {
+        if block.properties.get("status").map(String::as_str) != Some("backlog") {
+            continue;
+        }
+        let Some(blocked_by_raw) = block.properties.get("blocked_by") else {
+            continue;
+        };
+        let refs: Vec<String> = blocked_by_raw
+            .split(',')
+            .map(|s| s.trim().trim_start_matches("[[").trim_end_matches("]]").to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if refs.is_empty() {
+            continue;
+        }
+        let any_changed = refs.iter().any(|r| just_done.contains(r));
+        if !any_changed {
+            continue;
+        }
+        // Recheck: are *all* blockers now done?
+        let still_blocked = refs.iter().any(|r| {
+            // Same-note ref → look up; missing or non-done → still blocked.
+            // External ref (different note id) → conservatively still blocked.
+            let target = block_index.get(r.as_str());
+            match target {
+                Some(t) => t.properties.get("status").map(String::as_str) != Some("done"),
+                None => true,
+            }
+        });
+        if !still_blocked {
+            let line = block.id.rsplit_once(':').and_then(|(_, l)| l.parse().ok()).unwrap_or(0);
+            to_unblock.push((block.id.clone(), line));
+        }
+    }
+
+    if to_unblock.is_empty() {
+        return (next.to_string(), Vec::new());
+    }
+
+    // Rewrite each unblocked block's `status:: backlog` → `status:: todo`.
+    let mut new_body = body.clone();
+    let mut unblocked_ids = Vec::new();
+    for (block_id, line) in to_unblock {
+        if let Some(rewritten) = set_status_to_todo(&new_body, line) {
+            new_body = rewritten;
+            unblocked_ids.push(block_id);
+        }
+    }
+
+    let new_content = reassemble_content(next, &body, &new_body);
+    (new_content, unblocked_ids)
+}
+
+/// Find the `status::` continuation line under the bullet at `bullet_line`
+/// and rewrite it to `status:: todo`. Idempotent on already-todo. Returns
+/// `None` when no `status::` line is found within the block's continuation
+/// range, which signals the caller to skip rather than silently mis-edit.
+fn set_status_to_todo(body: &str, bullet_line: usize) -> Option<String> {
+    let lines: Vec<&str> = body.lines().collect();
+    if bullet_line >= lines.len() {
+        return None;
+    }
+    let bullet = lines[bullet_line];
+    let bullet_indent = bullet.len() - bullet.trim_start().len();
+    let mut new_lines: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+
+    for (i, line) in lines.iter().enumerate().skip(bullet_line + 1) {
+        let trim = line.trim_start();
+        if trim.is_empty() { continue; }
+        let indent = line.len() - trim.len();
+        // End of block: indent <= bullet's, AND the line starts a new bullet.
+        if indent <= bullet_indent && (trim.starts_with("- ") || trim == "-") {
+            break;
+        }
+        if let Some(_rest) = trim.strip_prefix("status::") {
+            let prefix: String = " ".repeat(indent);
+            new_lines[i] = format!("{}status:: todo", prefix);
+            // Preserve trailing newline behavior — `lines()` strips them,
+            // and `join("\n")` rebuilds.
+            return Some(new_lines.join("\n") + if body.ends_with('\n') { "\n" } else { "" });
+        }
+    }
+    None
 }
 
 /// Parse a `deadline::` value into `(date, optional_time_suffix)`. Accepts

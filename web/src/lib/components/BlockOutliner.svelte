@@ -9,7 +9,7 @@
   import BlockEditor from "./BlockEditor.svelte";
   import QueryBlock from "./QueryBlock.svelte";
   import CollectionBlock from "./CollectionBlock.svelte";
-  import { IconChevronRight, IconChevronDown } from "@tabler/icons-svelte";
+  import { IconChevronRight, IconChevronDown, IconLock, IconChecklist } from "@tabler/icons-svelte";
   import {
     buildRegistry,
     buildInheritanceMap,
@@ -102,6 +102,53 @@
    * an empty string value are skipped entirely so the block stays
    * compact when a property is unset.
    */
+  /**
+   * Phase 12.4 — count direct subtasks (one indent deeper) and how many
+   * are done. Returns null when the block has no children with `status::`,
+   * so the rollup chip stays out of the way for non-task hierarchies.
+   * Direct children only; deeper grandchildren are intentionally excluded
+   * to keep the rollup actionable ("close these N to close the parent").
+   */
+  function subtaskRollup(block: ParsedBlock): { done: number; total: number } | null {
+    const idx = blocks.findIndex((b) => b.id === block.id);
+    if (idx < 0) return null;
+    let done = 0;
+    let total = 0;
+    for (let i = idx + 1; i < blocks.length; i++) {
+      const sub = blocks[i];
+      if (sub.indent_level <= block.indent_level) break;
+      if (sub.indent_level !== block.indent_level + 1) continue;
+      const status = sub.properties.status;
+      if (!status) continue;
+      total++;
+      if (status === "done") done++;
+    }
+    return total === 0 ? null : { done, total };
+  }
+
+  /**
+   * Phase 12.4 — true when the block has a non-empty `blocked_by::` and at
+   * least one referenced block is not yet `done`. We render a small lock
+   * indicator so the user sees at a glance which tasks are gated. The
+   * value is parsed as comma-separated block ids `<note_id>:<line>`.
+   */
+  function isBlocked(block: ParsedBlock): boolean {
+    const raw = block.properties["blocked_by"];
+    if (!raw) return false;
+    const refs = raw
+      .split(",")
+      .map((s) => s.trim().replace(/^\[\[/, "").replace(/\]\]$/, ""))
+      .filter(Boolean);
+    if (refs.length === 0) return false;
+    // Best-effort: only consider refs that resolve within the same note.
+    // Cross-note dependencies need a wider lookup that v1 doesn't ship.
+    return refs.some((ref) => {
+      const target = blocks.find((b) => b.id === ref);
+      if (!target) return true; // unresolved → conservatively treat as blocked
+      return target.properties.status !== "done";
+    });
+  }
+
   function displayChipsFor(block: ParsedBlock): Array<{ key: string; value: string; def: PropertyDefinition }> {
     const allTags = [...new Set([...block.tags, ...block.inherited_tags])];
     const seen = new Set<string>();
@@ -1210,10 +1257,33 @@
              configurable per-tag pills surfacing selected property values
              (deadline, priority, …). Drawn from each tag's `display_chips`
              frontmatter array; values come from the block's parsed
-             properties. Skipped entirely when value is empty/unset. -->
-        {#if displayChipsFor(block).length > 0}
+             properties. Skipped entirely when value is empty/unset.
+             Phase 12.4 prepends synthetic chips: subtask rollup ("3/5"),
+             blocked-by lock — both purely visual, computed from the
+             block list, no markdown footprint. -->
+        {#if subtaskRollup(block) || isBlocked(block) || displayChipsFor(block).length > 0}
+          {@const _rollup = subtaskRollup(block)}
+          {@const _blocked = isBlocked(block)}
           {@const chips = displayChipsFor(block)}
           <div class="shrink-0 flex items-center gap-1 self-center pr-1 py-1">
+            {#if _blocked}
+              <span
+                class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/10 text-amber-500/90 font-medium"
+                title="Blocked by an unfinished task"
+              >
+                <IconLock size={11} stroke={2} />
+                <span>blocked</span>
+              </span>
+            {/if}
+            {#if _rollup}
+              <span
+                class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium {_rollup.done === _rollup.total ? 'bg-emerald-500/10 text-emerald-500/90' : 'bg-muted text-muted-foreground/80'}"
+                title="{_rollup.done} of {_rollup.total} subtasks done"
+              >
+                <IconChecklist size={11} stroke={2} />
+                <span>{_rollup.done}/{_rollup.total}</span>
+              </span>
+            {/if}
             {#each chips as chip}
               <DisplayChip propKey={chip.key} value={chip.value} def={chip.def} />
             {/each}

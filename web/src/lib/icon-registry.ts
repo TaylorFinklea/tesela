@@ -29,6 +29,8 @@ import {
   IconUser,
   IconStar,
   IconRepeat,
+  IconLock,
+  IconChecklist,
 } from "@tabler/icons-svelte";
 
 // Tabler's Svelte 5 typings are still in flux (the `IconCalendar` etc.
@@ -48,6 +50,8 @@ export const TABLER_ICONS: Record<string, unknown> = {
   user: IconUser,
   star: IconStar,
   repeat: IconRepeat,
+  lock: IconLock,
+  checklist: IconChecklist,
 };
 
 /**
