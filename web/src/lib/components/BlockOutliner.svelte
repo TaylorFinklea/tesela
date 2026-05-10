@@ -11,6 +11,20 @@
   export function isLastActiveOutliner(el: HTMLElement | null): boolean {
     return !!el && el === lastActiveOutliner;
   }
+
+  // Phase 12.X — one-shot flag so cross-day j/k navigation in the journal
+  // can land on an empty block in NORMAL mode. The outliner's auto-INSERT
+  // heuristic (empty + focused + !autoFocused + !restoredFocus) would
+  // otherwise drop us into INSERT every hop, forcing j Esc j Esc j Esc.
+  let nextFocusIsCrossNav = false;
+  export function markNextFocusAsCrossNav() {
+    nextFocusIsCrossNav = true;
+  }
+  export function consumeCrossNavFocus(): boolean {
+    if (!nextFocusIsCrossNav) return false;
+    nextFocusIsCrossNav = false;
+    return true;
+  }
 </script>
 
 <script lang="ts">
@@ -1253,7 +1267,16 @@
           <BlockEditor
             initialText={block.raw_text}
             onblur={() => {}}
-            onfocus={() => { focusedIndex = vi; autoFocused = false; restoredFocus = false; setLastActiveOutliner(rootEl ?? null); }}
+            onfocus={() => {
+              focusedIndex = vi;
+              autoFocused = false;
+              // Cross-day j/k navigation arms a one-shot flag so we land
+              // in NORMAL mode on the target block; otherwise it's a
+              // user-initiated focus and the auto-INSERT-on-empty rule
+              // applies (`restoredFocus = false`).
+              restoredFocus = consumeCrossNavFocus();
+              setLastActiveOutliner(rootEl ?? null);
+            }}
             onchange={(text) => handleBlockChange(block.id, text)}
             onnavigate={handleNavigate}
             onescape={() => {}}

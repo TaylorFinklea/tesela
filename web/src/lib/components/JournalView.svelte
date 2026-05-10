@@ -19,7 +19,7 @@
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { untrack } from "svelte";
   import { api } from "$lib/api-client";
-  import BlockOutliner from "$lib/components/BlockOutliner.svelte";
+  import BlockOutliner, { markNextFocusAsCrossNav } from "$lib/components/BlockOutliner.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
   import type { Note } from "$lib/types/Note";
 
@@ -253,6 +253,10 @@
     if (cms.length === 0) return false;
     const cm = direction === "down" ? cms[0] : cms[cms.length - 1];
     cm.scrollIntoView({ block: "nearest", behavior: "auto" });
+    // Arm the cross-nav flag so the target outliner lands in NORMAL even
+    // on empty blocks (otherwise the auto-INSERT-on-empty heuristic
+    // dumps the user into INSERT after every hop).
+    markNextFocusAsCrossNav();
     cm.focus();
     return true;
   }
