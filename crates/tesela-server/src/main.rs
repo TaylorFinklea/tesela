@@ -5,15 +5,12 @@ mod routes;
 mod state;
 
 use anyhow::Result;
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use tesela_core::{
-    config::Config,
+    config::{BackupConfig, Config},
     db::SqliteIndex,
     indexer::{Indexer, NoteEvent},
     storage::filesystem::FsNoteStore,
@@ -32,16 +29,13 @@ async fn main() -> Result<()> {
 
     let mosaic = find_mosaic()?;
 
-    // Auto-backup on startup (keep last 5 daily backups)
-    auto_backup(&mosaic);
-
-    let config = Config::default();
+    let config = load_config(&mosaic);
     let db_path = mosaic.join(".tesela").join("tesela.db");
     let notes_dir = mosaic.join("notes");
     let type_registry = TypeRegistry::load(&mosaic);
     info!("Loaded {} type definitions", type_registry.types.len());
 
-    let store = Arc::new(FsNoteStore::new(mosaic, config.storage));
+    let store = Arc::new(FsNoteStore::new(mosaic.clone(), config.storage.clone()));
     let index = Arc::new(SqliteIndex::open(&db_path).await?);
 
     // Wire up the Indexer (same as TUI)
@@ -166,6 +160,10 @@ async fn main() -> Result<()> {
     let store_for_notify: Arc<dyn NoteStore> = Arc::clone(&store) as Arc<dyn NoteStore>;
     notifications::start(Arc::clone(&notifier), store_for_notify, ws_tx.clone());
 
+    let mosaic_for_shutdown = mosaic.clone();
+    let index_for_shutdown = Arc::clone(&index);
+    let backup_cfg_for_shutdown = config.backup.clone();
+
     let app_state = AppState {
         store,
         index,
@@ -179,10 +177,150 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("tesela-server listening on http://{}", addr);
 
-    axum::serve(listener, router).await?;
+    axum::serve(listener, router)
+        .with_graceful_shutdown(wait_for_shutdown_signal())
+        .await?;
 
     indexer_handle.stop().await;
+
+    // Phase 13.A.4 — auto-backup on clean shutdown. Runs after axum has
+    // drained in-flight requests and the indexer has stopped, so the
+    // mosaic is in a quiescent state. We deliberately do NOT block
+    // shutdown indefinitely if backup fails — log + move on.
+    if backup_cfg_for_shutdown.auto_on_quit {
+        match auto_backup_on_quit(&mosaic_for_shutdown, &index_for_shutdown, &backup_cfg_for_shutdown).await
+        {
+            Ok(path) => info!("Auto-backup on shutdown: {}", path.display()),
+            Err(e) => warn!("Auto-backup on shutdown failed: {}", e),
+        }
+    }
+
     Ok(())
+}
+
+/// Resolves when the OS asks us to shut down (SIGINT or SIGTERM). On
+/// non-Unix only ctrl_c is wired; SIGTERM-equivalent handling would
+/// need platform-specific code we don't ship.
+async fn wait_for_shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            warn!("Failed to install ctrl_c handler: {}", e);
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(e) => {
+                warn!("Failed to install SIGTERM handler: {}", e);
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    info!("Shutdown signal received");
+}
+
+async fn auto_backup_on_quit(
+    mosaic: &std::path::Path,
+    index: &Arc<SqliteIndex>,
+    cfg: &BackupConfig,
+) -> Result<PathBuf> {
+    // Pre-stage the SQLite VACUUM INTO snapshot in-process while we
+    // still hold the live index handle.
+    let snapshot = tempfile::Builder::new()
+        .prefix("tesela-vacuum-")
+        .suffix(".db")
+        .tempfile()?;
+    let snap_path = snapshot.path().to_path_buf();
+    index.vacuum_into(&snap_path).await?;
+
+    let mosaic_owned = mosaic.to_path_buf();
+    let cfg = cfg.clone();
+    let snap_path_for_blocking = snap_path.clone();
+
+    // tesela_backup is sync; offload to a blocking task so we don't
+    // stall the runtime while git + sha hashing run.
+    let outcome = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let destination = if let Some(remote) = cfg.git_remote.as_ref() {
+            let branch = cfg.git_branch.clone().unwrap_or_else(|| "main".to_string());
+            let mirror = mosaic_owned.join(".tesela").join("backups").join(".git-mirror");
+            tesela_backup::Destination::Git {
+                remote: remote.clone(),
+                branch,
+                local_mirror: mirror,
+            }
+        } else if let Some(path) = cfg.external_path.as_ref() {
+            tesela_backup::Destination::External { path: path.clone() }
+        } else {
+            tesela_backup::Destination::Local
+        };
+
+        // Encrypt if destination is non-local and a keypair exists.
+        let encryption = match &destination {
+            tesela_backup::Destination::Local => tesela_backup::ManifestEncryption::None,
+            _ => match tesela_backup::encrypt::load_identity_for_mosaic(&mosaic_owned)
+                .map_err(|e| anyhow::anyhow!("{}", e))?
+            {
+                Some(id) => tesela_backup::ManifestEncryption::Age {
+                    recipient: id.to_public().to_string(),
+                },
+                None => {
+                    // No keypair — emit a warning but don't refuse to
+                    // back up. Non-local destinations would be
+                    // plaintext, which is suboptimal but better than
+                    // failing the shutdown hook silently.
+                    tracing::warn!(
+                        "No age identity in Keychain for this mosaic; non-local backup will be unencrypted"
+                    );
+                    tesela_backup::ManifestEncryption::None
+                }
+            },
+        };
+
+        let outcome = tesela_backup::backup(
+            &mosaic_owned,
+            tesela_backup::BackupOptions {
+                destination,
+                validate: true,
+                extra_files: vec![(".tesela/tesela.db".to_string(), snap_path_for_blocking)],
+                retention: Some(tesela_backup::GfsPolicy::default()),
+                encryption,
+            },
+        )
+        .map_err(|e| anyhow::anyhow!("{}", e))?;
+        Ok(outcome)
+    })
+    .await??;
+
+    drop(snapshot);
+    Ok(outcome.path)
+}
+
+fn load_config(mosaic: &std::path::Path) -> Config {
+    let path = mosaic.join(".tesela").join("config.toml");
+    if !path.exists() {
+        return Config::default();
+    }
+    match Config::load(&path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            warn!(
+                "Failed to read {}: {}; falling back to defaults",
+                path.display(),
+                e
+            );
+            Config::default()
+        }
+    }
 }
 
 fn find_mosaic() -> Result<PathBuf> {
@@ -198,64 +336,3 @@ fn find_mosaic() -> Result<PathBuf> {
     anyhow::bail!("No mosaic found. Run 'tesela init' first.")
 }
 
-/// Auto-backup on server startup. Creates a daily backup of notes/.
-/// Only creates one backup per day. Keeps last 5 daily backups.
-fn auto_backup(mosaic: &Path) {
-    let notes_dir = mosaic.join("notes");
-    if !notes_dir.exists() {
-        return;
-    }
-
-    let backup_root = mosaic.join(".tesela").join("backups");
-    if std::fs::create_dir_all(&backup_root).is_err() {
-        warn!("Failed to create backup directory");
-        return;
-    }
-
-    let today = chrono::Local::now().format("%Y%m%d").to_string();
-    let backup_dir = backup_root.join(format!("daily-{}", today));
-
-    // Skip if today's backup already exists
-    if backup_dir.exists() {
-        info!("Today's backup already exists: {}", backup_dir.display());
-        return;
-    }
-
-    // Copy notes/ recursively
-    if let Err(e) = copy_dir_recursive(&notes_dir, &backup_dir) {
-        warn!("Auto-backup failed: {}", e);
-        return;
-    }
-
-    info!("Auto-backup created: {}", backup_dir.display());
-
-    // Clean old backups (keep last 5)
-    if let Ok(entries) = std::fs::read_dir(&backup_root) {
-        let mut backups: Vec<_> = entries
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_name().to_string_lossy().starts_with("daily-"))
-            .collect();
-        backups.sort_by_key(|e| e.file_name());
-        let total = backups.len();
-        if total > 5 {
-            for entry in backups.into_iter().take(total - 5) {
-                let _ = std::fs::remove_dir_all(entry.path());
-            }
-        }
-    }
-}
-
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            std::fs::copy(&src_path, &dst_path)?;
-        }
-    }
-    Ok(())
-}

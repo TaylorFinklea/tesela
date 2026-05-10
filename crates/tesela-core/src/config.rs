@@ -21,6 +21,9 @@ pub struct Config {
     pub editor: EditorConfig,
     /// Search configuration
     pub search: SearchConfig,
+    /// Backup configuration (Phase 13)
+    #[serde(default)]
+    pub backup: BackupConfig,
 }
 
 /// General application settings
@@ -103,6 +106,36 @@ pub struct EditorConfig {
     pub auto_close_brackets: bool,
     /// Spell check
     pub spell_check: bool,
+}
+
+/// Backup configuration. All fields optional — defaults make the
+/// auto-on-quit hook fire to a local backup directory with GFS pruning.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupConfig {
+    /// Take a backup when tesela-server receives a clean shutdown
+    /// signal (SIGTERM / SIGINT).
+    pub auto_on_quit: bool,
+    /// Optional git remote (e.g. `git@github.com:me/backups.git`).
+    /// When set, the auto-on-quit backup is pushed here. Encryption
+    /// is always ON for git destinations.
+    pub git_remote: Option<String>,
+    /// Branch for the git destination. Default `main`.
+    pub git_branch: Option<String>,
+    /// Optional external directory for backups (e.g. an iCloud Drive
+    /// path). When set and `git_remote` is not, auto-backup writes
+    /// here instead of the in-mosaic `.tesela/backups/`.
+    pub external_path: Option<PathBuf>,
+}
+
+impl Default for BackupConfig {
+    fn default() -> Self {
+        Self {
+            auto_on_quit: true,
+            git_remote: None,
+            git_branch: None,
+            external_path: None,
+        }
+    }
 }
 
 /// Search configuration
