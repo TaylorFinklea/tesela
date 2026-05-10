@@ -12,6 +12,8 @@ tesela-core = { path = "../tesela-core" }
 tesela-plugins = { path = "../tesela-plugins" }
 tesela-backup = { path = "../tesela-backup" }
 tempfile = { workspace = true }
+walkdir = { workspace = true }
+sha2 = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 anyhow = { workspace = true }

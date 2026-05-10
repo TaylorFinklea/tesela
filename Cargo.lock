@@ -3336,6 +3336,7 @@ dependencies = [
  "indicatif",
  "predicates",
  "regex",
+ "sha2",
  "tempfile",
  "tesela-backup",
  "tesela-core",
@@ -3343,6 +3344,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "walkdir",
 ]
 
 [[package]]

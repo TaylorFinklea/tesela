@@ -5,6 +5,7 @@ use std::sync::Arc;
 use tesela_core::traits::plugin::PluginRegistry;
 
 mod import_logseq;
+mod import_obsidian;
 use tesela_core::{
     config::Config,
     daily::DailyNoteConfig,
@@ -163,6 +164,15 @@ enum Commands {
     /// Import notes from a LogSeq graph
     ImportLogseq {
         /// Path to the LogSeq graph directory (containing journals/ and pages/)
+        #[arg(long)]
+        source: PathBuf,
+        /// Dry run — show what would be imported without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Import notes from an Obsidian vault
+    ImportObsidian {
+        /// Path to the vault root
         #[arg(long)]
         source: PathBuf,
         /// Dry run — show what would be imported without writing
@@ -963,6 +973,10 @@ async fn main() -> Result<()> {
         return import_logseq::run(&mosaic, source, dry_run).await;
     }
 
+    if let Commands::ImportObsidian { source, dry_run } = cli.command {
+        return import_obsidian::run(&mosaic, source, dry_run).await;
+    }
+
     let ctx = Ctx::new(mosaic).await?;
 
     match cli.command {
@@ -977,7 +991,8 @@ async fn main() -> Result<()> {
         | Commands::BackupPrune { .. }
         | Commands::Restore { .. }
         | Commands::Export { .. }
-        | Commands::ImportLogseq { .. } => unreachable!(),
+        | Commands::ImportLogseq { .. }
+        | Commands::ImportObsidian { .. } => unreachable!(),
         Commands::New {
             title,
             tags,
