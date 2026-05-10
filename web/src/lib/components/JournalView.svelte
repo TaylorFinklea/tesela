@@ -306,9 +306,12 @@
   .journal-meta { font-family: var(--v9-mono); font-size: 11px; color: var(--v9-ink-faint); padding: 12px 0; }
   /* Line above the date, à la Logseq's daily journal — divider sits in
      the gap, date title immediately follows. First section has no rule
-     so the page doesn't open with a stray top border. */
-  .day { padding-top: 14px; border-top: 1px solid var(--v9-line); }
+     so the page doesn't open with a stray top border.
+     Padding-bottom gives ~3 blocks of breathing room after the last
+     entry; users who want to focus on a single day can drill into it. */
+  .day { padding-top: 14px; padding-bottom: 80px; border-top: 1px solid var(--v9-line); }
   .day:first-child { border-top: 0; padding-top: 0; }
+  .day:last-child { padding-bottom: 0; }
   .day-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
   .day-title { font-family: var(--v9-display, var(--v9-sans)); font-size: 18px; font-weight: 600; letter-spacing: -0.01em; color: var(--foreground); }
   .day.is-today .day-title { color: var(--primary); }
