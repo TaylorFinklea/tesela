@@ -252,7 +252,17 @@
     const cms = day.querySelectorAll<HTMLElement>(".cm-editor .cm-content");
     if (cms.length === 0) return false;
     const cm = direction === "down" ? cms[0] : cms[cms.length - 1];
-    cm.scrollIntoView({ block: "nearest", behavior: "auto" });
+    // Going up, the target is the day above. Scroll its header into view
+    // first so the date label stays visible — otherwise the cursor lands
+    // flush against the viewport top and the day-head is cut off above.
+    // Going down is fine with `nearest` because the cm-content sits below
+    // its day-head, so the header is already in the scrolled-past region.
+    if (direction === "up") {
+      const head = day.querySelector<HTMLElement>(".day-head");
+      (head ?? day).scrollIntoView({ block: "start", behavior: "auto" });
+    } else {
+      cm.scrollIntoView({ block: "nearest", behavior: "auto" });
+    }
     // Arm the cross-nav flag so the target outliner lands in NORMAL even
     // on empty blocks (otherwise the auto-INSERT-on-empty heuristic
     // dumps the user into INSERT after every hop).
