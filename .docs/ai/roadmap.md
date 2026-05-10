@@ -388,17 +388,19 @@ Closing the gaps that slice 2 left open. Status as of 2026-05-09:
 
 Out of scope still: shared lists, attachments, sub-reminders (12.4 handles Tesela-side hierarchy first), multi-account, Reminders categories outside Tasks.
 
-#### 12.2 — Recurring tasks & events
+#### 12.2 — Recurring tasks & events ✅ shipped
 
-`recurring::` block property storing an rrule-subset string. On `status:: done`, the engine auto-creates the next occurrence and may move the original to a `completed_at::` archive. Forms:
-- `recurring:: daily`
-- `recurring:: weekly` (same DOW), `recurring:: every 2 weeks`
-- `recurring:: monthly` (same DOM, clamped), `recurring:: every 3 months`
-- `recurring:: weekdays`, `recurring:: weekends`
-- `recurring:: every monday, wednesday, friday`
-- `recurring:: yearly` (anniversary)
+`recurring::` block property storing an rrule-subset string. On `status:: done`, the engine bumps `deadline::` to the next occurrence in place (Apple-style; one block ↔ one item for life), flips `status::` back to `todo`, and stamps `last_completed::` with the prior date. Shipped forms:
+- `recurring:: daily` / `every day`
+- `recurring:: weekly` / `every week`, `recurring:: every 2 weeks`
+- `recurring:: monthly` / `every month`, `recurring:: every 3 months`
+- `recurring:: yearly` / `annually` / `every year`, `recurring:: every 2 years`
+- `recurring:: weekdays` (Mon–Fri; from Fri/Sat/Sun → next Mon)
+- `recurring:: every N days`
 
-Backend: recurrence engine in `tesela-core` (RFC 5545 rrule subset). Frontend: NL parser recognizes "every monday", "weekly"; DatePicker shows a "repeat" sub-row; chip displays "May 8 · weekly". Mirrors Apple Reminders' recurrence shape so 12.1 sync round-trips correctly.
+Backend: pure `tesela_core::recurrence` (`parse` + `next_after`) with day-of-month clamping (Jan 31 + monthly → Feb 28/29) and Feb 29 leap handling. `apply_post_save_bumps` in `update_note` auto-detects status flips to `done` and rewrites the block transparently — no client-side trigger needed. Explicit `POST /api/blocks/recur-bump` exists for debugging. Frontend: `parseRecurrenceInput` mirrors the Rust parser; DatePicker has a "repeat" sub-row (none / daily / weekly / monthly / yearly / weekdays / custom); BottomDrawer commit writes `recurring::` alongside `deadline::`; `recurring.md` Property page renders the chip via the existing display-chips system. Mirrors Apple Reminders' recurrence shape so 12.1 sync round-trips correctly. Live-tested 2026-05-09 via PUT to `/notes/{id}` — flipping `status:: done` on `recurring:: monthly` produced the expected bumped deadline + `last_completed::` stamp.
+
+Deferred to 12.2.x: BYDAY sets like `every monday, wednesday, friday`; `until` / `count` end conditions; "skip this occurrence"; recurring on `scheduled::` instead of `deadline::`; `weekends` keyword.
 
 #### 12.3 — Notifications
 
