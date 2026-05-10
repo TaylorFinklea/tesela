@@ -32,6 +32,7 @@ pub mod archive;
 pub mod destination;
 pub mod encrypt;
 pub mod error;
+pub mod git;
 pub mod manifest;
 pub mod retention;
 pub mod validate;
@@ -97,6 +98,19 @@ pub fn backup(mosaic_root: &Path, opts: BackupOptions) -> Result<BackupOutcome> 
 
     let _lock = MosaicLock::acquire(mosaic_root)?;
 
+    // For git destinations the mirror must exist before we resolve
+    // paths so `resolve_target` lands the staging-final inside a real
+    // repo, not a bare directory we then have to git-init after the
+    // fact.
+    if let Destination::Git {
+        remote,
+        branch,
+        local_mirror,
+    } = &opts.destination
+    {
+        git::ensure_mirror(local_mirror, remote, branch)?;
+    }
+
     let backup_name = format!("backup-{}", Local::now().format("%Y%m%d-%H%M%S"));
     let final_path = opts.destination.resolve_target(mosaic_root, &backup_name)?;
 
@@ -153,6 +167,18 @@ pub fn backup(mosaic_root: &Path, opts: BackupOptions) -> Result<BackupOutcome> 
     } else {
         PruneOutcome::default()
     };
+
+    // After the directory is on disk + retention has run, push the
+    // mirror upstream. This happens *after* validation so we never
+    // publish a failed backup.
+    if let Destination::Git {
+        branch,
+        local_mirror,
+        ..
+    } = &opts.destination
+    {
+        git::commit_and_push(local_mirror, branch, &backup_name)?;
+    }
 
     Ok(BackupOutcome {
         path: final_path,

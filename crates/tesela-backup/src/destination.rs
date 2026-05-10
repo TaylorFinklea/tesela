@@ -4,8 +4,10 @@ use std::path::{Path, PathBuf};
 use crate::error::{BackupError, Result};
 use crate::manifest::ManifestDestination;
 
-/// Where a backup ends up. v1 ships Local + External; Git is reserved
-/// for a follow-up commit (Phase 13.A.3).
+/// Where a backup ends up. Local + External + Git are all dated
+/// subdirectories under a single "destination root" — the only thing
+/// that differs is *where* that root lives and what happens *after*
+/// the directory is written (push to git, etc).
 #[derive(Debug, Clone)]
 pub enum Destination {
     /// `<mosaic>/.tesela/backups/`
@@ -13,8 +15,15 @@ pub enum Destination {
     /// User-supplied directory (could be iCloud Drive, an external SSD,
     /// or any path the user wants).
     External { path: PathBuf },
-    /// Git remote (push commits). Not yet implemented in this commit.
-    Git { remote: String, branch: String },
+    /// Git remote. We maintain a working repo at `local_mirror` and
+    /// push each backup commit upstream. Restore reads back from the
+    /// mirror (or a fresh clone of the remote) — there's no
+    /// streaming-from-network path.
+    Git {
+        remote: String,
+        branch: String,
+        local_mirror: PathBuf,
+    },
 }
 
 impl Destination {
@@ -26,9 +35,7 @@ impl Destination {
                 .join("backups")
                 .join(backup_name)),
             Destination::External { path } => Ok(path.join(backup_name)),
-            Destination::Git { .. } => Err(BackupError::UnsupportedDestination(
-                "git destination not yet implemented (Phase 13.A.3)".to_string(),
-            )),
+            Destination::Git { local_mirror, .. } => Ok(local_mirror.join(backup_name)),
         }
     }
 
@@ -37,9 +44,7 @@ impl Destination {
         match self {
             Destination::Local => Ok(mosaic_root.join(".tesela").join("backups")),
             Destination::External { path } => Ok(path.clone()),
-            Destination::Git { .. } => Err(BackupError::UnsupportedDestination(
-                "git destination not yet implemented (Phase 13.A.3)".to_string(),
-            )),
+            Destination::Git { local_mirror, .. } => Ok(local_mirror.clone()),
         }
     }
 
@@ -49,7 +54,7 @@ impl Destination {
                 path: PathBuf::from(".tesela/backups"),
             },
             Destination::External { path } => ManifestDestination::External { path: path.clone() },
-            Destination::Git { remote, branch } => ManifestDestination::Git {
+            Destination::Git { remote, branch, .. } => ManifestDestination::Git {
                 remote: remote.clone(),
                 branch: branch.clone(),
             },

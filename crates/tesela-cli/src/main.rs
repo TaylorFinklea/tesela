@@ -102,10 +102,19 @@ enum Commands {
         /// External output directory (defaults to <mosaic>/.tesela/backups/).
         /// When set, the backup is encrypted with the mosaic's age identity
         /// (run `tesela backup-keygen` first if one doesn't exist yet).
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with = "git_remote")]
         output: Option<PathBuf>,
+        /// Push to a configured git remote (e.g. `git@github.com:me/backups.git`).
+        /// Maintains a local mirror at <mosaic>/.tesela/backups/.git-mirror/
+        /// and pushes each backup as a commit. Encryption is always ON for
+        /// git destinations.
+        #[arg(long)]
+        git_remote: Option<String>,
+        /// Branch name for git destination (defaults to `main`).
+        #[arg(long, default_value = "main")]
+        git_branch: String,
         /// Force encryption on local backups too (default: encrypt only when
-        /// `--output` points outside the mosaic).
+        /// `--output` points outside the mosaic, or always when `--git-remote`).
         #[arg(long)]
         encrypt: bool,
         /// Skip the post-write round-trip validation. Off by default —
@@ -415,6 +424,8 @@ async fn cmd_export(ctx: &Ctx, query: String, format: String) -> Result<()> {
 async fn cmd_backup(
     mosaic: &Path,
     output: Option<PathBuf>,
+    git_remote: Option<String>,
+    git_branch: String,
     force_encrypt: bool,
     validate: bool,
     prune: bool,
@@ -449,9 +460,20 @@ async fn cmd_backup(
         None
     };
 
-    let (destination, encrypt_default) = match output {
-        Some(path) => (tesela_backup::Destination::External { path }, true),
-        None => (tesela_backup::Destination::Local, false),
+    let (destination, encrypt_default) = if let Some(remote) = git_remote {
+        let mirror = mosaic.join(".tesela").join("backups").join(".git-mirror");
+        (
+            tesela_backup::Destination::Git {
+                remote,
+                branch: git_branch,
+                local_mirror: mirror,
+            },
+            true,
+        )
+    } else if let Some(path) = output {
+        (tesela_backup::Destination::External { path }, true)
+    } else {
+        (tesela_backup::Destination::Local, false)
     };
     let should_encrypt = force_encrypt || encrypt_default;
     let encryption = if should_encrypt {
@@ -823,12 +845,23 @@ async fn main() -> Result<()> {
     // Handle backup — needs mosaic path but not a full Ctx
     if let Commands::Backup {
         output,
+        git_remote,
+        git_branch,
         encrypt,
         no_validate,
         no_prune,
     } = cli.command
     {
-        return cmd_backup(&mosaic, output, encrypt, !no_validate, !no_prune).await;
+        return cmd_backup(
+            &mosaic,
+            output,
+            git_remote,
+            git_branch,
+            encrypt,
+            !no_validate,
+            !no_prune,
+        )
+        .await;
     }
 
     if matches!(cli.command, Commands::BackupKeygen) {
