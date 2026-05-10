@@ -979,10 +979,18 @@
     }
   });
 
-  // Keep the global vim context pointing to whichever block is currently focused.
-  // This lets the module-level vim actions (registered once) always target the right block.
-  $effect(() => {
-    if (!focused || !view) return;
+  // Keep the global vim context pointing to whichever block is currently
+  // focused. This used to live in a $effect on the `focused` prop, but
+  // that prop is set by the parent BlockOutliner from `focusedIndex === vi`
+  // — and in the journal view, every day's outliner auto-sets
+  // `focusedIndex = 0` on mount, so EVERY day's vi=0 BlockEditor thought
+  // `focused === true`. The last to flush its effect (the bottom-most day,
+  // Friday April 10) won the vimCtx race, and pressing j/k advanced *its*
+  // focusedIndex — which then triggered its `view.focus()` effect and
+  // snapped DOM focus to that day. Wiring vimCtx in the actual DOM focus
+  // event ensures it follows the editor the user is really in.
+  function wireVimCtx() {
+    if (!view) return;
     vimCtx.view = view;
     vimCtx.navigate = onNavigate ?? null;
     vimCtx.leader = onLeader ?? null;
@@ -1007,10 +1015,10 @@
     vimCtx.redoOutliner = onRedoOutliner ?? null;
     vimCtx.beginInsertSession = onBeginInsertSession ?? null;
     vimCtx.endInsertSession = onEndInsertSession ?? null;
-    return () => {
-      if (vimCtx.view === view) vimCtx.view = null;
-    };
-  });
+  }
+  function clearVimCtxIfMine() {
+    if (vimCtx.view === view) vimCtx.view = null;
+  }
 
   onMount(() => {
     const theme = EditorView.theme({
@@ -1026,8 +1034,8 @@
     });
 
     const focusBlurHandler = EditorView.domEventHandlers({
-      focus: () => { onFocus?.(); return false; },
-      blur: () => { if (!showSlashMenu) onBlur(); return false; },
+      focus: () => { wireVimCtx(); onFocus?.(); return false; },
+      blur: () => { clearVimCtxIfMine(); if (!showSlashMenu) onBlur(); return false; },
       // Phase 9.5b — wiki-link click navigates via gotoNote when vim is in
       // NORMAL mode. INSERT mode falls through so the click places the cursor.
       // Modifier-click also falls through so cmd/ctrl+click can open a new tab.
