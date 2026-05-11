@@ -144,7 +144,9 @@
     <div class="flex gap-2">
       <input
         type="text"
-        placeholder="/Users/you/Documents/My New Mosaic"
+        placeholder={current?.suggested_root
+          ? `${current.suggested_root}/my-new-mosaic`
+          : "/path/to/new/mosaic"}
         bind:value={newPath}
         class="flex-1 text-[12px] bg-muted/50 rounded-md px-3 py-2 text-foreground/90 font-mono outline-none border border-transparent focus:border-ring/30"
       />

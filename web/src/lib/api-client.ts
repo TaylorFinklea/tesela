@@ -160,6 +160,8 @@ export interface CurrentMosaicResponse {
   path: string;
   config_path: string;
   config_default_mosaic: string | null;
+  /** Parent directory the UI uses to suggest new-mosaic paths. */
+  suggested_root: string;
 }
 export interface CreateMosaicRequest {
   path: string;

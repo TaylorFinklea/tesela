@@ -5,7 +5,10 @@ mod routes;
 mod state;
 
 use anyhow::Result;
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio::sync::broadcast;
 use tracing::{info, warn};
 
@@ -26,6 +29,14 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    // One-shot config migration: older builds wrote config to
+    // ~/Library/Application Support/tesela/config.toml on macOS via
+    // `dirs::config_dir()`. New default is the XDG path. If the new
+    // path is empty but the old one is populated, move it.
+    if let Ok(Some(moved_to)) = Config::migrate_legacy_config() {
+        info!("Migrated user config to XDG path: {}", moved_to.display());
+    }
 
     let mosaic = find_mosaic()?;
 
@@ -325,15 +336,68 @@ fn load_config(mosaic: &std::path::Path) -> Config {
 }
 
 fn find_mosaic() -> Result<PathBuf> {
-    let mut dir = std::env::current_dir()?;
-    loop {
-        if dir.join(".tesela").exists() {
-            return Ok(dir);
-        }
-        if !dir.pop() {
-            break;
+    // 1. Explicit env override — CI / dev scripts / power users.
+    if let Ok(env) = std::env::var("TESELA_DEFAULT_MOSAIC") {
+        let p = PathBuf::from(env);
+        if p.join(".tesela").exists() {
+            return Ok(p);
         }
     }
-    anyhow::bail!("No mosaic found. Run 'tesela init' first.")
+
+    // 2. Cwd-walk: if the user is *inside* a mosaic dir, that's the
+    // strongest "use this" signal short of an env var. Wins over the
+    // saved config default so dev work in a sibling mosaic doesn't
+    // require flipping config.
+    if let Ok(start) = std::env::current_dir() {
+        let mut dir = start;
+        loop {
+            if dir.join(".tesela").exists() {
+                return Ok(dir);
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
+    }
+
+    // 3. Config-persisted default_mosaic (written by the Mosaic
+    // Settings UI's "Switch" button).
+    let config_path = Config::default_path();
+    if config_path.exists() {
+        if let Ok(cfg) = Config::load(&config_path) {
+            if let Some(p) = cfg.general.default_mosaic {
+                if p.join(".tesela").exists() {
+                    return Ok(p);
+                }
+            }
+        }
+    }
+
+    // 4. Fall back to the standard per-OS data dir. Auto-initialize
+    // it on first launch so a fresh user gets a working server
+    // without having to run `tesela init` first.
+    let default = Config::default_mosaic_path();
+    if !default.join(".tesela").exists() {
+        info!(
+            "No mosaic found; auto-initializing at {}",
+            default.display()
+        );
+        ensure_blank_mosaic(&default)?;
+    }
+    Ok(default)
+}
+
+/// Mirror of `tesela init` minus the SQLite open (which needs async).
+/// The caller does the SQLite open via `SqliteIndex::open` immediately
+/// after, which will create the database file if missing.
+fn ensure_blank_mosaic(path: &Path) -> Result<()> {
+    std::fs::create_dir_all(path.join(".tesela"))?;
+    std::fs::create_dir_all(path.join("notes"))?;
+    std::fs::create_dir_all(path.join("attachments"))?;
+    let cfg_path = path.join(".tesela").join("config.toml");
+    if !cfg_path.exists() {
+        Config::default().save(&cfg_path)?;
+    }
+    Ok(())
 }
 

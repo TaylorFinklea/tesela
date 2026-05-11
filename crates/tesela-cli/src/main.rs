@@ -244,35 +244,69 @@ impl Ctx {
 }
 
 fn resolve_mosaic(cli_arg: Option<PathBuf>) -> Result<PathBuf> {
+    // Migrate older config location if needed (best-effort).
+    let _ = Config::migrate_legacy_config();
+
     if let Some(p) = cli_arg {
         return Ok(p);
+    }
+
+    // Resolution order matches the server's find_mosaic for
+    // consistency: env → cwd-walk → config default → standard
+    // fallback. Cwd-walk wins over config default so being inside a
+    // mosaic dir overrides the saved preference.
+    if let Ok(env) = std::env::var("TESELA_DEFAULT_MOSAIC") {
+        let p = PathBuf::from(env);
+        if p.join(".tesela").exists() {
+            return Ok(p);
+        }
+    }
+
+    if let Ok(start) = std::env::current_dir() {
+        let mut dir = start;
+        loop {
+            if dir.join(".tesela").exists() {
+                return Ok(dir);
+            }
+            if !dir.pop() {
+                break;
+            }
+        }
     }
 
     let config_path = Config::default_path();
     if config_path.exists() {
         if let Ok(config) = Config::load(&config_path) {
             if let Some(mosaic) = config.general.default_mosaic {
-                return Ok(mosaic);
+                if mosaic.join(".tesela").exists() {
+                    return Ok(mosaic);
+                }
             }
         }
     }
 
-    // Walk up from current dir looking for .tesela/
-    let mut dir = std::env::current_dir()?;
-    loop {
-        if dir.join(".tesela").exists() {
-            return Ok(dir);
-        }
-        if !dir.pop() {
-            break;
-        }
+    // Final fallback: the per-OS standard mosaic location. CLI does
+    // NOT auto-init here — explicit `tesela init` is the way to
+    // create a mosaic from the command line. Server auto-inits in
+    // the equivalent fallback (different module, intentional split).
+    let default = Config::default_mosaic_path();
+    if default.join(".tesela").exists() {
+        return Ok(default);
     }
 
-    anyhow::bail!("No mosaic found. Run 'tesela init' or specify --mosaic")
+    anyhow::bail!(
+        "No mosaic found. Run `tesela init` (will create one at {}) or pass --mosaic <path>",
+        default.display()
+    )
 }
 
 async fn cmd_init(path: Option<PathBuf>) -> Result<()> {
-    let root = path.unwrap_or_else(|| std::env::current_dir().unwrap());
+    // No path → use the per-OS standard mosaic location instead of
+    // cwd. Cwd-init was the old default; it's almost never what
+    // first-time users want (they end up with a mosaic embedded in
+    // whatever directory they happened to be in). Pass `.` to opt
+    // into cwd explicitly.
+    let root = path.unwrap_or_else(Config::default_mosaic_path);
     let tesela_dir = root.join(".tesela");
     std::fs::create_dir_all(&tesela_dir)?;
     std::fs::create_dir_all(root.join("notes"))?;

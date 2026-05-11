@@ -322,16 +322,81 @@ impl Config {
         Ok(())
     }
 
-    /// Get the default config file path
+    /// Get the default config file path.
+    ///
+    /// Always XDG-style — `~/.config/tesela/config.toml` — even on
+    /// macOS where `dirs::config_dir()` would otherwise return
+    /// `~/Library/Application Support`. Tesela's config is small + the
+    /// kind of file users sync via dotfiles, so it lives next to other
+    /// CLI configs. (Mosaic *data* still uses the platform's data dir
+    /// — see `default_mosaic_path` below.)
+    ///
+    /// On the first read that finds the new path missing but the old
+    /// platform-dir path present, callers should migrate. See
+    /// `legacy_config_path` for that side.
     pub fn default_path() -> PathBuf {
-        dirs::config_dir()
-            .map(|p| p.join("tesela").join("config.toml"))
-            .unwrap_or_else(|| PathBuf::from("tesela.toml"))
+        match dirs::home_dir() {
+            Some(home) => home.join(".config").join("tesela").join("config.toml"),
+            None => PathBuf::from("tesela.toml"),
+        }
+    }
+
+    /// Pre-XDG location used by older builds (and `dirs::config_dir()`
+    /// fallback). Kept so we can migrate a user's existing config on
+    /// startup without losing their `default_mosaic` setting.
+    pub fn legacy_config_path() -> Option<PathBuf> {
+        dirs::config_dir().map(|p| p.join("tesela").join("config.toml"))
     }
 
     /// Get the config directory
     pub fn config_dir() -> Option<PathBuf> {
-        dirs::config_dir().map(|p| p.join("tesela"))
+        dirs::home_dir().map(|h| h.join(".config").join("tesela"))
+    }
+
+    /// Best-effort migration of the config file from the old
+    /// platform-config-dir location to the XDG-style location. Returns
+    /// `Ok(Some(new_path))` if a migration happened, `Ok(None)` if no
+    /// migration was needed.
+    pub fn migrate_legacy_config() -> Result<Option<PathBuf>> {
+        let new_path = Self::default_path();
+        if new_path.exists() {
+            return Ok(None);
+        }
+        let Some(old_path) = Self::legacy_config_path() else {
+            return Ok(None);
+        };
+        if old_path == new_path || !old_path.exists() {
+            return Ok(None);
+        }
+        if let Some(parent) = new_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        // Move, not copy — leaving the old file behind is just
+        // confusing (which one is authoritative?).
+        fs::rename(&old_path, &new_path).map_err(|e| TeselaError::Io(e))?;
+        Ok(Some(new_path))
+    }
+
+    /// Standard location for the *default* mosaic — used when the
+    /// user has no `default_mosaic` configured, no `TESELA_DEFAULT_MOSAIC`
+    /// env var, and no `.tesela/` walked-up from cwd.
+    ///
+    /// - macOS:   `~/Library/Application Support/tesela/default`
+    /// - Linux:   `~/.local/share/tesela/default`
+    /// - Windows: `%APPDATA%/tesela/default`
+    pub fn default_mosaic_path() -> PathBuf {
+        dirs::data_dir()
+            .map(|p| p.join("tesela").join("default"))
+            .unwrap_or_else(|| PathBuf::from("tesela-default-mosaic"))
+    }
+
+    /// Parent directory that holds all of Tesela's mosaics (default
+    /// plus any named ones the user creates). The Mosaic settings UI
+    /// uses this when suggesting paths for new mosaics.
+    pub fn mosaic_root_dir() -> PathBuf {
+        dirs::data_dir()
+            .map(|p| p.join("tesela"))
+            .unwrap_or_else(|| PathBuf::from("tesela"))
     }
 }
 

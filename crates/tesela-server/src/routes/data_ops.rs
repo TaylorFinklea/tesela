@@ -713,6 +713,11 @@ pub struct CurrentMosaicResponse {
     pub path: String,
     pub config_path: String,
     pub config_default_mosaic: Option<String>,
+    /// Parent directory under which new mosaics should be created by
+    /// default (`~/Library/Application Support/tesela/` on macOS,
+    /// `~/.local/share/tesela/` on Linux, `%APPDATA%/tesela/` on
+    /// Windows). The UI uses this to pre-fill new-mosaic paths.
+    pub suggested_root: String,
 }
 
 pub async fn get_current_mosaic(
@@ -732,6 +737,7 @@ pub async fn get_current_mosaic(
         path: state.mosaic_root.to_string_lossy().into_owned(),
         config_path: config_path.to_string_lossy().into_owned(),
         config_default_mosaic: config_default,
+        suggested_root: Config::mosaic_root_dir().to_string_lossy().into_owned(),
     }))
 }
 
