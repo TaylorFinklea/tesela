@@ -129,12 +129,12 @@
   }
 </script>
 
-<div class="flex-1 flex flex-col">
+<div class="flex-1 flex flex-col min-h-0">
   <header class="border-b border-border px-5 h-11 flex items-center shrink-0">
     <h1 class="text-[13px] font-semibold tracking-tight">Settings</h1>
   </header>
 
-  <div class="flex-1 overflow-y-auto">
+  <div class="flex-1 overflow-y-auto min-h-0">
     <div class="max-w-lg mx-auto py-8 px-6 space-y-8">
 
       <!-- Font size -->
