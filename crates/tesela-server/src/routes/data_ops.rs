@@ -508,6 +508,85 @@ pub async fn import_org(
         .map(Json)
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(default)]
+pub struct PickFolderRequest {
+    /// Optional prompt label shown in the dialog title.
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PickFolderResponse {
+    /// `null` when the user canceled the dialog.
+    pub path: Option<String>,
+}
+
+/// macOS-only: open Finder's "Choose Folder" dialog via osascript and
+/// return the picked POSIX path. Returns `path: null` when the user
+/// canceled. Used by the web Settings UI so users don't have to type
+/// import-source paths by hand.
+///
+/// Linux/Windows builds return 501 — those platforms would need
+/// zenity / native dialog libraries we don't ship.
+pub async fn pick_folder(
+    Json(req): Json<PickFolderRequest>,
+) -> Result<Json<PickFolderResponse>, (StatusCode, String)> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = req;
+        return Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "folder picker is macOS-only in this build".to_string(),
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let prompt = req
+            .prompt
+            .clone()
+            .unwrap_or_else(|| "Pick a folder".to_string());
+        // Bring the calling process to the foreground so the dialog
+        // appears on top of whatever the user is currently looking at,
+        // not buried behind their browser.
+        let escaped = prompt.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            "tell application \"System Events\" to activate\n\
+             POSIX path of (choose folder with prompt \"{}\")",
+            escaped
+        );
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("osascript")
+                .arg("-e")
+                .arg(&script)
+                .output()
+        })
+        .await
+        .map_err(internal)?
+        .map_err(internal_io)?;
+
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout)
+                .trim_end_matches('\n')
+                .trim_end_matches('/')
+                .to_string();
+            Ok(Json(PickFolderResponse { path: Some(path) }))
+        } else {
+            // exit code 1 + "User canceled. (-128)" is the cancel
+            // path. Any other failure surfaces the stderr to the UI.
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if stderr.contains("User canceled") || stderr.contains("(-128)") {
+                Ok(Json(PickFolderResponse { path: None }))
+            } else {
+                Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("osascript: {}", stderr.trim()),
+                ))
+            }
+        }
+    }
+}
+
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
 }

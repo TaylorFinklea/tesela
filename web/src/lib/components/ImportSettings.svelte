@@ -7,8 +7,29 @@
   let source = $state("");
   let dryRun = $state(true);
   let running = $state(false);
+  let picking = $state(false);
   let result = $state<ImportResponse | null>(null);
   let error = $state<string | null>(null);
+
+  async function pickFolder() {
+    if (picking) return;
+    picking = true;
+    error = null;
+    try {
+      const label =
+        kind === "obsidian"
+          ? "Pick an Obsidian vault folder"
+          : kind === "logseq"
+            ? "Pick a Logseq graph folder"
+            : "Pick a folder containing .org files";
+      const res = await api.pickFolder(label);
+      if (res.path) source = res.path;
+    } catch (e: any) {
+      error = e?.message ?? `${e}`;
+    } finally {
+      picking = false;
+    }
+  }
 
   async function runImport() {
     if (!source.trim()) {
@@ -51,16 +72,26 @@
           onclick={() => (kind = opt.id as Kind)}>{opt.label}</button>
       {/each}
     </div>
-    <input
-      type="text"
-      placeholder={kind === "obsidian"
-        ? "/Users/you/Documents/MyVault"
-        : kind === "logseq"
-          ? "/Users/you/Documents/Logseq-Graph"
-          : "/Users/you/org-roam"}
-      bind:value={source}
-      class="w-full text-[12px] bg-muted/50 rounded-md px-3 py-2 text-foreground/90 font-mono outline-none border border-transparent focus:border-ring/30"
-    />
+    <div class="flex gap-2">
+      <input
+        type="text"
+        placeholder={kind === "obsidian"
+          ? "/Users/you/Documents/MyVault"
+          : kind === "logseq"
+            ? "/Users/you/Documents/Logseq-Graph"
+            : "/Users/you/org-roam"}
+        bind:value={source}
+        class="flex-1 text-[12px] bg-muted/50 rounded-md px-3 py-2 text-foreground/90 font-mono outline-none border border-transparent focus:border-ring/30"
+      />
+      <button
+        class="px-3 py-1.5 rounded-md text-[12px] border border-border/50 hover:bg-muted/40 hover:text-foreground transition-colors disabled:opacity-50"
+        disabled={picking}
+        onclick={pickFolder}
+        title="Browse for a folder using Finder"
+      >
+        {picking ? "…" : "Browse…"}
+      </button>
+    </div>
     <label class="flex items-center gap-2 cursor-pointer text-[12px]">
       <input type="checkbox" bind:checked={dryRun} class="accent-primary" />
       <span class="text-muted-foreground/80">Dry run (don't write files)</span>

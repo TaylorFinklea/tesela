@@ -141,6 +141,11 @@ export const api = {
     post<ImportResponse>("/imports/logseq", { source, dry_run }),
   importOrg: (source: string, dry_run = false) =>
     post<ImportResponse>("/imports/org", { source, dry_run }),
+
+  /** Open a native folder picker on the server's machine (macOS only).
+   *  Returns `path: null` when the user cancels. */
+  pickFolder: (prompt?: string) =>
+    post<{ path: string | null }>("/pick-folder", { prompt: prompt ?? null }),
 };
 
 export interface BackupSummary {

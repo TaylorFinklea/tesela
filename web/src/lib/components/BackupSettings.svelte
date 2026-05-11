@@ -25,6 +25,20 @@
   let busyRow = $state<string | null>(null);
   let rowMessages = $state<Record<string, string>>({});
 
+  let pickingExternal = $state(false);
+  async function pickExternalFolder() {
+    if (pickingExternal) return;
+    pickingExternal = true;
+    try {
+      const res = await api.pickFolder("Pick an external backup folder");
+      if (res.path) externalPath = res.path;
+    } catch (e: any) {
+      runError = e?.message ?? `${e}`;
+    } finally {
+      pickingExternal = false;
+    }
+  }
+
   async function refreshList() {
     try {
       backups = await api.listBackups();
@@ -201,12 +215,22 @@
     </div>
 
     {#if destination === "external"}
-      <input
-        type="text"
-        placeholder="/Users/you/Library/Mobile Documents/com~apple~CloudDocs/TeselaBackups"
-        bind:value={externalPath}
-        class="w-full text-[12px] bg-muted/50 rounded-md px-3 py-2 text-foreground/90 font-mono outline-none border border-transparent focus:border-ring/30"
-      />
+      <div class="flex gap-2">
+        <input
+          type="text"
+          placeholder="/Users/you/Library/Mobile Documents/com~apple~CloudDocs/TeselaBackups"
+          bind:value={externalPath}
+          class="flex-1 text-[12px] bg-muted/50 rounded-md px-3 py-2 text-foreground/90 font-mono outline-none border border-transparent focus:border-ring/30"
+        />
+        <button
+          class="px-3 py-1.5 rounded-md text-[12px] border border-border/50 hover:bg-muted/40 hover:text-foreground transition-colors disabled:opacity-50"
+          disabled={pickingExternal}
+          onclick={pickExternalFolder}
+          title="Browse for a backup destination folder using Finder"
+        >
+          {pickingExternal ? "…" : "Browse…"}
+        </button>
+      </div>
     {:else if destination === "git"}
       <div class="flex gap-2">
         <input

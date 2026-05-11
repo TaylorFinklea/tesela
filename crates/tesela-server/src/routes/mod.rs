@@ -66,6 +66,7 @@ pub fn build(state: AppState) -> Router {
         .route("/imports/obsidian", post(data_ops::import_obsidian))
         .route("/imports/logseq", post(data_ops::import_logseq))
         .route("/imports/org", post(data_ops::import_org))
+        .route("/pick-folder", post(data_ops::pick_folder))
         .route("/ws", get(ws::ws_handler))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
