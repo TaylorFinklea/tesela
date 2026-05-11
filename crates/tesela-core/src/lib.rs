@@ -12,6 +12,7 @@ pub mod query;
 pub mod recurrence;
 pub mod regex_cache;
 pub mod storage;
+pub mod system_widgets;
 pub mod tag;
 pub mod traits;
 pub mod types;

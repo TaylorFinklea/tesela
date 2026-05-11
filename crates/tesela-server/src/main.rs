@@ -40,6 +40,17 @@ async fn main() -> Result<()> {
 
     let mosaic = find_mosaic()?;
 
+    // Idempotent system-widget backfill: every mosaic startup ensures
+    // the default rail widgets exist. Catches the case where a mosaic
+    // was created on an older binary (no seed call) or the user
+    // deleted a widget. Won't overwrite user edits — `seed` only
+    // creates missing files.
+    match tesela_core::system_widgets::seed(&mosaic) {
+        Ok(0) => {}
+        Ok(n) => info!("Seeded {} missing system widget(s) in {}", n, mosaic.display()),
+        Err(e) => warn!("System widget seed failed at {}: {}", mosaic.display(), e),
+    }
+
     let config = load_config(&mosaic);
     let db_path = mosaic.join(".tesela").join("tesela.db");
     let notes_dir = mosaic.join("notes");
@@ -397,6 +408,11 @@ fn ensure_blank_mosaic(path: &Path) -> Result<()> {
     let cfg_path = path.join(".tesela").join("config.toml");
     if !cfg_path.exists() {
         Config::default().save(&cfg_path)?;
+    }
+    // Seed the default system widgets so the rail nav is populated
+    // from the very first request. Idempotent — preserves user edits.
+    if let Err(e) = tesela_core::system_widgets::seed(path) {
+        warn!("Failed to seed system widgets at {}: {}", path.display(), e);
     }
     Ok(())
 }

@@ -865,7 +865,9 @@ pub async fn create_mosaic(
         ));
     }
 
-    // Init layout mirrors crates/tesela-cli/src/main.rs::cmd_init.
+    // Init layout mirrors crates/tesela-cli/src/main.rs::cmd_init,
+    // plus seeds the default system widgets so the rail nav is
+    // populated from the very first request after a switch.
     let init_path = path.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let tesela_dir = init_path.join(".tesela");
@@ -873,6 +875,7 @@ pub async fn create_mosaic(
         std::fs::create_dir_all(init_path.join("notes"))?;
         std::fs::create_dir_all(init_path.join("attachments"))?;
         Config::default().save(&tesela_dir.join("config.toml"))?;
+        tesela_core::system_widgets::seed(&init_path)?;
         Ok(())
     })
     .await

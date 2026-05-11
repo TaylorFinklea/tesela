@@ -323,7 +323,20 @@ async fn cmd_init(path: Option<PathBuf>) -> Result<()> {
         .await
         .context("Failed to initialize database")?;
 
-    println!("Initialized mosaic at {}", root.display());
+    // Seed the default rail widgets (Dailies, Pages, Tasks, …) so the
+    // first-launch UX isn't an empty rail. Idempotent.
+    let seeded = tesela_core::system_widgets::seed(&root)
+        .context("Failed to seed system widgets")?;
+
+    println!(
+        "Initialized mosaic at {}{}",
+        root.display(),
+        if seeded > 0 {
+            format!(" (seeded {} widget pages)", seeded)
+        } else {
+            String::new()
+        }
+    );
     Ok(())
 }
 

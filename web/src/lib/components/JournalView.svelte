@@ -118,6 +118,42 @@
   // Visible window — start with 30 most recent, expand on scroll.
   const PAGE = 30;
   let visibleCount = $state(PAGE);
+
+  // Virtual mounting: only sections that have entered the viewport
+  // (or are explicit anchor/today) actually mount a BlockOutliner.
+  // Without this, 30+ cm-editor instances stand up on every Dailies
+  // load — easily 2-5s of frozen UI on large imported graphs. Once a
+  // section mounts we keep it mounted; unmounting would risk losing
+  // in-flight edits.
+  let mountedSections = $state<Set<string>>(new Set());
+  function mountAction(node: HTMLElement, noteId: string) {
+    if (mountedSections.has(noteId)) return {};
+    const obs = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) {
+            mountedSections.add(noteId);
+            mountedSections = new Set(mountedSections);
+            obs.disconnect();
+            break;
+          }
+        }
+      },
+      { rootMargin: "800px" },
+    );
+    obs.observe(node);
+    return { destroy: () => obs.disconnect() };
+  }
+  function shouldStartMounted(noteTitle: string): boolean {
+    return noteTitle === todayStr || noteTitle === anchorDate;
+  }
+  /// Force-mount a day section (used by cross-day j/k navigation so
+  /// the target day's BlockOutliner can be focused after a tick).
+  function ensureMounted(noteId: string) {
+    if (mountedSections.has(noteId)) return;
+    mountedSections.add(noteId);
+    mountedSections = new Set(mountedSections);
+  }
   // Always include the anchor in the visible window even if it's past the
   // current paging horizon.
   const visibleDailies = $derived.by((): Note[] => {
@@ -307,10 +343,26 @@
         return;
       }
       const target = days[nextIdx] as HTMLElement;
+      const dailyId = target.getAttribute("data-daily");
+
+      // If the target day is still a virtualization placeholder (no
+      // cm-editor mounted), force it to upgrade and retry focus next
+      // frame once the editor exists.
+      const targetNote = dailyId && dailies.find((n) => n.title === dailyId);
+      if (targetNote && !mountedSections.has(targetNote.id)) {
+        ensureMounted(targetNote.id);
+        const tryFocus = (attempts: number) => {
+          if (focusCmInDay(target, direction)) return;
+          if (attempts <= 0) return;
+          requestAnimationFrame(() => tryFocus(attempts - 1));
+        };
+        requestAnimationFrame(() => tryFocus(30));
+        return;
+      }
+
       if (focusCmInDay(target, direction)) return;
       // Empty target — backfill a trailing empty bullet so it has a
       // landing spot, then focus once the re-render mounts the cm-editor.
-      const dailyId = target.getAttribute("data-daily");
       if (!dailyId) return;
       void ensureTrailingEmpty(dailyId).then(() => {
         const tryFocus = (attempts: number) => {
@@ -376,7 +428,14 @@
       {@const split = splitContent(note.content)}
       {@const isToday = note.title === todayStr}
       {@const isAnchor = note.title === anchorDate}
-      <section class="day" data-daily={note.title} class:is-today={isToday} class:is-anchor={isAnchor}>
+      {@const isMounted = mountedSections.has(note.id) || shouldStartMounted(note.title)}
+      <section
+        class="day"
+        data-daily={note.title}
+        class:is-today={isToday}
+        class:is-anchor={isAnchor}
+        use:mountAction={note.id}
+      >
         <header class="day-head">
           <h2 class="day-title">{formatDate(note.title)}</h2>
           {#if isToday}
@@ -384,14 +443,30 @@
           {/if}
           <span class="day-year">{formatYear(note.title)}</span>
         </header>
-        <BlockOutliner
-          noteId={note.id}
-          body={split.body}
-          frontmatter={split.frontmatter}
-          onContentChange={(content) => handleContentChange(note.id, content)}
-          onCancelAndFlush={(content) => cancelAndFlush(note.id, content)}
-          onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
-        />
+        {#if isMounted}
+          <BlockOutliner
+            noteId={note.id}
+            body={split.body}
+            frontmatter={split.frontmatter}
+            onContentChange={(content) => handleContentChange(note.id, content)}
+            onCancelAndFlush={(content) => cancelAndFlush(note.id, content)}
+            onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
+          />
+        {:else}
+          <!-- Cheap preview until the section scrolls near the viewport.
+               No cm-editor is mounted yet — keeps initial paint fast on
+               large imported journals (e.g. 459 Logseq dailies). -->
+          <div class="day-placeholder">
+            {#each split.body.split("\n").slice(0, 6) as line}
+              {#if line.trim().length > 0}
+                <div class="placeholder-line">{line.replace(/^\s*-\s?/, "• ")}</div>
+              {/if}
+            {/each}
+            {#if split.body.split("\n").length > 6}
+              <div class="placeholder-more">…</div>
+            {/if}
+          </div>
+        {/if}
       </section>
     {/each}
     {#if hasMore}
@@ -431,4 +506,30 @@
     cursor: pointer;
   }
   .journal-load-more:hover { border-color: var(--primary); color: var(--primary); }
+  /* Placeholder rendered for off-screen day sections — keeps the
+     date header visible (and the row clickable / scrollable-to) while
+     avoiding the cost of mounting a CodeMirror editor for every
+     imported day. Each line is just plain text, scaled to roughly
+     match the editor's typography. */
+  .day-placeholder {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-height: 60px;
+    padding-left: 20px;
+    color: var(--v9-ink-2, var(--muted-foreground));
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .placeholder-line {
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    max-width: 100%;
+  }
+  .placeholder-more { color: var(--v9-ink-faint); font-size: 11px; }
 </style>
