@@ -39,9 +39,7 @@ pub fn parse(input: &str) -> Option<Recurrence> {
 
     // "every N <unit>" — `N` defaults to 1 if absent ("every day" already matched above).
     if let Some(rest) = s.strip_prefix("every ") {
-        let mut parts = rest.splitn(2, ' ');
-        let n_str = parts.next()?;
-        let unit = parts.next()?;
+        let (n_str, unit) = rest.split_once(' ')?;
         let n: u32 = n_str.parse().ok()?;
         if n == 0 {
             return None;

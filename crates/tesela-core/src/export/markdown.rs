@@ -20,9 +20,10 @@ use walkdir::WalkDir;
 use crate::error::{Result, TeselaError};
 
 /// Which export shape to produce.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MarkdownMode {
     /// Byte-exact, round-trippable.
+    #[default]
     Full,
     /// Lossy, opens cleanly in Obsidian/Logseq.
     Portable,
@@ -32,12 +33,6 @@ pub enum MarkdownMode {
 pub struct ExportOptions {
     pub mode: MarkdownMode,
     pub include_attachments: bool,
-}
-
-impl Default for MarkdownMode {
-    fn default() -> Self {
-        Self::Full
-    }
 }
 
 #[derive(Debug, Default, Clone)]

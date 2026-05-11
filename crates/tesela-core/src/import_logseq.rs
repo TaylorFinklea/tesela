@@ -71,22 +71,17 @@ pub enum PlanKind {
     HardSkip,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Decision {
     /// Don't touch the target.
+    #[default]
     Skip,
     /// Replace the target with the imported content.
     Overwrite,
     /// Write to a sibling path with the given suffix appended to the
     /// note id, e.g. suffix="-imported" → `<id>-imported.md`.
     Rename { suffix: String },
-}
-
-impl Default for Decision {
-    fn default() -> Self {
-        Self::Skip
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]

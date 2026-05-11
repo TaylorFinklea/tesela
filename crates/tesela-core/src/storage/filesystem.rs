@@ -281,7 +281,7 @@ impl NoteStore for FsNoteStore {
         }
 
         // Sort by modified_at descending
-        notes.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+        notes.sort_by_key(|note| std::cmp::Reverse(note.modified_at));
 
         Ok(notes.into_iter().skip(offset).take(limit).collect())
     }

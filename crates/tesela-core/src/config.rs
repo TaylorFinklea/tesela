@@ -373,7 +373,7 @@ impl Config {
         }
         // Move, not copy — leaving the old file behind is just
         // confusing (which one is authoritative?).
-        fs::rename(&old_path, &new_path).map_err(|e| TeselaError::Io(e))?;
+        fs::rename(&old_path, &new_path).map_err(TeselaError::Io)?;
         Ok(Some(new_path))
     }
 

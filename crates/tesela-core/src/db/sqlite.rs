@@ -1176,7 +1176,7 @@ fn apply_sort(items: &mut [crate::query::QueryItem], sort: Option<&str>) {
     });
 }
 
-fn field<'a>(item: &'a crate::query::QueryItem, key: &str) -> String {
+fn field(item: &crate::query::QueryItem, key: &str) -> String {
     match key {
         "title" => item.title.to_ascii_lowercase(),
         "text" => item.text.to_ascii_lowercase(),
