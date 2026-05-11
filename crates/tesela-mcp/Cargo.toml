@@ -10,6 +10,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "tesela-mcp"
 path = "src/main.rs"
+bench = false
 
 [dependencies]
 tesela-core = { path = "../tesela-core" }

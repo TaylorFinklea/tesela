@@ -6,6 +6,9 @@ edition = "2021"
 [[bin]]
 name = "tesela-server"
 path = "src/main.rs"
+# Skip the bin's libtest pass during `cargo bench` so criterion's
+# `--save-baseline` flag isn't intercepted by an unrelated harness.
+bench = false
 
 [dependencies]
 tesela-core = { path = "../tesela-core" }

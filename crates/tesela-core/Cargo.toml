@@ -3,6 +3,11 @@ name = "tesela-core"
 version = "0.1.0"
 edition = "2021"
 
+# Skip the lib's libtest pass during `cargo bench` so criterion's
+# `--save-baseline` flag isn't intercepted by an unrelated harness.
+[lib]
+bench = false
+
 [dependencies]
 thiserror.workspace = true
 serde.workspace = true

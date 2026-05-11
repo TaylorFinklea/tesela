@@ -1383,7 +1383,16 @@
     // a re-read of the prop here to flip from false to true and incorrectly
     // drop us into Insert on undo/redo restores. The snapshot makes the
     // decision sticky to mount time.
-    if (focused) {
+    //
+    // The `!autoFocused` gate matches the gate on the reactive $effect
+    // a few hundred lines up. Parent's auto-focus path (focusedIndex=0
+    // on mount of a freshly visible day section) sets `autoFocused=true`
+    // to mean "decorative only — don't take keyboard focus." Without
+    // this gate, view.focus() below fires the focus DOM event → parent's
+    // onfocus flips autoFocused=false → the $effect re-evaluates and
+    // sees startInInsert=true for an empty block → lands the user in
+    // INSERT on a block they navigated into via cross-day j/k.
+    if (focused && !autoFocused) {
       const shouldStartInInsert = startInInsert;
       requestAnimationFrame(() => {
         if (!view) return;

@@ -6,6 +6,7 @@ edition = "2021"
 [[bin]]
 name = "tesela"
 path = "src/main.rs"
+bench = false
 
 [dependencies]
 tesela-core = { path = "../tesela-core" }
