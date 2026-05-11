@@ -5,7 +5,9 @@
 use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
-use tesela_backup::{backup, restore, BackupOptions, Destination, ManifestEncryption, RestoreOptions};
+use tesela_backup::{
+    backup, restore, BackupOptions, Destination, ManifestEncryption, RestoreOptions,
+};
 
 fn git_available() -> bool {
     Command::new("git")
@@ -105,8 +107,7 @@ fn backup_pushes_to_bare_remote_then_restore_pulls_back() {
     .expect("restore from git-cloned backup");
 
     let original = std::fs::read(mosaic.join("notes/2026-05-10.md")).unwrap();
-    let restored_bytes =
-        std::fs::read(restored.target.join("notes/2026-05-10.md")).unwrap();
+    let restored_bytes = std::fs::read(restored.target.join("notes/2026-05-10.md")).unwrap();
     assert_eq!(original, restored_bytes);
 }
 
@@ -185,9 +186,5 @@ fn second_backup_reuses_mirror_and_appends_commit() {
         .trim()
         .parse()
         .unwrap();
-    assert!(
-        count >= 2,
-        "expected ≥2 commits in mirror, got {}",
-        count
-    );
+    assert!(count >= 2, "expected ≥2 commits in mirror, got {}", count);
 }

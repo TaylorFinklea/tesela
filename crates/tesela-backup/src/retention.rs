@@ -57,7 +57,7 @@ pub fn prune_gfs(backup_root: &Path, policy: GfsPolicy, dry_run: bool) -> Result
             candidates.push((path, ts));
         }
     }
-    candidates.sort_by(|a, b| b.1.cmp(&a.1));
+    candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.1));
 
     let mut kept = Vec::new();
     let mut keep_set = std::collections::HashSet::new();

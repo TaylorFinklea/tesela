@@ -188,6 +188,7 @@ pub fn backup(mosaic_root: &Path, opts: BackupOptions) -> Result<BackupOutcome> 
 }
 
 /// Options for `restore()`.
+#[derive(Default)]
 pub struct RestoreOptions {
     /// `false` (default): restore into a sibling `<mosaic>-restored/`.
     /// `true`: replace the current mosaic in place (after renaming the
@@ -200,16 +201,6 @@ pub struct RestoreOptions {
     /// Allow restoring a backup written by a *newer* tesela than this
     /// binary. Off by default — refuse rather than silently corrupt.
     pub allow_newer: bool,
-}
-
-impl Default for RestoreOptions {
-    fn default() -> Self {
-        Self {
-            in_place: false,
-            target_override: None,
-            allow_newer: false,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -313,7 +304,7 @@ pub fn list(destination_root: &Path) -> Result<Vec<(PathBuf, Manifest)>> {
             }
         }
     }
-    out.sort_by(|a, b| b.1.created_at.cmp(&a.1.created_at));
+    out.sort_by_key(|entry| std::cmp::Reverse(entry.1.created_at));
     Ok(out)
 }
 
