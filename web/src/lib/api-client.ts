@@ -117,7 +117,95 @@ export const api = {
   remindersPull: () => post<RemindersPullOutcome>("/sync/reminders/pull", {}),
   remindersSync: () => post<RemindersSyncOutcome>("/sync/reminders", {}),
   remindersStatus: () => get<RemindersLastSync>("/sync/reminders/status"),
+
+  // Phase 13 — backup / export / import
+  listBackups: () => get<BackupSummary[]>("/backups"),
+  runBackup: (opts: RunBackupRequest) =>
+    post<RunBackupResponse>("/backups", opts),
+  verifyBackup: (name: string) =>
+    post<BackupValidation>(`/backups/${encodeURIComponent(name)}/verify`, {}),
+  restoreBackup: (name: string, opts: { in_place?: boolean; allow_newer?: boolean } = {}) =>
+    post<BackupRestoreResponse>(`/backups/${encodeURIComponent(name)}/restore`, opts),
+  pruneBackups: (dry_run = false) =>
+    post<BackupPruneResponse>("/backups/prune", { dry_run }),
+  backupKeygen: () => post<{ recipient: string }>("/backups/keygen", {}),
+  backupKeyStatus: () => get<BackupKeyStatus>("/backups/key-status"),
+  getBackupConfig: () => get<BackupConfigDto>("/backup-config"),
+  putBackupConfig: (cfg: BackupConfigDto) => put<BackupConfigDto>("/backup-config", cfg),
+
+  runExport: (opts: { out_path: string; mode: "full" | "portable"; include_attachments?: boolean }) =>
+    post<ExportResponse>("/export", opts),
+  importObsidian: (source: string, dry_run = false) =>
+    post<ImportResponse>("/imports/obsidian", { source, dry_run }),
+  importLogseq: (source: string, dry_run = false) =>
+    post<ImportResponse>("/imports/logseq", { source, dry_run }),
+  importOrg: (source: string, dry_run = false) =>
+    post<ImportResponse>("/imports/org", { source, dry_run }),
 };
+
+export interface BackupSummary {
+  name: string;
+  path: string;
+  created_at: string;
+  destination_kind: "local" | "external" | "git";
+  encryption_kind: "none" | "age";
+  file_count: number;
+  validated: boolean | null;
+  validated_at: string | null;
+}
+export interface RunBackupRequest {
+  destination: "local" | "external" | "git";
+  external_path?: string;
+  git_remote?: string;
+  git_branch?: string;
+  encrypt?: boolean;
+  no_validate?: boolean;
+  no_prune?: boolean;
+}
+export interface RunBackupResponse {
+  path: string;
+  file_count: number;
+  validated: boolean;
+  validation_note: string | null;
+}
+export interface BackupValidation {
+  ok: boolean;
+  elapsed_ms: number;
+  checked_at: string;
+  note: string | null;
+}
+export interface BackupRestoreResponse {
+  target: string;
+  renamed_previous: string | null;
+  file_count: number;
+}
+export interface BackupPruneResponse {
+  kept: string[];
+  removed: string[];
+  dry_run: boolean;
+}
+export interface BackupKeyStatus {
+  exists: boolean;
+  recipient: string | null;
+}
+export interface BackupConfigDto {
+  auto_on_quit: boolean;
+  external_path: string | null;
+  git_remote: string | null;
+  git_branch: string | null;
+}
+export interface ExportResponse {
+  note_count: number;
+  attachment_count: number;
+  stripped_property_count: number;
+  out_path: string;
+}
+export interface ImportResponse {
+  kind: string;
+  success: boolean;
+  stdout: string;
+  stderr: string;
+}
 
 export interface RemindersPushOutcome {
   created: string[];

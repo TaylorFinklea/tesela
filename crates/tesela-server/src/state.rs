@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -8,6 +9,7 @@ use tesela_core::{db::SqliteIndex, storage::filesystem::FsNoteStore, types::Type
 use crate::reminders::auto::AutoSync;
 
 pub struct AppState {
+    pub mosaic_root: PathBuf,
     pub store: Arc<FsNoteStore>,
     pub index: Arc<SqliteIndex>,
     pub ws_tx: broadcast::Sender<WsEvent>,

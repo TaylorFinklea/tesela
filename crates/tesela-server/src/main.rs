@@ -165,6 +165,7 @@ async fn main() -> Result<()> {
     let backup_cfg_for_shutdown = config.backup.clone();
 
     let app_state = AppState {
+        mosaic_root: mosaic_for_shutdown.clone(),
         store,
         index,
         ws_tx,

@@ -5,6 +5,9 @@
   import { prefs, type BulletStyle } from "$lib/preferences.svelte";
   import { runRemindersSync } from "$lib/reminders-sync";
   import { api, type RemindersLastSync } from "$lib/api-client";
+  import BackupSettings from "$lib/components/BackupSettings.svelte";
+  import ExportSettings from "$lib/components/ExportSettings.svelte";
+  import ImportSettings from "$lib/components/ImportSettings.svelte";
   import {
     isEnabled as isNotifyEnabled,
     setEnabled as setNotifyEnabled,
@@ -241,6 +244,15 @@
         {/if}
         <p class="text-[11px] text-muted-foreground/40 mt-1.5">Server scans deadlines every minute. Default lead: 1h before deadline, on-time for scheduled.</p>
       </section>
+
+      <!-- Phase 13 — Backups -->
+      <BackupSettings />
+
+      <!-- Phase 13 — Export -->
+      <ExportSettings />
+
+      <!-- Phase 13 — Import -->
+      <ImportSettings />
 
       <!-- Apple Reminders sync -->
       <section>

@@ -1,4 +1,5 @@
 mod calendar;
+mod data_ops;
 mod history;
 mod notes;
 mod search;
@@ -50,6 +51,21 @@ pub fn build(state: AppState) -> Router {
         .route("/types/{name}/nodes", get(types::list_typed_nodes))
         .route("/types/{name}/blocks", get(types::list_typed_blocks))
         .route("/properties", get(types::list_properties))
+        // Phase 13 — backup/export/import management (drives the web Settings UI)
+        .route("/backups", get(data_ops::list_backups).post(data_ops::run_backup))
+        .route("/backups/{name}/verify", post(data_ops::verify_backup))
+        .route("/backups/{name}/restore", post(data_ops::restore_backup))
+        .route("/backups/prune", post(data_ops::prune_backups))
+        .route("/backups/keygen", post(data_ops::keygen))
+        .route("/backups/key-status", get(data_ops::key_status))
+        .route(
+            "/backup-config",
+            get(data_ops::get_backup_config).put(data_ops::put_backup_config),
+        )
+        .route("/export", post(data_ops::run_export))
+        .route("/imports/obsidian", post(data_ops::import_obsidian))
+        .route("/imports/logseq", post(data_ops::import_logseq))
+        .route("/imports/org", post(data_ops::import_org))
         .route("/ws", get(ws::ws_handler))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))
