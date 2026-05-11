@@ -262,11 +262,21 @@ export function isVimEnabled(): boolean {
   }
 }
 
+// Route-driven auto-close (e.g. Settings): we remember the user's
+// persisted preference and route-suppress without overwriting it.
+// `forcedClosed` is in-memory only so a refresh + nav back returns to
+// the user's last actual choice.
+let forcedClosed = $state(false);
+
 export function isBottomDrawerOpen(): boolean {
+  if (forcedClosed) return false;
   return bottomDrawerOpen;
 }
 
 export function setBottomDrawerOpen(v: boolean) {
+  // A user action releases the route-driven suppression. If they
+  // explicitly want it open on Settings, honor that.
+  forcedClosed = false;
   bottomDrawerOpen = v;
   saveBottomOpen(v);
   if (!v && activeRegion === "bottom") {
@@ -275,7 +285,18 @@ export function setBottomDrawerOpen(v: boolean) {
 }
 
 export function toggleBottomDrawer() {
-  setBottomDrawerOpen(!bottomDrawerOpen);
+  setBottomDrawerOpen(!isBottomDrawerOpen());
+}
+
+/// Suppress the drawer while a route says it shouldn't be visible
+/// (e.g. Settings). The user's persisted open/close preference is
+/// preserved; we just hide it for the duration.
+export function setDrawerRouteSuppressed(suppress: boolean) {
+  if (forcedClosed === suppress) return;
+  forcedClosed = suppress;
+  if (suppress && activeRegion === "bottom") {
+    activeRegion = "focus";
+  }
 }
 
 export function getBottomTab(): BottomTab {

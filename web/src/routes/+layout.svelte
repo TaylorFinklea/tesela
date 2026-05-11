@@ -25,6 +25,7 @@
     isBottomDrawerOpen,
     toggleBottomDrawer,
     setBottomDrawerOpen,
+    setDrawerRouteSuppressed,
     getVSplitActiveSide,
     setVSplitActiveSide,
     adjustVSplitRatio,
@@ -125,6 +126,16 @@
   // and query-result row click call `gotoNote()` (which writes `?back=`).
   // Rail clicks and ⌘K palette picks are plain SvelteKit navigations that
   // replace the focus area full-screen. No global drill interceptor.
+
+  // Auto-collapse the bottom drawer on routes where it has nothing to do
+  // (Settings is the obvious one — it has no per-note context to surface
+  // in Backlinks/Properties/etc). Suppression is ephemeral: when the user
+  // navigates away, their persisted drawer preference is restored. An
+  // explicit `b` (toggleBottomDrawer) overrides the route suppression.
+  const ROUTE_NO_DRAWER = /^\/settings(\/|$)/;
+  $effect(() => {
+    setDrawerRouteSuppressed(ROUTE_NO_DRAWER.test(page.url.pathname));
+  });
 
   onMount(() => {
     connect();
