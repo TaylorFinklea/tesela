@@ -135,6 +135,7 @@ impl MosaicBuilder {
         // Seed the default rail widgets so the synthetic mosaic feels
         // like a real one in `tesela tui` etc.
         let widgets_seeded = tesela_core::system_widgets::seed(root)? as i64;
+        seed_builtin_type_pages(root)?;
 
         let mut rng = rng(self.seed);
         let notes_dir = root.join("notes");
@@ -248,6 +249,31 @@ impl MosaicBuilder {
             widgets: widgets_seeded as usize,
         })
     }
+}
+
+fn seed_builtin_type_pages(root: &Path) -> Result<()> {
+    let notes_dir = root.join("notes");
+    fs::write(
+        notes_dir.join("task.md"),
+        "---\ntitle: \"Task\"\ntype: \"Tag\"\nextends: \"Root Tag\"\nicon: \"☑\"\ntag_properties: [\"Status\", \"Priority\", \"Deadline\", \"Scheduled\"]\ntags: []\n---\n- Task tag page.\n",
+    )?;
+    fs::write(
+        notes_dir.join("status.md"),
+        "---\ntitle: \"Status\"\ntype: \"Property\"\nvalue_type: \"select\"\nchoices: [\"backlog\", \"todo\", \"doing\", \"in-review\", \"done\", \"canceled\"]\ndefault: \"todo\"\ntags: []\n---\n- Status property.\n",
+    )?;
+    fs::write(
+        notes_dir.join("priority.md"),
+        "---\ntitle: \"Priority\"\ntype: \"Property\"\nvalue_type: \"select\"\nchoices: [\"critical\", \"high\", \"medium\", \"low\"]\ndefault: \"medium\"\ntags: []\n---\n- Priority property.\n",
+    )?;
+    fs::write(
+        notes_dir.join("deadline.md"),
+        "---\ntitle: \"Deadline\"\ntype: \"Property\"\nvalue_type: \"date\"\ntags: []\n---\n- Deadline property.\n",
+    )?;
+    fs::write(
+        notes_dir.join("scheduled.md"),
+        "---\ntitle: \"Scheduled\"\ntype: \"Property\"\nvalue_type: \"date\"\ntags: []\n---\n- Scheduled property.\n",
+    )?;
+    Ok(())
 }
 
 fn render_daily(

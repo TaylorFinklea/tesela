@@ -290,7 +290,7 @@ pub async fn recur_bump(
 /// Pure helper. Returns `Some((new_content, next_deadline_iso))` if `block_id`
 /// resolves to a block in `content` with `status:: done` + valid `recurring::`
 /// + valid `deadline::`. Returns `None` for any reason a bump cannot apply
-/// (idempotent caller-side: just don't replace `content`).
+///   (idempotent caller-side: just don't replace `content`).
 ///
 /// The same routine drives both the explicit `recur_bump` endpoint and the
 /// post-save detection inside `update_note`, so semantics stay identical
@@ -623,8 +623,7 @@ fn rewrite_block_for_bump(
 
     // Walk forward from line+1 to find the block's continuation range.
     let mut end = lines.len();
-    for i in (block_line_num + 1)..lines.len() {
-        let l = &lines[i];
+    for (i, l) in lines.iter().enumerate().skip(block_line_num + 1) {
         let t = l.trim_start();
         if t.is_empty() {
             continue;

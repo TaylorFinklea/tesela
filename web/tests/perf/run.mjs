@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -14,6 +15,22 @@ const logseqSource = path.join(tempRoot, "small-logseq");
 const timingsPath = path.join(webRoot, "test-results", "perf-timings.jsonl");
 
 const children = new Set();
+
+function pickFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : null;
+      server.close(() => {
+        if (port === null) reject(new Error("failed to pick a free port"));
+        else resolve(port);
+      });
+    });
+  });
+}
 
 function run(cmd, args, options = {}) {
   const child = spawn(cmd, args, {
@@ -96,25 +113,30 @@ try {
     mosaic,
   ]);
 
+  const apiPort = await pickFreePort();
+  const webPort = await pickFreePort();
+  const apiBase = `http://127.0.0.1:${apiPort}`;
+  const webBase = `http://127.0.0.1:${webPort}`;
+
   run("cargo", ["run", "-p", "tesela-server"], {
     env: {
       TESELA_DEFAULT_MOSAIC: mosaic,
-      TESELA_SERVER_BIND: "127.0.0.1:7474",
+      TESELA_SERVER_BIND: `127.0.0.1:${apiPort}`,
       RUST_LOG: "error",
     },
   });
-  await waitFor("http://127.0.0.1:7474/health", 30_000);
+  await waitFor(`${apiBase}/health`, 30_000);
 
-  run("pnpm", ["dev", "--host", "127.0.0.1", "--port", "4174"], {
+  run("pnpm", ["dev", "--host", "127.0.0.1", "--port", String(webPort)], {
     cwd: webRoot,
-    env: { TESELA_PERF: "1" },
+    env: { TESELA_PERF: "1", TESELA_API_TARGET: apiBase },
   });
-  await waitFor("http://127.0.0.1:4174/p/dailies", 30_000);
+  await waitFor(`${webBase}/p/dailies`, 30_000);
 
   await runChecked("pnpm", ["exec", "playwright", "test", "--config", "playwright.perf.config.ts"], {
     cwd: webRoot,
     env: {
-      TESELA_PERF_BASE_URL: "http://127.0.0.1:4174",
+      TESELA_PERF_BASE_URL: webBase,
       TESELA_PERF_LOGSEQ_SOURCE: logseqSource,
       TESELA_PERF_NEW_MOSAIC: importTarget,
       TESELA_PERF_TIMINGS: timingsPath,

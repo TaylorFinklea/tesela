@@ -356,7 +356,7 @@ fn convert_org_to_markdown(raw: &str, log: &mut Vec<String>, rel_str: &str) -> S
                 }
                 if trimmed.starts_with("#+BEGIN_SRC") {
                     let lang = trimmed
-                        .splitn(3, char::is_whitespace)
+                        .split(char::is_whitespace)
                         .nth(1)
                         .unwrap_or("")
                         .to_string();
@@ -632,7 +632,7 @@ fn rewrite_org_links(line: &str) -> String {
                         out.push_str(a);
                     }
                     out.push_str("]]");
-                } else if let Some(_) = target.strip_prefix("id:") {
+                } else if target.strip_prefix("id:").is_some() {
                     if let Some(a) = alias {
                         out.push_str("[[");
                         out.push_str(a);

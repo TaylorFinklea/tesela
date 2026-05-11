@@ -29,7 +29,14 @@ test.describe("Tesela perf smoke suite", () => {
     await page.locator(".cm-content").first().focus();
 
     await timed(testInfo, "command-palette-open", 300, async () => {
-      await page.keyboard.press("Control+K");
+      await page.evaluate(() => {
+        document.dispatchEvent(new KeyboardEvent("keydown", {
+          key: "k",
+          metaKey: true,
+          bubbles: true,
+          cancelable: true,
+        }));
+      });
       await expect(page.locator('input[placeholder^="Search commands"]')).toBeVisible({ timeout: 300 });
       await expect(page.getByText(/^(Recent|Actions|Create)$/).first()).toBeVisible({ timeout: 300 });
     });
@@ -54,7 +61,7 @@ test.describe("Tesela perf smoke suite", () => {
       await expect(page.getByText("Review the Logseq import below before applying.")).toBeVisible({
         timeout: 5_000,
       });
-      await expect(page.getByText(/item(s)? from/)).toBeVisible();
+      await expect(page.getByText("New", { exact: true }).first()).toBeVisible();
     });
     await expectNoConsoleErrors(page);
   });

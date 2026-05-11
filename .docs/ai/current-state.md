@@ -1,6 +1,6 @@
 # Current State
 
-*Last updated: 2026-04-14*
+*Last updated: 2026-05-11*
 
 ## Active Branch
 
@@ -48,9 +48,15 @@
 
 ## Build Status
 
-- Web: `pnpm --dir web check` — 0 errors, 9 warnings (all a11y/svelte nits)
+- Rust: `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --workspace -- -D warnings` — green on 2026-05-11.
+- Web: `pnpm --dir web check`, `pnpm --dir web exec tsc --noEmit`, `pnpm --dir web test:perf` — green on 2026-05-11. `pnpm --dir web run lint` has no configured script.
 - Dev server: `pnpm --dir web dev` (Vite)
-- Rust: `cargo test --workspace` should be green (no Rust changes this session)
+
+## Recent Session Notes
+
+- Phase 14.2 frontend perf smoke suite is in place under `web/tests/perf/`, with a runner that creates a medium fixture mosaic, starts `tesela-server` and Vite on dynamic localhost ports, runs Playwright, and records JSONL timings.
+- `tesela-fixtures` now seeds built-in Task/Status/Priority/Deadline/Scheduled pages so generated mosaics have task board property metadata before the server's initial index.
+- Phase 14.3 perf workflow is in `.github/workflows/perf.yml`: nightly/main uploads Criterion baselines, PRs diff with `critcmp`, and comments only when a benchmark regression exceeds 10%.
 
 ## Blockers
 

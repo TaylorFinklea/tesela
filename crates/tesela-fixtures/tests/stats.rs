@@ -11,10 +11,10 @@ fn tiny_preset_produces_expected_layout() {
     let notes_dir = m.path.join("notes");
     assert!(notes_dir.exists(), "notes/ should exist");
     let count = fs::read_dir(&notes_dir).unwrap().count();
-    // 20 dailies + 8 pages + 9 system widgets = 37.
+    // 20 dailies + 8 pages + 9 system widgets + 5 built-in type pages = 42.
     assert!(
-        count >= 28 && count <= 40,
-        "expected ~37 entries in notes/, got {}",
+        count >= 38 && count <= 45,
+        "expected ~42 entries in notes/, got {}",
         count
     );
     // System widgets seeded.

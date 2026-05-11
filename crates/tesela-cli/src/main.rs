@@ -701,10 +701,7 @@ async fn cmd_backup_list(mosaic: &Path, output: Option<PathBuf>) -> Result<()> {
         println!("No backups found in {}", root.display());
         return Ok(());
     }
-    println!(
-        "{:<32} {:<25} {:>8} {}",
-        "name", "created", "files", "validated"
-    );
+    println!("{:<32} {:<25} {:>8} validated", "name", "created", "files");
     for (path, manifest) in backups {
         let name = path
             .file_name()
