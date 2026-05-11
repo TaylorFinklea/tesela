@@ -548,6 +548,9 @@
       const isFresh = typeof window !== "undefined" &&
         new URL(window.location.href).searchParams.get("fresh") === "1";
       autoFocused = !isFresh;
+      if (isFresh && visibleBlocks[0]?.raw_text === "") {
+        markRecentlyCreated(visibleBlocks[0].id);
+      }
     }
   });
 
@@ -791,6 +794,7 @@
     focusedIndex = vi + 1;
     autoFocused = false;
     restoredFocus = false;
+    markRecentlyCreated(newBlock.id);
   }
 
   /** Collect the IDs of `block` plus all of its descendants (any blocks
@@ -858,6 +862,20 @@
   // Pending mount hint: cursor position + optional insert-mode entry for the next block to mount
   let mountHint = $state<{ blockId: string; pos: number; startInInsert: boolean } | null>(null);
 
+  // Tracks the most-recently-created empty block so its auto-INSERT only
+  // fires once. Cleared on the next animation frame (after the BlockEditor
+  // has mounted and consumed the flag) so a later focus on the same block
+  // — via j/k or click — lands in NORMAL, not INSERT. Without this, the
+  // old `(empty && focused && !autoFocused && !restoredFocus)` heuristic
+  // re-fired on every navigation onto any existing empty block.
+  let recentlyCreatedBlockId = $state<string | null>(null);
+  function markRecentlyCreated(blockId: string) {
+    recentlyCreatedBlockId = blockId;
+    requestAnimationFrame(() => {
+      if (recentlyCreatedBlockId === blockId) recentlyCreatedBlockId = null;
+    });
+  }
+
   // Block clipboard for yy/p (array to support multi-block visual yank)
   let blockClipboard = $state<ParsedBlock[]>([]);
 
@@ -924,6 +942,7 @@
     focusedIndex = vi;
     autoFocused = false;
     restoredFocus = false;
+    markRecentlyCreated(newBlock.id);
   }
 
   // Visual mode handlers
@@ -1186,6 +1205,7 @@
       focusedIndex = 0;
       autoFocused = false;
       restoredFocus = false;
+      markRecentlyCreated(newBlock.id);
     }}
   >
     Click to start writing…
@@ -1285,7 +1305,7 @@
             onbackspaceempty={() => handleBackspace(vi)}
             onbackspacemerge={(text: string) => handleBackspaceMerge(vi, text)}
             initialCursorPos={mountHint?.blockId === block.id ? mountHint.pos : undefined}
-            startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (focusedIndex === vi && block.raw_text === "" && !autoFocused && !restoredFocus)}
+            startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (block.id === recentlyCreatedBlockId && block.raw_text === "")}
             autofocused={autoFocused}
             onleader={onLeader}
             oncyclestatus={() => blockVisualMode ? bulkCycleStatus() : handleStatusCycle(vi)}
