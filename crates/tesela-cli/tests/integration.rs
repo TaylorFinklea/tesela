@@ -90,7 +90,11 @@ fn test_cat_by_title() {
 }
 
 #[test]
-fn test_list_empty() {
+fn test_list_after_init_shows_only_widgets() {
+    // `tesela init` seeds 9 system Query widget pages (Phase 13 follow-up:
+    // see `tesela_core::system_widgets::seed`). So a freshly-init'd
+    // mosaic isn't empty — it has Dailies / Pages / Tasks / Projects /
+    // People / Inbox / Calendar / Recent / Pinned.
     let tmp = TempDir::new().unwrap();
     init_mosaic(&tmp);
 
@@ -98,7 +102,9 @@ fn test_list_empty() {
         .arg("list")
         .assert()
         .success()
-        .stdout(predicate::str::contains("No notes found"));
+        .stdout(predicate::str::contains("dailies"))
+        .stdout(predicate::str::contains("tasks"))
+        .stdout(predicate::str::contains("pages"));
 }
 
 #[test]

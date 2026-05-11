@@ -1,0 +1,15 @@
+[package]
+name = "tesela-fixtures"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tesela-core = { path = "../tesela-core" }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

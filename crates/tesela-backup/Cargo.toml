@@ -21,3 +21,9 @@ keyring = { workspace = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 tokio = { workspace = true }
+criterion = { workspace = true }
+tesela-fixtures = { path = "../tesela-fixtures" }
+
+[[bench]]
+name = "backup"
+harness = false

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins", "crates/tesela-server", "crates/tesela-backup"]
+members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins", "crates/tesela-server", "crates/tesela-backup", "crates/tesela-fixtures"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -62,8 +62,12 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 age = "0.11"
 keyring = { version = "3", features = ["apple-native"] }
 
-# Testing
+# Testing + benchmarking
 tempfile = "3"
 tokio-test = "0.4"
 assert_cmd = "2"
 predicates = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = "0.8"
+rand_chacha = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json"] }

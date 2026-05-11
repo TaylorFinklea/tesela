@@ -27,3 +27,17 @@ anyhow.workspace = true
 tempfile.workspace = true
 tokio-test.workspace = true
 ts-rs = { version = "12", features = ["chrono-impl"] }
+criterion.workspace = true
+tesela-fixtures = { path = "../tesela-fixtures" }
+
+[[bench]]
+name = "index"
+harness = false
+
+[[bench]]
+name = "list_notes"
+harness = false
+
+[[bench]]
+name = "typed_blocks"
+harness = false
