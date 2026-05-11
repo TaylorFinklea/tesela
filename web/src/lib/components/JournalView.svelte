@@ -38,9 +38,16 @@
     return `${y}-${m}-${day}`;
   })();
 
+  // Server-side fetch limit grows lazily as the user scrolls. We start
+  // at ~60 (2x the on-screen window) so the very first render only
+  // has to parse / mount that many notes — critical for graphs with
+  // hundreds of imported daily entries where `limit: 500` was loading
+  // tens of MB of JSON + spinning up hundreds of CodeMirror editors
+  // before the page could even render.
+  let fetchLimit = $state(60);
   const notesQuery = createQuery(() => ({
-    queryKey: ["notes", { tag: "daily", limit: 500 }] as const,
-    queryFn: () => api.listNotes({ tag: "daily", limit: 500 }),
+    queryKey: ["notes", { tag: "daily", limit: fetchLimit }] as const,
+    queryFn: () => api.listNotes({ tag: "daily", limit: fetchLimit }),
   }));
 
   // Sort descending by title (which is the YYYY-MM-DD date for dailies).
@@ -124,8 +131,19 @@
   const hasMore = $derived(visibleDailies.length < dailies.length);
 
   function loadMore() {
-    if (!hasMore) return;
+    if (!hasMore) {
+      // Already showing everything we've fetched — try fetching more
+      // from the server. The queryKey change triggers a refetch via
+      // TanStack.
+      fetchLimit = fetchLimit + PAGE * 2;
+      return;
+    }
     visibleCount = Math.min(dailies.length, visibleCount + PAGE);
+    // Pre-fetch the next batch when we're approaching the end of what
+    // we have locally, so the next loadMore is instant.
+    if (dailies.length - visibleCount < PAGE) {
+      fetchLimit = fetchLimit + PAGE * 2;
+    }
   }
 
   // ----- Per-note debounced save handlers -----
