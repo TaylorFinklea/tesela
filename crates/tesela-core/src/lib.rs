@@ -4,6 +4,7 @@ pub mod daily;
 pub mod db;
 pub mod error;
 pub mod export;
+pub mod import_logseq;
 pub mod indexer;
 pub mod link;
 pub mod note;

@@ -509,6 +509,56 @@ pub async fn import_org(
         .map(Json)
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Logseq import — plan + apply (Phase 13.D follow-up: conflict resolution)
+// ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct PlanLogseqRequest {
+    pub source: String,
+}
+
+/// Builds an ImportPlan WITHOUT touching files. Returns the full plan
+/// so the UI can show counts + conflicts + previews + decide what to
+/// do.
+pub async fn plan_logseq(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<PlanLogseqRequest>,
+) -> Result<Json<tesela_core::import_logseq::ImportPlan>, (StatusCode, String)> {
+    let source = PathBuf::from(&req.source);
+    let mosaic = state.mosaic_root.clone();
+    let plan = tokio::task::spawn_blocking(move || {
+        tesela_core::import_logseq::build_plan(&source, &mosaic)
+    })
+    .await
+    .map_err(internal)?
+    .map_err(|e| (StatusCode::BAD_REQUEST, format!("{}", e)))?;
+    Ok(Json(plan))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ApplyLogseqRequest {
+    pub plan: tesela_core::import_logseq::ImportPlan,
+    pub decisions: tesela_core::import_logseq::ApplyDecisions,
+}
+
+/// Applies a plan with per-item decisions. Caller is expected to send
+/// back the plan it just received from /plan-logseq (the plan carries
+/// the rendered content so we don't have to re-walk).
+pub async fn apply_logseq(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<ApplyLogseqRequest>,
+) -> Result<Json<tesela_core::import_logseq::ApplyOutcome>, (StatusCode, String)> {
+    let mosaic = state.mosaic_root.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        tesela_core::import_logseq::apply_plan(&req.plan, &req.decisions, &mosaic)
+    })
+    .await
+    .map_err(internal)?
+    .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e)))?;
+    Ok(Json(outcome))
+}
+
 #[derive(Debug, Deserialize, Default)]
 #[serde(default)]
 pub struct PickFolderRequest {

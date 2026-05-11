@@ -65,6 +65,8 @@ pub fn build(state: AppState) -> Router {
         .route("/export", post(data_ops::run_export))
         .route("/imports/obsidian", post(data_ops::import_obsidian))
         .route("/imports/logseq", post(data_ops::import_logseq))
+        .route("/imports/logseq/plan", post(data_ops::plan_logseq))
+        .route("/imports/logseq/apply", post(data_ops::apply_logseq))
         .route("/imports/org", post(data_ops::import_org))
         .route("/pick-folder", post(data_ops::pick_folder))
         .route("/mosaics/current", get(data_ops::get_current_mosaic))

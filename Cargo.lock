@@ -3336,6 +3336,8 @@ dependencies = [
  "indicatif",
  "predicates",
  "regex",
+ "serde",
+ "serde_json",
  "sha2",
  "tempfile",
  "tesela-backup",
@@ -3351,6 +3353,7 @@ dependencies = [
 name = "tesela-core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
  "dirs",

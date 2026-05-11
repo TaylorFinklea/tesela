@@ -142,6 +142,14 @@ export const api = {
   importOrg: (source: string, dry_run = false) =>
     post<ImportResponse>("/imports/org", { source, dry_run }),
 
+  /** Phase 13.D follow-up: structured plan+apply for Logseq imports
+   *  with per-conflict resolution. The plan carries rendered content
+   *  inline so apply doesn't have to re-walk the source. */
+  planLogseq: (source: string) =>
+    post<LogseqPlan>("/imports/logseq/plan", { source }),
+  applyLogseq: (plan: LogseqPlan, decisions: LogseqDecisions) =>
+    post<LogseqApplyOutcome>("/imports/logseq/apply", { plan, decisions }),
+
   /** Open a native folder picker on the server's machine (macOS only).
    *  Returns `path: null` when the user cancels. */
   pickFolder: (prompt?: string) =>
@@ -247,6 +255,50 @@ export interface ImportResponse {
   success: boolean;
   stdout: string;
   stderr: string;
+}
+
+// Logseq plan/apply types — matches tesela_core::import_logseq.
+export type LogseqPlanKind =
+  | "new_import"
+  | "unchanged"
+  | "conflict_diff_sha"
+  | "conflict_foreign"
+  | "hard_skip";
+
+export interface LogseqPlanItem {
+  source_rel: string;
+  source_sha: string;
+  target_id: string;
+  target_path: string;
+  kind: LogseqPlanKind;
+  reason?: string | null;
+  rendered_preview?: string | null;
+  existing_preview?: string | null;
+  existing_sha?: string | null;
+  /** Server sends; UI just echoes it back on apply. */
+  rendered_full?: string | null;
+}
+export interface LogseqPlan {
+  items: LogseqPlanItem[];
+  source: string;
+  mosaic: string;
+}
+export type LogseqDecision =
+  | { kind: "skip" }
+  | { kind: "overwrite" }
+  | { kind: "rename"; suffix: string };
+export interface LogseqDecisions {
+  per_item: Record<string, LogseqDecision>;
+  default: LogseqDecision;
+}
+export interface LogseqApplyOutcome {
+  imported: number;
+  overwritten: number;
+  renamed: number;
+  skipped: number;
+  unchanged: number;
+  assets_copied: number;
+  errors: string[];
 }
 
 export interface RemindersPushOutcome {

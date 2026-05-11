@@ -21,6 +21,7 @@ regex.workspace = true
 sqlx.workspace = true
 notify.workspace = true
 tokio-util.workspace = true
+anyhow.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
