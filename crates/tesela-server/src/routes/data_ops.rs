@@ -521,70 +521,177 @@ pub struct PickFolderResponse {
     pub path: Option<String>,
 }
 
-/// macOS-only: open Finder's "Choose Folder" dialog via osascript and
-/// return the picked POSIX path. Returns `path: null` when the user
-/// canceled. Used by the web Settings UI so users don't have to type
-/// import-source paths by hand.
+/// Open the OS's native "Choose Folder" dialog and return the picked
+/// absolute path. Returns `path: null` when the user cancels.
 ///
-/// Linux/Windows builds return 501 — those platforms would need
-/// zenity / native dialog libraries we don't ship.
+/// - macOS: AppleScript `choose folder` via `osascript`.
+/// - Linux: `zenity --file-selection --directory`, falling back to
+///   `kdialog --getexistingdirectory`. If neither is on PATH, returns
+///   a 501-ish error so the UI can fall back to manual entry.
+/// - Windows: PowerShell `System.Windows.Forms.FolderBrowserDialog`.
 pub async fn pick_folder(
     Json(req): Json<PickFolderRequest>,
 ) -> Result<Json<PickFolderResponse>, (StatusCode, String)> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = req;
-        return Err((
-            StatusCode::NOT_IMPLEMENTED,
-            "folder picker is macOS-only in this build".to_string(),
-        ));
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let prompt = req
-            .prompt
-            .clone()
-            .unwrap_or_else(|| "Pick a folder".to_string());
-        // Bring the calling process to the foreground so the dialog
-        // appears on top of whatever the user is currently looking at,
-        // not buried behind their browser.
-        let escaped = prompt.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!(
-            "tell application \"System Events\" to activate\n\
-             POSIX path of (choose folder with prompt \"{}\")",
-            escaped
-        );
-        let output = tokio::task::spawn_blocking(move || {
-            std::process::Command::new("osascript")
-                .arg("-e")
-                .arg(&script)
-                .output()
-        })
+    let prompt = req
+        .prompt
+        .clone()
+        .unwrap_or_else(|| "Pick a folder".to_string());
+    let outcome = tokio::task::spawn_blocking(move || run_native_picker(&prompt))
         .await
-        .map_err(internal)?
-        .map_err(internal_io)?;
+        .map_err(internal)?;
+    match outcome {
+        PickerOutcome::Picked(path) => Ok(Json(PickFolderResponse { path: Some(path) })),
+        PickerOutcome::Canceled => Ok(Json(PickFolderResponse { path: None })),
+        PickerOutcome::Unsupported(msg) => Err((StatusCode::NOT_IMPLEMENTED, msg)),
+        PickerOutcome::Failed(msg) => Err((StatusCode::INTERNAL_SERVER_ERROR, msg)),
+    }
+}
 
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout)
-                .trim_end_matches('\n')
-                .trim_end_matches('/')
-                .to_string();
-            Ok(Json(PickFolderResponse { path: Some(path) }))
+#[derive(Debug)]
+#[allow(dead_code)] // Unsupported is only constructed on Linux/Windows builds.
+enum PickerOutcome {
+    Picked(String),
+    Canceled,
+    Unsupported(String),
+    Failed(String),
+}
+
+#[cfg(target_os = "macos")]
+fn run_native_picker(prompt: &str) -> PickerOutcome {
+    // System Events activate brings the dialog forward so it pops on
+    // top of the user's browser, not buried behind it.
+    let escaped = prompt.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "tell application \"System Events\" to activate\n\
+         POSIX path of (choose folder with prompt \"{}\")",
+        escaped
+    );
+    let output = match std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => return PickerOutcome::Failed(format!("osascript: {}", e)),
+    };
+    if output.status.success() {
+        let path = String::from_utf8_lossy(&output.stdout)
+            .trim_end_matches('\n')
+            .trim_end_matches('/')
+            .to_string();
+        PickerOutcome::Picked(path)
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("User canceled") || stderr.contains("(-128)") {
+            PickerOutcome::Canceled
         } else {
-            // exit code 1 + "User canceled. (-128)" is the cancel
-            // path. Any other failure surfaces the stderr to the UI.
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            if stderr.contains("User canceled") || stderr.contains("(-128)") {
-                Ok(Json(PickFolderResponse { path: None }))
-            } else {
-                Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("osascript: {}", stderr.trim()),
-                ))
-            }
+            PickerOutcome::Failed(format!("osascript: {}", stderr.trim()))
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn run_native_picker(prompt: &str) -> PickerOutcome {
+    use std::process::Command;
+    // Try zenity first (GNOME, most common); fall back to kdialog
+    // (KDE). On cancel, both exit non-zero with empty stdout — we
+    // distinguish "no tool available" from "user canceled" by
+    // checking which command was actually missing.
+    if which_exists("zenity") {
+        match Command::new("zenity")
+            .args(["--file-selection", "--directory", "--title"])
+            .arg(prompt)
+            .output()
+        {
+            Ok(o) if o.status.success() => {
+                let path = String::from_utf8_lossy(&o.stdout)
+                    .trim_end_matches('\n')
+                    .to_string();
+                return PickerOutcome::Picked(path);
+            }
+            Ok(_) => return PickerOutcome::Canceled,
+            Err(e) => return PickerOutcome::Failed(format!("zenity: {}", e)),
+        }
+    }
+    if which_exists("kdialog") {
+        match Command::new("kdialog")
+            .args(["--getexistingdirectory", ".", "--title"])
+            .arg(prompt)
+            .output()
+        {
+            Ok(o) if o.status.success() => {
+                let path = String::from_utf8_lossy(&o.stdout)
+                    .trim_end_matches('\n')
+                    .to_string();
+                return PickerOutcome::Picked(path);
+            }
+            Ok(_) => return PickerOutcome::Canceled,
+            Err(e) => return PickerOutcome::Failed(format!("kdialog: {}", e)),
+        }
+    }
+    PickerOutcome::Unsupported(
+        "Install `zenity` (GNOME) or `kdialog` (KDE) to enable the folder picker, or paste the path manually."
+            .to_string(),
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn run_native_picker(prompt: &str) -> PickerOutcome {
+    // PowerShell needs the STA threading model for WinForms; the -Sta
+    // flag covers that. The dialog returns DialogResult.OK on pick;
+    // anything else (cancel, close) leaves SelectedPath unset and we
+    // emit an empty line, which we treat as cancellation.
+    let escaped = prompt.replace('"', "`\"");
+    let script = format!(
+        "Add-Type -AssemblyName System.Windows.Forms | Out-Null; \
+         $d = New-Object System.Windows.Forms.FolderBrowserDialog; \
+         $d.Description = \"{}\"; \
+         $d.ShowNewFolderButton = $true; \
+         if ($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {{ \
+           [Console]::Out.WriteLine($d.SelectedPath) \
+         }}",
+        escaped
+    );
+    let output = match std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Sta", "-Command"])
+        .arg(&script)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => return PickerOutcome::Failed(format!("powershell: {}", e)),
+    };
+    if !output.status.success() {
+        return PickerOutcome::Failed(format!(
+            "powershell: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let path = stdout.trim().to_string();
+    if path.is_empty() {
+        PickerOutcome::Canceled
+    } else {
+        PickerOutcome::Picked(path)
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn run_native_picker(_prompt: &str) -> PickerOutcome {
+    PickerOutcome::Unsupported(
+        "Folder picker is not implemented on this platform; paste the path manually.".to_string(),
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn which_exists(name: &str) -> bool {
+    std::process::Command::new("sh")
+        .arg("-c")
+        .arg(format!("command -v {}", name))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
