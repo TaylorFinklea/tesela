@@ -145,10 +145,10 @@ export const api = {
   /** Phase 13.D follow-up: structured plan+apply for Logseq imports
    *  with per-conflict resolution. The plan carries rendered content
    *  inline so apply doesn't have to re-walk the source. */
-  planLogseq: (source: string) =>
-    post<LogseqPlan>("/imports/logseq/plan", { source }),
-  applyLogseq: (plan: LogseqPlan, decisions: LogseqDecisions) =>
-    post<LogseqApplyOutcome>("/imports/logseq/apply", { plan, decisions }),
+  planLogseq: (source: string, mosaic?: string) =>
+    post<LogseqPlan>("/imports/logseq/plan", { source, mosaic }),
+  applyLogseq: (plan: LogseqPlan, decisions: LogseqDecisions, mosaic?: string) =>
+    post<LogseqApplyOutcome>("/imports/logseq/apply", { plan, decisions, mosaic }),
 
   /** Open a native folder picker on the server's machine (macOS only).
    *  Returns `path: null` when the user cancels. */

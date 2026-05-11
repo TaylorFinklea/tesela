@@ -516,6 +516,11 @@ pub async fn import_org(
 #[derive(Debug, Deserialize)]
 pub struct PlanLogseqRequest {
     pub source: String,
+    /// Optional target mosaic path (defaults to the currently-active
+    /// mosaic). Used by the "Create + import" flow to plan against a
+    /// just-created mosaic without having to switch to it first.
+    #[serde(default)]
+    pub mosaic: Option<String>,
 }
 
 /// Builds an ImportPlan WITHOUT touching files. Returns the full plan
@@ -526,7 +531,11 @@ pub async fn plan_logseq(
     Json(req): Json<PlanLogseqRequest>,
 ) -> Result<Json<tesela_core::import_logseq::ImportPlan>, (StatusCode, String)> {
     let source = PathBuf::from(&req.source);
-    let mosaic = state.mosaic_root.clone();
+    let mosaic = req
+        .mosaic
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.mosaic_root.clone());
     let plan = tokio::task::spawn_blocking(move || {
         tesela_core::import_logseq::build_plan(&source, &mosaic)
     })
@@ -540,6 +549,10 @@ pub async fn plan_logseq(
 pub struct ApplyLogseqRequest {
     pub plan: tesela_core::import_logseq::ImportPlan,
     pub decisions: tesela_core::import_logseq::ApplyDecisions,
+    /// Optional target mosaic path (defaults to the currently-active
+    /// mosaic).
+    #[serde(default)]
+    pub mosaic: Option<String>,
 }
 
 /// Applies a plan with per-item decisions. Caller is expected to send
@@ -549,7 +562,11 @@ pub async fn apply_logseq(
     State(state): State<Arc<AppState>>,
     Json(req): Json<ApplyLogseqRequest>,
 ) -> Result<Json<tesela_core::import_logseq::ApplyOutcome>, (StatusCode, String)> {
-    let mosaic = state.mosaic_root.clone();
+    let mosaic = req
+        .mosaic
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.mosaic_root.clone());
     let outcome = tokio::task::spawn_blocking(move || {
         tesela_core::import_logseq::apply_plan(&req.plan, &req.decisions, &mosaic)
     })

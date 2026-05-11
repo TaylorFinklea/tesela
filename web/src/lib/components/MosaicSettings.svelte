@@ -5,7 +5,10 @@
     type CurrentMosaicResponse,
     type CreateMosaicResponse,
     type DiscoveredMosaic,
+    type LogseqPlan,
+    type LogseqApplyOutcome,
   } from "$lib/api-client";
+  import LogseqPlanPreview from "$lib/components/LogseqPlanPreview.svelte";
 
   let current = $state<CurrentMosaicResponse | null>(null);
   let discovered = $state<DiscoveredMosaic[]>([]);
@@ -24,6 +27,11 @@
   let pickingSource = $state(false);
   let result = $state<CreateMosaicResponse | null>(null);
   let error = $state<string | null>(null);
+
+  // Logseq plan state (when create+import with Logseq lands).
+  let logseqPlan = $state<LogseqPlan | null>(null);
+  let logseqPlanTarget = $state<string | null>(null);
+  let logseqApplyOutcome = $state<LogseqApplyOutcome | null>(null);
 
   // Per-row state for the Discovered list
   let switchingPath = $state<string | null>(null);
@@ -113,22 +121,50 @@
     creating = true;
     error = null;
     result = null;
+    logseqPlan = null;
+    logseqPlanTarget = null;
+    logseqApplyOutcome = null;
+
     try {
-      result = await api.createMosaic({
-        name: locationMode === "name" ? newName.trim() : undefined,
-        path: locationMode === "custom" ? newCustomPath : undefined,
-        import:
-          mode === "import"
-            ? { kind: importKind, source: sourcePath }
-            : undefined,
-      });
-      // Refresh the discovered list so the new mosaic appears for quick-switch.
-      await refresh();
+      // Logseq import: split into create-blank + plan, so the user
+      // gets the same conflict-resolution preview as Settings → Data.
+      if (mode === "import" && importKind === "logseq") {
+        // 1. Create the mosaic without an inline import.
+        result = await api.createMosaic({
+          name: locationMode === "name" ? newName.trim() : undefined,
+          path: locationMode === "custom" ? newCustomPath : undefined,
+          // intentionally no `import` here
+        });
+        await refresh();
+        // 2. Plan the import against the freshly-created mosaic.
+        logseqPlanTarget = result.path;
+        logseqPlan = await api.planLogseq(sourcePath, result.path);
+      } else {
+        // Blank or non-Logseq import: existing path.
+        result = await api.createMosaic({
+          name: locationMode === "name" ? newName.trim() : undefined,
+          path: locationMode === "custom" ? newCustomPath : undefined,
+          import:
+            mode === "import"
+              ? { kind: importKind, source: sourcePath }
+              : undefined,
+        });
+        await refresh();
+      }
     } catch (e: any) {
       error = e?.message ?? `${e}`;
     } finally {
       creating = false;
     }
+  }
+
+  function onPlanApplied(outcome: LogseqApplyOutcome) {
+    logseqApplyOutcome = outcome;
+    logseqPlan = null;
+  }
+  function onPlanCancel() {
+    logseqPlan = null;
+    logseqPlanTarget = null;
   }
 
   async function switchAndRestart(path: string) {
@@ -336,7 +372,7 @@
       </button>
     </div>
 
-    {#if result}
+    {#if result && !logseqPlan && !logseqApplyOutcome}
       <div class="mt-2 border border-border/40 rounded-md px-3 py-2 space-y-1.5">
         <div class="text-[11px] text-foreground/80">
           Created at <span class="font-mono">{result.path}</span>
@@ -360,6 +396,52 @@
         <p class="text-[10px] text-muted-foreground/50">
           Server will gracefully shut down (auto-backup runs), then a fresh instance binds in ~2s. Page reloads automatically.
         </p>
+      </div>
+    {/if}
+
+    <!-- Logseq plan preview (when create+import landed) -->
+    {#if logseqPlan && logseqPlanTarget && !logseqApplyOutcome}
+      <div class="mt-2 border border-border/40 rounded-md px-3 py-2 space-y-2">
+        <div class="text-[11px] text-foreground/80">
+          Created blank mosaic at <span class="font-mono">{logseqPlanTarget}</span>.
+          Review the Logseq import below before applying.
+        </div>
+        <LogseqPlanPreview
+          plan={logseqPlan}
+          targetMosaic={logseqPlanTarget}
+          onapplied={onPlanApplied}
+          oncancel={onPlanCancel}
+        />
+      </div>
+    {/if}
+
+    <!-- After plan applied -->
+    {#if logseqApplyOutcome && logseqPlanTarget}
+      <div class="mt-2 border border-emerald-400/30 bg-emerald-400/5 rounded-md px-3 py-2 space-y-1.5 text-[12px]">
+        <div class="text-emerald-300/90 mb-1">Import applied to {logseqPlanTarget}</div>
+        <div class="grid grid-cols-3 gap-2 text-[11px] text-foreground/80">
+          <div>Imported: <span class="font-mono">{logseqApplyOutcome.imported}</span></div>
+          <div>Overwritten: <span class="font-mono">{logseqApplyOutcome.overwritten}</span></div>
+          <div>Renamed: <span class="font-mono">{logseqApplyOutcome.renamed}</span></div>
+          <div>Skipped: <span class="font-mono">{logseqApplyOutcome.skipped}</span></div>
+          <div>Unchanged: <span class="font-mono">{logseqApplyOutcome.unchanged}</span></div>
+          <div>Assets: <span class="font-mono">{logseqApplyOutcome.assets_copied}</span></div>
+        </div>
+        {#if logseqApplyOutcome.errors.length > 0}
+          <details class="text-[11px] text-red-300/80 mt-1">
+            <summary class="cursor-pointer">{logseqApplyOutcome.errors.length} error{logseqApplyOutcome.errors.length === 1 ? "" : "s"}</summary>
+            <ul class="ml-3 mt-1 list-disc">
+              {#each logseqApplyOutcome.errors as err}<li class="font-mono">{err}</li>{/each}
+            </ul>
+          </details>
+        {/if}
+        <button
+          class="px-2.5 py-1 rounded-md text-[12px] border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
+          disabled={!!switchingPath}
+          onclick={() => switchAndRestart(logseqPlanTarget!)}
+        >
+          {switchingPath ? "Switching…" : "Switch to this mosaic"}
+        </button>
       </div>
     {/if}
     {#if error}
