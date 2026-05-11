@@ -992,10 +992,29 @@ pub async fn switch_mosaic(
 /// process supervisor is configured, spawn a detached re-exec of
 /// ourselves that waits 2 seconds for the port to free before
 /// rebinding.
+///
+/// Passes the freshly-written `default_mosaic` (if any) as
+/// `TESELA_DEFAULT_MOSAIC` so the respawned server wins over its
+/// cwd-walk — otherwise re-execing from the same working directory
+/// finds the old mosaic and the Switch silently no-ops.
 pub async fn restart_server() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     #[cfg(unix)]
     {
-        let respawn_used = maybe_respawn_detached().map_err(server_error)?;
+        // Read the freshly-written config so we can pin the respawn
+        // to the configured default mosaic.
+        let pinned_mosaic = {
+            let cfg_path = Config::default_path();
+            if cfg_path.exists() {
+                Config::load(&cfg_path)
+                    .ok()
+                    .and_then(|c| c.general.default_mosaic)
+                    .map(|p| p.to_string_lossy().into_owned())
+            } else {
+                None
+            }
+        };
+        let respawn_used = maybe_respawn_detached(pinned_mosaic.as_deref())
+            .map_err(server_error)?;
         // Schedule SIGTERM after the HTTP response goes out.
         tokio::spawn(async {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -1005,6 +1024,7 @@ pub async fn restart_server() -> Result<Json<serde_json::Value>, (StatusCode, St
         });
         Ok(Json(serde_json::json!({
             "respawn_used": respawn_used,
+            "pinned_mosaic": pinned_mosaic,
         })))
     }
     #[cfg(not(unix))]
@@ -1018,7 +1038,7 @@ pub async fn restart_server() -> Result<Json<serde_json::Value>, (StatusCode, St
 }
 
 #[cfg(unix)]
-fn maybe_respawn_detached() -> anyhow::Result<bool> {
+fn maybe_respawn_detached(pinned_mosaic: Option<&str>) -> anyhow::Result<bool> {
     // If launchd is managing us via the LaunchAgent (`tesela install`),
     // it'll restart automatically — don't double-spawn.
     if launchd_managing_us() {
@@ -1029,9 +1049,22 @@ fn maybe_respawn_detached() -> anyhow::Result<bool> {
     // sh -c so we can `sleep` before re-exec. The intermediate sh
     // becomes the parent of the new server, then exits via exec.
     // `nohup` + redirected stdio detaches us from the terminal too.
+    //
+    // The env-var assignment in front of `exec` is the load-bearing
+    // bit for the Switch flow — without it the respawned server's
+    // cwd-walk would find the *old* mosaic again before checking the
+    // config default we just wrote.
+    let prefix = match pinned_mosaic {
+        Some(m) => format!("TESELA_DEFAULT_MOSAIC={} ", shell_escape(m)),
+        None => String::new(),
+    };
     std::process::Command::new("nohup")
         .args(["sh", "-c"])
-        .arg(format!("sleep 2 && exec {}", shell_escape(&exe_str)))
+        .arg(format!(
+            "sleep 2 && {}exec {}",
+            prefix,
+            shell_escape(&exe_str)
+        ))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

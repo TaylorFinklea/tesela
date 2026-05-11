@@ -29,6 +29,24 @@
   let switchingPath = $state<string | null>(null);
   let rowMessage = $state<Record<string, string>>({});
 
+  // "Switch to existing mosaic" picker — for mosaics outside the
+  // standard root (dev directories, etc).
+  let pickingExisting = $state(false);
+  async function pickAndSwitchExisting() {
+    if (pickingExisting) return;
+    pickingExisting = true;
+    try {
+      const res = await api.pickFolder("Pick a folder containing a `.tesela/` mosaic");
+      if (res.path) {
+        await switchAndRestart(res.path);
+      }
+    } catch (e: any) {
+      error = e?.message ?? `${e}`;
+    } finally {
+      pickingExisting = false;
+    }
+  }
+
   async function refresh() {
     try {
       current = await api.currentMosaic();
@@ -166,6 +184,17 @@
   {/if}
 
   <!-- Discovered mosaics -->
+  <div class="mb-3">
+    <button
+      class="px-2.5 py-1 rounded-md text-[11px] border border-border/50 hover:bg-muted/40 hover:text-foreground transition-colors disabled:opacity-50"
+      disabled={pickingExisting || !!switchingPath}
+      onclick={pickAndSwitchExisting}
+      title="Pick any folder with a `.tesela/` to switch to it"
+    >
+      {pickingExisting || switchingPath ? "…" : "Switch to existing mosaic…"}
+    </button>
+  </div>
+
   {#if discovered.length > 0}
     <div class="space-y-1 mb-5">
       <p class="text-[11px] text-muted-foreground/60 mb-1.5">
