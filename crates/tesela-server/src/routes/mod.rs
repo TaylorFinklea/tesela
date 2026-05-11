@@ -68,6 +68,7 @@ pub fn build(state: AppState) -> Router {
         .route("/imports/org", post(data_ops::import_org))
         .route("/pick-folder", post(data_ops::pick_folder))
         .route("/mosaics/current", get(data_ops::get_current_mosaic))
+        .route("/mosaics/discovered", get(data_ops::list_discovered_mosaics))
         .route("/mosaics", post(data_ops::create_mosaic))
         .route("/mosaics/switch", post(data_ops::switch_mosaic))
         .route("/server/restart", post(data_ops::restart_server))

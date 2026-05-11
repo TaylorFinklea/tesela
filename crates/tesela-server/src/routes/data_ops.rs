@@ -743,9 +743,13 @@ pub async fn get_current_mosaic(
 
 #[derive(Debug, Deserialize)]
 pub struct CreateMosaicRequest {
-    /// Absolute path where the mosaic will be initialized. Refuses to
-    /// proceed if a `.tesela/` already exists at this path.
-    pub path: String,
+    /// Absolute path where the mosaic will be initialized. Mutually
+    /// exclusive with `name` — if both are given, `path` wins.
+    pub path: Option<String>,
+    /// Just a mosaic name; the server places it under the standard
+    /// mosaic root directory (`<data_dir>/tesela/<name>`). Slashes,
+    /// `..`, and other path separators are rejected.
+    pub name: Option<String>,
     /// Optional import to run after init. `kind`: obsidian | logseq | org.
     pub import: Option<ImportSpec>,
 }
@@ -767,7 +771,26 @@ pub struct CreateMosaicResponse {
 pub async fn create_mosaic(
     Json(req): Json<CreateMosaicRequest>,
 ) -> Result<Json<CreateMosaicResponse>, (StatusCode, String)> {
-    let path = PathBuf::from(&req.path);
+    let path = if let Some(p) = req.path.as_ref().filter(|s| !s.trim().is_empty()) {
+        PathBuf::from(p)
+    } else if let Some(name) = req.name.as_ref().filter(|s| !s.trim().is_empty()) {
+        if name.contains('/')
+            || name.contains('\\')
+            || name.contains("..")
+            || name.starts_with('.')
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "Mosaic name can't contain slashes, `..`, or start with `.`".to_string(),
+            ));
+        }
+        Config::mosaic_root_dir().join(name.trim())
+    } else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "Either `path` or `name` is required".to_string(),
+        ));
+    };
     if path.join(".tesela").exists() {
         return Err((
             StatusCode::CONFLICT,
@@ -840,6 +863,95 @@ pub async fn create_mosaic(
         import_stderr,
         import_success,
     }))
+}
+
+#[derive(Debug, Serialize)]
+pub struct DiscoveredMosaic {
+    pub name: String,
+    pub path: String,
+    pub is_current: bool,
+    /// Best-effort count of `.md` files directly under `notes/`.
+    pub note_count: usize,
+    /// ISO timestamp of the most-recent file mtime under `notes/`,
+    /// or null when the dir is empty / unreadable.
+    pub last_modified: Option<String>,
+}
+
+/// Scan the standard mosaic root for any subdirectory containing a
+/// `.tesela/` marker. Always includes the current mosaic, even when
+/// it lives outside the standard root (e.g. cwd-walk found a dev
+/// mosaic in a git checkout).
+pub async fn list_discovered_mosaics(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<Vec<DiscoveredMosaic>>, (StatusCode, String)> {
+    let root = Config::mosaic_root_dir();
+    let current = state.mosaic_root.clone();
+    let mosaics = tokio::task::spawn_blocking(move || -> std::io::Result<Vec<DiscoveredMosaic>> {
+        let mut out: Vec<DiscoveredMosaic> = Vec::new();
+        if root.exists() {
+            for entry in std::fs::read_dir(&root)? {
+                let entry = entry?;
+                let p = entry.path();
+                if p.is_dir() && p.join(".tesela").exists() {
+                    out.push(summarize_mosaic(&p, &current));
+                }
+            }
+        }
+        // Include the current mosaic if it isn't already in the list.
+        if !out.iter().any(|m| std::path::Path::new(&m.path) == current.as_path()) {
+            out.push(summarize_mosaic(&current, &current));
+        }
+        // Sort: current first, then alpha by name.
+        out.sort_by(|a, b| {
+            b.is_current
+                .cmp(&a.is_current)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        Ok(out)
+    })
+    .await
+    .map_err(internal)?
+    .map_err(internal_io)?;
+    Ok(Json(mosaics))
+}
+
+fn summarize_mosaic(path: &std::path::Path, current: &std::path::Path) -> DiscoveredMosaic {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let notes_dir = path.join("notes");
+    let mut note_count = 0usize;
+    let mut last_mtime: Option<std::time::SystemTime> = None;
+    if let Ok(entries) = std::fs::read_dir(&notes_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) == Some("md") {
+                note_count += 1;
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(m) = meta.modified() {
+                        last_mtime = Some(match last_mtime {
+                            Some(prev) if prev > m => prev,
+                            _ => m,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    let last_modified = last_mtime.and_then(|t| {
+        chrono::DateTime::<chrono::Local>::from(t)
+            .to_rfc3339()
+            .into()
+    });
+    DiscoveredMosaic {
+        name,
+        path: path.to_string_lossy().into_owned(),
+        is_current: path == current,
+        note_count,
+        last_modified,
+    }
 }
 
 #[derive(Debug, Deserialize)]

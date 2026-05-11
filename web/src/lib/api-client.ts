@@ -149,6 +149,7 @@ export const api = {
 
   // Mosaic management
   currentMosaic: () => get<CurrentMosaicResponse>("/mosaics/current"),
+  discoveredMosaics: () => get<DiscoveredMosaic[]>("/mosaics/discovered"),
   createMosaic: (req: CreateMosaicRequest) =>
     post<CreateMosaicResponse>("/mosaics", req),
   switchMosaic: (path: string) =>
@@ -164,8 +165,18 @@ export interface CurrentMosaicResponse {
   suggested_root: string;
 }
 export interface CreateMosaicRequest {
-  path: string;
+  /** Custom absolute path. Mutually exclusive with `name`. */
+  path?: string;
+  /** Bare name; server places at `<data_dir>/tesela/<name>`. */
+  name?: string;
   import?: { kind: "obsidian" | "logseq" | "org"; source: string };
+}
+export interface DiscoveredMosaic {
+  name: string;
+  path: string;
+  is_current: boolean;
+  note_count: number;
+  last_modified: string | null;
 }
 export interface CreateMosaicResponse {
   path: string;

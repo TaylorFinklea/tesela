@@ -1,40 +1,62 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, type CurrentMosaicResponse, type CreateMosaicResponse } from "$lib/api-client";
+  import {
+    api,
+    type CurrentMosaicResponse,
+    type CreateMosaicResponse,
+    type DiscoveredMosaic,
+  } from "$lib/api-client";
 
   let current = $state<CurrentMosaicResponse | null>(null);
+  let discovered = $state<DiscoveredMosaic[]>([]);
+
+  // Create form
+  type LocationMode = "name" | "custom";
+  let locationMode = $state<LocationMode>("name");
   let mode = $state<"blank" | "import">("blank");
+  let newName = $state("");
+  let newCustomPath = $state("");
   let importKind = $state<"obsidian" | "logseq" | "org">("logseq");
-  let newPath = $state("");
   let sourcePath = $state("");
+
   let creating = $state(false);
-  let pickingNew = $state(false);
+  let pickingCustom = $state(false);
   let pickingSource = $state(false);
   let result = $state<CreateMosaicResponse | null>(null);
   let error = $state<string | null>(null);
-  let switching = $state(false);
+
+  // Per-row state for the Discovered list
+  let switchingPath = $state<string | null>(null);
+  let rowMessage = $state<Record<string, string>>({});
 
   async function refresh() {
     try {
       current = await api.currentMosaic();
-    } catch (e) {
-      // server may be restarting; tolerate.
-    }
+    } catch {/* tolerate */}
+    try {
+      discovered = await api.discoveredMosaics();
+    } catch {/* tolerate */}
   }
   onMount(refresh);
 
-  async function pickNewPath() {
-    if (pickingNew) return;
-    pickingNew = true;
+  // Derived: preview path for Name mode.
+  const resolvedNamePath = $derived.by(() => {
+    if (!current?.suggested_root) return "";
+    const trimmed = newName.trim();
+    if (!trimmed) return "";
+    return `${current.suggested_root}/${trimmed}`;
+  });
+
+  async function pickCustomPath() {
+    if (pickingCustom) return;
+    pickingCustom = true;
     try {
-      const res = await api.pickFolder(
-        "Pick (or create) a folder for the new mosaic",
-      );
-      if (res.path) newPath = res.path;
+      const res = await api.pickFolder("Pick (or create) a folder for the new mosaic");
+      if (res.path) newCustomPath = res.path;
     } catch (e: any) {
       error = e?.message ?? `${e}`;
     } finally {
-      pickingNew = false;
+      pickingCustom = false;
     }
   }
   async function pickSourcePath() {
@@ -58,7 +80,11 @@
 
   async function create() {
     if (creating) return;
-    if (!newPath.trim()) {
+    if (locationMode === "name" && !newName.trim()) {
+      error = "Give the mosaic a name.";
+      return;
+    }
+    if (locationMode === "custom" && !newCustomPath.trim()) {
       error = "Pick a target folder for the new mosaic.";
       return;
     }
@@ -71,12 +97,15 @@
     result = null;
     try {
       result = await api.createMosaic({
-        path: newPath,
+        name: locationMode === "name" ? newName.trim() : undefined,
+        path: locationMode === "custom" ? newCustomPath : undefined,
         import:
           mode === "import"
             ? { kind: importKind, source: sourcePath }
             : undefined,
       });
+      // Refresh the discovered list so the new mosaic appears for quick-switch.
+      await refresh();
     } catch (e: any) {
       error = e?.message ?? `${e}`;
     } finally {
@@ -84,31 +113,39 @@
     }
   }
 
-  async function switchAndRestart() {
-    if (!result || switching) return;
+  async function switchAndRestart(path: string) {
+    if (switchingPath) return;
     if (
       !confirm(
-        "Switch to this mosaic? The server will shut down (auto-backup runs), then a new instance will start on the new mosaic in ~2 seconds. The page will lose its WebSocket connection during the swap.",
+        `Switch to ${path}? The server will shut down (auto-backup runs), then a new instance will start in ~2 seconds. The page will lose its WebSocket connection during the swap.`,
       )
     ) {
       return;
     }
-    switching = true;
+    switchingPath = path;
+    rowMessage[path] = "Switching…";
     error = null;
     try {
-      await api.switchMosaic(result.path);
-      const r = await api.restartServer();
-      if (r.respawn_used) {
-        // Reload after ~4s to give the new server time to bind + index.
-        setTimeout(() => location.reload(), 4000);
-      } else {
-        // launchd managed — same wait.
-        setTimeout(() => location.reload(), 4000);
-      }
+      await api.switchMosaic(path);
+      await api.restartServer();
+      setTimeout(() => location.reload(), 4000);
     } catch (e: any) {
-      error = e?.message ?? `${e}`;
-      switching = false;
+      rowMessage[path] = `Error: ${e?.message ?? e}`;
+      switchingPath = null;
     }
+  }
+
+  function fmtRelative(iso: string | null): string {
+    if (!iso) return "";
+    const then = new Date(iso).getTime();
+    const sec = Math.max(0, Math.round((Date.now() - then) / 1000));
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.round(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    const hr = Math.round(min / 60);
+    if (hr < 24) return `${hr}h ago`;
+    const d = Math.round(hr / 24);
+    return `${d}d ago`;
   }
 </script>
 
@@ -128,7 +165,48 @@
     </div>
   {/if}
 
-  <div class="space-y-2">
+  <!-- Discovered mosaics -->
+  {#if discovered.length > 0}
+    <div class="space-y-1 mb-5">
+      <p class="text-[11px] text-muted-foreground/60 mb-1.5">
+        Discovered ({discovered.length})
+      </p>
+      {#each discovered as m}
+        <div class="border border-border/40 rounded-md px-3 py-2 space-y-1
+                    {m.is_current ? 'bg-primary/5 border-primary/30' : ''}">
+          <div class="flex items-center gap-3">
+            <span class="font-mono text-foreground/90 text-[12px]">{m.name}</span>
+            {#if m.is_current}
+              <span class="text-[10px] uppercase tracking-wider text-primary">current</span>
+            {/if}
+            <span class="ml-auto text-[10px] text-muted-foreground/60">
+              {m.note_count} note{m.note_count === 1 ? "" : "s"}
+              {#if m.last_modified}
+                · {fmtRelative(m.last_modified)}
+              {/if}
+            </span>
+          </div>
+          <div class="text-[10px] text-muted-foreground/50 font-mono break-all">{m.path}</div>
+          {#if !m.is_current}
+            <div class="flex items-center gap-2 pt-1">
+              <button
+                class="px-2 py-0.5 rounded text-[11px] border border-border/40 hover:bg-muted/40 disabled:opacity-50"
+                disabled={switchingPath === m.path}
+                onclick={() => switchAndRestart(m.path)}>Switch</button>
+              {#if rowMessage[m.path]}
+                <span class="text-[10px] text-muted-foreground/70">{rowMessage[m.path]}</span>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  {/if}
+
+  <!-- Create new -->
+  <div class="space-y-2 border-t border-border/30 pt-4">
+    <p class="text-[11px] text-muted-foreground/60 mb-1.5">Create a new mosaic</p>
+
     <div class="flex items-center gap-2">
       <span class="text-[12px] text-muted-foreground/70">Create:</span>
       {#each [
@@ -141,24 +219,52 @@
       {/each}
     </div>
 
-    <div class="flex gap-2">
+    <div class="flex items-center gap-2 pt-1">
+      <span class="text-[12px] text-muted-foreground/70">Location:</span>
+      {#each [
+        { id: "name", label: "Just a name" },
+        { id: "custom", label: "Custom folder" },
+      ] as opt}
+        <button
+          class="px-2.5 py-1 rounded-md text-[12px] transition-all border {locationMode === opt.id ? 'bg-primary/10 text-primary border-primary/20 ring-1 ring-primary/15' : 'text-muted-foreground border-border/50 hover:bg-muted/40 hover:text-foreground'}"
+          onclick={() => (locationMode = opt.id as LocationMode)}>{opt.label}</button>
+      {/each}
+    </div>
+
+    {#if locationMode === "name"}
       <input
         type="text"
-        placeholder={current?.suggested_root
-          ? `${current.suggested_root}/my-new-mosaic`
-          : "/path/to/new/mosaic"}
-        bind:value={newPath}
-        class="flex-1 text-[12px] bg-muted/50 rounded-md px-3 py-2 text-foreground/90 font-mono outline-none border border-transparent focus:border-ring/30"
+        placeholder="my-logseq-import"
+        bind:value={newName}
+        class="w-full text-[12px] bg-muted/50 rounded-md px-3 py-2 text-foreground/90 font-mono outline-none border border-transparent focus:border-ring/30"
       />
-      <button
-        class="px-3 py-1.5 rounded-md text-[12px] border border-border/50 hover:bg-muted/40 hover:text-foreground transition-colors disabled:opacity-50"
-        disabled={pickingNew}
-        onclick={pickNewPath}
-        title="Browse for the folder that will hold the new mosaic"
-      >
-        {pickingNew ? "…" : "Browse…"}
-      </button>
-    </div>
+      <p class="text-[11px] text-muted-foreground/50">
+        {#if resolvedNamePath}
+          Will create at <span class="font-mono">{resolvedNamePath}</span>
+        {:else if current?.suggested_root}
+          Will land under <span class="font-mono">{current.suggested_root}/&lt;name&gt;</span>
+        {/if}
+      </p>
+    {:else}
+      <div class="flex gap-2">
+        <input
+          type="text"
+          placeholder={current?.suggested_root
+            ? `${current.suggested_root}/my-new-mosaic`
+            : "/path/to/new/mosaic"}
+          bind:value={newCustomPath}
+          class="flex-1 text-[12px] bg-muted/50 rounded-md px-3 py-2 text-foreground/90 font-mono outline-none border border-transparent focus:border-ring/30"
+        />
+        <button
+          class="px-3 py-1.5 rounded-md text-[12px] border border-border/50 hover:bg-muted/40 hover:text-foreground transition-colors disabled:opacity-50"
+          disabled={pickingCustom}
+          onclick={pickCustomPath}
+          title="Browse for the folder that will hold the new mosaic"
+        >
+          {pickingCustom ? "…" : "Browse…"}
+        </button>
+      </div>
+    {/if}
 
     {#if mode === "import"}
       <div class="flex items-center gap-2 pt-1">
@@ -217,10 +323,10 @@
         {/if}
         <button
           class="px-2.5 py-1 rounded-md text-[12px] border border-primary/30 bg-primary/10 text-primary hover:bg-primary/20 transition-colors disabled:opacity-50"
-          disabled={switching}
-          onclick={switchAndRestart}
+          disabled={!!switchingPath}
+          onclick={() => switchAndRestart(result!.path)}
         >
-          {switching ? "Switching…" : "Switch to this mosaic"}
+          {switchingPath ? "Switching…" : "Switch to this mosaic"}
         </button>
         <p class="text-[10px] text-muted-foreground/50">
           Server will gracefully shut down (auto-backup runs), then a fresh instance binds in ~2s. Page reloads automatically.
