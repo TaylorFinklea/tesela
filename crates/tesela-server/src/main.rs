@@ -47,7 +47,11 @@ async fn main() -> Result<()> {
     // creates missing files.
     match tesela_core::system_widgets::seed(&mosaic) {
         Ok(0) => {}
-        Ok(n) => info!("Seeded {} missing system widget(s) in {}", n, mosaic.display()),
+        Ok(n) => info!(
+            "Seeded {} missing system widget(s) in {}",
+            n,
+            mosaic.display()
+        ),
         Err(e) => warn!("System widget seed failed at {}: {}", mosaic.display(), e),
     }
 
@@ -211,7 +215,12 @@ async fn main() -> Result<()> {
     // mosaic is in a quiescent state. We deliberately do NOT block
     // shutdown indefinitely if backup fails — log + move on.
     if backup_cfg_for_shutdown.auto_on_quit {
-        match auto_backup_on_quit(&mosaic_for_shutdown, &index_for_shutdown, &backup_cfg_for_shutdown).await
+        match auto_backup_on_quit(
+            &mosaic_for_shutdown,
+            &index_for_shutdown,
+            &backup_cfg_for_shutdown,
+        )
+        .await
         {
             Ok(path) => info!("Auto-backup on shutdown: {}", path.display()),
             Err(e) => warn!("Auto-backup on shutdown failed: {}", e),
@@ -416,4 +425,3 @@ fn ensure_blank_mosaic(path: &Path) -> Result<()> {
     }
     Ok(())
 }
-

@@ -45,6 +45,25 @@ Criterion has built-in baseline support. The dev loop:
    shipping. The harness is informational — no automatic gating
    (yet).
 
+## Frontend smoke suite
+
+The web perf smoke suite drives the real Svelte app through Playwright
+against a generated `tesela-fixtures::medium()` mosaic:
+
+```sh
+pnpm --dir web test:perf
+```
+
+The runner creates a temp mosaic with `cargo run -p tesela-fixtures-cli
+-- --preset medium --out <path>`, starts `tesela-server` on
+`127.0.0.1:7474`, starts Vite on `127.0.0.1:4174`, and records JSONL
+timings at `web/test-results/perf-timings.jsonl`. The smoke coverage is:
+
+- `/p/dailies` first paint to the fifth day section (<1.5s)
+- rail navigation to the Tasks kanban first card (<800ms)
+- command palette open and first result render (<300ms)
+- Settings → Mosaic → Logseq create/import plan preview (<5s)
+
 ## Adding a new bench
 
 1. Pick the crate that owns the function under test.
@@ -84,10 +103,7 @@ Criterion has built-in baseline support. The dev loop:
 
 ## Out of scope (yet)
 
-- **Frontend benches**: the Dailies-fetch and CodeMirror-mount issues
-  that triggered this phase are frontend-side. A Playwright-based
-  smoke suite is the next follow-up.
-- **CI integration**: `cargo bench` is local-only today. A future
-  `.github/workflows/perf.yml` will run benches on PR, diff against
-  the baseline stored as a CI artifact, and post a comment.
+- **Blocking perf gates**: `.github/workflows/perf.yml` runs Rust
+  benches and the frontend smoke suite informationally. It comments on
+  PRs only when a Rust benchmark regresses by more than 10%.
 - **Memory profiling**: wall-clock first.

@@ -47,17 +47,13 @@ fn list_at_varied_limits(c: &mut Criterion) {
     // Daily-filtered list — the JournalView's actual query shape.
     let mut group = c.benchmark_group("core/list/tag_daily");
     for limit in &[30usize, 60, 200] {
-        group.bench_with_input(
-            BenchmarkId::from_parameter(limit),
-            limit,
-            |b, &limit| {
-                b.iter(|| {
-                    rt.block_on(async {
-                        let _ = store.list(Some("daily"), limit, 0).await.unwrap();
-                    })
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(limit), limit, |b, &limit| {
+            b.iter(|| {
+                rt.block_on(async {
+                    let _ = store.list(Some("daily"), limit, 0).await.unwrap();
+                })
+            });
+        });
     }
     group.finish();
 }

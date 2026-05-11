@@ -35,7 +35,10 @@ pub fn build(state: AppState) -> Router {
         .route("/notes/{id}/backlinks", get(notes::get_backlinks))
         .route("/notes/{id}/links", get(notes::get_forward_links))
         .route("/notes/{id}/versions", get(history::list_versions))
-        .route("/notes/{id}/versions/{version_id}", get(history::get_version))
+        .route(
+            "/notes/{id}/versions/{version_id}",
+            get(history::get_version),
+        )
         .route("/links", get(notes::get_all_edges))
         .route("/blocks/recur-bump", post(notes::recur_bump))
         .route("/sync/reminders/push", post(sync::push))
@@ -52,7 +55,10 @@ pub fn build(state: AppState) -> Router {
         .route("/types/{name}/blocks", get(types::list_typed_blocks))
         .route("/properties", get(types::list_properties))
         // Phase 13 — backup/export/import management (drives the web Settings UI)
-        .route("/backups", get(data_ops::list_backups).post(data_ops::run_backup))
+        .route(
+            "/backups",
+            get(data_ops::list_backups).post(data_ops::run_backup),
+        )
         .route("/backups/{name}/verify", post(data_ops::verify_backup))
         .route("/backups/{name}/restore", post(data_ops::restore_backup))
         .route("/backups/prune", post(data_ops::prune_backups))
@@ -70,7 +76,10 @@ pub fn build(state: AppState) -> Router {
         .route("/imports/org", post(data_ops::import_org))
         .route("/pick-folder", post(data_ops::pick_folder))
         .route("/mosaics/current", get(data_ops::get_current_mosaic))
-        .route("/mosaics/discovered", get(data_ops::list_discovered_mosaics))
+        .route(
+            "/mosaics/discovered",
+            get(data_ops::list_discovered_mosaics),
+        )
         .route("/mosaics", post(data_ops::create_mosaic))
         .route("/mosaics/switch", post(data_ops::switch_mosaic))
         .route("/server/restart", post(data_ops::restart_server))

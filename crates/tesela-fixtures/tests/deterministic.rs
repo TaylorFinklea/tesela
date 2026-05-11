@@ -104,5 +104,8 @@ fn different_seed_produces_different_output() {
     let h2 = hash_dir(t2.path());
     let h1_total: u64 = h1.iter().fold(0u64, |acc, (_, h)| acc.wrapping_add(*h));
     let h2_total: u64 = h2.iter().fold(0u64, |acc, (_, h)| acc.wrapping_add(*h));
-    assert_ne!(h1_total, h2_total, "different seeds produced identical mosaics");
+    assert_ne!(
+        h1_total, h2_total,
+        "different seeds produced identical mosaics"
+    );
 }

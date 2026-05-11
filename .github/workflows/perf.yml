@@ -1,0 +1,193 @@
+name: Performance
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 8 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  perf:
+    name: Perf harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-perf-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install critcmp
+        run: |
+          if ! command -v critcmp >/dev/null 2>&1; then
+            cargo install critcmp --locked
+          fi
+
+      - name: Fetch latest main bench baseline
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p /tmp/bench-baseline target
+          run_id="$(gh run list --workflow perf.yml --branch main --status success --limit 20 --json databaseId,event --jq '[.[] | select(.event == "schedule" or .event == "workflow_dispatch" or .event == "push")][0].databaseId // ""')"
+          if [ -n "$run_id" ]; then
+            gh run download "$run_id" --name bench-baseline-main --dir /tmp/bench-baseline || true
+          fi
+          if [ -f /tmp/bench-baseline/bench-baseline-main.tar.gz ]; then
+            tar -xzf /tmp/bench-baseline/bench-baseline-main.tar.gz -C target
+          fi
+
+      - name: Run Rust criterion benches
+        id: benches
+        continue-on-error: true
+        run: |
+          baseline="${{ github.event_name == 'pull_request' && 'pr-current' || 'main' }}"
+          cargo bench --workspace --benches -- --save-baseline "$baseline"
+
+      - name: Diff Rust benches
+        if: github.event_name == 'pull_request'
+        id: bench_diff
+        continue-on-error: true
+        run: |
+          if find target/criterion -path '*/main/estimates.json' | grep -q .; then
+            critcmp main pr-current -t 10 > /tmp/critcmp.txt || true
+            node <<'NODE' > /tmp/bench-regressions.json
+          const fs = require("fs");
+          const path = require("path");
+          const root = "target/criterion";
+          const rows = [];
+          function walk(dir) {
+            for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+              const p = path.join(dir, ent.name);
+              if (ent.isDirectory()) walk(p);
+              else if (ent.name === "estimates.json" && p.endsWith("/pr-current/estimates.json")) {
+                const main = p.replace("/pr-current/estimates.json", "/main/estimates.json");
+                if (!fs.existsSync(main)) continue;
+                const cur = JSON.parse(fs.readFileSync(p, "utf8")).mean.point_estimate;
+                const base = JSON.parse(fs.readFileSync(main, "utf8")).mean.point_estimate;
+                const pct = ((cur - base) / base) * 100;
+                if (pct > 10) rows.push({ bench: path.dirname(path.dirname(p)).slice(root.length + 1), main: base, current: cur, pct });
+              }
+            }
+          }
+          if (fs.existsSync(root)) walk(root);
+          console.log(JSON.stringify(rows, null, 2));
+          NODE
+            count="$(node -e 'const fs=require("fs"); const rows=JSON.parse(fs.readFileSync("/tmp/bench-regressions.json","utf8")); console.log(rows.length)')"
+            if [ "$count" != "0" ]; then
+              echo "has_regression=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "has_regression=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "has_regression=false" >> "$GITHUB_OUTPUT"
+            echo "No main baseline artifact found." > /tmp/critcmp.txt
+            echo "[]" > /tmp/bench-regressions.json
+          fi
+
+      - name: Package main bench baseline
+        if: github.event_name != 'pull_request'
+        run: tar -czf bench-baseline-main.tar.gz -C target criterion
+
+      - name: Upload main bench baseline
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-baseline-main
+          path: bench-baseline-main.tar.gz
+          retention-days: 30
+
+      - name: Install pnpm
+        if: github.event_name == 'pull_request'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Install web dependencies
+        if: github.event_name == 'pull_request'
+        run: pnpm --dir web install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        if: github.event_name == 'pull_request'
+        run: pnpm --dir web exec playwright install --with-deps chromium
+
+      - name: Run frontend perf smoke suite
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        run: pnpm --dir web test:perf
+
+      - name: Upload frontend perf timings
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-perf-timings
+          path: |
+            web/test-results/perf-timings.jsonl
+            web/test-results/perf-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Comment on perf regression
+        if: github.event_name == 'pull_request' && steps.bench_diff.outputs.has_regression == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const regressions = JSON.parse(fs.readFileSync("/tmp/bench-regressions.json", "utf8"));
+            const critcmp = fs.existsSync("/tmp/critcmp.txt") ? fs.readFileSync("/tmp/critcmp.txt", "utf8").trim() : "";
+            const timingsPath = "web/test-results/perf-timings.jsonl";
+            const timings = fs.existsSync(timingsPath)
+              ? fs.readFileSync(timingsPath, "utf8").trim().split("\n").filter(Boolean).map((line) => JSON.parse(line))
+              : [];
+            const regRows = regressions.map((r) => `| \`${r.bench}\` | ${r.pct.toFixed(1)}% |`).join("\n");
+            const timingRows = timings.length
+              ? timings.map((t) => `| ${t.name} | ${t.ms}ms | ${t.budget_ms}ms | ${t.ok ? "yes" : "no"} |`).join("\n")
+              : "| n/a | n/a | n/a | n/a |";
+            const body = [
+              "### Performance regression detected",
+              "",
+              "Rust criterion benchmarks regressed by more than 10% compared with the latest main baseline.",
+              "",
+              "| Bench | Regression |",
+              "|---|---:|",
+              regRows,
+              "",
+              "<details><summary>critcmp output</summary>",
+              "",
+              "```text",
+              critcmp.slice(0, 60000),
+              "```",
+              "",
+              "</details>",
+              "",
+              "Frontend Playwright smoke timings from this PR run:",
+              "",
+              "| Smoke | Time | Budget | Within budget |",
+              "|---|---:|---:|---|",
+              timingRows,
+            ].join("\n");
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });

@@ -300,12 +300,11 @@ pub async fn keygen(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let mosaic = state.mosaic_root.clone();
-    let recipient = tokio::task::spawn_blocking(move || {
-        tesela_backup::encrypt::keygen_for_mosaic(&mosaic)
-    })
-    .await
-    .map_err(internal)?
-    .map_err(server_error)?;
+    let recipient =
+        tokio::task::spawn_blocking(move || tesela_backup::encrypt::keygen_for_mosaic(&mosaic))
+            .await
+            .map_err(internal)?
+            .map_err(server_error)?;
     Ok(Json(serde_json::json!({ "recipient": recipient })))
 }
 
@@ -346,7 +345,10 @@ pub async fn get_backup_config(
     };
     Ok(Json(BackupConfigDto {
         auto_on_quit: cfg.backup.auto_on_quit,
-        external_path: cfg.backup.external_path.map(|p| p.to_string_lossy().into_owned()),
+        external_path: cfg
+            .backup
+            .external_path
+            .map(|p| p.to_string_lossy().into_owned()),
         git_remote: cfg.backup.git_remote,
         git_branch: cfg.backup.git_branch,
     }))
@@ -841,10 +843,7 @@ pub async fn create_mosaic(
     let path = if let Some(p) = req.path.as_ref().filter(|s| !s.trim().is_empty()) {
         PathBuf::from(p)
     } else if let Some(name) = req.name.as_ref().filter(|s| !s.trim().is_empty()) {
-        if name.contains('/')
-            || name.contains('\\')
-            || name.contains("..")
-            || name.starts_with('.')
+        if name.contains('/') || name.contains('\\') || name.contains("..") || name.starts_with('.')
         {
             return Err((
                 StatusCode::BAD_REQUEST,
@@ -861,7 +860,10 @@ pub async fn create_mosaic(
     if path.join(".tesela").exists() {
         return Err((
             StatusCode::CONFLICT,
-            format!("a mosaic already exists at {} (`.tesela/` dir present)", path.display()),
+            format!(
+                "a mosaic already exists at {} (`.tesela/` dir present)",
+                path.display()
+            ),
         ));
     }
 
@@ -885,9 +887,12 @@ pub async fn create_mosaic(
     // Initializing SQLite needs a tokio runtime (sqlx), so do it in
     // the async context.
     let db_path = path.join(".tesela").join("tesela.db");
-    SqliteIndex::open(&db_path)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("init sqlite: {}", e)))?;
+    SqliteIndex::open(&db_path).await.map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("init sqlite: {}", e),
+        )
+    })?;
 
     let mut import_stdout = None;
     let mut import_stderr = None;
@@ -968,7 +973,10 @@ pub async fn list_discovered_mosaics(
             }
         }
         // Include the current mosaic if it isn't already in the list.
-        if !out.iter().any(|m| std::path::Path::new(&m.path) == current.as_path()) {
+        if !out
+            .iter()
+            .any(|m| std::path::Path::new(&m.path) == current.as_path())
+        {
             out.push(summarize_mosaic(&current, &current));
         }
         // Sort: current first, then alpha by name.
@@ -1083,8 +1091,8 @@ pub async fn restart_server() -> Result<Json<serde_json::Value>, (StatusCode, St
                 None
             }
         };
-        let respawn_used = maybe_respawn_detached(pinned_mosaic.as_deref())
-            .map_err(server_error)?;
+        let respawn_used =
+            maybe_respawn_detached(pinned_mosaic.as_deref()).map_err(server_error)?;
         // Schedule SIGTERM after the HTTP response goes out.
         tokio::spawn(async {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;

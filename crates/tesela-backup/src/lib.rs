@@ -351,7 +351,8 @@ impl MosaicLock {
             .write(true)
             .truncate(false)
             .open(&lock_path)?;
-        file.try_lock_exclusive().map_err(|_| BackupError::LockHeld)?;
+        file.try_lock_exclusive()
+            .map_err(|_| BackupError::LockHeld)?;
         Ok(Self { _file: file })
     }
 }
@@ -430,8 +431,7 @@ mod tests {
         assert_eq!(original, restored_bytes);
 
         let original_attach = std::fs::read(mosaic.join("attachments/foo.bin")).unwrap();
-        let restored_attach =
-            std::fs::read(restored.target.join("attachments/foo.bin")).unwrap();
+        let restored_attach = std::fs::read(restored.target.join("attachments/foo.bin")).unwrap();
         assert_eq!(original_attach, restored_attach);
     }
 
@@ -510,8 +510,7 @@ mod tests {
             *cell.borrow_mut() = None;
         });
 
-        let plain =
-            std::fs::read_to_string(restored.target.join("notes/2026-05-10.md")).unwrap();
+        let plain = std::fs::read_to_string(restored.target.join("notes/2026-05-10.md")).unwrap();
         assert!(plain.contains("hello"));
     }
 

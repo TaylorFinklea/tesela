@@ -172,12 +172,7 @@ fn test_export_mosaic_full() {
 
     let out = tmp.path().join("export-out");
     tesela(&tmp)
-        .args([
-            "export",
-            out.to_str().unwrap(),
-            "--mode",
-            "full",
-        ])
+        .args(["export", out.to_str().unwrap(), "--mode", "full"])
         .assert()
         .success()
         .stdout(predicate::str::contains("full mode"));

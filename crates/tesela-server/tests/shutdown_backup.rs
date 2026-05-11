@@ -98,7 +98,11 @@ fn sigterm_triggers_validated_backup() {
 
     let backup = entries.last().unwrap().path();
     let manifest = backup.join("manifest.json");
-    assert!(manifest.exists(), "manifest.json missing at {}", manifest.display());
+    assert!(
+        manifest.exists(),
+        "manifest.json missing at {}",
+        manifest.display()
+    );
 
     let raw = fs::read_to_string(&manifest).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();

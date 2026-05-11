@@ -564,10 +564,7 @@ mod tests {
     #[test]
     fn comparison_on_numeric_property() {
         let q = parse_query("priority:>=3");
-        assert!(block_matches(
-            &block_with(vec![], &[("priority", "5")]),
-            &q
-        ));
+        assert!(block_matches(&block_with(vec![], &[("priority", "5")]), &q));
         assert!(!block_matches(
             &block_with(vec![], &[("priority", "1")]),
             &q

@@ -40,11 +40,7 @@ pub struct PruneOutcome {
 /// 3. From what remains, walk by ISO week — keep one per week up to M.
 /// 4. From what still remains, walk by month — keep one per month up to K.
 /// 5. Anything not selected is removed.
-pub fn prune_gfs(
-    backup_root: &Path,
-    policy: GfsPolicy,
-    dry_run: bool,
-) -> Result<PruneOutcome> {
+pub fn prune_gfs(backup_root: &Path, policy: GfsPolicy, dry_run: bool) -> Result<PruneOutcome> {
     if !backup_root.exists() {
         return Ok(PruneOutcome::default());
     }

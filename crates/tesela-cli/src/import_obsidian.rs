@@ -84,7 +84,14 @@ pub async fn run(mosaic: &Path, source: PathBuf, dry_run: bool) -> Result<()> {
             continue;
         }
 
-        match import_one(&source, &rel, &notes_dir, dry_run, &mut log_lines, &mut produced_ids) {
+        match import_one(
+            &source,
+            &rel,
+            &notes_dir,
+            dry_run,
+            &mut log_lines,
+            &mut produced_ids,
+        ) {
             Ok(IndexAction::Imported) => stats.imported += 1,
             Ok(IndexAction::Unchanged) => stats.unchanged += 1,
             Ok(IndexAction::Conflict) => stats.conflicts += 1,
@@ -106,9 +113,8 @@ pub async fn run(mosaic: &Path, source: PathBuf, dry_run: bool) -> Result<()> {
         );
         content.push_str(&log_lines.join("\n"));
         content.push('\n');
-        fs::write(&log_path, content).with_context(|| {
-            format!("write import log {}", log_path.display())
-        })?;
+        fs::write(&log_path, content)
+            .with_context(|| format!("write import log {}", log_path.display()))?;
     }
 
     println!("Obsidian import complete:");
@@ -334,12 +340,7 @@ fn extract_frontmatter_value(content: &str, key: &str) -> Option<String> {
 /// Build the new frontmatter: keep what was there, append/overwrite
 /// our two source-tracking keys, ensure `tags` includes the folder
 /// tags. Fully fenced YAML, ready to write.
-fn build_frontmatter(
-    existing: &str,
-    rel_str: &str,
-    sha: &str,
-    folder_tags: &[String],
-) -> String {
+fn build_frontmatter(existing: &str, rel_str: &str, sha: &str, folder_tags: &[String]) -> String {
     let mut out = String::new();
     out.push_str("---\n");
 
@@ -527,8 +528,7 @@ mod tests {
         make_vault(&vault);
 
         run(&mosaic, vault.clone(), false).await.unwrap();
-        let first_body =
-            fs::read_to_string(mosaic.join("notes/other-page.md")).unwrap();
+        let first_body = fs::read_to_string(mosaic.join("notes/other-page.md")).unwrap();
         let first_mtime = fs::metadata(mosaic.join("notes/other-page.md"))
             .unwrap()
             .modified()
@@ -538,8 +538,7 @@ mod tests {
         // Re-run with the same vault — second time should be a no-op
         // for unchanged files.
         run(&mosaic, vault.clone(), false).await.unwrap();
-        let second_body =
-            fs::read_to_string(mosaic.join("notes/other-page.md")).unwrap();
+        let second_body = fs::read_to_string(mosaic.join("notes/other-page.md")).unwrap();
         let second_mtime = fs::metadata(mosaic.join("notes/other-page.md"))
             .unwrap()
             .modified()

@@ -3,6 +3,11 @@ name = "tesela-plugins"
 version = "0.1.0"
 edition = "2021"
 
+# Skip the lib's libtest pass during `cargo bench` so criterion's
+# `--save-baseline` flag isn't intercepted by an unrelated harness.
+[lib]
+bench = false
+
 [dependencies]
 tesela-core = { path = "../tesela-core" }
 mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }

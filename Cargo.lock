@@ -3644,6 +3644,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tesela-fixtures-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "tesela-fixtures",
+]
+
+[[package]]
 name = "tesela-mcp"
 version = "0.1.0"
 dependencies = [

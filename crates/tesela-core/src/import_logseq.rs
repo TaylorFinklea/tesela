@@ -1,9 +1,9 @@
+use crate::regex_cache::{BLOCK_REF_RE, LOGSEQ_DATE_RE, PRIORITY_RE};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use crate::regex_cache::{BLOCK_REF_RE, LOGSEQ_DATE_RE, PRIORITY_RE};
 
 const SOURCE_PATH_KEY: &str = "source_logseq_path";
 const SOURCE_SHA_KEY: &str = "source_logseq_sha";
@@ -136,8 +136,8 @@ pub async fn run(mosaic: &Path, source: PathBuf, dry_run: bool) -> Result<()> {
         return Ok(());
     }
 
-    let outcome = apply_plan(&plan, &ApplyDecisions::default(), mosaic)
-        .context("apply logseq import")?;
+    let outcome =
+        apply_plan(&plan, &ApplyDecisions::default(), mosaic).context("apply logseq import")?;
     println!("  Imported: {}", outcome.imported);
     println!("  Overwritten: {}", outcome.overwritten);
     println!("  Renamed: {}", outcome.renamed);
@@ -198,9 +198,7 @@ pub fn build_plan(source: &Path, mosaic: &Path) -> Result<ImportPlan> {
             }
             let stem = name.trim_end_matches(".md");
             let date_id = stem.replace('_', "-");
-            if date_id.len() != 10
-                || date_id.chars().filter(|c| *c == '-').count() != 2
-            {
+            if date_id.len() != 10 || date_id.chars().filter(|c| *c == '-').count() != 2 {
                 continue;
             }
             let target_path = notes_dir.join(format!("{}.md", date_id));
@@ -224,7 +222,10 @@ pub fn build_plan(source: &Path, mosaic: &Path) -> Result<ImportPlan> {
                         converted
                     )
                 },
-            )? else { continue };
+            )?
+            else {
+                continue;
+            };
             items.push(item);
         }
     }
@@ -257,7 +258,11 @@ pub fn build_plan(source: &Path, mosaic: &Path) -> Result<ImportPlan> {
                 .map(|s| s.replace([' ', ':'], "-").to_lowercase())
                 .filter(|s| !s.is_empty())
                 .collect();
-            let title = clean_name.split('/').next_back().unwrap_or(&clean_name).to_string();
+            let title = clean_name
+                .split('/')
+                .next_back()
+                .unwrap_or(&clean_name)
+                .to_string();
             let safe_name_for_id = safe_name.clone();
             let Some(item) = plan_one(
                 &source_path,
@@ -280,16 +285,13 @@ pub fn build_plan(source: &Path, mosaic: &Path) -> Result<ImportPlan> {
                     };
                     format!(
                         "---\ntitle: \"{}\"\ntags: {}\n{}: \"{}\"\n{}: \"{}\"\n---\n{}",
-                        title,
-                        tags,
-                        SOURCE_PATH_KEY,
-                        rel_str,
-                        SOURCE_SHA_KEY,
-                        sha,
-                        converted
+                        title, tags, SOURCE_PATH_KEY, rel_str, SOURCE_SHA_KEY, sha, converted
                     )
                 },
-            )? else { continue };
+            )?
+            else {
+                continue;
+            };
             items.push(item);
         }
     }
@@ -422,9 +424,11 @@ pub fn apply_plan(
                 let content = item.rendered_full.as_deref().unwrap_or_default();
                 match std::fs::write(&target_path, content) {
                     Ok(_) => outcome.imported += 1,
-                    Err(e) => outcome
-                        .errors
-                        .push(format!("write {}: {}", target_path.display(), e)),
+                    Err(e) => {
+                        outcome
+                            .errors
+                            .push(format!("write {}: {}", target_path.display(), e))
+                    }
                 }
             }
             PlanKind::ConflictDiffSha | PlanKind::ConflictForeign => {
@@ -433,9 +437,11 @@ pub fn apply_plan(
                     Decision::Skip => outcome.skipped += 1,
                     Decision::Overwrite => match std::fs::write(&target_path, content) {
                         Ok(_) => outcome.overwritten += 1,
-                        Err(e) => outcome
-                            .errors
-                            .push(format!("overwrite {}: {}", target_path.display(), e)),
+                        Err(e) => outcome.errors.push(format!(
+                            "overwrite {}: {}",
+                            target_path.display(),
+                            e
+                        )),
                     },
                     Decision::Rename { suffix } => {
                         let renamed = target_path.with_file_name(format!(
@@ -455,9 +461,11 @@ pub fn apply_plan(
                         }
                         match std::fs::write(&renamed, content) {
                             Ok(_) => outcome.renamed += 1,
-                            Err(e) => outcome
-                                .errors
-                                .push(format!("rename write {}: {}", renamed.display(), e)),
+                            Err(e) => outcome.errors.push(format!(
+                                "rename write {}: {}",
+                                renamed.display(),
+                                e
+                            )),
                         }
                     }
                 }
@@ -701,16 +709,8 @@ mod tests {
             "- TODO Write tests\n- DONE Eat lunch\n",
         )
         .unwrap();
-        fs::write(
-            root.join("pages/Foo.md"),
-            "title:: Foo\n- regular page\n",
-        )
-        .unwrap();
-        fs::write(
-            root.join("pages/Parent___Child.md"),
-            "- nested page\n",
-        )
-        .unwrap();
+        fs::write(root.join("pages/Foo.md"), "title:: Foo\n- regular page\n").unwrap();
+        fs::write(root.join("pages/Parent___Child.md"), "- nested page\n").unwrap();
         fs::write(root.join("assets/thing.png"), b"\x89PNG\r\n").unwrap();
         fs::write(root.join("whiteboards/board.edn"), "{}").unwrap();
     }
@@ -767,7 +767,11 @@ mod tests {
 
         let plan = build_plan(&graph, &mosaic).unwrap();
         let counts = summarize(&plan);
-        assert!(counts.new_imports >= 2, "expected new imports: {:?}", counts);
+        assert!(
+            counts.new_imports >= 2,
+            "expected new imports: {:?}",
+            counts
+        );
         assert!(counts.conflicts >= 1, "expected ≥1 conflict: {:?}", counts);
         assert!(counts.hard_skips >= 1, "expected hard skip: {:?}", counts);
 
@@ -800,9 +804,12 @@ mod tests {
             .clone();
 
         let mut decisions = ApplyDecisions::default();
-        decisions
-            .per_item
-            .insert(foo_rel, Decision::Rename { suffix: "imported".to_string() });
+        decisions.per_item.insert(
+            foo_rel,
+            Decision::Rename {
+                suffix: "imported".to_string(),
+            },
+        );
         let outcome = apply_plan(&plan, &decisions, &mosaic).unwrap();
         assert_eq!(outcome.renamed, 1);
         assert!(notes.join("foo-imported.md").exists());

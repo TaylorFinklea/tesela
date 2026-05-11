@@ -144,7 +144,10 @@ pub async fn scan_once(
 fn parse_deadline_local(raw: &str) -> Option<DateTime<Utc>> {
     let trimmed = raw.trim();
     let (date_part, time_part) = match trimmed.find(' ') {
-        Some(idx) => (trimmed[..idx].trim(), Some(trimmed[idx..].trim().to_string())),
+        Some(idx) => (
+            trimmed[..idx].trim(),
+            Some(trimmed[idx..].trim().to_string()),
+        ),
         None => (trimmed, None),
     };
     let bare = date_part

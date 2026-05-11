@@ -21,9 +21,15 @@ pub struct AppState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum WsEvent {
-    NoteCreated { note: Note },
-    NoteUpdated { note: Note },
-    NoteDeleted { id: String },
+    NoteCreated {
+        note: Note,
+    },
+    NoteUpdated {
+        note: Note,
+    },
+    NoteDeleted {
+        id: String,
+    },
     /// Phase 12.3 — fired once per (block, deadline) when the configured
     /// lead time is reached and the task is still open. Client decides
     /// whether to surface a desktop notification.

@@ -325,8 +325,8 @@ async fn cmd_init(path: Option<PathBuf>) -> Result<()> {
 
     // Seed the default rail widgets (Dailies, Pages, Tasks, …) so the
     // first-launch UX isn't an empty rail. Idempotent.
-    let seeded = tesela_core::system_widgets::seed(&root)
-        .context("Failed to seed system widgets")?;
+    let seeded =
+        tesela_core::system_widgets::seed(&root).context("Failed to seed system widgets")?;
 
     println!(
         "Initialized mosaic at {}{}",
@@ -516,7 +516,11 @@ fn cmd_export_mosaic(mosaic: &Path, out: PathBuf, mode: String, attachments: boo
         println!(
             "Attachments: {} file{}",
             outcome.attachment_count,
-            if outcome.attachment_count == 1 { "" } else { "s" }
+            if outcome.attachment_count == 1 {
+                ""
+            } else {
+                "s"
+            }
         );
     }
     if matches!(mode, MarkdownMode::Portable) {
@@ -640,10 +644,7 @@ async fn cmd_backup(
     );
     if let Some(v) = &outcome.manifest.validated {
         if v.ok {
-            println!(
-                "Validated: round-trip OK in {} ms",
-                v.elapsed_ms
-            );
+            println!("Validated: round-trip OK in {} ms", v.elapsed_ms);
         } else {
             println!(
                 "Validated: FAILED — {}",
@@ -667,7 +668,10 @@ fn cmd_backup_keygen(mosaic: &Path) -> Result<()> {
     let recipient =
         tesela_backup::encrypt::keygen_for_mosaic(mosaic).map_err(|e| anyhow::anyhow!("{}", e))?;
     println!("Generated age identity for {}", mosaic.display());
-    println!("Stored in Keychain (service=tesela-backup, account={})", mosaic.display());
+    println!(
+        "Stored in Keychain (service=tesela-backup, account={})",
+        mosaic.display()
+    );
     println!("Public recipient: {}", recipient);
     println!("\nFuture `tesela backup --output <path>` runs will encrypt to this recipient.");
     Ok(())

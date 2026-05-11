@@ -83,7 +83,11 @@ pub fn parse_blocks(note_id: &str, body: &str) -> Vec<ParsedBlock> {
 
     for (line_num, indent, raw_text) in raw_blocks {
         // Pop stack entries that are at the same or deeper indent (not true ancestors)
-        while ancestor_stack.last().map(|(i, _)| *i >= indent).unwrap_or(false) {
+        while ancestor_stack
+            .last()
+            .map(|(i, _)| *i >= indent)
+            .unwrap_or(false)
+        {
             ancestor_stack.pop();
         }
         // Collect unique tags from all remaining ancestors (preserving order)
@@ -118,7 +122,11 @@ fn make_block(
     let mut seen = std::collections::HashSet::new();
     let mut tags: Vec<String> = Vec::new();
     if let Some(tags_value) = properties.remove("tags") {
-        for t in tags_value.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        for t in tags_value
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+        {
             if seen.insert(t.to_string()) {
                 tags.push(t.to_string());
             }
@@ -276,7 +284,10 @@ mod tests {
         let body = "- Item\n  tags:: Task\n  status:: doing";
         let blocks = parse_blocks("test", body);
         assert_eq!(blocks[0].tags, vec!["Task"]);
-        assert_eq!(blocks[0].properties.get("status"), Some(&"doing".to_string()));
+        assert_eq!(
+            blocks[0].properties.get("status"),
+            Some(&"doing".to_string())
+        );
         assert!(!blocks[0].properties.contains_key("tags"));
     }
 

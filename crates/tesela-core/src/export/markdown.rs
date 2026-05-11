@@ -281,7 +281,11 @@ fn parse_property_line(line: &str) -> Option<(&str, &str)> {
     let trimmed = line.trim_start();
     let colon_pos = trimmed.find("::")?;
     let key = trimmed[..colon_pos].trim();
-    if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         return None;
     }
     let value = trimmed[colon_pos + 2..].trim_end_matches('\n').trim();
@@ -296,7 +300,11 @@ fn parse_yaml_line(line: &str) -> Option<(&str, &str)> {
     }
     let colon_pos = line.find(':')?;
     let key = line[..colon_pos].trim();
-    if key.is_empty() || !key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') {
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    {
         return None;
     }
     let value = line[colon_pos + 1..].trim_end_matches('\n').trim();
@@ -353,9 +361,17 @@ fn write_portable_readme(out_root: &Path, outcome: &ExportOutcome) -> Result<()>
         outcome.note_count,
         if outcome.note_count == 1 { "" } else { "s" },
         outcome.attachment_count,
-        if outcome.attachment_count == 1 { "" } else { "s" },
+        if outcome.attachment_count == 1 {
+            ""
+        } else {
+            "s"
+        },
         outcome.stripped_property_count,
-        if outcome.stripped_property_count == 1 { "y" } else { "ies" },
+        if outcome.stripped_property_count == 1 {
+            "y"
+        } else {
+            "ies"
+        },
     );
     fs::write(out_root.join("README.md"), body)?;
     Ok(())
@@ -431,8 +447,7 @@ mod tests {
         .unwrap();
         assert!(outcome.stripped_property_count >= 5);
 
-        let stripped =
-            fs::read_to_string(out.join("notes/2026-05-10.md")).unwrap();
+        let stripped = fs::read_to_string(out.join("notes/2026-05-10.md")).unwrap();
         // Tesela-internal properties: gone.
         assert!(!stripped.contains("apple_reminder_id"));
         assert!(!stripped.contains("apple_reminder_synced_at"));
@@ -450,9 +465,8 @@ mod tests {
 
     #[test]
     fn portable_strips_underscore_keys() {
-        let (out, removed) = strip_for_portable(
-            "- Test\n  status:: todo\n  _draft:: true\n  _internal:: 42\n",
-        );
+        let (out, removed) =
+            strip_for_portable("- Test\n  status:: todo\n  _draft:: true\n  _internal:: 42\n");
         assert_eq!(removed, 2);
         assert!(out.contains("status:: todo"));
         assert!(!out.contains("_draft"));

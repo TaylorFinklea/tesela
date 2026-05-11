@@ -1,0 +1,10 @@
+[package]
+name = "tesela-fixtures-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tesela-fixtures = { path = "../tesela-fixtures" }
+anyhow = { workspace = true }
+clap = { workspace = true }
+

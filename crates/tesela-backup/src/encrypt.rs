@@ -115,7 +115,11 @@ pub fn identity_for_manifest(manifest: &Manifest) -> Result<Identity> {
 /// by `restore`.
 pub fn encrypt_staging(staging: &Path, recipient_str: &str) -> Result<()> {
     let recipient = Recipient::from_str(recipient_str).map_err(|e| {
-        BackupError::Other(anyhow::anyhow!("invalid recipient {}: {}", recipient_str, e))
+        BackupError::Other(anyhow::anyhow!(
+            "invalid recipient {}: {}",
+            recipient_str,
+            e
+        ))
     })?;
 
     for entry in WalkDir::new(staging) {
@@ -139,9 +143,8 @@ pub fn encrypt_staging(staging: &Path, recipient_str: &str) -> Result<()> {
 fn encrypt_file(src: &Path, dst: &Path, recipient: &Recipient) -> Result<()> {
     let mut input = File::open(src)?;
     let output = File::create(dst)?;
-    let encryptor =
-        Encryptor::with_recipients(std::iter::once(recipient as &dyn age::Recipient))
-            .map_err(|e| BackupError::Other(anyhow::anyhow!("age encryptor: {}", e)))?;
+    let encryptor = Encryptor::with_recipients(std::iter::once(recipient as &dyn age::Recipient))
+        .map_err(|e| BackupError::Other(anyhow::anyhow!("age encryptor: {}", e)))?;
     let mut writer = encryptor
         .wrap_output(output)
         .map_err(|e| BackupError::Other(anyhow::anyhow!("age wrap_output: {}", e)))?;

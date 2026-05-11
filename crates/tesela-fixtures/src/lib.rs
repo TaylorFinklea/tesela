@@ -179,9 +179,7 @@ impl MosaicBuilder {
             );
             let content = format!(
                 "---\ntitle: \"{}\"\ntags: [\"daily\"]\ncreated: {}T00:00:00Z\n---\n{}",
-                id,
-                id,
-                body,
+                id, id, body,
             );
             fs::write(notes_dir.join(format!("{}.md", id)), content)?;
             total_blocks += blocks;
@@ -231,7 +229,10 @@ impl MosaicBuilder {
             for i in 0..n {
                 let mut buf = vec![0u8; bytes];
                 rand::RngCore::fill_bytes(&mut rng, &mut buf);
-                fs::write(root.join("attachments").join(format!("blob-{:04}.bin", i)), buf)?;
+                fs::write(
+                    root.join("attachments").join(format!("blob-{:04}.bin", i)),
+                    buf,
+                )?;
                 attachment_count += 1;
             }
         }
@@ -276,12 +277,15 @@ fn render_daily(
         let indent = if chance(rng, 0.25) { 1 } else { 0 };
         if *tasks_left > 0 && chance(rng, 0.20) {
             let deadline = if chance(rng, 0.5) {
-                Some(format!("2026-{:02}-{:02}", range(rng, 5, 12), range(rng, 1, 28)))
+                Some(format!(
+                    "2026-{:02}-{:02}",
+                    range(rng, 5, 12),
+                    range(rng, 1, 28)
+                ))
             } else {
                 None
             };
-            let task_lines =
-                task_block(rng, indent, &pool, tags, deadline.as_deref());
+            let task_lines = task_block(rng, indent, &pool, tags, deadline.as_deref());
             for line in &task_lines {
                 if line.contains("[[") {
                     links += 1;
@@ -368,7 +372,11 @@ fn render_page(
     for i in 0..block_count {
         if *tasks_left > 0 && !is_deep && chance(rng, 0.10) {
             let deadline = if chance(rng, 0.4) {
-                Some(format!("2026-{:02}-{:02}", range(rng, 5, 12), range(rng, 1, 28)))
+                Some(format!(
+                    "2026-{:02}-{:02}",
+                    range(rng, 5, 12),
+                    range(rng, 1, 28)
+                ))
             } else {
                 None
             };

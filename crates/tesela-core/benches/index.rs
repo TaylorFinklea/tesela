@@ -29,53 +29,47 @@ fn initial_index_at_scale(c: &mut Criterion) {
     ] {
         let total_notes = dailies + pages;
         group.throughput(Throughput::Elements(total_notes as u64));
-        group.bench_with_input(
-            BenchmarkId::from_parameter(label),
-            label,
-            |b, _| {
-                b.iter_batched(
-                    || {
-                        // Build a fresh mosaic + empty SQLite per iteration so
-                        // we measure cold-start indexing every time. Setup
-                        // cost is excluded from the timer via iter_batched.
-                        let mosaic = MosaicBuilder::new()
-                            .seed(42)
-                            .daily_notes(*dailies)
-                            .pages(*pages)
-                            .tasks(0)
-                            .backlinks_per_note(0, 2)
-                            .build()
-                            .unwrap();
-                        let db_path = mosaic.path.join(".tesela").join("tesela.db");
-                        rt.block_on(async {
-                            let index = SqliteIndex::open(&db_path).await.unwrap();
-                            let store = FsNoteStore::new(
-                                mosaic.path.clone(),
-                                Config::default().storage,
-                            );
-                            (mosaic, store, index)
-                        })
-                    },
-                    |(mosaic, store, index)| {
-                        rt.block_on(async {
-                            let store = Arc::new(store);
-                            let index = Arc::new(index);
-                            let store_dyn: Arc<dyn NoteStore> =
-                                Arc::clone(&store) as Arc<dyn NoteStore>;
-                            let index_dyn: Arc<dyn SearchIndex> =
-                                Arc::clone(&index) as Arc<dyn SearchIndex>;
-                            let graph_dyn: Arc<dyn LinkGraph> =
-                                Arc::clone(&index) as Arc<dyn LinkGraph>;
-                            let indexer = Indexer::new(store_dyn, index_dyn, graph_dyn);
-                            indexer.initial_index().await.unwrap();
-                            // Keep the mosaic alive until after the work runs.
-                            drop(mosaic);
-                        })
-                    },
-                    criterion::BatchSize::SmallInput,
-                );
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(label), label, |b, _| {
+            b.iter_batched(
+                || {
+                    // Build a fresh mosaic + empty SQLite per iteration so
+                    // we measure cold-start indexing every time. Setup
+                    // cost is excluded from the timer via iter_batched.
+                    let mosaic = MosaicBuilder::new()
+                        .seed(42)
+                        .daily_notes(*dailies)
+                        .pages(*pages)
+                        .tasks(0)
+                        .backlinks_per_note(0, 2)
+                        .build()
+                        .unwrap();
+                    let db_path = mosaic.path.join(".tesela").join("tesela.db");
+                    rt.block_on(async {
+                        let index = SqliteIndex::open(&db_path).await.unwrap();
+                        let store =
+                            FsNoteStore::new(mosaic.path.clone(), Config::default().storage);
+                        (mosaic, store, index)
+                    })
+                },
+                |(mosaic, store, index)| {
+                    rt.block_on(async {
+                        let store = Arc::new(store);
+                        let index = Arc::new(index);
+                        let store_dyn: Arc<dyn NoteStore> =
+                            Arc::clone(&store) as Arc<dyn NoteStore>;
+                        let index_dyn: Arc<dyn SearchIndex> =
+                            Arc::clone(&index) as Arc<dyn SearchIndex>;
+                        let graph_dyn: Arc<dyn LinkGraph> =
+                            Arc::clone(&index) as Arc<dyn LinkGraph>;
+                        let indexer = Indexer::new(store_dyn, index_dyn, graph_dyn);
+                        indexer.initial_index().await.unwrap();
+                        // Keep the mosaic alive until after the work runs.
+                        drop(mosaic);
+                    })
+                },
+                criterion::BatchSize::SmallInput,
+            );
+        });
     }
     group.finish();
 }

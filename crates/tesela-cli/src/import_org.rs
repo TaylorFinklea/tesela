@@ -140,8 +140,8 @@ fn import_one(
     dry_run: bool,
     log: &mut Vec<String>,
 ) -> Result<IndexAction> {
-    let raw = fs::read_to_string(org_path)
-        .with_context(|| format!("read {}", org_path.display()))?;
+    let raw =
+        fs::read_to_string(org_path).with_context(|| format!("read {}", org_path.display()))?;
     let sha = sha256_hex(&raw);
 
     let rel_str = if source_root.is_file() {
@@ -300,10 +300,7 @@ fn convert_org_to_markdown(raw: &str, log: &mut Vec<String>, rel_str: &str) -> S
                         PlanningKind::Scheduled => "scheduled",
                         PlanningKind::Closed => "closed",
                     };
-                    out.push_str(&format!(
-                        "{}{}:: [[{}]]\n",
-                        prop_indent, key, date
-                    ));
+                    out.push_str(&format!("{}{}:: [[{}]]\n", prop_indent, key, date));
                     if let Some(rec) = repeater {
                         out.push_str(&format!("{}recurring:: {}\n", prop_indent, rec));
                     }
@@ -525,11 +522,7 @@ fn parse_planning(line: &str) -> Option<(PlanningKind, String, Option<String>)> 
     let inner = after
         .strip_prefix('<')
         .and_then(|s| s.split('>').next())
-        .or_else(|| {
-            after
-                .strip_prefix('[')
-                .and_then(|s| s.split(']').next())
-        })?;
+        .or_else(|| after.strip_prefix('[').and_then(|s| s.split(']').next()))?;
     // Date is the first 10 chars (YYYY-MM-DD).
     if inner.len() < 10 {
         return None;
@@ -768,12 +761,16 @@ Plan content.
         write_fixture(&src);
 
         run(&mosaic, src.clone(), false).await.unwrap();
-        let mtime1 =
-            fs::metadata(mosaic.join("notes/project.md")).unwrap().modified().unwrap();
+        let mtime1 = fs::metadata(mosaic.join("notes/project.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(10));
         run(&mosaic, src.clone(), false).await.unwrap();
-        let mtime2 =
-            fs::metadata(mosaic.join("notes/project.md")).unwrap().modified().unwrap();
+        let mtime2 = fs::metadata(mosaic.join("notes/project.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
         assert_eq!(mtime1, mtime2);
     }
 

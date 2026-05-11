@@ -889,11 +889,7 @@ impl SearchIndex for SqliteIndex {
         }))
     }
 
-    async fn calendar_marks(
-        &self,
-        from: &str,
-        to: &str,
-    ) -> Result<crate::query::CalendarMarks> {
+    async fn calendar_marks(&self, from: &str, to: &str) -> Result<crate::query::CalendarMarks> {
         use crate::query::{extract_iso_date, CalendarMarks, DayMarkers};
         use std::collections::HashMap;
         let mut days: HashMap<String, DayMarkers> = HashMap::new();
@@ -913,7 +909,9 @@ impl SearchIndex for SqliteIndex {
             let property_name: String = row.get("property_name");
             let value: Option<String> = row.try_get("value").ok().flatten();
             let Some(v) = value else { continue };
-            let Some(date) = extract_iso_date(&v) else { continue };
+            let Some(date) = extract_iso_date(&v) else {
+                continue;
+            };
             if date.as_str() < from || date.as_str() > to {
                 continue;
             }
@@ -967,40 +965,47 @@ impl SqliteIndex {
             .find(|f| f.key == "tag" && f.op == QueryOp::Eq)
             .map(|f| f.value.as_str());
 
-        let candidate_notes: Vec<(String, String, String, Option<String>)> = if let Some(tag) = prefilter_tag {
-            // Pre-filter is intentionally over-inclusive — `block_matches`
-            // refines below. `body LIKE '%<tag>%'` catches both legacy
-            // `#<tag>` inline syntax AND the `tags:: <tag>` continuation-line
-            // syntax used by block-level tags (e.g. projects.md where the
-            // block has `tags:: Task` but the note frontmatter does not).
-            sqlx::query("SELECT id, title, body, note_type FROM notes WHERE body LIKE ? OR tags LIKE ?")
+        let candidate_notes: Vec<(String, String, String, Option<String>)> =
+            if let Some(tag) = prefilter_tag {
+                // Pre-filter is intentionally over-inclusive — `block_matches`
+                // refines below. `body LIKE '%<tag>%'` catches both legacy
+                // `#<tag>` inline syntax AND the `tags:: <tag>` continuation-line
+                // syntax used by block-level tags (e.g. projects.md where the
+                // block has `tags:: Task` but the note frontmatter does not).
+                sqlx::query(
+                    "SELECT id, title, body, note_type FROM notes WHERE body LIKE ? OR tags LIKE ?",
+                )
                 .bind(format!("%{}%", tag))
                 .bind(format!("%\"{}%", tag))
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| db_err("Failed to fetch candidate notes for block query", e))?
                 .into_iter()
-                .map(|row| (
-                    row.get("id"),
-                    row.get("title"),
-                    row.get("body"),
-                    row.try_get::<Option<String>, _>("note_type").ok().flatten(),
-                ))
+                .map(|row| {
+                    (
+                        row.get("id"),
+                        row.get("title"),
+                        row.get("body"),
+                        row.try_get::<Option<String>, _>("note_type").ok().flatten(),
+                    )
+                })
                 .collect()
-        } else {
-            sqlx::query("SELECT id, title, body, note_type FROM notes")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(|e| db_err("Failed to fetch all notes for block query", e))?
-                .into_iter()
-                .map(|row| (
-                    row.get("id"),
-                    row.get("title"),
-                    row.get("body"),
-                    row.try_get::<Option<String>, _>("note_type").ok().flatten(),
-                ))
-                .collect()
-        };
+            } else {
+                sqlx::query("SELECT id, title, body, note_type FROM notes")
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|e| db_err("Failed to fetch all notes for block query", e))?
+                    .into_iter()
+                    .map(|row| {
+                        (
+                            row.get("id"),
+                            row.get("title"),
+                            row.get("body"),
+                            row.try_get::<Option<String>, _>("note_type").ok().flatten(),
+                        )
+                    })
+                    .collect()
+            };
 
         let mut out = Vec::new();
         for (note_id, note_title, body, page_note_type) in &candidate_notes {

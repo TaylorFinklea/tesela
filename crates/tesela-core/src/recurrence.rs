@@ -106,7 +106,11 @@ fn add_years(date: NaiveDate, n: u32) -> NaiveDate {
 }
 
 fn days_in_month(year: i32, month: u32) -> u32 {
-    let (next_y, next_m) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let (next_y, next_m) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
     let first_of_next = NaiveDate::from_ymd_opt(next_y, next_m, 1).expect("valid month");
     let last = first_of_next - Duration::days(1);
     last.day()
@@ -126,7 +130,10 @@ mod tests {
         assert_eq!(parse(" Daily "), Some(Recurrence::Daily));
         assert_eq!(parse("every day"), Some(Recurrence::Daily));
         assert_eq!(parse("weekly"), Some(Recurrence::Weekly { interval: 1 }));
-        assert_eq!(parse("every week"), Some(Recurrence::Weekly { interval: 1 }));
+        assert_eq!(
+            parse("every week"),
+            Some(Recurrence::Weekly { interval: 1 })
+        );
         assert_eq!(parse("monthly"), Some(Recurrence::Monthly { interval: 1 }));
         assert_eq!(parse("yearly"), Some(Recurrence::Yearly { interval: 1 }));
         assert_eq!(parse("annually"), Some(Recurrence::Yearly { interval: 1 }));
@@ -135,11 +142,20 @@ mod tests {
 
     #[test]
     fn parse_every_n() {
-        assert_eq!(parse("every 2 weeks"), Some(Recurrence::Weekly { interval: 2 }));
+        assert_eq!(
+            parse("every 2 weeks"),
+            Some(Recurrence::Weekly { interval: 2 })
+        );
         assert_eq!(parse("every 3 days"), Some(Recurrence::EveryNDays(3)));
         assert_eq!(parse("every 1 day"), Some(Recurrence::Daily));
-        assert_eq!(parse("every 6 months"), Some(Recurrence::Monthly { interval: 6 }));
-        assert_eq!(parse("every 2 years"), Some(Recurrence::Yearly { interval: 2 }));
+        assert_eq!(
+            parse("every 6 months"),
+            Some(Recurrence::Monthly { interval: 6 })
+        );
+        assert_eq!(
+            parse("every 2 years"),
+            Some(Recurrence::Yearly { interval: 2 })
+        );
     }
 
     #[test]
@@ -155,7 +171,10 @@ mod tests {
     #[test]
     fn next_after_daily_and_every_n() {
         assert_eq!(next_after(&Recurrence::Daily, d(2026, 5, 7)), d(2026, 5, 8));
-        assert_eq!(next_after(&Recurrence::EveryNDays(3), d(2026, 5, 7)), d(2026, 5, 10));
+        assert_eq!(
+            next_after(&Recurrence::EveryNDays(3), d(2026, 5, 7)),
+            d(2026, 5, 10)
+        );
     }
 
     #[test]
@@ -205,12 +224,24 @@ mod tests {
     #[test]
     fn next_after_weekdays_skips_weekend() {
         // Fri 2026-05-08 → Mon 2026-05-11
-        assert_eq!(next_after(&Recurrence::Weekdays, d(2026, 5, 8)), d(2026, 5, 11));
+        assert_eq!(
+            next_after(&Recurrence::Weekdays, d(2026, 5, 8)),
+            d(2026, 5, 11)
+        );
         // Sat 2026-05-09 → Mon 2026-05-11
-        assert_eq!(next_after(&Recurrence::Weekdays, d(2026, 5, 9)), d(2026, 5, 11));
+        assert_eq!(
+            next_after(&Recurrence::Weekdays, d(2026, 5, 9)),
+            d(2026, 5, 11)
+        );
         // Sun 2026-05-10 → Mon 2026-05-11
-        assert_eq!(next_after(&Recurrence::Weekdays, d(2026, 5, 10)), d(2026, 5, 11));
+        assert_eq!(
+            next_after(&Recurrence::Weekdays, d(2026, 5, 10)),
+            d(2026, 5, 11)
+        );
         // Mon 2026-05-11 → Tue 2026-05-12
-        assert_eq!(next_after(&Recurrence::Weekdays, d(2026, 5, 11)), d(2026, 5, 12));
+        assert_eq!(
+            next_after(&Recurrence::Weekdays, d(2026, 5, 11)),
+            d(2026, 5, 12)
+        );
     }
 }

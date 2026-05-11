@@ -123,8 +123,12 @@ struct OrphanWriteback {
 }
 
 enum SyncEffect {
-    Created { reminder_id: String },
-    Updated { reminder_id: String },
+    Created {
+        reminder_id: String,
+    },
+    Updated {
+        reminder_id: String,
+    },
     /// `apple_reminder_id::` was set on the block but EventKit no longer
     /// has a matching item. Don't create a new reminder; let the caller
     /// stamp `apple_reminder_orphan:: true` so future pushes skip it.
@@ -402,7 +406,10 @@ fn upsert_block_property(
         .unwrap_or(0);
     let next_block_line = blocks
         .iter()
-        .filter_map(|b| b.id.rsplit_once(':').and_then(|(_, n)| n.parse::<usize>().ok()))
+        .filter_map(|b| {
+            b.id.rsplit_once(':')
+                .and_then(|(_, n)| n.parse::<usize>().ok())
+        })
         .filter(|n| *n > block_start_idx)
         .min();
 
@@ -416,8 +423,7 @@ fn upsert_block_property(
     let mut replaced = false;
     for i in block_start_idx + 1..=block_end.min(lines.len().saturating_sub(1)) {
         let trimmed = lines[i].trim_start();
-        if let Some(rest) = trimmed.strip_prefix(&format!("{key}::"))
-        {
+        if let Some(rest) = trimmed.strip_prefix(&format!("{key}::")) {
             let indent = &lines[i][..lines[i].len() - trimmed.len()];
             let _ = rest; // keep for readability — value is always rewritten
             lines[i] = format!("{indent}{key}:: {value}");
@@ -603,12 +609,11 @@ fn build_recurrence_rule(rec: Recurrence) -> Retained<EKRecurrenceRule> {
     }
 }
 
-unsafe fn simple_rule(
-    freq: EKRecurrenceFrequency,
-    interval: isize,
-) -> Retained<EKRecurrenceRule> {
+unsafe fn simple_rule(freq: EKRecurrenceFrequency, interval: isize) -> Retained<EKRecurrenceRule> {
     let alloc = EKRecurrenceRule::alloc();
-    unsafe { EKRecurrenceRule::initRecurrenceWithFrequency_interval_end(alloc, freq, interval, None) }
+    unsafe {
+        EKRecurrenceRule::initRecurrenceWithFrequency_interval_end(alloc, freq, interval, None)
+    }
 }
 
 unsafe fn weekdays_rule() -> Retained<EKRecurrenceRule> {
@@ -660,18 +665,17 @@ unsafe fn snapshot_recurrence(rem: &EKReminder) -> Option<Recurrence> {
     // daysOfTheWeek == {Mon, Tue, Wed, Thu, Fri}.
     if freq == EKRecurrenceFrequency::Weekly && interval == 1 {
         if let Some(arr) = unsafe { rule.daysOfTheWeek() } {
-            let mut days: Vec<isize> = arr
-                .iter()
-                .map(|d| unsafe { d.dayOfTheWeek() }.0)
-                .collect();
+            let mut days: Vec<isize> = arr.iter().map(|d| unsafe { d.dayOfTheWeek() }.0).collect();
             days.sort();
-            if days == [
-                EKWeekday::Monday.0,
-                EKWeekday::Tuesday.0,
-                EKWeekday::Wednesday.0,
-                EKWeekday::Thursday.0,
-                EKWeekday::Friday.0,
-            ] {
+            if days
+                == [
+                    EKWeekday::Monday.0,
+                    EKWeekday::Tuesday.0,
+                    EKWeekday::Wednesday.0,
+                    EKWeekday::Thursday.0,
+                    EKWeekday::Friday.0,
+                ]
+            {
                 return Some(Recurrence::Weekdays);
             }
             // Any other BYDAY pattern is out of scope for v1.
@@ -740,18 +744,19 @@ async fn request_access() -> Result<()> {
     // worker, and we want the async runtime free in the meantime.
     tokio::task::spawn_blocking(move || {
         let event_store = unsafe { EKEventStore::new() };
-        let block = block2::RcBlock::new(move |granted: Bool, err: *mut objc2_foundation::NSError| {
-            let mut guard = tx.lock().unwrap();
-            if let Some(sender) = guard.take() {
-                if !err.is_null() {
-                    let nserr: &objc2_foundation::NSError = unsafe { &*err };
-                    let desc = nserr.localizedDescription().to_string();
-                    let _ = sender.send(Err(desc));
-                } else {
-                    let _ = sender.send(Ok(granted.as_bool()));
+        let block =
+            block2::RcBlock::new(move |granted: Bool, err: *mut objc2_foundation::NSError| {
+                let mut guard = tx.lock().unwrap();
+                if let Some(sender) = guard.take() {
+                    if !err.is_null() {
+                        let nserr: &objc2_foundation::NSError = unsafe { &*err };
+                        let desc = nserr.localizedDescription().to_string();
+                        let _ = sender.send(Err(desc));
+                    } else {
+                        let _ = sender.send(Ok(granted.as_bool()));
+                    }
                 }
-            }
-        });
+            });
 
         // macOS 14+ — modern API for Reminders permission. EventKit's
         // older requestAccessToEntityType: is now deprecated; we use
@@ -777,7 +782,9 @@ async fn request_access() -> Result<()> {
         .map_err(|e| anyhow!("EventKit error: {e}"))?;
 
     if !granted {
-        anyhow::bail!("Reminders access denied. Grant in System Settings → Privacy & Security → Reminders.");
+        anyhow::bail!(
+            "Reminders access denied. Grant in System Settings → Privacy & Security → Reminders."
+        );
     }
     Ok(())
 }
@@ -965,9 +972,7 @@ struct BlockRef {
     synced_at_unix_ms: Option<i64>,
 }
 
-async fn collect_block_index(
-    store: &Arc<dyn NoteStore>,
-) -> Result<HashMap<String, BlockRef>> {
+async fn collect_block_index(store: &Arc<dyn NoteStore>) -> Result<HashMap<String, BlockRef>> {
     let notes = store
         .list(None, usize::MAX, 0)
         .await
@@ -1020,9 +1025,7 @@ fn compute_diff(snap: &ReminderSnapshot, block: &BlockRef) -> PullDiff {
     // Conflict gate: if EK hasn't been touched since our last sync, the
     // EK side has nothing newer to offer — Tesela's value (which may have
     // diverged via local edits) wins by default.
-    if let (Some(synced), Some(modified)) =
-        (block.synced_at_unix_ms, snap.last_modified_unix_ms)
-    {
+    if let (Some(synced), Some(modified)) = (block.synced_at_unix_ms, snap.last_modified_unix_ms) {
         if modified <= synced {
             return diff;
         }
@@ -1073,10 +1076,7 @@ fn compute_diff(snap: &ReminderSnapshot, block: &BlockRef) -> PullDiff {
     diff
 }
 
-async fn apply_pull_writebacks(
-    store: &Arc<dyn NoteStore>,
-    items: &[PullWriteback],
-) -> Result<()> {
+async fn apply_pull_writebacks(store: &Arc<dyn NoteStore>, items: &[PullWriteback]) -> Result<()> {
     let mut by_note: HashMap<&str, Vec<&PullWriteback>> = HashMap::new();
     for wb in items {
         by_note.entry(wb.note_id.as_str()).or_default().push(wb);
@@ -1095,13 +1095,8 @@ async fn apply_pull_writebacks(
                 note.content = set_block_text(&note.content, note_id, &wb.block_id, new_title);
             }
             if let Some(status) = &wb.diff.status {
-                note.content = upsert_block_property(
-                    &note.content,
-                    note_id,
-                    &wb.block_id,
-                    "status",
-                    status,
-                );
+                note.content =
+                    upsert_block_property(&note.content, note_id, &wb.block_id, "status", status);
             }
             if let Some(deadline) = wb.diff.deadline {
                 note.content = upsert_block_property(
@@ -1206,30 +1201,27 @@ async fn fetch_reminders() -> Result<Vec<ReminderSnapshot>> {
 
         // Wrap our single calendar in an NSArray for the predicate.
         let cal_array = NSArray::from_retained_slice(&[calendar]);
-        let predicate =
-            unsafe { event_store.predicateForRemindersInCalendars(Some(&cal_array)) };
+        let predicate = unsafe { event_store.predicateForRemindersInCalendars(Some(&cal_array)) };
 
-        let block = block2::RcBlock::new(
-            move |reminders_ptr: *mut NSArray<EKReminder>| {
-                let mut snapshots = Vec::new();
-                if !reminders_ptr.is_null() {
-                    let reminders: &NSArray<EKReminder> = unsafe { &*reminders_ptr };
-                    for rem in reminders.iter() {
-                        snapshots.push(unsafe { snapshot_reminder(&rem) });
-                    }
+        let block = block2::RcBlock::new(move |reminders_ptr: *mut NSArray<EKReminder>| {
+            let mut snapshots = Vec::new();
+            if !reminders_ptr.is_null() {
+                let reminders: &NSArray<EKReminder> = unsafe { &*reminders_ptr };
+                for rem in reminders.iter() {
+                    snapshots.push(unsafe { snapshot_reminder(&rem) });
                 }
-                if let Some(s) = tx.lock().unwrap().take() {
-                    let _ = s.send(Ok(snapshots));
-                }
-            },
-        );
+            }
+            if let Some(s) = tx.lock().unwrap().take() {
+                let _ = s.send(Ok(snapshots));
+            }
+        });
 
         // The completion handler is held by EventKit until it fires. We
         // forget the RcBlock so it isn't dropped when this scope exits;
         // the heap-allocated block remains alive for EventKit.
         unsafe {
-            let _request = event_store
-                .fetchRemindersMatchingPredicate_completion(&predicate, &block);
+            let _request =
+                event_store.fetchRemindersMatchingPredicate_completion(&predicate, &block);
         }
         std::mem::forget(block);
     });
@@ -1245,10 +1237,7 @@ async fn fetch_reminders() -> Result<Vec<ReminderSnapshot>> {
 
 unsafe fn snapshot_reminder(rem: &EKReminder) -> ReminderSnapshot {
     let reminder_id = rem.calendarItemIdentifier().to_string();
-    let title = rem
-        .title()
-        .map(|t| t.to_string())
-        .unwrap_or_default();
+    let title = rem.title().map(|t| t.to_string()).unwrap_or_default();
     let completed = rem.isCompleted();
     let priority = rem.priority() as u8;
     let due_deadline = rem.dueDateComponents().and_then(|dc| {
@@ -1335,7 +1324,10 @@ mod tests {
     fn parse_deadline_bracketed_date_only() {
         assert_eq!(
             parse_deadline("[[2026-05-08]]"),
-            Some(Deadline { date: date(2026, 5, 8), time: None })
+            Some(Deadline {
+                date: date(2026, 5, 8),
+                time: None
+            })
         );
     }
 
@@ -1346,7 +1338,10 @@ mod tests {
         // tokenize first.
         assert_eq!(
             parse_deadline("[[2026-05-08]] 10:00"),
-            Some(Deadline { date: date(2026, 5, 8), time: Some(time(10, 0)) })
+            Some(Deadline {
+                date: date(2026, 5, 8),
+                time: Some(time(10, 0))
+            })
         );
     }
 
@@ -1354,11 +1349,17 @@ mod tests {
     fn parse_deadline_unbracketed() {
         assert_eq!(
             parse_deadline("2026-05-08"),
-            Some(Deadline { date: date(2026, 5, 8), time: None })
+            Some(Deadline {
+                date: date(2026, 5, 8),
+                time: None
+            })
         );
         assert_eq!(
             parse_deadline("2026-05-08 14:30"),
-            Some(Deadline { date: date(2026, 5, 8), time: Some(time(14, 30)) })
+            Some(Deadline {
+                date: date(2026, 5, 8),
+                time: Some(time(14, 30))
+            })
         );
     }
 
@@ -1366,11 +1367,17 @@ mod tests {
     fn parse_deadline_12h_am_pm() {
         assert_eq!(
             parse_deadline("[[2026-05-08]] 9:30 AM"),
-            Some(Deadline { date: date(2026, 5, 8), time: Some(time(9, 30)) })
+            Some(Deadline {
+                date: date(2026, 5, 8),
+                time: Some(time(9, 30))
+            })
         );
         assert_eq!(
             parse_deadline("[[2026-05-08]] 9:30 pm"),
-            Some(Deadline { date: date(2026, 5, 8), time: Some(time(21, 30)) })
+            Some(Deadline {
+                date: date(2026, 5, 8),
+                time: Some(time(21, 30))
+            })
         );
     }
 
@@ -1383,9 +1390,15 @@ mod tests {
 
     #[test]
     fn deadline_format_round_trip() {
-        let date_only = Deadline { date: date(2026, 5, 8), time: None };
+        let date_only = Deadline {
+            date: date(2026, 5, 8),
+            time: None,
+        };
         assert_eq!(date_only.format_property(), "[[2026-05-08]]");
-        let with_time = Deadline { date: date(2026, 5, 8), time: Some(time(10, 0)) };
+        let with_time = Deadline {
+            date: date(2026, 5, 8),
+            time: Some(time(10, 0)),
+        };
         assert_eq!(with_time.format_property(), "[[2026-05-08]] 10:00");
     }
 
@@ -1395,11 +1408,26 @@ mod tests {
         // not the long "every 1 week" variants — those would flap on
         // every sync if the user typed a shorter form locally.
         assert_eq!(recurrence_to_canonical(Recurrence::Daily), "daily");
-        assert_eq!(recurrence_to_canonical(Recurrence::Weekly { interval: 1 }), "weekly");
-        assert_eq!(recurrence_to_canonical(Recurrence::Weekly { interval: 2 }), "every 2 weeks");
-        assert_eq!(recurrence_to_canonical(Recurrence::Monthly { interval: 1 }), "monthly");
-        assert_eq!(recurrence_to_canonical(Recurrence::Yearly { interval: 1 }), "yearly");
-        assert_eq!(recurrence_to_canonical(Recurrence::EveryNDays(3)), "every 3 days");
+        assert_eq!(
+            recurrence_to_canonical(Recurrence::Weekly { interval: 1 }),
+            "weekly"
+        );
+        assert_eq!(
+            recurrence_to_canonical(Recurrence::Weekly { interval: 2 }),
+            "every 2 weeks"
+        );
+        assert_eq!(
+            recurrence_to_canonical(Recurrence::Monthly { interval: 1 }),
+            "monthly"
+        );
+        assert_eq!(
+            recurrence_to_canonical(Recurrence::Yearly { interval: 1 }),
+            "yearly"
+        );
+        assert_eq!(
+            recurrence_to_canonical(Recurrence::EveryNDays(3)),
+            "every 3 days"
+        );
         assert_eq!(recurrence_to_canonical(Recurrence::Weekdays), "weekdays");
     }
 
@@ -1424,4 +1452,3 @@ mod tests {
         }
     }
 }
-

@@ -169,7 +169,11 @@ pub async fn update_note(
         });
     }
     if !unblocked.is_empty() {
-        tracing::debug!("dependency cycles: unblocked {} block(s) in note {}", unblocked.len(), id);
+        tracing::debug!(
+            "dependency cycles: unblocked {} block(s) in note {}",
+            unblocked.len(),
+            id
+        );
     }
     Ok(Json(updated))
 }
@@ -235,7 +239,12 @@ pub async fn recur_bump(
 ) -> AppResult<Json<RecurBumpResp>> {
     let (note_id_str, _) = match req.block_id.rsplit_once(':') {
         Some((nid, _)) => (nid.to_string(), ()),
-        None => return Ok(Json(RecurBumpResp { bumped: false, next_deadline: None })),
+        None => {
+            return Ok(Json(RecurBumpResp {
+                bumped: false,
+                next_deadline: None,
+            }))
+        }
     };
 
     let note_id = NoteId::new(&note_id_str);
@@ -246,18 +255,19 @@ pub async fn recur_bump(
         .ok_or_else(|| AppError::NotFound(format!("Note not found: {}", note_id_str)))?;
 
     let Some((new_content, next_iso)) = try_bump_block(&note.content, &req.block_id) else {
-        return Ok(Json(RecurBumpResp { bumped: false, next_deadline: None }));
+        return Ok(Json(RecurBumpResp {
+            bumped: false,
+            next_deadline: None,
+        }));
     };
 
     let prev_content = note.content.clone();
     let mut updated_note = note.clone();
     updated_note.content = new_content;
     s.store.update(&updated_note).await?;
-    let updated = s
-        .store
-        .get(&note_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Note not found after recur bump: {}", note_id_str)))?;
+    let updated = s.store.get(&note_id).await?.ok_or_else(|| {
+        AppError::NotFound(format!("Note not found after recur bump: {}", note_id_str))
+    })?;
     s.index.reindex(&updated).await?;
     if updated.content != prev_content {
         if let Err(e) = s
@@ -430,11 +440,7 @@ fn detect_status_flips_to_done(prev: &str, next: &str) -> Vec<String> {
 /// users with cross-note `blocked_by::` will see the unblock take effect
 /// the next time the dependent's own note is re-saved (or they manually
 /// edit it). v1.1 will add a reverse-index walk for cross-note unblock.
-pub fn apply_dependency_cycles(
-    prev: &str,
-    next: &str,
-    note_id: &str,
-) -> (String, Vec<String>) {
+pub fn apply_dependency_cycles(prev: &str, next: &str, note_id: &str) -> (String, Vec<String>) {
     let flipped_to_done = detect_status_flips_to_done(prev, next);
     if flipped_to_done.is_empty() {
         return (next.to_string(), Vec::new());
@@ -444,7 +450,10 @@ pub fn apply_dependency_cycles(
     // `<note_id>:<line>` references inside `blocked_by::` values verbatim.
     let just_done: std::collections::HashSet<String> = flipped_to_done
         .iter()
-        .filter_map(|id| id.rsplit_once(':').map(|(_, l)| format!("{}:{}", note_id, l)))
+        .filter_map(|id| {
+            id.rsplit_once(':')
+                .map(|(_, l)| format!("{}:{}", note_id, l))
+        })
         .collect();
 
     let (_meta, body) = match parse_frontmatter(next) {
@@ -465,7 +474,12 @@ pub fn apply_dependency_cycles(
         };
         let refs: Vec<String> = blocked_by_raw
             .split(',')
-            .map(|s| s.trim().trim_start_matches("[[").trim_end_matches("]]").to_string())
+            .map(|s| {
+                s.trim()
+                    .trim_start_matches("[[")
+                    .trim_end_matches("]]")
+                    .to_string()
+            })
             .filter(|s| !s.is_empty())
             .collect();
         if refs.is_empty() {
@@ -486,7 +500,11 @@ pub fn apply_dependency_cycles(
             }
         });
         if !still_blocked {
-            let line = block.id.rsplit_once(':').and_then(|(_, l)| l.parse().ok()).unwrap_or(0);
+            let line = block
+                .id
+                .rsplit_once(':')
+                .and_then(|(_, l)| l.parse().ok())
+                .unwrap_or(0);
             to_unblock.push((block.id.clone(), line));
         }
     }
@@ -524,7 +542,9 @@ fn set_status_to_todo(body: &str, bullet_line: usize) -> Option<String> {
 
     for (i, line) in lines.iter().enumerate().skip(bullet_line + 1) {
         let trim = line.trim_start();
-        if trim.is_empty() { continue; }
+        if trim.is_empty() {
+            continue;
+        }
         let indent = line.len() - trim.len();
         // End of block: indent <= bullet's, AND the line starts a new bullet.
         if indent <= bullet_indent && (trim.starts_with("- ") || trim == "-") {
@@ -652,7 +672,10 @@ fn rewrite_block_for_bump(
         additions.push(format!("{}deadline:: {}", cont_indent, new_deadline));
     }
     if !updated_last_completed {
-        additions.push(format!("{}last_completed:: {}", cont_indent, last_completed));
+        additions.push(format!(
+            "{}last_completed:: {}",
+            cont_indent, last_completed
+        ));
     }
     if !additions.is_empty() {
         for (offset, add) in additions.into_iter().enumerate() {
