@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { EditorView } from "@codemirror/view";
   import { EditorState } from "@codemirror/state";
-  import { keymap } from "@codemirror/view";
+  import { keymap, drawSelection } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim } from "@replit/codemirror-vim";
   import { teselaDecorations, teselaDecorationTheme } from "$lib/cm-decorations";
@@ -27,7 +27,7 @@
       ".cm-line": { padding: "2px 0" },
       ".cm-cursor": { borderLeftColor: "var(--primary)", borderLeftWidth: "2px" },
       ".cm-fat-cursor": { background: "color-mix(in srgb, var(--primary) 25%, transparent) !important" },
-      "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": { backgroundColor: "color-mix(in srgb, var(--primary) 15%, transparent)" },
+      "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": { backgroundColor: "color-mix(in srgb, var(--primary) 15%, transparent) !important" },
       ".cm-gutters": { display: "none" },
       "&.cm-focused": { outline: "none" },
     });
@@ -44,6 +44,7 @@
         vim(),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         history(),
+        drawSelection(),
         theme,
         updateListener,
         teselaDecorations,

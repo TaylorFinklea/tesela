@@ -263,7 +263,7 @@
   // outliner-undo restores blocks[i].body). The updateListener skips these
   // so they don't loop back through onChange as fake user edits.
   const externalSync = Annotation.define<boolean>();
-  import { keymap } from "@codemirror/view";
+  import { keymap, drawSelection } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim, getCM } from "@replit/codemirror-vim";
   import {
@@ -1039,7 +1039,7 @@
       ".cm-cursor, .cm-fat-cursor": { display: "none" },
       "&.cm-focused .cm-cursor": { display: "block", borderLeftColor: "var(--primary)", borderLeftWidth: "2px" },
       "&.cm-focused .cm-fat-cursor": { display: "block", background: "color-mix(in srgb, var(--primary) 25%, transparent) !important" },
-      "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": { backgroundColor: "color-mix(in srgb, var(--primary) 15%, transparent)" },
+      "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": { backgroundColor: "color-mix(in srgb, var(--primary) 15%, transparent) !important" },
       ".cm-gutters": { display: "none" },
       "&.cm-focused": { outline: "none" },
     });
@@ -1337,6 +1337,11 @@
         vim(),
         keymap.of([...defaultKeymap, ...historyKeymap]),
         history(),
+        // Renders `.cm-cursor` in insert mode (the native browser caret is
+        // only 1px and easy to miss on empty blocks). cm-vim hides this
+        // layer via `.cm-vimMode .cm-cursorLayer:not(.cm-vimCursorLayer)` in
+        // normal/visual mode, so its own fat-cursor stays the only cursor.
+        drawSelection(),
         theme,
         inputHandler,
         updateListener,
