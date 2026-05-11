@@ -5,6 +5,7 @@
   import { prefs, type BulletStyle } from "$lib/preferences.svelte";
   import { runRemindersSync } from "$lib/reminders-sync";
   import { api, type RemindersLastSync } from "$lib/api-client";
+  import MosaicSettings from "$lib/components/MosaicSettings.svelte";
   import BackupSettings from "$lib/components/BackupSettings.svelte";
   import ExportSettings from "$lib/components/ExportSettings.svelte";
   import ImportSettings from "$lib/components/ImportSettings.svelte";
@@ -139,6 +140,10 @@
 
   <div class="flex-1 overflow-y-auto min-h-0">
     <div class="max-w-lg mx-auto py-8 px-6 space-y-8">
+
+      <!-- Phase 13 — Mosaic create / switch (top of page since this is the
+           highest-level data op the user might be looking for). -->
+      <MosaicSettings />
 
       <!-- Font size -->
       <section>

@@ -51,7 +51,9 @@ objc2-event-kit = { version = "0.3", features = [
 ] }
 block2 = "0.6"
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = { workspace = true }
 serde_json = { workspace = true }
-libc = "0.2"

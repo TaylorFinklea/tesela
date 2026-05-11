@@ -146,7 +146,31 @@ export const api = {
    *  Returns `path: null` when the user cancels. */
   pickFolder: (prompt?: string) =>
     post<{ path: string | null }>("/pick-folder", { prompt: prompt ?? null }),
+
+  // Mosaic management
+  currentMosaic: () => get<CurrentMosaicResponse>("/mosaics/current"),
+  createMosaic: (req: CreateMosaicRequest) =>
+    post<CreateMosaicResponse>("/mosaics", req),
+  switchMosaic: (path: string) =>
+    post<{ config_path: string; default_mosaic: string }>("/mosaics/switch", { path }),
+  restartServer: () => post<{ respawn_used: boolean }>("/server/restart", {}),
 };
+
+export interface CurrentMosaicResponse {
+  path: string;
+  config_path: string;
+  config_default_mosaic: string | null;
+}
+export interface CreateMosaicRequest {
+  path: string;
+  import?: { kind: "obsidian" | "logseq" | "org"; source: string };
+}
+export interface CreateMosaicResponse {
+  path: string;
+  import_stdout: string | null;
+  import_stderr: string | null;
+  import_success: boolean | null;
+}
 
 export interface BackupSummary {
   name: string;

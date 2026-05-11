@@ -18,6 +18,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use tesela_core::config::Config;
+use tesela_core::db::SqliteIndex;
 
 use crate::state::AppState;
 
@@ -692,6 +693,250 @@ fn which_exists(name: &str) -> bool {
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Mosaic management (Phase 13 follow-up)
+//
+// Lets the user create a fresh mosaic from the UI — blank or seeded by
+// an import from Obsidian / Logseq / Org — and switch the running
+// server to it. The switch path writes the new default to
+// ~/.config/tesela/config.toml, sends SIGTERM to the running server
+// (so the graceful shutdown + auto-backup hook fires), and (if no
+// LaunchAgent is managing the process) spawns a detached re-exec of
+// the server binary that waits ~2s for the port to free before
+// rebinding.
+// ──────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct CurrentMosaicResponse {
+    pub path: String,
+    pub config_path: String,
+    pub config_default_mosaic: Option<String>,
+}
+
+pub async fn get_current_mosaic(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<CurrentMosaicResponse>, (StatusCode, String)> {
+    let config_path = Config::default_path();
+    let config_default = if config_path.exists() {
+        Config::load(&config_path)
+            .map_err(server_error)?
+            .general
+            .default_mosaic
+            .map(|p| p.to_string_lossy().into_owned())
+    } else {
+        None
+    };
+    Ok(Json(CurrentMosaicResponse {
+        path: state.mosaic_root.to_string_lossy().into_owned(),
+        config_path: config_path.to_string_lossy().into_owned(),
+        config_default_mosaic: config_default,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateMosaicRequest {
+    /// Absolute path where the mosaic will be initialized. Refuses to
+    /// proceed if a `.tesela/` already exists at this path.
+    pub path: String,
+    /// Optional import to run after init. `kind`: obsidian | logseq | org.
+    pub import: Option<ImportSpec>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ImportSpec {
+    pub kind: String,
+    pub source: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateMosaicResponse {
+    pub path: String,
+    pub import_stdout: Option<String>,
+    pub import_stderr: Option<String>,
+    pub import_success: Option<bool>,
+}
+
+pub async fn create_mosaic(
+    Json(req): Json<CreateMosaicRequest>,
+) -> Result<Json<CreateMosaicResponse>, (StatusCode, String)> {
+    let path = PathBuf::from(&req.path);
+    if path.join(".tesela").exists() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("a mosaic already exists at {} (`.tesela/` dir present)", path.display()),
+        ));
+    }
+
+    // Init layout mirrors crates/tesela-cli/src/main.rs::cmd_init.
+    let init_path = path.clone();
+    tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let tesela_dir = init_path.join(".tesela");
+        std::fs::create_dir_all(&tesela_dir)?;
+        std::fs::create_dir_all(init_path.join("notes"))?;
+        std::fs::create_dir_all(init_path.join("attachments"))?;
+        Config::default().save(&tesela_dir.join("config.toml"))?;
+        Ok(())
+    })
+    .await
+    .map_err(internal)?
+    .map_err(server_error)?;
+
+    // Initializing SQLite needs a tokio runtime (sqlx), so do it in
+    // the async context.
+    let db_path = path.join(".tesela").join("tesela.db");
+    SqliteIndex::open(&db_path)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("init sqlite: {}", e)))?;
+
+    let mut import_stdout = None;
+    let mut import_stderr = None;
+    let mut import_success = None;
+
+    if let Some(spec) = req.import {
+        let subcommand = match spec.kind.as_str() {
+            "obsidian" => "import-obsidian",
+            "logseq" => "import-logseq",
+            "org" => "import-org",
+            other => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("unknown import kind: {}", other),
+                ));
+            }
+        };
+        let mosaic_str = path.to_string_lossy().into_owned();
+        let source_owned = spec.source.clone();
+        let subcommand_owned = subcommand.to_string();
+        let output = tokio::task::spawn_blocking(move || {
+            std::process::Command::new("tesela")
+                .arg("--mosaic")
+                .arg(&mosaic_str)
+                .arg(&subcommand_owned)
+                .arg("--source")
+                .arg(&source_owned)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+        })
+        .await
+        .map_err(internal)?
+        .map_err(internal_io)?;
+        import_success = Some(output.status.success());
+        import_stdout = Some(String::from_utf8_lossy(&output.stdout).into_owned());
+        import_stderr = Some(String::from_utf8_lossy(&output.stderr).into_owned());
+    }
+
+    Ok(Json(CreateMosaicResponse {
+        path: path.to_string_lossy().into_owned(),
+        import_stdout,
+        import_stderr,
+        import_success,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SwitchMosaicRequest {
+    pub path: String,
+}
+
+/// Persist the new mosaic as the default in `~/.config/tesela/config.toml`.
+/// Doesn't restart anything — call `/server/restart` afterwards to swap.
+pub async fn switch_mosaic(
+    Json(req): Json<SwitchMosaicRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let target = PathBuf::from(&req.path);
+    if !target.join(".tesela").exists() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("{} is not a mosaic (no `.tesela/` dir)", target.display()),
+        ));
+    }
+    let config_path = Config::default_path();
+    let mut cfg = if config_path.exists() {
+        Config::load(&config_path).map_err(server_error)?
+    } else {
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent).map_err(internal_io)?;
+        }
+        Config::default()
+    };
+    cfg.general.default_mosaic = Some(target.clone());
+    cfg.save(&config_path).map_err(server_error)?;
+    Ok(Json(serde_json::json!({
+        "config_path": config_path.to_string_lossy(),
+        "default_mosaic": target.to_string_lossy(),
+    })))
+}
+
+/// Gracefully shut down (clean-shutdown auto-backup runs), and if no
+/// process supervisor is configured, spawn a detached re-exec of
+/// ourselves that waits 2 seconds for the port to free before
+/// rebinding.
+pub async fn restart_server() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    #[cfg(unix)]
+    {
+        let respawn_used = maybe_respawn_detached().map_err(server_error)?;
+        // Schedule SIGTERM after the HTTP response goes out.
+        tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            unsafe {
+                libc::kill(std::process::id() as i32, libc::SIGTERM);
+            }
+        });
+        Ok(Json(serde_json::json!({
+            "respawn_used": respawn_used,
+        })))
+    }
+    #[cfg(not(unix))]
+    {
+        Err((
+            StatusCode::NOT_IMPLEMENTED,
+            "server restart is currently Unix-only; stop and relaunch the server manually"
+                .to_string(),
+        ))
+    }
+}
+
+#[cfg(unix)]
+fn maybe_respawn_detached() -> anyhow::Result<bool> {
+    // If launchd is managing us via the LaunchAgent (`tesela install`),
+    // it'll restart automatically — don't double-spawn.
+    if launchd_managing_us() {
+        return Ok(false);
+    }
+    let exe = std::env::current_exe()?;
+    let exe_str = exe.to_string_lossy().into_owned();
+    // sh -c so we can `sleep` before re-exec. The intermediate sh
+    // becomes the parent of the new server, then exits via exec.
+    // `nohup` + redirected stdio detaches us from the terminal too.
+    std::process::Command::new("nohup")
+        .args(["sh", "-c"])
+        .arg(format!("sleep 2 && exec {}", shell_escape(&exe_str)))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn launchd_managing_us() -> bool {
+    std::process::Command::new("launchctl")
+        .args(["list", "com.tesela.server"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(unix)]
+fn shell_escape(s: &str) -> String {
+    // Single-quote and escape any embedded single quotes.
+    let escaped = s.replace('\'', "'\\''");
+    format!("'{}'", escaped)
 }
 
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
