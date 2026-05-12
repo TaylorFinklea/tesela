@@ -48,6 +48,14 @@
 
   const focused = $derived(getActiveRegion() === "bottom");
   const side = $derived(getDrawerSide());
+  const drawerActive = $derived(getActiveRegion() === "bottom");
+  const activeBoxShadow = $derived(
+    drawerActive
+      ? side === "bottom"
+        ? "inset 0 2px 0 0 var(--primary)"
+        : "inset 2px 0 0 0 var(--primary)"
+      : "none",
+  );
   let rootEl = $state<HTMLElement | undefined>();
   let selectedNavIndex = $state(0);
   let panelContext = $state<"page" | "block">("page");
@@ -917,7 +925,7 @@
   onfocus={() => setActiveRegion("bottom")}
   onclick={() => setActiveRegion("bottom")}
   onkeydown={handleKeydown}
-  style="outline: none;"
+  style="outline: none; box-shadow: {activeBoxShadow};"
 >
   <SplitDivider
     orientation={side === "bottom" ? "horizontal" : "vertical"}
