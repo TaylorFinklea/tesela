@@ -47,9 +47,11 @@
     type PropertyDefinition,
   } from "$lib/property-registry";
   import DisplayChip from "./DisplayChip.svelte";
+  import ContextMenu from "./ContextMenu.svelte";
   import type { HiddenKeysConfig } from "$lib/cm-decorations";
   import { prefs } from "$lib/preferences.svelte";
   import { OutlinerHistory, type OutlinerSnapshot } from "$lib/stores/outliner-history.svelte";
+  import { pinBlock, setBottomDrawerOpen, setBottomTab } from "$lib/stores/pane-state.svelte";
 
   let {
     noteId,
@@ -1115,6 +1117,7 @@
   });
 
   let rootEl = $state<HTMLDivElement | undefined>();
+  let ctxMenu = $state<{ x: number; y: number; blockId: string; blockText: string; blockNoteId: string } | null>(null);
 
   // Phase 9.7 — Cmd+Z / Cmd+Shift+Z inside cm-editors route here so the
   // unified outliner+insert-session undo stack drives the redo cycle, not
@@ -1260,7 +1263,17 @@
         <button
           class="shrink-0 pl-1 pr-1.5 cursor-pointer transition-opacity {prefs.bulletStyle === 'dot' ? 'pt-[14px]' : 'pt-[10px]'}"
           onclick={(e) => { e.stopPropagation(); onDrillIn?.(block.id); }}
-          title="Drill in"
+          oncontextmenu={(e) => {
+            e.preventDefault();
+            ctxMenu = {
+              x: e.clientX,
+              y: e.clientY,
+              blockId: block.id,
+              blockText: block.raw_text ?? "",
+              blockNoteId: block.note_id,
+            };
+          }}
+          title="Drill in (right-click for more)"
         >
           {#if prefs.bulletStyle === "dot"}
             <span class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === vi ? 'bg-primary' : 'bg-muted-foreground/40 hover:bg-muted-foreground/80'}"></span>
@@ -1417,6 +1430,25 @@
       {/if}
     {/each}
   </div>
+{/if}
+
+{#if ctxMenu}
+  <ContextMenu
+    x={ctxMenu.x}
+    y={ctxMenu.y}
+    onclose={() => ctxMenu = null}
+    items={[
+      {
+        label: "Pin to drawer",
+        action: () => {
+          const preview = ctxMenu!.blockText.trim().slice(0, 40) || "(empty)";
+          const id = pinBlock(ctxMenu!.blockNoteId, ctxMenu!.blockId, preview);
+          setBottomDrawerOpen(true);
+          setBottomTab({ kind: "pinned", id });
+        },
+      },
+    ]}
+  />
 {/if}
 
 <!-- Bulk tag picker overlay (visual mode bulk-tag op) -->
