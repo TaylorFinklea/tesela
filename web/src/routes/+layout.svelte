@@ -514,6 +514,10 @@
     };
     const gtHandler = (e: KeyboardEvent) => {
       if (!isVimEnabled()) return;
+      // Modifier-only events ("Shift", "Control", "Alt", "Meta") fire between
+      // `g` and `T` when the user types Shift+T. Ignore them so they don't
+      // fall into the `else` branch below and wipe pendingG.
+      if (e.key === "Shift" || e.key === "Control" || e.key === "Alt" || e.key === "Meta") return;
       if (getActiveRegion() !== "bottom") { clearPendingG(); return; }
       if (!isBottomDrawerOpen()) { clearPendingG(); return; }
       const target = e.target as HTMLElement;
@@ -545,9 +549,11 @@
       }
 
       if (e.key === "g" && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        // First key of chord: arm the pending state
+        // First key of chord: arm the pending state. Vim's `timeoutlen`
+        // default is 1000 ms; we give a bit more slack because Shift+T takes
+        // longer than two unmodified keystrokes (Shift fires its own event).
         clearPendingG();
-        pendingG = setTimeout(clearPendingG, 800);
+        pendingG = setTimeout(clearPendingG, 1500);
         // Prevent this lone 'g' from doing anything else on the drawer root
         e.preventDefault();
       }
