@@ -349,6 +349,15 @@
       if (pendingTimer) { clearTimeout(pendingTimer); pendingTimer = null; }
     };
 
+    // Focus the active pinned-tab editor inside the drawer (if any).
+    // Scheduled in a rAF so the region state settles before we query the DOM.
+    const focusDrawerEditor = () => {
+      requestAnimationFrame(() => {
+        const cm = document.querySelector<HTMLElement>(".v9-bottom .cm-editor .cm-content");
+        cm?.focus();
+      });
+    };
+
     const ctrlWHandler = (e: KeyboardEvent) => {
       if (showLeaderMenu) return;
       if (!isVimEnabled()) return;
@@ -380,7 +389,11 @@
               if (getVSplitActiveSide() === "right") setVSplitActiveSide("left");
               else goBackColumn();
             } else if (r === "focus") setActiveRegion("rail");
-            else if (r === "bottom") setActiveRegion("focus");
+            else if (r === "bottom") {
+              // When right-docked, ^w h means "go left" → back to focus.
+              // When bottom-docked, ^w h also returns to focus (same logic).
+              setActiveRegion("focus");
+            }
             break;
           }
           case "l": {
@@ -388,23 +401,28 @@
             // Phase 9.5b: focus + column-split shown + left active → flip to right.
             if (r === "focus" && isColumnSplitOpen() && getVSplitActiveSide() === "left") {
               setVSplitActiveSide("right");
+            } else if (r === "focus" && isBottomDrawerOpen() && getDrawerSide() === "right") {
+              // Right-docked drawer: ^w l from focus enters the drawer.
+              setActiveRegion("bottom");
+              focusDrawerEditor();
             } else if (r === "rail") setActiveRegion("focus");
             break;
           }
           case "j": {
             const r = getActiveRegion();
-            // Phase 9.9 — `^w j` opens the bottom drawer if closed, then
-            // focuses it. Previously, when the drawer was closed, ^w j fell
-            // through to the kanban-split branch (or did nothing at all),
-            // which contradicted the user's "drop to drawer" mental model.
-            // The kanban path now requires the drawer to already be closed
-            // AND a kanban split to be open AND no column-split.
+            // Phase 9.9 — `^w j` opens the bottom-docked drawer if closed, then
+            // focuses it. When the drawer is right-docked, `j` is not a spatial
+            // move toward it, so we skip drawer logic in that case.
+            // The kanban path requires drawer to already be closed AND a kanban
+            // split open AND no column-split.
             if (r === "focus") {
+              const drawerIsRight = isBottomDrawerOpen() && getDrawerSide() === "right";
               if (isSplitOpen() && getActivePane() !== "kanban") {
                 setActivePane("kanban");
-              } else {
+              } else if (!drawerIsRight) {
                 if (!isBottomDrawerOpen()) setBottomDrawerOpen(true);
                 setActiveRegion("bottom");
+                focusDrawerEditor();
               }
             }
             break;
