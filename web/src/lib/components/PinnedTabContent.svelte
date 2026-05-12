@@ -1,10 +1,40 @@
 <script lang="ts">
-  import { createQuery } from "@tanstack/svelte-query";
+  import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import BlockOutliner from "./BlockOutliner.svelte";
   import type { PinnedTab } from "$lib/stores/pane-state.svelte";
 
   let { pin, onunpin }: { pin: PinnedTab | undefined; onunpin: () => void } = $props();
+
+  const queryClient = useQueryClient();
+
+  let saveTimer: number | null = null;
+  let inflight: AbortController | null = null;
+
+  function handleContentChange(fullContent: string) {
+    if (!pin) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(async () => {
+      inflight?.abort();
+      inflight = new AbortController();
+      try {
+        const updated = await api.updateNote(pin!.noteId, fullContent, inflight.signal);
+        queryClient.setQueryData(["note", pin!.noteId], updated);
+      } catch (e) {
+        if ((e as Error).name !== "AbortError") console.error("Save failed", e);
+      }
+    }, 400);
+  }
+
+  function handleCancelAndFlush(fullContent: string) {
+    if (!pin) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    inflight?.abort();
+    inflight = new AbortController();
+    void api.updateNote(pin!.noteId, fullContent, inflight.signal).then((updated) => {
+      queryClient.setQueryData(["note", pin!.noteId], updated);
+    });
+  }
 
   function splitFm(content: string): string {
     if (!content.startsWith("---")) return "";
@@ -43,6 +73,8 @@
       body={splitBody(note.content)}
       frontmatter={splitFm(note.content)}
       isPinnedTab={true}
+      onContentChange={handleContentChange}
+      onCancelAndFlush={handleCancelAndFlush}
     />
   {:else}
     <BlockOutliner
@@ -51,6 +83,8 @@
       frontmatter={splitFm(note.content)}
       drillBlockId={pin.blockId}
       isPinnedTab={true}
+      onContentChange={handleContentChange}
+      onCancelAndFlush={handleCancelAndFlush}
     />
   {/if}
 {/if}
