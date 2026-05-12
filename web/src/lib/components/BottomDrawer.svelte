@@ -53,8 +53,8 @@
   const activeBoxShadow = $derived(
     drawerActive
       ? side === "bottom"
-        ? "inset 0 2px 0 0 var(--primary)"
-        : "inset 2px 0 0 0 var(--primary)"
+        ? "inset 0 3px 0 0 var(--primary), 0 -8px 24px -6px color-mix(in srgb, var(--primary) 50%, transparent)"
+        : "inset 3px 0 0 0 var(--primary), -8px 0 24px -6px color-mix(in srgb, var(--primary) 50%, transparent)"
       : "none",
   );
   let rootEl = $state<HTMLElement | undefined>();
