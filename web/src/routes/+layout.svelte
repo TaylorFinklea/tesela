@@ -127,6 +127,7 @@
       { key: "j", label: "Drawer",            action: () => { setBottomDrawerOpen(true); setActiveRegion("bottom"); },   hint: "⌃w j" },
       { key: "k", label: "Focus",             action: () => setActiveRegion("focus"),                                    hint: "⌃w k" },
       { key: "r", label: "Toggle rail",       action: toggleRail,                                                        hint: "r" },
+      { key: "P", label: "Panel position",    action: toggleDrawerSide,                                                  hint: "p" },
       { key: "q", label: "Close split",       action: () => goBackColumn(),                                              hint: "⌃w q" },
     ]},
     { key: "T", label: "Toggle drawer",       action: toggleBottomDrawer, hint: "b" },
