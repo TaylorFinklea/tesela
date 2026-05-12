@@ -3,6 +3,7 @@
   import { api } from "$lib/api-client";
   import BlockOutliner from "./BlockOutliner.svelte";
   import type { PinnedTab } from "$lib/stores/pane-state.svelte";
+  import { setFocusedBlock } from "$lib/stores/current-block.svelte";
 
   let { pin, onunpin }: { pin: PinnedTab | undefined; onunpin: () => void } = $props();
 
@@ -75,6 +76,8 @@
       isPinnedTab={true}
       onContentChange={handleContentChange}
       onCancelAndFlush={handleCancelAndFlush}
+      onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
+      onfocusedblockchange={(b) => setFocusedBlock(b)}
     />
   {:else}
     <BlockOutliner
@@ -85,6 +88,8 @@
       isPinnedTab={true}
       onContentChange={handleContentChange}
       onCancelAndFlush={handleCancelAndFlush}
+      onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
+      onfocusedblockchange={(b) => setFocusedBlock(b)}
     />
   {/if}
 {/if}
