@@ -33,6 +33,10 @@
     getVimMode,
     isRailOpen,
     toggleRail,
+    getDrawerSide,
+    getDrawerWidth,
+    getDrawerHeight,
+    toggleDrawerSide,
   } from "$lib/stores/pane-state.svelte";
   import { goBack as goBackColumn } from "$lib/stores/active-pane-nav.svelte";
   import { page } from "$app/state";
@@ -63,6 +67,9 @@
   let leaderInitialPath = $state<string[]>([]);
   const drawerOpen = $derived(isBottomDrawerOpen());
   const railOpen = $derived(isRailOpen());
+  const drawerSide = $derived(getDrawerSide());
+  const drawerWidth = $derived(getDrawerWidth());
+  const drawerHeight = $derived(getDrawerHeight());
   const activeToast = $derived(getToast());
 
   // Phase 10.2 — unified spacemacs-style leader chord tree. Block actions
@@ -452,7 +459,11 @@
 </svelte:head>
 
 <QueryClientProvider client={queryClient}>
-  <div class="v9 dark {drawerOpen ? 'with-bottom' : ''} {railOpen ? '' : 'rail-collapsed'}">
+  <div
+    class="v9 dark {drawerOpen ? 'with-bottom' : ''} {railOpen ? '' : 'rail-collapsed'} drawer-{drawerSide}"
+    style:--v9-drawer-h={drawerHeight + 'px'}
+    style:--v9-drawer-w={drawerWidth + 'px'}
+  >
     <CrumbBar />
     <Rail />
     {#if !railOpen}
