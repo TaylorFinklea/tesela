@@ -501,6 +501,7 @@
       e.preventDefault();
       e.stopImmediatePropagation();
       cycleBottomDrawerTab(e.key === "l" ? 1 : -1);
+      focusDrawerEditor();
     };
 
     // gt / gT chord — cycle drawer tabs when vim is enabled.
@@ -529,11 +530,13 @@
           e.preventDefault();
           clearPendingG();
           cycleBottomDrawerTab(1);
+          focusDrawerEditor();
           return;
         } else if (e.key === "T") {
           e.preventDefault();
           clearPendingG();
           cycleBottomDrawerTab(-1);
+          focusDrawerEditor();
           return;
         } else {
           // Not a drawer-tab chord — cancel and let the key through
@@ -550,6 +553,22 @@
       }
     };
 
+    // Belt-and-suspenders Tab guard: when the active region is "bottom" and
+    // focus is stranded outside the drawer (can happen after a tab-cycle unmount),
+    // intercept Tab at capture phase and redirect focus into the drawer instead
+    // of letting it walk the document's tabbable elements.
+    const drawerTabGuard = (e: KeyboardEvent) => {
+      if (e.key !== "Tab") return;
+      if (getActiveRegion() !== "bottom") return;
+      if (!isBottomDrawerOpen()) return;
+      const active = document.activeElement as HTMLElement | null;
+      // If focus is already inside the drawer, let the drawer's own handler deal with it.
+      if (active?.closest(".v9-bottom")) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      focusDrawerEditor();
+    };
+
     document.addEventListener("keydown", spaceHandler);
     document.addEventListener("keydown", altLeaderHandler, true);
     document.addEventListener("tesela:open-leader-at", openLeaderAtHandler);
@@ -561,6 +580,7 @@
     document.addEventListener("tesela:focus-pane", focusPaneHandler);
     document.addEventListener("keydown", drawerTabHandler, true);
     document.addEventListener("keydown", gtHandler);
+    document.addEventListener("keydown", drawerTabGuard, true);
     return () => {
       document.removeEventListener("keydown", spaceHandler);
       document.removeEventListener("keydown", altLeaderHandler, true);
@@ -573,6 +593,7 @@
       document.removeEventListener("tesela:focus-pane", focusPaneHandler);
       document.removeEventListener("keydown", drawerTabHandler, true);
       document.removeEventListener("keydown", gtHandler);
+      document.removeEventListener("keydown", drawerTabGuard, true);
       if (pendingTimer) clearTimeout(pendingTimer);
       clearPendingG();
     };

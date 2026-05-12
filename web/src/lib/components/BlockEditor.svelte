@@ -258,10 +258,29 @@
     // Drawer-tab cycling from inside a pinned-tab editor.
     // cycleDrawerTab is set to null for non-pinned editors so these actions
     // no-op when the user is in the main focus-area editor.
-    Vim.defineAction("nextDrawerTab", () => { vimCtx.cycleDrawerTab?.(1); });
+    // After cycling, the old editor unmounts and focus falls to body — restore
+    // focus to the new tab's cm-editor via rAF so subsequent chords still land
+    // in the drawer.
+    function focusDrawerEditorAfterCycle() {
+      requestAnimationFrame(() => {
+        const cm = document.querySelector<HTMLElement>(".v9-bottom .cm-editor .cm-content");
+        if (cm) { cm.focus(); return; }
+        const drawer = document.querySelector<HTMLElement>(".v9-bottom");
+        if (drawer) drawer.focus();
+      });
+    }
+    Vim.defineAction("nextDrawerTab", () => {
+      if (!vimCtx.cycleDrawerTab) return;
+      vimCtx.cycleDrawerTab(1);
+      focusDrawerEditorAfterCycle();
+    });
     Vim.mapCommand("gt", "action", "nextDrawerTab", {}, { context: "normal" });
 
-    Vim.defineAction("prevDrawerTab", () => { vimCtx.cycleDrawerTab?.(-1); });
+    Vim.defineAction("prevDrawerTab", () => {
+      if (!vimCtx.cycleDrawerTab) return;
+      vimCtx.cycleDrawerTab(-1);
+      focusDrawerEditorAfterCycle();
+    });
     // cm-vim's vimKeyFromEvent encodes single-character keys literally, so
     // capital 'T' arrives in the keyBuffer as 'T', not '<S-t>'. The chord
     // string must match the literal keyBuffer sequence "gT".
