@@ -58,6 +58,7 @@
       : "none",
   );
   let rootEl = $state<HTMLElement | undefined>();
+  let tabsStripEl = $state<HTMLElement | undefined>();
   let selectedNavIndex = $state(0);
   let panelContext = $state<"page" | "block">("page");
 
@@ -727,6 +728,18 @@
     }
   });
 
+  // Keep the active tab visible in the overflow-scrollable tab strip.
+  // Re-runs whenever the active tab kind/id changes — without this, cycling
+  // off the visible end leaves the highlighted tab clipped offscreen.
+  $effect(() => {
+    void tab; // dependency
+    if (!tabsStripEl) return;
+    requestAnimationFrame(() => {
+      const active = tabsStripEl?.querySelector<HTMLElement>(".tab.active");
+      active?.scrollIntoView({ inline: "nearest", block: "nearest" });
+    });
+  });
+
   $effect(() => {
     if (selectedNavIndex >= allBacklinkSources.length) {
       selectedNavIndex = Math.max(0, allBacklinkSources.length - 1);
@@ -935,7 +948,7 @@
     pixelMode={true}
     onresize={side === "bottom" ? setDrawerHeight : setDrawerWidth}
   />
-  <div class="tabs">
+  <div class="tabs" bind:this={tabsStripEl}>
     {#each tabSpecs as t}
       <span
         class="tab {fixedTabId === t.id ? 'active' : ''}"
