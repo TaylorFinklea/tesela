@@ -465,19 +465,19 @@
       if (target instanceof HTMLElement) target.focus();
     };
 
-    // Ctrl+Tab / Meta+Tab — cycle drawer tabs regardless of vim mode.
-    // Works both when focus is on the drawer root (non-editor tabs) AND when
-    // it is inside a cm-editor in a pinned tab.  We intentionally do NOT gate
-    // on `isEditing` here: the whole point is to reach through the editor.
-    // We use the capture phase so the browser's own Ctrl+Tab (switch browser
-    // tab) and cm6 never see it first.
+    // Cmd+Ctrl+h/l — cycle drawer tabs regardless of vim mode.
+    // This combination is not reserved by any browser or OS, so it reliably
+    // fires even when focus is inside a cm-editor.  Ctrl+Tab was the previous
+    // binding but Chrome reserves it for browser-tab switching at the OS level
+    // and preventDefault() cannot reliably intercept it.
     const drawerTabHandler = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.key !== "Tab") return;
+      if (!e.metaKey || !e.ctrlKey) return;
+      if (e.key !== "h" && e.key !== "l") return;
       if (getActiveRegion() !== "bottom") return;
       if (!isBottomDrawerOpen()) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      cycleBottomDrawerTab(e.shiftKey ? -1 : 1);
+      cycleBottomDrawerTab(e.key === "l" ? 1 : -1);
     };
 
     // gt / gT chord — cycle drawer tabs when vim is enabled.
