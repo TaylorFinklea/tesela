@@ -25,6 +25,27 @@ const VIM_KEY = "tesela:vimEnabled";
 const BOTTOM_OPEN_KEY = "tesela:bottomDrawerOpen";
 const BOTTOM_TAB_KEY = "tesela:bottomDrawerTab";
 
+const RAIL_OPEN_KEY = "tesela:railOpen";
+
+function loadRailOpen(): boolean {
+  if (!browser) return true;
+  try {
+    const v = localStorage.getItem(RAIL_OPEN_KEY);
+    return v === null ? true : v === "true";
+  } catch {
+    return true;
+  }
+}
+
+function saveRailOpen(v: boolean): void {
+  if (!browser) return;
+  try {
+    localStorage.setItem(RAIL_OPEN_KEY, String(v));
+  } catch {
+    // ignore
+  }
+}
+
 function loadRatio(): number {
   if (!browser) return 60;
   try {
@@ -126,6 +147,7 @@ let ctrlWPending = $state(false);
 let vimMode = $state("NORMAL");
 let bottomDrawerOpen = $state(loadBottomOpen());
 let bottomTab = $state<BottomTab>(loadBottomTab());
+let railOpen = $state(loadRailOpen());
 
 // Phase 9.5b — column-view navigation. The split is open whenever the URL
 // has `?back=<noteId>`; this store only carries the active side + ratio.
@@ -306,4 +328,20 @@ export function getBottomTab(): BottomTab {
 export function setBottomTab(tab: BottomTab) {
   bottomTab = tab;
   saveBottomTab(tab);
+}
+
+export function isRailOpen(): boolean {
+  return railOpen;
+}
+
+export function setRailOpen(v: boolean): void {
+  railOpen = v;
+  saveRailOpen(v);
+  if (!v && activeRegion === "rail") {
+    activeRegion = "focus";
+  }
+}
+
+export function toggleRail(): void {
+  setRailOpen(!railOpen);
 }
