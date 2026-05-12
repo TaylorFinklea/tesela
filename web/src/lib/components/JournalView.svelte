@@ -21,6 +21,7 @@
   import { api } from "$lib/api-client";
   import BlockOutliner, { markNextFocusAsCrossNav } from "$lib/components/BlockOutliner.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
+  import { setFocusedBlock } from "$lib/stores/current-block.svelte";
   import type { Note } from "$lib/types/Note";
 
   let { anchorDate }: { anchorDate: string } = $props();
@@ -451,6 +452,7 @@
             onContentChange={(content) => handleContentChange(note.id, content)}
             onCancelAndFlush={(content) => cancelAndFlush(note.id, content)}
             onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
+            onfocusedblockchange={(b) => setFocusedBlock(b)}
           />
         {:else}
           <!-- Cheap preview until the section scrolls near the viewport.
