@@ -553,7 +553,41 @@ html, body { height: 100%; margin: 0; }
 /* SplitDivider positioning in bottom vs right */
 .v9.drawer-bottom .split-divider { position: absolute; top: 0; left: 0; right: 0; height: 6px; }
 .v9.drawer-right .split-divider { position: absolute; top: 0; bottom: 0; left: 0; width: 6px; }
-.v9-bottom .tabs { display: flex; gap: 0; background: var(--v9-bg); border-bottom: 1px solid var(--v9-line); }
+.v9-bottom .tabs { display: flex; gap: 0; background: var(--v9-bg); border-bottom: 1px solid var(--v9-line); overflow-x: auto; flex-wrap: nowrap; }
+.v9-bottom .tabs::-webkit-scrollbar { height: 4px; }
+.v9-tab-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--v9-line);
+  margin: 4px 6px;
+  flex-shrink: 0;
+}
+.v9-tab-label {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.v9-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: none;
+  background: transparent;
+  color: var(--v9-ink-faint);
+  cursor: pointer;
+  opacity: 0;
+  border-radius: 2px;
+  margin-left: 2px;
+  flex-shrink: 0;
+  padding: 0;
+  line-height: 1;
+}
+.v9-bottom .tabs .tab:hover .v9-tab-close,
+.v9-bottom .tabs .tab.active .v9-tab-close { opacity: 1; }
+.v9-tab-close:hover { background: var(--v9-bg-3); color: var(--v9-ink-2); }
 .v9-bottom .tabs .tab {
   padding: 6px 12px;
   font-family: var(--v9-mono);

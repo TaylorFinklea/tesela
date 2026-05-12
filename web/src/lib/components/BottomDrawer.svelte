@@ -12,9 +12,12 @@
     setDrawerHeight,
     setDrawerWidth,
     toggleDrawerSide,
+    getPinnedTabs,
+    unpinTab,
     type BottomTab,
     type FixedTabId,
   } from "$lib/stores/pane-state.svelte";
+  import { IconX } from "@tabler/icons-svelte";
   import SplitDivider from "./SplitDivider.svelte";
   import { getFocusedBlock } from "$lib/stores/current-block.svelte";
   import { parseBlocks } from "$lib/block-parser";
@@ -691,6 +694,20 @@
   ]);
 
   const fixedTabId = $derived(tab.kind === "fixed" ? tab.id : null);
+  const pinned = $derived(getPinnedTabs());
+
+  function handleUnpin(id: string) {
+    const currentTabBeforeUnpin = getBottomTab();
+    unpinTab(id);
+    if (currentTabBeforeUnpin.kind === "pinned" && currentTabBeforeUnpin.id === id) {
+      const remaining = getPinnedTabs();
+      if (remaining.length > 0) {
+        setBottomTab({ kind: "pinned", id: remaining[remaining.length - 1].id });
+      } else {
+        setBottomTab({ kind: "fixed", id: "backlinks" });
+      }
+    }
+  }
 
   function cycleTab(direction: 1 | -1) {
     const idx = tabSpecs.findIndex((t) => t.id === fixedTabId);
@@ -913,6 +930,32 @@
         tabindex="-1"
       >
         {t.label} <span class="n">{t.n}</span>
+      </span>
+    {/each}
+    {#if pinned.length > 0}
+      <span class="v9-tab-divider" aria-hidden="true"></span>
+    {/if}
+    {#each pinned as p (p.id)}
+      <span
+        class="tab {tab.kind === 'pinned' && tab.id === p.id ? 'active' : ''}"
+        onclick={(e) => { e.stopPropagation(); setBottomTab({ kind: 'pinned', id: p.id }); setActiveRegion("bottom"); }}
+        onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setBottomTab({ kind: 'pinned', id: p.id }); } }}
+        role="tab"
+        tabindex="-1"
+        title={p.kind === 'page' ? p.title : p.preview}
+      >
+        <span class="v9-tab-label">{p.kind === 'page' ? p.title : p.preview}</span>
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
+        <span
+          class="v9-tab-close"
+          onclick={(e) => { e.stopPropagation(); handleUnpin(p.id); }}
+          title="Unpin"
+          aria-label="Unpin"
+          role="button"
+          tabindex="-1"
+        >
+          <IconX size={10} stroke={2} />
+        </span>
       </span>
     {/each}
     <span style="flex: 1;"></span>
