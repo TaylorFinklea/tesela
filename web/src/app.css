@@ -109,7 +109,7 @@ html, body { height: 100%; margin: 0; }
   font-size: 13px;
   line-height: 1.5;
   display: grid;
-  grid-template-columns: 232px 1fr;
+  grid-template-columns: var(--v9-rail-w, 232px) 1fr;
   grid-template-rows: 32px 1fr 24px;
   grid-template-areas:
     "crumb crumb"
@@ -119,6 +119,8 @@ html, body { height: 100%; margin: 0; }
 }
 .v9.with-bottom { grid-template-rows: 32px 1fr 220px 24px; grid-template-areas:
   "crumb crumb" "rail focus" "bottom bottom" "status status"; }
+.v9.rail-collapsed { --v9-rail-w: 0px; }
+.v9-rail { transition: width 200ms ease, padding 200ms ease; }
 
 /* Breadcrumb header */
 .v9-crumb {
