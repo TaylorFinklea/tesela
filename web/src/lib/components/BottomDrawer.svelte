@@ -735,12 +735,12 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (!focused) return;
-    if ((e.ctrlKey || e.metaKey) && e.key === "Tab") {
-      // While editing a property inline, Tab is "commit + advance" — let the
-      // input's onkeydown handle it (handleBlockKeydown / handlePageKeydown).
+    // Plain Tab / Shift+Tab: prevent the browser from moving focus to the next
+    // tabbable element outside the drawer.  This only applies when focus is NOT
+    // inside a cm-editor (where Tab is used for indentation).
+    if (e.key === "Tab" && !(e.target as HTMLElement)?.closest(".cm-editor")) {
       if (editingKey !== null || editingBlockKey !== null) return;
       e.preventDefault();
-      cycleBottomDrawerTab(e.shiftKey ? -1 : 1);
       return;
     }
     if (e.key === "Escape") {
