@@ -118,6 +118,7 @@
       { key: "l", label: "Right pane",        action: () => { setVSplitActiveSide("right"); setActiveRegion("focus"); }, hint: "⌃w l" },
       { key: "j", label: "Drawer",            action: () => { setBottomDrawerOpen(true); setActiveRegion("bottom"); },   hint: "⌃w j" },
       { key: "k", label: "Focus",             action: () => setActiveRegion("focus"),                                    hint: "⌃w k" },
+      { key: "r", label: "Toggle rail",       action: toggleRail,                                                        hint: "r" },
       { key: "q", label: "Close split",       action: () => goBackColumn(),                                              hint: "⌃w q" },
     ]},
     { key: "T", label: "Toggle drawer",       action: toggleBottomDrawer, hint: "b" },
@@ -230,6 +231,11 @@
       if (e.key === "1" || e.key === "b") {
         e.preventDefault();
         toggleBottomDrawer();
+        return;
+      }
+      if (e.key === "r") {
+        e.preventDefault();
+        toggleRail();
         return;
       }
       if (e.key === "[") {
