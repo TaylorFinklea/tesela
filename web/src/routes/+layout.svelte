@@ -31,6 +31,8 @@
     adjustVSplitRatio,
     setVSplitRatio,
     getVimMode,
+    isRailOpen,
+    toggleRail,
   } from "$lib/stores/pane-state.svelte";
   import { goBack as goBackColumn } from "$lib/stores/active-pane-nav.svelte";
   import { page } from "$app/state";
@@ -59,6 +61,7 @@
   let showLeaderMenu = $state(false);
   let leaderInitialPath = $state<string[]>([]);
   const drawerOpen = $derived(isBottomDrawerOpen());
+  const railOpen = $derived(isRailOpen());
   const activeToast = $derived(getToast());
 
   // Phase 10.2 — unified spacemacs-style leader chord tree. Block actions
@@ -442,7 +445,7 @@
 </svelte:head>
 
 <QueryClientProvider client={queryClient}>
-  <div class="v9 dark {drawerOpen ? 'with-bottom' : ''}">
+  <div class="v9 dark {drawerOpen ? 'with-bottom' : ''} {railOpen ? '' : 'rail-collapsed'}">
     <CrumbBar />
     <Rail />
     <main class="v9-focus">
