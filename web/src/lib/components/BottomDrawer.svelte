@@ -8,8 +8,13 @@
     setActiveRegion,
     getBottomTab,
     setBottomTab,
+    getDrawerSide,
+    setDrawerHeight,
+    setDrawerWidth,
+    toggleDrawerSide,
     type BottomTab,
   } from "$lib/stores/pane-state.svelte";
+  import SplitDivider from "./SplitDivider.svelte";
   import { getFocusedBlock } from "$lib/stores/current-block.svelte";
   import { parseBlocks } from "$lib/block-parser";
   import { updateBlockProperty, clearBlockProperty } from "$lib/property-update";
@@ -29,6 +34,7 @@
   import HistoryTab from "./HistoryTab.svelte";
   import LinkedTasksTab from "./LinkedTasksTab.svelte";
   import DatePicker from "./DatePicker.svelte";
+  import { IconLayoutSidebarRightCollapse, IconLayoutBottombarCollapse } from "@tabler/icons-svelte";
 
   const queryClient = useQueryClient();
 
@@ -36,6 +42,7 @@
   const noteId = $derived(path.startsWith("/p/") ? decodeURIComponent(path.slice(3)) : "");
 
   const focused = $derived(getActiveRegion() === "bottom");
+  const side = $derived(getDrawerSide());
   let rootEl = $state<HTMLElement | undefined>();
   let selectedNavIndex = $state(0);
   let panelContext = $state<"page" | "block">("page");
@@ -883,6 +890,11 @@
   onkeydown={handleKeydown}
   style="outline: none;"
 >
+  <SplitDivider
+    orientation={side === "bottom" ? "horizontal" : "vertical"}
+    pixelMode={true}
+    onresize={side === "bottom" ? setDrawerHeight : setDrawerWidth}
+  />
   <div class="tabs">
     {#each tabSpecs as t}
       <span
@@ -895,6 +907,19 @@
         {t.label} <span class="n">{t.n}</span>
       </span>
     {/each}
+    <span style="flex: 1;"></span>
+    <button
+      class="v9-drawer-dock"
+      onclick={(e) => { e.stopPropagation(); toggleDrawerSide(); }}
+      title={side === 'bottom' ? 'Dock drawer to right' : 'Dock drawer to bottom'}
+      aria-label="Toggle drawer position"
+    >
+      {#if side === 'bottom'}
+        <IconLayoutSidebarRightCollapse size={14} stroke={2} />
+      {:else}
+        <IconLayoutBottombarCollapse size={14} stroke={2} />
+      {/if}
+    </button>
   </div>
   <div class="body">
     {#if !noteId}

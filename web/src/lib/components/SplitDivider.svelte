@@ -3,15 +3,21 @@
    * Drag-resizable divider between two panes. Supports horizontal (top/bottom
    * pane stack — used by the kanban split) and vertical (left/right pane stack
    * — used by Phase 9.5 focus-pane vsplit) orientations.
+   *
+   * pixelMode = true: onresize receives absolute pixels instead of a 0-100 ratio.
+   *   horizontal → height from bottom edge (window.innerHeight - clientY)
+   *   vertical   → width from right edge  (window.innerWidth  - clientX)
    */
   type Orientation = "horizontal" | "vertical";
 
   let {
     onresize,
     orientation = "horizontal",
+    pixelMode = false,
   }: {
-    onresize: (ratio: number) => void;
+    onresize: (value: number) => void;
     orientation?: Orientation;
+    pixelMode?: boolean;
   } = $props();
 
   let dragging = $state(false);
@@ -26,11 +32,21 @@
     const isVertical = orientation === "vertical";
 
     const handleMove = (ev: MouseEvent) => {
-      const rect = container.getBoundingClientRect();
-      const ratio = isVertical
-        ? ((ev.clientX - rect.left) / rect.width) * 100
-        : ((ev.clientY - rect.top) / rect.height) * 100;
-      onresize(Math.max(20, Math.min(80, ratio)));
+      if (pixelMode) {
+        if (isVertical) {
+          // Width from right edge of viewport.
+          onresize(window.innerWidth - ev.clientX);
+        } else {
+          // Height from bottom edge of viewport.
+          onresize(window.innerHeight - ev.clientY);
+        }
+      } else {
+        const rect = container.getBoundingClientRect();
+        const ratio = isVertical
+          ? ((ev.clientX - rect.left) / rect.width) * 100
+          : ((ev.clientY - rect.top) / rect.height) * 100;
+        onresize(Math.max(20, Math.min(80, ratio)));
+      }
     };
 
     const handleUp = () => {
