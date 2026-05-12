@@ -24,6 +24,7 @@ export function buildCommands(deps: {
   createQuery: (title: string) => Promise<void>;
   goToDaily: () => Promise<void>;
   toggleBottomDrawer: () => void;
+  toggleRail: () => void;
   syncReminders?: () => Promise<void>;
   deleteNote?: () => void;
   copyNoteLink?: () => void;
@@ -73,6 +74,15 @@ export function buildCommands(deps: {
       shortcut: "b",
       keywords: ["drawer", "bottom", "toggle", "collapse", "expand", "panel", "backlinks", "properties"],
       action: () => deps.toggleBottomDrawer(),
+    },
+    {
+      id: "toggle-rail",
+      label: "Toggle Rail",
+      icon: "IconLayoutSidebar",
+      category: "action",
+      shortcut: "r",
+      keywords: ["rail", "sidebar", "left", "toggle", "collapse", "expand", "panel"],
+      action: () => deps.toggleRail(),
     },
     ...(deps.syncReminders ? [{
       id: "sync-reminders",

@@ -6,7 +6,7 @@
   import { api } from "$lib/api-client";
   import { getRecents } from "$lib/stores/recents.svelte";
   import { toggleFavorite } from "$lib/stores/favorites.svelte";
-  import { toggleBottomDrawer } from "$lib/stores/pane-state.svelte";
+  import { toggleBottomDrawer, toggleRail } from "$lib/stores/pane-state.svelte";
   import { runRemindersSync } from "$lib/reminders-sync";
   import { buildCommands, matchesQuery, type Command } from "$lib/commands";
   import type { Note } from "$lib/types/Note";
@@ -91,6 +91,7 @@
       goto(`/p/${encodeURIComponent(note.id)}`);
     },
     toggleBottomDrawer: () => { toggleBottomDrawer(); close(); },
+    toggleRail: () => { toggleRail(); close(); },
     syncReminders: async () => {
       close();
       await runRemindersSync(queryClient);
