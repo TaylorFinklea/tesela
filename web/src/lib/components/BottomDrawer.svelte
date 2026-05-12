@@ -711,14 +711,17 @@
   }
 
   function cycleTab(direction: 1 | -1) {
-    const idx = tabSpecs.findIndex((t) => t.id === fixedTabId);
-    if (idx < 0) {
-      // Currently on a pinned tab; cycle back to the last fixed tab
-      setBottomTab({ kind: "fixed", id: tabSpecs[direction === 1 ? 0 : tabSpecs.length - 1].id });
-      return;
-    }
-    const next = (idx + direction + tabSpecs.length) % tabSpecs.length;
-    setBottomTab({ kind: "fixed", id: tabSpecs[next].id });
+    // Build a flat list of all tabs: fixed first, then pinned.
+    // Tab/Shift+Tab cycles through the entire combined strip.
+    const allTabs: BottomTab[] = [
+      ...tabSpecs.map(t => ({ kind: "fixed" as const, id: t.id })),
+      ...pinned.map(p => ({ kind: "pinned" as const, id: p.id })),
+    ];
+    const currentIdx = allTabs.findIndex(t =>
+      t.kind === tab.kind && t.id === tab.id,
+    );
+    const next = (currentIdx + direction + allTabs.length) % allTabs.length;
+    setBottomTab(allTabs[next]);
   }
 
   $effect(() => {
