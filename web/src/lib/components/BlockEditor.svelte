@@ -262,7 +262,10 @@
     Vim.mapCommand("gt", "action", "nextDrawerTab", {}, { context: "normal" });
 
     Vim.defineAction("prevDrawerTab", () => { vimCtx.cycleDrawerTab?.(-1); });
-    Vim.mapCommand("gT", "action", "prevDrawerTab", {}, { context: "normal" });
+    // cm-vim parses multi-char sequences; capital T has a shorter mapping ("T")
+    // that can shadow the second character of "gT".  Use the canonical shift
+    // encoding "g<S-t>" so cm-vim treats it as a distinct chord.
+    Vim.mapCommand("g<S-t>", "action", "prevDrawerTab", {}, { context: "normal" });
   }
 </script>
 
