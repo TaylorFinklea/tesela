@@ -19,6 +19,9 @@ export type BottomTab =
   | { kind: "fixed"; id: FixedTabId }
   | { kind: "pinned"; id: string };
 export type DrawerSide = "bottom" | "right";
+export type PinnedTab =
+  | { id: string; kind: "page"; noteId: string; title: string }
+  | { id: string; kind: "block"; noteId: string; blockId: string; preview: string };
 
 const RATIO_KEY = "tesela:splitRatio";
 // Phase 9.5b — bumped from `tesela:vSplitRatio` so existing values from the
@@ -33,6 +36,7 @@ const RAIL_OPEN_KEY = "tesela:railOpen";
 const DRAWER_SIDE_KEY = "tesela:drawerSide";
 const DRAWER_HEIGHT_KEY = "tesela:drawerHeight";
 const DRAWER_WIDTH_KEY = "tesela:drawerWidth";
+const PINNED_TABS_KEY = "tesela:pinnedTabs";
 
 function loadRailOpen(): boolean {
   if (!browser) return true;
@@ -199,6 +203,31 @@ function saveNumber(key: string, n: number): void {
   }
 }
 
+function loadPinnedTabs(): PinnedTab[] {
+  if (!browser) return [];
+  try {
+    const raw = localStorage.getItem(PINNED_TABS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((t): t is PinnedTab =>
+      t && typeof t.id === "string" && typeof t.noteId === "string" &&
+      (t.kind === "page" || t.kind === "block"),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function savePinnedTabs(tabs: PinnedTab[]): void {
+  if (!browser) return;
+  try {
+    localStorage.setItem(PINNED_TABS_KEY, JSON.stringify(tabs));
+  } catch {
+    // ignore
+  }
+}
+
 let splitOpen = $state(false);
 let activeRegion = $state<Region>("focus");
 let activePane = $state<MainPane>("outliner");
@@ -211,6 +240,7 @@ let railOpen = $state(loadRailOpen());
 let drawerSide = $state<DrawerSide>(loadDrawerSide());
 let drawerHeight = $state(loadNumber(DRAWER_HEIGHT_KEY, 220, 120, 600));
 let drawerWidth = $state(loadNumber(DRAWER_WIDTH_KEY, 360, 240, 800));
+let pinnedTabs = $state<PinnedTab[]>(loadPinnedTabs());
 
 // Phase 9.5b — column-view navigation. The split is open whenever the URL
 // has `?back=<noteId>`; this store only carries the active side + ratio.
@@ -430,4 +460,27 @@ export function setDrawerWidth(n: number): void {
   const clamped = Math.max(240, Math.min(800, n));
   drawerWidth = clamped;
   saveNumber(DRAWER_WIDTH_KEY, clamped);
+}
+
+export function getPinnedTabs(): PinnedTab[] {
+  return pinnedTabs;
+}
+
+export function pinPage(noteId: string, title: string): string {
+  const id = crypto.randomUUID();
+  pinnedTabs = [...pinnedTabs, { id, kind: "page", noteId, title }];
+  savePinnedTabs(pinnedTabs);
+  return id;
+}
+
+export function pinBlock(noteId: string, blockId: string, preview: string): string {
+  const id = crypto.randomUUID();
+  pinnedTabs = [...pinnedTabs, { id, kind: "block", noteId, blockId, preview }];
+  savePinnedTabs(pinnedTabs);
+  return id;
+}
+
+export function unpinTab(id: string): void {
+  pinnedTabs = pinnedTabs.filter(t => t.id !== id);
+  savePinnedTabs(pinnedTabs);
 }
