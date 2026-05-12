@@ -15,6 +15,7 @@ import { browser } from "$app/environment";
 export type Region = "rail" | "middle" | "focus" | "bottom";
 export type MainPane = "outliner" | "kanban";
 export type BottomTab = "backlinks" | "properties" | "outline" | "history" | "linkedTasks";
+export type DrawerSide = "bottom" | "right";
 
 const RATIO_KEY = "tesela:splitRatio";
 // Phase 9.5b — bumped from `tesela:vSplitRatio` so existing values from the
@@ -26,6 +27,9 @@ const BOTTOM_OPEN_KEY = "tesela:bottomDrawerOpen";
 const BOTTOM_TAB_KEY = "tesela:bottomDrawerTab";
 
 const RAIL_OPEN_KEY = "tesela:railOpen";
+const DRAWER_SIDE_KEY = "tesela:drawerSide";
+const DRAWER_HEIGHT_KEY = "tesela:drawerHeight";
+const DRAWER_WIDTH_KEY = "tesela:drawerWidth";
 
 function loadRailOpen(): boolean {
   if (!browser) return true;
@@ -139,6 +143,47 @@ function saveBottomTab(tab: BottomTab) {
   }
 }
 
+function loadDrawerSide(): DrawerSide {
+  if (!browser) return "bottom";
+  try {
+    const v = localStorage.getItem(DRAWER_SIDE_KEY);
+    return v === "right" ? "right" : "bottom";
+  } catch {
+    return "bottom";
+  }
+}
+
+function saveDrawerSide(v: DrawerSide): void {
+  if (!browser) return;
+  try {
+    localStorage.setItem(DRAWER_SIDE_KEY, v);
+  } catch {
+    // ignore
+  }
+}
+
+function loadNumber(key: string, fallback: number, min: number, max: number): number {
+  if (!browser) return fallback;
+  try {
+    const v = localStorage.getItem(key);
+    if (v === null) return fallback;
+    const n = Number(v);
+    if (Number.isFinite(n) && n >= min && n <= max) return n;
+    return fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function saveNumber(key: string, n: number): void {
+  if (!browser) return;
+  try {
+    localStorage.setItem(key, String(n));
+  } catch {
+    // ignore
+  }
+}
+
 let splitOpen = $state(false);
 let activeRegion = $state<Region>("focus");
 let activePane = $state<MainPane>("outliner");
@@ -148,6 +193,9 @@ let vimMode = $state("NORMAL");
 let bottomDrawerOpen = $state(loadBottomOpen());
 let bottomTab = $state<BottomTab>(loadBottomTab());
 let railOpen = $state(loadRailOpen());
+let drawerSide = $state<DrawerSide>(loadDrawerSide());
+let drawerHeight = $state(loadNumber(DRAWER_HEIGHT_KEY, 220, 120, 600));
+let drawerWidth = $state(loadNumber(DRAWER_WIDTH_KEY, 360, 240, 800));
 
 // Phase 9.5b — column-view navigation. The split is open whenever the URL
 // has `?back=<noteId>`; this store only carries the active side + ratio.
@@ -344,4 +392,27 @@ export function setRailOpen(v: boolean): void {
 
 export function toggleRail(): void {
   setRailOpen(!railOpen);
+}
+
+export function getDrawerSide(): DrawerSide { return drawerSide; }
+export function setDrawerSide(side: DrawerSide): void {
+  drawerSide = side;
+  saveDrawerSide(side);
+}
+export function toggleDrawerSide(): void {
+  setDrawerSide(drawerSide === "bottom" ? "right" : "bottom");
+}
+
+export function getDrawerHeight(): number { return drawerHeight; }
+export function setDrawerHeight(n: number): void {
+  const clamped = Math.max(120, Math.min(600, n));
+  drawerHeight = clamped;
+  saveNumber(DRAWER_HEIGHT_KEY, clamped);
+}
+
+export function getDrawerWidth(): number { return drawerWidth; }
+export function setDrawerWidth(n: number): void {
+  const clamped = Math.max(240, Math.min(800, n));
+  drawerWidth = clamped;
+  saveNumber(DRAWER_WIDTH_KEY, clamped);
 }
