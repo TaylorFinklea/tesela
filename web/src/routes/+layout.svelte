@@ -37,7 +37,11 @@
     getDrawerWidth,
     getDrawerHeight,
     toggleDrawerSide,
+    pinBlock,
+    pinPage,
+    setBottomTab,
   } from "$lib/stores/pane-state.svelte";
+  import { getFocusedBlock } from "$lib/stores/current-block.svelte";
   import { goBack as goBackColumn } from "$lib/stores/active-pane-nav.svelte";
   import { page } from "$app/state";
   import CrumbBar from "$lib/components/CrumbBar.svelte";
@@ -48,7 +52,7 @@
   import StatusBar from "$lib/components/StatusBar.svelte";
   import { ensureSystemWidgets } from "$lib/system-widgets";
   import { api } from "$lib/api-client";
-  import { getToast, clearToast } from "$lib/stores/toast.svelte";
+  import { toast, getToast, clearToast } from "$lib/stores/toast.svelte";
   import { IconChevronRight } from "@tabler/icons-svelte";
   import "../app.css";
 
@@ -131,9 +135,38 @@
       { key: "q", label: "Close split",       action: () => goBackColumn(),                                              hint: "⌃w q" },
     ]},
     { key: "T", label: "Toggle drawer",       action: toggleBottomDrawer, hint: "b" },
+    { key: "P", label: "Pin", children: [
+      { key: "b", label: "Pin focused block", action: () => pinFocusedBlock(), hint: "b" },
+      { key: "p", label: "Pin current page",  action: () => pinCurrentPage(),  hint: "p" },
+    ]},
     { key: "y", label: "Yank to clipboard",
       action: () => document.dispatchEvent(new CustomEvent("tesela:yank-clipboard")), hint: "leader Y" },
   ];
+
+  function pinFocusedBlock() {
+    const block = getFocusedBlock();
+    if (!block) {
+      toast("No block focused", "warn");
+      return;
+    }
+    const preview = (block.raw_text ?? "").trim().slice(0, 40) || "(empty)";
+    const id = pinBlock(block.note_id, block.id, preview);
+    setBottomDrawerOpen(true);
+    setBottomTab({ kind: "pinned", id });
+  }
+
+  function pinCurrentPage() {
+    const url = new URL(window.location.href);
+    const path = url.pathname;
+    if (!path.startsWith("/p/")) {
+      toast("No page to pin", "warn");
+      return;
+    }
+    const noteId = decodeURIComponent(path.slice(3));
+    const id = pinPage(noteId, noteId);
+    setBottomDrawerOpen(true);
+    setBottomTab({ kind: "pinned", id });
+  }
 
   // Phase 9.5c — drilling is opt-in: only block drill-in, wiki-link click,
   // and query-result row click call `gotoNote()` (which writes `?back=`).
