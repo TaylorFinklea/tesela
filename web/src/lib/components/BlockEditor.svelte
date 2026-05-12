@@ -956,7 +956,13 @@
     // flips autoFocused=false, which then triggers the auto-INSERT path
     // below for any empty block — landing the user in INSERT before
     // they've pressed a key.
-    if (!view.hasFocus && !autoFocused) view.focus();
+    // Additional guard: only grab focus when no other element currently has it
+    // (i.e. document.activeElement is body or null). Without this, switching
+    // focus to a drawer-tab editor causes the focus-area BlockEditor's $effect
+    // to re-run (because `focused` is still true for its block) and steal focus
+    // back, making the cursor in the drawer editor appear then immediately vanish.
+    const bodyOrNull = document.activeElement === document.body || document.activeElement === null;
+    if (!view.hasFocus && !autoFocused && bodyOrNull) view.focus();
     if (startInInsert && !appliedAutoInsert) {
       appliedAutoInsert = true;
       const cm = getCM(view);
