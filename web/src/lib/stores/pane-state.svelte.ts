@@ -14,7 +14,10 @@ import { browser } from "$app/environment";
 
 export type Region = "rail" | "middle" | "focus" | "bottom";
 export type MainPane = "outliner" | "kanban";
-export type BottomTab = "backlinks" | "properties" | "outline" | "history" | "linkedTasks";
+export type FixedTabId = "backlinks" | "properties" | "outline" | "history" | "linkedTasks";
+export type BottomTab =
+  | { kind: "fixed"; id: FixedTabId }
+  | { kind: "pinned"; id: string };
 export type DrawerSide = "bottom" | "right";
 
 const RATIO_KEY = "tesela:splitRatio";
@@ -115,7 +118,7 @@ function saveBottomOpen(v: boolean) {
   }
 }
 
-const VALID_TABS: ReadonlySet<BottomTab> = new Set([
+const VALID_FIXED_IDS: ReadonlySet<FixedTabId> = new Set([
   "backlinks",
   "properties",
   "outline",
@@ -124,20 +127,32 @@ const VALID_TABS: ReadonlySet<BottomTab> = new Set([
 ]);
 
 function loadBottomTab(): BottomTab {
-  if (!browser) return "backlinks";
+  if (!browser) return { kind: "fixed", id: "backlinks" };
   try {
     const stored = localStorage.getItem(BOTTOM_TAB_KEY);
-    if (stored && VALID_TABS.has(stored as BottomTab)) return stored as BottomTab;
-    return "backlinks";
+    if (!stored) return { kind: "fixed", id: "backlinks" };
+    // Legacy: plain string equal to a known fixed id.
+    if (VALID_FIXED_IDS.has(stored as FixedTabId)) {
+      return { kind: "fixed", id: stored as FixedTabId };
+    }
+    // New shape: JSON object.
+    const parsed = JSON.parse(stored);
+    if (parsed?.kind === "fixed" && VALID_FIXED_IDS.has(parsed.id)) {
+      return { kind: "fixed", id: parsed.id };
+    }
+    if (parsed?.kind === "pinned" && typeof parsed.id === "string") {
+      return { kind: "pinned", id: parsed.id };
+    }
+    return { kind: "fixed", id: "backlinks" };
   } catch {
-    return "backlinks";
+    return { kind: "fixed", id: "backlinks" };
   }
 }
 
 function saveBottomTab(tab: BottomTab) {
   if (!browser) return;
   try {
-    localStorage.setItem(BOTTOM_TAB_KEY, tab);
+    localStorage.setItem(BOTTOM_TAB_KEY, JSON.stringify(tab));
   } catch {
     // ignore
   }

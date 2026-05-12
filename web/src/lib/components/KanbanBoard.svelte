@@ -317,7 +317,7 @@
         setFocusedBlock(card);
         setBottomDrawerOpen(true);
         setActiveRegion("bottom");
-        setBottomTab("properties");
+        setBottomTab({ kind: "fixed", id: "properties" });
         break;
       }
     }

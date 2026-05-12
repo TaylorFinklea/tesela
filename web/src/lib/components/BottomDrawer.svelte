@@ -13,6 +13,7 @@
     setDrawerWidth,
     toggleDrawerSide,
     type BottomTab,
+    type FixedTabId,
   } from "$lib/stores/pane-state.svelte";
   import SplitDivider from "./SplitDivider.svelte";
   import { getFocusedBlock } from "$lib/stores/current-block.svelte";
@@ -680,7 +681,7 @@
     linkedTasksCountQuery.data?.groups?.reduce((acc, g) => acc + g.items.length, 0) ?? 0,
   );
 
-  type TabSpec = { id: BottomTab; label: string; n: number };
+  type TabSpec = { id: FixedTabId; label: string; n: number };
   const tabSpecs = $derived<TabSpec[]>([
     { id: "backlinks", label: "Backlinks", n: allBacklinkSources.length },
     { id: "properties", label: "Properties", n: customProperties.length + blockProperties.length },
@@ -689,10 +690,17 @@
     { id: "linkedTasks", label: "Linked tasks", n: linkedTasksCount },
   ]);
 
+  const fixedTabId = $derived(tab.kind === "fixed" ? tab.id : null);
+
   function cycleTab(direction: 1 | -1) {
-    const idx = tabSpecs.findIndex((t) => t.id === tab);
+    const idx = tabSpecs.findIndex((t) => t.id === fixedTabId);
+    if (idx < 0) {
+      // Currently on a pinned tab; cycle back to the last fixed tab
+      setBottomTab({ kind: "fixed", id: tabSpecs[direction === 1 ? 0 : tabSpecs.length - 1].id });
+      return;
+    }
     const next = (idx + direction + tabSpecs.length) % tabSpecs.length;
-    setBottomTab(tabSpecs[next].id);
+    setBottomTab({ kind: "fixed", id: tabSpecs[next].id });
   }
 
   $effect(() => {
@@ -729,7 +737,7 @@
       setActiveRegion("focus");
       return;
     }
-    if (tab === "backlinks") {
+    if (fixedTabId === "backlinks") {
       if (e.key === "j" || e.key === "ArrowDown") {
         e.preventDefault();
         selectedNavIndex = Math.min(allBacklinkSources.length - 1, selectedNavIndex + 1);
@@ -742,7 +750,7 @@
         goto(`/p/${encodeURIComponent(src.toLowerCase())}`);
         setActiveRegion("focus");
       }
-    } else if (tab === "properties") {
+    } else if (fixedTabId === "properties") {
       // While editing an inline input, that input owns its keys (handlePage/BlockKeydown).
       if (editingKey !== null || editingBlockKey !== null) return;
       const prop = flatProperties[selectedPropertyIndex];
@@ -898,9 +906,9 @@
   <div class="tabs">
     {#each tabSpecs as t}
       <span
-        class="tab {t.id === tab ? 'active' : ''}"
-        onclick={(e) => { e.stopPropagation(); setBottomTab(t.id); setActiveRegion("bottom"); }}
-        onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setBottomTab(t.id); } }}
+        class="tab {fixedTabId === t.id ? 'active' : ''}"
+        onclick={(e) => { e.stopPropagation(); setBottomTab({ kind: 'fixed', id: t.id }); setActiveRegion("bottom"); }}
+        onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setBottomTab({ kind: 'fixed', id: t.id }); } }}
         role="tab"
         tabindex="-1"
       >
@@ -924,7 +932,7 @@
   <div class="body">
     {#if !noteId}
       <div style="color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">No note focused</div>
-    {:else if tab === "backlinks"}
+    {:else if fixedTabId === "backlinks"}
       {#if allBacklinkSources.length === 0}
         <div style="color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">No pages link here</div>
       {:else}
@@ -941,7 +949,7 @@
           </div>
         {/each}
       {/if}
-    {:else if tab === "properties"}
+    {:else if fixedTabId === "properties"}
       <!-- pg/blk segmented -->
       <div style="display: flex; gap: 6px; margin-bottom: 10px; font-family: var(--v9-mono); font-size: 10.5px;">
         <button
@@ -968,7 +976,7 @@
               {#each blockProperties as prop, pi}
                 {@const def = propertyRegistry.get(prop.key.toLowerCase())}
                 {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, blockHiddenChoices) : []}
-                {@const propSelected = focused && tab === "properties" && panelContext === "block" && selectedPropertyIndex === pi}
+                {@const propSelected = focused && fixedTabId === "properties" && panelContext === "block" && selectedPropertyIndex === pi}
                 {@const propChord = propertyChords.get(prop.key)}
                 {@const valChords = visibleChoices.length > 0 ? deriveValueChords(visibleChoices, def) : new Map()}
                 <span
@@ -1125,7 +1133,7 @@
               {#each customProperties as prop, pi}
                 {@const def = propertyRegistry.get(prop.key.toLowerCase())}
                 {@const visibleChoices = def && isSelectType(def) ? getVisibleChoices(def, hiddenChoices) : []}
-                {@const propSelected = focused && tab === "properties" && panelContext === "page" && selectedPropertyIndex === pi}
+                {@const propSelected = focused && fixedTabId === "properties" && panelContext === "page" && selectedPropertyIndex === pi}
                 {@const propChord = propertyChords.get(prop.key)}
                 {@const valChords = visibleChoices.length > 0 ? deriveValueChords(visibleChoices, def) : new Map()}
                 <span
@@ -1267,7 +1275,7 @@
           <div style="color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">Loading…</div>
         {/if}
       {/if}
-    {:else if tab === "outline"}
+    {:else if fixedTabId === "outline"}
       {#if outlineBlocks.length === 0}
         <div style="color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">No outline</div>
       {:else}
@@ -1280,9 +1288,9 @@
           >· {b.text || "(empty)"}</div>
         {/each}
       {/if}
-    {:else if tab === "history"}
+    {:else if fixedTabId === "history"}
       <HistoryTab {noteId} />
-    {:else if tab === "linkedTasks"}
+    {:else if fixedTabId === "linkedTasks"}
       <LinkedTasksTab {noteId} />
     {/if}
   </div>

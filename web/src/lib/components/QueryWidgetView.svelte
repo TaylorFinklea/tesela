@@ -416,7 +416,7 @@
       setFocusedBlock(stub);
       setBottomDrawerOpen(true);
       setActiveRegion("bottom");
-      setBottomTab("properties");
+      setBottomTab({ kind: "fixed", id: "properties" });
     } else if (e.key === "s" && flatRows[selectedIndex]?.kind === "block") {
       // Phase 9.9 — `s` cycles the highlighted row's status without
       // leaving the result list.
