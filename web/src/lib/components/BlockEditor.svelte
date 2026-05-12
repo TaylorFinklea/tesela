@@ -262,10 +262,10 @@
     Vim.mapCommand("gt", "action", "nextDrawerTab", {}, { context: "normal" });
 
     Vim.defineAction("prevDrawerTab", () => { vimCtx.cycleDrawerTab?.(-1); });
-    // cm-vim parses multi-char sequences; capital T has a shorter mapping ("T")
-    // that can shadow the second character of "gT".  Use the canonical shift
-    // encoding "g<S-t>" so cm-vim treats it as a distinct chord.
-    Vim.mapCommand("g<S-t>", "action", "prevDrawerTab", {}, { context: "normal" });
+    // cm-vim's vimKeyFromEvent encodes single-character keys literally, so
+    // capital 'T' arrives in the keyBuffer as 'T', not '<S-t>'. The chord
+    // string must match the literal keyBuffer sequence "gT".
+    Vim.mapCommand("gT", "action", "prevDrawerTab", {}, { context: "normal" });
   }
 </script>
 
@@ -956,13 +956,21 @@
     // flips autoFocused=false, which then triggers the auto-INSERT path
     // below for any empty block — landing the user in INSERT before
     // they've pressed a key.
-    // Additional guard: only grab focus when no other element currently has it
-    // (i.e. document.activeElement is body or null). Without this, switching
-    // focus to a drawer-tab editor causes the focus-area BlockEditor's $effect
-    // to re-run (because `focused` is still true for its block) and steal focus
-    // back, making the cursor in the drawer editor appear then immediately vanish.
-    const bodyOrNull = document.activeElement === document.body || document.activeElement === null;
-    if (!view.hasFocus && !autoFocused && bodyOrNull) view.focus();
+    // Region-aware focus guard: allow focus-steal when the currently focused
+    // element is in the SAME region (drawer vs focus-area) as this BlockEditor.
+    // This restores j/k cross-block navigation within a region while still
+    // preventing cross-region focus theft (e.g. focus-area editor stealing
+    // back from a drawer pinned-tab editor).
+    // "drawer" = inside .v9-bottom; "focus-area" = outside .v9-bottom.
+    const active = document.activeElement;
+    const isBody = active === document.body || active === null;
+    let sameRegion = false;
+    if (active instanceof Element) {
+      const activeInDrawer = !!active.closest(".v9-bottom");
+      const myRegionIsDrawer = isPinnedTab === true;
+      sameRegion = activeInDrawer === myRegionIsDrawer;
+    }
+    if (!view.hasFocus && !autoFocused && (isBody || sameRegion)) view.focus();
     if (startInInsert && !appliedAutoInsert) {
       appliedAutoInsert = true;
       const cm = getCM(view);
@@ -1296,12 +1304,16 @@
       // by extension order) so it pre-empts cm-vim's `g`-prefix state. In
       // INSERT/VISUAL we return false so the user can still type `g` or
       // run vim's visual `g` operators.
+      // Exception: when this editor is inside a pinned drawer tab, `g` is
+      // the first key of the `gt`/`gT` drawer-tab cycling chord.  Don't
+      // open the leader menu — let the event bubble to the layout's gtHandler.
       {
         key: "g",
         run: (v) => {
           const cm = getCM(v);
           const vs = cm?.state?.vim as { insertMode?: boolean; visualMode?: boolean } | undefined;
           if (vs?.insertMode || vs?.visualMode) return false;
+          if (isPinnedTab) return false; // let gtHandler in layout arm the chord
           document.dispatchEvent(new CustomEvent("tesela:open-leader-at", { detail: { path: ["Go to"] } }));
           return true;
         },

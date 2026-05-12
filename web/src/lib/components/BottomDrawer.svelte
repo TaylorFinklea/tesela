@@ -741,6 +741,7 @@
     if (e.key === "Tab" && !(e.target as HTMLElement)?.closest(".cm-editor")) {
       if (editingKey !== null || editingBlockKey !== null) return;
       e.preventDefault();
+      e.stopPropagation();
       return;
     }
     if (e.key === "Escape") {
@@ -751,6 +752,21 @@
       // typeahead even though the active region has flipped back to "focus".
       (document.activeElement as HTMLElement | null)?.blur();
       setActiveRegion("focus");
+      return;
+    }
+    // Enter on a pinned tab (when not already inside an editor): focus the
+    // first cm-editor in the drawer so the user can start typing immediately
+    // without reaching for the mouse.
+    if (
+      e.key === "Enter" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey &&
+      tab.kind === "pinned" &&
+      !(e.target as HTMLElement)?.closest(".cm-editor")
+    ) {
+      e.preventDefault();
+      requestAnimationFrame(() => {
+        const cm = document.querySelector<HTMLElement>(".v9-bottom .cm-editor .cm-content");
+        cm?.focus();
+      });
       return;
     }
     if (fixedTabId === "backlinks") {

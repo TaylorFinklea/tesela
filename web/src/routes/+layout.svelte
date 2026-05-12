@@ -350,11 +350,16 @@
     };
 
     // Focus the active pinned-tab editor inside the drawer (if any).
+    // When no cm-editor is present (e.g. Backlinks tab), fall back to focusing
+    // the drawer root itself (tabindex=0) so keyboard events land in the drawer
+    // region and Tab won't escape to browser chrome.
     // Scheduled in a rAF so the region state settles before we query the DOM.
     const focusDrawerEditor = () => {
       requestAnimationFrame(() => {
         const cm = document.querySelector<HTMLElement>(".v9-bottom .cm-editor .cm-content");
-        cm?.focus();
+        if (cm) { cm.focus(); return; }
+        const root = document.querySelector<HTMLElement>(".v9-bottom");
+        root?.focus();
       });
     };
 
@@ -511,7 +516,12 @@
       if (getActiveRegion() !== "bottom") { clearPendingG(); return; }
       if (!isBottomDrawerOpen()) { clearPendingG(); return; }
       const target = e.target as HTMLElement;
-      if (target.closest(".cm-editor")) { clearPendingG(); return; }
+      // Allow the chord from inside the drawer's own cm-editor (pinned-tab
+      // editor) — the BlockEditor's `g` keymap returns false for isPinnedTab
+      // so the event bubbles here. Only skip editors that are NOT inside the
+      // drawer (focus-area editors, which have their own `g` → leader action).
+      const inDrawerEditor = target.closest(".v9-bottom .cm-editor");
+      if (target.closest(".cm-editor") && !inDrawerEditor) { clearPendingG(); return; }
 
       if (pendingG) {
         // Second key of chord
