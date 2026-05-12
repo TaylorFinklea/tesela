@@ -40,6 +40,7 @@
     pinBlock,
     pinPage,
     setBottomTab,
+    cycleBottomDrawerTab,
   } from "$lib/stores/pane-state.svelte";
   import { getFocusedBlock } from "$lib/stores/current-block.svelte";
   import { goBack as goBackColumn } from "$lib/stores/active-pane-nav.svelte";
@@ -464,6 +465,63 @@
       if (target instanceof HTMLElement) target.focus();
     };
 
+    // Ctrl+Tab / Meta+Tab — cycle drawer tabs regardless of vim mode.
+    // Works both when focus is on the drawer root (non-editor tabs) AND when
+    // it is inside a cm-editor in a pinned tab.  We intentionally do NOT gate
+    // on `isEditing` here: the whole point is to reach through the editor.
+    // We use the capture phase so the browser's own Ctrl+Tab (switch browser
+    // tab) and cm6 never see it first.
+    const drawerTabHandler = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key !== "Tab") return;
+      if (getActiveRegion() !== "bottom") return;
+      if (!isBottomDrawerOpen()) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      cycleBottomDrawerTab(e.shiftKey ? -1 : 1);
+    };
+
+    // gt / gT chord — cycle drawer tabs when vim is enabled.
+    // Only active when the drawer is focused AND the key event is NOT
+    // originating from inside a cm-editor (inside editors, BlockEditor's
+    // own vim action registration handles it).
+    let pendingG: ReturnType<typeof setTimeout> | null = null;
+    const clearPendingG = () => {
+      if (pendingG) { clearTimeout(pendingG); pendingG = null; }
+    };
+    const gtHandler = (e: KeyboardEvent) => {
+      if (!isVimEnabled()) return;
+      if (getActiveRegion() !== "bottom") { clearPendingG(); return; }
+      if (!isBottomDrawerOpen()) { clearPendingG(); return; }
+      const target = e.target as HTMLElement;
+      if (target.closest(".cm-editor")) { clearPendingG(); return; }
+
+      if (pendingG) {
+        // Second key of chord
+        if (e.key === "t") {
+          e.preventDefault();
+          clearPendingG();
+          cycleBottomDrawerTab(1);
+          return;
+        } else if (e.key === "T") {
+          e.preventDefault();
+          clearPendingG();
+          cycleBottomDrawerTab(-1);
+          return;
+        } else {
+          // Not a drawer-tab chord — cancel and let the key through
+          clearPendingG();
+        }
+      }
+
+      if (e.key === "g" && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // First key of chord: arm the pending state
+        clearPendingG();
+        pendingG = setTimeout(clearPendingG, 800);
+        // Prevent this lone 'g' from doing anything else on the drawer root
+        e.preventDefault();
+      }
+    };
+
     document.addEventListener("keydown", spaceHandler);
     document.addEventListener("keydown", altLeaderHandler, true);
     document.addEventListener("tesela:open-leader-at", openLeaderAtHandler);
@@ -473,6 +531,8 @@
     document.addEventListener("keydown", escHandler);
     document.addEventListener("tesela:leader", leaderHandler);
     document.addEventListener("tesela:focus-pane", focusPaneHandler);
+    document.addEventListener("keydown", drawerTabHandler, true);
+    document.addEventListener("keydown", gtHandler);
     return () => {
       document.removeEventListener("keydown", spaceHandler);
       document.removeEventListener("keydown", altLeaderHandler, true);
@@ -483,7 +543,10 @@
       document.removeEventListener("keydown", escHandler);
       document.removeEventListener("tesela:leader", leaderHandler);
       document.removeEventListener("tesela:focus-pane", focusPaneHandler);
+      document.removeEventListener("keydown", drawerTabHandler, true);
+      document.removeEventListener("keydown", gtHandler);
       if (pendingTimer) clearTimeout(pendingTimer);
+      clearPendingG();
     };
   });
 </script>

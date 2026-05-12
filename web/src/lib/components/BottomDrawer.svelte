@@ -14,6 +14,7 @@
     toggleDrawerSide,
     getPinnedTabs,
     unpinTab,
+    cycleBottomDrawerTab,
     type BottomTab,
     type FixedTabId,
   } from "$lib/stores/pane-state.svelte";
@@ -718,20 +719,6 @@
     }
   }
 
-  function cycleTab(direction: 1 | -1) {
-    // Build a flat list of all tabs: fixed first, then pinned.
-    // Tab/Shift+Tab cycles through the entire combined strip.
-    const allTabs: BottomTab[] = [
-      ...tabSpecs.map(t => ({ kind: "fixed" as const, id: t.id })),
-      ...pinned.map(p => ({ kind: "pinned" as const, id: p.id })),
-    ];
-    const currentIdx = allTabs.findIndex(t =>
-      t.kind === tab.kind && t.id === tab.id,
-    );
-    const next = (currentIdx + direction + allTabs.length) % allTabs.length;
-    setBottomTab(allTabs[next]);
-  }
-
   $effect(() => {
     if (focused) {
       if (rootEl && document.activeElement !== rootEl) rootEl.focus();
@@ -748,12 +735,12 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (!focused) return;
-    if (e.key === "Tab") {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Tab") {
       // While editing a property inline, Tab is "commit + advance" — let the
       // input's onkeydown handle it (handleBlockKeydown / handlePageKeydown).
       if (editingKey !== null || editingBlockKey !== null) return;
       e.preventDefault();
-      cycleTab(e.shiftKey ? -1 : 1);
+      cycleBottomDrawerTab(e.shiftKey ? -1 : 1);
       return;
     }
     if (e.key === "Escape") {
