@@ -51,3 +51,6 @@ phase3g-*.png
 phase3h-*.png
 phase3i-*.png
 logseq-*.png
+
+# Local screen-recordings / repro artifacts
+*.mov
