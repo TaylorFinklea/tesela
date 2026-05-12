@@ -4,7 +4,10 @@
   import { page } from "$app/state";
   import { goto } from "$app/navigation";
   import { api } from "$lib/api-client";
-  import { getActiveRegion, setActiveRegion } from "$lib/stores/pane-state.svelte";
+  import { getActiveRegion, setActiveRegion, isRailOpen, toggleRail } from "$lib/stores/pane-state.svelte";
+  import { IconChevronLeft } from "@tabler/icons-svelte";
+
+  const open = $derived(isRailOpen());
   import { parseWidgets, widgetsBySection } from "$lib/widget-registry.svelte";
   import MiniCalendar from "./MiniCalendar.svelte";
   import type { Note } from "$lib/types/Note";
@@ -224,6 +227,16 @@
   onkeydown={handleKeydown}
   style="outline: none;"
 >
+  {#if open}
+    <button
+      class="v9-rail-collapse"
+      onclick={toggleRail}
+      title="Collapse rail (r)"
+      aria-label="Collapse rail"
+    >
+      <IconChevronLeft size={14} stroke={2} />
+    </button>
+  {/if}
   <div class="v9-rail-scroll">
     {#each ["pinned", "browse", "saved"] as const as sectionName}
       {#if orderedSections[sectionName].length > 0}

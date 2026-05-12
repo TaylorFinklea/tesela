@@ -120,7 +120,44 @@ html, body { height: 100%; margin: 0; }
 .v9.with-bottom { grid-template-rows: 32px 1fr 220px 24px; grid-template-areas:
   "crumb crumb" "rail focus" "bottom bottom" "status status"; }
 .v9.rail-collapsed { --v9-rail-w: 0px; }
-.v9-rail { transition: width 200ms ease, padding 200ms ease; }
+.v9-rail { transition: width 200ms ease, padding 200ms ease; position: relative; }
+
+.v9-rail-collapse {
+  position: absolute;
+  top: 38px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--v9-ink-faint);
+  cursor: pointer;
+  border-radius: 3px;
+  z-index: 5;
+}
+.v9-rail-collapse:hover { background: var(--v9-bg-3); color: var(--v9-ink-2); }
+
+.v9-rail-reveal {
+  position: fixed;
+  top: 38px;
+  left: 0;
+  width: 12px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--v9-bg-2);
+  border: 1px solid var(--v9-line);
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+  color: var(--v9-ink-faint);
+  cursor: pointer;
+  z-index: 5;
+}
+.v9-rail-reveal:hover { background: var(--v9-bg-3); color: var(--v9-ink-2); }
 
 /* Breadcrumb header */
 .v9-crumb {

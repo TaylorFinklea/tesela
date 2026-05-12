@@ -45,6 +45,7 @@
   import { ensureSystemWidgets } from "$lib/system-widgets";
   import { api } from "$lib/api-client";
   import { getToast, clearToast } from "$lib/stores/toast.svelte";
+  import { IconChevronRight } from "@tabler/icons-svelte";
   import "../app.css";
 
   let { children } = $props();
@@ -454,6 +455,16 @@
   <div class="v9 dark {drawerOpen ? 'with-bottom' : ''} {railOpen ? '' : 'rail-collapsed'}">
     <CrumbBar />
     <Rail />
+    {#if !railOpen}
+      <button
+        class="v9-rail-reveal"
+        onclick={toggleRail}
+        title="Expand rail (r)"
+        aria-label="Expand rail"
+      >
+        <IconChevronRight size={14} stroke={2} />
+      </button>
+    {/if}
     <main class="v9-focus">
       {@render children()}
     </main>
