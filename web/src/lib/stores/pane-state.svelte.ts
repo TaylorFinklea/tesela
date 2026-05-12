@@ -423,6 +423,20 @@ export function setBottomTab(tab: BottomTab) {
   saveBottomTab(tab);
 }
 
+/** Cycle through the flat list of all drawer tabs: 5 fixed in canonical
+ *  order (backlinks → properties → outline → history → linkedTasks), then
+ *  pinned tabs in insertion order.  `direction` is +1 (next) or -1 (prev). */
+export function cycleBottomDrawerTab(direction: 1 | -1): void {
+  const fixedIds: FixedTabId[] = ["backlinks", "properties", "outline", "history", "linkedTasks"];
+  const allTabs: BottomTab[] = [
+    ...fixedIds.map(id => ({ kind: "fixed" as const, id })),
+    ...pinnedTabs.map(p => ({ kind: "pinned" as const, id: p.id })),
+  ];
+  const currentIdx = allTabs.findIndex(t => t.kind === bottomTab.kind && t.id === bottomTab.id);
+  const next = (currentIdx + direction + allTabs.length) % allTabs.length;
+  setBottomTab(allTabs[next]);
+}
+
 export function isRailOpen(): boolean {
   return railOpen;
 }
