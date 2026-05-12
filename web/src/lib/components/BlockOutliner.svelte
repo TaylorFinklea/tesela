@@ -1353,6 +1353,7 @@
             onRedoOutliner={redoOutliner}
             onBeginInsertSession={beginInsertSession}
             onEndInsertSession={endInsertSession}
+            {isPinnedTab}
           />
         </div>
 

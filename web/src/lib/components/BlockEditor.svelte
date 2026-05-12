@@ -33,6 +33,7 @@
     redoOutliner: (() => boolean) | null;
     beginInsertSession: (() => void) | null;
     endInsertSession: (() => void) | null;
+    cycleDrawerTab: ((direction: 1 | -1) => void) | null;
   } = {
     view: null, navigate: null, pageJump: null,
     deleteBlock: null, yankBlock: null,
@@ -44,6 +45,7 @@
     toggleProps: null,
     undoOutliner: null, redoOutliner: null,
     beginInsertSession: null, endInsertSession: null,
+    cycleDrawerTab: null,
   };
 
   // We deliberately re-register on every editor mount. Each call unshifts
@@ -252,6 +254,15 @@
       if (!handled) cm?.execCommand?.("redo");
     });
     Vim.mapCommand("<C-r>", "action", "redoBlockOp", {}, { context: "normal" });
+
+    // Drawer-tab cycling from inside a pinned-tab editor.
+    // cycleDrawerTab is set to null for non-pinned editors so these actions
+    // no-op when the user is in the main focus-area editor.
+    Vim.defineAction("nextDrawerTab", () => { vimCtx.cycleDrawerTab?.(1); });
+    Vim.mapCommand("gt", "action", "nextDrawerTab", {}, { context: "normal" });
+
+    Vim.defineAction("prevDrawerTab", () => { vimCtx.cycleDrawerTab?.(-1); });
+    Vim.mapCommand("gT", "action", "prevDrawerTab", {}, { context: "normal" });
   }
 </script>
 
@@ -282,11 +293,10 @@
   // pressing `i` always opens search regardless of which menu the user is
   // in or what tag-properties they've defined.
   const SLASH_RESERVED: ReadonlySet<string> = new Set(["i"]);
-  import { setVimMode } from "$lib/stores/pane-state.svelte";
+  import { setVimMode, getVimMode, cycleBottomDrawerTab } from "$lib/stores/pane-state.svelte";
   import { api } from "$lib/api-client";
   import { goto } from "$app/navigation";
   import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
-  import { getVimMode } from "$lib/stores/pane-state.svelte";
   import ChordMenu, { type ChordNode } from "./ChordMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
   import DatePicker from "./DatePicker.svelte";
@@ -337,6 +347,7 @@
     autoFillNames,
     propertyDefs,
     onInsertTemplate,
+    isPinnedTab = false,
   }: {
     initialText: string;
     onblur: () => void;
@@ -398,6 +409,9 @@
      *  ID. The BlockOutliner fetches its body and inserts the parsed blocks as
      *  children of the current block. */
     onInsertTemplate?: (templateNoteId: string) => void;
+    /** When true, this editor is inside a pinned drawer tab. Enables gt/gT
+     *  vim actions for cycling drawer tabs from within the editor. */
+    isPinnedTab?: boolean;
   } = $props();
 
   const hiddenKeysCompartment = new Compartment();
@@ -1026,6 +1040,9 @@
     vimCtx.redoOutliner = onRedoOutliner ?? null;
     vimCtx.beginInsertSession = onBeginInsertSession ?? null;
     vimCtx.endInsertSession = onEndInsertSession ?? null;
+    // Only expose drawer-tab cycling when inside a pinned-tab editor so that
+    // gt / gT in the main focus-area editor remains a no-op.
+    vimCtx.cycleDrawerTab = isPinnedTab ? cycleBottomDrawerTab : null;
   }
   function clearVimCtxIfMine() {
     if (vimCtx.view === view) vimCtx.view = null;
