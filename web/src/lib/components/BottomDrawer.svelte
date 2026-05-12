@@ -36,6 +36,7 @@
   import type { Link } from "$lib/types/Link";
   import type { GraphEdge } from "$lib/types/GraphEdge";
   import HistoryTab from "./HistoryTab.svelte";
+  import PinnedTabContent from "./PinnedTabContent.svelte";
   import LinkedTasksTab from "./LinkedTasksTab.svelte";
   import DatePicker from "./DatePicker.svelte";
   import { IconLayoutSidebarRightCollapse, IconLayoutBottombarCollapse } from "@tabler/icons-svelte";
@@ -973,7 +974,12 @@
     </button>
   </div>
   <div class="body">
-    {#if !noteId}
+    {#if tab.kind === 'pinned'}
+      <PinnedTabContent
+        pin={pinned.find(p => p.id === tab.id)}
+        onunpin={() => handleUnpin(tab.id)}
+      />
+    {:else if !noteId}
       <div style="color: var(--v9-ink-faint); font-family: var(--v9-mono); font-size: 11px;">No note focused</div>
     {:else if fixedTabId === "backlinks"}
       {#if allBacklinkSources.length === 0}

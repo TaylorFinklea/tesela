@@ -61,6 +61,7 @@
     onfocusedblockchange,
     drillBlockId = "",
     onDrillIn,
+    isPinnedTab = false,
   }: {
     noteId: string;
     body: string;
@@ -75,6 +76,7 @@
     onfocusedblockchange?: (block: ParsedBlock | null) => void;
     drillBlockId?: string;
     onDrillIn?: (blockId: string) => void;
+    isPinnedTab?: boolean;
   } = $props();
 
   // Fetch notes list for autocomplete + tag-property visibility resolution
@@ -1295,7 +1297,7 @@
               // user-initiated focus and the auto-INSERT-on-empty rule
               // applies (`restoredFocus = false`).
               restoredFocus = consumeCrossNavFocus();
-              setLastActiveOutliner(rootEl ?? null);
+              if (!isPinnedTab) setLastActiveOutliner(rootEl ?? null);
             }}
             onchange={(text) => handleBlockChange(block.id, text)}
             onnavigate={handleNavigate}
