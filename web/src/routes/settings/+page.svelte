@@ -3,6 +3,8 @@
   import { useQueryClient } from "@tanstack/svelte-query";
   import { prefs, type BulletStyle } from "$lib/preferences.svelte";
   import { runRemindersSync } from "$lib/reminders-sync";
+  import { theme } from "$lib/theme.svelte";
+  import { THEMES } from "$lib/themes";
 
   function loadSetting(key: string, fallback: string): string {
     if (!browser) return fallback;
@@ -65,6 +67,43 @@
           />
           <span class="text-[12px] text-muted-foreground font-mono w-8">{fontSize}px</span>
         </div>
+      </section>
+
+      <!-- Theme -->
+      <section>
+        <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">Theme</h2>
+        <div class="grid grid-cols-2 gap-2">
+          {#each THEMES as t}
+            <button
+              type="button"
+              aria-label={`Switch to ${t.name} theme`}
+              class="group flex items-center gap-3 p-2 rounded-md border transition-all text-left {theme.current === t.id ? 'border-primary/50 bg-primary/5 ring-1 ring-primary/20' : 'border-border/40 hover:border-border hover:bg-muted/30'}"
+              onclick={() => theme.set(t.id)}
+            >
+              <span
+                class="shrink-0 inline-flex w-10 h-10 rounded overflow-hidden border border-black/20"
+                style="background: {t.swatch.bg};"
+                aria-hidden="true"
+              >
+                <span class="flex flex-col w-full">
+                  <span class="flex-1 flex">
+                    <span class="flex-1" style="background: {t.swatch.bg};"></span>
+                    <span class="flex-1" style="background: {t.swatch.fg}; opacity: 0.95;"></span>
+                  </span>
+                  <span class="flex-1 flex">
+                    <span class="flex-1" style="background: {t.swatch.primary};"></span>
+                    <span class="flex-1" style="background: {t.swatch.secondary};"></span>
+                  </span>
+                </span>
+              </span>
+              <span class="flex-1 min-w-0">
+                <span class="block text-[12.5px] truncate {theme.current === t.id ? 'text-primary' : 'text-foreground/90'}">{t.name}</span>
+                <span class="block text-[10px] uppercase tracking-wider text-muted-foreground/50">{t.mode}</span>
+              </span>
+            </button>
+          {/each}
+        </div>
+        <p class="text-[11px] text-muted-foreground/40 mt-2">Switches instantly. Persisted across sessions.</p>
       </section>
 
       <!-- Vim mode -->

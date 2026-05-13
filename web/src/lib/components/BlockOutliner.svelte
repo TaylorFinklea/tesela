@@ -1083,7 +1083,8 @@
       restoredFocus = false;
     }}
   >
-    Click to start writing…
+    <span class="text-muted-foreground/50">i</span>
+    <span class="ml-1.5 text-muted-foreground/40">to insert</span>
   </div>
 {:else}
   <div class="space-y-0" bind:this={rootEl}>

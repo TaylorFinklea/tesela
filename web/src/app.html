@@ -5,14 +5,28 @@
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<link rel="preconnect" href="https://fonts.googleapis.com" />
 		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-		<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+		<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Inter+Tight:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
 		<meta name="text-scale" content="scale" />
 		%sveltekit.head%
 		<script>
 			(function() {
+				// FOUC-safe theme init: read persisted theme before any module
+				// loads so the role-token cascade is correct on first paint.
 				var root = document.documentElement;
-				root.classList.add('dark');
-				root.setAttribute('data-theme', 'tokyo-night');
+				var DEFAULT = 'tokyo-night';
+				var LIGHTS = {'tokyo-night-day':1,'catppuccin-latte':1,'rose-pine-dawn':1};
+				var DARKS = {
+					'tokyo-night':1,'tokyo-night-storm':1,'catppuccin-mocha':1,'catppuccin-macchiato':1,'catppuccin-frappe':1,
+					'gruvbox-dark':1,'gruvbox-material':1,'rose-pine':1,'rose-pine-moon':1,'nord':1,'nordic':1,'dracula':1,
+					'dracula-pro':1,'nightfox':1,'duskfox':1,'carbonfox':1,'everforest-dark':1,'kanagawa-wave':1,
+					'kanagawa-dragon':1,'one-dark':1,'palenight':1,'monokai-pro':1,'solarized-dark':1,'ayu-dark':1
+				};
+				var stored = null;
+				try { stored = localStorage.getItem('tesela:theme'); } catch (e) {}
+				var id = (stored && (DARKS[stored] || LIGHTS[stored])) ? stored : DEFAULT;
+				root.setAttribute('data-theme', id);
+				if (LIGHTS[id]) { root.classList.add('light'); root.classList.remove('dark'); }
+				else            { root.classList.add('dark');  root.classList.remove('light'); }
 			})();
 		</script>
 	</head>
