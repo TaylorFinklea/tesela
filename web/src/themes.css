@@ -1,0 +1,643 @@
+/*
+ * Theme palettes. Each `[data-theme="<id>"]` block overrides the role tokens
+ * declared in app.css. Colors are sourced from each theme's canonical
+ * upstream where possible (Tokyo Night, Catppuccin, Gruvbox, Rose Pine,
+ * Nord, Dracula, Nightfox, Everforest, Kanagawa, One Dark, Material
+ * Palenight, Monokai Pro, Solarized, Ayu).
+ *
+ * Saturation note: the type-* tokens are intentionally a notch quieter than
+ * each theme's "max chroma" version of the same hue. Block bullets and
+ * categorized chips use these, so they need to read as structural color, not
+ * as competing brand color.
+ */
+
+/* === Tokyo Night (default) === */
+:root[data-theme="tokyo-night"] {
+  --bg: #1a1b26;
+  --bg-2: #1f2335;
+  --bg-3: #24283b;
+  --bg-4: #2a2e42;
+  --line: #2f334d;
+  --line-soft: #292e42;
+  --fg-default: #c0caf5;
+  --fg-muted: #a9b1d6;
+  --fg-subtle: #737aa2;
+  --fg-faint: #545c7e;
+  --accent-primary: #ff9e64;
+  --accent-secondary: #bb9af7;
+  --type-task: #db6c83;
+  --type-event: #6dbacc;
+  --type-note: #e8b86b;
+  --type-project: #6a8fdc;
+  --type-person: #a98be0;
+  --type-query: #88b85e;
+  --type-template: #c79b58;
+}
+
+/* === Tokyo Night Storm === */
+:root[data-theme="tokyo-night-storm"] {
+  --bg: #24283b;
+  --bg-2: #1f2335;
+  --bg-3: #292e42;
+  --bg-4: #313650;
+  --line: #3b4261;
+  --line-soft: #2f334d;
+  --fg-default: #c0caf5;
+  --fg-muted: #a9b1d6;
+  --fg-subtle: #7982a9;
+  --fg-faint: #565f89;
+  --accent-primary: #ff9e64;
+  --accent-secondary: #bb9af7;
+  --type-task: #db6c83;
+  --type-event: #6dbacc;
+  --type-note: #e8b86b;
+  --type-project: #6a8fdc;
+  --type-person: #a98be0;
+  --type-query: #88b85e;
+  --type-template: #c79b58;
+}
+
+/* === Catppuccin Mocha === */
+:root[data-theme="catppuccin-mocha"] {
+  --bg: #1e1e2e;
+  --bg-2: #181825;
+  --bg-3: #313244;
+  --bg-4: #45475a;
+  --line: #313244;
+  --line-soft: #292c3c;
+  --fg-default: #cdd6f4;
+  --fg-muted: #bac2de;
+  --fg-subtle: #7f849c;
+  --fg-faint: #585b70;
+  --accent-primary: #fab387;
+  --accent-secondary: #cba6f7;
+  --type-task: #e08097;
+  --type-event: #74c7ec;
+  --type-note: #e5b572;
+  --type-project: #89b4fa;
+  --type-person: #b4a5e6;
+  --type-query: #97c97a;
+  --type-template: #c5a373;
+}
+
+/* === Catppuccin Macchiato === */
+:root[data-theme="catppuccin-macchiato"] {
+  --bg: #24273a;
+  --bg-2: #1e2030;
+  --bg-3: #363a4f;
+  --bg-4: #494d64;
+  --line: #363a4f;
+  --line-soft: #2c2e42;
+  --fg-default: #cad3f5;
+  --fg-muted: #b8c0e0;
+  --fg-subtle: #8087a2;
+  --fg-faint: #5b6078;
+  --accent-primary: #f5a97f;
+  --accent-secondary: #c6a0f6;
+  --type-task: #e09199;
+  --type-event: #7dc4e4;
+  --type-note: #e3b572;
+  --type-project: #8aadf4;
+  --type-person: #b3a4e8;
+  --type-query: #98c67c;
+  --type-template: #c4a373;
+}
+
+/* === Catppuccin Frappe === */
+:root[data-theme="catppuccin-frappe"] {
+  --bg: #303446;
+  --bg-2: #292c3c;
+  --bg-3: #414559;
+  --bg-4: #51576d;
+  --line: #414559;
+  --line-soft: #353a4d;
+  --fg-default: #c6d0f5;
+  --fg-muted: #b5bfe2;
+  --fg-subtle: #838ba7;
+  --fg-faint: #626880;
+  --accent-primary: #ef9f76;
+  --accent-secondary: #ca9ee6;
+  --type-task: #db8d99;
+  --type-event: #85c1dc;
+  --type-note: #dfb56e;
+  --type-project: #8caaee;
+  --type-person: #b09ee0;
+  --type-query: #97c179;
+  --type-template: #bf9c70;
+}
+
+/* === Gruvbox Dark === */
+:root[data-theme="gruvbox-dark"] {
+  --bg: #282828;
+  --bg-2: #32302f;
+  --bg-3: #3c3836;
+  --bg-4: #504945;
+  --line: #3c3836;
+  --line-soft: #32302f;
+  --fg-default: #ebdbb2;
+  --fg-muted: #d5c4a1;
+  --fg-subtle: #a89984;
+  --fg-faint: #7c6f64;
+  --accent-primary: #fe8019;
+  --accent-secondary: #d3869b;
+  --type-task: #cc6666;
+  --type-event: #83a598;
+  --type-note: #d8a657;
+  --type-project: #7daea3;
+  --type-person: #c084c2;
+  --type-query: #a9b665;
+  --type-template: #b48a4a;
+}
+
+/* === Gruvbox Material Dark === */
+:root[data-theme="gruvbox-material"] {
+  --bg: #1d2021;
+  --bg-2: #282828;
+  --bg-3: #32302f;
+  --bg-4: #45403d;
+  --line: #45403d;
+  --line-soft: #32302f;
+  --fg-default: #d4be98;
+  --fg-muted: #ddc7a1;
+  --fg-subtle: #928374;
+  --fg-faint: #5a524c;
+  --accent-primary: #e78a4e;
+  --accent-secondary: #d3869b;
+  --type-task: #ea6962;
+  --type-event: #89b482;
+  --type-note: #d8a657;
+  --type-project: #7daea3;
+  --type-person: #c084c2;
+  --type-query: #a9b665;
+  --type-template: #b48a4a;
+}
+
+/* === Rose Pine === */
+:root[data-theme="rose-pine"] {
+  --bg: #191724;
+  --bg-2: #1f1d2e;
+  --bg-3: #26233a;
+  --bg-4: #312f48;
+  --line: #26233a;
+  --line-soft: #21202e;
+  --fg-default: #e0def4;
+  --fg-muted: #c8c2eb;
+  --fg-subtle: #908caa;
+  --fg-faint: #6e6a86;
+  --accent-primary: #ebbcba;
+  --accent-secondary: #c4a7e7;
+  --type-task: #eb6f92;
+  --type-event: #9ccfd8;
+  --type-note: #f6c177;
+  --type-project: #31748f;
+  --type-person: #c4a7e7;
+  --type-query: #80a37a;
+  --type-template: #c08a5a;
+}
+
+/* === Rose Pine Moon === */
+:root[data-theme="rose-pine-moon"] {
+  --bg: #232136;
+  --bg-2: #2a273f;
+  --bg-3: #393552;
+  --bg-4: #44415a;
+  --line: #393552;
+  --line-soft: #2f2b43;
+  --fg-default: #e0def4;
+  --fg-muted: #c8c2eb;
+  --fg-subtle: #908caa;
+  --fg-faint: #6e6a86;
+  --accent-primary: #ea9a97;
+  --accent-secondary: #c4a7e7;
+  --type-task: #eb6f92;
+  --type-event: #9ccfd8;
+  --type-note: #f6c177;
+  --type-project: #3e8fb0;
+  --type-person: #c4a7e7;
+  --type-query: #80a37a;
+  --type-template: #c08a5a;
+}
+
+/* === Nord === */
+:root[data-theme="nord"] {
+  --bg: #2e3440;
+  --bg-2: #3b4252;
+  --bg-3: #434c5e;
+  --bg-4: #4c566a;
+  --line: #434c5e;
+  --line-soft: #3b4252;
+  --fg-default: #eceff4;
+  --fg-muted: #d8dee9;
+  --fg-subtle: #88909d;
+  --fg-faint: #5e6779;
+  --accent-primary: #88c0d0;
+  --accent-secondary: #b48ead;
+  --type-task: #bf616a;
+  --type-event: #81a1c1;
+  --type-note: #ebcb8b;
+  --type-project: #5e81ac;
+  --type-person: #b48ead;
+  --type-query: #a3be8c;
+  --type-template: #d08770;
+}
+
+/* === Nordic === */
+:root[data-theme="nordic"] {
+  --bg: #242933;
+  --bg-2: #2e3440;
+  --bg-3: #3b4252;
+  --bg-4: #434c5e;
+  --line: #434c5e;
+  --line-soft: #3b4252;
+  --fg-default: #eceff4;
+  --fg-muted: #d8dee9;
+  --fg-subtle: #88909d;
+  --fg-faint: #5e6779;
+  --accent-primary: #88c0d0;
+  --accent-secondary: #b48ead;
+  --type-task: #bf616a;
+  --type-event: #81a1c1;
+  --type-note: #ebcb8b;
+  --type-project: #5e81ac;
+  --type-person: #b48ead;
+  --type-query: #a3be8c;
+  --type-template: #d08770;
+}
+
+/* === Dracula === */
+:root[data-theme="dracula"] {
+  --bg: #282a36;
+  --bg-2: #1f2029;
+  --bg-3: #44475a;
+  --bg-4: #535769;
+  --line: #44475a;
+  --line-soft: #353749;
+  --fg-default: #f8f8f2;
+  --fg-muted: #d8d8c8;
+  --fg-subtle: #8a8d99;
+  --fg-faint: #6272a4;
+  --accent-primary: #ff79c6;
+  --accent-secondary: #bd93f9;
+  --type-task: #ff5555;
+  --type-event: #8be9fd;
+  --type-note: #f1fa8c;
+  --type-project: #6272a4;
+  --type-person: #bd93f9;
+  --type-query: #50fa7b;
+  --type-template: #ffb86c;
+}
+
+/* === Dracula Pro === */
+:root[data-theme="dracula-pro"] {
+  --bg: #22212c;
+  --bg-2: #2a2937;
+  --bg-3: #3a3849;
+  --bg-4: #4d4b5e;
+  --line: #3a3849;
+  --line-soft: #2e2c3a;
+  --fg-default: #f8f8f2;
+  --fg-muted: #d8d8c8;
+  --fg-subtle: #8a8d99;
+  --fg-faint: #5b5e75;
+  --accent-primary: #ff80bf;
+  --accent-secondary: #9580ff;
+  --type-task: #ff9580;
+  --type-event: #80ffea;
+  --type-note: #ffff80;
+  --type-project: #8aff80;
+  --type-person: #9580ff;
+  --type-query: #8aff80;
+  --type-template: #ffca80;
+}
+
+/* === Nightfox === */
+:root[data-theme="nightfox"] {
+  --bg: #192330;
+  --bg-2: #131a24;
+  --bg-3: #29394f;
+  --bg-4: #39506d;
+  --line: #29394f;
+  --line-soft: #1f2c3d;
+  --fg-default: #cdcecf;
+  --fg-muted: #aeafb0;
+  --fg-subtle: #71839b;
+  --fg-faint: #526176;
+  --accent-primary: #f4a261;
+  --accent-secondary: #9d79d6;
+  --type-task: #c94f6d;
+  --type-event: #63cdcf;
+  --type-note: #dbc074;
+  --type-project: #719cd6;
+  --type-person: #9d79d6;
+  --type-query: #81b29a;
+  --type-template: #c98158;
+}
+
+/* === Duskfox === */
+:root[data-theme="duskfox"] {
+  --bg: #232136;
+  --bg-2: #1d1b2c;
+  --bg-3: #393552;
+  --bg-4: #4a4768;
+  --line: #393552;
+  --line-soft: #2f2b43;
+  --fg-default: #e0def4;
+  --fg-muted: #c8c2eb;
+  --fg-subtle: #908caa;
+  --fg-faint: #6e6a86;
+  --accent-primary: #ea9a97;
+  --accent-secondary: #c4a7e7;
+  --type-task: #eb6f92;
+  --type-event: #9ccfd8;
+  --type-note: #f6c177;
+  --type-project: #569fba;
+  --type-person: #c4a7e7;
+  --type-query: #a3be8c;
+  --type-template: #c08a5a;
+}
+
+/* === Carbonfox === */
+:root[data-theme="carbonfox"] {
+  --bg: #161616;
+  --bg-2: #1c1c1c;
+  --bg-3: #252525;
+  --bg-4: #353535;
+  --line: #252525;
+  --line-soft: #1f1f1f;
+  --fg-default: #f2f4f8;
+  --fg-muted: #b6b8bb;
+  --fg-subtle: #7b7c7e;
+  --fg-faint: #525354;
+  --accent-primary: #ff7eb6;
+  --accent-secondary: #be95ff;
+  --type-task: #ee5396;
+  --type-event: #33b1ff;
+  --type-note: #08bdba;
+  --type-project: #78a9ff;
+  --type-person: #be95ff;
+  --type-query: #25be6a;
+  --type-template: #d4bbff;
+}
+
+/* === Everforest Dark === */
+:root[data-theme="everforest-dark"] {
+  --bg: #2d353b;
+  --bg-2: #232a2e;
+  --bg-3: #374145;
+  --bg-4: #4a555b;
+  --line: #4a555b;
+  --line-soft: #343f44;
+  --fg-default: #d3c6aa;
+  --fg-muted: #b8b18d;
+  --fg-subtle: #859289;
+  --fg-faint: #5a655e;
+  --accent-primary: #e69875;
+  --accent-secondary: #d699b6;
+  --type-task: #e67e80;
+  --type-event: #7fbbb3;
+  --type-note: #dbbc7f;
+  --type-project: #7fbbb3;
+  --type-person: #d699b6;
+  --type-query: #a7c080;
+  --type-template: #d69d68;
+}
+
+/* === Kanagawa Wave === */
+:root[data-theme="kanagawa-wave"] {
+  --bg: #1f1f28;
+  --bg-2: #16161d;
+  --bg-3: #2a2a37;
+  --bg-4: #363646;
+  --line: #2a2a37;
+  --line-soft: #232330;
+  --fg-default: #dcd7ba;
+  --fg-muted: #c8c093;
+  --fg-subtle: #727169;
+  --fg-faint: #54546d;
+  --accent-primary: #ffa066;
+  --accent-secondary: #957fb8;
+  --type-task: #c34043;
+  --type-event: #7e9cd8;
+  --type-note: #dca561;
+  --type-project: #7e9cd8;
+  --type-person: #957fb8;
+  --type-query: #76946a;
+  --type-template: #c0a36e;
+}
+
+/* === Kanagawa Dragon === */
+:root[data-theme="kanagawa-dragon"] {
+  --bg: #181616;
+  --bg-2: #12120f;
+  --bg-3: #282727;
+  --bg-4: #393836;
+  --line: #282727;
+  --line-soft: #1f1d1d;
+  --fg-default: #c5c9c5;
+  --fg-muted: #a6a69c;
+  --fg-subtle: #737c73;
+  --fg-faint: #525a52;
+  --accent-primary: #b6927b;
+  --accent-secondary: #a292a3;
+  --type-task: #c4746e;
+  --type-event: #8a9a7b;
+  --type-note: #c4b28a;
+  --type-project: #8ba4b0;
+  --type-person: #a292a3;
+  --type-query: #87a987;
+  --type-template: #b6927b;
+}
+
+/* === One Dark === */
+:root[data-theme="one-dark"] {
+  --bg: #282c34;
+  --bg-2: #21252b;
+  --bg-3: #353b45;
+  --bg-4: #3e4451;
+  --line: #353b45;
+  --line-soft: #2c313a;
+  --fg-default: #abb2bf;
+  --fg-muted: #9ba1ad;
+  --fg-subtle: #6b7280;
+  --fg-faint: #4b5263;
+  --accent-primary: #d19a66;
+  --accent-secondary: #c678dd;
+  --type-task: #e06c75;
+  --type-event: #56b6c2;
+  --type-note: #e5c07b;
+  --type-project: #61afef;
+  --type-person: #c678dd;
+  --type-query: #98c379;
+  --type-template: #be8b5b;
+}
+
+/* === Material Palenight === */
+:root[data-theme="palenight"] {
+  --bg: #292d3e;
+  --bg-2: #1f2233;
+  --bg-3: #343a52;
+  --bg-4: #444b6a;
+  --line: #343a52;
+  --line-soft: #2a2e44;
+  --fg-default: #a6accd;
+  --fg-muted: #959cbd;
+  --fg-subtle: #676e95;
+  --fg-faint: #4f546b;
+  --accent-primary: #f78c6c;
+  --accent-secondary: #c792ea;
+  --type-task: #ff5370;
+  --type-event: #89ddff;
+  --type-note: #ffcb6b;
+  --type-project: #82aaff;
+  --type-person: #c792ea;
+  --type-query: #c3e88d;
+  --type-template: #f78c6c;
+}
+
+/* === Monokai Pro === */
+:root[data-theme="monokai-pro"] {
+  --bg: #2d2a2e;
+  --bg-2: #221f22;
+  --bg-3: #403e41;
+  --bg-4: #5b595c;
+  --line: #403e41;
+  --line-soft: #312e32;
+  --fg-default: #fcfcfa;
+  --fg-muted: #c1c0c0;
+  --fg-subtle: #939293;
+  --fg-faint: #69676c;
+  --accent-primary: #fc9867;
+  --accent-secondary: #ab9df2;
+  --type-task: #ff6188;
+  --type-event: #78dce8;
+  --type-note: #ffd866;
+  --type-project: #78dce8;
+  --type-person: #ab9df2;
+  --type-query: #a9dc76;
+  --type-template: #fc9867;
+}
+
+/* === Solarized Dark === */
+:root[data-theme="solarized-dark"] {
+  --bg: #002b36;
+  --bg-2: #073642;
+  --bg-3: #0e4756;
+  --bg-4: #19586a;
+  --line: #0e4756;
+  --line-soft: #093945;
+  --fg-default: #93a1a1;
+  --fg-muted: #839496;
+  --fg-subtle: #586e75;
+  --fg-faint: #495a60;
+  --accent-primary: #cb4b16;
+  --accent-secondary: #6c71c4;
+  --type-task: #dc322f;
+  --type-event: #2aa198;
+  --type-note: #b58900;
+  --type-project: #268bd2;
+  --type-person: #d33682;
+  --type-query: #859900;
+  --type-template: #cb4b16;
+}
+
+/* === Ayu Dark === */
+:root[data-theme="ayu-dark"] {
+  --bg: #0b0e14;
+  --bg-2: #131721;
+  --bg-3: #1f2430;
+  --bg-4: #2d333f;
+  --line: #1f2430;
+  --line-soft: #161b25;
+  --fg-default: #bfbdb6;
+  --fg-muted: #a09f99;
+  --fg-subtle: #6a7180;
+  --fg-faint: #4d5566;
+  --accent-primary: #ff8f40;
+  --accent-secondary: #d2a6ff;
+  --type-task: #f07178;
+  --type-event: #59c2ff;
+  --type-note: #ffb454;
+  --type-project: #59c2ff;
+  --type-person: #d2a6ff;
+  --type-query: #aad94c;
+  --type-template: #e6b450;
+}
+
+/* ============================ Lights ============================ */
+
+/* === Tokyo Night Day === */
+:root[data-theme="tokyo-night-day"] {
+  --bg: #e1e2e7;
+  --bg-2: #d6d8df;
+  --bg-3: #c9ccd6;
+  --bg-4: #b9bcc8;
+  --line: #c9ccd6;
+  --line-soft: #d6d8df;
+  --fg-default: #3760bf;
+  --fg-muted: #5a6595;
+  --fg-subtle: #848cb5;
+  --fg-faint: #a4a8c1;
+  --accent-primary: #b15c00;
+  --accent-secondary: #7847bd;
+  --type-task: #c64343;
+  --type-event: #007197;
+  --type-note: #8c6c3e;
+  --type-project: #2e7de9;
+  --type-person: #9854f1;
+  --type-query: #587539;
+  --type-template: #8c6c3e;
+}
+
+/* === Catppuccin Latte === */
+:root[data-theme="catppuccin-latte"] {
+  --bg: #eff1f5;
+  --bg-2: #e6e9ef;
+  --bg-3: #dce0e8;
+  --bg-4: #ccd0da;
+  --line: #dce0e8;
+  --line-soft: #e6e9ef;
+  --fg-default: #4c4f69;
+  --fg-muted: #5c5f77;
+  --fg-subtle: #8c8fa1;
+  --fg-faint: #acb0be;
+  --accent-primary: #fe640b;
+  --accent-secondary: #8839ef;
+  --type-task: #d20f39;
+  --type-event: #04a5e5;
+  --type-note: #df8e1d;
+  --type-project: #1e66f5;
+  --type-person: #8839ef;
+  --type-query: #40a02b;
+  --type-template: #dd7878;
+}
+
+/* === Rose Pine Dawn === */
+:root[data-theme="rose-pine-dawn"] {
+  --bg: #faf4ed;
+  --bg-2: #fffaf3;
+  --bg-3: #f2e9de;
+  --bg-4: #dfdad9;
+  --line: #f2e9de;
+  --line-soft: #f4ede4;
+  --fg-default: #575279;
+  --fg-muted: #797593;
+  --fg-subtle: #9893a5;
+  --fg-faint: #b8b3c1;
+  --accent-primary: #d7827e;
+  --accent-secondary: #907aa9;
+  --type-task: #b4637a;
+  --type-event: #56949f;
+  --type-note: #ea9d34;
+  --type-project: #286983;
+  --type-person: #907aa9;
+  --type-query: #618774;
+  --type-template: #b4956b;
+}
+
+/* Light themes also need slightly different chrome treatment for the
+   warm accent on warm backgrounds; the existing rules in app.css already
+   reference role tokens, so a single attribute on <html> flips everything. */
+.light .v9-status,
+.light .v9-crumb {
+  background: var(--bg-2);
+}

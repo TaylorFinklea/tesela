@@ -491,9 +491,19 @@
   .day:first-child { border-top: 0; padding-top: 0; }
   .day:last-child { padding-bottom: 0; }
   .day-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
-  .day-title { font-family: var(--v9-display, var(--v9-sans)); font-size: 18px; font-weight: 600; letter-spacing: -0.01em; color: var(--foreground); }
-  .day.is-today .day-title { color: var(--primary); }
-  .day-pill { font-size: 10px; padding: 2px 8px; border-radius: 9999px; background: var(--primary); color: var(--primary-foreground); font-weight: 500; }
+  .day-title { font-family: var(--theme-font-sans); font-size: 18px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg-default); }
+  /* Today still gets a marker, but it's a soft brightening, not the
+     primary accent — primary is reserved for active selection now. */
+  .day.is-today .day-title { color: var(--fg-default); }
+  .day-pill {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 9999px;
+    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
+    color: var(--accent-primary);
+    border: 1px solid color-mix(in srgb, var(--accent-primary) 28%, transparent);
+    font-weight: 500;
+  }
   .day-year { font-family: var(--v9-mono); font-size: 11px; color: var(--v9-ink-faint); margin-left: auto; }
   .day.is-anchor::before { content: ""; display: block; height: 0; }
   .journal-sentinel { display: flex; justify-content: center; padding: 20px 0 60px; }
