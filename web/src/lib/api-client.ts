@@ -118,6 +118,18 @@ export const api = {
   remindersSync: () => post<RemindersSyncOutcome>("/sync/reminders", {}),
   remindersStatus: () => get<RemindersLastSync>("/sync/reminders/status"),
 
+  // Phase 2.1 — multi-device peer sync over the LAN
+  syncDevice: () => get<SyncDeviceInfo>("/sync/peer/device"),
+  syncListPeers: () => get<SyncPeer[]>("/sync/peer/peers"),
+  syncAddPeer: (peer: SyncPeer) => post<SyncPeer>("/sync/peer/peers", peer),
+  syncRemovePeer: (deviceIdHex: string) =>
+    fetch(`${BASE_URL}/sync/peer/peers/${encodeURIComponent(deviceIdHex)}`, {
+      method: "DELETE",
+    }),
+  syncStatus: () => get<SyncPeerStatus[]>("/sync/peer/status"),
+  syncDiscovered: () => get<SyncDiscoveredPeer[]>("/sync/peer/discovered"),
+  syncNow: () => post<SyncNowResponse>("/sync/peer/now", {}),
+
   // Phase 13 — backup / export / import
   listBackups: () => get<BackupSummary[]>("/backups"),
   runBackup: (opts: RunBackupRequest) =>
@@ -321,4 +333,38 @@ export interface RemindersLastSync {
   trigger: string | null;
   outcome: RemindersSyncOutcome | null;
   error: string | null;
+}
+
+// Phase 2.1 — peer sync types. Mirror crates/tesela-server/src/routes/peer_sync.rs.
+export interface SyncDeviceInfo {
+  device_id_hex: string;
+}
+export interface SyncPeer {
+  device_id_hex: string;
+  url: string;
+  display_name: string | null;
+}
+export interface SyncPeerStatus {
+  device_id_hex: string;
+  url: string;
+  /** NTP64-encoded HLC of the most recent op we've received from this peer.
+   *  Null means we haven't applied anything from them yet. */
+  peer_cursor_ntp: number | null;
+}
+export interface SyncDiscoveredPeer {
+  device_id_hex: string;
+  display_name: string;
+  url: string;
+  /** Seconds since the most recent mDNS update from this peer. */
+  last_seen_secs_ago: number;
+}
+/** Per-peer outcome from `POST /sync/peer/now`. Server returns a map keyed
+ *  by device_id_hex; each entry has `applied` on success or `error` on
+ *  failure. */
+export interface SyncNowPeerResult {
+  applied?: number;
+  error?: string;
+}
+export interface SyncNowResponse {
+  peers: Record<string, SyncNowPeerResult>;
 }

@@ -7,6 +7,7 @@
     { href: "/settings/mosaic", label: "Mosaic", hint: "Create or switch mosaic" },
     { href: "/settings/data", label: "Data", hint: "Backups, export, import" },
     { href: "/settings/sync", label: "Sync", hint: "Notifications, Apple Reminders" },
+    { href: "/settings/devices", label: "Devices", hint: "LAN peers, device sync" },
   ];
 </script>
 
