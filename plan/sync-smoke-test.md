@@ -19,17 +19,14 @@ the other within the sync interval (default 5 seconds).
    mkdir -p /tmp/sync-smoke-b/.tesela /tmp/sync-smoke-b/notes
    ```
 
-2. Start two servers, each pinned to its own mosaic. `--mosaic` is not
-   parsed by `tesela-server`; use `TESELA_DEFAULT_MOSAIC` instead.
+2. Start two servers, each pinned to its own mosaic via `--mosaic`.
 
    ```sh
-   TESELA_DEFAULT_MOSAIC=/tmp/sync-smoke-a \
-     TESELA_SERVER_BIND=127.0.0.1:7474 \
-     tesela-server > /tmp/sync-smoke-a.log 2>&1 &
+   TESELA_SERVER_BIND=127.0.0.1:7474 \
+     tesela-server --mosaic /tmp/sync-smoke-a > /tmp/sync-smoke-a.log 2>&1 &
 
-   TESELA_DEFAULT_MOSAIC=/tmp/sync-smoke-b \
-     TESELA_SERVER_BIND=127.0.0.1:7475 \
-     tesela-server > /tmp/sync-smoke-b.log 2>&1 &
+   TESELA_SERVER_BIND=127.0.0.1:7475 \
+     tesela-server --mosaic /tmp/sync-smoke-b > /tmp/sync-smoke-b.log 2>&1 &
    ```
 
 3. Confirm each server got its own device id.
@@ -123,19 +120,21 @@ the other within the sync interval (default 5 seconds).
 - Sync grain is the whole note blob (NoteUpsert carries the full
   markdown). Concurrent edits to the same note in the same window
   resolve by HLC last-writer-wins; the loser's content is still in the
-  oplog for inspection but not on disk. Block-level sync arrives once
-  the Mutation API refactor lands.
-- Delete propagation is recorded in the oplog but the file is not yet
-  removed on the receiving side. Also blocked on the Mutation refactor.
+  oplog for inspection but not on disk. Block-level sync is planned in
+  `plan/block-level-sync.md`.
 - Wire format is cleartext postcard. Crypto (XChaCha20-Poly1305 AEAD)
   arrives in Phase 2 alongside the LAN transport and pairing UI.
 - Transport is HTTP-only and requires the peer to be reachable directly
   (no mDNS discovery yet, no relay). LAN mDNS and a thin WebSocket
   relay are Phase 2/3 work.
-- `tesela-server` does NOT parse a `--mosaic` flag (despite earlier
-  documentation). Use `TESELA_DEFAULT_MOSAIC` env var. Filed as a
-  follow-up.
 - Stable note_id is derived deterministically from the slug
   (`blake3(slug)[..16]`) so two devices creating the same slug see it
   as a single note. UUID-v7 note identity arrives with the Mutation
   refactor.
+
+## Fixed since Phase 1.5 initial cut
+
+- `--mosaic <PATH>` is now a real CLI flag (used above). Takes
+  precedence over `TESELA_DEFAULT_MOSAIC`.
+- NoteDelete now unlinks the file on the receiving peer. The slug is
+  carried in the op payload so receivers can locate the target file.
