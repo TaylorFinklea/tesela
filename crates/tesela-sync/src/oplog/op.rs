@@ -75,6 +75,11 @@ pub enum OpPayload {
     NoteDelete {
         /// Note primary key.
         note_id: [u8; 16],
+        /// Slug at the time of deletion. Carried so receivers can locate
+        /// the on-disk file under `{mosaic}/notes/{slug}.md` without
+        /// having to look up the prior NoteUpsert. None means the
+        /// producer did not know the slug (rare; non-fatal).
+        display_alias: Option<String>,
     },
     /// Create or update a block row.
     BlockUpsert {

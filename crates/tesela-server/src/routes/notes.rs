@@ -210,8 +210,10 @@ async fn record_sync_upsert(s: &Arc<AppState>, note: &Note) {
 }
 
 async fn record_sync_delete(s: &Arc<AppState>, note_id: &NoteId) {
+    let slug = note_id.as_str();
     let payload = OpPayload::NoteDelete {
-        note_id: stable_uuid_from_slug(note_id.as_str()),
+        note_id: stable_uuid_from_slug(slug),
+        display_alias: Some(slug.to_string()),
     };
     if let Err(e) = s.sync_engine.record_local(payload).await {
         tracing::warn!("sync: record_local delete failed for {}: {}", note_id, e);

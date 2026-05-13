@@ -144,7 +144,7 @@ impl SqliteEngine {
 
     fn touched_ids(payload: &OpPayload, applied: &mut AppliedChanges) {
         match payload {
-            OpPayload::NoteUpsert { note_id, .. } | OpPayload::NoteDelete { note_id } => {
+            OpPayload::NoteUpsert { note_id, .. } | OpPayload::NoteDelete { note_id, .. } => {
                 applied.note_ids.push(*note_id);
             }
             OpPayload::BlockUpsert {
@@ -448,12 +448,28 @@ impl SqliteEngine {
                 }
                 tracing::debug!(slug, "tesela-sync: materialized NoteUpsert");
             }
-            OpPayload::NoteDelete { .. } => {
-                // Phase 1.5: blob delete by note_id needs a slug lookup.
-                // Without a slug we cannot locate the file. The oplog row
-                // is still appended so peers learn about the delete; full
-                // file deletion arrives with the Mutation API refactor.
-                tracing::debug!("tesela-sync: NoteDelete recorded; file delete deferred");
+            OpPayload::NoteDelete { display_alias, .. } => {
+                let Some(slug) = display_alias.as_deref() else {
+                    tracing::debug!(
+                        "tesela-sync: NoteDelete without slug; file delete skipped"
+                    );
+                    return Ok(());
+                };
+                let path = mosaic.join("notes").join(format!("{slug}.md"));
+                match tokio::fs::remove_file(&path).await {
+                    Ok(()) => {
+                        tracing::debug!(slug, "tesela-sync: materialized NoteDelete");
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        tracing::debug!(slug, "tesela-sync: NoteDelete on already-gone file");
+                    }
+                    Err(e) => {
+                        return Err(SyncError::Storage(format!(
+                            "remove_file {}: {e}",
+                            path.display()
+                        )));
+                    }
+                }
             }
             OpPayload::BlockUpsert { .. }
             | OpPayload::BlockMove { .. }

@@ -5,6 +5,7 @@ mod routes;
 mod state;
 
 use anyhow::Result;
+use clap::Parser;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -25,11 +26,26 @@ use tesela_sync::{DeviceId, SqliteEngine};
 use reminders::auto::AutoSync;
 use state::{AppState, WsEvent};
 
+#[derive(Debug, Parser)]
+#[command(
+    name = "tesela-server",
+    about = "Tesela HTTP server (notes API, sync daemon, WebSocket)"
+)]
+struct Args {
+    /// Override the mosaic directory. Takes precedence over the
+    /// TESELA_DEFAULT_MOSAIC env var, the cwd-walk lookup, and the
+    /// user's saved config.
+    #[arg(long, value_name = "PATH")]
+    mosaic: Option<PathBuf>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    let args = Args::parse();
 
     // One-shot config migration: older builds wrote config to
     // ~/Library/Application Support/tesela/config.toml on macOS via
@@ -39,7 +55,18 @@ async fn main() -> Result<()> {
         info!("Migrated user config to XDG path: {}", moved_to.display());
     }
 
-    let mosaic = find_mosaic()?;
+    let mosaic = match args.mosaic {
+        Some(p) => {
+            if !p.join(".tesela").exists() {
+                anyhow::bail!(
+                    "--mosaic {} is not a mosaic directory (no .tesela/ found)",
+                    p.display()
+                );
+            }
+            p
+        }
+        None => find_mosaic()?,
+    };
 
     // Idempotent system-widget backfill: every mosaic startup ensures
     // the default rail widgets exist. Catches the case where a mosaic
