@@ -1,6 +1,6 @@
 //! SQLite schema definitions and migrations for Tesela
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 pub const CREATE_MIGRATIONS_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -110,5 +110,57 @@ END"#,
     UNIQUE(note_id, version_number)
 )"#,
         "CREATE INDEX IF NOT EXISTS idx_note_versions_note ON note_versions(note_id, version_number DESC)",
+    ],
+), (
+    // Sync substrate. Owned by the `tesela-sync` crate (see
+    // crates/tesela-sync/src/schema.rs for the canonical DDL). Duplicated
+    // here so the mosaic database has these tables even when tesela-sync
+    // is not driving migrations. Idempotent via IF NOT EXISTS.
+    "004_sync_substrate",
+    &[
+        r#"CREATE TABLE IF NOT EXISTS oplog (
+    hlc_ntp         INTEGER NOT NULL,
+    device_id       BLOB    NOT NULL,
+    schema_version  INTEGER NOT NULL,
+    payload         BLOB    NOT NULL,
+    content_hash    BLOB    NOT NULL,
+    txn_id          BLOB,
+    PRIMARY KEY (hlc_ntp, device_id)
+) WITHOUT ROWID"#,
+        "CREATE INDEX IF NOT EXISTS idx_oplog_device_hlc ON oplog(device_id, hlc_ntp)",
+        "CREATE INDEX IF NOT EXISTS idx_oplog_content_hash ON oplog(content_hash)",
+        r#"CREATE TABLE IF NOT EXISTS peer_cursors (
+    peer_device_id          BLOB    PRIMARY KEY,
+    last_seen_hlc_ntp       INTEGER NOT NULL,
+    last_ack_at_wall_clock  INTEGER NOT NULL
+)"#,
+        r#"CREATE TABLE IF NOT EXISTS parked_ops (
+    op_hlc_ntp      INTEGER NOT NULL,
+    op_device_id    BLOB    NOT NULL,
+    schema_version  INTEGER NOT NULL,
+    payload         BLOB    NOT NULL,
+    parked_at       INTEGER NOT NULL,
+    park_reason     TEXT    NOT NULL,
+    PRIMARY KEY (op_hlc_ntp, op_device_id)
+)"#,
+        r#"CREATE TABLE IF NOT EXISTS device_self (
+    rowid           INTEGER PRIMARY KEY CHECK (rowid = 1),
+    device_id       BLOB    NOT NULL,
+    ed25519_pubkey  BLOB    NOT NULL,
+    ed25519_privkey BLOB    NOT NULL,
+    display_name    TEXT    NOT NULL
+)"#,
+        r#"CREATE TABLE IF NOT EXISTS group_members (
+    group_id        BLOB    NOT NULL,
+    device_id       BLOB    NOT NULL,
+    ed25519_pubkey  BLOB    NOT NULL,
+    display_name    TEXT,
+    added_at        INTEGER NOT NULL,
+    PRIMARY KEY (group_id, device_id)
+)"#,
+        r#"CREATE TABLE IF NOT EXISTS group_keys (
+    group_id        BLOB    PRIMARY KEY,
+    group_sym_key   BLOB    NOT NULL
+)"#,
     ],
 )];
