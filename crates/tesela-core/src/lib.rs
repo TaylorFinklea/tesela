@@ -8,6 +8,7 @@ pub mod import_logseq;
 pub mod indexer;
 pub mod link;
 pub mod note;
+pub mod note_tree;
 pub mod query;
 pub mod recurrence;
 pub mod regex_cache;

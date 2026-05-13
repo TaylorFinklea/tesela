@@ -34,6 +34,7 @@
 #![warn(missing_docs)]
 
 pub mod device;
+pub mod diff;
 pub mod engine;
 pub mod error;
 pub mod group;
