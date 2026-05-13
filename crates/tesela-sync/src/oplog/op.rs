@@ -52,6 +52,12 @@ pub enum OpKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpPayload {
     /// Create or update a note row.
+    ///
+    /// Phase 1.5 note: `content` carries the full markdown body for
+    /// "blob" sync. When the block-level data model lands (Phase 2 of
+    /// the data model), a v1-to-v2 translator will decompose
+    /// `NoteUpsert.content` into a sequence of `BlockUpsert` ops at apply
+    /// time, and `content` becomes the empty string on new ops.
     NoteUpsert {
         /// Note primary key (UUID).
         note_id: [u8; 16],
@@ -60,6 +66,8 @@ pub enum OpPayload {
         display_alias: Option<String>,
         /// Note title.
         title: String,
+        /// Full markdown content including frontmatter. Phase 1.5 only.
+        content: String,
         /// Creation timestamp, millis since epoch.
         created_at_millis: i64,
     },

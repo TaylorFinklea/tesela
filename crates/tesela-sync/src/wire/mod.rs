@@ -43,6 +43,7 @@ mod tests {
             note_id: [note_id_byte; 16],
             display_alias: Some("alias".to_string()),
             title: title.to_string(),
+            content: String::new(),
             created_at_millis: 0,
         }
     }

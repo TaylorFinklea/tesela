@@ -180,6 +180,7 @@ fn note_upsert(id_seed: u8, title: &str) -> OpPayload {
         note_id: [id_seed; 16],
         display_alias: Some(format!("note-{id_seed}")),
         title: title.to_string(),
+        content: format!("# {title}\n\n"),
         created_at_millis: 0,
     }
 }

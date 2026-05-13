@@ -54,6 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             note_id: id,
             display_alias: Some(format!("a-note-{i}")),
             title: format!("A note {i}"),
+            content: String::new(),
             created_at_millis: 0,
         })
         .await?;
@@ -66,6 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             note_id: id,
             display_alias: Some(format!("b-note-{i}")),
             title: format!("B note {i}"),
+            content: String::new(),
             created_at_millis: 0,
         })
         .await?;

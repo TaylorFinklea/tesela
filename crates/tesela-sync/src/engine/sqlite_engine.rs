@@ -14,6 +14,7 @@ use crate::wire::envelope::SyncEnvelope;
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
+use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -30,13 +31,29 @@ struct Inner {
     pool: SqlitePool,
     hlc: Hlc,
     device: DeviceId,
+    /// When set, `apply_changes` writes markdown files for incoming
+    /// NoteUpsert / NoteDelete ops under `{mosaic_dir}/notes/`. When
+    /// None, the engine is oplog-only (used in unit tests).
+    mosaic_dir: Option<PathBuf>,
 }
 
 impl SqliteEngine {
     /// Open or create the engine state at the given SQLite URL (path or
     /// `sqlite::memory:`). Creates the device identity if absent. Runs
-    /// the sync substrate DDL idempotently.
+    /// the sync substrate DDL idempotently. No file materialization.
     pub async fn open(sqlite_url: &str, device: DeviceId) -> SyncResult<Self> {
+        Self::open_with_mosaic(sqlite_url, None, device).await
+    }
+
+    /// Like [`open`] but additionally materializes markdown files under
+    /// `mosaic_dir/notes/` when applying remote ops. Used by
+    /// `tesela-server` so incoming sync ops produce on-disk files the
+    /// existing `FsNoteStore` read path will see.
+    pub async fn open_with_mosaic(
+        sqlite_url: &str,
+        mosaic_dir: Option<PathBuf>,
+        device: DeviceId,
+    ) -> SyncResult<Self> {
         let opts = SqliteConnectOptions::from_str(sqlite_url)
             .map_err(|e| SyncError::Storage(e.to_string()))?
             .create_if_missing(true)
@@ -52,6 +69,7 @@ impl SqliteEngine {
                 pool,
                 hlc: Hlc::new(device),
                 device,
+                mosaic_dir,
             }),
         })
     }
@@ -201,6 +219,7 @@ impl SyncEngine for SqliteEngine {
             // Phase 2+ inserts translator chain here.
 
             self.append_op(&op).await?;
+            self.materialize(&op.payload).await?;
             Self::touched_ids(&op.payload, &mut applied);
             applied.applied += 1;
             if max_seen.map(|m| op.hlc > m).unwrap_or(true) {
@@ -392,6 +411,63 @@ impl SyncEngine for SqliteEngine {
 }
 
 impl SqliteEngine {
+    /// Materialize an applied op into the on-disk markdown file (Phase 1.5
+    /// blob model). No-op if `mosaic_dir` is None. The file watcher in
+    /// `tesela-core::indexer::Indexer` will pick up the change and update
+    /// the derived tables (`notes`, `notes_fts`, `links`,
+    /// `block_properties`, `tag_defs`, `property_defs`) on its own.
+    async fn materialize(&self, payload: &OpPayload) -> SyncResult<()> {
+        let Some(mosaic) = self.inner.mosaic_dir.as_ref() else {
+            return Ok(());
+        };
+        match payload {
+            OpPayload::NoteUpsert {
+                display_alias,
+                content,
+                ..
+            } => {
+                let Some(slug) = display_alias.as_deref() else {
+                    // Without a slug we don't have a stable filename. Skip
+                    // file materialization but the oplog row was already
+                    // written, so future ops with the slug will work.
+                    return Ok(());
+                };
+                let notes_dir = mosaic.join("notes");
+                if let Err(e) = tokio::fs::create_dir_all(&notes_dir).await {
+                    return Err(SyncError::Storage(format!(
+                        "create_dir_all {}: {e}",
+                        notes_dir.display()
+                    )));
+                }
+                let path = notes_dir.join(format!("{slug}.md"));
+                if let Err(e) = tokio::fs::write(&path, content).await {
+                    return Err(SyncError::Storage(format!(
+                        "write {}: {e}",
+                        path.display()
+                    )));
+                }
+                tracing::debug!(slug, "tesela-sync: materialized NoteUpsert");
+            }
+            OpPayload::NoteDelete { .. } => {
+                // Phase 1.5: blob delete by note_id needs a slug lookup.
+                // Without a slug we cannot locate the file. The oplog row
+                // is still appended so peers learn about the delete; full
+                // file deletion arrives with the Mutation API refactor.
+                tracing::debug!("tesela-sync: NoteDelete recorded; file delete deferred");
+            }
+            OpPayload::BlockUpsert { .. }
+            | OpPayload::BlockMove { .. }
+            | OpPayload::BlockDelete { .. } => {
+                // Block-level materialization arrives with Phase 2 of the
+                // data model. For Phase 1.5 only NoteUpsert is materialized.
+            }
+            OpPayload::AttachmentUpsert { .. } | OpPayload::AttachmentDelete { .. } => {
+                // Phase 2: content-addressed blob store.
+            }
+        }
+        Ok(())
+    }
+
     async fn park_op_internal(&self, op: &EncodedOp, reason: ParkReason) -> SyncResult<()> {
         let payload_bytes = postcard::to_allocvec(&op.payload)?;
         let now = chrono::Utc::now().timestamp_millis();
