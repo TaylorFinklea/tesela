@@ -6,6 +6,7 @@
     SyncPeer,
     SyncPeerStatus,
     SyncDiscoveredPeer,
+    SyncPairingCode,
   } from "$lib/api-client";
 
   // --- state -----------------------------------------------------------------
@@ -26,6 +27,16 @@
   let manualUrl = $state("");
   let manualName = $state("");
   let manualBusy = $state(false);
+
+  // Pairing-code state — Phase 2.2. The local device can show its code on
+  // demand (kept hidden by default because it's a secret), and the joining
+  // device pastes a code into the textarea to one-shot pair.
+  let pairingCode = $state<SyncPairingCode | null>(null);
+  let pairingCodeRevealed = $state(false);
+  let pairingCodeError = $state<string | null>(null);
+  let pasteCode = $state("");
+  let pasteBusy = $state(false);
+  let pasteResultMsg = $state<string | null>(null);
 
   // --- helpers ---------------------------------------------------------------
 
@@ -150,6 +161,50 @@
       await navigator.clipboard.writeText(device.device_id_hex);
     } catch {
       /* ignore */
+    }
+  }
+
+  async function revealPairingCode() {
+    pairingCodeError = null;
+    try {
+      pairingCode = await api.syncGetPairingCode();
+      pairingCodeRevealed = true;
+    } catch (e) {
+      pairingCodeError =
+        e instanceof ApiError ? `${e.status} ${e.body}` : (e as Error).message;
+    }
+  }
+
+  function hidePairingCode() {
+    pairingCodeRevealed = false;
+  }
+
+  async function copyPairingCode() {
+    if (!pairingCode) return;
+    try {
+      await navigator.clipboard.writeText(pairingCode.code);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function pasteAndPair() {
+    if (!pasteCode.trim()) return;
+    pasteBusy = true;
+    pasteResultMsg = null;
+    try {
+      const r = await api.syncPairWithCode(pasteCode.trim());
+      pasteResultMsg = r.adopted_group
+        ? `Paired with ${r.display_name || r.device_id_hex.slice(0, 8)} (adopted their group key).`
+        : `Paired with ${r.display_name || r.device_id_hex.slice(0, 8)}.`;
+      pasteCode = "";
+      await refresh();
+    } catch (e) {
+      pasteResultMsg = null;
+      errorMsg =
+        e instanceof ApiError ? `${e.status} ${e.body}` : (e as Error).message;
+    } finally {
+      pasteBusy = false;
     }
   }
 
@@ -287,11 +342,85 @@
 
 <section>
   <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">
+    Pair via code
+  </h2>
+  <p class="text-[11px] text-muted-foreground/70 mb-2">
+    On the device you want to bring in, open <span class="font-mono">Settings → Devices</span>, click
+    <em>Show pairing code</em>, copy the code, and paste it below. One step pairs the device and
+    shares the group key.
+  </p>
+  <textarea
+    placeholder="Paste pairing code…"
+    bind:value={pasteCode}
+    rows="3"
+    class="w-full px-2.5 py-1.5 text-[11.5px] font-mono rounded-md border border-border/40 bg-background resize-none break-all"
+  ></textarea>
+  <div class="mt-2 flex items-center gap-2">
+    <button
+      type="button"
+      class="text-[11.5px] px-3 py-1.5 rounded-md border border-primary/40 text-primary hover:bg-primary/10 disabled:opacity-50"
+      disabled={pasteBusy || !pasteCode.trim()}
+      onclick={pasteAndPair}
+    >
+      {pasteBusy ? "Pairing…" : "Pair via code"}
+    </button>
+    {#if pasteResultMsg}
+      <span class="text-[10.5px] text-muted-foreground/80">{pasteResultMsg}</span>
+    {/if}
+  </div>
+</section>
+
+<section>
+  <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">
+    Your pairing code
+  </h2>
+  <p class="text-[11px] text-muted-foreground/70 mb-2">
+    Treat this like a password: anyone with it can sync into your notes. Show it on this
+    device, paste it on the joining device.
+  </p>
+  {#if !pairingCodeRevealed}
+    <button
+      type="button"
+      class="text-[11.5px] px-3 py-1.5 rounded-md border border-border/40 text-foreground hover:bg-muted/40"
+      onclick={revealPairingCode}
+    >
+      Show pairing code
+    </button>
+    {#if pairingCodeError}
+      <div class="mt-2 text-[10.5px] text-red-500/90">{pairingCodeError}</div>
+    {/if}
+  {:else if pairingCode}
+    <div class="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2.5">
+      <div class="text-[10.5px] uppercase tracking-widest text-amber-500/80 mb-1">Pairing code</div>
+      <code class="block text-[11px] font-mono break-all leading-relaxed">{pairingCode.code}</code>
+      <div class="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          class="text-[11px] px-2.5 py-1 rounded-md border border-border/40 text-foreground hover:bg-muted/40"
+          onclick={copyPairingCode}
+        >
+          Copy
+        </button>
+        <button
+          type="button"
+          class="text-[11px] px-2.5 py-1 rounded-md border border-border/40 text-muted-foreground hover:text-foreground"
+          onclick={hidePairingCode}
+        >
+          Hide
+        </button>
+        <span class="text-[10.5px] text-muted-foreground/60">{pairingCode.url}</span>
+      </div>
+    </div>
+  {/if}
+</section>
+
+<section>
+  <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">
     Pair manually
   </h2>
   <p class="text-[11px] text-muted-foreground/70 mb-2">
-    Useful if the other device is on a different network. Copy its device ID and URL from
-    its own "This Device" card and reachable address.
+    Fallback when you can't reach the pairing-code flow (e.g. pairing back to an older build).
+    Both sides need to share the same group key already, otherwise sync envelopes won't match.
   </p>
   <div class="space-y-2">
     <input

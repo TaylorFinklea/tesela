@@ -129,6 +129,9 @@ export const api = {
   syncStatus: () => get<SyncPeerStatus[]>("/sync/peer/status"),
   syncDiscovered: () => get<SyncDiscoveredPeer[]>("/sync/peer/discovered"),
   syncNow: () => post<SyncNowResponse>("/sync/peer/now", {}),
+  syncGetPairingCode: () => get<SyncPairingCode>("/sync/peer/pairing-code"),
+  syncPairWithCode: (code: string) =>
+    post<SyncPairWithCodeResult>("/sync/peer/pair-code", { code }),
 
   // Phase 13 — backup / export / import
   listBackups: () => get<BackupSummary[]>("/backups"),
@@ -367,4 +370,19 @@ export interface SyncNowPeerResult {
 }
 export interface SyncNowResponse {
   peers: Record<string, SyncNowPeerResult>;
+}
+/** Phase 2.2 — pairing code we hand to a joining device. */
+export interface SyncPairingCode {
+  /** Single base64url-no-pad string to copy / paste. Carries the group
+   *  id, group key, device id, URL, and display name. */
+  code: string;
+  display_name: string;
+  device_id_hex: string;
+  url: string;
+}
+export interface SyncPairWithCodeResult {
+  device_id_hex: string;
+  display_name: string;
+  url: string;
+  adopted_group: boolean;
 }

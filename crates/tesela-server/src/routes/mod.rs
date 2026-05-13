@@ -59,6 +59,9 @@ pub fn build(state: AppState) -> Router {
         .route("/sync/peer/status", get(peer_sync::status))
         // Phase 2.1 mDNS LAN discovery
         .route("/sync/peer/discovered", get(peer_sync::discovered))
+        // Phase 2.2 pairing-code key exchange
+        .route("/sync/peer/pairing-code", get(peer_sync::get_pairing_code))
+        .route("/sync/peer/pair-code", post(peer_sync::pair_with_code))
         .route("/search", get(search::search_notes))
         .route("/search/query", post(search_query::execute))
         .route("/calendar/marks", get(calendar::marks))

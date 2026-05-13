@@ -69,6 +69,8 @@ blake3 = "1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 futures = "0.3"
 mdns-sd = { version = "0.13", default-features = false, features = ["async"] }
+base64 = "0.22"
+if-addrs = "0.13"
 
 # Testing + benchmarking
 tempfile = "3"

@@ -5,7 +5,8 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use tesela_core::{db::SqliteIndex, storage::filesystem::FsNoteStore, types::TypeRegistry, Note};
-use tesela_sync::{LanDiscovery, SqliteEngine};
+use tesela_sync::{GroupIdentity, LanDiscovery, SqliteEngine};
+use tokio::sync::RwLock;
 
 use crate::reminders::auto::AutoSync;
 
@@ -23,6 +24,18 @@ pub struct AppState {
     /// disabled or failed to start (we log and continue, since sync over
     /// manually-configured peers still works).
     pub lan_discovery: Option<Arc<LanDiscovery>>,
+    /// Phase 2.2 — the symmetric group identity (id + key) used by the
+    /// pairing flow. Wrapped in RwLock so `POST /sync/peer/pair-code`
+    /// can swap it after a successful pair without restarting the
+    /// server. Cleartext sync continues to function while the pending
+    /// AEAD slice is unwritten.
+    pub group_identity: Arc<RwLock<GroupIdentity>>,
+    /// A human-readable display name advertised over mDNS and embedded
+    /// in pairing codes. Captured once at startup.
+    pub display_name: String,
+    /// The reachable HTTP URL we hand to joining devices in pairing
+    /// codes. `http://<lan-ip-or-bind-host>:<port>`.
+    pub public_url: String,
 }
 
 /// Events broadcast to WebSocket clients when notes change.

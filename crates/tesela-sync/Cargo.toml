@@ -36,6 +36,10 @@ sqlx.workspace = true
 # LAN discovery (Phase 2.1)
 mdns-sd.workspace = true
 
+# Pairing code encoding (Phase 2.2)
+base64.workspace = true
+rand.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio-test.workspace = true

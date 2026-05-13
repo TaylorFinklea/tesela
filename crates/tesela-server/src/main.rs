@@ -22,6 +22,7 @@ use tesela_core::{
     types::TypeRegistry,
 };
 use tesela_sync::{DeviceId, LanDiscovery, SqliteEngine};
+use tokio::sync::RwLock;
 
 use reminders::auto::AutoSync;
 use state::{AppState, WsEvent};
@@ -265,6 +266,22 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(7474);
 
+    // Phase 2.2 — group identity (id + symmetric key), persisted in
+    // `<mosaic>/.tesela/`. A fresh install gets a freshly-minted group;
+    // a join via pairing code overwrites both halves.
+    let group_identity =
+        tesela_sync::load_or_create_group_identity(&mosaic_for_shutdown)
+            .await
+            .map_err(|e| anyhow::anyhow!("load group identity: {e}"))?;
+    info!(
+        "tesela-sync: group id = {:02x?}",
+        group_identity.group_id.as_bytes()
+    );
+    let group_identity = Arc::new(RwLock::new(group_identity));
+
+    let display_name = device_display_name();
+    let public_url = build_public_url(&addr, bound_port);
+
     // Phase 2.1 — mDNS-based LAN discovery. Each tesela-server instance
     // advertises itself and listens for siblings, surfacing them through
     // `GET /sync/peer/discovered`. Failure here is non-fatal: manually
@@ -274,7 +291,6 @@ async fn main() -> Result<()> {
         None
     } else {
         let device = sync_engine.device();
-        let display_name = device_display_name();
         match LanDiscovery::start(device, &display_name, bound_port) {
             Ok(d) => {
                 info!(
@@ -299,6 +315,9 @@ async fn main() -> Result<()> {
         auto_sync,
         sync_engine,
         lan_discovery,
+        group_identity,
+        display_name,
+        public_url,
     };
     let router = routes::build(app_state);
 
@@ -387,6 +406,40 @@ fn char_to_nibble(b: u8) -> Option<u8> {
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
     }
+}
+
+/// Construct the URL we embed in pairing codes. If the bind address is
+/// a wildcard (`0.0.0.0` / `[::]`) we substitute the first reachable
+/// non-loopback IPv4 from `if-addrs`. Loopback bind addresses keep
+/// their host (the user is testing on one machine on purpose).
+fn build_public_url(bind: &str, port: u16) -> String {
+    let host = bind
+        .rsplit_once(':')
+        .map(|(h, _)| h.trim_matches(|c| c == '[' || c == ']'))
+        .unwrap_or(bind);
+    let public_host = match host {
+        "0.0.0.0" | "::" | "[::]" => first_lan_ipv4().unwrap_or_else(|| host.to_string()),
+        h => h.to_string(),
+    };
+    if public_host.contains(':') {
+        format!("http://[{public_host}]:{port}")
+    } else {
+        format!("http://{public_host}:{port}")
+    }
+}
+
+fn first_lan_ipv4() -> Option<String> {
+    let addrs = if_addrs::get_if_addrs().ok()?;
+    addrs
+        .into_iter()
+        .filter(|i| !i.is_loopback())
+        .filter_map(|i| match i.ip() {
+            std::net::IpAddr::V4(v4) if !v4.is_link_local() && !v4.is_unspecified() => {
+                Some(v4.to_string())
+            }
+            _ => None,
+        })
+        .next()
 }
 
 /// Picks a user-visible name for this device, used in mDNS TXT records

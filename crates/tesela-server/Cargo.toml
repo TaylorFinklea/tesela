@@ -30,6 +30,7 @@ postcard.workspace = true
 uuid.workspace = true
 blake3.workspace = true
 clap = { workspace = true }
+if-addrs.workspace = true
 
 # Phase 12.1 — Apple Reminders bidirectional sync. EventKit is a macOS/iOS
 # framework, so the FFI is gated behind cfg(target_os = "macos"). Linux/

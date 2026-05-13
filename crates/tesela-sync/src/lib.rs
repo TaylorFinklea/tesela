@@ -52,6 +52,8 @@ pub mod crypto;
 
 // Public re-exports. Keep this surface narrow and FFI-friendly.
 
+pub use crypto::keys::{adopt as adopt_group_identity, load_or_create as load_or_create_group_identity, GroupIdentity, GroupKey};
+pub use crypto::pairing::{decode as decode_pairing_code, encode as encode_pairing_code, PairingCode};
 pub use device::{DeviceId, DeviceMetadata};
 pub use discovery::{DiscoveredPeer, LanDiscovery, TESELA_SERVICE_TYPE};
 pub use engine::{

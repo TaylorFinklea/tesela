@@ -30,7 +30,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tesela_sync::oplog::op::EncodedOp;
 use tesela_sync::{
-    DeviceId, GroupId, PeerCursor, SqliteEngine, SyncEngine, SyncEnvelope,
+    decode_pairing_code, encode_pairing_code, DeviceId, GroupId, PairingCode, PeerCursor,
+    SqliteEngine, SyncEngine, SyncEnvelope,
 };
 
 use crate::state::AppState;
@@ -212,6 +213,106 @@ pub struct DiscoveredPeerView {
     pub url: String,
     /// Seconds since this peer was last seen via mDNS.
     pub last_seen_secs_ago: u64,
+}
+
+/// Phase 2.2 — emit a pairing code carrying the local group identity,
+/// device id, URL, and display name. The joining side decodes this and
+/// adopts the group identity.
+#[derive(Debug, Serialize)]
+pub struct PairingCodePayload {
+    pub code: String,
+    pub display_name: String,
+    pub device_id_hex: String,
+    pub url: String,
+}
+
+pub async fn get_pairing_code(
+    State(s): State<Arc<AppState>>,
+) -> Result<Json<PairingCodePayload>, (StatusCode, String)> {
+    let ident = s.group_identity.read().await.clone();
+    let device = s.sync_engine.device();
+    let code = PairingCode::from_local(
+        &ident,
+        device,
+        s.public_url.clone(),
+        s.display_name.clone(),
+    );
+    let encoded = encode_pairing_code(&code)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("encode: {e}")))?;
+    Ok(Json(PairingCodePayload {
+        code: encoded,
+        display_name: s.display_name.clone(),
+        device_id_hex: device.to_hex(),
+        url: s.public_url.clone(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PairWithCodeReq {
+    pub code: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PairWithCodeResp {
+    pub device_id_hex: String,
+    pub display_name: String,
+    pub url: String,
+    /// True when we adopted a different group identity to complete the
+    /// pair. False when our local group already matched.
+    pub adopted_group: bool,
+}
+
+pub async fn pair_with_code(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<PairWithCodeReq>,
+) -> Result<Json<PairWithCodeResp>, (StatusCode, String)> {
+    let parsed = decode_pairing_code(&req.code)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("decode: {e}")))?;
+    let own_device = s.sync_engine.device();
+    if parsed.device_id == own_device {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "pairing code is from this device".to_string(),
+        ));
+    }
+    let mut adopted = false;
+    {
+        let current = s.group_identity.read().await.clone();
+        if current.group_id != parsed.group_id
+            || current.group_key.as_bytes() != &parsed.group_key_bytes
+        {
+            let incoming = parsed.group_identity();
+            tesela_sync::adopt_group_identity(&s.mosaic_root, &incoming)
+                .await
+                .map_err(|e| {
+                    (StatusCode::INTERNAL_SERVER_ERROR, format!("adopt: {e}"))
+                })?;
+            *s.group_identity.write().await = incoming;
+            adopted = true;
+        }
+    }
+    let peer = Peer {
+        device_id_hex: parsed.device_id.to_hex(),
+        url: parsed.url.clone(),
+        display_name: Some(parsed.display_name.clone()),
+    };
+    let mut peers = read_peers(&s.mosaic_root).await;
+    peers.retain(|x| x.device_id_hex != peer.device_id_hex);
+    peers.push(peer.clone());
+    write_peers(&s.mosaic_root, &peers)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    tracing::info!(
+        "sync_peer: paired via code with {} (adopted_group={})",
+        peer.device_id_hex,
+        adopted
+    );
+    Ok(Json(PairWithCodeResp {
+        device_id_hex: peer.device_id_hex,
+        display_name: peer.display_name.clone().unwrap_or_default(),
+        url: peer.url,
+        adopted_group: adopted,
+    }))
 }
 
 pub async fn discovered(State(s): State<Arc<AppState>>) -> Json<Vec<DiscoveredPeerView>> {
