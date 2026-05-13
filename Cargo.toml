@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins", "crates/tesela-server", "crates/tesela-backup", "crates/tesela-fixtures", "crates/tesela-fixtures-cli"]
+members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins", "crates/tesela-server", "crates/tesela-backup", "crates/tesela-fixtures", "crates/tesela-fixtures-cli", "crates/tesela-sync"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -61,6 +61,13 @@ tower-http = { version = "0.6", features = ["cors", "trace"] }
 # Encryption + Keychain (used by tesela-backup)
 age = "0.11"
 keyring = { version = "3", features = ["apple-native"] }
+
+# Sync substrate (used by tesela-sync)
+postcard = { version = "1", features = ["alloc"] }
+uhlc = "0.8"
+blake3 = "1"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+futures = "0.3"
 
 # Testing + benchmarking
 tempfile = "3"
