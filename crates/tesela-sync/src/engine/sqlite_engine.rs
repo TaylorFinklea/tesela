@@ -471,16 +471,271 @@ impl SqliteEngine {
                     }
                 }
             }
-            OpPayload::BlockUpsert { .. }
-            | OpPayload::BlockMove { .. }
-            | OpPayload::BlockDelete { .. } => {
-                // Block-level materialization arrives with Phase 2 of the
-                // data model. For Phase 1.5 only NoteUpsert is materialized.
+            OpPayload::BlockUpsert {
+                block_id,
+                note_id,
+                parent_block_id,
+                order_key,
+                indent_level,
+                text,
+            } => {
+                self.apply_block_upsert(
+                    mosaic,
+                    *note_id,
+                    *block_id,
+                    *parent_block_id,
+                    order_key,
+                    *indent_level,
+                    text,
+                )
+                .await?;
+            }
+            OpPayload::BlockMove {
+                block_id,
+                new_parent,
+                new_order_key,
+            } => {
+                self.apply_block_move(mosaic, *block_id, *new_parent, new_order_key)
+                    .await?;
+            }
+            OpPayload::BlockDelete { block_id } => {
+                self.apply_block_delete(mosaic, *block_id).await?;
             }
             OpPayload::AttachmentUpsert { .. } | OpPayload::AttachmentDelete { .. } => {
                 // Phase 2: content-addressed blob store.
             }
         }
+        Ok(())
+    }
+
+    /// Locate the slug for a note by walking the oplog for the most
+    /// recent NoteUpsert with this note_id. None means no NoteUpsert
+    /// is in the oplog yet (the block op landed before its note's
+    /// create was replayed); the caller logs and skips.
+    async fn find_slug_for_note(&self, note_id: [u8; 16]) -> SyncResult<Option<String>> {
+        let rows = sqlx::query(
+            "SELECT payload FROM oplog ORDER BY hlc_ntp DESC",
+        )
+        .fetch_all(&self.inner.pool)
+        .await?;
+        for row in rows {
+            let bytes: Vec<u8> = row.get(0);
+            let Ok(payload) = postcard::from_bytes::<OpPayload>(&bytes) else {
+                continue;
+            };
+            if let OpPayload::NoteUpsert {
+                note_id: nid,
+                display_alias,
+                ..
+            } = payload
+            {
+                if nid == note_id {
+                    return Ok(display_alias);
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    /// Locate the note_id that owns a given block. First checks the
+    /// oplog for any BlockUpsert with this block_id; if none, parses the
+    /// stamped content carried by each NoteUpsert and returns the note
+    /// whose content contains the block id. Returns None only when no
+    /// trace of the block exists in the oplog yet (e.g. a BlockMove
+    /// arrived before the establishing NoteUpsert or BlockUpsert).
+    async fn find_note_for_block(&self, block_id: [u8; 16]) -> SyncResult<Option<[u8; 16]>> {
+        let rows = sqlx::query(
+            "SELECT payload FROM oplog ORDER BY hlc_ntp DESC",
+        )
+        .fetch_all(&self.inner.pool)
+        .await?;
+        let target_uuid = uuid::Uuid::from_bytes(block_id);
+        let mut note_upserts: Vec<([u8; 16], String)> = Vec::new();
+        for row in &rows {
+            let bytes: Vec<u8> = row.get(0);
+            let Ok(payload) = postcard::from_bytes::<OpPayload>(&bytes) else {
+                continue;
+            };
+            match payload {
+                OpPayload::BlockUpsert {
+                    block_id: bid,
+                    note_id,
+                    ..
+                } => {
+                    if bid == block_id {
+                        return Ok(Some(note_id));
+                    }
+                }
+                OpPayload::NoteUpsert {
+                    note_id, content, ..
+                } => {
+                    note_upserts.push((note_id, content));
+                }
+                _ => {}
+            }
+        }
+        // Fallback: scan NoteUpsert content payloads.
+        for (note_id, content) in note_upserts {
+            let tree = tesela_core::note_tree::parse_note(&content);
+            if tree.blocks.iter().any(|b| b.id == target_uuid) {
+                return Ok(Some(note_id));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn apply_block_upsert(
+        &self,
+        mosaic: &std::path::Path,
+        note_id: [u8; 16],
+        block_id: [u8; 16],
+        parent: Option<[u8; 16]>,
+        _order_key: &str,
+        indent_level: u16,
+        text: &str,
+    ) -> SyncResult<()> {
+        let Some(slug) = self.find_slug_for_note(note_id).await? else {
+            tracing::debug!(
+                "BlockUpsert for unknown note_id; deferring until NoteUpsert arrives"
+            );
+            return Ok(());
+        };
+        let path = mosaic.join("notes").join(format!("{slug}.md"));
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                return Err(SyncError::Storage(format!(
+                    "read {}: {e}",
+                    path.display()
+                )));
+            }
+        };
+        let mut tree = tesela_core::note_tree::parse_note(&content);
+        let block_uuid = uuid::Uuid::from_bytes(block_id);
+        let parent_uuid = parent.map(uuid::Uuid::from_bytes);
+
+        if let Some(existing) = tree.blocks.iter_mut().find(|b| b.id == block_uuid) {
+            existing.text = text.to_string();
+            existing.indent = indent_level;
+            existing.parent = parent_uuid;
+        } else {
+            tree.blocks.push(tesela_core::note_tree::FlatBlock {
+                id: block_uuid,
+                parent: parent_uuid,
+                indent: indent_level,
+                text: text.to_string(),
+            });
+        }
+
+        let serialized = tesela_core::note_tree::serialize_note(&tree);
+        if let Err(e) = tokio::fs::write(&path, serialized).await {
+            return Err(SyncError::Storage(format!(
+                "write {}: {e}",
+                path.display()
+            )));
+        }
+        tracing::debug!(slug, "tesela-sync: materialized BlockUpsert");
+        Ok(())
+    }
+
+    async fn apply_block_move(
+        &self,
+        mosaic: &std::path::Path,
+        block_id: [u8; 16],
+        new_parent: Option<[u8; 16]>,
+        _new_order_key: &str,
+    ) -> SyncResult<()> {
+        let Some(note_id) = self.find_note_for_block(block_id).await? else {
+            tracing::debug!("BlockMove for unknown block_id; deferring");
+            return Ok(());
+        };
+        let Some(slug) = self.find_slug_for_note(note_id).await? else {
+            tracing::debug!("BlockMove: note_id has no NoteUpsert; deferring");
+            return Ok(());
+        };
+        let path = mosaic.join("notes").join(format!("{slug}.md"));
+        let Ok(content) = tokio::fs::read_to_string(&path).await else {
+            tracing::debug!(slug, "BlockMove: target file missing; deferring");
+            return Ok(());
+        };
+        let mut tree = tesela_core::note_tree::parse_note(&content);
+        let block_uuid = uuid::Uuid::from_bytes(block_id);
+        let parent_uuid = new_parent.map(uuid::Uuid::from_bytes);
+        if let Some(existing) = tree.blocks.iter_mut().find(|b| b.id == block_uuid) {
+            existing.parent = parent_uuid;
+            // Recompute indent from parent: if parent exists in the tree,
+            // child indent is parent.indent + 1; else top-level (0).
+            let new_indent = match parent_uuid {
+                None => 0u16,
+                Some(pid) => tree
+                    .blocks
+                    .iter()
+                    .find(|b| b.id == pid)
+                    .map(|p| p.indent + 1)
+                    .unwrap_or(0),
+            };
+            if let Some(existing) = tree.blocks.iter_mut().find(|b| b.id == block_uuid) {
+                existing.indent = new_indent;
+            }
+            let serialized = tesela_core::note_tree::serialize_note(&tree);
+            if let Err(e) = tokio::fs::write(&path, serialized).await {
+                return Err(SyncError::Storage(format!(
+                    "write {}: {e}",
+                    path.display()
+                )));
+            }
+            tracing::debug!(slug, "tesela-sync: materialized BlockMove");
+        } else {
+            tracing::debug!(slug, "BlockMove: block not found in current file");
+        }
+        Ok(())
+    }
+
+    async fn apply_block_delete(
+        &self,
+        mosaic: &std::path::Path,
+        block_id: [u8; 16],
+    ) -> SyncResult<()> {
+        let Some(note_id) = self.find_note_for_block(block_id).await? else {
+            tracing::debug!("BlockDelete for unknown block_id; deferring");
+            return Ok(());
+        };
+        let Some(slug) = self.find_slug_for_note(note_id).await? else {
+            tracing::debug!("BlockDelete: note_id has no NoteUpsert; deferring");
+            return Ok(());
+        };
+        let path = mosaic.join("notes").join(format!("{slug}.md"));
+        let Ok(content) = tokio::fs::read_to_string(&path).await else {
+            tracing::debug!(slug, "BlockDelete: target file missing");
+            return Ok(());
+        };
+        let mut tree = tesela_core::note_tree::parse_note(&content);
+        let block_uuid = uuid::Uuid::from_bytes(block_id);
+        let before = tree.blocks.len();
+        tree.blocks.retain(|b| b.id != block_uuid);
+        if tree.blocks.len() == before {
+            return Ok(());
+        }
+        // Also drop any children that pointed at the deleted block.
+        // Simpler: re-parent them to None (preserves their content,
+        // loses the hierarchy). Tradeoff: matches the on-disk
+        // representation we can express; an alternative would be to
+        // recursively delete them, but that loses user data.
+        for child in tree.blocks.iter_mut() {
+            if child.parent == Some(block_uuid) {
+                child.parent = None;
+                child.indent = 0;
+            }
+        }
+        let serialized = tesela_core::note_tree::serialize_note(&tree);
+        if let Err(e) = tokio::fs::write(&path, serialized).await {
+            return Err(SyncError::Storage(format!(
+                "write {}: {e}",
+                path.display()
+            )));
+        }
+        tracing::debug!(slug, "tesela-sync: materialized BlockDelete");
         Ok(())
     }
 

@@ -83,6 +83,17 @@ async fn main() -> Result<()> {
         Err(e) => warn!("System widget seed failed at {}: {}", mosaic.display(), e),
     }
 
+    // Stamp persistent block ids on existing .md files so block-level
+    // sync has stable identifiers to diff against. Idempotent — files
+    // that already have bids are not touched. Runs before the indexer
+    // boots so the watcher's first scan sees the canonical (stamped)
+    // content.
+    match tesela_core::note_tree::stamp_existing_notes(&mosaic.join("notes")).await {
+        Ok(0) => {}
+        Ok(n) => info!("Stamped block ids on {} note(s)", n),
+        Err(e) => warn!("Block-id stamping failed: {}", e),
+    }
+
     let config = load_config(&mosaic);
     let db_path = mosaic.join(".tesela").join("tesela.db");
     let notes_dir = mosaic.join("notes");

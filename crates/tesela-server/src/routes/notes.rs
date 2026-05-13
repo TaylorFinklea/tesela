@@ -12,12 +12,13 @@ use tesela_core::{
     daily::DailyNoteConfig,
     link::{GraphEdge, Link},
     note::NoteId,
+    note_tree::{parse_note, serialize_note},
     recurrence::{self, Recurrence},
     storage::markdown::parse_frontmatter,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     Note,
 };
-use tesela_sync::{OpPayload, SyncEngine};
+use tesela_sync::{diff::diff_note_trees, OpPayload, SyncEngine};
 
 use crate::{
     error::{AppError, AppResult},
@@ -106,10 +107,14 @@ pub async fn create_note(
         .iter()
         .map(String::as_str)
         .collect();
-    let note = s.store.create(&req.title, &req.content, &tags).await?;
+    // Stamp persistent block ids on any unstamped bullets before write
+    // so the on-disk form is canonical for sync. Idempotent for input
+    // that already has bids.
+    let stamped = stamp_block_ids(&req.content);
+    let note = s.store.create(&req.title, &stamped, &tags).await?;
     s.index.reindex(&note).await?;
     ensure_tag_pages(&s, &note).await;
-    record_sync_upsert(&s, &note).await;
+    record_sync_create(&s, &note).await;
     let _ = s.ws_tx.send(WsEvent::NoteCreated { note: note.clone() });
     Ok(Json(note))
 }
@@ -136,7 +141,11 @@ pub async fn update_note(
     // `todo`. Cross-note dependencies are out of v1 scope; users can
     // manually unblock or wait for the dependent's own save to re-evaluate.
     let (new_content, unblocked) = apply_dependency_cycles(&prev_content, &new_content, &id);
-    note.content = new_content;
+    // Stamp persistent block ids on any newly-added bullets so the
+    // on-disk form is canonical for sync. Lines that already had bids
+    // (from prior saves) round-trip untouched.
+    let stamped_new = stamp_block_ids(&new_content);
+    note.content = stamped_new;
     s.store.update(&note).await?;
     // Re-read to get fresh parsed metadata and checksum
     let updated = s
@@ -157,7 +166,7 @@ pub async fn update_note(
         }
     }
     ensure_tag_pages(&s, &updated).await;
-    record_sync_upsert(&s, &updated).await;
+    record_sync_update(&s, &prev_content, &updated).await;
     let _ = s.ws_tx.send(WsEvent::NoteUpdated {
         note: updated.clone(),
     });
@@ -193,10 +202,10 @@ pub async fn delete_note(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Phase 1.5: emit a NoteUpsert op to the sync engine after a local
-/// write. Best-effort: a failure here logs but does not fail the request,
-/// because the user-visible save already succeeded.
-async fn record_sync_upsert(s: &Arc<AppState>, note: &Note) {
+/// Producer path for note creation. Emits one NoteUpsert that carries
+/// the slug, title, and full stamped content so any peer (including one
+/// that has never seen this note before) can materialize it correctly.
+async fn record_sync_create(s: &Arc<AppState>, note: &Note) {
     let payload = OpPayload::NoteUpsert {
         note_id: stable_uuid_from_slug(note.id.as_str()),
         display_alias: Some(note.id.as_str().to_string()),
@@ -205,8 +214,77 @@ async fn record_sync_upsert(s: &Arc<AppState>, note: &Note) {
         created_at_millis: note.created_at.timestamp_millis(),
     };
     if let Err(e) = s.sync_engine.record_local(payload).await {
-        tracing::warn!("sync: record_local upsert failed for {}: {}", note.id, e);
+        tracing::warn!(
+            "sync: record_local NoteUpsert failed for {}: {}",
+            note.id,
+            e
+        );
     }
+}
+
+/// Producer path for note updates. Diffs the prior on-disk content
+/// against the new content and emits BlockUpsert / BlockMove /
+/// BlockDelete ops. Avoids emitting a NoteUpsert: when two peers edit
+/// different blocks of the same note concurrently, NoteUpsert's
+/// last-writer-wins on the whole blob would stomp the loser's edit,
+/// whereas block-level ops converge correctly per [[plan/block-level-sync.md]].
+///
+/// Falls back to emitting a NoteUpsert blob when the diff is empty but
+/// the content actually changed (e.g. frontmatter-only edits like a
+/// title change, which the block parser does not currently surface).
+/// The fallback is data-lossy under concurrent edits to the same note,
+/// matching Phase 1.5 behavior; it is recorded as a known limitation
+/// in the block-level-sync plan.
+async fn record_sync_update(s: &Arc<AppState>, prev_content: &str, note: &Note) {
+    let note_id = stable_uuid_from_slug(note.id.as_str());
+    let old_tree = parse_note(prev_content);
+    let new_tree = parse_note(&note.content);
+    let ops = diff_note_trees(note_id, &old_tree, &new_tree);
+
+    if ops.is_empty() {
+        if prev_content == note.content {
+            return;
+        }
+        // Body parses identical (or both empty) but raw content
+        // differs: frontmatter or non-bullet content changed. Fall
+        // back to NoteUpsert.
+        let payload = OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some(note.id.as_str().to_string()),
+            title: note.title.clone(),
+            content: note.content.clone(),
+            created_at_millis: note.created_at.timestamp_millis(),
+        };
+        if let Err(e) = s.sync_engine.record_local(payload).await {
+            tracing::warn!(
+                "sync: record_local NoteUpsert fallback failed for {}: {}",
+                note.id,
+                e
+            );
+        }
+        return;
+    }
+
+    for op in ops {
+        if let Err(e) = s.sync_engine.record_local(op).await {
+            tracing::warn!(
+                "sync: record_local Block op failed for {}: {}",
+                note.id,
+                e
+            );
+        }
+    }
+}
+
+/// Parse `content`, stamp persistent block ids onto any unstamped
+/// bullets, and return the canonical serialized form. Returns
+/// `content` unchanged if every bullet already has a bid.
+fn stamp_block_ids(content: &str) -> String {
+    let tree = parse_note(content);
+    if !tree.stamped_any {
+        return content.to_string();
+    }
+    serialize_note(&tree)
 }
 
 async fn record_sync_delete(s: &Arc<AppState>, note_id: &NoteId) {
