@@ -22,6 +22,7 @@ class EmptyWidget extends WidgetType {
 // surface (e.g. read-only block reference card) wants the kind inline.
 
 const tagHide = Decoration.replace({ widget: new EmptyWidget() });
+const bidHide = Decoration.replace({ widget: new EmptyWidget() });
 const wikiLinkMark = Decoration.mark({ class: "cm-tesela-wikilink" });
 const wikiLinkBracketMark = Decoration.mark({ class: "cm-tesela-wikilink-bracket" });
 const propertyKeyMark = Decoration.mark({ class: "cm-tesela-prop-key" });
@@ -31,6 +32,10 @@ const tagsLineHide = Decoration.line({ attributes: { class: "cm-tesela-tags-line
 const hiddenPropLineDeco = Decoration.line({ attributes: { class: "cm-tesela-hidden-prop-line" } });
 
 const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
+// Persistent block-id comments emitted by the server's note_tree serializer.
+// One leading whitespace char (canonical form: a single space) is included so
+// the visible line ends exactly where the user expects.
+const BID_RE = /[ \t]?<!-- bid:[0-9a-fA-F-]+ -->/g;
 const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
 // Allow empty values so we can decorate auto-filled `key:: ` (no value yet)
 // lines too. Use `[ \t]?` (not `\s?`) for the separator — `\s` would match a
@@ -88,6 +93,12 @@ function buildDecorations(view: EditorView): Built {
   TAGS_LINE_RE.lastIndex = 0;
   while ((m = TAGS_LINE_RE.exec(doc)) !== null) {
     decos.push({ from: m.index, to: m.index, decoration: tagsLineHide });
+  }
+
+  // Block-id comments: hide entirely + atomic so cursor jumps past them.
+  BID_RE.lastIndex = 0;
+  while ((m = BID_RE.exec(doc)) !== null) {
+    decos.push({ from: m.index, to: m.index + m[0].length, decoration: bidHide, atomic: true });
   }
   // Phase 9.7 — the inline kind-glyph badge that used to prepend "TASK" /
   // "URGENT" to block-line 0 was removed in favor of the standalone tag pill

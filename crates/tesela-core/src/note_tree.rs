@@ -202,7 +202,7 @@ fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
             current = Some(RawBlock {
                 indent,
                 bid,
-                text: text_no_bid.to_string(),
+                text: text_no_bid,
             });
         } else if let Some(rb) = current.as_mut() {
             // Continuation line.
@@ -244,26 +244,52 @@ fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
     (blocks, stamped_any)
 }
 
-/// Strip a trailing `<!-- bid:UUID -->` comment from a single line of
-/// text. Returns the cleaned text and the parsed uuid, if any.
-fn extract_bid(line: &str) -> (&str, Option<Uuid>) {
-    // The comment must be the last thing on the line (after any trailing
-    // whitespace). Search from the right.
-    let trimmed = line.trim_end();
-    let Some(start) = trimmed.rfind(BID_PREFIX) else {
-        return (trimmed, None);
-    };
-    if !trimmed[start..].ends_with(BID_SUFFIX) {
-        return (trimmed, None);
+/// Strip `<!-- bid:UUID -->` comments from a line of text. Returns the
+/// cleaned text and the first parsed UUID, if any. Tolerates the comment
+/// appearing anywhere on the line (not only as a trailing token) so users
+/// who type past a hidden bid in the editor don't drop block identity on
+/// save. A single leading whitespace char is consumed along with each bid
+/// to keep the join clean. Malformed bid comments are left in the text.
+fn extract_bid(line: &str) -> (String, Option<Uuid>) {
+    let input = line.trim_end();
+    let mut out = String::with_capacity(input.len());
+    let mut id: Option<Uuid> = None;
+    let mut idx = 0;
+    while idx < input.len() {
+        let Some(rel_start) = input[idx..].find(BID_PREFIX) else {
+            out.push_str(&input[idx..]);
+            break;
+        };
+        let start = idx + rel_start;
+        let after_prefix = start + BID_PREFIX.len();
+        let Some(rel_end) = input[after_prefix..].find(BID_SUFFIX) else {
+            out.push_str(&input[idx..]);
+            break;
+        };
+        let inner_end = after_prefix + rel_end;
+        let end = inner_end + BID_SUFFIX.len();
+        match Uuid::parse_str(input[after_prefix..inner_end].trim()) {
+            Ok(uuid) => {
+                let preceding_end = if start > idx
+                    && matches!(input.as_bytes()[start - 1], b' ' | b'\t')
+                {
+                    start - 1
+                } else {
+                    start
+                };
+                out.push_str(&input[idx..preceding_end]);
+                if id.is_none() {
+                    id = Some(uuid);
+                }
+                idx = end;
+            }
+            Err(_) => {
+                out.push_str(&input[idx..after_prefix]);
+                idx = after_prefix;
+            }
+        }
     }
-    let inner = &trimmed[start + BID_PREFIX.len()..trimmed.len() - BID_SUFFIX.len()];
-    let inner_trimmed = inner.trim();
-    let Ok(uuid) = Uuid::parse_str(inner_trimmed) else {
-        return (trimmed, None);
-    };
-    // Strip the comment and any trailing space before it.
-    let before = trimmed[..start].trim_end();
-    (before, Some(uuid))
+    (out.trim_end().to_string(), id)
 }
 
 fn format_bid(id: Uuid) -> String {
@@ -456,6 +482,23 @@ mod tests {
         // The malformed comment is left in the text and a fresh bid stamped.
         assert!(t.stamped_any);
         assert_eq!(t.blocks[0].text, "thing <!-- bid:not-a-uuid -->");
+    }
+
+    #[test]
+    fn text_typed_past_hidden_bid_rejoins_cleanly() {
+        // Editor hides the bid as atomic, but End-of-line + typing can still
+        // land characters in the doc *after* the bid comment. On save the
+        // parser must reconstruct the visible text and preserve the id.
+        let id = fixture_uuid(0x42);
+        let content = format!("- foo <!-- bid:{} -->bar\n", id);
+        let t = parse_note(&content);
+        assert!(!t.stamped_any, "existing bid should be reused, not re-stamped");
+        assert_eq!(t.blocks.len(), 1);
+        assert_eq!(t.blocks[0].id, id);
+        assert_eq!(t.blocks[0].text, "foobar");
+        // And the serializer puts the bid back at the canonical end position.
+        let serialized = serialize_note(&t);
+        assert_eq!(serialized, format!("- foobar <!-- bid:{} -->\n", id));
     }
 
     #[test]
