@@ -22,7 +22,7 @@
 
   onMount(() => {
     const theme = EditorView.theme({
-      "&": { backgroundColor: "transparent", color: "var(--foreground)", fontSize: "14.5px", fontFamily: "'Source Sans 3', -apple-system, system-ui, sans-serif", lineHeight: "1.8" },
+      "&": { backgroundColor: "transparent", color: "var(--foreground)", fontSize: "14.5px", fontFamily: "var(--theme-font-sans)", lineHeight: "1.8" },
       ".cm-content": { caretColor: "var(--primary)", padding: "0", maxWidth: "100%" },
       ".cm-line": { padding: "2px 0" },
       ".cm-cursor": { borderLeftColor: "var(--primary)", borderLeftWidth: "2px" },

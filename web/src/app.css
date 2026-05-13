@@ -1,53 +1,98 @@
 @import "tailwindcss";
+@import "./themes.css";
 
 @custom-variant dark (&:is(.dark *));
 
-/* === v9 — Tokyo Night base tokens === */
+/* === Role-token contract ===========================================
+ * Every theme provides values for the variables in this block. The
+ * defaults below are Tokyo Night so the app renders identically when
+ * no `data-theme` attribute is set. Themes override these via
+ * `[data-theme="<id>"]` selectors in themes.css.
+ * ================================================================== */
 :root {
-  --v9-bg: #1a1b26;
-  --v9-bg-2: #1f2335;
-  --v9-bg-3: #24283b;
-  --v9-bg-4: #2a2e42;
-  --v9-line: #2f334d;
-  --v9-line-soft: #292e42;
-  --v9-ink: #c0caf5;
-  --v9-ink-2: #a9b1d6;
-  --v9-ink-3: #737aa2;
-  --v9-ink-faint: #545c7e;
-  --v9-amber: #ff9e64;       /* tokyo-night orange — primary accent */
-  --v9-amber-2: #ffc777;     /* yellow */
-  --v9-rose: #f7768e;        /* red */
-  --v9-sage: #9ece6a;        /* green */
-  --v9-indigo: #7aa2f7;      /* blue */
-  --v9-plum: #bb9af7;        /* purple */
-  --v9-ochre: #e0af68;       /* gold */
-  --v9-teal: #7dcfff;        /* cyan */
-  --v9-mono: "JetBrains Mono", ui-monospace, monospace;
-  --v9-sans: "Inter Tight", system-ui, sans-serif;
+  /* Backgrounds (canvas to chrome) */
+  --bg: #1a1b26;
+  --bg-2: #1f2335;
+  --bg-3: #24283b;
+  --bg-4: #2a2e42;
 
-  /* Legacy token aliases — keeps the rest of the app rendering Tokyo Night
-     without renaming every var in every component. */
-  --background: var(--v9-bg);
-  --foreground: var(--v9-ink);
-  --surface: var(--v9-bg-2);
-  --surface-2: var(--v9-bg-3);
-  --muted: var(--v9-bg-3);
-  --muted-foreground: var(--v9-ink-3);
-  --accent: var(--v9-bg-3);
-  --accent-foreground: var(--v9-ink);
-  --primary: var(--v9-amber);
-  --primary-foreground: var(--v9-bg);
-  --destructive: var(--v9-rose);
-  --border: var(--v9-line);
-  --ring: var(--v9-amber);
-  --popover: var(--v9-bg-3);
-  --popover-foreground: var(--v9-ink);
-  --block-bg: var(--v9-bg-2);
-  --block-border: var(--v9-line);
+  /* Lines / borders */
+  --line: #2f334d;
+  --line-soft: #292e42;
+
+  /* Foreground scale */
+  --fg-default: #c0caf5;
+  --fg-muted: #a9b1d6;
+  --fg-subtle: #737aa2;
+  --fg-faint: #545c7e;
+
+  /* Accents — primary is the brand color (active selection, today indicator).
+     Secondary is reserved for navigational moments that should not pull
+     from primary. Type-* colors are for semantic categories (task, event,
+     note, project, person, query, template) and stay quieter than primary. */
+  --accent-primary: #ff9e64;
+  --accent-secondary: #bb9af7;
+  --type-task: #db6c83;
+  --type-event: #6dbacc;
+  --type-note: #e8b86b;
+  --type-project: #6a8fdc;
+  --type-person: #a98be0;
+  --type-query: #88b85e;
+  --type-template: #c79b58;
+
+  /* Typography. Themes can override these via the same role tokens. */
+  --theme-font-sans: "Geist", "Geist Sans", "Inter Tight", system-ui, sans-serif;
+  --theme-font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* === Compatibility aliases ============================================
+   * These keep the rest of the app rendering without a sweeping rename.
+   * `--v9-*` names map to role tokens; semantic shadcn-style aliases
+   * (--background, --primary, etc.) map to the same. Type chips use the
+   * type-* colors directly via their existing --v9-rose / --v9-indigo
+   * etc. wires; theme palettes override those mappings indirectly by
+   * remapping the v9 tokens to type-* values where that makes sense. */
+  --v9-bg: var(--bg);
+  --v9-bg-2: var(--bg-2);
+  --v9-bg-3: var(--bg-3);
+  --v9-bg-4: var(--bg-4);
+  --v9-line: var(--line);
+  --v9-line-soft: var(--line-soft);
+  --v9-ink: var(--fg-default);
+  --v9-ink-2: var(--fg-muted);
+  --v9-ink-3: var(--fg-subtle);
+  --v9-ink-faint: var(--fg-faint);
+  --v9-amber: var(--accent-primary);
+  --v9-amber-2: var(--type-note);
+  --v9-rose: var(--type-task);
+  --v9-teal: var(--type-event);
+  --v9-indigo: var(--type-project);
+  --v9-plum: var(--type-person);
+  --v9-sage: var(--type-query);
+  --v9-ochre: var(--type-template);
+  --v9-mono: var(--theme-font-mono);
+  --v9-sans: var(--theme-font-sans);
+
+  --background: var(--bg);
+  --foreground: var(--fg-default);
+  --surface: var(--bg-2);
+  --surface-2: var(--bg-3);
+  --muted: var(--bg-3);
+  --muted-foreground: var(--fg-subtle);
+  --accent: var(--bg-3);
+  --accent-foreground: var(--fg-default);
+  --primary: var(--accent-primary);
+  --primary-foreground: var(--bg);
+  --destructive: var(--type-task);
+  --border: var(--line);
+  --ring: var(--accent-primary);
+  --popover: var(--bg-3);
+  --popover-foreground: var(--fg-default);
+  --block-bg: var(--bg-2);
+  --block-border: var(--line);
   --block-radius: 4px;
   --block-shadow: none;
-  --focus-glow: 0 0 0 2px rgba(255,158,100,0.18);
-  --thread-border: var(--v9-line-soft);
+  --focus-glow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 18%, transparent);
+  --thread-border: var(--line-soft);
 }
 
 @theme inline {
@@ -68,9 +113,9 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-block-bg: var(--block-bg);
   --color-block-border: var(--block-border);
-  --font-display: "Inter Tight", system-ui, sans-serif;
-  --font-sans: "Inter Tight", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-display: var(--theme-font-sans);
+  --font-sans: var(--theme-font-sans);
+  --font-mono: var(--theme-font-mono);
 }
 
 @layer base {
@@ -266,7 +311,7 @@ html, body { height: 100%; margin: 0; }
 .v9-rail .w[data-icon="project"]  .gl { background: var(--v9-indigo); }
 .v9-rail .w[data-icon="person"]   .gl { background: var(--v9-plum); }
 .v9-rail .w[data-icon="query"]    .gl { background: var(--v9-sage); }
-.v9-rail .w[data-icon="clock"]    .gl { background: var(--v9-ochre); color: #1a1b26; }
+.v9-rail .w[data-icon="clock"]    .gl { background: var(--v9-ochre); color: var(--bg); }
 .v9-rail .w[data-icon="pin"]      .gl { background: var(--v9-rose); }
 .v9-rail .w .badge { font-size: 10px; color: var(--v9-ink-faint); font-family: var(--v9-mono); font-variant-numeric: tabular-nums; }
 .v9-rail .w.active .badge { color: var(--v9-amber-2); }
@@ -435,7 +480,7 @@ html, body { height: 100%; margin: 0; }
 
 /* Phase 9.4 — visual cue while a rail row is being dragged. */
 .v9-rail .w.dragging { opacity: 0.4; }
-.v9link { color: var(--v9-amber); background: rgba(255,158,100,0.12); padding: 0 4px; border-radius: 2px; }
+.v9link { color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 12%, transparent); padding: 0 4px; border-radius: 2px; }
 .v9tag { color: var(--v9-sage); }
 
 /* Focus column header */
@@ -490,13 +535,19 @@ html, body { height: 100%; margin: 0; }
   gap: 6px;
 }
 .v9-bottom .tabs .tab .n { color: var(--v9-ink-faint); font-size: 10px; }
-.v9-bottom .tabs .tab.active { background: var(--v9-bg-2); color: var(--v9-amber); box-shadow: inset 0 -2px 0 var(--v9-amber); }
+/* Drawer tabs: quiet active state. Subtle bg tint and a soft fg lift instead
+   of an accent underline, so the drawer reads as quiet chrome. */
+.v9-bottom .tabs .tab.active {
+  background: var(--bg-2);
+  color: var(--fg-default);
+  box-shadow: inset 0 -1px 0 var(--line);
+}
 .v9-bottom .body { flex: 1; overflow-y: auto; padding: 8px 14px; }
 .v9-bl-card { padding: 6px 0; border-bottom: 1px dashed var(--v9-line); display: grid; grid-template-columns: 1fr; gap: 2px; }
 .v9-bl-card .src { font-family: var(--v9-mono); font-size: 10.5px; color: var(--v9-amber); display: flex; gap: 8px; }
 .v9-bl-card .src .lbl { color: var(--v9-ink-2); }
 .v9-bl-card .snip { color: var(--v9-ink-2); font-size: 12px; }
-.v9-bl-card .snip em { font-style: normal; font-weight: 600; color: var(--v9-amber-2); background: rgba(255,158,100,0.18); padding: 0 3px; border-radius: 2px; }
+.v9-bl-card .snip em { font-style: normal; font-weight: 600; color: var(--v9-amber-2); background: color-mix(in srgb, var(--accent-primary) 18%, transparent); padding: 0 3px; border-radius: 2px; }
 
 /* Phase 9.7 — keyboard-selected property chip in the bottom drawer. */
 .v9-bottom .pchip.selected { box-shadow: inset 0 0 0 1px var(--v9-amber); border-color: var(--v9-amber); }

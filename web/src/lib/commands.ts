@@ -4,7 +4,10 @@
  * and an action function. Context-dependent commands specify which route they appear on.
  */
 
-export type CommandCategory = "action" | "navigation" | "context";
+import { theme } from "$lib/theme.svelte";
+import { THEMES } from "$lib/themes";
+
+export type CommandCategory = "action" | "navigation" | "context" | "theme";
 
 export interface Command {
   id: string;
@@ -152,6 +155,18 @@ export function buildCommands(deps: {
       keywords: ["favorite", "star", "pin", "bookmark"],
       context: "note-page",
       action: () => deps.toggleFavorite!(),
+    });
+  }
+
+  // === Themes — one entry per theme so they're keyboard-switchable. ===
+  for (const t of THEMES) {
+    commands.push({
+      id: `theme:${t.id}`,
+      label: `Theme: ${t.name}`,
+      icon: t.mode === "dark" ? "IconMoon" : "IconSun",
+      category: "theme",
+      keywords: ["theme", "color", "palette", t.mode, t.id, t.name.toLowerCase()],
+      action: () => theme.set(t.id),
     });
   }
 
