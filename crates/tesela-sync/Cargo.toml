@@ -1,0 +1,39 @@
+[package]
+name = "tesela-sync"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+bench = false
+
+[dependencies]
+tesela-core = { path = "../tesela-core" }
+
+# Serialization + wire format
+serde.workspace = true
+postcard.workspace = true
+
+# Identity + hashing
+uuid.workspace = true
+blake3.workspace = true
+
+# Time / HLC
+chrono.workspace = true
+uhlc.workspace = true
+
+# Errors + tracing
+thiserror.workspace = true
+tracing.workspace = true
+
+# Async
+async-trait.workspace = true
+tokio.workspace = true
+futures.workspace = true
+
+# Database
+sqlx.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio-test.workspace = true
+tracing-subscriber.workspace = true
