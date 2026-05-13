@@ -1,0 +1,28 @@
+[package]
+name = "tesela-sync-ffi"
+version = "0.1.0"
+edition = "2021"
+description = "UniFFI bridge crate exposing tesela-sync to Swift / Kotlin / Python."
+
+[lib]
+# `staticlib` lets us link into the iOS framework / Android shared lib.
+# `cdylib` lets host-side bindings tests load it as a dynamic lib.
+# `lib` keeps `cargo test` happy.
+crate-type = ["staticlib", "cdylib", "lib"]
+bench = false
+
+[dependencies]
+tesela-sync = { path = "../tesela-sync" }
+uniffi.workspace = true
+thiserror.workspace = true
+
+[features]
+# Pulls in the binary scaffolding so `cargo run --bin uniffi-bindgen
+# --features cli` can generate Swift / Kotlin / Python bindings from
+# the crate's #[uniffi::export] proc-macros.
+cli = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]

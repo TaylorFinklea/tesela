@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins", "crates/tesela-server", "crates/tesela-backup", "crates/tesela-fixtures", "crates/tesela-fixtures-cli", "crates/tesela-sync"]
+members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins", "crates/tesela-server", "crates/tesela-backup", "crates/tesela-fixtures", "crates/tesela-fixtures-cli", "crates/tesela-sync", "crates/tesela-sync-ffi"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -72,6 +72,7 @@ mdns-sd = { version = "0.13", default-features = false, features = ["async"] }
 base64 = "0.22"
 if-addrs = "0.13"
 chacha20poly1305 = "0.10"
+uniffi = "0.31"
 
 # Testing + benchmarking
 tempfile = "3"
