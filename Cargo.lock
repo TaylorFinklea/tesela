@@ -3856,6 +3856,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "blake3",
  "block2",
  "chrono",
  "criterion",
@@ -3863,6 +3864,7 @@ dependencies = [
  "objc2",
  "objc2-event-kit",
  "objc2-foundation",
+ "postcard",
  "regex",
  "reqwest",
  "serde",
@@ -3871,10 +3873,12 @@ dependencies = [
  "tesela-backup",
  "tesela-core",
  "tesela-fixtures",
+ "tesela-sync",
  "tokio",
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

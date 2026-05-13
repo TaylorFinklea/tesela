@@ -20,6 +20,7 @@ use tesela_core::{
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     types::TypeRegistry,
 };
+use tesela_sync::{DeviceId, SqliteEngine};
 
 use reminders::auto::AutoSync;
 use state::{AppState, WsEvent};
@@ -190,6 +191,38 @@ async fn main() -> Result<()> {
     let index_for_shutdown = Arc::clone(&index);
     let backup_cfg_for_shutdown = config.backup.clone();
 
+    // Phase 1.5 — multi-device sync engine. Reuses the same SQLite file
+    // tesela-core opened above (WAL mode tolerates multiple connections).
+    // Materializes incoming NoteUpsert ops into `{mosaic}/notes/{slug}.md`
+    // so the existing file-watcher picks them up and the read path
+    // through FsNoteStore sees them.
+    let sync_engine = {
+        let url = format!("sqlite:{}", db_path.display());
+        let device = load_or_create_device_id(&mosaic).await;
+        let engine = SqliteEngine::open_with_mosaic(
+            &url,
+            Some(mosaic_for_shutdown.clone()),
+            device,
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("open sync engine: {e}"))?;
+        info!("tesela-sync: device id = {}", engine.device().to_hex());
+        Arc::new(engine)
+    };
+
+    // Phase 1.5 — background sync daemon. Every 5 seconds, pull from each
+    // paired peer. Symmetric: both peers pull, so both converge.
+    {
+        let mosaic_clone = mosaic_for_shutdown.clone();
+        let engine_clone = Arc::clone(&sync_engine);
+        let ws_tx_clone = ws_tx.clone();
+        let store_clone = Arc::clone(&store);
+        let index_clone = Arc::clone(&index);
+        tokio::spawn(async move {
+            sync_daemon_loop(mosaic_clone, engine_clone, ws_tx_clone, store_clone, index_clone).await;
+        });
+    }
+
     let app_state = AppState {
         mosaic_root: mosaic_for_shutdown.clone(),
         store,
@@ -197,6 +230,7 @@ async fn main() -> Result<()> {
         ws_tx,
         type_registry,
         auto_sync,
+        sync_engine,
     };
     let router = routes::build(app_state);
 
@@ -228,6 +262,109 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Load or generate this device's persistent id.
+///
+/// Stored at `{mosaic}/.tesela/device_id.hex`. Created on first run with
+/// a UUIDv7 (time-ordered). Reused thereafter so HLCs stay monotonic
+/// across restarts.
+async fn load_or_create_device_id(mosaic: &Path) -> DeviceId {
+    let path = mosaic.join(".tesela").join("device_id.hex");
+    if let Ok(bytes) = tokio::fs::read(&path).await {
+        let s = String::from_utf8_lossy(&bytes).trim().to_string();
+        if let Some(d) = parse_hex_device_id(&s) {
+            return d;
+        }
+        warn!(
+            "device_id.hex at {} is malformed; regenerating",
+            path.display()
+        );
+    }
+    let new_id = DeviceId::new_random();
+    let tesela_dir = mosaic.join(".tesela");
+    if let Err(e) = tokio::fs::create_dir_all(&tesela_dir).await {
+        warn!(
+            "Could not create {}: {} (device id will be ephemeral)",
+            tesela_dir.display(),
+            e
+        );
+        return new_id;
+    }
+    if let Err(e) = tokio::fs::write(&path, new_id.to_hex().as_bytes()).await {
+        warn!(
+            "Could not write {}: {} (device id will be ephemeral)",
+            path.display(),
+            e
+        );
+    }
+    new_id
+}
+
+fn parse_hex_device_id(hex: &str) -> Option<DeviceId> {
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut out = [0u8; 16];
+    for i in 0..16 {
+        let hi = char_to_nibble(hex.as_bytes()[i * 2])?;
+        let lo = char_to_nibble(hex.as_bytes()[i * 2 + 1])?;
+        out[i] = (hi << 4) | lo;
+    }
+    Some(DeviceId(out))
+}
+
+fn char_to_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// Background sync daemon. Every 5 seconds, attempt one pull per known
+/// peer. Errors are logged; the loop continues so a single broken peer
+/// doesn't stop sync for everyone else.
+async fn sync_daemon_loop(
+    mosaic: PathBuf,
+    engine: Arc<SqliteEngine>,
+    _ws_tx: tokio::sync::broadcast::Sender<WsEvent>,
+    _store: Arc<FsNoteStore>,
+    _index: Arc<SqliteIndex>,
+) {
+    let interval = std::env::var("TESELA_SYNC_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(5);
+    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    info!(
+        "tesela-sync: daemon started (interval = {}s, device = {})",
+        interval,
+        engine.device().to_hex()
+    );
+    loop {
+        ticker.tick().await;
+        let peers = read_peers_for_daemon(&mosaic).await;
+        for peer in peers {
+            if let Err(e) =
+                routes::peer_sync::sync_with_peer_minimal(&engine, &mosaic, &peer).await
+            {
+                tracing::debug!("sync to {}: {}", peer.url, e);
+            }
+        }
+    }
+}
+
+async fn read_peers_for_daemon(mosaic: &Path) -> Vec<routes::peer_sync::Peer> {
+    let path = mosaic.join(".tesela").join("sync_peers.json");
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            serde_json::from_slice::<Vec<routes::peer_sync::Peer>>(&bytes).unwrap_or_default()
+        }
+        Err(_) => Vec::new(),
+    }
 }
 
 /// Resolves when the OS asks us to shut down (SIGINT or SIGTERM). On

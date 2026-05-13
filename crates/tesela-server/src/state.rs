@@ -5,6 +5,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use tesela_core::{db::SqliteIndex, storage::filesystem::FsNoteStore, types::TypeRegistry, Note};
+use tesela_sync::SqliteEngine;
 
 use crate::reminders::auto::AutoSync;
 
@@ -15,6 +16,9 @@ pub struct AppState {
     pub ws_tx: broadcast::Sender<WsEvent>,
     pub type_registry: TypeRegistry,
     pub auto_sync: Arc<AutoSync>,
+    /// Phase 1.5 multi-device sync engine. Records every local note
+    /// write to the oplog and applies remote envelopes from peers.
+    pub sync_engine: Arc<SqliteEngine>,
 }
 
 /// Events broadcast to WebSocket clients when notes change.

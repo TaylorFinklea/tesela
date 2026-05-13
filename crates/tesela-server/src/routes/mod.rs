@@ -2,6 +2,7 @@ mod calendar;
 mod data_ops;
 mod history;
 mod notes;
+pub mod peer_sync;
 mod search;
 mod search_query;
 mod sync;
@@ -45,6 +46,17 @@ pub fn build(state: AppState) -> Router {
         .route("/sync/reminders/pull", post(sync::pull))
         .route("/sync/reminders", post(sync::sync))
         .route("/sync/reminders/status", get(sync::status))
+        // Phase 1.5 multi-device sync
+        .route("/sync/peer/device", get(peer_sync::get_device))
+        .route(
+            "/sync/peer/peers",
+            get(peer_sync::list_peers).post(peer_sync::add_peer),
+        )
+        .route("/sync/peer/peers/{device_id_hex}", axum::routing::delete(peer_sync::remove_peer))
+        .route("/sync/peer/produce", post(peer_sync::produce))
+        .route("/sync/peer/envelope", post(peer_sync::receive_envelope))
+        .route("/sync/peer/now", post(peer_sync::sync_now))
+        .route("/sync/peer/status", get(peer_sync::status))
         .route("/search", get(search::search_notes))
         .route("/search/query", post(search_query::execute))
         .route("/calendar/marks", get(calendar::marks))

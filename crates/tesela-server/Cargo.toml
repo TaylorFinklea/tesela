@@ -13,6 +13,7 @@ bench = false
 [dependencies]
 tesela-core = { path = "../tesela-core" }
 tesela-backup = { path = "../tesela-backup" }
+tesela-sync = { path = "../tesela-sync" }
 tempfile = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
@@ -24,6 +25,10 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono.workspace = true
 regex.workspace = true
+reqwest = { workspace = true }
+postcard.workspace = true
+uuid.workspace = true
+blake3.workspace = true
 
 # Phase 12.1 — Apple Reminders bidirectional sync. EventKit is a macOS/iOS
 # framework, so the FFI is gated behind cfg(target_os = "macos"). Linux/

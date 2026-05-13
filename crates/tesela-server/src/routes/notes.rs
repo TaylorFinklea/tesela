@@ -17,6 +17,7 @@ use tesela_core::{
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     Note,
 };
+use tesela_sync::{OpPayload, SyncEngine};
 
 use crate::{
     error::{AppError, AppResult},
@@ -108,6 +109,7 @@ pub async fn create_note(
     let note = s.store.create(&req.title, &req.content, &tags).await?;
     s.index.reindex(&note).await?;
     ensure_tag_pages(&s, &note).await;
+    record_sync_upsert(&s, &note).await;
     let _ = s.ws_tx.send(WsEvent::NoteCreated { note: note.clone() });
     Ok(Json(note))
 }
@@ -155,6 +157,7 @@ pub async fn update_note(
         }
     }
     ensure_tag_pages(&s, &updated).await;
+    record_sync_upsert(&s, &updated).await;
     let _ = s.ws_tx.send(WsEvent::NoteUpdated {
         note: updated.clone(),
     });
@@ -185,8 +188,47 @@ pub async fn delete_note(
     let note_id = NoteId::new(&id);
     s.store.delete(&note_id).await?;
     s.index.remove(&note_id).await?;
+    record_sync_delete(&s, &note_id).await;
     let _ = s.ws_tx.send(WsEvent::NoteDeleted { id });
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Phase 1.5: emit a NoteUpsert op to the sync engine after a local
+/// write. Best-effort: a failure here logs but does not fail the request,
+/// because the user-visible save already succeeded.
+async fn record_sync_upsert(s: &Arc<AppState>, note: &Note) {
+    let payload = OpPayload::NoteUpsert {
+        note_id: stable_uuid_from_slug(note.id.as_str()),
+        display_alias: Some(note.id.as_str().to_string()),
+        title: note.title.clone(),
+        content: note.content.clone(),
+        created_at_millis: note.created_at.timestamp_millis(),
+    };
+    if let Err(e) = s.sync_engine.record_local(payload).await {
+        tracing::warn!("sync: record_local upsert failed for {}: {}", note.id, e);
+    }
+}
+
+async fn record_sync_delete(s: &Arc<AppState>, note_id: &NoteId) {
+    let payload = OpPayload::NoteDelete {
+        note_id: stable_uuid_from_slug(note_id.as_str()),
+    };
+    if let Err(e) = s.sync_engine.record_local(payload).await {
+        tracing::warn!("sync: record_local delete failed for {}: {}", note_id, e);
+    }
+}
+
+/// Phase 1.5 stable note_id derivation: blake3(slug) truncated to 16
+/// bytes. Two devices independently creating the same slug produce the
+/// same note_id, so it looks like an update rather than a primary-key
+/// collision. Real UUID-v7 identity arrives with the Mutation API
+/// refactor (Phase 2 data model).
+fn stable_uuid_from_slug(slug: &str) -> [u8; 16] {
+    let hash = blake3::hash(slug.as_bytes());
+    let bytes = hash.as_bytes();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&bytes[..16]);
+    out
 }
 
 pub async fn get_backlinks(
