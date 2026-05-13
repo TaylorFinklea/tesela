@@ -30,8 +30,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tesela_sync::oplog::op::EncodedOp;
 use tesela_sync::{
-    decode_pairing_code, encode_pairing_code, DeviceId, GroupId, PairingCode, PeerCursor,
-    SqliteEngine, SyncEngine, SyncEnvelope,
+    aead_open, aead_seal, decode_pairing_code, encode_pairing_code, envelope_aad, DeviceId,
+    GroupIdentity, PairingCode, PeerCursor, SqliteEngine, SyncEngine, SyncEnvelope,
 };
 
 use crate::state::AppState;
@@ -62,7 +62,11 @@ pub struct ProduceRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProduceResponse {
-    pub ops: Vec<EncodedOp>,
+    /// Phase 2.3 — AEAD-sealed op batch. Receiver opens the envelope
+    /// with the shared group key before applying. An empty envelope
+    /// (ciphertext == ops-postcard-of-empty-vec) is a legal response
+    /// when there's nothing new to send.
+    pub envelope: SyncEnvelope,
     /// New cursor (NTP64) pointing past the last produced op. None if
     /// no ops were produced.
     pub new_cursor_ntp: Option<i64>,
@@ -152,8 +156,11 @@ pub async fn produce(
         PeerCursor::Earliest => None,
         PeerCursor::At(ts) => Some(ts.ntp64_as_i64()),
     };
+    let ident = s.group_identity.read().await.clone();
+    let envelope = seal_ops_envelope(&s.sync_engine.device(), &ident, &batch.ops)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     let resp = ProduceResponse {
-        ops: batch.ops,
+        envelope,
         new_cursor_ntp,
     };
     let body = postcard::to_allocvec(&resp)
@@ -166,6 +173,52 @@ pub async fn produce(
         .into_response())
 }
 
+/// Bundle a batch of ops into an AEAD-sealed envelope addressed to the
+/// local group. AAD binds the routing metadata so a relay can't rewrite
+/// either field without invalidating the tag.
+fn seal_ops_envelope(
+    from: &DeviceId,
+    ident: &GroupIdentity,
+    ops: &[EncodedOp],
+) -> Result<SyncEnvelope, String> {
+    let plaintext =
+        postcard::to_allocvec(&ops.to_vec()).map_err(|e| format!("encode ops: {e}"))?;
+    let aad = envelope_aad(from.as_bytes(), ident.group_id.as_bytes());
+    let sealed = aead_seal(&ident.group_key, &plaintext, &aad)
+        .map_err(|e| format!("seal envelope: {e}"))?;
+    Ok(SyncEnvelope {
+        from_device: *from,
+        to_group: ident.group_id,
+        nonce: sealed.nonce,
+        ciphertext: sealed.ciphertext,
+    })
+}
+
+/// Open an AEAD-sealed envelope back into a `Vec<EncodedOp>`. Rejects
+/// envelopes addressed to a group we don't belong to.
+fn open_ops_envelope(
+    envelope: &SyncEnvelope,
+    ident: &GroupIdentity,
+) -> Result<Vec<EncodedOp>, String> {
+    if envelope.to_group != ident.group_id {
+        return Err(format!(
+            "envelope group_id {:02x?} doesn't match local {:02x?} (pair via code first?)",
+            envelope.to_group.as_bytes(),
+            ident.group_id.as_bytes()
+        ));
+    }
+    let aad = envelope_aad(envelope.from_device.as_bytes(), ident.group_id.as_bytes());
+    let plaintext = aead_open(
+        &ident.group_key,
+        &envelope.nonce,
+        &envelope.ciphertext,
+        &aad,
+    )
+    .map_err(|e| format!("open envelope: {e}"))?;
+    postcard::from_bytes::<Vec<EncodedOp>>(&plaintext)
+        .map_err(|e| format!("decode ops: {e}"))
+}
+
 pub async fn receive_envelope(
     State(s): State<Arc<AppState>>,
     body: Bytes,
@@ -173,9 +226,22 @@ pub async fn receive_envelope(
     let envelope: SyncEnvelope = postcard::from_bytes(&body)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("postcard: {e}")))?;
     let from = envelope.from_device;
+    let ident = s.group_identity.read().await.clone();
+    let ops = open_ops_envelope(&envelope, &ident).map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
+    // The engine still consumes a cleartext-ciphertext envelope. Wrap
+    // the decrypted ops back into an internal-only envelope so
+    // apply_changes stays unchanged (it'll move into the engine once we
+    // refactor the trait to take a GroupKey directly).
+    let internal = SyncEnvelope {
+        from_device: from,
+        to_group: ident.group_id,
+        nonce: [0u8; 24],
+        ciphertext: postcard::to_allocvec(&ops)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+    };
     let applied = s
         .sync_engine
-        .apply_changes(from, envelope)
+        .apply_changes(from, internal)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     tracing::info!(
@@ -407,34 +473,30 @@ pub async fn sync_with_peer(s: &AppState, peer: &Peer) -> Result<u32, String> {
     let produced: ProduceResponse = postcard::from_bytes(&body_bytes)
         .map_err(|e| format!("decode ProduceResponse: {e}"))?;
 
-    if produced.ops.is_empty() {
+    let ident = s.group_identity.read().await.clone();
+    let ops = open_ops_envelope(&produced.envelope, &ident)?;
+    if ops.is_empty() {
         return Ok(0);
     }
 
-    // Apply locally. Wrap into a SyncEnvelope so apply_changes sees the
-    // same shape regardless of transport.
-    let envelope = SyncEnvelope {
+    // Wrap the decrypted ops into a synthetic cleartext envelope for
+    // apply_changes (which still consumes plaintext via the ciphertext
+    // field). When the engine grows decrypt-in-apply this conversion
+    // collapses.
+    let internal = SyncEnvelope {
         from_device: peer_device,
-        to_group: GroupId([0u8; 16]),
+        to_group: ident.group_id,
         nonce: [0u8; 24],
-        ciphertext: postcard::to_allocvec(&produced.ops)
+        ciphertext: postcard::to_allocvec(&ops)
             .map_err(|e| format!("re-encode ops: {e}"))?,
     };
     let applied = s
         .sync_engine
-        .apply_changes(peer_device, envelope)
+        .apply_changes(peer_device, internal)
         .await
         .map_err(|e| format!("apply_changes: {e}"))?;
 
-    // Re-broadcast WS events for each touched note so connected clients
-    // see the new content immediately. The indexer's file-watcher will
-    // also fire, but we want zero latency.
     for note_id_bytes in &applied.note_ids {
-        // The note id in the oplog is a UUID, but our notes table uses
-        // slugs. Without a mapping, we can't easily map UUID -> Note.
-        // For Phase 1.5 the indexer's file-watcher does the heavy
-        // lifting; clients will see the WsEvent::NoteUpdated when the
-        // indexer fires. Skip the eager broadcast here.
         let _ = note_id_bytes;
     }
 
@@ -450,11 +512,14 @@ async fn read_peers(mosaic_root: &Path) -> Vec<Peer> {
 }
 
 /// Daemon-friendly variant that does not require an `AppState`. Used by
-/// the background sync loop in `main.rs`.
+/// the background sync loop in `main.rs`. Takes the group identity by
+/// reference so the daemon can hold its own `RwLock` and snapshot once
+/// per tick.
 pub async fn sync_with_peer_minimal(
     engine: &SqliteEngine,
     _mosaic_root: &Path,
     peer: &Peer,
+    ident: &GroupIdentity,
 ) -> Result<u32, String> {
     let peer_device = hex_to_device_id(&peer.device_id_hex)
         .ok_or_else(|| format!("invalid device id hex: {}", peer.device_id_hex))?;
@@ -491,18 +556,19 @@ pub async fn sync_with_peer_minimal(
         .map_err(|e| format!("read response body: {e}"))?;
     let produced: ProduceResponse = postcard::from_bytes(&body_bytes)
         .map_err(|e| format!("decode ProduceResponse: {e}"))?;
-    if produced.ops.is_empty() {
+    let ops = open_ops_envelope(&produced.envelope, ident)?;
+    if ops.is_empty() {
         return Ok(0);
     }
-    let envelope = SyncEnvelope {
+    let internal = SyncEnvelope {
         from_device: peer_device,
-        to_group: GroupId([0u8; 16]),
+        to_group: ident.group_id,
         nonce: [0u8; 24],
-        ciphertext: postcard::to_allocvec(&produced.ops)
+        ciphertext: postcard::to_allocvec(&ops)
             .map_err(|e| format!("re-encode ops: {e}"))?,
     };
     let applied = engine
-        .apply_changes(peer_device, envelope)
+        .apply_changes(peer_device, internal)
         .await
         .map_err(|e| format!("apply_changes: {e}"))?;
     Ok(applied.applied)

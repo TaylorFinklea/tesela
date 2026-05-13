@@ -191,11 +191,12 @@ mod tests {
 
     #[test]
     fn debug_does_not_leak_key_bytes() {
-        let k = GroupKey::random();
+        // Pick a fixture whose bytes don't collide with literals in the
+        // Debug output (the field name "len" + the value "32"). 0xab
+        // renders as "ab" — not present in the formatted struct.
+        let k = GroupKey::from_bytes([0xab; 32]);
         let dbg = format!("{:?}", k);
-        for byte in k.as_bytes() {
-            assert!(!dbg.contains(&format!("{:02x}", byte)));
-        }
+        assert!(!dbg.contains("ab"), "got dbg = {dbg}");
     }
 
     #[tokio::test]

@@ -71,6 +71,7 @@ futures = "0.3"
 mdns-sd = { version = "0.13", default-features = false, features = ["async"] }
 base64 = "0.22"
 if-addrs = "0.13"
+chacha20poly1305 = "0.10"
 
 # Testing + benchmarking
 tempfile = "3"

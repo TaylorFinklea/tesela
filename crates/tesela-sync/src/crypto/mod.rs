@@ -5,5 +5,6 @@
 //! complete from day one and Phase 1 transports can carry cleartext
 //! envelopes without any crypto on the call path.
 
+pub mod aead;
 pub mod keys;
 pub mod pairing;

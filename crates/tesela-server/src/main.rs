@@ -249,26 +249,14 @@ async fn main() -> Result<()> {
         Arc::new(engine)
     };
 
-    // Phase 1.5 — background sync daemon. Every 5 seconds, pull from each
-    // paired peer. Symmetric: both peers pull, so both converge.
-    {
-        let mosaic_clone = mosaic_for_shutdown.clone();
-        let engine_clone = Arc::clone(&sync_engine);
-        let ws_tx_clone = ws_tx.clone();
-        let store_clone = Arc::clone(&store);
-        let index_clone = Arc::clone(&index);
-        tokio::spawn(async move {
-            sync_daemon_loop(mosaic_clone, engine_clone, ws_tx_clone, store_clone, index_clone).await;
-        });
-    }
-
     let addr = std::env::var("TESELA_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:7474".to_string());
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(7474);
 
     // Phase 2.2 — group identity (id + symmetric key), persisted in
     // `<mosaic>/.tesela/`. A fresh install gets a freshly-minted group;
-    // a join via pairing code overwrites both halves.
+    // a join via pairing code overwrites both halves. Loaded BEFORE the
+    // sync daemon so it can encrypt outgoing envelopes from tick 0.
     let group_identity =
         tesela_sync::load_or_create_group_identity(&mosaic_for_shutdown)
             .await
@@ -278,6 +266,28 @@ async fn main() -> Result<()> {
         group_identity.group_id.as_bytes()
     );
     let group_identity = Arc::new(RwLock::new(group_identity));
+
+    // Phase 1.5 — background sync daemon. Every 5 seconds, pull from each
+    // paired peer. Symmetric: both peers pull, so both converge.
+    {
+        let mosaic_clone = mosaic_for_shutdown.clone();
+        let engine_clone = Arc::clone(&sync_engine);
+        let ws_tx_clone = ws_tx.clone();
+        let store_clone = Arc::clone(&store);
+        let index_clone = Arc::clone(&index);
+        let group_identity_clone = Arc::clone(&group_identity);
+        tokio::spawn(async move {
+            sync_daemon_loop(
+                mosaic_clone,
+                engine_clone,
+                ws_tx_clone,
+                store_clone,
+                index_clone,
+                group_identity_clone,
+            )
+            .await;
+        });
+    }
 
     let display_name = device_display_name();
     let public_url = build_public_url(&addr, bound_port);
@@ -473,6 +483,7 @@ async fn sync_daemon_loop(
     _ws_tx: tokio::sync::broadcast::Sender<WsEvent>,
     _store: Arc<FsNoteStore>,
     _index: Arc<SqliteIndex>,
+    group_identity: Arc<RwLock<tesela_sync::GroupIdentity>>,
 ) {
     let interval = std::env::var("TESELA_SYNC_INTERVAL_SECS")
         .ok()
@@ -488,9 +499,13 @@ async fn sync_daemon_loop(
     loop {
         ticker.tick().await;
         let peers = read_peers_for_daemon(&mosaic).await;
+        // Snapshot the identity once per tick. A concurrent pair-code
+        // adopt will land on the next tick. We avoid holding the read
+        // lock across `await` on the wire (drop before the loop body).
+        let ident = group_identity.read().await.clone();
         for peer in peers {
             if let Err(e) =
-                routes::peer_sync::sync_with_peer_minimal(&engine, &mosaic, &peer).await
+                routes::peer_sync::sync_with_peer_minimal(&engine, &mosaic, &peer, &ident).await
             {
                 tracing::debug!("sync to {}: {}", peer.url, e);
             }
