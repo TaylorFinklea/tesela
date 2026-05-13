@@ -21,7 +21,7 @@ use tesela_core::{
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     types::TypeRegistry,
 };
-use tesela_sync::{DeviceId, SqliteEngine};
+use tesela_sync::{DeviceId, LanDiscovery, SqliteEngine};
 
 use reminders::auto::AutoSync;
 use state::{AppState, WsEvent};
@@ -261,6 +261,35 @@ async fn main() -> Result<()> {
         });
     }
 
+    let addr = std::env::var("TESELA_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:7474".to_string());
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(7474);
+
+    // Phase 2.1 — mDNS-based LAN discovery. Each tesela-server instance
+    // advertises itself and listens for siblings, surfacing them through
+    // `GET /sync/peer/discovered`. Failure here is non-fatal: manually
+    // configured peers still work.
+    let lan_discovery = if std::env::var("TESELA_DISABLE_MDNS").is_ok() {
+        info!("tesela-sync: mDNS discovery disabled via TESELA_DISABLE_MDNS");
+        None
+    } else {
+        let device = sync_engine.device();
+        let display_name = device_display_name();
+        match LanDiscovery::start(device, &display_name, bound_port) {
+            Ok(d) => {
+                info!(
+                    "tesela-sync: mDNS advertising as {} on port {}",
+                    display_name, bound_port
+                );
+                Some(Arc::new(d))
+            }
+            Err(e) => {
+                warn!("tesela-sync: mDNS discovery failed to start: {e}");
+                None
+            }
+        }
+    };
+
     let app_state = AppState {
         mosaic_root: mosaic_for_shutdown.clone(),
         store,
@@ -269,11 +298,10 @@ async fn main() -> Result<()> {
         type_registry,
         auto_sync,
         sync_engine,
+        lan_discovery,
     };
     let router = routes::build(app_state);
 
-    let addr = std::env::var("TESELA_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:7474".to_string());
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
     info!("tesela-server listening on http://{}", addr);
 
     axum::serve(listener, router)
@@ -359,6 +387,28 @@ fn char_to_nibble(b: u8) -> Option<u8> {
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
     }
+}
+
+/// Picks a user-visible name for this device, used in mDNS TXT records
+/// and in any UI listing the local instance. Order of preference:
+/// `TESELA_DEVICE_NAME` env override, then the OS hostname, then a
+/// generic fallback so something always appears.
+fn device_display_name() -> String {
+    if let Ok(name) = std::env::var("TESELA_DEVICE_NAME") {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    if let Ok(out) = std::process::Command::new("hostname").output() {
+        if out.status.success() {
+            let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !s.is_empty() {
+                return s;
+            }
+        }
+    }
+    "Tesela device".to_string()
 }
 
 /// Background sync daemon. Every 5 seconds, attempt one pull per known

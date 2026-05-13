@@ -5,7 +5,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use tesela_core::{db::SqliteIndex, storage::filesystem::FsNoteStore, types::TypeRegistry, Note};
-use tesela_sync::SqliteEngine;
+use tesela_sync::{LanDiscovery, SqliteEngine};
 
 use crate::reminders::auto::AutoSync;
 
@@ -19,6 +19,10 @@ pub struct AppState {
     /// Phase 1.5 multi-device sync engine. Records every local note
     /// write to the oplog and applies remote envelopes from peers.
     pub sync_engine: Arc<SqliteEngine>,
+    /// Phase 2.1 mDNS-based LAN peer discovery. `None` if discovery was
+    /// disabled or failed to start (we log and continue, since sync over
+    /// manually-configured peers still works).
+    pub lan_discovery: Option<Arc<LanDiscovery>>,
 }
 
 /// Events broadcast to WebSocket clients when notes change.

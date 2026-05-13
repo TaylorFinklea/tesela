@@ -33,6 +33,9 @@ futures.workspace = true
 # Database
 sqlx.workspace = true
 
+# LAN discovery (Phase 2.1)
+mdns-sd.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio-test.workspace = true

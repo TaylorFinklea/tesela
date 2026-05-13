@@ -35,6 +35,7 @@
 
 pub mod device;
 pub mod diff;
+pub mod discovery;
 pub mod engine;
 pub mod error;
 pub mod group;
@@ -52,6 +53,7 @@ pub mod crypto;
 // Public re-exports. Keep this surface narrow and FFI-friendly.
 
 pub use device::{DeviceId, DeviceMetadata};
+pub use discovery::{DiscoveredPeer, LanDiscovery, TESELA_SERVICE_TYPE};
 pub use engine::{
     AppliedChanges, LocalCursor, ParkedSummary, PeerCursor, ProducedBatch, ReplayReport,
     SyncEngine,

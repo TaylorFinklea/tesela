@@ -14,6 +14,7 @@
 //! - `POST /sync/peer/envelope`   receive a SyncEnvelope (postcard in / 204 out)
 //! - `POST /sync/peer/now`        trigger immediate sync with all peers (JSON out)
 //! - `GET  /sync/peer/status`     per-peer last sync info (JSON out)
+//! - `GET  /sync/peer/discovered` (Phase 2.1) mDNS-discovered LAN peers (JSON out)
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -200,6 +201,35 @@ pub async fn sync_now(State(s): State<Arc<AppState>>) -> Json<Value> {
         }
     }
     Json(json!({ "peers": results }))
+}
+
+/// Phase 2.1 — mDNS-discovered LAN peers. These are candidates only;
+/// adding them to the paired-peers list is still a separate user action.
+#[derive(Debug, Serialize)]
+pub struct DiscoveredPeerView {
+    pub device_id_hex: String,
+    pub display_name: String,
+    pub url: String,
+    /// Seconds since this peer was last seen via mDNS.
+    pub last_seen_secs_ago: u64,
+}
+
+pub async fn discovered(State(s): State<Arc<AppState>>) -> Json<Vec<DiscoveredPeerView>> {
+    let Some(d) = s.lan_discovery.as_ref() else {
+        return Json(Vec::new());
+    };
+    let snapshot = d.snapshot(std::time::Duration::from_secs(60));
+    let now = std::time::Instant::now();
+    let out = snapshot
+        .into_iter()
+        .map(|p| DiscoveredPeerView {
+            device_id_hex: p.device_id.to_hex(),
+            url: p.http_url(),
+            last_seen_secs_ago: now.duration_since(p.last_seen).as_secs(),
+            display_name: p.display_name,
+        })
+        .collect();
+    Json(out)
 }
 
 pub async fn status(State(s): State<Arc<AppState>>) -> Json<Vec<PeerStatus>> {
