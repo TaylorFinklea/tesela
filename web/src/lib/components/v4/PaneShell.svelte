@@ -13,6 +13,7 @@
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import type { Note } from "$lib/types/Note";
+  import type { GraphEdge } from "$lib/types/GraphEdge";
   import type { Pane } from "$lib/stores/pane-tree";
   import {
     focusPane,
@@ -33,6 +34,7 @@
   import { widgetFromNote, parseWidgets } from "$lib/widget-registry.svelte";
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
   import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
+  import GraphCanvas from "$lib/components/GraphCanvas.svelte";
   import PaneKindMenu from "$lib/components/v4/PaneKindMenu.svelte";
   import ContextPane from "$lib/components/v4/ContextPane.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
@@ -81,15 +83,39 @@
     return widgetFromNote(n);
   });
 
-  // All Query notes — the widget-picker dropdown's options.
+  // The notes list backs the widget picker (Query notes), the dashboard
+  // (pinned widgets), and the graph (nodes). One query, shared cache.
+  const needsNotesList = $derived(
+    pane.kind === "widget" ||
+      pane.kind === "graph" ||
+      pane.kind === "dashboard",
+  );
   const allNotesQuery = createQuery(() => ({
     queryKey: ["notes", { limit: 500 }] as const,
     queryFn: () => api.listNotes({ limit: 500 }),
-    enabled: pane.kind === "widget",
+    enabled: needsNotesList,
   }));
-  const widgetChoices = $derived(
-    parseWidgets((allNotesQuery.data ?? []) as Note[]),
+  const allNotes = $derived((allNotesQuery.data ?? []) as Note[]);
+  const widgetChoices = $derived(parseWidgets(allNotes));
+
+  // ── graph + dashboard kinds ───────────────────────────────────────────────
+  const edgesQuery = createQuery(() => ({
+    queryKey: ["all-edges"] as const,
+    queryFn: () => api.getAllEdges(),
+    enabled: pane.kind === "graph",
+  }));
+  const graphEdges = $derived((edgesQuery.data ?? []) as GraphEdge[]);
+  const dashboardWidgets = $derived(
+    widgetChoices.filter((w) => w.section === "pinned"),
   );
+
+  // Open a tile in *this* pane — used by graph nodes / dashboard rows.
+  // Per the proto's model this converts the focused non-editor pane
+  // into an editor for that tile.
+  function openTileInThisPane(noteId: string) {
+    focusPane(row, col);
+    jumpToTile(noteId);
+  }
 
   // ── context kind ──────────────────────────────────────────────────────────
   // A context pane follows the tab's most-recently-focused editor pane
@@ -312,10 +338,7 @@
           <div class="v4-pane-scroll">
             <QueryWidgetView
               widget={widgetConfig}
-              onOpenRow={(pageId) => {
-                focusPane(row, col);
-                jumpToTile(pageId);
-              }}
+              onOpenRow={(pageId) => openTileInThisPane(pageId)}
             />
           </div>
         {/key}
@@ -334,10 +357,31 @@
         focusedBlock={contextFocusedBlock}
         onOpenNote={openNoteInFollowedEditor}
       />
-    {:else}
-      <div class="v4-pane-empty">
-        <p>{KIND_LABEL[pane.kind]} pane</p>
-        <p class="v4-pane-empty-hint">wired up in Phase 2c</p>
+    {:else if pane.kind === "graph"}
+      <div class="v4-graph-host">
+        <GraphCanvas
+          notes={allNotes}
+          edges={graphEdges}
+          onNodePick={openTileInThisPane}
+        />
+      </div>
+    {:else if pane.kind === "dashboard"}
+      <div class="v4-dashboard">
+        {#if dashboardWidgets.length === 0}
+          <p class="v4-pane-empty">no pinned widgets</p>
+        {:else}
+          {#each dashboardWidgets as w (w.id)}
+            <div class="v4-dash-card">
+              <div class="v4-dash-card-title">{w.title}</div>
+              <div class="v4-dash-card-body">
+                <QueryWidgetView
+                  widget={w}
+                  onOpenRow={(pageId) => openTileInThisPane(pageId)}
+                />
+              </div>
+            </div>
+          {/each}
+        {/if}
       </div>
     {/if}
   </div>
@@ -479,5 +523,50 @@
   .v4-pane-empty-hint {
     color: var(--v4-ink6);
     font-size: 10.5px;
+  }
+
+  /* graph kind — GraphCanvas positions itself absolute/inset:0, so the
+     host just needs to be a sized positioned box. */
+  .v4-graph-host {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* dashboard kind — auto-fill grid of pinned-widget cards. */
+  .v4-dashboard {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 12px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    grid-auto-rows: 280px;
+    gap: 10px;
+    align-content: start;
+  }
+  .v4-dash-card {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border: 1px solid var(--v4-hair);
+    border-radius: 7px;
+    background: var(--v4-surface-lo);
+    overflow: hidden;
+  }
+  .v4-dash-card-title {
+    flex-shrink: 0;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--v4-hair);
+    font-family: var(--v4-sans);
+    font-size: 12px;
+    color: var(--v4-ink2);
+  }
+  .v4-dash-card-body {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 6px 8px;
   }
 </style>
