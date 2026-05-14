@@ -37,9 +37,24 @@ function schedulePersist() {
   }, DEBOUNCE_MS);
 }
 
+// Per-tab "which editor pane was focused most recently" — a `context`
+// pane follows this so it shows the right note even when focus has
+// moved onto the context pane itself or a widget pane. Not persisted;
+// rebuilds as the user focuses editors. `$state` Map so `getLastEditorPaneId`
+// reads are reactive for the context pane's `$derived`.
+const lastEditorByTab = $state(new Map<string, string>());
+
+function trackLastEditor() {
+  const t = pt.focusedTab(state);
+  if (!t) return;
+  const p = t.layout[t.focus[0]]?.[t.focus[1]];
+  if (p?.kind === "editor") lastEditorByTab.set(t.id, p.id);
+}
+
 function commit(next: PaneTreeState) {
   if (next === state) return;
   state = next;
+  trackLastEditor();
   schedulePersist();
 }
 
@@ -51,6 +66,12 @@ export function getFocusedPane(): Pane | undefined { return pt.focusedPane(state
 export function getFocusedPaneId(): string | undefined { return pt.focusedPane(state)?.id; }
 export function getFirstEditorTile(): string | undefined { return pt.firstEditorTile(state); }
 export function getPaneById(id: string) { return pt.paneById(state, id); }
+
+/** Id of the editor pane focused most recently in the given tab.
+ * `context` panes follow this. Undefined until an editor is focused. */
+export function getLastEditorPaneId(tabId: string): string | undefined {
+  return lastEditorByTab.get(tabId);
+}
 
 // ── mutations ──────────────────────────────────────────────────────────────
 

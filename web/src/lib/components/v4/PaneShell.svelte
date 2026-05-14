@@ -20,15 +20,21 @@
     swapKind,
     setPaneWidget,
     jumpToTile,
+    getFocusedTab,
+    getLastEditorPaneId,
+    getPaneById,
+    getFirstEditorTile,
   } from "$lib/stores/pane-tree.svelte";
   import {
     setFocusedBlockForPane,
     clearPaneFocusedBlock,
+    getFocusedBlockForPane,
   } from "$lib/stores/current-block.svelte";
   import { widgetFromNote, parseWidgets } from "$lib/widget-registry.svelte";
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
   import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
   import PaneKindMenu from "$lib/components/v4/PaneKindMenu.svelte";
+  import ContextPane from "$lib/components/v4/ContextPane.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
 
   let {
@@ -84,6 +90,44 @@
   const widgetChoices = $derived(
     parseWidgets((allNotesQuery.data ?? []) as Note[]),
   );
+
+  // ── context kind ──────────────────────────────────────────────────────────
+  // A context pane follows the tab's most-recently-focused editor pane
+  // (unless explicitly pinned to a tile via `pane.tile`).
+  const followedEditor = $derived.by(() => {
+    if (pane.kind !== "context") return undefined;
+    const tab = getFocusedTab();
+    if (!tab) return undefined;
+    const id = getLastEditorPaneId(tab.id);
+    if (!id) return undefined;
+    const hit = getPaneById(id);
+    return hit?.pane.kind === "editor" ? hit : undefined;
+  });
+  const contextNoteId = $derived.by(() => {
+    if (pane.kind !== "context") return undefined;
+    if (pane.tile) return pane.tile;
+    const ed = followedEditor;
+    if (ed && ed.pane.kind === "editor") {
+      return ed.pane.tiles[ed.pane.activeIdx] ?? getFirstEditorTile();
+    }
+    return getFirstEditorTile();
+  });
+  const contextFocusedBlock = $derived.by(() => {
+    if (pane.kind !== "context" || pane.tile) return null;
+    const ed = followedEditor;
+    return ed ? getFocusedBlockForPane(ed.pane.id) : null;
+  });
+
+  // Opening a note from a context-pane tab routes into the followed
+  // editor pane (not the context pane itself) so the context pane
+  // stays a context pane.
+  function openNoteInFollowedEditor(targetNoteId: string) {
+    const ed = followedEditor;
+    if (ed) {
+      focusPane(ed.row, ed.col);
+    }
+    jumpToTile(targetNoteId);
+  }
 
   const note = $derived(noteQuery.data as Note | undefined);
   const split = $derived(splitContent(note?.content ?? ""));
@@ -220,6 +264,11 @@
             {/each}
           {/if}
         </select>
+      {:else if pane.kind === "context"}
+        <span class="v4-pane-title">Context</span>
+        <span class="v4-pane-sub">
+          {pane.tile ? `pinned · ${pane.tile}` : `following · ${contextNoteId ?? "—"}`}
+        </span>
       {:else}
         <span class="v4-pane-title">{KIND_LABEL[pane.kind]}</span>
       {/if}
@@ -279,10 +328,16 @@
           <p>"{pane.widget}" is not a Query note</p>
         </div>
       {/if}
+    {:else if pane.kind === "context"}
+      <ContextPane
+        noteId={contextNoteId}
+        focusedBlock={contextFocusedBlock}
+        onOpenNote={openNoteInFollowedEditor}
+      />
     {:else}
       <div class="v4-pane-empty">
         <p>{KIND_LABEL[pane.kind]} pane</p>
-        <p class="v4-pane-empty-hint">wired up in Phase 2b–2c</p>
+        <p class="v4-pane-empty-hint">wired up in Phase 2c</p>
       </div>
     {/if}
   </div>
@@ -343,6 +398,14 @@
     font-family: var(--v4-sans);
     font-size: 12px;
     color: var(--v4-ink2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .v4-pane-sub {
+    font-family: var(--v4-mono);
+    font-size: 10px;
+    color: var(--v4-ink5);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
