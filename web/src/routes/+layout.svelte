@@ -68,6 +68,13 @@
     },
   });
 
+  // Redesign-v4 branch: the `/v4` route group ships its own shell. When
+  // the path is /v4 we render it "bare" (no rail / drawer / crumb bar /
+  // command palette) and suppress this layout's global keydown handlers
+  // so they don't collide with the v4 keymap. The QueryClientProvider +
+  // WS connection still wrap it, so v4 inherits them for free.
+  const isV4 = $derived(page.url.pathname.startsWith("/v4"));
+
   let showLeaderMenu = $state(false);
   let leaderInitialPath = $state<string[]>([]);
   const drawerOpen = $derived(isBottomDrawerOpen());
@@ -184,6 +191,11 @@
     setDrawerRouteSuppressed(ROUTE_NO_DRAWER.test(page.url.pathname));
   });
 
+  // Live route check for the keydown handlers below. They're registered
+  // once in onMount but must yield to the v4 shell when the SPA
+  // navigates to /v4 without a reload.
+  const skipForV4 = () => window.location.pathname.startsWith("/v4");
+
   onMount(() => {
     connect();
 
@@ -210,6 +222,7 @@
     void ensureSystemWidgets(api);
 
     const spaceHandler = (e: KeyboardEvent) => {
+      if (skipForV4()) return;
       if (e.key !== " " || showLeaderMenu) return;
       // Region gate: drawer / rail / middle own Space when active. Without
       // this, Space on the drawer wrapper (a tabindex=0 div) opens the
@@ -234,6 +247,7 @@
     // a cm-editor in INSERT mode where `Space` would just type a space.
     // Capture phase + stopImmediatePropagation so cm6 / cm-vim never see it.
     const altLeaderHandler = (e: KeyboardEvent) => {
+      if (skipForV4()) return;
       if (showLeaderMenu) return;
       if (!e.ctrlKey || e.key !== ",") return;
       if (e.metaKey || e.altKey) return;
@@ -258,6 +272,7 @@
     };
     // Global shortcuts (outside editors): 1, b, [, ], /
     const panelHandler = (e: KeyboardEvent) => {
+      if (skipForV4()) return;
       const target = e.target as HTMLElement;
       const isEditing =
         target.tagName === "INPUT" ||
@@ -307,6 +322,7 @@
     // vim is on. When vim is off we leave Cmd+Z untouched so the platform
     // shortcut works inside the editor.
     const cmdZHandler = (e: KeyboardEvent) => {
+      if (skipForV4()) return;
       if (!isVimEnabled()) return;
       const isUndo = (e.metaKey || e.ctrlKey) && !e.altKey && (e.key === "z" || e.key === "Z");
       if (!isUndo) return;
@@ -330,6 +346,7 @@
     // so we never see those at this layer; the explicit NORMAL check is
     // belt-and-suspenders.
     const escHandler = (e: KeyboardEvent) => {
+      if (skipForV4()) return;
       if (e.key !== "Escape") return;
       if (!isColumnSplitOpen()) return;
       if (getActiveRegion() !== "focus") return;
@@ -364,6 +381,7 @@
     };
 
     const ctrlWHandler = (e: KeyboardEvent) => {
+      if (skipForV4()) return;
       if (showLeaderMenu) return;
       if (!isVimEnabled()) return;
 
@@ -494,6 +512,7 @@
     // binding but Chrome reserves it for browser-tab switching at the OS level
     // and preventDefault() cannot reliably intercept it.
     const drawerTabHandler = (e: KeyboardEvent) => {
+      if (skipForV4()) return;
       if (!e.metaKey || !e.ctrlKey) return;
       if (e.key !== "h" && e.key !== "l") return;
       if (getActiveRegion() !== "bottom") return;
@@ -513,6 +532,7 @@
       if (pendingG) { clearTimeout(pendingG); pendingG = null; }
     };
     const gtHandler = (e: KeyboardEvent) => {
+      if (skipForV4()) return;
       if (!isVimEnabled()) return;
       // Modifier-only events ("Shift", "Control", "Alt", "Meta") fire between
       // `g` and `T` when the user types Shift+T. Ignore them so they don't
@@ -564,6 +584,7 @@
     // intercept Tab at capture phase and redirect focus into the drawer instead
     // of letting it walk the document's tabbable elements.
     const drawerTabGuard = (e: KeyboardEvent) => {
+      if (skipForV4()) return;
       if (e.key !== "Tab") return;
       if (getActiveRegion() !== "bottom") return;
       if (!isBottomDrawerOpen()) return;
@@ -611,38 +632,43 @@
 </svelte:head>
 
 <QueryClientProvider client={queryClient}>
-  <div
-    class="v9 dark {drawerOpen ? 'with-bottom' : ''} {railOpen ? '' : 'rail-collapsed'} drawer-{drawerSide}"
-    style:--v9-drawer-h={drawerHeight + 'px'}
-    style:--v9-drawer-w={drawerWidth + 'px'}
-  >
-    <CrumbBar />
-    <Rail />
-    {#if !railOpen}
-      <button
-        class="v9-rail-reveal"
-        onclick={toggleRail}
-        title="Expand rail (r)"
-        aria-label="Expand rail"
-      >
-        <IconChevronRight size={14} stroke={2} />
-      </button>
+  {#if isV4}
+    <!-- redesign-v4: the /v4 route renders its own full-screen shell. -->
+    {@render children()}
+  {:else}
+    <div
+      class="v9 dark {drawerOpen ? 'with-bottom' : ''} {railOpen ? '' : 'rail-collapsed'} drawer-{drawerSide}"
+      style:--v9-drawer-h={drawerHeight + 'px'}
+      style:--v9-drawer-w={drawerWidth + 'px'}
+    >
+      <CrumbBar />
+      <Rail />
+      {#if !railOpen}
+        <button
+          class="v9-rail-reveal"
+          onclick={toggleRail}
+          title="Expand rail (r)"
+          aria-label="Expand rail"
+        >
+          <IconChevronRight size={14} stroke={2} />
+        </button>
+      {/if}
+      <main class="v9-focus">
+        {@render children()}
+      </main>
+      {#if drawerOpen}
+        <BottomDrawer />
+      {/if}
+      <StatusBar />
+    </div>
+    <CommandPalette />
+    {#if showLeaderMenu}
+      <ChordMenu
+        tree={leaderTree}
+        initialPath={leaderInitialPath}
+        onclose={() => { showLeaderMenu = false; leaderInitialPath = []; }}
+      />
     {/if}
-    <main class="v9-focus">
-      {@render children()}
-    </main>
-    {#if drawerOpen}
-      <BottomDrawer />
-    {/if}
-    <StatusBar />
-  </div>
-  <CommandPalette />
-  {#if showLeaderMenu}
-    <ChordMenu
-      tree={leaderTree}
-      initialPath={leaderInitialPath}
-      onclose={() => { showLeaderMenu = false; leaderInitialPath = []; }}
-    />
   {/if}
   {#if activeToast}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
