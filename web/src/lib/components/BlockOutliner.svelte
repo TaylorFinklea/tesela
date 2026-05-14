@@ -52,6 +52,10 @@
   import { prefs } from "$lib/preferences.svelte";
   import { OutlinerHistory, type OutlinerSnapshot } from "$lib/stores/outliner-history.svelte";
   import { pinBlock, setBottomDrawerOpen, setBottomTab } from "$lib/stores/pane-state.svelte";
+  import {
+    registerPaneOutliner,
+    unregisterPaneOutliner,
+  } from "$lib/stores/pane-tree.svelte";
 
   let {
     noteId,
@@ -64,6 +68,7 @@
     drillBlockId = "",
     onDrillIn,
     isPinnedTab = false,
+    paneId,
   }: {
     noteId: string;
     body: string;
@@ -79,6 +84,11 @@
     drillBlockId?: string;
     onDrillIn?: (blockId: string) => void;
     isPinnedTab?: boolean;
+    /** Prism v4 — id of the pane this outliner lives in. When set, the
+     *  outliner registers its root element in the pane-tree's outliner
+     *  registry so later phases can route events to "the outliner in
+     *  pane X". Unset for the legacy chrome (column-view, journal, etc). */
+    paneId?: string;
   } = $props();
 
   // Fetch notes list for autocomplete + tag-property visibility resolution
@@ -1118,6 +1128,15 @@
 
   let rootEl = $state<HTMLDivElement | undefined>();
   let ctxMenu = $state<{ x: number; y: number; blockId: string; blockText: string; blockNoteId: string } | null>(null);
+
+  // Prism v4 — register this outliner's root element with the pane-tree
+  // registry so later phases can target events at "the outliner in pane
+  // X". No-op for the legacy chrome (paneId unset).
+  onMount(() => {
+    if (!paneId || !rootEl) return;
+    registerPaneOutliner(paneId, rootEl);
+    return () => unregisterPaneOutliner(paneId);
+  });
 
   // Phase 9.7 — Cmd+Z / Cmd+Shift+Z inside cm-editors route here so the
   // unified outliner+insert-session undo stack drives the redo cycle, not

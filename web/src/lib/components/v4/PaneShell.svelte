@@ -10,11 +10,16 @@
    * `routes/p/[id]/+page.svelte`; Phase 2 extracts a shared
    * `<NoteRenderer>` and this duplication goes away.
    */
+  import { onDestroy } from "svelte";
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import type { Note } from "$lib/types/Note";
   import type { Pane } from "$lib/stores/pane-tree";
   import { focusPane, stackNext } from "$lib/stores/pane-tree.svelte";
+  import {
+    setFocusedBlockForPane,
+    clearPaneFocusedBlock,
+  } from "$lib/stores/current-block.svelte";
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
 
@@ -103,6 +108,10 @@
     await flushSave();
   }
 
+  // Drop this pane's focused-block entry when the pane unmounts (e.g.
+  // closePane) so a stale block can't linger in the shared map.
+  onDestroy(() => clearPaneFocusedBlock(pane.id));
+
   // Clicking anywhere in the pane that isn't the editor focuses the
   // shell itself, so pane-nav keys (hjkl) land here rather than in a
   // cm-editor. Clicking into the editor lets cm own focus.
@@ -187,8 +196,10 @@
               noteId={note.id}
               body={split.body}
               frontmatter={split.frontmatter}
+              paneId={pane.id}
               onContentChange={handleContentChange}
               onCancelAndFlush={cancelAndFlush}
+              onfocusedblockchange={(b) => setFocusedBlockForPane(pane.id, b)}
             />
           </div>
         {/key}

@@ -78,3 +78,27 @@ export function moveTab(from: number, to: number) { commit(pt.moveTab(state, fro
 export function resetTree() {
   commit(pt.initialState());
 }
+
+// ── pane → outliner DOM-element registry ────────────────────────────────────
+//
+// Imperative lookup table mapping a pane id to the root DOM element of
+// the BlockOutliner mounted inside it. Not reactive — consumers look it
+// up at event-handling time. This is the primitive that lets later
+// phases route document-level events to the right pane: Phase 4's
+// Command Station restores focus to the prior pane's outliner, and
+// Phase 5's leader tree dispatches `tesela:*` events carrying a paneId.
+// Phase 1.5 only populates it; nothing reads it yet.
+
+const outlinerEls = new Map<string, HTMLElement>();
+
+export function registerPaneOutliner(paneId: string, el: HTMLElement) {
+  outlinerEls.set(paneId, el);
+}
+
+export function unregisterPaneOutliner(paneId: string) {
+  outlinerEls.delete(paneId);
+}
+
+export function getPaneOutliner(paneId: string): HTMLElement | undefined {
+  return outlinerEls.get(paneId);
+}
