@@ -45,6 +45,27 @@ self-contained.
 
 Each milestone ends with a concrete check the user can run.
 
+### Status (2026-05-13 evening)
+
+- M1 done: `crates/tesela-sync-ffi` lives, 5 unit tests pass, Swift
+  bindings generate to ~876 lines without error.
+- M2 done: rustup installed (kept Homebrew rust alongside, invoke
+  rustup binaries by full path via `~/.cargo/bin/`); iOS targets added
+  for `aarch64-apple-ios` + `aarch64-apple-ios-sim`; both compile to
+  41M `libtesela_sync_ffi.a` artifacts under `target/.../release/`.
+- M3 done: `app/Tesela-iOS/` scaffolded via xcodegen; SwiftUI app
+  installs and launches on iOS 26 simulator and renders live values
+  from three FFI calls (`teselaSyncVersion`, `syncSchemaVersion`,
+  `generateDeviceIdHex`). Build is `arm64`-only — no x86_64 cross
+  shipped, fine for Apple Silicon hosts.
+
+Open M3 caveat: the generated `.xcodeproj/` is gitignored —
+re-create with `xcodegen generate` from `app/Tesela-iOS/`. Build via
+`xcodebuild -project Tesela-iOS.xcodeproj -scheme Tesela -sdk
+iphonesimulator -configuration Release build`. Use a sim destination
+ID via `xcrun simctl list devices` (the Release config sidesteps the
+Xcode 26 debug-proxy dylib that hangs `simctl install`).
+
 ### M1 — UniFFI bridge crate
 
 Create `crates/tesela-sync-ffi`. Wraps `tesela-sync` with a UniFFI-

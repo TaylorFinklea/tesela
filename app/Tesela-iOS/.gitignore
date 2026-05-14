@@ -1,0 +1,10 @@
+# xcodegen generates this from project.yml on every build. Re-create
+# with `xcodegen generate` from inside this directory. Committing it
+# would mean every dev needs the same absolute paths in DerivedData.
+Tesela-iOS.xcodeproj/
+
+# Xcode artifacts (DerivedData lives outside this tree, but other
+# transient bits land here on real-device builds).
+build/
+*.xcuserstate
+xcuserdata/

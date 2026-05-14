@@ -1,0 +1,54 @@
+name: Tesela-iOS
+
+options:
+  bundleIdPrefix: app.tesela
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+
+targets:
+  Tesela:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Generated
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.tesela.ios
+        SWIFT_INCLUDE_PATHS: "$(SRCROOT)/CFFI"
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/CFFI"
+        OTHER_LDFLAGS: "-ltesela_sync_ffi"
+        LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]: "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release"
+        LIBRARY_SEARCH_PATHS[sdk=iphoneos*]: "$(SRCROOT)/../../target/aarch64-apple-ios/release"
+        # Only build arm64. We cross-compile tesela-sync-ffi for
+        # aarch64-apple-ios{,-sim} but not x86_64-apple-ios — Apple
+        # Silicon simulators don't need it. If we ever support Intel
+        # Macs, add a `cargo build --target x86_64-apple-ios` rule and
+        # an XCFramework wrapper.
+        ARCHS: "arm64"
+        EXCLUDED_ARCHS: "x86_64"
+        ENABLE_USER_SCRIPT_SANDBOXING: "NO"
+        # Simulator builds need at least ad-hoc signing or simctl
+        # launch hangs silently. We avoid CODE_SIGNING_ALLOWED=NO
+        # (works for the linker but not for the sim runtime).
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: "NO"
+        TARGETED_DEVICE_FAMILY: "1,2"
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Tesela
+        UILaunchScreen:
+          UIColorName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
