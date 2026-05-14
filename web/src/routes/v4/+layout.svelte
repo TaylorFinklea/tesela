@@ -14,6 +14,7 @@
   import { onMount } from "svelte";
   import "$lib/v4/tokens.css";
   import {
+    getState,
     getFocusedTab,
     getFocusedPane,
     vsplit,
@@ -23,8 +24,12 @@
     stackNext,
     stackAdd,
     jumpToTile,
+    newTab,
+    closeTab,
+    switchTabByIndex,
   } from "$lib/stores/pane-tree.svelte";
   import PaneShell from "$lib/components/v4/PaneShell.svelte";
+  import TopBarTabs from "$lib/components/v4/TopBarTabs.svelte";
 
   let { children } = $props();
 
@@ -51,7 +56,7 @@
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
 
-      // Splits + close pane — fire regardless of focus (capture phase).
+      // Splits + tab/pane management — fire regardless of focus (capture).
       if (mod && e.key === "\\") {
         e.preventDefault();
         vsplit("editor");
@@ -62,9 +67,25 @@
         hsplit("editor");
         return;
       }
+      if (mod && e.shiftKey && (e.key === "w" || e.key === "W")) {
+        e.preventDefault();
+        closeTab(getState().activeTabId);
+        return;
+      }
       if (mod && !e.shiftKey && (e.key === "w" || e.key === "W")) {
         e.preventDefault();
         closePane();
+        return;
+      }
+      if (mod && (e.key === "t" || e.key === "T")) {
+        e.preventDefault();
+        newTab();
+        return;
+      }
+      // ⌥1–9 jumps to the Nth tab.
+      if (e.altKey && /^[1-9]$/.test(e.key)) {
+        e.preventDefault();
+        switchTabByIndex(Number(e.key) - 1);
         return;
       }
 
@@ -140,10 +161,7 @@
       <span class="v4-mark" aria-hidden="true">◧</span>
       <span class="v4-brand-name">tesela</span>
     </div>
-    <div class="v4-tabs-placeholder">
-      <span class="v4-tab-chip active">{tab?.name ?? "untitled"}</span>
-      <span class="v4-tabs-hint">tabs · Phase 3</span>
-    </div>
+    <TopBarTabs />
     <button class="v4-command-bar" type="button" disabled>
       <span class="v4-command-bar-kbd">⌘K</span>
       <span class="v4-command-bar-hint">Command Station · Phase 4</span>
@@ -247,26 +265,6 @@
     color: var(--v4-ink2);
     font-weight: 500;
   }
-  .v4-tabs-placeholder {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    min-width: 0;
-    overflow: hidden;
-  }
-  .v4-tab-chip {
-    font-size: 12px;
-    padding: 2px 10px;
-    border-radius: 5px;
-    color: var(--v4-ink3);
-    border-top: 1px solid transparent;
-  }
-  .v4-tab-chip.active {
-    color: var(--v4-ink);
-    background: rgba(123, 140, 255, 0.08);
-    border-top-color: var(--v4-accent);
-  }
-  .v4-tabs-hint,
   .v4-journey-hint,
   .v4-command-bar-hint {
     font-family: var(--v4-mono);
