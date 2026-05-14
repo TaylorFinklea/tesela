@@ -24,6 +24,7 @@ import {
   paneById,
   renameTab,
   serialize,
+  setPaneWidget,
   stackAdd,
   stackClose,
   stackNext,
@@ -230,7 +231,37 @@ test("swapKind preserves the pane id while replacing fields", () => {
   const p = focusedPane(s);
   assert.equal(p.id, id);
   assert.equal(p.kind, "widget");
-  assert.equal(p.widget, "timeline");
+  assert.equal(p.widget, "recent");
+});
+
+test("swapKind to the same kind is a no-op (preserves reference)", () => {
+  const s = fresh();
+  const id = focusedPane(s).id;
+  const after = swapKind(s, id, "editor");
+  assert.equal(after, s);
+});
+
+test("setPaneWidget points a widget pane at a new Query note", () => {
+  let s = fresh();
+  const id = focusedPane(s).id;
+  s = swapKind(s, id, "widget");
+  s = setPaneWidget(s, id, "tasks");
+  assert.equal(focusedPane(s).widget, "tasks");
+});
+
+test("setPaneWidget is a no-op on a non-widget pane", () => {
+  const s = fresh();
+  const id = focusedPane(s).id; // editor pane
+  const after = setPaneWidget(s, id, "tasks");
+  assert.equal(after, s);
+});
+
+test("setPaneWidget is a no-op when the widget id is unchanged", () => {
+  let s = fresh();
+  const id = focusedPane(s).id;
+  s = swapKind(s, id, "widget"); // widget = "recent"
+  const after = setPaneWidget(s, id, "recent");
+  assert.equal(after, s);
 });
 
 // ── tabs ────────────────────────────────────────────────────────────────────

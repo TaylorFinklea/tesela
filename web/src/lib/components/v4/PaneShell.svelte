@@ -1,13 +1,12 @@
 <script lang="ts">
   /*
-   * Prism v4 — one cell of the pane grid. Phase 1 implements the
-   * `editor` kind only (mounts the existing BlockOutliner with the
-   * pane's active tile). The other kinds render a labelled placeholder
-   * until Phase 2 wires them up.
+   * Prism v4 — one cell of the pane grid. Phase 2a implements `editor`
+   * and `widget` kinds; `context` / `graph` / `dashboard` still render a
+   * labelled placeholder until 2b/2c.
    *
    * Each editor pane owns its own debounced save timer, so concurrent
    * edits across panes never collide on the PUT. The save path mirrors
-   * `routes/p/[id]/+page.svelte`; Phase 2 extracts a shared
+   * `routes/p/[id]/+page.svelte`; Phase 2d extracts a shared
    * `<NoteRenderer>` and this duplication goes away.
    */
   import { onDestroy } from "svelte";
@@ -15,12 +14,21 @@
   import { api } from "$lib/api-client";
   import type { Note } from "$lib/types/Note";
   import type { Pane } from "$lib/stores/pane-tree";
-  import { focusPane, stackNext } from "$lib/stores/pane-tree.svelte";
+  import {
+    focusPane,
+    stackNext,
+    swapKind,
+    setPaneWidget,
+    jumpToTile,
+  } from "$lib/stores/pane-tree.svelte";
   import {
     setFocusedBlockForPane,
     clearPaneFocusedBlock,
   } from "$lib/stores/current-block.svelte";
+  import { widgetFromNote, parseWidgets } from "$lib/widget-registry.svelte";
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
+  import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
+  import PaneKindMenu from "$lib/components/v4/PaneKindMenu.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
 
   let {
@@ -49,6 +57,33 @@
     queryFn: () => api.getNote(activeTileId as string),
     enabled: !!activeTileId,
   }));
+
+  // ── widget kind ───────────────────────────────────────────────────────────
+  // A widget pane points at a Query-type note by id; `widgetFromNote`
+  // turns that note into the config `QueryWidgetView` consumes.
+  const widgetNoteId = $derived(
+    pane.kind === "widget" ? pane.widget : undefined,
+  );
+  const widgetNoteQuery = createQuery(() => ({
+    queryKey: ["note", widgetNoteId] as const,
+    queryFn: () => api.getNote(widgetNoteId as string),
+    enabled: !!widgetNoteId,
+  }));
+  const widgetConfig = $derived.by(() => {
+    const n = widgetNoteQuery.data as Note | undefined;
+    if (!n || n.metadata.note_type !== "Query") return null;
+    return widgetFromNote(n);
+  });
+
+  // All Query notes — the widget-picker dropdown's options.
+  const allNotesQuery = createQuery(() => ({
+    queryKey: ["notes", { limit: 500 }] as const,
+    queryFn: () => api.listNotes({ limit: 500 }),
+    enabled: pane.kind === "widget",
+  }));
+  const widgetChoices = $derived(
+    parseWidgets((allNotesQuery.data ?? []) as Note[]),
+  );
 
   const note = $derived(noteQuery.data as Note | undefined);
   const split = $derived(splitContent(note?.content ?? ""));
@@ -169,12 +204,28 @@
         {:else}
           <span class="v4-pane-title">{activeTileId ?? "empty"}</span>
         {/if}
+      {:else if pane.kind === "widget"}
+        <select
+          class="v4-widget-picker"
+          value={pane.widget}
+          onclick={(e) => e.stopPropagation()}
+          onchange={(e) => setPaneWidget(pane.id, e.currentTarget.value)}
+          title="pick widget"
+        >
+          {#if widgetChoices.length === 0}
+            <option value={pane.widget}>{pane.widget}</option>
+          {:else}
+            {#each widgetChoices as w (w.id)}
+              <option value={w.id}>{w.title}</option>
+            {/each}
+          {/if}
+        </select>
       {:else}
         <span class="v4-pane-title">{KIND_LABEL[pane.kind]}</span>
       {/if}
     </div>
     <div class="v4-pane-header-right">
-      <span class="v4-kind-chip">{KIND_LABEL[pane.kind]}</span>
+      <PaneKindMenu {pane} onSwapKind={(k) => swapKind(pane.id, k)} />
     </div>
   </header>
 
@@ -204,10 +255,34 @@
           </div>
         {/key}
       {/if}
+    {:else if pane.kind === "widget"}
+      {#if widgetNoteQuery.isLoading}
+        <div class="v4-pane-empty"><p>loading…</p></div>
+      {:else if widgetConfig}
+        {#key pane.widget}
+          <div class="v4-pane-scroll">
+            <QueryWidgetView
+              widget={widgetConfig}
+              onOpenRow={(pageId) => {
+                focusPane(row, col);
+                jumpToTile(pageId);
+              }}
+            />
+          </div>
+        {/key}
+      {:else if widgetNoteQuery.isError}
+        <div class="v4-pane-empty">
+          <p>could not load widget "{pane.widget}"</p>
+        </div>
+      {:else}
+        <div class="v4-pane-empty">
+          <p>"{pane.widget}" is not a Query note</p>
+        </div>
+      {/if}
     {:else}
       <div class="v4-pane-empty">
         <p>{KIND_LABEL[pane.kind]} pane</p>
-        <p class="v4-pane-empty-hint">wired up in Phase 2</p>
+        <p class="v4-pane-empty-hint">wired up in Phase 2b–2c</p>
       </div>
     {/if}
   </div>
@@ -272,14 +347,19 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .v4-kind-chip {
-    font-family: var(--v4-mono);
-    font-size: 10px;
-    letter-spacing: 0.4px;
-    color: var(--v4-ink4);
+  .v4-widget-picker {
+    font-family: var(--v4-sans);
+    font-size: 12px;
+    color: var(--v4-ink2);
+    background: transparent;
     border: 1px solid var(--v4-hair);
     border-radius: 5px;
-    padding: 2px 7px;
+    padding: 1px 6px;
+    max-width: 220px;
+    cursor: pointer;
+  }
+  .v4-widget-picker:hover {
+    border-color: var(--v4-hair2);
   }
 
   .v4-stack-bar {

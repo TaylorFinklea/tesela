@@ -46,7 +46,17 @@
     kind: "block" | "page";
   };
 
-  let { widget }: { widget: Widget } = $props();
+  let {
+    widget,
+    onOpenRow,
+  }: {
+    widget: Widget;
+    /** Prism v4 — when set, row activation routes here instead of the
+     *  legacy `gotoNote` column-view drill. The v4 widget pane wires
+     *  this to `jumpToTile` so a result opens in the focused editor
+     *  pane. Unset for the legacy rail/route mount. */
+    onOpenRow?: (pageId: string, blockId: string | null) => void;
+  } = $props();
   const queryClient = useQueryClient();
 
   /**
@@ -223,6 +233,10 @@
   const flatRows = $derived<Row[]>(view.groups ? view.groups.flatMap((g) => g.rows) : view.rows);
 
   function openRow(row: Row) {
+    if (onOpenRow) {
+      onOpenRow(row.pageId, row.blockId ?? null);
+      return;
+    }
     gotoNote(row.pageId, row.blockId ?? null);
   }
 

@@ -64,6 +64,7 @@ export function stackAdd(tileId: string) { commit(pt.stackAdd(state, tileId)); }
 export function stackNext(dir: 1 | -1) { commit(pt.stackNext(state, dir)); }
 export function stackClose(idx: number) { commit(pt.stackClose(state, idx)); }
 export function swapKind(paneId: string, kind: PaneKind) { commit(pt.swapKind(state, paneId, kind)); }
+export function setPaneWidget(paneId: string, widgetId: string) { commit(pt.setPaneWidget(state, paneId, widgetId)); }
 export function newTab(name?: string) { commit(pt.newTab(state, name)); }
 export function closeTab(tabId: string) { commit(pt.closeTab(state, tabId)); }
 export function switchTab(tabId: string) { commit(pt.switchTab(state, tabId)); }

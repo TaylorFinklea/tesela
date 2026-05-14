@@ -27,7 +27,9 @@ export type EditorPane = {
 export type WidgetPane = {
   id: string;
   kind: "widget";
-  /** Widget id or stable kind key (e.g. "timeline", "calendar"). */
+  /** Id of the Query-type note that defines this widget (e.g. "tasks",
+   *  "recent", "projects", or any user-authored Query note). The widget
+   *  pane resolves it through `widgetFromNote`. */
   widget: string;
 };
 
@@ -71,10 +73,14 @@ export function mkTabId(): string {
 
 // ── factories ───────────────────────────────────────────────────────────────
 
+/** Default Query-note id a fresh widget pane points at. "recent" is one
+ * of the system widgets seeded by `ensureSystemWidgets`. */
+export const DEFAULT_WIDGET = "recent";
+
 export function makePane(kind: PaneKind): Pane {
   switch (kind) {
     case "editor":    return { id: mkPaneId(), kind, tiles: [], activeIdx: 0 };
-    case "widget":    return { id: mkPaneId(), kind, widget: "timeline" };
+    case "widget":    return { id: mkPaneId(), kind, widget: DEFAULT_WIDGET };
     case "context":   return { id: mkPaneId(), kind, tile: null };
     case "graph":     return { id: mkPaneId(), kind };
     case "dashboard": return { id: mkPaneId(), kind };
@@ -315,10 +321,35 @@ export function stackClose(state: PaneTreeState, idx: number): PaneTreeState {
  * the prior kind's fields. */
 export function swapKind(state: PaneTreeState, paneId: string, newKind: PaneKind): PaneTreeState {
   return replaceTab(state, state.activeTabId, (t) => {
+    let changed = false;
     const layout = t.layout.map((row) =>
-      row.map((p) => (p.id === paneId ? { ...makePane(newKind), id: p.id } : p)),
+      row.map((p) => {
+        if (p.id === paneId && p.kind !== newKind) {
+          changed = true;
+          return { ...makePane(newKind), id: p.id };
+        }
+        return p;
+      }),
     );
-    return { ...t, layout };
+    return changed ? { ...t, layout } : t;
+  });
+}
+
+/** Point a widget pane at a different Query note. No-op if the pane
+ * isn't a widget pane or already shows that widget. */
+export function setPaneWidget(state: PaneTreeState, paneId: string, widgetId: string): PaneTreeState {
+  return replaceTab(state, state.activeTabId, (t) => {
+    let changed = false;
+    const layout = t.layout.map((row) =>
+      row.map((p) => {
+        if (p.id === paneId && p.kind === "widget" && p.widget !== widgetId) {
+          changed = true;
+          return { ...p, widget: widgetId };
+        }
+        return p;
+      }),
+    );
+    return changed ? { ...t, layout } : t;
   });
 }
 
