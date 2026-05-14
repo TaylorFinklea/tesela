@@ -480,9 +480,9 @@ fn device_display_name() -> String {
 async fn sync_daemon_loop(
     mosaic: PathBuf,
     engine: Arc<SqliteEngine>,
-    _ws_tx: tokio::sync::broadcast::Sender<WsEvent>,
-    _store: Arc<FsNoteStore>,
-    _index: Arc<SqliteIndex>,
+    ws_tx: tokio::sync::broadcast::Sender<WsEvent>,
+    store: Arc<FsNoteStore>,
+    index: Arc<SqliteIndex>,
     group_identity: Arc<RwLock<tesela_sync::GroupIdentity>>,
 ) {
     let interval = std::env::var("TESELA_SYNC_INTERVAL_SECS")
@@ -504,8 +504,10 @@ async fn sync_daemon_loop(
         // lock across `await` on the wire (drop before the loop body).
         let ident = group_identity.read().await.clone();
         for peer in peers {
-            if let Err(e) =
-                routes::peer_sync::sync_with_peer_minimal(&engine, &mosaic, &peer, &ident).await
+            if let Err(e) = routes::peer_sync::sync_with_peer_minimal(
+                &engine, &mosaic, &store, &index, &ws_tx, &peer, &ident,
+            )
+            .await
             {
                 tracing::debug!("sync to {}: {}", peer.url, e);
             }

@@ -508,10 +508,13 @@ impl SqliteEngine {
         Ok(())
     }
 
-    /// Locate the slug for a note by walking the oplog for the most
-    /// recent NoteUpsert with this note_id. None means no NoteUpsert
-    /// is in the oplog yet (the block op landed before its note's
-    /// create was replayed); the caller logs and skips.
+    /// Locate the slug for a note. First tries the oplog (any NoteUpsert
+    /// carrying `note_id`); on miss, falls back to walking the mosaic's
+    /// `notes/` directory and matching `blake3(stem)[..16]` against
+    /// `note_id`. The fallback covers legacy notes that exist on disk but
+    /// were never recorded as a NoteUpsert (auto-created dailies and tag
+    /// pages prior to the sync-record fix, or any future code path that
+    /// forgets to record the upsert).
     async fn find_slug_for_note(&self, note_id: [u8; 16]) -> SyncResult<Option<String>> {
         let rows = sqlx::query(
             "SELECT payload FROM oplog ORDER BY hlc_ntp DESC",
@@ -531,6 +534,28 @@ impl SqliteEngine {
             {
                 if nid == note_id {
                     return Ok(display_alias);
+                }
+            }
+        }
+        if let Some(mosaic) = self.inner.mosaic_dir.as_ref() {
+            let notes_dir = mosaic.join("notes");
+            let mut entries = match tokio::fs::read_dir(&notes_dir).await {
+                Ok(e) => e,
+                Err(_) => return Ok(None),
+            };
+            while let Some(entry) = entries.next_entry().await.map_err(|e| {
+                SyncError::Storage(format!("read_dir {}: {e}", notes_dir.display()))
+            })? {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                    continue;
+                }
+                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                let hash = blake3::hash(stem.as_bytes());
+                if hash.as_bytes()[..16] == note_id[..] {
+                    return Ok(Some(stem.to_string()));
                 }
             }
         }

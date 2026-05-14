@@ -28,13 +28,20 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tesela_core::{
+    db::SqliteIndex,
+    note::NoteId,
+    storage::filesystem::FsNoteStore,
+    traits::{note_store::NoteStore, search_index::SearchIndex},
+};
 use tesela_sync::oplog::op::EncodedOp;
 use tesela_sync::{
     aead_open, aead_seal, decode_pairing_code, encode_pairing_code, envelope_aad, DeviceId,
     GroupIdentity, PairingCode, PeerCursor, SqliteEngine, SyncEngine, SyncEnvelope,
 };
+use tokio::sync::broadcast;
 
-use crate::state::AppState;
+use crate::state::{AppState, WsEvent};
 
 const PEERS_FILE: &str = "sync_peers.json";
 
@@ -496,9 +503,14 @@ pub async fn sync_with_peer(s: &AppState, peer: &Peer) -> Result<u32, String> {
         .await
         .map_err(|e| format!("apply_changes: {e}"))?;
 
-    for note_id_bytes in &applied.note_ids {
-        let _ = note_id_bytes;
-    }
+    rebroadcast_touched_notes(
+        &s.mosaic_root,
+        &s.store,
+        &s.index,
+        &s.ws_tx,
+        &applied.note_ids,
+    )
+    .await;
 
     Ok(applied.applied)
 }
@@ -514,10 +526,15 @@ async fn read_peers(mosaic_root: &Path) -> Vec<Peer> {
 /// Daemon-friendly variant that does not require an `AppState`. Used by
 /// the background sync loop in `main.rs`. Takes the group identity by
 /// reference so the daemon can hold its own `RwLock` and snapshot once
-/// per tick.
+/// per tick. The store / index / ws_tx are used to reindex touched notes
+/// and broadcast `WsEvent` so the web UI live-updates without a hard
+/// refresh.
 pub async fn sync_with_peer_minimal(
     engine: &SqliteEngine,
-    _mosaic_root: &Path,
+    mosaic_root: &Path,
+    store: &FsNoteStore,
+    index: &SqliteIndex,
+    ws_tx: &broadcast::Sender<WsEvent>,
     peer: &Peer,
     ident: &GroupIdentity,
 ) -> Result<u32, String> {
@@ -571,7 +588,95 @@ pub async fn sync_with_peer_minimal(
         .apply_changes(peer_device, internal)
         .await
         .map_err(|e| format!("apply_changes: {e}"))?;
+    rebroadcast_touched_notes(mosaic_root, store, index, ws_tx, &applied.note_ids).await;
     Ok(applied.applied)
+}
+
+/// After `apply_changes` materializes ops onto disk, walk the set of
+/// touched `note_id`s and (a) re-fetch the note via the store so the
+/// derived SQL projections (tasks view, search index, link graph) are
+/// rebuilt, and (b) emit a `WsEvent::NoteUpdated` so the web UI's
+/// `queryClient` invalidates its caches and re-renders without a hard
+/// refresh.
+///
+/// Resolves each `note_id` back to a slug by walking the on-disk `notes/`
+/// directory and matching `blake3(stem)[..16]` — the same fallback the
+/// engine uses for unknown-slug BlockUpserts. Notes whose slug can't be
+/// resolved (file deleted concurrently, e.g.) are skipped silently rather
+/// than failing the broader sync round; missing-file is normal under
+/// concurrent deletion.
+async fn rebroadcast_touched_notes(
+    mosaic_root: &Path,
+    store: &FsNoteStore,
+    index: &SqliteIndex,
+    ws_tx: &broadcast::Sender<WsEvent>,
+    note_ids: &[[u8; 16]],
+) {
+    if note_ids.is_empty() {
+        return;
+    }
+    let slug_index = match build_slug_index(mosaic_root).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("sync_peer: failed to build slug index: {e}");
+            return;
+        }
+    };
+    for nid in note_ids {
+        let Some(slug) = slug_index.get(nid) else {
+            continue;
+        };
+        let note_id = NoteId::new(slug);
+        match store.get(&note_id).await {
+            Ok(Some(note)) => {
+                if let Err(e) = index.reindex(&note).await {
+                    tracing::warn!("sync_peer: reindex {slug} after apply: {e}");
+                }
+                let _ = ws_tx.send(WsEvent::NoteUpdated { note });
+            }
+            Ok(None) => {
+                let _ = ws_tx.send(WsEvent::NoteDeleted {
+                    id: slug.to_string(),
+                });
+            }
+            Err(e) => {
+                tracing::warn!("sync_peer: store.get {slug} after apply: {e}");
+            }
+        }
+    }
+}
+
+/// One-shot scan of `mosaic_root/notes/` returning a `note_id -> slug`
+/// map. The note_id derivation matches `stable_uuid_from_slug` in
+/// `routes/notes.rs` (blake3 of slug bytes, truncated to 16 bytes).
+async fn build_slug_index(mosaic_root: &Path) -> Result<std::collections::HashMap<[u8; 16], String>, String> {
+    let notes_dir = mosaic_root.join("notes");
+    let mut entries = match tokio::fs::read_dir(&notes_dir).await {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(std::collections::HashMap::new());
+        }
+        Err(e) => return Err(format!("read_dir {}: {e}", notes_dir.display())),
+    };
+    let mut out = std::collections::HashMap::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| format!("read_dir entry: {e}"))?
+    {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("md") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let hash = blake3::hash(stem.as_bytes());
+        let mut key = [0u8; 16];
+        key.copy_from_slice(&hash.as_bytes()[..16]);
+        out.insert(key, stem.to_string());
+    }
+    Ok(out)
 }
 
 async fn write_peers(mosaic_root: &Path, peers: &[Peer]) -> Result<(), std::io::Error> {

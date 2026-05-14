@@ -92,7 +92,19 @@ pub async fn get_daily_note(
         }
         None
     });
+    // Probe first so we can detect the lazy-creation branch and emit a
+    // NoteUpsert into the sync oplog only on the first-ever create. Without
+    // this, peers receive BlockUpserts for the daily but can't resolve a
+    // slug for the note_id and silently drop them.
+    let resolved_date = date.unwrap_or_else(|| chrono::Local::now().date_naive());
+    let slug = tesela_core::daily::daily_note_title(resolved_date, &config);
+    let existed = s.store.get(&NoteId::new(&slug)).await?;
     let note = s.store.daily_note(date, &config).await?;
+    if existed.is_none() {
+        s.index.reindex(&note).await?;
+        record_sync_create(&s, &note).await;
+        let _ = s.ws_tx.send(WsEvent::NoteCreated { note: note.clone() });
+    }
     Ok(Json(note))
 }
 
@@ -873,6 +885,10 @@ async fn ensure_tag_pages(s: &Arc<AppState>, note: &Note) {
                 match s.store.create(tag, &content, &[]).await {
                     Ok(tag_note) => {
                         let _ = s.index.reindex(&tag_note).await;
+                        // Sync visibility: peers need a NoteUpsert in the
+                        // oplog so subsequent BlockUpserts against this
+                        // page can resolve its slug.
+                        record_sync_create(s, &tag_note).await;
                         let _ = s.ws_tx.send(WsEvent::NoteCreated { note: tag_note });
                         tracing::info!("Auto-created tag page: {}", tag);
                     }
