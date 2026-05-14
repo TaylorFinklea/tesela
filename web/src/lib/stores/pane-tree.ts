@@ -141,6 +141,28 @@ export function firstEditorTile(state: PaneTreeState): string | undefined {
   return undefined;
 }
 
+/** Locate an editor pane whose tile stack contains `tileId`, searching
+ * every tab. Returns the first hit's tab id + coordinates, or undefined.
+ * Used by URL deep-link routing to focus an already-open tile instead
+ * of opening a duplicate. */
+export function findTile(
+  state: PaneTreeState,
+  tileId: string,
+): { tabId: string; row: number; col: number } | undefined {
+  for (const tab of state.tabs) {
+    for (let r = 0; r < tab.layout.length; r++) {
+      const row = tab.layout[r];
+      for (let c = 0; c < row.length; c++) {
+        const p = row[c];
+        if (p.kind === "editor" && p.tiles.includes(tileId)) {
+          return { tabId: tab.id, row: r, col: c };
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 // ── internal helpers ────────────────────────────────────────────────────────
 
 /** Short-circuits to the same state reference when fn returns the same

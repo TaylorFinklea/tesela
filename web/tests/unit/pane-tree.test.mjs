@@ -11,6 +11,7 @@ import {
   closePane,
   closeTab,
   deserialize,
+  findTile,
   focusPane,
   focusedPane,
   focusedTab,
@@ -331,6 +332,25 @@ test("paneById finds a pane in a non-active tab", () => {
   assert.ok(hit);
   assert.equal(hit.pane.id, firstPaneId);
   assert.equal(hit.tab.name, "untitled");
+});
+
+test("findTile locates an editor pane holding a tile, across tabs", () => {
+  let s = fresh();
+  s = jumpToTile(s, "alpha"); // tab 1, pane [0,0] now holds "alpha"
+  const tab1Id = s.activeTabId;
+  s = newTab(s, "second");
+  s = jumpToTile(s, "beta"); // tab 2 holds "beta"
+  // From tab 2, find a tile that lives in tab 1.
+  const hit = findTile(s, "alpha");
+  assert.ok(hit);
+  assert.equal(hit.tabId, tab1Id);
+  assert.deepEqual([hit.row, hit.col], [0, 0]);
+});
+
+test("findTile returns undefined when no pane holds the tile", () => {
+  let s = fresh();
+  s = jumpToTile(s, "alpha");
+  assert.equal(findTile(s, "nonexistent"), undefined);
 });
 
 // ── serialization ───────────────────────────────────────────────────────────

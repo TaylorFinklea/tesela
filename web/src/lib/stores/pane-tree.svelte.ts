@@ -66,6 +66,7 @@ export function getFocusedPane(): Pane | undefined { return pt.focusedPane(state
 export function getFocusedPaneId(): string | undefined { return pt.focusedPane(state)?.id; }
 export function getFirstEditorTile(): string | undefined { return pt.firstEditorTile(state); }
 export function getPaneById(id: string) { return pt.paneById(state, id); }
+export function getTileLocation(tileId: string) { return pt.findTile(state, tileId); }
 
 /** Id of the editor pane focused most recently in the given tab.
  * `context` panes follow this. Undefined until an editor is focused. */
