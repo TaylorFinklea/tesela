@@ -32,11 +32,11 @@
     getFocusedBlockForPane,
   } from "$lib/stores/current-block.svelte";
   import { widgetFromNote, parseWidgets } from "$lib/widget-registry.svelte";
-  import BlockOutliner from "$lib/components/BlockOutliner.svelte";
   import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
   import GraphCanvas from "$lib/components/GraphCanvas.svelte";
   import PaneKindMenu from "$lib/components/v4/PaneKindMenu.svelte";
   import ContextPane from "$lib/components/v4/ContextPane.svelte";
+  import NoteRenderer from "$lib/components/v4/NoteRenderer.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
 
   let {
@@ -155,18 +155,9 @@
     jumpToTile(targetNoteId);
   }
 
+  // The note shown by an editor pane. `<NoteRenderer>` splits frontmatter
+  // from body and picks the right view component for the note's type.
   const note = $derived(noteQuery.data as Note | undefined);
-  const split = $derived(splitContent(note?.content ?? ""));
-
-  function splitContent(content: string): { frontmatter: string; body: string } {
-    if (!content.startsWith("---")) return { frontmatter: "", body: content };
-    const endIdx = content.indexOf("---", 3);
-    if (endIdx === -1) return { frontmatter: "", body: content };
-    const fmEnd = endIdx + 3;
-    const afterFm = content.slice(fmEnd);
-    const bodyStart = afterFm.startsWith("\n") ? 1 : 0;
-    return { frontmatter: content.slice(0, fmEnd) + "\n", body: afterFm.slice(bodyStart) };
-  }
 
   // ── per-pane debounced save ───────────────────────────────────────────────
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -318,14 +309,13 @@
       {:else if note}
         {#key activeTileId}
           <div class="v4-pane-scroll">
-            <BlockOutliner
-              noteId={note.id}
-              body={split.body}
-              frontmatter={split.frontmatter}
+            <NoteRenderer
+              {note}
               paneId={pane.id}
               onContentChange={handleContentChange}
               onCancelAndFlush={cancelAndFlush}
               onfocusedblockchange={(b) => setFocusedBlockForPane(pane.id, b)}
+              onOpenNote={openTileInThisPane}
             />
           </div>
         {/key}
