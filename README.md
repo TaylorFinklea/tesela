@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="brand/exports/tesela-logo-512.png" alt="Tesela logo" width="128" height="128" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/exports/dark/tesela-logo-dark-512.png" />
+    <img src="brand/exports/tesela-logo-512.png" alt="Tesela logo" width="128" height="128" />
+  </picture>
 </p>
 
 # Tesela
