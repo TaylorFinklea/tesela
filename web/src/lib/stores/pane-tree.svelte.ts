@@ -12,6 +12,7 @@
 
 import * as pt from "./pane-tree";
 import type { Pane, PaneKind, PaneTreeState, Tab } from "./pane-tree";
+import { pushJourney } from "./journey.svelte";
 
 const DEBOUNCE_MS = 200;
 
@@ -81,8 +82,14 @@ export function moveFocus(dRow: number, dCol: number) { commit(pt.moveFocus(stat
 export function vsplit(kind: PaneKind = "editor") { commit(pt.vsplit(state, kind)); }
 export function hsplit(kind: PaneKind = "editor") { commit(pt.hsplit(state, kind)); }
 export function closePane() { commit(pt.closePane(state)); }
-export function jumpToTile(tileId: string) { commit(pt.jumpToTile(state, tileId)); }
-export function stackAdd(tileId: string) { commit(pt.stackAdd(state, tileId)); }
+export function jumpToTile(tileId: string, via: string = "manual") {
+  commit(pt.jumpToTile(state, tileId));
+  pushJourney(tileId, via);
+}
+export function stackAdd(tileId: string) {
+  commit(pt.stackAdd(state, tileId));
+  pushJourney(tileId, "stack");
+}
 export function stackNext(dir: 1 | -1) { commit(pt.stackNext(state, dir)); }
 export function stackClose(idx: number) { commit(pt.stackClose(state, idx)); }
 export function swapKind(paneId: string, kind: PaneKind) { commit(pt.swapKind(state, paneId, kind)); }

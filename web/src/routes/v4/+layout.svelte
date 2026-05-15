@@ -30,9 +30,22 @@
     switchTabByIndex,
   } from "$lib/stores/pane-tree.svelte";
   import { openStation } from "$lib/stores/station.svelte";
+  import ColonCommandLine from "$lib/components/v4/ColonCommandLine.svelte";
+  import FullscreenOverlay from "$lib/components/v4/FullscreenOverlay.svelte";
+  import Journey from "$lib/components/v4/Journey.svelte";
   import PaneShell from "$lib/components/v4/PaneShell.svelte";
+  import PeekPopover from "$lib/components/v4/PeekPopover.svelte";
   import Station from "$lib/components/v4/Station.svelte";
   import TopBarTabs from "$lib/components/v4/TopBarTabs.svelte";
+  import {
+    canGoBackInJourney,
+    canGoForwardInJourney,
+    goBackInJourney,
+    goForwardInJourney,
+  } from "$lib/stores/journey.svelte";
+  import { openColonMode } from "$lib/stores/colon-mode.svelte";
+  import { openFullscreenGraph } from "$lib/stores/fullscreen-overlay.svelte";
+  import { togglePeek } from "$lib/stores/peek.svelte";
 
   let { children } = $props();
 
@@ -108,6 +121,25 @@
         return;
       }
 
+      // ⌘[ / ⌘] walk the Journey breadcrumb. Fires regardless of focus —
+      // these are app-level navigation, parallel to browser back/forward.
+      if (mod && e.key === "[") {
+        e.preventDefault();
+        if (canGoBackInJourney()) {
+          const t = goBackInJourney();
+          if (t) jumpToTile(t, "back");
+        }
+        return;
+      }
+      if (mod && e.key === "]") {
+        e.preventDefault();
+        if (canGoForwardInJourney()) {
+          const t = goForwardInJourney();
+          if (t) jumpToTile(t, "forward");
+        }
+        return;
+      }
+
       // The rest only fire when a cm-editor / input doesn't own focus.
       if (isTextEntry(e.target) || mod || e.altKey) return;
 
@@ -147,6 +179,19 @@
         case "o":
           e.preventDefault();
           promptJump();
+          break;
+        // Phase 5 surfaces.
+        case ":":
+          e.preventDefault();
+          openColonMode();
+          break;
+        case "i":
+          e.preventDefault();
+          togglePeek(getFocusedPaneId());
+          break;
+        case "g":
+          e.preventDefault();
+          openFullscreenGraph();
           break;
         default:
           break;
@@ -191,16 +236,16 @@
       <span class="v4-command-bar-hint">Command Station — verbs, dashboard…</span>
     </button>
     <div class="v4-topbar-icons">
-      <button type="button" title="graph (Phase 5)" disabled>✦</button>
-      <button type="button" title="keys (Phase 5)" disabled>?</button>
+      <button
+        type="button"
+        title="fullscreen graph · g"
+        onclick={() => openFullscreenGraph()}
+      >✦</button>
+      <button type="button" title="keys (Phase 6 polish)" disabled>?</button>
     </div>
   </header>
 
-  <!-- Journey bar -->
-  <div class="v4-journey">
-    <span class="v4-journey-label">journey</span>
-    <span class="v4-journey-hint">breadcrumb trail · Phase 5</span>
-  </div>
+  <Journey />
 
   <!-- Pane grid -->
   <div
@@ -241,11 +286,11 @@
       {/if}
     </span>
     <span class="v4-status-right">
-      <span><b>⌘\</b> vsplit</span>
-      <span><b>⌘-</b> hsplit</span>
-      <span><b>⌘W</b> close</span>
+      <span><b>⌘K</b> station</span>
+      <span><b>:</b> ex</span>
+      <span><b>i</b> peek</span>
+      <span><b>g</b> graph</span>
       <span><b>hjkl</b> move</span>
-      <span><b>o</b> open</span>
     </span>
   </footer>
 
@@ -256,6 +301,11 @@
   <!-- Phase 4 — Command Station modal. Owns its own keydown handler
        while open (Esc, ⌘1–⌘4, ⌘K toggle-close). -->
   <Station />
+
+  <!-- Phase 5 surfaces. Each owns its own Esc handler while open. -->
+  <PeekPopover />
+  <FullscreenOverlay />
+  <ColonCommandLine />
 </div>
 
 <style>
@@ -294,7 +344,6 @@
     color: var(--v4-ink2);
     font-weight: 500;
   }
-  .v4-journey-hint,
   .v4-command-bar-hint {
     font-family: var(--v4-mono);
     font-size: 10px;
@@ -334,24 +383,19 @@
     padding: 3px 9px;
     font-family: var(--v4-mono);
     font-size: 12px;
+    cursor: pointer;
+    transition: color 140ms, border-color 140ms;
+  }
+  .v4-topbar-icons button:hover:not(:disabled) {
+    color: var(--v4-ink2);
+    border-color: var(--v4-hair2);
+  }
+  .v4-topbar-icons button:disabled {
     cursor: default;
+    opacity: 0.6;
   }
 
-  /* Journey bar */
-  .v4-journey {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 0 14px;
-    border-bottom: 1px solid var(--v4-hair);
-  }
-  .v4-journey-label {
-    font-family: var(--v4-mono);
-    font-size: 9.5px;
-    letter-spacing: 1.4px;
-    text-transform: uppercase;
-    color: var(--v4-ink5);
-  }
+  /* Journey bar styles live in Journey.svelte. */
 
   /* Pane grid */
   .v4-grid {
