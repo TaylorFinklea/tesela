@@ -256,7 +256,7 @@
   <!-- Top bar -->
   <header class="v4-topbar">
     <div class="v4-brand">
-      <span class="v4-mark" aria-hidden="true">◧</span>
+      <span class="v4-mark" aria-hidden="true"></span>
       <span class="v4-brand-name">tesela</span>
     </div>
     <TopBarTabs />
@@ -349,7 +349,16 @@
     border-bottom: 1px solid var(--v4-hair);
   }
   .v4-brand { display: flex; align-items: center; gap: 8px; }
-  .v4-mark { color: var(--v4-accent); font-size: 14px; }
+  .v4-mark {
+    display: inline-block;
+    width: 18px;
+    height: 18px;
+    background-image: url('/tesela-icon-light.svg');
+    background-size: contain;
+    background-position: center;
+    background-repeat: no-repeat;
+  }
+  :global(.dark) .v4-mark { background-image: url('/tesela-icon-dark.svg'); }
   .v4-brand-name { font-size: 12.5px; color: var(--v4-ink2); font-weight: 500; }
   .v4-command-bar-hint {
     font-family: var(--v4-mono);
@@ -388,12 +397,20 @@
   }
   .v4-topbar-icons button:disabled { cursor: default; opacity: 0.6; }
 
-  /* Pane tree host */
+  /* Pane tree host — column-flex container so the <LayoutTree> root
+     stretches to fill the 1fr grid cell. */
   .v4-grid {
     display: flex;
+    flex-direction: column;
     min-height: 0;
     min-width: 0;
     background: var(--v4-hair);
+  }
+  .v4-grid > :global(.v4-split),
+  .v4-grid > :global(.v4-pane) {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
   }
   .v4-grid.dragging { user-select: none; }
   .v4-grid.dragging :global(.cm-editor) { pointer-events: none; }

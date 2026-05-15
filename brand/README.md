@@ -10,34 +10,59 @@ Design direction: **B1** from the 2026-05-15 Recraft batch (see `tesela-logo-mar
 
 ## The variants
 
-Tesela's icon ships in **two color variants** plus a **card-backed PNG** for surfaces where the wallpaper is unknowable. The accent color `#F13408` stays constant across all variants — it's the continuity thread.
+Tesela's icon ships at **two detail levels** (full T mark for big surfaces, simplified 3-tile mark for small surfaces) × **two color variants** (light navy for light surfaces, dark sky-blue for dark surfaces), plus a **card-backed PNG** for surfaces where the wallpaper is unknowable. The accent color `#F13408` stays constant across every combination — it's the continuity thread.
+
+### Detail levels (responsive iconography)
+
+| Level | When to use | Why |
+|---|---|---|
+| **Full mark** (7 tiles, T-shape) | ≥ 180 px — Apple touch icon, PWA icons, README header, OG image, landing page, marketing | At these sizes the mosaic gaps read and reward inspection. |
+| **Simplified mark** (3 tiles — middle stem + bottom stem + coral accent) | ≤ 32 px — favicon, in-app top-bar mark | The full T's mosaic gaps disappear at favicon resolution; stripping to 3 bold shapes keeps the icon assertive instead of mushy. The simplified version reads as "two blue blocks with a coral interrupt" — distinct enough to recognize, simple enough to survive 16×16. |
+
+### Color variants
 
 | Variant | Tile color | When to use |
 |---|---|---|
-| **Light** (canonical) | `#023047` deep navy | Light surfaces: light-mode browser tabs, light README theme, OG image, landing page, marketing, light-mode app screenshots. Reads with ~14:1 contrast against white. |
+| **Light** (canonical) | `#023047` deep navy | Light surfaces: light-mode browser tabs, light README theme, OG image, landing page. Reads with ~14:1 contrast against white. |
 | **Dark** | `#93C5FD` soft sky-blue (Tailwind blue-300) | Dark surfaces: dark-mode browser tabs, dark README theme, in-app branding (Tokyo Night and friends), future macOS/iOS dark icon variants. Reads with ~9:1 contrast against typical dark UI. |
-| **Card-backed** | `#023047` navy on `#F8F7F4` cream rounded square | PNG-only contexts where the surface is unpredictable: iOS Home Screen via `apple-touch-icon`, PWA install icons, anywhere the icon ships as a single raster you can't theme-switch. |
+| **Card-backed** | `#023047` navy on `#F8F7F4` cream rounded square | PNG-only contexts where the surface is unpredictable: iOS Home Screen via `apple-touch-icon`, PWA install icons. |
 
 ## Files
 
 ### Masters
 
+**Full T mark** (`viewBox="375 375 1542 1542"`, all 7 tiles):
+
 | File | Role |
 |---|---|
-| `tesela-logo-mark.svg` | **Light variant master.** Plain SVG, navy tiles + coral accent, transparent background. Single source of truth for the canonical mark. |
-| `tesela-logo-mark-dark.svg` | **Dark variant master.** Same path data, tile fill swapped to `#93C5FD`. Transparent background. Hand-edited by Taylor on 2026-05-15 (color sampled at `#93C5FD` from `tesela-light.png`). |
-| `tesela-favicon.svg` | **Favicon SVG.** Same paths, but `.tile` paths use a CSS class with `@media (prefers-color-scheme: dark)` to swap fills between `#023047` (light) and `#93C5FD` (dark) at render time. This is what the browser embeds via `<link rel="icon" type="image/svg+xml">`. |
-| `tesela-icon-card.svg` | **Card-backed variant.** Light variant with a `#F8F7F4` cream rounded square baked behind the mark. Drives the home-screen PNGs. |
-| `og-image.svg` | **OG / Twitter card** (1200×630). Logo + wordmark + subtitle on cream canvas. Self-contained — embeds the mark's path data directly and is independent of the master's viewBox. |
+| `tesela-logo-mark.svg` | **Light variant.** Plain SVG, navy tiles + coral accent, transparent background. Single source of truth for the canonical full mark. |
+| `tesela-logo-mark-dark.svg` | **Dark variant.** Same path data, tile fill `#93C5FD`. Transparent background. |
+| `tesela-icon-card.svg` | **Card-backed variant.** Light variant with a `#F8F7F4` cream rounded square baked behind the mark. Drives the home-screen PNGs (apple-touch, PWA). |
+
+**Simplified mark** (`viewBox="710 910 880 880"`, 3 tiles — middle stem, bottom stem, coral accent):
+
+| File | Role |
+|---|---|
+| `tesela-icon-mark.svg` | **Light variant.** Plain SVG, navy tiles + coral, transparent background. Used directly as `/tesela-icon-light.svg` in the web app. |
+| `tesela-icon-mark-dark.svg` | **Dark variant.** Tile fill `#93C5FD`. Used as `/tesela-icon-dark.svg` in the web app, swapped via the `.dark` body class. |
+| `tesela-favicon.svg` | **Favicon SVG.** Simplified paths + CSS `@media (prefers-color-scheme: dark)` to swap tile color at browser render time. This is what ships via `<link rel="icon" type="image/svg+xml">`. |
+
+**Other:**
+
+| File | Role |
+|---|---|
+| `og-image.svg` | OG / Twitter card (1200×630). Logo + wordmark + subtitle on cream canvas. Embeds the **full** mark's path data directly. |
 | `tesela-logo-mark.recraft.json` | Recraft generation metadata for reproducibility. Not consumed by the build. |
 
 ### Exports
 
 | Path | Source SVG | Contents |
 |---|---|---|
-| `exports/tesela-logo-{32,180,192,512,1024,2048}.png` | `tesela-logo-mark.svg` | Light-variant PNGs (navy + transparent). 2048 is the high-res raster for Photoshop work. |
-| `exports/dark/tesela-logo-dark-{32,192,512,1024,2048}.png` | `tesela-logo-mark-dark.svg` | Dark-variant PNGs (light-blue + transparent). |
-| `exports/card/tesela-icon-card-{180,192,512,1024}.png` | `tesela-icon-card.svg` | Card-backed PNGs (navy on cream rounded square). |
+| `exports/tesela-logo-{32,180,192,512,1024,2048}.png` | `tesela-logo-mark.svg` | Full-mark light PNGs (navy + transparent). 2048 is the high-res raster for Photoshop work. |
+| `exports/dark/tesela-logo-dark-{32,192,512,1024,2048}.png` | `tesela-logo-mark-dark.svg` | Full-mark dark PNGs (light-blue + transparent). |
+| `exports/card/tesela-icon-card-{180,192,512,1024}.png` | `tesela-icon-card.svg` | Full-mark card-backed PNGs (navy on cream rounded square). |
+| `exports/icon/tesela-icon-{16,32,64,128,256,512}.png` | `tesela-icon-mark.svg` | Simplified-mark light PNGs (3 tiles, navy + coral). |
+| `exports/icon/dark/tesela-icon-dark-{16,32,64,128,256,512}.png` | `tesela-icon-mark-dark.svg` | Simplified-mark dark PNGs. |
 | `exports/tesela-og-image.png` | `og-image.svg` | OG/Twitter image (1200×630). |
 
 ## Colors
@@ -55,12 +80,14 @@ Tesela's icon ships in **two color variants** plus a **card-backed PNG** for sur
 
 | File | Source | Wired into |
 |---|---|---|
-| `favicon.svg` | `tesela-favicon.svg` | `<link rel="icon" type="image/svg+xml">` — adapts via CSS to light/dark browser chrome |
-| `favicon-32.png` | `exports/tesela-logo-32.png` (light) | `<link rel="icon" sizes="32x32">` — small-size raster fallback |
-| `apple-touch-icon.png` | `exports/card/tesela-icon-card-180.png` | `<link rel="apple-touch-icon">` — card-backed so it works on any iOS wallpaper |
-| `icon-192.png` | `exports/card/tesela-icon-card-192.png` | PWA manifest — card-backed for home-screen safety |
+| `favicon.svg` | `tesela-favicon.svg` (simplified, variant-swap) | `<link rel="icon" type="image/svg+xml">` — simplified 3-tile mark, adapts via CSS to light/dark browser chrome |
+| `favicon-32.png` | `exports/icon/tesela-icon-32.png` (simplified light) | `<link rel="icon" sizes="32x32">` — small-size raster fallback |
+| `tesela-icon-light.svg` | `tesela-icon-mark.svg` | In-app top-bar mark (`.v4-mark` in `routes/v4/+layout.svelte`) — served as a background-image, swapped to dark variant via `.dark` body class |
+| `tesela-icon-dark.svg` | `tesela-icon-mark-dark.svg` | In-app top-bar mark — used when `:global(.dark)` body class is active |
+| `apple-touch-icon.png` | `exports/card/tesela-icon-card-180.png` | `<link rel="apple-touch-icon">` — full mark, card-backed for any iOS wallpaper |
+| `icon-192.png` | `exports/card/tesela-icon-card-192.png` | PWA manifest — full mark, card-backed |
 | `icon-512.png` | `exports/card/tesela-icon-card-512.png` | PWA manifest |
-| `og-image.png` | `exports/tesela-og-image.png` | `og:image`, `twitter:image` |
+| `og-image.png` | `exports/tesela-og-image.png` | `og:image`, `twitter:image` — full mark, cream backdrop baked in |
 | `manifest.webmanifest` | hand-authored | `<link rel="manifest">` |
 
 ### README
@@ -103,17 +130,27 @@ for size in 180 192 512 1024; do
     -w ${size} -h ${size} tesela-icon-card.svg
 done
 
+# Simplified mark — 3 tiles, used at favicon size and in-app top-bar
+for size in 16 32 64 128 256 512; do
+  inkscape --export-type=png --export-filename="exports/icon/tesela-icon-${size}.png" \
+    -w ${size} -h ${size} tesela-icon-mark.svg
+  inkscape --export-type=png --export-filename="exports/icon/dark/tesela-icon-dark-${size}.png" \
+    -w ${size} -h ${size} tesela-icon-mark-dark.svg
+done
+
 # OG image (text→paths so it renders without Inter Tight installed)
 inkscape --export-type=png --export-filename="exports/tesela-og-image.png" \
   -w 1200 -h 630 --export-text-to-path og-image.svg
 
 # Sync to web/static/
-cp tesela-favicon.svg                ../web/static/favicon.svg
-cp exports/tesela-logo-32.png        ../web/static/favicon-32.png
+cp tesela-favicon.svg                    ../web/static/favicon.svg
+cp exports/icon/tesela-icon-32.png       ../web/static/favicon-32.png
+cp tesela-icon-mark.svg                  ../web/static/tesela-icon-light.svg
+cp tesela-icon-mark-dark.svg             ../web/static/tesela-icon-dark.svg
 cp exports/card/tesela-icon-card-180.png ../web/static/apple-touch-icon.png
 cp exports/card/tesela-icon-card-192.png ../web/static/icon-192.png
 cp exports/card/tesela-icon-card-512.png ../web/static/icon-512.png
-cp exports/tesela-og-image.png       ../web/static/og-image.png
+cp exports/tesela-og-image.png           ../web/static/og-image.png
 ```
 
 ## Editing notes
