@@ -78,6 +78,7 @@ cp exports/tesela-og-image.png       ../web/static/og-image.png
 
 - **Accent tile placement is not load-bearing.** The accent can be moved to any tile without re-running the generator. The optical sweet spots are (a) the rightmost crossbar tile and (b) the second-from-top tile in the stem. Avoid the very bottom of the stem — it makes the mark feel like it's leaking downward.
 - **Don't add gradients, shadows, or 3D.** The mark is intentionally flat-vector so it survives at 16 px (favicon) and 1024 px (app icon) without losing its read.
+- **Dark-mode adaptation (SVG favicon only).** The SVG embeds a `<style>` block that swaps the navy tile fill to off-white (`#E8EEF2`) under `@media (prefers-color-scheme: dark)`. The coral accent stays constant. PNG exports always render the light-mode default (navy on transparent) because Inkscape doesn't evaluate the dark-mode media query at render time — which is the desired behavior, since the rasters are used in contexts (apple-touch-icon, PWA, OG image) where the platform handles its own dark-mode treatment.
 
 ## Prompt of record
 
