@@ -164,6 +164,7 @@
     align-items: flex-start;
     justify-content: flex-end;
     padding: 80px 40px 20px;
+    animation: v4-fade-in var(--v4-dur-fast) var(--v4-ease-overlay);
   }
   .peek {
     width: min(420px, calc(100vw - 80px));
@@ -175,6 +176,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    animation: v4-popover-in var(--v4-dur-base) var(--v4-ease-overlay);
   }
   .peek-head {
     display: flex;

@@ -25,7 +25,9 @@ import {
   paneById,
   renameTab,
   serialize,
+  setColSizes,
   setPaneWidget,
+  setRowSizes,
   stackAdd,
   stackClose,
   stackNext,
@@ -351,6 +353,109 @@ test("findTile returns undefined when no pane holds the tile", () => {
   let s = fresh();
   s = jumpToTile(s, "alpha");
   assert.equal(findTile(s, "nonexistent"), undefined);
+});
+
+// ── sizes ───────────────────────────────────────────────────────────────────
+
+test("initialState seeds rowSizes=[1] and colSizes=[[1]]", () => {
+  const t = focusedTab(fresh());
+  assert.deepEqual(t.rowSizes, [1]);
+  assert.deepEqual(t.colSizes, [[1]]);
+});
+
+test("vsplit halves the focused cell's weight into two siblings", () => {
+  let s = fresh(); // colSizes[0] = [1]
+  s = vsplit(s); // focus -> [0,1]
+  const t = focusedTab(s);
+  assert.deepEqual(t.colSizes, [[0.5, 0.5]]);
+  assert.deepEqual(t.rowSizes, [1]);
+});
+
+test("vsplit twice produces [0.5, 0.25, 0.25] at focus index", () => {
+  let s = fresh();
+  s = vsplit(s);   // [0.5, 0.5], focus [0,1]
+  s = vsplit(s);   // [0,1] halves into [0.25, 0.25], so [0.5, 0.25, 0.25]
+  const t = focusedTab(s);
+  assert.deepEqual(t.colSizes, [[0.5, 0.25, 0.25]]);
+  assert.deepEqual(t.focus, [0, 2]);
+});
+
+test("hsplit halves the focused row's weight and seeds new row with [1]", () => {
+  let s = fresh();
+  s = hsplit(s);
+  const t = focusedTab(s);
+  assert.deepEqual(t.rowSizes, [0.5, 0.5]);
+  assert.deepEqual(t.colSizes, [[1], [1]]);
+});
+
+test("closePane redistributes a column's weight to the left neighbor", () => {
+  let s = fresh();
+  s = vsplit(s); // colSizes [0.5, 0.5], focus [0,1]
+  s = closePane(s);
+  const t = focusedTab(s);
+  // closed pane was index 1 → its 0.5 weight rolled into index 0.
+  assert.deepEqual(t.colSizes, [[1]]);
+  assert.deepEqual(t.rowSizes, [1]);
+});
+
+test("closePane collapsing the last row redistributes row weight", () => {
+  let s = fresh();
+  s = hsplit(s); // rowSizes [0.5, 0.5], focus [1,0]
+  s = closePane(s);
+  const t = focusedTab(s);
+  // closed row 1 → its 0.5 rolled into row 0.
+  assert.deepEqual(t.rowSizes, [1]);
+  assert.deepEqual(t.colSizes, [[1]]);
+});
+
+test("setColSizes rewrites a row's weights when length matches", () => {
+  let s = fresh();
+  s = vsplit(s);
+  s = setColSizes(s, 0, [0.7, 0.3]);
+  assert.deepEqual(focusedTab(s).colSizes, [[0.7, 0.3]]);
+});
+
+test("setColSizes is a no-op on length mismatch or invalid row", () => {
+  const s = fresh();
+  // layout[0].length is 1 but we passed 2 sizes → no-op.
+  assert.equal(setColSizes(s, 0, [0.7, 0.3]), s);
+  assert.equal(setColSizes(s, 5, [1]), s);
+});
+
+test("setRowSizes rewrites the row weights when length matches", () => {
+  let s = fresh();
+  s = hsplit(s);
+  s = setRowSizes(s, [0.2, 0.8]);
+  assert.deepEqual(focusedTab(s).rowSizes, [0.2, 0.8]);
+});
+
+test("setRowSizes is a no-op on length mismatch", () => {
+  const s = fresh();
+  assert.equal(setRowSizes(s, [0.5, 0.5]), s);
+});
+
+test("deserialize backfills missing rowSizes/colSizes with 1s", () => {
+  // Construct a legacy envelope without sizes — emulating a state
+  // serialized before this migration existed.
+  const legacy = {
+    version: STATE_VERSION,
+    activeTabId: "t1",
+    tabs: [
+      {
+        id: "t1",
+        name: "legacy",
+        layout: [
+          [{ id: "p1", kind: "editor", tiles: [], activeIdx: 0 }],
+          [{ id: "p2", kind: "editor", tiles: [], activeIdx: 0 }],
+        ],
+        focus: [0, 0],
+      },
+    ],
+  };
+  const back = deserialize(JSON.stringify(legacy));
+  assert.ok(back);
+  assert.deepEqual(back.tabs[0].rowSizes, [1, 1]);
+  assert.deepEqual(back.tabs[0].colSizes, [[1], [1]]);
 });
 
 // ── serialization ───────────────────────────────────────────────────────────

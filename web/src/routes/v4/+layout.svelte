@@ -29,7 +29,10 @@
     newTab,
     closeTab,
     switchTabByIndex,
+    setColSizes,
+    setRowSizes,
   } from "$lib/stores/pane-tree.svelte";
+  import { MIN_PANE_WEIGHT } from "$lib/stores/pane-tree";
   import { openStation } from "$lib/stores/station.svelte";
   import ColonCommandLine from "$lib/components/v4/ColonCommandLine.svelte";
   import FullscreenOverlay from "$lib/components/v4/FullscreenOverlay.svelte";
@@ -216,6 +219,88 @@
     const id = window.prompt("stack tile (note slug)")?.trim();
     if (id) stackAdd(id);
   }
+
+  // ── pane resize ──────────────────────────────────────────────────────────
+  //
+  // Each row is a flex row whose children carry `flex: <weight>` from
+  // `tab.colSizes[r]`. The grid container is a flex column of those rows,
+  // each one styled `flex: <weight>` from `tab.rowSizes`. A drag handler
+  // swaps two adjacent weights such that their sum is preserved, so only
+  // the pair on either side of the gutter moves.
+  let gridEl = $state<HTMLElement | undefined>();
+  let activeDrag = $state(false);
+
+  function beginColDrag(ev: PointerEvent, rowIdx: number, leftIdx: number) {
+    const t = getFocusedTab();
+    if (!t) return;
+    const rowEl = (ev.currentTarget as HTMLElement)?.parentElement;
+    if (!rowEl) return;
+    const rowPx = rowEl.getBoundingClientRect().width;
+    if (rowPx <= 0) return;
+    const startX = ev.clientX;
+    const sizesStart = t.colSizes[rowIdx].slice();
+    const totalW = sizesStart.reduce((s, w) => s + w, 0);
+    const sL = sizesStart[leftIdx];
+    const sR = sizesStart[leftIdx + 1];
+    const sum = sL + sR;
+    ev.preventDefault();
+    activeDrag = true;
+    document.body.style.cursor = "col-resize";
+    const onMove = (e: PointerEvent) => {
+      const dPx = e.clientX - startX;
+      // Convert px delta into weight delta in proportion to total row
+      // width: weight-per-px = totalW / rowPx.
+      const dW = (dPx / rowPx) * totalW;
+      let newL = sL + dW;
+      newL = Math.max(MIN_PANE_WEIGHT, Math.min(sum - MIN_PANE_WEIGHT, newL));
+      const next = sizesStart.slice();
+      next[leftIdx] = newL;
+      next[leftIdx + 1] = sum - newL;
+      setColSizes(rowIdx, next);
+    };
+    const onUp = () => {
+      activeDrag = false;
+      document.body.style.cursor = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
+  function beginRowDrag(ev: PointerEvent, topIdx: number) {
+    const t = getFocusedTab();
+    if (!t || !gridEl) return;
+    const gridPx = gridEl.getBoundingClientRect().height;
+    if (gridPx <= 0) return;
+    const startY = ev.clientY;
+    const sizesStart = t.rowSizes.slice();
+    const totalW = sizesStart.reduce((s, w) => s + w, 0);
+    const sT = sizesStart[topIdx];
+    const sB = sizesStart[topIdx + 1];
+    const sum = sT + sB;
+    ev.preventDefault();
+    activeDrag = true;
+    document.body.style.cursor = "row-resize";
+    const onMove = (e: PointerEvent) => {
+      const dPx = e.clientY - startY;
+      const dW = (dPx / gridPx) * totalW;
+      let newT = sT + dW;
+      newT = Math.max(MIN_PANE_WEIGHT, Math.min(sum - MIN_PANE_WEIGHT, newT));
+      const next = sizesStart.slice();
+      next[topIdx] = newT;
+      next[topIdx + 1] = sum - newT;
+      setRowSizes(next);
+    };
+    const onUp = () => {
+      activeDrag = false;
+      document.body.style.cursor = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
 </script>
 
 <svelte:head>
@@ -256,25 +341,46 @@
 
   <Journey />
 
-  <!-- Pane grid -->
-  <div
-    class="v4-grid"
-    style="grid-template-rows: {(tab?.layout ?? []).map(() => '1fr').join(' ')}"
-  >
+  <!-- Pane grid — flex column of flex rows. Each row + pane carries a
+       `flex` weight from `tab.rowSizes` / `tab.colSizes`; drag handles
+       between siblings rewrite those weights live. -->
+  <div class="v4-grid" class:dragging={activeDrag} bind:this={gridEl}>
     {#each tab?.layout ?? [] as rowArr, r (r)}
       <div
         class="v4-grid-row"
-        style="grid-template-columns: {rowArr.map(() => '1fr').join(' ')}"
+        style="flex: {tab?.rowSizes[r] ?? 1} 1 0"
       >
         {#each rowArr as pane, c (pane.id)}
-          <PaneShell
-            {pane}
-            row={r}
-            col={c}
-            focused={!!tab && r === tab.focus[0] && c === tab.focus[1]}
-          />
+          <div class="v4-pane-cell" style="flex: {tab?.colSizes[r][c] ?? 1} 1 0">
+            <PaneShell
+              {pane}
+              row={r}
+              col={c}
+              focused={!!tab && r === tab.focus[0] && c === tab.focus[1]}
+            />
+          </div>
+          {#if c < rowArr.length - 1}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="v4-resizer v4-resizer-col"
+              role="separator"
+              aria-orientation="vertical"
+              title="drag to resize"
+              onpointerdown={(e) => beginColDrag(e, r, c)}
+            ></div>
+          {/if}
         {/each}
       </div>
+      {#if r < (tab?.layout.length ?? 0) - 1}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <div
+          class="v4-resizer v4-resizer-row"
+          role="separator"
+          aria-orientation="horizontal"
+          title="drag to resize"
+          onpointerdown={(e) => beginRowDrag(e, r)}
+        ></div>
+      {/if}
     {/each}
   </div>
 
@@ -406,21 +512,71 @@
 
   /* Journey bar styles live in Journey.svelte. */
 
-  /* Pane grid */
+  /* Pane grid — flex column of flex rows with explicit weights. */
   .v4-grid {
-    display: grid;
-    gap: 1px;
-    background: var(--v4-hair);
+    display: flex;
+    flex-direction: column;
     min-height: 0;
     min-width: 0;
+    background: var(--v4-hair);
+  }
+  .v4-grid.dragging {
+    /* While a drag is active, every cm-editor inside the grid loses pointer
+       capture so the cursor and selection don't flicker. */
+    user-select: none;
+  }
+  .v4-grid.dragging * {
+    pointer-events: none;
   }
   .v4-grid-row {
-    display: grid;
-    gap: 1px;
-    background: var(--v4-hair);
+    display: flex;
+    flex-direction: row;
     min-height: 0;
     min-width: 0;
   }
+  .v4-pane-cell {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* Resizers — invisible 1px hairlines that thicken on hover/drag. */
+  .v4-resizer {
+    background: var(--v4-hair);
+    position: relative;
+    flex-shrink: 0;
+    transition: background 140ms;
+  }
+  .v4-resizer::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+  }
+  .v4-resizer-col {
+    width: 1px;
+    cursor: col-resize;
+  }
+  .v4-resizer-col::after {
+    /* expand the hit area to ±3px so the user doesn't need pixel-perfect aim */
+    left: -3px;
+    right: -3px;
+  }
+  .v4-resizer-row {
+    height: 1px;
+    cursor: row-resize;
+  }
+  .v4-resizer-row::after {
+    top: -3px;
+    bottom: -3px;
+  }
+  .v4-resizer:hover {
+    background: var(--v4-accent-dim);
+  }
+  /* Keep the cursor + hit area working during an active drag (overrides the
+     blanket `pointer-events: none` from `.v4-grid.dragging *`). */
+  .v4-grid.dragging .v4-resizer { pointer-events: auto; }
 
   /* Status line */
   .v4-statusline {

@@ -50,7 +50,15 @@ export type Tab = {
   name: string;
   layout: Pane[][];
   focus: [number, number];
+  /** Vertical flex weights — one per row in `layout`. */
+  rowSizes: number[];
+  /** Horizontal flex weights — `colSizes[r].length === layout[r].length`. */
+  colSizes: number[][];
 };
+
+/** Minimum weight allocated to any pane during a drag. Keeps the user from
+ *  collapsing a sibling to zero (which would defeat the drag handle). */
+export const MIN_PANE_WEIGHT = 0.05;
 
 export type PaneTreeState = {
   version: number;
@@ -93,6 +101,8 @@ export function makeTab(name: string = "untitled"): Tab {
     name,
     layout: [[makePane("editor")]],
     focus: [0, 0],
+    rowSizes: [1],
+    colSizes: [[1]],
   };
 }
 
@@ -225,7 +235,14 @@ export function vsplit(state: PaneTreeState, kind: PaneKind = "editor"): PaneTre
     const layout = t.layout.map((row, i) =>
       i === r ? [...row.slice(0, c + 1), np, ...row.slice(c + 1)] : row,
     );
-    return { ...t, layout, focus: [r, c + 1] };
+    // Split the focused cell's weight in half so the new sibling takes
+    // half its width. Untouched rows keep their colSizes references.
+    const colSizes = t.colSizes.map((row, i) => {
+      if (i !== r) return row;
+      const half = row[c] / 2;
+      return [...row.slice(0, c), half, half, ...row.slice(c + 1)];
+    });
+    return { ...t, layout, colSizes, focus: [r, c + 1] };
   });
 }
 
@@ -234,7 +251,12 @@ export function hsplit(state: PaneTreeState, kind: PaneKind = "editor"): PaneTre
     const [r] = t.focus;
     const np = makePane(kind);
     const layout = [...t.layout.slice(0, r + 1), [np], ...t.layout.slice(r + 1)];
-    return { ...t, layout, focus: [r + 1, 0] };
+    // Split the focused row's weight in half; the new single-cell row
+    // starts with [1] for its colSizes entry.
+    const half = t.rowSizes[r] / 2;
+    const rowSizes = [...t.rowSizes.slice(0, r), half, half, ...t.rowSizes.slice(r + 1)];
+    const colSizes = [...t.colSizes.slice(0, r + 1), [1], ...t.colSizes.slice(r + 1)];
+    return { ...t, layout, rowSizes, colSizes, focus: [r + 1, 0] };
   });
 }
 
@@ -244,13 +266,53 @@ export function closePane(state: PaneTreeState): PaneTreeState {
     if (t.layout.length === 1 && t.layout[0].length === 1) return t;
     const [r, c] = t.focus;
     const newRow = t.layout[r].filter((_, i) => i !== c);
-    const layout =
-      newRow.length > 0
-        ? t.layout.map((rr, i) => (i === r ? newRow : rr))
-        : t.layout.filter((_, i) => i !== r);
+    if (newRow.length > 0) {
+      // Closing a column inside a row → redistribute the closed cell's
+      // weight to its left sibling (or right if it was at index 0).
+      const layout = t.layout.map((rr, i) => (i === r ? newRow : rr));
+      const colSizes = t.colSizes.map((row, i) => {
+        if (i !== r) return row;
+        const closed = row[c];
+        const next = row.filter((_, j) => j !== c);
+        const into = Math.max(0, c - 1);
+        next[into] += closed;
+        return next;
+      });
+      const nr = Math.min(r, layout.length - 1);
+      const nc = Math.min(c, layout[nr].length - 1);
+      return { ...t, layout, colSizes, focus: [nr, nc] };
+    }
+    // Whole row collapsing → redistribute its weight to a neighbor row.
+    const layout = t.layout.filter((_, i) => i !== r);
+    const closedRowW = t.rowSizes[r];
+    const rowSizes = t.rowSizes.filter((_, i) => i !== r);
+    const intoRow = Math.max(0, r - 1);
+    rowSizes[intoRow] += closedRowW;
+    const colSizes = t.colSizes.filter((_, i) => i !== r);
     const nr = Math.min(r, layout.length - 1);
     const nc = Math.min(c, layout[nr].length - 1);
-    return { ...t, layout, focus: [nr, nc] };
+    return { ...t, layout, rowSizes, colSizes, focus: [nr, nc] };
+  });
+}
+
+// ── size mutations (drag handlers) ───────────────────────────────────────────
+
+/** Replace a single row's column weights wholesale. Used by the drag
+ *  handler each pointermove. Validates length matches layout[r]. */
+export function setColSizes(state: PaneTreeState, r: number, sizes: number[]): PaneTreeState {
+  return replaceTab(state, state.activeTabId, (t) => {
+    const row = t.layout[r];
+    if (!row || sizes.length !== row.length) return t;
+    const colSizes = t.colSizes.map((row, i) => (i === r ? sizes.slice() : row));
+    return { ...t, colSizes };
+  });
+}
+
+/** Replace the row weights wholesale. Used by the row-drag handler. */
+export function setRowSizes(state: PaneTreeState, sizes: number[]): PaneTreeState {
+  return replaceTab(state, state.activeTabId, (t) => {
+    if (sizes.length !== t.layout.length) return t;
+    return { ...t, rowSizes: sizes.slice() };
   });
 }
 
@@ -444,5 +506,23 @@ export function deserialize(raw: string | null | undefined): PaneTreeState | nul
   if (typeof obj.activeTabId !== "string") return null;
   // Light shape check; deeper validation can land if real-world bugs surface.
   if (!obj.tabs.some((t: any) => t && t.id === obj.activeTabId)) return null;
-  return obj as PaneTreeState;
+  // Migrate tabs that pre-date rowSizes/colSizes: default each row +
+  // column weight to 1. Stays a no-op for tabs already carrying them.
+  const tabs = (obj.tabs as any[]).map((t) => {
+    if (!Array.isArray(t.layout)) return t;
+    const rowSizes =
+      Array.isArray(t.rowSizes) && t.rowSizes.length === t.layout.length
+        ? t.rowSizes
+        : t.layout.map(() => 1);
+    const colSizes =
+      Array.isArray(t.colSizes) &&
+      t.colSizes.length === t.layout.length &&
+      t.colSizes.every((row: unknown, i: number) =>
+        Array.isArray(row) && row.length === t.layout[i].length,
+      )
+        ? t.colSizes
+        : t.layout.map((row: unknown[]) => row.map(() => 1));
+    return { ...t, rowSizes, colSizes };
+  });
+  return { ...(obj as PaneTreeState), tabs };
 }

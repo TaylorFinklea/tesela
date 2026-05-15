@@ -29,5 +29,39 @@
   --v4-accent2: #62c8ff;
 
   --v4-sans: "Geist", "Inter Tight", system-ui, -apple-system, sans-serif;
-  --v4-mono: "Geist Mono", ui-monospace, "SF Mono", monospace;
+  /* Geist Mono isn't on Google Fonts; JetBrains Mono is already loaded
+     globally in app.html, so use that as the v4 mono. */
+  --v4-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+
+  /* ── motion ───────────────────────────────────────────────────────────── */
+  /* Pane-settle: a soft overshoot-feel curve borrowed from the proto. */
+  --v4-ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+  /* Fast in / lingering out — overlays use this so they feel responsive
+     when opening and gentle when dismissed. */
+  --v4-ease-overlay: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --v4-dur-fast: 140ms;
+  --v4-dur-base: 220ms;
+  --v4-dur-slow: 320ms;
+}
+
+/* ── keyframes (scoped to .v4-root via class names) ─────────────────────── */
+@keyframes v4-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes v4-slide-down {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes v4-popover-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v4-root :is(*, *::before, *::after) {
+    animation: none !important;
+    transition: none !important;
+  }
 }

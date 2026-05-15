@@ -20,13 +20,13 @@ import {
   vsplit,
 } from "$lib/stores/pane-tree.svelte";
 
-const SETTINGS_PAGES = new Set([
-  "general",
-  "devices",
-  "sync",
-  "mosaic",
-  "data",
-]);
+const SETTINGS_PAGES: { slug: string; label: string }[] = [
+  { slug: "general", label: "General" },
+  { slug: "devices", label: "Devices" },
+  { slug: "sync", label: "Sync" },
+  { slug: "mosaic", label: "Mosaic" },
+  { slug: "data", label: "Data" },
+];
 
 export type V4Command = {
   id: string;
@@ -165,20 +165,18 @@ export function buildV4Commands(): V4Command[] {
       keywords: ["daily", "today", "journal"],
       run: () => jumpToDaily(),
     },
-    {
-      id: "settings",
-      verb: "settings",
-      label: "Open settings…",
+    // One palette row per settings page so users can pick directly
+     //   without a modal arg prompt. The `:settings <page>` ex-form is
+     //   covered by `findCommandByVerb` matching the page slug.
+    ...SETTINGS_PAGES.map(({ slug, label }) => ({
+      id: `settings-${slug}`,
+      verb: `settings-${slug}`,
+      label: `Settings · ${label}`,
       glyph: "⚙",
-      category: "navigate",
-      keywords: ["settings", "preferences", "config", "devices", "sync", "mosaic", "general", "data"],
-      argPrompt: "page (general · devices · sync · mosaic · data)",
-      run: (arg) => {
-        const page = (arg ?? "").trim().toLowerCase();
-        const target = SETTINGS_PAGES.has(page) ? page : "general";
-        return goto(`/settings/${target}`);
-      },
-    },
+      category: "navigate" as const,
+      keywords: ["settings", "preferences", "config", slug, label.toLowerCase()],
+      run: () => goto(`/settings/${slug}`),
+    })),
     {
       id: "new-note",
       verb: "new",

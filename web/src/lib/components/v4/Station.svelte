@@ -349,6 +349,7 @@
     align-items: flex-start;
     justify-content: center;
     padding: 60px 20px 20px;
+    animation: v4-fade-in var(--v4-dur-fast) var(--v4-ease-overlay);
   }
   .station {
     width: min(900px, calc(100vw - 40px));
@@ -360,6 +361,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    animation: v4-slide-down var(--v4-dur-base) var(--v4-ease-overlay);
   }
 
   .station-tabs {

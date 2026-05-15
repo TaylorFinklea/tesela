@@ -396,7 +396,9 @@
     min-height: 0;
     background: var(--v4-bg);
     border-top: 2px solid transparent;
-    transition: border-color 200ms, background 200ms;
+    transition:
+      border-color var(--v4-dur-base, 220ms) var(--v4-ease-settle, ease-out),
+      background var(--v4-dur-base, 220ms) var(--v4-ease-settle, ease-out);
     outline: none;
   }
   .v4-pane.focused {

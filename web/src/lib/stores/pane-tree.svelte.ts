@@ -100,6 +100,8 @@ export function switchTab(tabId: string) { commit(pt.switchTab(state, tabId)); }
 export function switchTabByIndex(index: number) { commit(pt.switchTabByIndex(state, index)); }
 export function renameTab(tabId: string, name: string) { commit(pt.renameTab(state, tabId, name)); }
 export function moveTab(from: number, to: number) { commit(pt.moveTab(state, from, to)); }
+export function setColSizes(r: number, sizes: number[]) { commit(pt.setColSizes(state, r, sizes)); }
+export function setRowSizes(sizes: number[]) { commit(pt.setRowSizes(state, sizes)); }
 
 /**
  * Reset to a fresh initialState. Useful for tests + the "wipe layout"

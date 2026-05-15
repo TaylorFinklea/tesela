@@ -84,6 +84,7 @@
     background: var(--v4-bg);
     display: flex;
     flex-direction: column;
+    animation: v4-fade-in var(--v4-dur-base) var(--v4-ease-overlay);
   }
   .overlay-head {
     display: flex;
