@@ -12,7 +12,6 @@
    * cross-talk with the legacy chrome.
    */
   import { onMount } from "svelte";
-  import { goto } from "$app/navigation";
   import "$lib/v4/tokens.css";
   import {
     getState,
@@ -48,7 +47,10 @@
     goForwardInJourney,
   } from "$lib/stores/journey.svelte";
   import { openColonMode } from "$lib/stores/colon-mode.svelte";
-  import { openFullscreenGraph } from "$lib/stores/fullscreen-overlay.svelte";
+  import {
+    openFullscreenGraph,
+    openSettingsOverlay,
+  } from "$lib/stores/fullscreen-overlay.svelte";
   import { togglePeek } from "$lib/stores/peek.svelte";
 
   let { children } = $props();
@@ -333,7 +335,7 @@
       <button
         type="button"
         title="settings — devices, sync, mosaic…"
-        onclick={() => goto("/settings/general")}
+        onclick={() => openSettingsOverlay("general")}
       >⚙</button>
       <button type="button" title="keys (Phase 6 polish)" disabled>?</button>
     </div>

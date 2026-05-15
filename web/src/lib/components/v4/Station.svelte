@@ -53,29 +53,56 @@
   let inputEl = $state<HTMLInputElement | undefined>();
   let selectedIdx = $state(0);
 
+  /** Unified palette row. Commands and notes share the same selectable list
+   *  so the user can type once and pick either a verb (`vsplit`) or a tile
+   *  (a note id / title) by fuzzy match. */
+  type CmdRow = { kind: "cmd"; key: string; cmd: V4Command; score: number };
+  type NoteRow = { kind: "note"; key: string; note: Note; score: number };
+  type PaletteRow = CmdRow | NoteRow;
+
+  const MAX_NOTES_IN_PALETTE = 12;
+
   const allCommands = buildV4Commands();
 
-  // Score + rank commands. Fuzzy via the existing scoreFuzzy; same-score
-  // items keep insertion order which roughly mirrors category groupings.
-  const filteredCommands = $derived.by<V4Command[]>(() => {
-    if (!query.trim()) return allCommands;
-    const q = query.trim();
-    const scored = allCommands
-      .filter((c) => matchesV4Command(c, q))
-      .map((c) => ({ c, score: Math.max(scoreFuzzy(c.label, q).score, scoreFuzzy(c.verb ?? c.id, q).score) }))
-      .sort((a, b) => b.score - a.score);
-    return scored.map((s) => s.c);
-  });
-
-  // ── dashboard data ────────────────────────────────────────────────────────
+  // ── data (notes drive both palette + dashboard) ──────────────────────────
   const notesQuery = createQuery(() => ({
     queryKey: ["notes", { limit: 500 }] as const,
     queryFn: () => api.listNotes({ limit: 500 }),
     enabled: open,
   }));
-  const widgets = $derived(parseWidgets((notesQuery.data ?? []) as Note[]));
+  const allNotes = $derived((notesQuery.data ?? []) as Note[]);
+  const widgets = $derived(parseWidgets(allNotes));
   const grouped = $derived(widgetsBySection(widgets));
   const pinned = $derived(grouped.pinned);
+
+  // Score commands + notes against the query, merge into one ranked list.
+  // Empty query shows only commands (notes would be noise without a filter).
+  const filteredRows = $derived.by<PaletteRow[]>(() => {
+    const q = query.trim();
+    const cmdRows: CmdRow[] = !q
+      ? allCommands.map((c) => ({ kind: "cmd" as const, key: `c:${c.id}`, cmd: c, score: 0 }))
+      : allCommands
+          .filter((c) => matchesV4Command(c, q))
+          .map((c) => ({
+            kind: "cmd" as const,
+            key: `c:${c.id}`,
+            cmd: c,
+            score: Math.max(scoreFuzzy(c.label, q).score, scoreFuzzy(c.verb ?? c.id, q).score),
+          }));
+    if (!q) return cmdRows;
+    const noteRows: NoteRow[] = allNotes
+      .map((n) => {
+        const titleScore = scoreFuzzy(n.title ?? "", q).score;
+        const idScore = scoreFuzzy(n.id, q).score;
+        return { kind: "note" as const, key: `n:${n.id}`, note: n, score: Math.max(titleScore, idScore) };
+      })
+      .filter((r) => r.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, MAX_NOTES_IN_PALETTE);
+    // Interleave by score: commands and notes mix, so a precise note title
+    // beats a weak partial command match.
+    return [...cmdRows, ...noteRows].sort((a, b) => b.score - a.score);
+  });
 
   // ── lifecycle ────────────────────────────────────────────────────────────
   // When the Station opens, seed the search and focus the input. We do this
@@ -136,7 +163,7 @@
     if (activeTab !== "palette") return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      selectedIdx = Math.min(selectedIdx + 1, filteredCommands.length - 1);
+      selectedIdx = Math.min(selectedIdx + 1, filteredRows.length - 1);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       selectedIdx = Math.max(0, selectedIdx - 1);
@@ -147,9 +174,22 @@
   }
 
   async function runFocused() {
-    const cmd = filteredCommands[selectedIdx];
-    if (!cmd) return;
-    await runCommand(cmd);
+    const row = filteredRows[selectedIdx];
+    if (!row) return;
+    if (row.kind === "cmd") await runCommand(row.cmd);
+    else openNoteRow(row.note);
+  }
+
+  function openNoteRow(note: Note) {
+    // Note row → jumpToTile in the prior pane. Same focus-restore dance as
+    // runCommand so the user lands on the pane they invoked the Station from.
+    const prior = getStationPriorPaneId();
+    if (prior) {
+      const hit = getPaneById(prior);
+      if (hit) focusPane(hit.row, hit.col);
+    }
+    closeStation();
+    jumpToTile(note.id, "palette");
   }
 
   async function runCommand(cmd: V4Command) {
@@ -209,8 +249,8 @@
 
   // Clamp selectedIdx whenever the filtered list shrinks.
   $effect(() => {
-    if (selectedIdx >= filteredCommands.length) {
-      selectedIdx = Math.max(0, filteredCommands.length - 1);
+    if (selectedIdx >= filteredRows.length) {
+      selectedIdx = Math.max(0, filteredRows.length - 1);
     }
   });
 </script>
@@ -254,13 +294,13 @@
             bind:this={inputEl}
             bind:value={query}
             class="station-input"
-            placeholder="type a command, then ↵ — try vsplit, daily, new note"
+            placeholder="type a command or a note title, then ↵"
             spellcheck={false}
             autocorrect="off"
             autocapitalize="off"
           />
           <div class="station-results" role="listbox">
-            {#each filteredCommands as cmd, i (cmd.id)}
+            {#each filteredRows as row, i (row.key)}
               <button
                 type="button"
                 role="option"
@@ -269,20 +309,29 @@
                 class:active={i === selectedIdx}
                 onclick={() => {
                   selectedIdx = i;
-                  void runCommand(cmd);
+                  if (row.kind === "cmd") void runCommand(row.cmd);
+                  else openNoteRow(row.note);
                 }}
                 onmouseenter={() => (selectedIdx = i)}
               >
-                <span class="station-row-glyph">{cmd.glyph}</span>
-                <span class="station-row-label">{cmd.label}</span>
-                <span class="station-row-meta">
-                  {#if cmd.verb}
-                    <span class="station-row-verb">:{cmd.verb}</span>
-                  {/if}
-                  {#if cmd.shortcut}
-                    <span class="station-row-shortcut">{cmd.shortcut}</span>
-                  {/if}
-                </span>
+                {#if row.kind === "cmd"}
+                  <span class="station-row-glyph">{row.cmd.glyph}</span>
+                  <span class="station-row-label">{row.cmd.label}</span>
+                  <span class="station-row-meta">
+                    {#if row.cmd.verb}
+                      <span class="station-row-verb">:{row.cmd.verb}</span>
+                    {/if}
+                    {#if row.cmd.shortcut}
+                      <span class="station-row-shortcut">{row.cmd.shortcut}</span>
+                    {/if}
+                  </span>
+                {:else}
+                  <span class="station-row-glyph station-row-note-mark">≡</span>
+                  <span class="station-row-label">{row.note.title || row.note.id}</span>
+                  <span class="station-row-meta">
+                    <span class="station-row-verb">{row.note.id}</span>
+                  </span>
+                {/if}
               </button>
             {:else}
               <div class="station-empty">no matches for "{query}"</div>
@@ -461,6 +510,8 @@
     text-align: center;
     flex-shrink: 0;
   }
+  /* Note rows use a calmer glyph color so verbs visually anchor the list. */
+  .station-row-note-mark { color: var(--v4-ink5); }
   .station-row-label { flex: 1; }
   .station-row-meta {
     display: flex;

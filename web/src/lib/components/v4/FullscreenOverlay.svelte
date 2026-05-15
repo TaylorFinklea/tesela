@@ -2,13 +2,15 @@
   /*
    * Prism v4 — fullscreen overlay shell.
    *
-   * Phase 5 ships exactly one overlay: the graph (`g` opens it). The
-   * shell is generic so future overlays (zen-mode editor, presentation
-   * view) can slot in via the `OverlayKind` union without rebuilding
-   * the keymap or backdrop.
+   * Two overlay kinds today: graph (`g` opens it) and settings (`⚙` /
+   * `:settings-<slug>` open it). The shell is generic so future
+   * overlays (zen-mode editor, presentation view) can slot in via
+   * the `OverlayKind` union without rebuilding the keymap or backdrop.
    *
    * Graph uses the same `GraphCanvas` that the in-pane `graph` kind
-   * mounts; here we just give it the full viewport.
+   * mounts; here we just give it the full viewport. Settings mounts
+   * `<SettingsOverlay>` which composes the existing settings page
+   * components inside the v4 shell.
    */
   import { onMount } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
@@ -16,6 +18,7 @@
   import type { Note } from "$lib/types/Note";
   import type { GraphEdge } from "$lib/types/GraphEdge";
   import GraphCanvas from "$lib/components/GraphCanvas.svelte";
+  import SettingsOverlay from "$lib/components/v4/SettingsOverlay.svelte";
   import {
     closeOverlay,
     getActiveOverlay,
@@ -73,6 +76,10 @@
         }}
       />
     </div>
+  </div>
+{:else if open && kind === "settings"}
+  <div class="overlay">
+    <SettingsOverlay />
   </div>
 {/if}
 

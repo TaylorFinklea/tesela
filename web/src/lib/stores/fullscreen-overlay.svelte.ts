@@ -1,14 +1,22 @@
 /**
- * Prism v4 — fullscreen overlays (Phase 5).
+ * Prism v4 — fullscreen overlays.
  *
- * Today: just the graph (`g` opens it). Future overlays (e.g. zen-mode
- * editor, presentation view) can extend the `OverlayKind` union and
- * the FullscreenOverlay component without growing the keymap.
+ * Today: graph (`g`) and settings (`⚙` / `:settings-<slug>`). Future
+ * overlays (zen-mode editor, presentation view) can extend the
+ * `OverlayKind` union without growing the keymap.
  */
 
-export type OverlayKind = "graph";
+export type OverlayKind = "graph" | "settings";
+
+export type SettingsSlug =
+  | "general"
+  | "mosaic"
+  | "data"
+  | "sync"
+  | "devices";
 
 let active = $state<OverlayKind | null>(null);
+let settingsSlug = $state<SettingsSlug>("general");
 
 export function isOverlayOpen(): boolean {
   return active !== null;
@@ -18,8 +26,21 @@ export function getActiveOverlay(): OverlayKind | null {
   return active;
 }
 
+export function getSettingsSlug(): SettingsSlug {
+  return settingsSlug;
+}
+
+export function setSettingsSlug(slug: SettingsSlug) {
+  settingsSlug = slug;
+}
+
 export function openFullscreenGraph() {
   active = "graph";
+}
+
+export function openSettingsOverlay(slug: SettingsSlug = "general") {
+  settingsSlug = slug;
+  active = "settings";
 }
 
 export function closeOverlay() {

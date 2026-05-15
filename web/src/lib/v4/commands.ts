@@ -6,7 +6,6 @@
  * top of the same registry.
  */
 
-import { goto } from "$app/navigation";
 import { api } from "$lib/api-client";
 import {
   closePane,
@@ -19,8 +18,12 @@ import {
   stackNext,
   vsplit,
 } from "$lib/stores/pane-tree.svelte";
+import {
+  openSettingsOverlay,
+  type SettingsSlug,
+} from "$lib/stores/fullscreen-overlay.svelte";
 
-const SETTINGS_PAGES: { slug: string; label: string }[] = [
+const SETTINGS_PAGES: { slug: SettingsSlug; label: string }[] = [
   { slug: "general", label: "General" },
   { slug: "devices", label: "Devices" },
   { slug: "sync", label: "Sync" },
@@ -166,8 +169,9 @@ export function buildV4Commands(): V4Command[] {
       run: () => jumpToDaily(),
     },
     // One palette row per settings page so users can pick directly
-     //   without a modal arg prompt. The `:settings <page>` ex-form is
-     //   covered by `findCommandByVerb` matching the page slug.
+    // without a modal arg prompt. Each row opens the in-v4 Settings
+    // overlay on the chosen slug; the `/settings/*` routes still work
+    // as bookmark fallbacks but are no longer the primary surface.
     ...SETTINGS_PAGES.map(({ slug, label }) => ({
       id: `settings-${slug}`,
       verb: `settings-${slug}`,
@@ -175,7 +179,7 @@ export function buildV4Commands(): V4Command[] {
       glyph: "⚙",
       category: "navigate" as const,
       keywords: ["settings", "preferences", "config", slug, label.toLowerCase()],
-      run: () => goto(`/settings/${slug}`),
+      run: () => openSettingsOverlay(slug),
     })),
     {
       id: "new-note",
