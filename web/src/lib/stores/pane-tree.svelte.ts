@@ -75,6 +75,50 @@ export function getLastEditorPaneId(tabId: string): string | undefined {
   return lastEditorByTab.get(tabId);
 }
 
+/**
+ * Resolve the editor pane that "navigation" surfaces (graph, widget,
+ * dashboard, context, Station, Peek, Journey) should open a tile in.
+ *
+ * Order of preference:
+ *   1. `preferredPaneId` if it's already an editor pane (e.g. Station's
+ *      prior-pane restore — when the user invoked ⌘K from an editor).
+ *   2. The most-recently-focused editor pane in the current tab —
+ *      mirrors neovim's "open in last buffer" semantics for nav panes.
+ *   3. Undefined — caller should fall back to converting the current
+ *      pane via `jumpToTile` directly.
+ */
+export function resolveEditorTarget(preferredPaneId?: string): { row: number; col: number } | undefined {
+  if (preferredPaneId) {
+    const hit = pt.paneById(state, preferredPaneId);
+    if (hit?.pane.kind === "editor") return { row: hit.row, col: hit.col };
+  }
+  const tab = pt.focusedTab(state);
+  if (!tab) return undefined;
+  const last = lastEditorByTab.get(tab.id);
+  if (!last) return undefined;
+  const hit = pt.paneById(state, last);
+  if (hit?.pane.kind === "editor") return { row: hit.row, col: hit.col };
+  return undefined;
+}
+
+/**
+ * Open `tileId` in the resolved editor pane. Used by every navigation
+ * surface: Station note rows, Dashboard widget rows, PeekPopover
+ * backlinks / outline / journey, GraphCanvas node picks, Journey
+ * breadcrumb chips, the ⌘[ / ⌘] history walk.
+ *
+ * Wiki-link / drill-in clicks from inside an editor continue to use
+ * `jumpToTile` directly so they stay in their current buffer — that's
+ * native in-buffer navigation, not "open from a nav surface."
+ */
+export function openInEditor(tileId: string, opts?: { preferredPaneId?: string; via?: string }) {
+  const target = resolveEditorTarget(opts?.preferredPaneId);
+  if (target) {
+    focusPane(target.row, target.col);
+  }
+  jumpToTile(tileId, opts?.via ?? "manual");
+}
+
 // ── mutations ──────────────────────────────────────────────────────────────
 
 export function focusPane(row: number, col: number) { commit(pt.focusPane(state, row, col)); }

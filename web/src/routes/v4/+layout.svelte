@@ -30,6 +30,7 @@
     switchTabByIndex,
     setColSizes,
     setRowSizes,
+    openInEditor,
   } from "$lib/stores/pane-tree.svelte";
   import { MIN_PANE_WEIGHT } from "$lib/stores/pane-tree";
   import { openStation } from "$lib/stores/station.svelte";
@@ -129,11 +130,13 @@
 
       // ⌘[ / ⌘] walk the Journey breadcrumb. Fires regardless of focus —
       // these are app-level navigation, parallel to browser back/forward.
+      // Routes through `openInEditor` so back/forward lands in the main
+      // editor, not whatever pane currently has focus.
       if (mod && e.key === "[") {
         e.preventDefault();
         if (canGoBackInJourney()) {
           const t = goBackInJourney();
-          if (t) jumpToTile(t, "back");
+          if (t) openInEditor(t, { via: "back" });
         }
         return;
       }
@@ -141,7 +144,7 @@
         e.preventDefault();
         if (canGoForwardInJourney()) {
           const t = goForwardInJourney();
-          if (t) jumpToTile(t, "forward");
+          if (t) openInEditor(t, { via: "forward" });
         }
         return;
       }

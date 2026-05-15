@@ -24,7 +24,7 @@
   import {
     getFocusedPane,
     getPaneById,
-    jumpToTile,
+    openInEditor,
   } from "$lib/stores/pane-tree.svelte";
   import {
     getJourneyEntries,
@@ -61,7 +61,7 @@
 
   function pickEntry(idx: number) {
     const t = jumpToJourneyEntry(idx);
-    if (t) jumpToTile(t, "peek-journey");
+    if (t) openInEditor(t, { via: "peek-journey" });
   }
 
   onMount(() => {
@@ -107,7 +107,7 @@
           <BacklinksTab
             noteId={tileId}
             onOpenNote={(id) => {
-              jumpToTile(id, "peek");
+              openInEditor(id, { via: "peek" });
               closePeek();
             }}
           />
@@ -115,7 +115,7 @@
           <OutlineTab
             noteId={tileId}
             onOpenNote={(id) => {
-              jumpToTile(id, "peek");
+              openInEditor(id, { via: "peek" });
               closePeek();
             }}
           />

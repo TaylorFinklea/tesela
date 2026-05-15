@@ -17,24 +17,27 @@
     goForwardInJourney,
     jumpToJourneyEntry,
   } from "$lib/stores/journey.svelte";
-  import { jumpToTile } from "$lib/stores/pane-tree.svelte";
+  import { openInEditor } from "$lib/stores/pane-tree.svelte";
 
   const entries = $derived(getJourneyEntries());
   const cursor = $derived(getJourneyCursor());
   const canBack = $derived(canGoBackInJourney());
   const canFwd = $derived(canGoForwardInJourney());
 
+  // Journey is a navigation surface: clicking a chip / walking back or
+  // forward routes the target tile into the main editor pane, not
+  // whatever pane currently has focus. Mirrors neovim's history-jumps.
   function walkBack() {
     const t = goBackInJourney();
-    if (t) jumpToTile(t, "back");
+    if (t) openInEditor(t, { via: "back" });
   }
   function walkForward() {
     const t = goForwardInJourney();
-    if (t) jumpToTile(t, "forward");
+    if (t) openInEditor(t, { via: "forward" });
   }
   function chipClick(idx: number) {
     const t = jumpToJourneyEntry(idx);
-    if (t) jumpToTile(t, "chip");
+    if (t) openInEditor(t, { via: "chip" });
   }
 </script>
 

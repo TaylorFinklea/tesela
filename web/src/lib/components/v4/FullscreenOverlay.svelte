@@ -24,7 +24,7 @@
     getActiveOverlay,
     isOverlayOpen,
   } from "$lib/stores/fullscreen-overlay.svelte";
-  import { jumpToTile } from "$lib/stores/pane-tree.svelte";
+  import { openInEditor } from "$lib/stores/pane-tree.svelte";
 
   const open = $derived(isOverlayOpen());
   const kind = $derived(getActiveOverlay());
@@ -71,7 +71,7 @@
         {notes}
         {edges}
         onNodePick={(noteId) => {
-          jumpToTile(noteId, "graph");
+          openInEditor(noteId, { via: "graph" });
           closeOverlay();
         }}
       />

@@ -26,6 +26,7 @@
     getLastEditorPaneId,
     getPaneById,
     getFirstEditorTile,
+    openInEditor,
   } from "$lib/stores/pane-tree.svelte";
   import {
     setFocusedBlockForPane,
@@ -110,12 +111,20 @@
     widgetChoices.filter((w) => w.section === "pinned"),
   );
 
-  // Open a tile in *this* pane — used by graph nodes / dashboard rows.
-  // Per the proto's model this converts the focused non-editor pane
-  // into an editor for that tile.
-  function openTileInThisPane(noteId: string) {
-    focusPane(row, col);
-    jumpToTile(noteId);
+  // Open a tile from this pane. Two modes:
+  //  - Editor pane: stay in the same pane (wiki links, drill-in, in-buffer
+  //    nav). This is the "follow link in current buffer" UX.
+  //  - Non-editor pane (graph node, widget row, dashboard card, context
+  //    backlink): route to the last-focused editor in the tab via
+  //    `openInEditor` — neovim's "open in main buffer" pattern. Falls back
+  //    to converting the focused pane when no editor exists yet.
+  function openTileFromThisPane(noteId: string) {
+    if (pane.kind === "editor") {
+      focusPane(row, col);
+      jumpToTile(noteId);
+    } else {
+      openInEditor(noteId, { via: pane.kind });
+    }
   }
 
   // ── context kind ──────────────────────────────────────────────────────────
@@ -146,14 +155,11 @@
   });
 
   // Opening a note from a context-pane tab routes into the followed
-  // editor pane (not the context pane itself) so the context pane
-  // stays a context pane.
+  // editor pane (not the context pane itself) so the context pane stays
+  // a context pane. Delegates to the unified resolver so the rule is
+  // consistent across every nav surface in v4.
   function openNoteInFollowedEditor(targetNoteId: string) {
-    const ed = followedEditor;
-    if (ed) {
-      focusPane(ed.row, ed.col);
-    }
-    jumpToTile(targetNoteId);
+    openInEditor(targetNoteId, { via: "context" });
   }
 
   // The note shown by an editor pane. `<NoteRenderer>` splits frontmatter
@@ -212,9 +218,20 @@
   // Clicking anywhere in the pane that isn't the editor focuses the
   // shell itself, so pane-nav keys (hjkl) land here rather than in a
   // cm-editor. Clicking into the editor lets cm own focus.
+  //
+  // Skip the focus-on-self path when the click hit an interactive
+  // control. Those controls already handle focus themselves (stack
+  // chips re-focus this pane; the close button stopPropagation's; nav
+  // rows in widget / dashboard / graph route through `openInEditor`
+  // which focuses the target editor). Without this guard, the bubble
+  // would steal focus back to this (sidebar) pane right after a
+  // navigation moved it to the editor — the bug Taylor reported.
   function onShellClick(e: MouseEvent) {
-    focusPane(row, col);
     const target = e.target as HTMLElement;
+    if (target.closest("button, a, input, textarea, select, [role='button'], [role='option']")) {
+      return;
+    }
+    focusPane(row, col);
     if (!target.closest(".cm-editor")) {
       shellEl?.focus();
     }
@@ -326,7 +343,7 @@
               onContentChange={handleContentChange}
               onCancelAndFlush={cancelAndFlush}
               onfocusedblockchange={(b) => setFocusedBlockForPane(pane.id, b)}
-              onOpenNote={openTileInThisPane}
+              onOpenNote={openTileFromThisPane}
             />
           </div>
         {/key}
@@ -339,7 +356,7 @@
           <div class="v4-pane-scroll">
             <QueryWidgetView
               widget={widgetConfig}
-              onOpenRow={(pageId) => openTileInThisPane(pageId)}
+              onOpenRow={(pageId) => openTileFromThisPane(pageId)}
             />
           </div>
         {/key}
@@ -363,7 +380,7 @@
         <GraphCanvas
           notes={allNotes}
           edges={graphEdges}
-          onNodePick={openTileInThisPane}
+          onNodePick={openTileFromThisPane}
         />
       </div>
     {:else if pane.kind === "dashboard"}
@@ -377,7 +394,7 @@
               <div class="v4-dash-card-body">
                 <QueryWidgetView
                   widget={w}
-                  onOpenRow={(pageId) => openTileInThisPane(pageId)}
+                  onOpenRow={(pageId) => openTileFromThisPane(pageId)}
                 />
               </div>
             </div>

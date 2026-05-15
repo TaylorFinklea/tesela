@@ -37,6 +37,7 @@
     getPaneById,
     getPaneOutliner,
     jumpToTile,
+    openInEditor,
     setPaneWidget,
     swapKind,
   } from "$lib/stores/pane-tree.svelte";
@@ -181,15 +182,11 @@
   }
 
   function openNoteRow(note: Note) {
-    // Note row → jumpToTile in the prior pane. Same focus-restore dance as
-    // runCommand so the user lands on the pane they invoked the Station from.
-    const prior = getStationPriorPaneId();
-    if (prior) {
-      const hit = getPaneById(prior);
-      if (hit) focusPane(hit.row, hit.col);
-    }
+    // Note row → route through the unified resolver. If the prior pane was
+    // an editor, that wins; otherwise the last-focused editor in the tab
+    // wins. Falls back to converting the focused pane when no editor exists.
     closeStation();
-    jumpToTile(note.id, "palette");
+    openInEditor(note.id, { preferredPaneId: getStationPriorPaneId(), via: "palette" });
   }
 
   async function runCommand(cmd: V4Command) {
@@ -233,13 +230,8 @@
   }
 
   function openTileFromWidget(noteId: string) {
-    const prior = getStationPriorPaneId();
-    if (prior) {
-      const hit = getPaneById(prior);
-      if (hit) focusPane(hit.row, hit.col);
-    }
-    jumpToTile(noteId);
     closeStation();
+    openInEditor(noteId, { preferredPaneId: getStationPriorPaneId(), via: "dashboard" });
   }
 
   onMount(() => {
