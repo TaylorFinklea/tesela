@@ -17,6 +17,7 @@
     getState,
     getFocusedTab,
     getFocusedPane,
+    getFocusedPaneId,
     vsplit,
     hsplit,
     closePane,
@@ -28,7 +29,9 @@
     closeTab,
     switchTabByIndex,
   } from "$lib/stores/pane-tree.svelte";
+  import { openStation } from "$lib/stores/station.svelte";
   import PaneShell from "$lib/components/v4/PaneShell.svelte";
+  import Station from "$lib/components/v4/Station.svelte";
   import TopBarTabs from "$lib/components/v4/TopBarTabs.svelte";
 
   let { children } = $props();
@@ -52,9 +55,25 @@
     );
   }
 
+  function openCommandStation(opts?: { query?: string }) {
+    openStation({
+      tab: "palette",
+      query: opts?.query,
+      priorPaneId: getFocusedPaneId(),
+    });
+  }
+
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
+
+      // ⌘K opens the Station. Station's own keydown handler intercepts
+      // ⌘K while open (toggle-close), so this only ever fires the open.
+      if (mod && !e.shiftKey && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        openCommandStation();
+        return;
+      }
 
       // Splits + tab/pane management — fire regardless of focus (capture).
       if (mod && e.key === "\\") {
@@ -162,9 +181,14 @@
       <span class="v4-brand-name">tesela</span>
     </div>
     <TopBarTabs />
-    <button class="v4-command-bar" type="button" disabled>
+    <button
+      class="v4-command-bar"
+      type="button"
+      onclick={() => openCommandStation()}
+      title="open the Command Station · ⌘K"
+    >
       <span class="v4-command-bar-kbd">⌘K</span>
-      <span class="v4-command-bar-hint">Command Station · Phase 4</span>
+      <span class="v4-command-bar-hint">Command Station — verbs, dashboard…</span>
     </button>
     <div class="v4-topbar-icons">
       <button type="button" title="graph (Phase 5)" disabled>✦</button>
@@ -228,6 +252,10 @@
   <!-- The page component is the URL→state adapter; it renders nothing
        visible in Phase 1 but its onMount bootstraps the focused pane. -->
   <div style="display: none">{@render children()}</div>
+
+  <!-- Phase 4 — Command Station modal. Owns its own keydown handler
+       while open (Esc, ⌘1–⌘4, ⌘K toggle-close). -->
+  <Station />
 </div>
 
 <style>
@@ -280,7 +308,13 @@
     background: var(--v4-surface-lo);
     border: 1px solid var(--v4-hair);
     border-radius: 7px;
-    cursor: default;
+    color: var(--v4-ink5);
+    cursor: pointer;
+    transition: border-color 140ms, color 140ms;
+  }
+  .v4-command-bar:hover {
+    border-color: var(--v4-hair2);
+    color: var(--v4-ink2);
   }
   .v4-command-bar-kbd {
     font-family: var(--v4-mono);
