@@ -25,7 +25,7 @@
     const hit = getTileLocation(slug);
     if (hit) {
       switchTab(hit.tabId);
-      focusPane(hit.row, hit.col);
+      focusPane(hit.paneId);
     } else {
       jumpToTile(slug);
     }

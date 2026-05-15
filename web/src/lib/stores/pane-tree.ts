@@ -1,17 +1,17 @@
 /**
- * Prism v4 pane-tree state. Pure data + pure mutation functions. The
- * reactive Svelte wrapper lives next door in `pane-tree.svelte.ts`;
- * this file stays free of runes so it's testable under plain Node.
+ * Prism v4 pane-tree state — binary-tree splits.
  *
- * Model (mirrors `Tesela2.zip → proto-prism4.jsx`):
+ * Each tab's layout is a recursive split tree (same shape tmux / zellij
+ * / Aerospace use):
  *
- *   tab    = { id, name, layout: Pane[][], focus: [rowIdx, colIdx] }
- *   pane   = { id, kind, ...kindFields }
+ *   tab    = { id, name, layout: LayoutNode, focus: paneId }
+ *   layout = LeafNode { pane }
+ *          | SplitNode { dir: "vertical"|"horizontal", children, sizes }
  *
- * Every mutation is a pure (state) -> state function — never in-place.
- * The wrapper uses `$state.raw` and assigns the whole tree on each
- * mutation, which matches React reducer semantics and avoids Svelte 5
- * fine-grained reactivity surprises on deeply nested arrays.
+ * vsplit on the focused leaf splits *just that leaf*, not the row it
+ * lives in — so a left sidebar can stay full-height while you split
+ * the main editor area. Mutations are pure (state) -> state functions;
+ * the reactive Svelte wrapper lives next door.
  */
 
 export type PaneKind = "editor" | "widget" | "context" | "graph" | "dashboard";
@@ -27,9 +27,7 @@ export type EditorPane = {
 export type WidgetPane = {
   id: string;
   kind: "widget";
-  /** Id of the Query-type note that defines this widget (e.g. "tasks",
-   *  "recent", "projects", or any user-authored Query note). The widget
-   *  pane resolves it through `widgetFromNote`. */
+  /** Id of the Query-type note that defines this widget. */
   widget: string;
 };
 
@@ -45,20 +43,30 @@ export type DashboardPane = { id: string; kind: "dashboard" };
 
 export type Pane = EditorPane | WidgetPane | ContextPane | GraphPane | DashboardPane;
 
+export type SplitDir = "vertical" | "horizontal";
+
+export type LeafNode = {
+  kind: "leaf";
+  pane: Pane;
+};
+export type SplitNode = {
+  id: string;
+  kind: "split";
+  /** vertical = children laid out side-by-side (vsplit produces this).
+   *  horizontal = children stacked top-to-bottom (hsplit produces this). */
+  dir: SplitDir;
+  children: LayoutNode[];
+  /** One weight per child. Length always === children.length. */
+  sizes: number[];
+};
+export type LayoutNode = LeafNode | SplitNode;
+
 export type Tab = {
   id: string;
   name: string;
-  layout: Pane[][];
-  focus: [number, number];
-  /** Vertical flex weights — one per row in `layout`. */
-  rowSizes: number[];
-  /** Horizontal flex weights — `colSizes[r].length === layout[r].length`. */
-  colSizes: number[][];
+  layout: LayoutNode;
+  focus: string; // pane id
 };
-
-/** Minimum weight allocated to any pane during a drag. Keeps the user from
- *  collapsing a sibling to zero (which would defeat the drag handle). */
-export const MIN_PANE_WEIGHT = 0.05;
 
 export type PaneTreeState = {
   version: number;
@@ -66,23 +74,30 @@ export type PaneTreeState = {
   activeTabId: string;
 };
 
-export const STATE_VERSION = 1;
+/**
+ * Bump when the on-disk shape changes. The Phase 6 binary-tree refactor
+ * jumps to v2; `deserialize` keeps a v1 (Pane[][]) migration path.
+ */
+export const STATE_VERSION = 2;
 export const STORAGE_KEY = "tesela:prism4:v1";
+
+/** Minimum weight allocated to any pane during a drag. */
+export const MIN_PANE_WEIGHT = 0.05;
 
 // ── id minting ──────────────────────────────────────────────────────────────
 
 export function mkPaneId(): string {
   return "p" + Math.random().toString(36).slice(2, 9);
 }
-
+export function mkSplitId(): string {
+  return "s" + Math.random().toString(36).slice(2, 9);
+}
 export function mkTabId(): string {
   return "tab-" + Math.random().toString(36).slice(2, 9);
 }
 
 // ── factories ───────────────────────────────────────────────────────────────
 
-/** Default Query-note id a fresh widget pane points at. "recent" is one
- * of the system widgets seeded by `ensureSystemWidgets`. */
 export const DEFAULT_WIDGET = "recent";
 
 export function makePane(kind: PaneKind): Pane {
@@ -95,14 +110,22 @@ export function makePane(kind: PaneKind): Pane {
   }
 }
 
+export function makeLeaf(kind: PaneKind = "editor"): LeafNode {
+  return { kind: "leaf", pane: makePane(kind) };
+}
+
+export function makeSplit(dir: SplitDir, children: LayoutNode[]): SplitNode {
+  const sizes = children.map(() => 1 / children.length);
+  return { id: mkSplitId(), kind: "split", dir, children, sizes };
+}
+
 export function makeTab(name: string = "untitled"): Tab {
+  const leaf = makeLeaf("editor");
   return {
     id: mkTabId(),
     name,
-    layout: [[makePane("editor")]],
-    focus: [0, 0],
-    rowSizes: [1],
-    colSizes: [[1]],
+    layout: leaf,
+    focus: leaf.pane.id,
   };
 }
 
@@ -115,6 +138,56 @@ export function initialState(): PaneTreeState {
   };
 }
 
+// ── traversal ──────────────────────────────────────────────────────────────
+
+/** Iterate every leaf in pre-order. */
+export function* leaves(node: LayoutNode): Generator<LeafNode> {
+  if (node.kind === "leaf") {
+    yield node;
+  } else {
+    for (const c of node.children) yield* leaves(c);
+  }
+}
+
+/** Walk the tree depth-first and return the path of indices from `root`
+ *  to a node matching the predicate, plus the node itself. */
+export function findPath(
+  root: LayoutNode,
+  pred: (n: LayoutNode) => boolean,
+): { node: LayoutNode; path: number[] } | undefined {
+  if (pred(root)) return { node: root, path: [] };
+  if (root.kind === "leaf") return undefined;
+  for (let i = 0; i < root.children.length; i++) {
+    const hit = findPath(root.children[i], pred);
+    if (hit) return { node: hit.node, path: [i, ...hit.path] };
+  }
+  return undefined;
+}
+
+export function findLeafByPaneId(root: LayoutNode, paneId: string): LeafNode | undefined {
+  for (const l of leaves(root)) if (l.pane.id === paneId) return l;
+  return undefined;
+}
+
+/** Returns the immediate parent split of the leaf identified by pane id,
+ *  plus the index of the leaf within its parent. Returns undefined when
+ *  the leaf is the root (no parent). */
+export function findParentOf(
+  root: LayoutNode,
+  paneId: string,
+): { parent: SplitNode; index: number } | undefined {
+  if (root.kind === "leaf") return undefined;
+  for (let i = 0; i < root.children.length; i++) {
+    const c = root.children[i];
+    if (c.kind === "leaf" && c.pane.id === paneId) return { parent: root, index: i };
+    if (c.kind === "split") {
+      const hit = findParentOf(c, paneId);
+      if (hit) return hit;
+    }
+  }
+  return undefined;
+}
+
 // ── lookups ─────────────────────────────────────────────────────────────────
 
 export function focusedTab(state: PaneTreeState): Tab | undefined {
@@ -124,17 +197,17 @@ export function focusedTab(state: PaneTreeState): Tab | undefined {
 export function focusedPane(state: PaneTreeState): Pane | undefined {
   const t = focusedTab(state);
   if (!t) return undefined;
-  return t.layout[t.focus[0]]?.[t.focus[1]];
+  const leaf = findLeafByPaneId(t.layout, t.focus);
+  return leaf?.pane;
 }
 
-export function paneById(state: PaneTreeState, paneId: string): { tab: Tab; pane: Pane; row: number; col: number } | undefined {
+export function paneById(
+  state: PaneTreeState,
+  paneId: string,
+): { tab: Tab; pane: Pane } | undefined {
   for (const tab of state.tabs) {
-    for (let r = 0; r < tab.layout.length; r++) {
-      const row = tab.layout[r];
-      for (let c = 0; c < row.length; c++) {
-        if (row[c].id === paneId) return { tab, pane: row[c], row: r, col: c };
-      }
-    }
+    const leaf = findLeafByPaneId(tab.layout, paneId);
+    if (leaf) return { tab, pane: leaf.pane };
   }
   return undefined;
 }
@@ -143,41 +216,32 @@ export function paneById(state: PaneTreeState, paneId: string): { tab: Tab; pane
 export function firstEditorTile(state: PaneTreeState): string | undefined {
   const t = focusedTab(state);
   if (!t) return undefined;
-  for (const row of t.layout) {
-    for (const p of row) {
-      if (p.kind === "editor" && p.tiles.length > 0) return p.tiles[p.activeIdx];
+  for (const l of leaves(t.layout)) {
+    if (l.pane.kind === "editor" && l.pane.tiles.length > 0) {
+      return l.pane.tiles[l.pane.activeIdx];
     }
   }
   return undefined;
 }
 
 /** Locate an editor pane whose tile stack contains `tileId`, searching
- * every tab. Returns the first hit's tab id + coordinates, or undefined.
- * Used by URL deep-link routing to focus an already-open tile instead
- * of opening a duplicate. */
+ *  every tab. Returns the first hit's tab id + pane id, or undefined. */
 export function findTile(
   state: PaneTreeState,
   tileId: string,
-): { tabId: string; row: number; col: number } | undefined {
+): { tabId: string; paneId: string } | undefined {
   for (const tab of state.tabs) {
-    for (let r = 0; r < tab.layout.length; r++) {
-      const row = tab.layout[r];
-      for (let c = 0; c < row.length; c++) {
-        const p = row[c];
-        if (p.kind === "editor" && p.tiles.includes(tileId)) {
-          return { tabId: tab.id, row: r, col: c };
-        }
+    for (const l of leaves(tab.layout)) {
+      if (l.pane.kind === "editor" && l.pane.tiles.includes(tileId)) {
+        return { tabId: tab.id, paneId: l.pane.id };
       }
     }
   }
   return undefined;
 }
 
-// ── internal helpers ────────────────────────────────────────────────────────
+// ── internal helpers ───────────────────────────────────────────────────────
 
-/** Short-circuits to the same state reference when fn returns the same
- * tab (no-op detection). That lets the reactive wrapper skip persistence
- * + re-render on idempotent calls. */
 function replaceTab(state: PaneTreeState, tabId: string, fn: (t: Tab) => Tab): PaneTreeState {
   let changed = false;
   const tabs = state.tabs.map((t) => {
@@ -189,146 +253,266 @@ function replaceTab(state: PaneTreeState, tabId: string, fn: (t: Tab) => Tab): P
   return changed ? { ...state, tabs } : state;
 }
 
-function withPaneAt(t: Tab, r: number, c: number, fn: (p: Pane) => Pane): Tab {
-  const row = t.layout[r];
-  if (!row) return t;
-  const oldPane = row[c];
-  if (!oldPane) return t;
-  const nextPane = fn(oldPane);
-  if (nextPane === oldPane) return t;
-  const layout = t.layout.map((rr, i) =>
-    i === r ? rr.map((p, j) => (j === c ? nextPane : p)) : rr,
-  );
-  return { ...t, layout };
+/** Immutable tree update — runs `fn` on every node matching `pred` (DFS).
+ *  Returns the (possibly unchanged) root. */
+function updateNode(
+  root: LayoutNode,
+  pred: (n: LayoutNode) => boolean,
+  fn: (n: LayoutNode) => LayoutNode,
+): LayoutNode {
+  if (pred(root)) return fn(root);
+  if (root.kind === "leaf") return root;
+  let changed = false;
+  const next = root.children.map((c) => {
+    const updated = updateNode(c, pred, fn);
+    if (updated !== c) changed = true;
+    return updated;
+  });
+  return changed ? { ...root, children: next } : root;
 }
 
-// ── focus + split mutations ─────────────────────────────────────────────────
+/** Collapse a split with only one child into that child. Bottom-up so a
+ *  chain of single-child splits all collapse in one pass. */
+function collapse(root: LayoutNode): LayoutNode {
+  if (root.kind === "leaf") return root;
+  let changed = false;
+  const cs = root.children.map((c) => {
+    const u = collapse(c);
+    if (u !== c) changed = true;
+    return u;
+  });
+  if (cs.length === 1) return cs[0];
+  return changed ? { ...root, children: cs } : root;
+}
 
-export function focusPane(state: PaneTreeState, row: number, col: number): PaneTreeState {
+function findFirstLeaf(n: LayoutNode): LeafNode {
+  if (n.kind === "leaf") return n;
+  return findFirstLeaf(n.children[0]);
+}
+
+/** Spatial-neighbor lookup. Walks up from the focused leaf to find the
+ *  nearest ancestor whose split direction matches the requested motion,
+ *  then descends into the sibling on that side. Returns undefined when
+ *  no neighbor exists in the requested direction. */
+function neighborLeaf(
+  root: LayoutNode,
+  paneId: string,
+  dir: "left" | "right" | "up" | "down",
+): LeafNode | undefined {
+  const hit = findPath(root, (n) => n.kind === "leaf" && n.pane.id === paneId);
+  if (!hit) return undefined;
+  const path = hit.path;
+  const axis: SplitDir = dir === "left" || dir === "right" ? "vertical" : "horizontal";
+  const stride = dir === "left" || dir === "up" ? -1 : 1;
+  // Walk from root down to the focused leaf, remembering each ancestor split.
+  let node: LayoutNode = root;
+  const ancestors: SplitNode[] = [];
+  for (const idx of path) {
+    if (node.kind !== "split") break;
+    ancestors.push(node);
+    node = node.children[idx];
+  }
+  for (let i = ancestors.length - 1; i >= 0; i--) {
+    const a = ancestors[i];
+    if (a.dir !== axis) continue;
+    const idxInA = path[i];
+    const targetIdx = idxInA + stride;
+    if (targetIdx < 0 || targetIdx >= a.children.length) continue;
+    return descendToLeaf(a.children[targetIdx], dir);
+  }
+  return undefined;
+}
+
+/** Reach into a subtree, preferring the edge child closest to the motion's
+ *  origin. (Coming from the right via `left` → land on the rightmost leaf.) */
+function descendToLeaf(
+  node: LayoutNode,
+  fromDir: "left" | "right" | "up" | "down",
+): LeafNode {
+  if (node.kind === "leaf") return node;
+  const axis: SplitDir = fromDir === "left" || fromDir === "right" ? "vertical" : "horizontal";
+  if (node.dir === axis) {
+    const idx = fromDir === "left" || fromDir === "up" ? node.children.length - 1 : 0;
+    return descendToLeaf(node.children[idx], fromDir);
+  }
+  return descendToLeaf(node.children[0], fromDir);
+}
+
+// ── focus + split mutations ────────────────────────────────────────────────
+
+export function focusPane(state: PaneTreeState, paneId: string): PaneTreeState {
   return replaceTab(state, state.activeTabId, (t) => {
-    const r = Math.max(0, Math.min(t.layout.length - 1, row));
-    const rowArr = t.layout[r];
-    if (!rowArr || rowArr.length === 0) return t;
-    const c = Math.max(0, Math.min(rowArr.length - 1, col));
-    if (r === t.focus[0] && c === t.focus[1]) return t;
-    return { ...t, focus: [r, c] };
+    if (t.focus === paneId) return t;
+    if (!findLeafByPaneId(t.layout, paneId)) return t;
+    return { ...t, focus: paneId };
   });
 }
 
-/** Move focus by delta in 2D. Clamps to grid edges. */
-export function moveFocus(state: PaneTreeState, dRow: number, dCol: number): PaneTreeState {
+export function moveFocus(
+  state: PaneTreeState,
+  dir: "left" | "right" | "up" | "down",
+): PaneTreeState {
   return replaceTab(state, state.activeTabId, (t) => {
-    const [r, c] = t.focus;
-    const nr = Math.max(0, Math.min(t.layout.length - 1, r + dRow));
-    const rowArr = t.layout[nr];
-    if (!rowArr || rowArr.length === 0) return t;
-    const nc = Math.max(0, Math.min(rowArr.length - 1, c + dCol));
-    if (nr === r && nc === c) return t;
-    return { ...t, focus: [nr, nc] };
+    const target = neighborLeaf(t.layout, t.focus, dir);
+    if (!target || target.pane.id === t.focus) return t;
+    return { ...t, focus: target.pane.id };
+  });
+}
+
+/** Insert a new leaf next to the focused leaf along `dir`. If the
+ *  parent split is already aligned with `dir`, the new leaf joins as a
+ *  sibling; otherwise the focused leaf is wrapped in a new split. */
+function insertSplit(state: PaneTreeState, dir: SplitDir, kind: PaneKind): PaneTreeState {
+  return replaceTab(state, state.activeTabId, (t) => {
+    const focused = t.focus;
+    const newLeaf = makeLeaf(kind);
+    const parent = findParentOf(t.layout, focused);
+    // Case 1: focused leaf is the root (no parent). Wrap in a split.
+    if (!parent) {
+      if (t.layout.kind !== "leaf" || t.layout.pane.id !== focused) return t;
+      const split = makeSplit(dir, [t.layout, newLeaf]);
+      return { ...t, layout: split, focus: newLeaf.pane.id };
+    }
+    const parentSplit = parent.parent;
+    // Case 2: parent split already aligned with `dir`. Insert sibling after.
+    if (parentSplit.dir === dir) {
+      const layout = updateNode(t.layout, (n) => n.kind === "split" && n.id === parentSplit.id, (n) => {
+        if (n.kind !== "split") return n;
+        const sizes = n.sizes.slice();
+        const half = sizes[parent.index] / 2;
+        sizes[parent.index] = half;
+        sizes.splice(parent.index + 1, 0, half);
+        const children = [
+          ...n.children.slice(0, parent.index + 1),
+          newLeaf,
+          ...n.children.slice(parent.index + 1),
+        ];
+        return { ...n, children, sizes };
+      });
+      return { ...t, layout, focus: newLeaf.pane.id };
+    }
+    // Case 3: parent dir doesn't match. Wrap the focused leaf in a new
+    // split that does, replacing it inside the parent.
+    const layout = updateNode(t.layout, (n) => n.kind === "split" && n.id === parentSplit.id, (n) => {
+      if (n.kind !== "split") return n;
+      const child = n.children[parent.index];
+      const newSplit = makeSplit(dir, [child, newLeaf]);
+      const children = n.children.slice();
+      children[parent.index] = newSplit;
+      return { ...n, children };
+    });
+    return { ...t, layout, focus: newLeaf.pane.id };
   });
 }
 
 export function vsplit(state: PaneTreeState, kind: PaneKind = "editor"): PaneTreeState {
-  return replaceTab(state, state.activeTabId, (t) => {
-    const [r, c] = t.focus;
-    const np = makePane(kind);
-    const layout = t.layout.map((row, i) =>
-      i === r ? [...row.slice(0, c + 1), np, ...row.slice(c + 1)] : row,
-    );
-    // Split the focused cell's weight in half so the new sibling takes
-    // half its width. Untouched rows keep their colSizes references.
-    const colSizes = t.colSizes.map((row, i) => {
-      if (i !== r) return row;
-      const half = row[c] / 2;
-      return [...row.slice(0, c), half, half, ...row.slice(c + 1)];
-    });
-    return { ...t, layout, colSizes, focus: [r, c + 1] };
-  });
+  return insertSplit(state, "vertical", kind);
 }
 
 export function hsplit(state: PaneTreeState, kind: PaneKind = "editor"): PaneTreeState {
-  return replaceTab(state, state.activeTabId, (t) => {
-    const [r] = t.focus;
-    const np = makePane(kind);
-    const layout = [...t.layout.slice(0, r + 1), [np], ...t.layout.slice(r + 1)];
-    // Split the focused row's weight in half; the new single-cell row
-    // starts with [1] for its colSizes entry.
-    const half = t.rowSizes[r] / 2;
-    const rowSizes = [...t.rowSizes.slice(0, r), half, half, ...t.rowSizes.slice(r + 1)];
-    const colSizes = [...t.colSizes.slice(0, r + 1), [1], ...t.colSizes.slice(r + 1)];
-    return { ...t, layout, rowSizes, colSizes, focus: [r + 1, 0] };
-  });
+  return insertSplit(state, "horizontal", kind);
 }
 
-/** Closes the focused pane. The very last pane in the only tab cannot close. */
+/** Closes the focused pane. The very last pane in the only tab cannot
+ *  close — refusing leaves the user with something to focus. */
 export function closePane(state: PaneTreeState): PaneTreeState {
   return replaceTab(state, state.activeTabId, (t) => {
-    if (t.layout.length === 1 && t.layout[0].length === 1) return t;
-    const [r, c] = t.focus;
-    const newRow = t.layout[r].filter((_, i) => i !== c);
-    if (newRow.length > 0) {
-      // Closing a column inside a row → redistribute the closed cell's
-      // weight to its left sibling (or right if it was at index 0).
-      const layout = t.layout.map((rr, i) => (i === r ? newRow : rr));
-      const colSizes = t.colSizes.map((row, i) => {
-        if (i !== r) return row;
-        const closed = row[c];
-        const next = row.filter((_, j) => j !== c);
-        const into = Math.max(0, c - 1);
-        next[into] += closed;
-        return next;
-      });
-      const nr = Math.min(r, layout.length - 1);
-      const nc = Math.min(c, layout[nr].length - 1);
-      return { ...t, layout, colSizes, focus: [nr, nc] };
+    if (t.layout.kind === "leaf") return t;
+    const parent = findParentOf(t.layout, t.focus);
+    if (!parent) return t;
+    const parentSplit = parent.parent;
+    // Pick a new focus pane: prefer the leaf at the index-1 position in
+    // the parent split, else index+1. Use the first leaf of whichever
+    // child we land on.
+    const siblingIdx = parent.index > 0 ? parent.index - 1 : parent.index + 1;
+    const sibling = parentSplit.children[siblingIdx];
+    const nextFocus = findFirstLeaf(sibling).pane.id;
+    // Remove the focused leaf + its weight; roll the weight into a
+    // remaining neighbor so the split's total weight is preserved.
+    const layout = updateNode(t.layout, (n) => n.kind === "split" && n.id === parentSplit.id, (n) => {
+      if (n.kind !== "split") return n;
+      const closedW = n.sizes[parent.index];
+      const into = Math.max(0, parent.index - 1);
+      const children = n.children.filter((_, i) => i !== parent.index);
+      const sizes = n.sizes.filter((_, i) => i !== parent.index);
+      if (sizes.length > 0) {
+        const intoFinal = into >= sizes.length ? sizes.length - 1 : into;
+        sizes[intoFinal] += closedW;
+      }
+      return { ...n, children, sizes };
+    });
+    const collapsed = collapse(layout);
+    return { ...t, layout: collapsed, focus: nextFocus };
+  });
+}
+
+/** Detach the focused leaf and reinsert at the dir-most edge of the
+ *  tab so it becomes a top-level row/column on that side. */
+export function movePane(
+  state: PaneTreeState,
+  dir: "left" | "right" | "up" | "down",
+): PaneTreeState {
+  return replaceTab(state, state.activeTabId, (t) => {
+    if (t.layout.kind === "leaf") return t;
+    const focusedLeaf = findLeafByPaneId(t.layout, t.focus);
+    if (!focusedLeaf) return t;
+    const parent = findParentOf(t.layout, t.focus);
+    if (!parent) return t;
+    const parentSplit = parent.parent;
+    // Detach from current parent (mirror of closePane's weight-merge).
+    const without = updateNode(t.layout, (n) => n.kind === "split" && n.id === parentSplit.id, (n) => {
+      if (n.kind !== "split") return n;
+      const closedW = n.sizes[parent.index];
+      const into = Math.max(0, parent.index - 1);
+      const children = n.children.filter((_, i) => i !== parent.index);
+      const sizes = n.sizes.filter((_, i) => i !== parent.index);
+      if (sizes.length > 0) {
+        const intoFinal = into >= sizes.length ? sizes.length - 1 : into;
+        sizes[intoFinal] += closedW;
+      }
+      return { ...n, children, sizes };
+    });
+    const collapsed = collapse(without);
+    const axis: SplitDir = dir === "left" || dir === "right" ? "vertical" : "horizontal";
+    const appendAtEnd = dir === "right" || dir === "down";
+    let nextLayout: LayoutNode;
+    if (collapsed.kind === "split" && collapsed.dir === axis) {
+      const newWeight = 1 / (collapsed.children.length + 1);
+      const children = appendAtEnd
+        ? [...collapsed.children, focusedLeaf]
+        : [focusedLeaf, ...collapsed.children];
+      const sizes = appendAtEnd
+        ? [...collapsed.sizes, newWeight]
+        : [newWeight, ...collapsed.sizes];
+      nextLayout = { ...collapsed, children, sizes };
+    } else {
+      const children = appendAtEnd ? [collapsed, focusedLeaf] : [focusedLeaf, collapsed];
+      nextLayout = makeSplit(axis, children);
     }
-    // Whole row collapsing → redistribute its weight to a neighbor row.
-    const layout = t.layout.filter((_, i) => i !== r);
-    const closedRowW = t.rowSizes[r];
-    const rowSizes = t.rowSizes.filter((_, i) => i !== r);
-    const intoRow = Math.max(0, r - 1);
-    rowSizes[intoRow] += closedRowW;
-    const colSizes = t.colSizes.filter((_, i) => i !== r);
-    const nr = Math.min(r, layout.length - 1);
-    const nc = Math.min(c, layout[nr].length - 1);
-    return { ...t, layout, rowSizes, colSizes, focus: [nr, nc] };
+    return { ...t, layout: nextLayout, focus: focusedLeaf.pane.id };
   });
 }
 
-// ── size mutations (drag handlers) ───────────────────────────────────────────
+// ── tile + stack mutations (editor panes) ──────────────────────────────────
 
-/** Replace a single row's column weights wholesale. Used by the drag
- *  handler each pointermove. Validates length matches layout[r]. */
-export function setColSizes(state: PaneTreeState, r: number, sizes: number[]): PaneTreeState {
-  return replaceTab(state, state.activeTabId, (t) => {
-    const row = t.layout[r];
-    if (!row || sizes.length !== row.length) return t;
-    const colSizes = t.colSizes.map((row, i) => (i === r ? sizes.slice() : row));
-    return { ...t, colSizes };
-  });
+function withFocusedLeaf(t: Tab, fn: (pane: Pane) => Pane): Tab {
+  const leaf = findLeafByPaneId(t.layout, t.focus);
+  if (!leaf) return t;
+  const next = fn(leaf.pane);
+  if (next === leaf.pane) return t;
+  return {
+    ...t,
+    layout: updateNode(
+      t.layout,
+      (n) => n.kind === "leaf" && n.pane.id === t.focus,
+      () => ({ kind: "leaf", pane: next }),
+    ),
+  };
 }
 
-/** Replace the row weights wholesale. Used by the row-drag handler. */
-export function setRowSizes(state: PaneTreeState, sizes: number[]): PaneTreeState {
-  return replaceTab(state, state.activeTabId, (t) => {
-    if (sizes.length !== t.layout.length) return t;
-    return { ...t, rowSizes: sizes.slice() };
-  });
-}
-
-// ── tile + stack mutations (editor panes) ───────────────────────────────────
-
-/**
- * Replace the focused pane's active tile with `tileId`. If the focused
- * pane is not an editor, convert it to one. If the editor pane has an
- * empty stack, seed it with `tileId`.
- */
 export function jumpToTile(state: PaneTreeState, tileId: string): PaneTreeState {
-  return replaceTab(state, state.activeTabId, (t) => {
-    const [r, c] = t.focus;
-    const pane = t.layout[r]?.[c];
-    if (!pane) return t;
-    return withPaneAt(t, r, c, (p) => {
+  return replaceTab(state, state.activeTabId, (t) =>
+    withFocusedLeaf(t, (p) => {
       if (p.kind !== "editor") {
         return { id: p.id, kind: "editor", tiles: [tileId], activeIdx: 0 };
       }
@@ -337,107 +521,102 @@ export function jumpToTile(state: PaneTreeState, tileId: string): PaneTreeState 
         ...p,
         tiles: p.tiles.map((tid, k) => (k === p.activeIdx ? tileId : tid)),
       };
-    });
-  });
+    }),
+  );
 }
 
-/**
- * Push `tileId` onto the focused editor pane's stack. If already
- * present, focus its index instead of duplicating. No-op if focused
- * pane isn't an editor.
- */
 export function stackAdd(state: PaneTreeState, tileId: string): PaneTreeState {
-  return replaceTab(state, state.activeTabId, (t) => {
-    const [r, c] = t.focus;
-    const pane = t.layout[r]?.[c];
-    if (!pane || pane.kind !== "editor") return t;
-    return withPaneAt(t, r, c, (p) => {
+  return replaceTab(state, state.activeTabId, (t) =>
+    withFocusedLeaf(t, (p) => {
       if (p.kind !== "editor") return p;
       const existing = p.tiles.indexOf(tileId);
       if (existing >= 0) return { ...p, activeIdx: existing };
       return { ...p, tiles: [...p.tiles, tileId], activeIdx: p.tiles.length };
-    });
-  });
+    }),
+  );
 }
 
-/** Cycle the focused editor pane's active tile by `dir` (+1 / -1). */
 export function stackNext(state: PaneTreeState, dir: 1 | -1): PaneTreeState {
-  return replaceTab(state, state.activeTabId, (t) => {
-    const [r, c] = t.focus;
-    const pane = t.layout[r]?.[c];
-    if (!pane || pane.kind !== "editor") return t;
-    const n = pane.tiles.length;
-    if (n <= 1) return t;
-    return withPaneAt(t, r, c, (p) => {
+  return replaceTab(state, state.activeTabId, (t) =>
+    withFocusedLeaf(t, (p) => {
       if (p.kind !== "editor") return p;
+      const n = p.tiles.length;
+      if (n <= 1) return p;
       const ni = ((p.activeIdx + dir) % n + n) % n;
       return { ...p, activeIdx: ni };
-    });
-  });
+    }),
+  );
 }
 
-/** Remove a tile from the focused editor pane's stack by index. */
 export function stackClose(state: PaneTreeState, idx: number): PaneTreeState {
-  return replaceTab(state, state.activeTabId, (t) => {
-    const [r, c] = t.focus;
-    const pane = t.layout[r]?.[c];
-    if (!pane || pane.kind !== "editor") return t;
-    return withPaneAt(t, r, c, (p) => {
+  return replaceTab(state, state.activeTabId, (t) =>
+    withFocusedLeaf(t, (p) => {
       if (p.kind !== "editor") return p;
       if (idx < 0 || idx >= p.tiles.length) return p;
       const tiles = p.tiles.filter((_, i) => i !== idx);
-      // If we just closed the last tile, leave empty (editor with no
-      // active tile is a valid state — the next jumpToTile populates it).
       const activeIdx =
-        tiles.length === 0
-          ? 0
-          : idx <= p.activeIdx
-            ? Math.max(0, p.activeIdx - 1)
-            : p.activeIdx;
+        tiles.length === 0 ? 0 : idx <= p.activeIdx ? Math.max(0, p.activeIdx - 1) : p.activeIdx;
       return { ...p, tiles, activeIdx };
-    });
-  });
+    }),
+  );
 }
 
-// ── pane-kind swap ──────────────────────────────────────────────────────────
+// ── pane-kind swap ─────────────────────────────────────────────────────────
 
-/** Swap a pane's kind, preserving its id and (where possible) ignoring
- * the prior kind's fields. */
 export function swapKind(state: PaneTreeState, paneId: string, newKind: PaneKind): PaneTreeState {
   return replaceTab(state, state.activeTabId, (t) => {
-    let changed = false;
-    const layout = t.layout.map((row) =>
-      row.map((p) => {
-        if (p.id === paneId && p.kind !== newKind) {
-          changed = true;
-          return { ...makePane(newKind), id: p.id };
-        }
-        return p;
-      }),
-    );
-    return changed ? { ...t, layout } : t;
+    const leaf = findLeafByPaneId(t.layout, paneId);
+    if (!leaf || leaf.pane.kind === newKind) return t;
+    const replacement: Pane = { ...makePane(newKind), id: leaf.pane.id };
+    return {
+      ...t,
+      layout: updateNode(
+        t.layout,
+        (n) => n.kind === "leaf" && n.pane.id === paneId,
+        () => ({ kind: "leaf", pane: replacement }),
+      ),
+    };
   });
 }
 
-/** Point a widget pane at a different Query note. No-op if the pane
- * isn't a widget pane or already shows that widget. */
 export function setPaneWidget(state: PaneTreeState, paneId: string, widgetId: string): PaneTreeState {
   return replaceTab(state, state.activeTabId, (t) => {
-    let changed = false;
-    const layout = t.layout.map((row) =>
-      row.map((p) => {
-        if (p.id === paneId && p.kind === "widget" && p.widget !== widgetId) {
-          changed = true;
-          return { ...p, widget: widgetId };
-        }
-        return p;
-      }),
-    );
-    return changed ? { ...t, layout } : t;
+    const leaf = findLeafByPaneId(t.layout, paneId);
+    if (!leaf || leaf.pane.kind !== "widget" || leaf.pane.widget === widgetId) return t;
+    const replacement: WidgetPane = { ...leaf.pane, widget: widgetId };
+    return {
+      ...t,
+      layout: updateNode(
+        t.layout,
+        (n) => n.kind === "leaf" && n.pane.id === paneId,
+        () => ({ kind: "leaf", pane: replacement }),
+      ),
+    };
   });
 }
 
-// ── tab mutations ───────────────────────────────────────────────────────────
+// ── size mutations (drag handlers) ─────────────────────────────────────────
+
+/** Replace the sizes array on a specific split node. Used by the drag
+ *  handler each pointermove. Validates length matches children — returns
+ *  the same state reference when the update is a no-op (so reactive
+ *  consumers skip a re-render). */
+export function setSplitSizes(state: PaneTreeState, splitId: string, sizes: number[]): PaneTreeState {
+  return replaceTab(state, state.activeTabId, (t) => {
+    const layout = updateNode(
+      t.layout,
+      (n) => n.kind === "split" && n.id === splitId,
+      (n) => {
+        if (n.kind !== "split") return n;
+        if (sizes.length !== n.children.length) return n;
+        return { ...n, sizes: sizes.slice() };
+      },
+    );
+    return layout === t.layout ? t : { ...t, layout };
+  });
+}
+
+// ── tab mutations ──────────────────────────────────────────────────────────
 
 export function newTab(state: PaneTreeState, name: string = "new"): PaneTreeState {
   const t = makeTab(name);
@@ -447,8 +626,7 @@ export function newTab(state: PaneTreeState, name: string = "new"): PaneTreeStat
 export function closeTab(state: PaneTreeState, tabId: string): PaneTreeState {
   if (state.tabs.length <= 1) return state;
   const remaining = state.tabs.filter((t) => t.id !== tabId);
-  const activeTabId =
-    tabId === state.activeTabId ? remaining[0].id : state.activeTabId;
+  const activeTabId = tabId === state.activeTabId ? remaining[0].id : state.activeTabId;
   return { ...state, tabs: remaining, activeTabId };
 }
 
@@ -458,7 +636,6 @@ export function switchTab(state: PaneTreeState, tabId: string): PaneTreeState {
   return { ...state, activeTabId: tabId };
 }
 
-/** Switch to the Nth tab (0-indexed). Out-of-range no-ops. */
 export function switchTabByIndex(state: PaneTreeState, index: number): PaneTreeState {
   const tab = state.tabs[index];
   if (!tab) return state;
@@ -472,7 +649,6 @@ export function renameTab(state: PaneTreeState, tabId: string, name: string): Pa
   };
 }
 
-/** Move tab `from` index to `to` index. Out-of-range or identical no-ops. */
 export function moveTab(state: PaneTreeState, from: number, to: number): PaneTreeState {
   if (from === to) return state;
   if (from < 0 || from >= state.tabs.length) return state;
@@ -483,14 +659,17 @@ export function moveTab(state: PaneTreeState, from: number, to: number): PaneTre
   return { ...state, tabs };
 }
 
-// ── serialization ───────────────────────────────────────────────────────────
+// ── serialization ──────────────────────────────────────────────────────────
 
 export function serialize(state: PaneTreeState): string {
   return JSON.stringify(state);
 }
 
-/** Returns null on any decode/version mismatch. Caller falls back to
- * `initialState()`. */
+/**
+ * Returns null on any decode failure. Migrates legacy v1 state (the
+ * `Pane[][]` matrix with `rowSizes` / `colSizes`) into the v2 binary
+ * tree on the fly so existing localStorage envelopes keep working.
+ */
 export function deserialize(raw: string | null | undefined): PaneTreeState | null {
   if (!raw) return null;
   let parsed: unknown;
@@ -501,28 +680,92 @@ export function deserialize(raw: string | null | undefined): PaneTreeState | nul
   }
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
-  if (obj.version !== STATE_VERSION) return null;
   if (!Array.isArray(obj.tabs) || obj.tabs.length === 0) return null;
   if (typeof obj.activeTabId !== "string") return null;
-  // Light shape check; deeper validation can land if real-world bugs surface.
   if (!obj.tabs.some((t: any) => t && t.id === obj.activeTabId)) return null;
-  // Migrate tabs that pre-date rowSizes/colSizes: default each row +
-  // column weight to 1. Stays a no-op for tabs already carrying them.
-  const tabs = (obj.tabs as any[]).map((t) => {
-    if (!Array.isArray(t.layout)) return t;
-    const rowSizes =
-      Array.isArray(t.rowSizes) && t.rowSizes.length === t.layout.length
-        ? t.rowSizes
-        : t.layout.map(() => 1);
-    const colSizes =
-      Array.isArray(t.colSizes) &&
-      t.colSizes.length === t.layout.length &&
-      t.colSizes.every((row: unknown, i: number) =>
-        Array.isArray(row) && row.length === t.layout[i].length,
-      )
-        ? t.colSizes
-        : t.layout.map((row: unknown[]) => row.map(() => 1));
-    return { ...t, rowSizes, colSizes };
-  });
-  return { ...(obj as PaneTreeState), tabs };
+
+  if (obj.version === STATE_VERSION) {
+    const tabs = (obj.tabs as any[]).map((t) => normalizeV2Tab(t));
+    if (tabs.some((t) => t === null)) return null;
+    return { ...(obj as PaneTreeState), tabs: tabs as Tab[] };
+  }
+  if (obj.version === 1) {
+    return migrateV1((obj as unknown) as LegacyV1State);
+  }
+  return null;
+}
+
+function normalizeV2Tab(t: any): Tab | null {
+  if (!t || typeof t.id !== "string" || typeof t.name !== "string") return null;
+  if (!t.layout || typeof t.focus !== "string") return null;
+  if (!findLeafByPaneId(t.layout as LayoutNode, t.focus)) {
+    const first = findFirstLeaf(t.layout as LayoutNode);
+    return { ...(t as Tab), focus: first.pane.id };
+  }
+  return t as Tab;
+}
+
+type LegacyV1State = {
+  version: number;
+  activeTabId: string;
+  tabs: {
+    id: string;
+    name: string;
+    layout: Pane[][];
+    focus: [number, number];
+    rowSizes?: number[];
+    colSizes?: number[][];
+  }[];
+};
+
+function migrateV1(s: LegacyV1State): PaneTreeState | null {
+  try {
+    const tabs: Tab[] = s.tabs.map((t) => {
+      const rows = t.layout;
+      const rowSizes =
+        Array.isArray(t.rowSizes) && t.rowSizes.length === rows.length
+          ? t.rowSizes
+          : rows.map(() => 1);
+      const colSizes =
+        Array.isArray(t.colSizes) && t.colSizes.length === rows.length
+          ? t.colSizes
+          : rows.map((r) => r.map(() => 1));
+      const rowNodes: LayoutNode[] = rows.map((row, r) => {
+        const ls: LeafNode[] = row.map((pane) => ({ kind: "leaf", pane }));
+        if (ls.length === 1) return ls[0];
+        return {
+          id: mkSplitId(),
+          kind: "split",
+          dir: "vertical",
+          children: ls,
+          sizes: colSizes[r].slice(),
+        };
+      });
+      const layout: LayoutNode =
+        rowNodes.length === 1
+          ? rowNodes[0]
+          : {
+              id: mkSplitId(),
+              kind: "split",
+              dir: "horizontal",
+              children: rowNodes,
+              sizes: rowSizes.slice(),
+            };
+      const [fr, fc] = t.focus;
+      const focusPaneObj = rows[fr]?.[fc] ?? rows[0]?.[0] ?? findFirstLeaf(layout).pane;
+      return {
+        id: t.id,
+        name: t.name,
+        layout,
+        focus: focusPaneObj.id,
+      };
+    });
+    return {
+      version: STATE_VERSION,
+      tabs,
+      activeTabId: s.activeTabId,
+    };
+  } catch {
+    return null;
+  }
 }

@@ -13,6 +13,7 @@ import {
   getState,
   hsplit,
   jumpToTile,
+  movePane,
   newTab,
   stackAdd,
   stackNext,
@@ -89,6 +90,19 @@ export function buildV4Commands(): V4Command[] {
       keywords: ["close", "quit", "kill", "pane"],
       run: () => closePane(),
     },
+    // Pane-move: detach focused leaf, reinsert at the dir-most edge of
+    // the tab — Aerospace-style "send this pane to the left", etc.
+    ...(["left", "right", "up", "down"] as const).map((dir) => ({
+      id: `move-${dir}`,
+      verb: `move-${dir}`,
+      label: `Move pane ${dir}`,
+      glyph:
+        dir === "left" ? "←" : dir === "right" ? "→" : dir === "up" ? "↑" : "↓",
+      category: "pane" as const,
+      shortcut: `⌘⇧${dir === "left" ? "H" : dir === "right" ? "L" : dir === "up" ? "K" : "J"}`,
+      keywords: ["move", "push", "send", dir, "pane"],
+      run: () => movePane(dir),
+    })),
 
     // ── tab ─────────────────────────────────────────────────────────────
     {

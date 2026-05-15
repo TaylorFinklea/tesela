@@ -43,13 +43,9 @@
 
   let {
     pane,
-    row,
-    col,
     focused,
   }: {
     pane: Pane;
-    row: number;
-    col: number;
     focused: boolean;
   } = $props();
 
@@ -116,11 +112,10 @@
   //    nav). This is the "follow link in current buffer" UX.
   //  - Non-editor pane (graph node, widget row, dashboard card, context
   //    backlink): route to the last-focused editor in the tab via
-  //    `openInEditor` — neovim's "open in main buffer" pattern. Falls back
-  //    to converting the focused pane when no editor exists yet.
+  //    `openInEditor` — neovim's "open in main buffer" pattern.
   function openTileFromThisPane(noteId: string) {
     if (pane.kind === "editor") {
-      focusPane(row, col);
+      focusPane(pane.id);
       jumpToTile(noteId);
     } else {
       openInEditor(noteId, { via: pane.kind });
@@ -231,7 +226,7 @@
     if (target.closest("button, a, input, textarea, select, [role='button'], [role='option']")) {
       return;
     }
-    focusPane(row, col);
+    focusPane(pane.id);
     if (!target.closest(".cm-editor")) {
       shellEl?.focus();
     }
@@ -269,7 +264,7 @@
                 class:active={i === pane.activeIdx}
                 onclick={(e) => {
                   e.stopPropagation();
-                  focusPane(row, col);
+                  focusPane(pane.id);
                   // step the stack to this index
                   const delta = i - pane.activeIdx;
                   if (delta !== 0) stackNext(delta > 0 ? 1 : -1);
@@ -316,7 +311,7 @@
         title="close pane · ⌘W"
         onclick={(e) => {
           e.stopPropagation();
-          focusPane(row, col);
+          focusPane(pane.id);
           closePane();
         }}
       >×</button>

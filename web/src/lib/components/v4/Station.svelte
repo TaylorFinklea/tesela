@@ -127,7 +127,7 @@
     if (el) el.focus({ preventScroll: true });
     else {
       const hit = getPaneById(prior);
-      if (hit) focusPane(hit.row, hit.col);
+      if (hit) focusPane(hit.pane.id);
     }
   }
 
@@ -196,7 +196,7 @@
     const prior = getStationPriorPaneId();
     if (prior) {
       const hit = getPaneById(prior);
-      if (hit) focusPane(hit.row, hit.col);
+      if (hit) focusPane(hit.pane.id);
     }
     let arg: string | undefined;
     if (cmd.argPrompt) {
@@ -219,9 +219,9 @@
     if (prior) {
       const hit = getPaneById(prior);
       if (hit) {
-        focusPane(hit.row, hit.col);
-        swapKind(prior, "widget");
-        setPaneWidget(prior, widgetNoteId);
+        focusPane(hit.pane.id);
+        swapKind(hit.pane.id, "widget");
+        setPaneWidget(hit.pane.id, widgetNoteId);
       }
     } else {
       jumpToTile(widgetNoteId);

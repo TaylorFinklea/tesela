@@ -13,14 +13,15 @@
     newTab,
   } from "$lib/stores/pane-tree.svelte";
   import type { Tab } from "$lib/stores/pane-tree";
+  import { leaves } from "$lib/stores/pane-tree";
 
   const state = $derived(getState());
 
   // Compact "3e·1w·c" kind-count pill for a tab.
   function kindCounts(tab: Tab): string {
     const counts: Record<string, number> = {};
-    for (const row of tab.layout) {
-      for (const pane of row) counts[pane.kind] = (counts[pane.kind] ?? 0) + 1;
+    for (const leaf of leaves(tab.layout)) {
+      counts[leaf.pane.kind] = (counts[leaf.pane.kind] ?? 0) + 1;
     }
     const parts: string[] = [];
     if (counts.editor) parts.push(`${counts.editor}e`);
