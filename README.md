@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="brand/exports/tesela-logo-512.png" alt="Tesela logo" width="128" height="128" />
+</p>
+
 # Tesela
 
 A keyboard-first note-taking system built in Rust with a web frontend. Tesela combines a block outliner, Vim-style editing, a page-based type system, and a local REST/WebSocket server so the UI and backend can evolve independently.

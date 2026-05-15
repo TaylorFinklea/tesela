@@ -1,0 +1,67 @@
+/*
+ * Prism v4 design tokens. Scoped to `.v4-root` so they never leak into
+ * the legacy chrome while both layouts coexist on the redesign-v4
+ * branch. Values lifted from the v4 proto's T3 palette
+ * (`Tesela2.zip → v3-shared.jsx`). The radial-gradient background from
+ * the proto is intentionally dropped — Taylor didn't want the gradient;
+ * we use the flat dark surface instead. Full visual polish (Geist font
+ * loading, ambient, animations) lands in Phase 6.
+ */
+
+.v4-root {
+  --v4-bg: #08090f;
+  --v4-surface-lo: rgba(255, 255, 255, 0.015);
+  --v4-surface: rgba(255, 255, 255, 0.028);
+  --v4-surface-hi: rgba(255, 255, 255, 0.045);
+
+  --v4-hair: rgba(255, 255, 255, 0.045);
+  --v4-hair2: rgba(255, 255, 255, 0.075);
+
+  --v4-ink: #eaeefc;
+  --v4-ink2: #cdd4ff;
+  --v4-ink3: #a9b1d6;
+  --v4-ink4: #737aa2;
+  --v4-ink5: #535a82;
+  --v4-ink6: #363c5e;
+
+  --v4-accent: #7b8cff;
+  --v4-accent-dim: rgba(123, 140, 255, 0.55);
+  --v4-accent2: #62c8ff;
+
+  --v4-sans: "Geist", "Inter Tight", system-ui, -apple-system, sans-serif;
+  /* Geist Mono isn't on Google Fonts; JetBrains Mono is already loaded
+     globally in app.html, so use that as the v4 mono. */
+  --v4-mono: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+
+  /* ── motion ───────────────────────────────────────────────────────────── */
+  /* Pane-settle: a soft overshoot-feel curve borrowed from the proto. */
+  --v4-ease-settle: cubic-bezier(0.22, 1, 0.36, 1);
+  /* Fast in / lingering out — overlays use this so they feel responsive
+     when opening and gentle when dismissed. */
+  --v4-ease-overlay: cubic-bezier(0.16, 1, 0.3, 1);
+
+  --v4-dur-fast: 140ms;
+  --v4-dur-base: 220ms;
+  --v4-dur-slow: 320ms;
+}
+
+/* ── keyframes (scoped to .v4-root via class names) ─────────────────────── */
+@keyframes v4-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes v4-slide-down {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@keyframes v4-popover-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0)    scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .v4-root :is(*, *::before, *::after) {
+    animation: none !important;
+    transition: none !important;
+  }
+}

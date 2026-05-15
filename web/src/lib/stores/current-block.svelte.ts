@@ -1,48 +1,69 @@
 /**
- * Currently focused block in the active note's outliner.
+ * Currently focused block, tracked per pane.
  *
- * Phase 9.5b — per-side state for the column-view split. The drawer's
- * Properties / Outline tabs follow whichever side is active per
- * `pane-state.svelte`'s `vSplitActiveSide`. Single-pane state always sets
- * active = "right", so the drawer reads `rightFocusedBlock` in that case.
+ * Originally a 2-slot model (left / right) for the legacy column-view
+ * split. Prism v4 has an arbitrary number of editor panes, so the state
+ * is now a `Map<paneId, ParsedBlock | null>`. Each BlockOutliner
+ * publishes via its `onfocusedblockchange` callback; the surrounding
+ * pane shell wires that callback to `setFocusedBlockForPane`.
  *
- * BlockOutliner publishes via its `onfocusedblockchange` callback; the note
- * page wires the callback to the side-specific setter
- * (`setLeftFocusedBlock` / `setRightFocusedBlock`).
+ * The legacy chrome still uses the left/right API — those functions are
+ * kept as thin shims over reserved sentinel pane ids, so the column-view
+ * split, bottom drawer, kanban, journal, and query-widget code paths are
+ * untouched while both chromes coexist on the redesign-v4 branch.
  */
 import type { ParsedBlock } from "$lib/types/ParsedBlock";
 import { getVSplitActiveSide } from "$lib/stores/pane-state.svelte";
 
-let leftFocusedBlock = $state<ParsedBlock | null>(null);
-let rightFocusedBlock = $state<ParsedBlock | null>(null);
+/** Reserved pane ids backing the legacy left/right column-view split. */
+const LEGACY_LEFT = "__legacy_left__";
+const LEGACY_RIGHT = "__legacy_right__";
+
+// Svelte 5 makes Map mutations (`set` / `delete`) reactive when the Map
+// itself is `$state`-wrapped, so consumers re-run on every change.
+const focusedByPane = $state(new Map<string, ParsedBlock | null>());
+
+// ── v4 per-pane API ─────────────────────────────────────────────────────────
+
+export function setFocusedBlockForPane(paneId: string, block: ParsedBlock | null) {
+  focusedByPane.set(paneId, block);
+}
+
+export function getFocusedBlockForPane(paneId: string): ParsedBlock | null {
+  return focusedByPane.get(paneId) ?? null;
+}
+
+/** Drop a pane's entry entirely — call when the pane unmounts. */
+export function clearPaneFocusedBlock(paneId: string) {
+  focusedByPane.delete(paneId);
+}
+
+// ── legacy left/right compat shims ──────────────────────────────────────────
 
 export function getLeftFocusedBlock(): ParsedBlock | null {
-  return leftFocusedBlock;
+  return focusedByPane.get(LEGACY_LEFT) ?? null;
 }
 
 export function getRightFocusedBlock(): ParsedBlock | null {
-  return rightFocusedBlock;
+  return focusedByPane.get(LEGACY_RIGHT) ?? null;
 }
 
 export function setLeftFocusedBlock(block: ParsedBlock | null) {
-  leftFocusedBlock = block;
+  focusedByPane.set(LEGACY_LEFT, block);
 }
 
 export function setRightFocusedBlock(block: ParsedBlock | null) {
-  rightFocusedBlock = block;
+  focusedByPane.set(LEGACY_RIGHT, block);
 }
 
-/** The block the bottom drawer should show — follows active side. */
+/** The block the legacy bottom drawer should show — follows active side. */
 export function getFocusedBlock(): ParsedBlock | null {
-  if (getVSplitActiveSide() === "right") return rightFocusedBlock;
-  return leftFocusedBlock;
+  const key = getVSplitActiveSide() === "right" ? LEGACY_RIGHT : LEGACY_LEFT;
+  return focusedByPane.get(key) ?? null;
 }
 
-/** Backwards-compat setter — writes whichever side is active. */
+/** Legacy backwards-compat setter — writes whichever side is active. */
 export function setFocusedBlock(block: ParsedBlock | null) {
-  if (getVSplitActiveSide() === "right") {
-    rightFocusedBlock = block;
-  } else {
-    leftFocusedBlock = block;
-  }
+  const key = getVSplitActiveSide() === "right" ? LEGACY_RIGHT : LEGACY_LEFT;
+  focusedByPane.set(key, block);
 }

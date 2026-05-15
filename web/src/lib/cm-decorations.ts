@@ -8,7 +8,7 @@
  *   `.show-props` ancestor can override
  */
 import { EditorView, Decoration, WidgetType, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { Facet, RangeSet, RangeSetBuilder } from "@codemirror/state";
+import { EditorSelection, EditorState, Facet, RangeSet, RangeSetBuilder, Transaction } from "@codemirror/state";
 
 class EmptyWidget extends WidgetType {
   toDOM() { return document.createElement("span"); }
@@ -175,6 +175,151 @@ export const teselaDecorations = ViewPlugin.fromClass(
     provide: (plugin) => EditorView.atomicRanges.of((view) => view.plugin(plugin)?.atomicTags ?? RangeSet.empty),
   },
 );
+
+// ── atomic-cursor transaction filter ────────────────────────────────────────
+//
+// `EditorView.atomicRanges` is only consulted by the BUILT-IN cursor motion
+// commands. `@replit/codemirror-vim`'s `h`/`l` go through `moveByCharacters`
+// → `setCursor(line, cur.ch ± 1)` which dispatches a plain selection
+// transaction without checking atomicRanges (see dist/index.js:2389 + 7258).
+// The cursor visibly gets stuck at the empty `widgetBuffer` span and goes
+// invisible until enough `l` presses exhaust the underlying hidden chars.
+//
+// The fix runs as a `transactionFilter`: any selection that lands inside an
+// atomic range gets snapped to the appropriate edge (forward motion → `to`,
+// backward → `from`). Catches cm-vim, mouse clicks, and any other consumer
+// that dispatches a selection without checking atomicRanges.
+//
+// Atomic ranges covered:
+//   - inline `#tags` (TAG_RE) — fully hidden via tagHide widget
+//   - block-id comments (BID_RE) — fully hidden via bidHide widget
+//   - whole `tags:: ...` lines — hidden via `display:none` line decoration
+//   - hidden `key:: value` property lines per the hiddenPropertyKeysFacet
+
+/**
+ * Pure: returns sorted, non-overlapping `[from, to)` byte ranges in `doc`
+ * that the cursor should skip over. Exported so the unit tests can exercise
+ * the snap logic without a live editor.
+ */
+export function findAtomicCursorRanges(doc: string, config: HiddenKeysConfig): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+
+  TAG_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = TAG_RE.exec(doc)) !== null) {
+    ranges.push([m.index, m.index + m[0].length]);
+  }
+
+  BID_RE.lastIndex = 0;
+  while ((m = BID_RE.exec(doc)) !== null) {
+    ranges.push([m.index, m.index + m[0].length]);
+  }
+
+  // For full-line hides, include the trailing newline so `j` from above
+  // moves all the way past the hidden line to the line below.
+  function lineRangeWithNewline(lineStart: number, lineLen: number): [number, number] {
+    const end = lineStart + lineLen;
+    const after = doc.charCodeAt(end) === 10 ? end + 1 : end; // \n
+    return [lineStart, after];
+  }
+
+  TAGS_LINE_RE.lastIndex = 0;
+  while ((m = TAGS_LINE_RE.exec(doc)) !== null) {
+    ranges.push(lineRangeWithNewline(m.index, m[0].length));
+  }
+
+  if (config.hide.size > 0 || config.hideEmpty.size > 0) {
+    PROPERTY_RE.lastIndex = 0;
+    while ((m = PROPERTY_RE.exec(doc)) !== null) {
+      const key = m[1].toLowerCase();
+      if (key === "tags") continue;
+      const value = m[2] ?? "";
+      const isEmpty = value.trim() === "";
+      if (config.hide.has(key) || (isEmpty && config.hideEmpty.has(key))) {
+        ranges.push(lineRangeWithNewline(m.index, m[0].length));
+      }
+    }
+  }
+
+  ranges.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  return ranges;
+}
+
+/**
+ * Pure: snap `newHead` out of any atomic range. Direction is inferred from
+ * `oldHead` — forward motion lands at `to`, backward at `from`. The far
+ * edge of the range is "inclusive" when motion is INTO it (forward into
+ * `from` snaps past to `to`, backward into `to` snaps back to `from`)
+ * because a 0-width hidden widget collapses `from` and `to` onto the same
+ * physical column — without this, vim `l` from the char just before a
+ * `#tag` feels stuck for an extra press. The "from" edge stays selectable
+ * when motion is away from the range (cursor just left from to-1 backward
+ * etc.), and any boundary visit with `oldHead === newHead` (mouse click
+ * etc.) keeps the original head so external selections aren't moved.
+ *
+ * The transactionFilter that owns this skips doc-changing transactions
+ * entirely, so this snap never fires during typing.
+ */
+export function snapHeadOutOfAtomicRanges(
+  newHead: number,
+  oldHead: number,
+  ranges: ReadonlyArray<readonly [number, number]>,
+): number {
+  for (const [from, to] of ranges) {
+    if (newHead < from) break; // ranges sorted
+    if (newHead > to) continue;
+    const forward = newHead > oldHead;
+    const backward = newHead < oldHead;
+    if (forward && newHead >= from && newHead < to) return to;
+    if (backward && newHead > from && newHead <= to) return from;
+  }
+  return newHead;
+}
+
+export const teselaAtomicCursorFilter = EditorState.transactionFilter.of((tr) => {
+  // Skip doc-changing transactions (typing, paste, undo): the post-edit
+  // cursor placement is the editor's own concern and snapping there would
+  // teleport the cursor across a tag the user just typed in front of.
+  if (!tr.selection || tr.docChanged) return tr;
+  const config = tr.startState.facet(hiddenPropertyKeysFacet);
+  const ranges = findAtomicCursorRanges(tr.newDoc.toString(), config);
+  if (ranges.length === 0) return tr;
+
+  const oldSel = tr.startState.selection;
+  let changed = false;
+  const adjusted = tr.newSelection.ranges.map((r, i) => {
+    const oldHead = oldSel.ranges[i]?.head ?? -1;
+    const head = snapHeadOutOfAtomicRanges(r.head, oldHead, ranges);
+    if (head === r.head) return r;
+    changed = true;
+    // Collapse anchor to head when the prior selection was a cursor (empty)
+    // so we don't accidentally turn a vim `l` into a visual selection.
+    const anchor = r.anchor === r.head ? head : r.anchor;
+    return EditorSelection.range(anchor, head);
+  });
+  if (!changed) return tr;
+
+  // Rebuild as a spec. Forward the annotations we care about — userEvent
+  // (history grouping) and remote (collaboration). Other annotations are
+  // rare on selection-only transactions and would just survive as-is on
+  // the original tr anyway (this filter only fires when we actually shift
+  // the selection).
+  const userEvent = tr.annotation(Transaction.userEvent);
+  const remote = tr.annotation(Transaction.remote);
+  const annotations = [
+    ...(userEvent !== undefined ? [Transaction.userEvent.of(userEvent)] : []),
+    ...(remote !== undefined ? [Transaction.remote.of(remote)] : []),
+  ];
+  return [
+    {
+      changes: tr.changes,
+      selection: EditorSelection.create(adjusted, tr.newSelection.mainIndex),
+      effects: tr.effects,
+      scrollIntoView: tr.scrollIntoView,
+      annotations: annotations.length > 0 ? annotations : undefined,
+    },
+  ];
+});
 
 export const teselaDecorationTheme = EditorView.theme({
   ".cm-tesela-tags-line": {
