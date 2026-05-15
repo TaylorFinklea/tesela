@@ -97,7 +97,7 @@
               <option value={k}>{k}</option>
             {/each}
           </select>
-          <button class="peek-close" type="button" onclick={closePeek} title="close · Esc · i">×</button>
+          <button class="peek-close" type="button" onclick={closePeek} title="close · Esc · K">×</button>
         </div>
       </header>
       <div class="peek-body">

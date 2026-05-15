@@ -12,6 +12,7 @@
    * cross-talk with the legacy chrome.
    */
   import { onMount } from "svelte";
+  import { goto } from "$app/navigation";
   import "$lib/v4/tokens.css";
   import {
     getState,
@@ -185,7 +186,10 @@
           e.preventDefault();
           openColonMode();
           break;
-        case "i":
+        case "K":
+          // Peek — `K` mirrors vim's "look up keyword" semantically.
+          // Lowercase `k` is move-focus-up above; uppercase is unbound in
+          // our pane keymap, so this doesn't collide with vim insert (`i`).
           e.preventDefault();
           togglePeek(getFocusedPaneId());
           break;
@@ -241,6 +245,11 @@
         title="fullscreen graph · g"
         onclick={() => openFullscreenGraph()}
       >✦</button>
+      <button
+        type="button"
+        title="settings — devices, sync, mosaic…"
+        onclick={() => goto("/settings/general")}
+      >⚙</button>
       <button type="button" title="keys (Phase 6 polish)" disabled>?</button>
     </div>
   </header>
@@ -288,7 +297,7 @@
     <span class="v4-status-right">
       <span><b>⌘K</b> station</span>
       <span><b>:</b> ex</span>
-      <span><b>i</b> peek</span>
+      <span><b>K</b> peek</span>
       <span><b>g</b> graph</span>
       <span><b>hjkl</b> move</span>
     </span>

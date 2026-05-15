@@ -6,6 +6,7 @@
  * top of the same registry.
  */
 
+import { goto } from "$app/navigation";
 import { api } from "$lib/api-client";
 import {
   closePane,
@@ -18,6 +19,14 @@ import {
   stackNext,
   vsplit,
 } from "$lib/stores/pane-tree.svelte";
+
+const SETTINGS_PAGES = new Set([
+  "general",
+  "devices",
+  "sync",
+  "mosaic",
+  "data",
+]);
 
 export type V4Command = {
   id: string;
@@ -155,6 +164,20 @@ export function buildV4Commands(): V4Command[] {
       category: "navigate",
       keywords: ["daily", "today", "journal"],
       run: () => jumpToDaily(),
+    },
+    {
+      id: "settings",
+      verb: "settings",
+      label: "Open settings…",
+      glyph: "⚙",
+      category: "navigate",
+      keywords: ["settings", "preferences", "config", "devices", "sync", "mosaic", "general", "data"],
+      argPrompt: "page (general · devices · sync · mosaic · data)",
+      run: (arg) => {
+        const page = (arg ?? "").trim().toLowerCase();
+        const target = SETTINGS_PAGES.has(page) ? page : "general";
+        return goto(`/settings/${target}`);
+      },
     },
     {
       id: "new-note",
