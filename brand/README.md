@@ -12,19 +12,19 @@ Design direction: **B1** from the 2026-05-15 Recraft batch (see `tesela-logo-mar
 
 | File | Role |
 |---|---|
-| `tesela-logo-mark.svg` | **Vector master.** Single source of truth. Edit this when shape changes are needed. |
-| `tesela-logo-mark-source.tiff` | High-res raster master (~2292px, 21 MB). Use for Photoshop edits (e.g. repositioning the accent tile) and for exporting large rasters. |
-| `tesela-logo-mark.png` | Web-friendly raster preview (~72 KB). Convenience export from the master; do not hand-edit. |
-| `tesela-logo-mark.recraft.json` | Recraft generation metadata (prompt, style, settings). Reproducibility record only — not consumed by the build. |
-| `og-image.svg` | OG/Twitter link preview composition (1200×630) — logo + wordmark + subtitle on cream canvas. |
-| `exports/` | Pre-rendered PNGs of the mark at standard sizes (32, 180, 192, 512, 1024) and the OG image. Regenerate with the commands in the *Regenerating exports* section. |
+| `tesela-logo-mark.svg` | **Vector master.** Single source of truth. Tight-cropped square (`viewBox="475 475 1342 1342"`), transparent background. Edit this when shape or framing changes are needed. |
+| `tesela-logo-mark.png` | 1342×1342 raster preview rendered from the master. Hand-editable for one-off tweaks (e.g. the framing fix on 2026-05-15 was done here in Photoshop, then back-ported to the SVG's `viewBox`). |
+| `tesela-logo-mark.recraft.json` | Recraft generation metadata (original prompt, style, settings). Reproducibility record only — not consumed by the build. Note: the original Recraft output had a white background and wider padding; both have since been corrected directly in the SVG master. |
+| `og-image.svg` | OG/Twitter link preview composition (1200×630) — logo + wordmark + subtitle on cream canvas. Embeds the mark's path data directly (independent of the master's viewBox). |
+| `exports/` | Pre-rendered PNGs of the mark at standard sizes (32, 180, 192, 512, 1024, 2048) and the OG image. The 2048 export is the high-res raster master — open it in Photoshop for one-off edits, then back-port any framing changes to the SVG. Regenerate with the commands in the *Regenerating exports* section. |
+| `tesela-logo-mark-source.tiff` | ⚠️ **Stale.** Original 2292×2292 Recraft raster with the old wide-padding framing and a white background. Kept temporarily for reference; safe to delete. |
 
 ## Colors
 
 | Role | Hex | Notes |
 |---|---|---|
 | Tiles | `#023047` | Deep navy. Reads on both light and dark UI backgrounds. |
-| Accent | `#F13408` | Warm orange-red. Currently on the middle stem tile — repositionable in Photoshop. |
+| Accent | `#F13408` | Warm orange-red. Currently on the middle stem tile — repositionable in Photoshop or by re-coloring a different path in the SVG. |
 
 ## Where it ships
 
@@ -51,11 +51,15 @@ When the SVG master changes, regenerate exports (see below) and re-copy into `we
 From the `brand/` directory:
 
 ```sh
-# Mark exports
-for size in 32 180 192 512 1024; do
+# Mark exports (2048 is the high-res raster master for Photoshop work)
+for size in 32 180 192 512 1024 2048; do
   inkscape --export-type=png --export-filename="exports/tesela-logo-${size}.png" \
     -w ${size} -h ${size} tesela-logo-mark.svg
 done
+
+# Top-level preview
+inkscape --export-type=png --export-filename="tesela-logo-mark.png" \
+  -w 1342 -h 1342 tesela-logo-mark.svg
 
 # OG image (text→paths so it renders without Inter Tight installed)
 inkscape --export-type=png --export-filename="exports/tesela-og-image.png" \
