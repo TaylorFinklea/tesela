@@ -491,7 +491,7 @@
     cursor: pointer;
   }
   .station-row.active {
-    background: rgba(123, 140, 255, 0.10);
+    background: color-mix(in srgb, var(--v4-accent) 10%, transparent);
     color: var(--v4-ink);
   }
   .station-row-glyph {

@@ -24,9 +24,15 @@
   --v4-ink5: #535a82;
   --v4-ink6: #363c5e;
 
-  --v4-accent: #7b8cff;
-  --v4-accent-dim: rgba(123, 140, 255, 0.55);
-  --v4-accent2: #62c8ff;
+  /* Accent pulled from the brand mark's vermilion tile (#F13408).
+     Dimmed variant = same hue at ~55% alpha — used for low-key
+     surfaces (pane focus glow, drag-handle hover). `--v4-accent2`
+     stays as the brand's complementary cool tone for rare two-color
+     callouts (e.g. focus dot on inactive panes), derived from the
+     dark navy at a higher saturation so it still reads on dark bg. */
+  --v4-accent: #F13408;
+  --v4-accent-dim: rgba(241, 52, 8, 0.55);
+  --v4-accent2: #2DB4D9;
 
   --v4-sans: "Geist", "Inter Tight", system-ui, -apple-system, sans-serif;
   /* Geist Mono isn't on Google Fonts; JetBrains Mono is already loaded

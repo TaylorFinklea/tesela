@@ -95,7 +95,7 @@
     background: var(--v4-surface-lo);
   }
   .v4-tab.active {
-    background: rgba(123, 140, 255, 0.08);
+    background: color-mix(in srgb, var(--v4-accent) 8%, transparent);
     border-top-color: var(--v4-accent);
     color: var(--v4-ink);
   }

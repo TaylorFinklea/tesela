@@ -85,7 +85,11 @@
 
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
-      const mod = e.metaKey || e.ctrlKey;
+      // App-level shortcuts use ⌘ only — Ctrl is reserved for vim. Most
+      // notably this gives vim its `<C-w>` window-prefix back (was being
+      // eaten by the close-pane binding). Cross-platform Ctrl support can
+      // come later as a pref; today the app is Mac-only.
+      const mod = e.metaKey;
 
       // ⌘K opens the Station. Station's own keydown handler intercepts
       // ⌘K while open (toggle-close), so this only ever fires the open.
@@ -125,6 +129,20 @@
       if (e.altKey && /^[1-9]$/.test(e.key)) {
         e.preventDefault();
         switchTabByIndex(Number(e.key) - 1);
+        return;
+      }
+
+      // ⌘I / ⌘G — peek + fullscreen graph. Fire from anywhere (including
+      // inside cm-editor) so the user doesn't need to escape vim to reach
+      // them. Bare `K` / `g` below also work outside the editor.
+      if (mod && !e.shiftKey && (e.key === "i" || e.key === "I")) {
+        e.preventDefault();
+        togglePeek(getFocusedPaneId());
+        return;
+      }
+      if (mod && !e.shiftKey && (e.key === "g" || e.key === "G")) {
+        e.preventDefault();
+        openFullscreenGraph();
         return;
       }
 
@@ -408,8 +426,8 @@
     <span class="v4-status-right">
       <span><b>⌘K</b> station</span>
       <span><b>:</b> ex</span>
-      <span><b>K</b> peek</span>
-      <span><b>g</b> graph</span>
+      <span><b>⌘I</b> peek</span>
+      <span><b>⌘G</b> graph</span>
       <span><b>hjkl</b> move</span>
     </span>
   </footer>

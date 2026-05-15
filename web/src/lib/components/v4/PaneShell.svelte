@@ -422,7 +422,7 @@
     border-top-color: var(--v4-accent);
     background: linear-gradient(
       180deg,
-      rgba(123, 140, 255, 0.04),
+      color-mix(in srgb, var(--v4-accent) 5%, transparent),
       transparent 30%
     );
   }
@@ -527,7 +527,7 @@
   .v4-stack-chip.active {
     color: var(--v4-ink);
     border-color: var(--v4-accent-dim);
-    background: rgba(123, 140, 255, 0.08);
+    background: color-mix(in srgb, var(--v4-accent) 8%, transparent);
   }
 
   .v4-pane-body {

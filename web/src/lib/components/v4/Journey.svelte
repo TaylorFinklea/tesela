@@ -146,6 +146,6 @@
   .v4-journey-chip.active {
     color: var(--v4-ink);
     border-color: var(--v4-accent-dim);
-    background: rgba(123, 140, 255, 0.10);
+    background: color-mix(in srgb, var(--v4-accent) 10%, transparent);
   }
 </style>
