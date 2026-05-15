@@ -5,7 +5,7 @@
   import { keymap, drawSelection } from "@codemirror/view";
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim } from "@replit/codemirror-vim";
-  import { teselaDecorations, teselaDecorationTheme } from "$lib/cm-decorations";
+  import { teselaAtomicCursorFilter, teselaDecorations, teselaDecorationTheme } from "$lib/cm-decorations";
 
   let {
     body,
@@ -48,6 +48,7 @@
         theme,
         updateListener,
         teselaDecorations,
+        teselaAtomicCursorFilter,
         teselaDecorationTheme,
         EditorView.lineWrapping,
       ],

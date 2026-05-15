@@ -21,6 +21,7 @@
     swapKind,
     setPaneWidget,
     jumpToTile,
+    closePane,
     getFocusedTab,
     getLastEditorPaneId,
     getPaneById,
@@ -292,6 +293,16 @@
     </div>
     <div class="v4-pane-header-right">
       <PaneKindMenu {pane} onSwapKind={(k) => swapKind(pane.id, k)} />
+      <button
+        type="button"
+        class="v4-pane-close"
+        title="close pane · ⌘W"
+        onclick={(e) => {
+          e.stopPropagation();
+          focusPane(row, col);
+          closePane();
+        }}
+      >×</button>
     </div>
   </header>
 
@@ -457,6 +468,21 @@
   }
   .v4-widget-picker:hover {
     border-color: var(--v4-hair2);
+  }
+
+  .v4-pane-close {
+    background: transparent;
+    border: 0;
+    color: var(--v4-ink5);
+    font-size: 14px;
+    line-height: 1;
+    padding: 2px 6px;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .v4-pane-close:hover {
+    color: var(--v4-ink2);
+    background: var(--v4-surface-lo);
   }
 
   .v4-stack-bar {

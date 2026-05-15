@@ -219,6 +219,7 @@
     <span class="v4-status-right">
       <span><b>⌘\</b> vsplit</span>
       <span><b>⌘-</b> hsplit</span>
+      <span><b>⌘W</b> close</span>
       <span><b>hjkl</b> move</span>
       <span><b>o</b> open</span>
     </span>

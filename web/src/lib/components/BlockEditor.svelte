@@ -300,6 +300,7 @@
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim, getCM } from "@replit/codemirror-vim";
   import {
+    teselaAtomicCursorFilter,
     teselaDecorations,
     teselaDecorationTheme,
     hiddenPropertyKeysFacet,
@@ -1404,6 +1405,7 @@
         updateListener,
         focusBlurHandler,
         teselaDecorations,
+        teselaAtomicCursorFilter,
         teselaDecorationTheme,
         hiddenKeysCompartment.of(
           hiddenPropertyKeysFacet.of(hiddenKeys ?? { hide: new Set(), hideEmpty: new Set() }),
