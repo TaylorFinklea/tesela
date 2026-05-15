@@ -12,7 +12,7 @@ Design direction: **B1** from the 2026-05-15 Recraft batch (see `tesela-logo-mar
 
 | File | Role |
 |---|---|
-| `tesela-logo-mark.svg` | **Vector master.** Single source of truth. Tight-cropped square (`viewBox="475 475 1342 1342"`), transparent background. Edit this when shape or framing changes are needed. |
+| `tesela-logo-mark.svg` | **Vector master.** Single source of truth. Square `viewBox="375 375 1542 1542"` with ~10% padding around the mark for app-icon breathing room. Edit this when shape or framing changes are needed. |
 | `tesela-logo-mark.png` | 1342×1342 raster preview rendered from the master. Hand-editable for one-off tweaks (e.g. the framing fix on 2026-05-15 was done here in Photoshop, then back-ported to the SVG's `viewBox`). |
 | `tesela-logo-mark.recraft.json` | Recraft generation metadata (original prompt, style, settings). Reproducibility record only — not consumed by the build. Note: the original Recraft output had a white background and wider padding; both have since been corrected directly in the SVG master. |
 | `og-image.svg` | OG/Twitter link preview composition (1200×630) — logo + wordmark + subtitle on cream canvas. Embeds the mark's path data directly (independent of the master's viewBox). |
