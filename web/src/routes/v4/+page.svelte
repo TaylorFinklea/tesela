@@ -8,16 +8,17 @@
    *    redirects `/p/<slug>` into `/v4#tile=<slug>`; we read the hash on
    *    first run, seed the focused leaf with that page, and clear the hash.
    *
-   * 2. Otherwise, if the active tab's focused leaf is an empty page-buffer,
-   *    fetch today's daily and seed it. Covers fresh boots and migration
-   *    paths where the focused leaf came over from v4 with an empty pageId.
+   * 2. Otherwise, scan the active tab's leaves and seed today's daily
+   *    into every empty page buffer (targets a specific leaf id rather
+   *    than the focused one, so derived/ambient panes are untouched).
    */
   import { api } from "$lib/api-client";
   import {
     getActiveTab,
     openPageInFocused,
+    openPageInLeaf,
   } from "$lib/buffer/state.svelte";
-  import { asPageId } from "$lib/buffer/types";
+  import { asPageId, type LeafId } from "$lib/buffer/types";
 
   const seenTabs = new Set<string>();
   let consumedHash = false;
@@ -44,12 +45,11 @@
     if (seenTabs.has(tab.id)) return;
     seenTabs.add(tab.id);
 
-    // Walk leaves to find the first empty page-buffer.
-    let needsDaily = false;
+    const emptyLeafIds: LeafId[] = [];
     function walk(node: import("$lib/buffer/types").Node): void {
       if (node.type === "leaf") {
         if (node.buffer.kind === "page" && node.buffer.pageId === "") {
-          needsDaily = true;
+          emptyLeafIds.push(node.id);
         }
       } else {
         walk(node.children[0]);
@@ -57,11 +57,15 @@
       }
     }
     walk(tab.layout);
-    if (!needsDaily) return;
+    if (emptyLeafIds.length === 0) return;
 
     api
       .getDailyNote()
-      .then((daily) => openPageInFocused(asPageId(daily.id)))
+      .then((daily) => {
+        for (const id of emptyLeafIds) {
+          openPageInLeaf(id, asPageId(daily.id));
+        }
+      })
       .catch((e) => console.error("v5: failed to seed daily note", e));
   });
 </script>

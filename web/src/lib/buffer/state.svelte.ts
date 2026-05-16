@@ -44,6 +44,7 @@ import {
   type PageId,
 } from "./types.ts";
 import { loadFromLocalStorage, saveToLocalStorage } from "./migration.ts";
+import { touchRecent } from "../state/shared.svelte.ts";
 
 const DEBOUNCE_MS = 200;
 
@@ -112,12 +113,24 @@ function focusLeafIn(ws: Workspace, tabId: TabId, leafId: LeafId): Workspace {
   if (!t) return ws;
   const leaf = findLeaf(t.layout, leafId);
   if (!leaf) return ws;
+  // Empty pageId means the page buffer hasn't been seeded yet — it's
+  // still a placeholder. Don't pollute the follow source with it; keep
+  // the prior real page so derived followers stay useful.
+  const nextLastPage =
+    leaf.buffer.kind === "page" && leaf.buffer.pageId
+      ? leaf.buffer.pageId
+      : t.lastFocusedPageId;
   const next: Tab = {
     ...t,
     lastFocusedLeafId: leafId,
-    lastFocusedPageId:
-      leaf.buffer.kind === "page" ? leaf.buffer.pageId : t.lastFocusedPageId,
+    lastFocusedPageId: nextLastPage,
   };
+  // Side-effect: page focus updates the recent LRU. Lives in the chokepoint
+  // alongside the follow-source mutation; both are gated by the same
+  // page-kind + non-empty check.
+  if (leaf.buffer.kind === "page" && leaf.buffer.pageId) {
+    touchRecent(leaf.buffer.pageId);
+  }
   return replaceTab(ws, next);
 }
 
@@ -182,15 +195,28 @@ export function setRatio(splitId: SplitId, ratio: number) {
 export function openPageInFocused(pageId: PageId) {
   const t = activeTabOf(workspace);
   if (!t || !t.lastFocusedLeafId) return;
+  openPageInLeaf(t.lastFocusedLeafId, pageId);
+}
+
+/** Replace a specific leaf's buffer with a page. Used by the daily seed
+ *  flow that needs to target the empty page leaf, not whatever happens to
+ *  be focused. */
+export function openPageInLeaf(leafId: LeafId, pageId: PageId) {
+  const t = activeTabOf(workspace);
+  if (!t) return;
   const layout = replaceLeafBuffer(
     t.layout,
-    t.lastFocusedLeafId,
+    leafId,
     makePageBuffer(pageId),
   );
   const intermediate = replaceTab(workspace, { ...t, layout });
-  // Force the follow-binding to update too — the leaf id didn't change but
-  // the buffer kind / pageId might have.
-  commit(focusLeafIn(intermediate, t.id, t.lastFocusedLeafId));
+  // If the targeted leaf is currently focused, re-run focusLeafIn to
+  // update the follow-binding chokepoint with the new pageId.
+  if (t.lastFocusedLeafId === leafId) {
+    commit(focusLeafIn(intermediate, t.id, leafId));
+  } else {
+    commit(intermediate);
+  }
 }
 
 /** Replace the focused leaf's buffer with a derived buffer. */

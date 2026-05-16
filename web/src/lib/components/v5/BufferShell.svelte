@@ -22,10 +22,12 @@
     Buffer,
     LeafId,
     PageId,
+    Reference,
   } from "$lib/buffer/types";
   import {
     closeFocusedLeaf,
     focusLeaf,
+    getLastFocusedPageId,
     openPageInFocused,
   } from "$lib/buffer/state.svelte";
   import {
@@ -34,6 +36,10 @@
   } from "$lib/stores/current-block.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
   import NoteRenderer from "$lib/components/v4/NoteRenderer.svelte";
+  import "$lib/renderers/register"; // side-effect: register all v5 renderers
+  import { mount as mountDerived } from "$lib/renderers/derived";
+  import { get as getAmbient } from "$lib/renderers/ambient";
+  import { pickCascadeMember, type NavigationIntent } from "$lib/buffer/protocol";
 
   let {
     leafId,
@@ -121,11 +127,37 @@
   }
 
   // Opening a note from inside a page buffer (e.g. wiki link, query row):
-  // for now, replace this pane's page. Phase 4 will route through the
-  // host's `onNavigate` intent sink.
+  // for now, replace this pane's page. Phase 4 routes derived renderers
+  // through the explicit intent sink below.
   function openNoteHere(targetPageId: string) {
     openPageInFocused(targetPageId as PageId);
   }
+
+  // Derived + ambient renderers emit NavigationIntents through this sink.
+  function handleIntent(i: NavigationIntent) {
+    if (i.kind === "open-page") {
+      // For Phase 4, "replace" simply swaps the focused pane's content.
+      // "split-right", "split-down", "new-tab" are deferred to Phase 9
+      // when Peek navigation lands; default everything to replace.
+      openPageInFocused(i.path as PageId);
+    }
+    // tag and query navigation intents are no-ops for Phase 4.
+  }
+
+  // Resolve a derived buffer's binding into a concrete Reference.
+  // Follow → reads the active tab's lastFocusedPageId; Pinned → the
+  // explicit reference. Returns undefined when Follow has no source yet.
+  function resolveDerivedReference(buf: Buffer & { kind: "derived" }): Reference | undefined {
+    if (buf.binding.mode === "pinned") return buf.binding.reference;
+    const pid = getLastFocusedPageId();
+    if (!pid) return undefined;
+    return { kind: "page", path: pid };
+  }
+
+  // Size passed to renderer cascades. Phase 4 doesn't yet measure the
+  // host element, so we feed a generous default so renderers always pick
+  // their full mode. Phase 10 wires real measurement.
+  const DEFAULT_SIZE = { cols: 200, rows: 60 };
 
   const KIND_LABEL: Record<Buffer["kind"], string> = {
     page: "page",
@@ -206,20 +238,35 @@
           {/key}
         {/if}
       {:else if buffer.kind === "derived"}
-        <div class="v5-buffer-empty">
-          <p>derived buffers land in Phase 4</p>
-          <p class="v5-buffer-empty-hint">
-            renderer: {buffer.rendererName} ·
-            {buffer.binding.mode === "follow"
-              ? "follow"
-              : "pinned"}
-          </p>
-        </div>
+        {@const ref = resolveDerivedReference(buffer)}
+        {#if !ref}
+          <div class="v5-buffer-empty">
+            <p>nothing focused yet</p>
+            <p class="v5-buffer-empty-hint">
+              focus a page buffer to see {buffer.rendererName}
+            </p>
+          </div>
+        {:else}
+          {@const r = mountDerived(buffer.rendererName, ref)}
+          {@const C = pickCascadeMember(r.cascade, DEFAULT_SIZE)}
+          <div class="v5-buffer-scroll">
+            <C
+              reference={ref}
+              size={DEFAULT_SIZE}
+              onNavigate={handleIntent}
+            />
+          </div>
+        {/if}
       {:else if buffer.kind === "ambient"}
-        <div class="v5-buffer-empty">
-          <p>ambient buffers land in Phase 5</p>
-          <p class="v5-buffer-empty-hint">{buffer.ambientName}</p>
-        </div>
+        {@const r = getAmbient(buffer.ambientName)}
+        {#if !r}
+          <div class="v5-buffer-empty">
+            <p>ambient "{buffer.ambientName}" is not registered</p>
+          </div>
+        {:else}
+          {@const C = pickCascadeMember(r.cascade, DEFAULT_SIZE)}
+          <C size={DEFAULT_SIZE} onNavigate={handleIntent} />
+        {/if}
       {/if}
       {#snippet failed(error, reset)}
         <div class="v5-buffer-empty">

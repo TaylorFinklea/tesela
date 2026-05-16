@@ -1,24 +1,31 @@
 /**
- * Prism v4 command verbs — the rows that appear in the Station's Palette
- * tab. Kept separate from the legacy `lib/commands.ts` (which is wired into
- * the old chrome's CommandPalette and its `deps` shape) so v4's verb set
- * can evolve independently. Phases 5+ add `:`-prefixed ex-mode dispatch on
- * top of the same registry.
+ * Prism v5 command verbs — the rows that appear in the Station's Palette
+ * tab and the `:` ex-mode dispatcher.
+ *
+ * File still lives under `lib/v4/` for now to avoid mid-cutover import
+ * churn; will move to `lib/v5/` in Phase 13.
  */
 
 import { api } from "$lib/api-client";
 import {
-  closePane,
+  closeFocusedLeaf,
   closeTab,
-  getState,
+  getWorkspace,
   hsplit,
-  jumpToTile,
   movePane,
   newTab,
-  stackAdd,
-  stackNext,
+  openPageInFocused,
   vsplit,
-} from "$lib/stores/pane-tree.svelte";
+} from "$lib/buffer/state.svelte";
+import {
+  asPageId,
+  type DerivedBinding,
+} from "$lib/buffer/types";
+import {
+  makeAmbientBuffer,
+  makeDerivedBuffer,
+  makePageBuffer,
+} from "$lib/buffer/tree";
 import {
   openSettingsOverlay,
   type SettingsSlug,
@@ -32,29 +39,45 @@ const SETTINGS_PAGES: { slug: SettingsSlug; label: string }[] = [
   { slug: "data", label: "Data" },
 ];
 
+const DERIVED_RENDERERS: { name: string; label: string; verb: string; glyph: string }[] = [
+  { name: "backlinks-of-page", label: "Backlinks (follow)", verb: "backlinks", glyph: "↩" },
+  { name: "outline-of-page", label: "Outline (follow)", verb: "outline", glyph: "⋮" },
+  { name: "properties-of-page", label: "Properties (follow)", verb: "properties", glyph: "⚙" },
+  { name: "tasks-linked-to-page", label: "Linked tasks (follow)", verb: "tasks", glyph: "☑" },
+  { name: "local-graph-of-page", label: "Local graph (follow)", verb: "graph-local", glyph: "✦" },
+];
+
+const AMBIENTS: { name: string; label: string; verb: string; glyph: string }[] = [
+  { name: "calendar", label: "Calendar", verb: "calendar", glyph: "📅" },
+  { name: "today-in-progress", label: "Today in progress", verb: "in-progress", glyph: "⏱" },
+  { name: "workspace-dashboard", label: "Workspace dashboard", verb: "dashboard", glyph: "▦" },
+  { name: "ai-workspace", label: "AI workspace", verb: "ai", glyph: "✺" },
+];
+
 export type V4Command = {
   id: string;
-  /** The colon verb form, used by Phase 5's `:` ex-mode (without the `:`). */
   verb?: string;
   label: string;
-  /** Short glyph rendered alongside the label — keeps Palette rows scannable. */
   glyph: string;
-  category: "pane" | "tab" | "tile" | "create" | "navigate";
+  category: "pane" | "tab" | "tile" | "create" | "navigate" | "derived" | "ambient";
   shortcut?: string;
   keywords: string[];
-  /** If set, the verb prompts the user for a single string arg before running. */
   argPrompt?: string;
   run: (arg?: string) => void | Promise<void>;
 };
 
 async function jumpToDaily() {
   const daily = await api.getDailyNote();
-  jumpToTile(daily.id);
+  openPageInFocused(asPageId(daily.id));
 }
 
 async function createNoteAndJump(title: string) {
   const note = await api.createNote(title, "");
-  jumpToTile(note.id);
+  openPageInFocused(asPageId(note.id));
+}
+
+function followBinding(): DerivedBinding {
+  return { mode: "follow" };
 }
 
 export function buildV4Commands(): V4Command[] {
@@ -68,7 +91,7 @@ export function buildV4Commands(): V4Command[] {
       category: "pane",
       shortcut: "⌘\\",
       keywords: ["split", "vsplit", "vertical", "right", "pane"],
-      run: () => vsplit("editor"),
+      run: () => vsplit(makePageBuffer(asPageId(""))),
     },
     {
       id: "hsplit",
@@ -78,7 +101,7 @@ export function buildV4Commands(): V4Command[] {
       category: "pane",
       shortcut: "⌘-",
       keywords: ["split", "hsplit", "horizontal", "below", "pane"],
-      run: () => hsplit("editor"),
+      run: () => hsplit(makePageBuffer(asPageId(""))),
     },
     {
       id: "close-pane",
@@ -88,10 +111,8 @@ export function buildV4Commands(): V4Command[] {
       category: "pane",
       shortcut: "⌘W",
       keywords: ["close", "quit", "kill", "pane"],
-      run: () => closePane(),
+      run: () => closeFocusedLeaf(),
     },
-    // Pane-move: detach focused leaf, reinsert at the dir-most edge of
-    // the tab — Aerospace-style "send this pane to the left", etc.
     ...(["left", "right", "up", "down"] as const).map((dir) => ({
       id: `move-${dir}`,
       verb: `move-${dir}`,
@@ -123,54 +144,44 @@ export function buildV4Commands(): V4Command[] {
       category: "tab",
       shortcut: "⌘⇧W",
       keywords: ["tab", "close", "kill"],
-      run: () => closeTab(getState().activeTabId),
+      run: () => closeTab(getWorkspace().activeTabId),
     },
 
-    // ── tile ────────────────────────────────────────────────────────────
+    // ── tile (page-buffer ops) ──────────────────────────────────────────
     {
       id: "jump",
       verb: "jump",
-      label: "Jump to tile…",
+      label: "Jump to page…",
       glyph: "→",
       category: "tile",
       keywords: ["jump", "go", "open", "tile", "note", "page"],
       argPrompt: "note slug or id",
       run: (arg) => {
-        if (arg) jumpToTile(arg);
+        if (arg) openPageInFocused(asPageId(arg));
       },
     },
-    {
-      id: "stack",
-      verb: "stack",
-      label: "Stack tile on focused pane…",
-      glyph: "≣",
-      category: "tile",
-      keywords: ["stack", "add", "zellij", "tile"],
-      argPrompt: "note slug or id",
-      run: (arg) => {
-        if (arg) stackAdd(arg);
-      },
-    },
-    {
-      id: "stack-next",
-      verb: "stacknext",
-      label: "Cycle stack forward",
-      glyph: "]",
-      category: "tile",
-      shortcut: "]",
-      keywords: ["stack", "next", "cycle"],
-      run: () => stackNext(1),
-    },
-    {
-      id: "stack-prev",
-      verb: "stackprev",
-      label: "Cycle stack backward",
-      glyph: "[",
-      category: "tile",
-      shortcut: "[",
-      keywords: ["stack", "prev", "cycle"],
-      run: () => stackNext(-1),
-    },
+
+    // ── derived buffers ────────────────────────────────────────────────
+    ...DERIVED_RENDERERS.map((d) => ({
+      id: d.verb,
+      verb: d.verb,
+      label: `Open ${d.label}`,
+      glyph: d.glyph,
+      category: "derived" as const,
+      keywords: [d.verb, "derived", "follow", d.name],
+      run: () => vsplit(makeDerivedBuffer(d.name, followBinding())),
+    })),
+
+    // ── ambient buffers ────────────────────────────────────────────────
+    ...AMBIENTS.map((a) => ({
+      id: a.verb,
+      verb: a.verb,
+      label: `Open ${a.label}`,
+      glyph: a.glyph,
+      category: "ambient" as const,
+      keywords: [a.verb, "ambient", a.name],
+      run: () => vsplit(makeAmbientBuffer(a.name)),
+    })),
 
     // ── create / navigate ───────────────────────────────────────────────
     {
@@ -182,10 +193,22 @@ export function buildV4Commands(): V4Command[] {
       keywords: ["daily", "today", "journal"],
       run: () => jumpToDaily(),
     },
-    // One palette row per settings page so users can pick directly
-    // without a modal arg prompt. Each row opens the in-v4 Settings
-    // overlay on the chosen slug; the `/settings/*` routes still work
-    // as bookmark fallbacks but are no longer the primary surface.
+    {
+      id: "scratch",
+      verb: "scratch",
+      label: "New scratch page",
+      glyph: "✎",
+      category: "create",
+      shortcut: "Space n s",
+      keywords: ["scratch", "draft", "throwaway", "new"],
+      run: async () => {
+        // Scratch impl proper lands in Phase 11. For now: create a
+        // timestamped note with no special type and open it.
+        const d = new Date();
+        const stamp = `scratch/${d.toISOString().slice(0, 16).replace(":", "-")}`;
+        await createNoteAndJump(stamp);
+      },
+    },
     ...SETTINGS_PAGES.map(({ slug, label }) => ({
       id: `settings-${slug}`,
       verb: `settings-${slug}`,
@@ -218,7 +241,6 @@ export function matchesV4Command(cmd: V4Command, query: string): boolean {
   return cmd.keywords.some((kw) => kw.includes(q));
 }
 
-/** Look up a verb (used by Phase 5's `:` ex-mode parser). */
 export function findCommandByVerb(verb: string): V4Command | undefined {
   const v = verb.toLowerCase();
   return buildV4Commands().find((c) => c.verb === v || c.id === v);

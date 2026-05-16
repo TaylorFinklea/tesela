@@ -39,7 +39,10 @@
   import LayoutTree from "$lib/components/v5/LayoutTree.svelte";
   import MigrationModal from "$lib/components/v5/MigrationModal.svelte";
   import PeekPopover from "$lib/components/v4/PeekPopover.svelte";
+  import Sidebar from "$lib/components/v5/Sidebar.svelte";
   import Station from "$lib/components/v4/Station.svelte";
+  import StatusLine from "$lib/components/v5/StatusLine.svelte";
+  import { setSidebarCollapsed } from "$lib/buffer/state.svelte";
   import {
     canGoBackInJourney,
     canGoForwardInJourney,
@@ -143,6 +146,12 @@
       if (mod && !e.shiftKey && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         openCommandStation();
+        return;
+      }
+      if (mod && !e.shiftKey && (e.key === "b" || e.key === "B")) {
+        e.preventDefault();
+        const ws = getWorkspace();
+        setSidebarCollapsed(!ws.sidebar.collapsed);
         return;
       }
       if (mod && e.key === "\\") {
@@ -329,36 +338,20 @@
 
   <Journey />
 
-  <div class="v4-grid" class:dragging={dragRef.value}>
-    {#if tab}
-      <LayoutTree
-        node={tab.layout}
-        focusedLeafId={focusedLeafId}
-        activeDragRef={dragRef}
-      />
-    {/if}
+  <div class="v5-body">
+    <Sidebar />
+    <div class="v4-grid" class:dragging={dragRef.value}>
+      {#if tab}
+        <LayoutTree
+          node={tab.layout}
+          focusedLeafId={focusedLeafId}
+          activeDragRef={dragRef}
+        />
+      {/if}
+    </div>
   </div>
 
-  <footer class="v4-statusline">
-    <span class="v4-status-mode">● NORMAL</span>
-    <span class="v4-status-center">
-      <span>tab: {tab?.name ?? "—"}</span>
-      <span class="v4-status-sep">·</span>
-      <span>{focusedBuffer?.kind ?? "—"}</span>
-      {#if focusedPageId}
-        <span class="v4-status-sep">·</span>
-        <span>{focusedPageId}</span>
-      {/if}
-    </span>
-    <span class="v4-status-right">
-      <span><b>⌘K</b> station</span>
-      <span><b>:</b> ex</span>
-      <span><b>⌘I</b> peek</span>
-      <span><b>⌘G</b> graph</span>
-      <span><b>hjkl</b> move</span>
-      <span><b>⌘⇧hjkl</b> push</span>
-    </span>
-  </footer>
+  <StatusLine />
 
   <div style="display: none">{@render children()}</div>
 
@@ -385,6 +378,20 @@
     font-family: var(--v4-sans);
     font-size: 13px;
     overflow: hidden;
+  }
+  .v5-body {
+    display: flex;
+    flex-direction: row;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .v5-body > :global(.v5-sidebar) {
+    flex-shrink: 0;
+  }
+  .v5-body > .v4-grid {
+    flex: 1;
+    min-width: 0;
   }
   .v4-topbar {
     display: grid;
