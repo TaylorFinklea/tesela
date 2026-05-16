@@ -85,10 +85,57 @@
     });
   }
 
+  // Ctrl-W prefix state machine. Vim users expect `<C-w>h/j/k/l` to move
+  // between panes. Without intercepting it here, cm-vim swallows the
+  // chord and tries its own window-motion submode, which knows nothing
+  // about our pane tree. Tradeoff: insert-mode `<C-w>` (delete previous
+  // word) is no longer available inside the editor. Listen on the
+  // *capture* phase below so this fires before cm-vim's keymap.
+  let awaitingCtrlW = false;
+  let ctrlWTimer: ReturnType<typeof setTimeout> | null = null;
+  function clearCtrlW() {
+    awaitingCtrlW = false;
+    if (ctrlWTimer) {
+      clearTimeout(ctrlWTimer);
+      ctrlWTimer = null;
+    }
+  }
+
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
       // App-level shortcuts use ⌘ only — Ctrl is reserved for vim.
       const mod = e.metaKey;
+
+      // Ctrl-W h/j/k/l — pane focus motions, vim window-motion convention.
+      if (
+        !e.metaKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        e.ctrlKey &&
+        (e.key === "w" || e.key === "W")
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        awaitingCtrlW = true;
+        if (ctrlWTimer) clearTimeout(ctrlWTimer);
+        ctrlWTimer = setTimeout(clearCtrlW, 1500);
+        return;
+      }
+      if (awaitingCtrlW) {
+        const k = e.key.toLowerCase();
+        // Only consume the follow-up if it's an h/j/k/l motion. Any
+        // other key cancels the prefix and falls through normally.
+        if (k === "h" || k === "j" || k === "k" || k === "l") {
+          clearCtrlW();
+          e.preventDefault();
+          e.stopPropagation();
+          const dir =
+            k === "h" ? "left" : k === "l" ? "right" : k === "j" ? "down" : "up";
+          moveFocus(dir as "left" | "right" | "up" | "down");
+          return;
+        }
+        clearCtrlW();
+      }
 
       // ⌘K opens the Station. Station's own keydown handler intercepts
       // ⌘K while open (toggle-close).

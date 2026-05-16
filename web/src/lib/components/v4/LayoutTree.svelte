@@ -96,10 +96,9 @@
 <style>
   .v4-split {
     display: flex;
+    flex: 1;
     min-width: 0;
     min-height: 0;
-    width: 100%;
-    height: 100%;
     background: var(--v4-hair);
   }
   .v4-split-v { flex-direction: row; }
@@ -110,6 +109,13 @@
     min-width: 0;
     min-height: 0;
     overflow: hidden;
+  }
+  /* Any pane shell or nested split inside a split-child fills it. */
+  .v4-split-child > :global(.v4-pane),
+  .v4-split-child > :global(.v4-split) {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
   }
 
   .v4-resizer {

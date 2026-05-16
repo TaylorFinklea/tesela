@@ -35,6 +35,7 @@
   } from "$lib/stores/current-block.svelte";
   import { widgetFromNote, parseWidgets } from "$lib/widget-registry.svelte";
   import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
+  import JournalView from "$lib/components/JournalView.svelte";
   import GraphCanvas from "$lib/components/GraphCanvas.svelte";
   import PaneKindMenu from "$lib/components/v4/PaneKindMenu.svelte";
   import ContextPane from "$lib/components/v4/ContextPane.svelte";
@@ -80,6 +81,17 @@
     if (!n || n.metadata.note_type !== "Query") return null;
     return widgetFromNote(n);
   });
+
+  // The "dailies" widget is special — it has no query, it's an anchor
+  // for the Logseq-style continuous journal. Render <JournalView>
+  // directly instead of the empty QueryWidgetView.
+  function todayISO(): string {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
 
   // The notes list backs the widget picker (Query notes), the dashboard
   // (pinned widgets), and the graph (nodes). One query, shared cache.
@@ -344,7 +356,11 @@
         {/key}
       {/if}
     {:else if pane.kind === "widget"}
-      {#if widgetNoteQuery.isLoading}
+      {#if pane.widget === "dailies"}
+        <div class="v4-pane-scroll">
+          <JournalView anchorDate={todayISO()} />
+        </div>
+      {:else if widgetNoteQuery.isLoading}
         <div class="v4-pane-empty"><p>loading…</p></div>
       {:else if widgetConfig}
         {#key pane.widget}
