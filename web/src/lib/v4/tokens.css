@@ -9,7 +9,10 @@
  */
 
 .v4-root {
-  --v4-bg: #08090f;
+  /* Lifted from #08090f → #131521 so panels read as "dark UI" rather than
+     "pitch black", and the gradient on the focused-pane glow has a base
+     to lift off of. */
+  --v4-bg: #131521;
   --v4-surface-lo: rgba(255, 255, 255, 0.03);
   --v4-surface: rgba(255, 255, 255, 0.055);
   --v4-surface-hi: rgba(255, 255, 255, 0.08);

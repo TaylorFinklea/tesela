@@ -145,8 +145,11 @@
 
     ctx.clearRect(0, 0, width, height);
 
-    ctx.strokeStyle = muted + "20";
-    ctx.lineWidth = 1;
+    // Edges + nodes need to stand out from the dark bg. Previous alphas
+    // (20 = 12%, 33 = 20%) were near-invisible. Bumped so the graph
+    // actually reads at-a-glance.
+    ctx.strokeStyle = muted + "80";
+    ctx.lineWidth = 1.2;
     for (const edge of graphEdges) {
       const a = nodes[edge.source];
       const b = nodes[edge.target];
@@ -165,15 +168,15 @@
       ctx.fillStyle = isHovered
         ? primary
         : node.connections > 0
-          ? fg + "80"
-          : fg + "33";
+          ? fg + "dd"
+          : fg + "88";
       ctx.fill();
 
       if (isHovered || node.connections >= 2) {
         ctx.font = isHovered
           ? "12px 'Source Sans 3', sans-serif"
           : "10px 'Source Sans 3', sans-serif";
-        ctx.fillStyle = isHovered ? fg : muted + "66";
+        ctx.fillStyle = isHovered ? fg : muted + "cc";
         ctx.fillText(node.title, node.x + r + 4, node.y + 4);
       }
     }

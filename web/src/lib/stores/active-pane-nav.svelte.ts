@@ -61,6 +61,23 @@ function programmaticGoto(url: string, opts: Parameters<typeof goto>[1]): void {
  */
 export function gotoNote(targetNoteId: string, targetBlockId?: string | null): void {
   const u = page.url;
+
+  // v5 short-circuit: when the active route is the v5 chrome (/v4), open
+  // the target directly in the focused buffer instead of rewriting the
+  // URL. The v5 buffer tree owns navigation; the URL is just for
+  // deep-link entry. Without this, wiki-link clicks set the URL but the
+  // chrome doesn't observe it and nothing visibly changes.
+  if (u.pathname === "/v4" || u.pathname.startsWith("/v4/")) {
+    // Lazy import to avoid a hard dep cycle: this module is also
+    // imported by legacy v9 components that don't know about v5.
+    import("$lib/buffer/state.svelte").then(({ openPageInFocused }) => {
+      import("$lib/buffer/types").then(({ asPageId }) => {
+        openPageInFocused(asPageId(targetNoteId));
+      });
+    });
+    return;
+  }
+
   const onPagePath = u.pathname.startsWith("/p/");
   const splitOpen = !!u.searchParams.get("back");
   const activeSide = getVSplitActiveSide();

@@ -143,6 +143,18 @@
         clearCtrlW();
       }
 
+      // `:` always opens v5 ex-mode, even when cm-editor has focus and
+      // cm-vim would normally claim it for its own ex commands. v5's verb
+      // set is the only one that knows about ambient buffers / derived
+      // splits / etc., so vim's `:w` style commands aren't useful here.
+      // Document this in the help overlay if a user complains.
+      if (!mod && !e.altKey && !e.ctrlKey && e.key === ":") {
+        e.preventDefault();
+        e.stopPropagation();
+        openColonMode();
+        return;
+      }
+
       if (mod && !e.shiftKey && (e.key === "k" || e.key === "K")) {
         e.preventDefault();
         openCommandStation();
@@ -231,14 +243,7 @@
       // Bare h/j/k/l are reserved for vim motion inside the editor — pane
       // motion is via `<C-w>hjkl` (handled above) or arrow + shift if
       // outside an editor. We deliberately do NOT remap bare hjkl here.
-      switch (e.key) {
-        case ":":
-          e.preventDefault();
-          openColonMode();
-          break;
-        default:
-          break;
-      }
+      // `:` is intercepted above before reaching this point.
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
