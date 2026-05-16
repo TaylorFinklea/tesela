@@ -175,10 +175,36 @@
     return { kind: "page", path: pid };
   }
 
-  // Size passed to renderer cascades. Phase 4 doesn't yet measure the
-  // host element, so we feed a generous default so renderers always pick
-  // their full mode. Phase 10 wires real measurement.
-  const DEFAULT_SIZE = { cols: 200, rows: 60 };
+  // ── size measurement for cascade ─────────────────────────────────────
+  //
+  // Phase 10: BufferShell measures its content area via ResizeObserver,
+  // converts px → cell-units (cols, rows) using a fixed monospace cell
+  // (CHAR_WIDTH × LINE_HEIGHT), and feeds that to renderer cascades.
+  // Renderers don't self-decide which mode to use — the host picks the
+  // most-featured cascade member that fits this size.
+  //
+  // Cell units rather than raw pixels because the spec specifies them and
+  // renderers read more naturally as "needs ≥80 cols" than "≥640px".
+  const CHAR_WIDTH = 7;   // approx monospace char @ 12px
+  const LINE_HEIGHT = 20; // approx body line height
+  let bodyEl = $state<HTMLElement | undefined>();
+  let measuredSize = $state({ cols: 80, rows: 24 });
+
+  $effect(() => {
+    if (!bodyEl) return;
+    const ro = new ResizeObserver((entries) => {
+      const e = entries[0];
+      if (!e) return;
+      const w = e.contentRect.width;
+      const h = e.contentRect.height;
+      measuredSize = {
+        cols: Math.max(1, Math.floor(w / CHAR_WIDTH)),
+        rows: Math.max(1, Math.floor(h / LINE_HEIGHT)),
+      };
+    });
+    ro.observe(bodyEl);
+    return () => ro.disconnect();
+  });
 
   function referenceLabel(ref: Reference): string {
     if (ref.kind === "page") return ref.path || "(empty)";
@@ -246,7 +272,7 @@
     </div>
   </header>
 
-  <div class="v5-buffer-body">
+  <div class="v5-buffer-body" bind:this={bodyEl}>
     <svelte:boundary>
       {#if buffer.kind === "page"}
         {#if !activePageId}
@@ -286,11 +312,11 @@
           </div>
         {:else}
           {@const r = mountDerived(buffer.rendererName, ref)}
-          {@const C = pickCascadeMember(r.cascade, DEFAULT_SIZE)}
+          {@const C = pickCascadeMember(r.cascade, measuredSize)}
           <div class="v5-buffer-scroll">
             <C
               reference={ref}
-              size={DEFAULT_SIZE}
+              size={measuredSize}
               onNavigate={handleIntent}
             />
           </div>
@@ -302,8 +328,8 @@
             <p>ambient "{buffer.ambientName}" is not registered</p>
           </div>
         {:else}
-          {@const C = pickCascadeMember(r.cascade, DEFAULT_SIZE)}
-          <C size={DEFAULT_SIZE} onNavigate={handleIntent} />
+          {@const C = pickCascadeMember(r.cascade, measuredSize)}
+          <C size={measuredSize} onNavigate={handleIntent} />
         {/if}
       {/if}
       {#snippet failed(error, reset)}

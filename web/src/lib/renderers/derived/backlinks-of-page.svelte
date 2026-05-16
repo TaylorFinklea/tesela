@@ -14,10 +14,16 @@
 
   let {
     reference,
+    size,
     onNavigate,
   }: DerivedRendererProps<{ kind: "page"; path: string }> = $props();
 
   const pageId = $derived(reference.path || undefined);
+
+  // In-mode adaptation: drop the verbose unlinked-references blurb on
+  // narrow hosts (Peek, narrow splits). Cascade picks the mode; this
+  // size-prop driven branch is just within-mode polish.
+  const showUnlinkedSection = $derived(size.cols >= 70);
 
   const backlinksQuery = createQuery(() => ({
     queryKey: ["backlinks", pageId] as const,
@@ -95,15 +101,17 @@
       {/if}
     </section>
 
-    <section>
-      <h3>Unlinked references <span class="badge">soon</span></h3>
-      <p class="muted">
-        Coming soon — like Logseq's unlinked references, this will surface
-        places that mention this page's title or any of its aliases but
-        aren't formally `[[wiki-linked]]`. Roadmap: fuzzy-match against
-        page corpus on the backend, surface here for one-click linking.
-      </p>
-    </section>
+    {#if showUnlinkedSection}
+      <section>
+        <h3>Unlinked references <span class="badge">soon</span></h3>
+        <p class="muted">
+          Coming soon — like Logseq's unlinked references, this will surface
+          places that mention this page's title or any of its aliases but
+          aren't formally `[[wiki-linked]]`. Roadmap: fuzzy-match against
+          page corpus on the backend, surface here for one-click linking.
+        </p>
+      </section>
+    {/if}
   </div>
 {/if}
 
