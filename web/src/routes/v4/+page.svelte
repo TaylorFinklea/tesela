@@ -1,29 +1,23 @@
 <script lang="ts">
   /*
-   * `/v4` entry. URL → state adapter; renders nothing visible (the
-   * layout owns the whole shell).
+   * `/v4` entry under Prism v5.
    *
-   * Two responsibilities, in order:
+   * Two responsibilities:
    *
-   * 1. Consume `#tile=<slug>` on mount. The Phase 6 default-route swap
-   *    redirects `/p/<slug>` into `/v4#tile=<slug>`; we read the hash
-   *    on first run, jumpToTile into the focused pane, and clear the
-   *    hash so the URL settles at `/v4`.
+   * 1. Consume `#tile=<slug>` on mount. The Phase 6 (v4) default-route swap
+   *    redirects `/p/<slug>` into `/v4#tile=<slug>`; we read the hash on
+   *    first run, seed the focused leaf with that page, and clear the hash.
    *
-   * 2. Otherwise, seed every empty editor leaf in the active tab with
-   *    today's daily note. Covers the first /v4 mount, ⌘T new tabs,
-   *    and stale localStorage where focus may have ended up on a
-   *    non-editor pane. If at least one editor was filled, also park
-   *    focus on it so the user can type immediately.
+   * 2. Otherwise, if the active tab's focused leaf is an empty page-buffer,
+   *    fetch today's daily and seed it. Covers fresh boots and migration
+   *    paths where the focused leaf came over from v4 with an empty pageId.
    */
   import { api } from "$lib/api-client";
   import {
-    focusPane,
-    getFocusedPane,
-    getFocusedTab,
-    jumpToTile,
-  } from "$lib/stores/pane-tree.svelte";
-  import { leaves } from "$lib/stores/pane-tree";
+    getActiveTab,
+    openPageInFocused,
+  } from "$lib/buffer/state.svelte";
+  import { asPageId } from "$lib/buffer/types";
 
   const seenTabs = new Set<string>();
   let consumedHash = false;
@@ -38,47 +32,36 @@
         const id = decodeURIComponent(hash.slice(prefix.length));
         history.replaceState(null, "", "/v4");
         if (id) {
-          jumpToTile(id, "url");
+          openPageInFocused(asPageId(id));
           return;
         }
       }
     }
 
     // ── (2) daily seed ──────────────────────────────────────────────
-    const tab = getFocusedTab();
+    const tab = getActiveTab();
     if (!tab) return;
     if (seenTabs.has(tab.id)) return;
     seenTabs.add(tab.id);
 
-    // Collect every editor leaf in this tab. The first empty one gets
-    // today's daily; subsequent empties also get it so a fresh layout
-    // with several panes all land on something useful.
-    const editorIds: string[] = [];
-    const emptyEditorIds: string[] = [];
-    for (const leaf of leaves(tab.layout)) {
-      if (leaf.pane.kind === "editor") {
-        editorIds.push(leaf.pane.id);
-        if (leaf.pane.tiles.length === 0) emptyEditorIds.push(leaf.pane.id);
+    // Walk leaves to find the first empty page-buffer.
+    let needsDaily = false;
+    function walk(node: import("$lib/buffer/types").Node): void {
+      if (node.type === "leaf") {
+        if (node.buffer.kind === "page" && node.buffer.pageId === "") {
+          needsDaily = true;
+        }
+      } else {
+        walk(node.children[0]);
+        walk(node.children[1]);
       }
     }
-    if (emptyEditorIds.length === 0) return;
+    walk(tab.layout);
+    if (!needsDaily) return;
 
     api
       .getDailyNote()
-      .then((daily) => {
-        // Park focus on an editor (preferring an empty one) so the
-        // first keystroke lands in the daily, not on the widget pane.
-        const prior = getFocusedPane();
-        const target = emptyEditorIds[0];
-        focusPane(target);
-        jumpToTile(daily.id);
-        // Restore prior focus only if it was *already* an editor —
-        // otherwise leaving the user on the widget pane was the bug
-        // we're trying to fix.
-        if (prior?.kind === "editor" && editorIds.includes(prior.id)) {
-          focusPane(prior.id);
-        }
-      })
-      .catch((e) => console.error("v4: failed to seed daily note", e));
+      .then((daily) => openPageInFocused(asPageId(daily.id)))
+      .catch((e) => console.error("v5: failed to seed daily note", e));
   });
 </script>
