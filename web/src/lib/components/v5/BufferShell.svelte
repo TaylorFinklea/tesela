@@ -53,6 +53,27 @@
 
   let shellEl = $state<HTMLElement | undefined>();
 
+  // When this leaf becomes focused AND it's a page buffer, push focus
+  // into the inner cm-editor so the user can immediately start typing.
+  // For non-page buffers (derived, ambient), focus stays on the shell —
+  // there's nothing to type into.
+  $effect(() => {
+    if (!focused || !shellEl) return;
+    if (buffer.kind !== "page") return;
+    // Defer one tick so freshly-mounted editors finish their setup.
+    const t = setTimeout(() => {
+      if (!shellEl) return;
+      // Skip if user's already focused something inside (e.g. clicked a
+      // chip, the sidebar, the search box).
+      if (shellEl.contains(document.activeElement)) {
+        if (document.activeElement?.classList.contains("cm-content")) return;
+      }
+      const cmContent = shellEl.querySelector(".cm-content");
+      if (cmContent instanceof HTMLElement) cmContent.focus();
+    }, 0);
+    return () => clearTimeout(t);
+  });
+
   // ── page buffer: TanStack Query for the note ──────────────────────────
   const activePageId = $derived(
     buffer.kind === "page" ? buffer.pageId : undefined,
@@ -159,6 +180,16 @@
   // their full mode. Phase 10 wires real measurement.
   const DEFAULT_SIZE = { cols: 200, rows: 60 };
 
+  function referenceLabel(ref: Reference): string {
+    if (ref.kind === "page") return ref.path || "(empty)";
+    if (ref.kind === "tag") return `#${ref.value}`;
+    return ref.dsl;
+  }
+
+  function truncate(s: string, n: number): string {
+    return s.length > n ? s.slice(0, n - 1) + "…" : s;
+  }
+
   const KIND_LABEL: Record<Buffer["kind"], string> = {
     page: "page",
     derived: "derived",
@@ -185,9 +216,16 @@
       {:else if buffer.kind === "derived"}
         <span class="v5-buffer-title">{buffer.rendererName}</span>
         <span class="v5-buffer-sub">
-          {buffer.binding.mode === "follow"
-            ? "following"
-            : `pinned · ${buffer.binding.reference.kind}`}
+          {#if buffer.binding.mode === "follow"}
+            {@const ref = resolveDerivedReference(buffer)}
+            {#if ref}
+              · following {truncate(referenceLabel(ref), 30)}
+            {:else}
+              · (nothing focused)
+            {/if}
+          {:else}
+            · pinned · {truncate(referenceLabel(buffer.binding.reference), 30)}
+          {/if}
         </span>
       {:else}
         <span class="v5-buffer-title">{buffer.ambientName}</span>

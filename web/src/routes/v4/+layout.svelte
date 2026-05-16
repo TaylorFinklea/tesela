@@ -228,38 +228,13 @@
 
       if (isTextEntry(e.target) || mod || e.altKey) return;
 
+      // Bare h/j/k/l are reserved for vim motion inside the editor — pane
+      // motion is via `<C-w>hjkl` (handled above) or arrow + shift if
+      // outside an editor. We deliberately do NOT remap bare hjkl here.
       switch (e.key) {
-        case "h":
-        case "ArrowLeft":
-          e.preventDefault();
-          moveFocus("left");
-          break;
-        case "l":
-        case "ArrowRight":
-          e.preventDefault();
-          moveFocus("right");
-          break;
-        case "j":
-        case "ArrowDown":
-          e.preventDefault();
-          moveFocus("down");
-          break;
-        case "k":
-        case "ArrowUp":
-          e.preventDefault();
-          moveFocus("up");
-          break;
         case ":":
           e.preventDefault();
           openColonMode();
-          break;
-        case "K":
-          e.preventDefault();
-          togglePeek(focusedLeafId as unknown as string | undefined);
-          break;
-        case "g":
-          e.preventDefault();
-          openFullscreenGraph();
           break;
         default:
           break;

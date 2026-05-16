@@ -162,6 +162,8 @@ export function buildV4Commands(): V4Command[] {
     },
 
     // ── derived buffers ────────────────────────────────────────────────
+    // Open horizontally beneath the focused page at a 70/30 ratio (page
+    // up top, derived below). To eventually be configurable via settings.
     ...DERIVED_RENDERERS.map((d) => ({
       id: d.verb,
       verb: d.verb,
@@ -169,7 +171,7 @@ export function buildV4Commands(): V4Command[] {
       glyph: d.glyph,
       category: "derived" as const,
       keywords: [d.verb, "derived", "follow", d.name],
-      run: () => vsplit(makeDerivedBuffer(d.name, followBinding())),
+      run: () => hsplit(makeDerivedBuffer(d.name, followBinding()), 0.7),
     })),
 
     // ── ambient buffers ────────────────────────────────────────────────

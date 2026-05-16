@@ -29,9 +29,12 @@
   /* Accents — primary is the brand color (active selection, today indicator).
      Secondary is reserved for navigational moments that should not pull
      from primary. Type-* colors are for semantic categories (task, event,
-     note, project, person, query, template) and stay quieter than primary. */
-  --accent-primary: #ff9e64;
-  --accent-secondary: #bb9af7;
+     note, project, person, query, template) and stay quieter than primary.
+     v5 polish: aligned to the original Prism v4 indigo mockup palette;
+     a real theming engine that re-exposes brand variants lands in
+     settings once chrome stabilizes. */
+  --accent-primary: #7b8cff;
+  --accent-secondary: #f0a45c;
   --type-task: #db6c83;
   --type-event: #6dbacc;
   --type-note: #e8b86b;

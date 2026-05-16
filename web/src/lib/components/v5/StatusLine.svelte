@@ -98,7 +98,7 @@
     <span><b>⌘I</b> peek</span>
     <span><b>⌘G</b> graph</span>
     <span><b>⌘B</b> sidebar</span>
-    <span><b>hjkl</b> move</span>
+    <span><b>⌃W hjkl</b> move</span>
   </span>
 </footer>
 

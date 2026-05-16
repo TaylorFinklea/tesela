@@ -125,6 +125,14 @@ pub async fn create_note(
     let stamped = stamp_block_ids(&req.content);
     let note = s.store.create(&req.title, &stamped, &tags).await?;
     s.index.reindex(&note).await?;
+    {
+        use tesela_core::link::extract_wiki_links;
+        use tesela_core::traits::link_graph::LinkGraph;
+        let links = extract_wiki_links(&note.content);
+        if let Err(e) = s.index.update_links(&note.id, &links).await {
+            tracing::warn!("Failed to update links on create for {:?}: {}", note.id, e);
+        }
+    }
     ensure_tag_pages(&s, &note).await;
     record_sync_create(&s, &note).await;
     let _ = s.ws_tx.send(WsEvent::NoteCreated { note: note.clone() });
@@ -166,6 +174,18 @@ pub async fn update_note(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Note not found after update: {}", id)))?;
     s.index.reindex(&updated).await?;
+    // v5 polish: refresh the link graph for this note. Without this, the
+    // wiki-link extractor only runs via the fs-watcher path, leaving the
+    // `links` table empty when notes round-trip through PUT only. The
+    // backlinks API + fullscreen graph both depend on the `links` table.
+    {
+        use tesela_core::link::extract_wiki_links;
+        use tesela_core::traits::link_graph::LinkGraph;
+        let links = extract_wiki_links(&updated.content);
+        if let Err(e) = s.index.update_links(&note_id, &links).await {
+            tracing::warn!("Failed to update links on PUT for {:?}: {}", note_id, e);
+        }
+    }
     // Phase 9.3: append a version row. Best-effort — a versioning failure
     // shouldn't fail the PUT. Cap each note at 200 historical versions.
     if updated.content != prev_content {

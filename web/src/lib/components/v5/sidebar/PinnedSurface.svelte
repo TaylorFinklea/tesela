@@ -1,35 +1,72 @@
 <script lang="ts">
-  /* Pinned surface — user-curated. Read from shared workspace state. */
-  import { getPinned, unpin } from "$lib/state/shared.svelte";
+  /* Pinned surface — pages + blocks. Right-click a block to pin it. */
+  import {
+    getPinned,
+    getPinnedBlocks,
+    unpin,
+    unpinBlock,
+  } from "$lib/state/shared.svelte";
   import { openPageInFocused } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
 
   const pinned = $derived(getPinned());
+  const blocks = $derived(getPinnedBlocks());
 </script>
 
 <div class="v5-side-surface">
   <header>Pinned</header>
-  {#if pinned.length === 0}
+  {#if pinned.length === 0 && blocks.length === 0}
     <p class="muted">no pinned</p>
-    <p class="hint">★ in the notes tree to pin</p>
+    <p class="hint">★ a note in the tree · or right-click a block</p>
   {:else}
-    <ul>
-      {#each pinned as id (id)}
-        <li>
-          <button
-            type="button"
-            class="row"
-            onclick={() => openPageInFocused(asPageId(id))}
-          >{id}</button>
-          <button
-            type="button"
-            class="unpin"
-            title="unpin"
-            onclick={() => unpin(id)}
-          >×</button>
-        </li>
-      {/each}
-    </ul>
+    {#if pinned.length > 0}
+      <section>
+        <h3>Pages</h3>
+        <ul>
+          {#each pinned as id (id)}
+            <li>
+              <button
+                type="button"
+                class="row"
+                onclick={() => openPageInFocused(asPageId(id))}
+              >{id}</button>
+              <button
+                type="button"
+                class="x"
+                title="unpin"
+                onclick={() => unpin(id)}
+              >×</button>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
+    {#if blocks.length > 0}
+      <section>
+        <h3>Blocks</h3>
+        <ul>
+          {#each blocks as b (b.pageId + ":" + b.blockId)}
+            <li>
+              <button
+                type="button"
+                class="row"
+                onclick={() => openPageInFocused(asPageId(b.pageId))}
+                title={`${b.pageId} · ${b.blockId}`}
+              >
+                <span class="preview">{b.preview}</span>
+                <span class="src">{b.pageId}</span>
+              </button>
+              <button
+                type="button"
+                class="x"
+                title="unpin"
+                onclick={() => unpinBlock(b.pageId, b.blockId)}
+              >×</button>
+            </li>
+          {/each}
+        </ul>
+      </section>
+    {/if}
   {/if}
 </div>
 
@@ -42,13 +79,23 @@
     font-family: var(--v4-mono);
     font-size: 11px;
     color: var(--v4-ink2);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
   header {
     color: var(--v4-ink);
     text-transform: uppercase;
     font-size: 10px;
     letter-spacing: 0.7px;
-    margin-bottom: 8px;
+  }
+  h3 {
+    margin: 0 0 6px;
+    color: var(--v4-ink5);
+    font-size: 9.5px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    font-weight: 500;
   }
   ul {
     list-style: none;
@@ -76,12 +123,28 @@
     white-space: nowrap;
     font-family: var(--v4-mono);
     font-size: 11px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
   }
   .row:hover {
     border-color: var(--v4-hair);
     color: var(--v4-ink);
   }
-  .unpin {
+  .preview {
+    color: var(--v4-ink2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .src {
+    color: var(--v4-ink6);
+    font-size: 9.5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .x {
     background: transparent;
     border: 0;
     color: var(--v4-ink6);

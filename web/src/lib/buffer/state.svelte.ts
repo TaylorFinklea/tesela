@@ -136,15 +136,15 @@ function focusLeafIn(ws: Workspace, tabId: TabId, leafId: LeafId): Workspace {
 
 // ── split / close / move ───────────────────────────────────────────────────
 
-export function vsplit(buffer: Buffer) {
-  splitWith("v", buffer);
+export function vsplit(buffer: Buffer, ratio: number = 0.5) {
+  splitWith("v", buffer, ratio);
 }
 
-export function hsplit(buffer: Buffer) {
-  splitWith("h", buffer);
+export function hsplit(buffer: Buffer, ratio: number = 0.5) {
+  splitWith("h", buffer, ratio);
 }
 
-function splitWith(dir: "v" | "h", buffer: Buffer) {
+function splitWith(dir: "v" | "h", buffer: Buffer, ratio: number) {
   const t = activeTabOf(workspace);
   if (!t || !t.lastFocusedLeafId) return;
   const { layout, newLeafId } = splitFocused(
@@ -152,6 +152,7 @@ function splitWith(dir: "v" | "h", buffer: Buffer) {
     t.lastFocusedLeafId,
     dir,
     buffer,
+    ratio,
   );
   const intermediate = replaceTab(workspace, { ...t, layout });
   commit(focusLeafIn(intermediate, t.id, newLeafId));

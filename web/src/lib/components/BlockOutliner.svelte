@@ -52,6 +52,7 @@
   import { prefs } from "$lib/preferences.svelte";
   import { OutlinerHistory, type OutlinerSnapshot } from "$lib/stores/outliner-history.svelte";
   import { pinBlock, setBottomDrawerOpen, setBottomTab } from "$lib/stores/pane-state.svelte";
+  import { togglePinBlock as v5TogglePinBlock } from "$lib/state/shared.svelte";
   import {
     registerPaneOutliner,
     unregisterPaneOutliner,
@@ -1460,12 +1461,10 @@
     onclose={() => ctxMenu = null}
     items={[
       {
-        label: "Pin to drawer",
+        label: "Pin this block",
         action: () => {
           const preview = ctxMenu!.blockText.trim().slice(0, 40) || "(empty)";
-          const id = pinBlock(ctxMenu!.blockNoteId, ctxMenu!.blockId, preview);
-          setBottomDrawerOpen(true);
-          setBottomTab({ kind: "pinned", id });
+          v5TogglePinBlock(ctxMenu!.blockNoteId, ctxMenu!.blockId, preview);
         },
       },
     ]}

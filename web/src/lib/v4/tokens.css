@@ -24,15 +24,22 @@
   --v4-ink5: #535a82;
   --v4-ink6: #363c5e;
 
-  /* Accent pulled from the brand mark's vermilion tile (#F13408).
-     Dimmed variant = same hue at ~55% alpha — used for low-key
-     surfaces (pane focus glow, drag-handle hover). `--v4-accent2`
-     stays as the brand's complementary cool tone for rare two-color
-     callouts (e.g. focus dot on inactive panes), derived from the
-     dark navy at a higher saturation so it still reads on dark bg. */
-  --v4-accent: #F13408;
-  --v4-accent-dim: rgba(241, 52, 8, 0.55);
-  --v4-accent2: #2DB4D9;
+  /* v5 default palette: cool indigo from the original Prism v4 proto
+     mockup (`Tesela2.zip → proto-prism4.jsx`). The vermilion (#F13408)
+     brand variant briefly shipped late in v4 is rolled back as the
+     baseline; a real theming engine that re-exposes both will land as
+     a settings surface once the chrome stabilizes. */
+  --v4-accent: #7b8cff;          /* indigo */
+  --v4-accent-dim: rgba(123, 140, 255, 0.55);
+  --v4-accent2: #f0a45c;         /* warm amber for two-tone callouts */
+
+  /* Override the global Tailwind/theme accent inside the v5 chrome so
+     legacy components (BlockOutliner wiki links, etc.) pick up the
+     indigo too. Without this, themes.css (e.g. `solarized-dark`)
+     re-asserts its own --accent-primary downstream and the orange
+     leaks back in. */
+  --accent-primary: var(--v4-accent);
+  --primary: var(--v4-accent);
 
   --v4-sans: "Geist", "Inter Tight", system-ui, -apple-system, sans-serif;
   /* Geist Mono isn't on Google Fonts; JetBrains Mono is already loaded

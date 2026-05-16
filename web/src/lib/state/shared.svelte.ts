@@ -18,8 +18,15 @@
  */
 
 const PINNED_KEY = "tesela:workspace:pinned";
+const PINNED_BLOCKS_KEY = "tesela:workspace:pinned-blocks";
 const RECENT_KEY = "tesela:workspace:recent";
 const RECENT_LIMIT = 50;
+
+export type PinnedBlock = {
+  pageId: string;
+  blockId: string;
+  preview: string;
+};
 
 function readArray(key: string): string[] {
   if (typeof localStorage === "undefined") return [];
@@ -42,7 +49,36 @@ function writeArray(key: string, arr: string[]): void {
   }
 }
 
+function readBlocks(): PinnedBlock[] {
+  if (typeof localStorage === "undefined") return [];
+  try {
+    const raw = localStorage.getItem(PINNED_BLOCKS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.filter(
+      (b): b is PinnedBlock =>
+        b &&
+        typeof b.pageId === "string" &&
+        typeof b.blockId === "string" &&
+        typeof b.preview === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeBlocks(arr: PinnedBlock[]): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(PINNED_BLOCKS_KEY, JSON.stringify(arr));
+  } catch (e) {
+    console.warn("pinned-blocks persist failed", e);
+  }
+}
+
 let pinned = $state<string[]>(readArray(PINNED_KEY));
+let pinnedBlocks = $state<PinnedBlock[]>(readBlocks());
 let recent = $state<string[]>(readArray(RECENT_KEY));
 
 // ── pinned ─────────────────────────────────────────────────────────────────
@@ -75,6 +111,44 @@ export function unpin(pageId: string): void {
   if (!pinned.includes(pageId)) return;
   pinned = pinned.filter((p) => p !== pageId);
   writeArray(PINNED_KEY, pinned);
+}
+
+// ── pinned blocks ──────────────────────────────────────────────────────────
+
+export function getPinnedBlocks(): PinnedBlock[] {
+  return pinnedBlocks;
+}
+
+export function isPinnedBlock(pageId: string, blockId: string): boolean {
+  return pinnedBlocks.some(
+    (b) => b.pageId === pageId && b.blockId === blockId,
+  );
+}
+
+export function togglePinBlock(
+  pageId: string,
+  blockId: string,
+  preview: string,
+): void {
+  if (!pageId || !blockId) return;
+  const exists = pinnedBlocks.some(
+    (b) => b.pageId === pageId && b.blockId === blockId,
+  );
+  if (exists) {
+    pinnedBlocks = pinnedBlocks.filter(
+      (b) => !(b.pageId === pageId && b.blockId === blockId),
+    );
+  } else {
+    pinnedBlocks = [{ pageId, blockId, preview }, ...pinnedBlocks];
+  }
+  writeBlocks(pinnedBlocks);
+}
+
+export function unpinBlock(pageId: string, blockId: string): void {
+  pinnedBlocks = pinnedBlocks.filter(
+    (b) => !(b.pageId === pageId && b.blockId === blockId),
+  );
+  writeBlocks(pinnedBlocks);
 }
 
 // ── recent ─────────────────────────────────────────────────────────────────

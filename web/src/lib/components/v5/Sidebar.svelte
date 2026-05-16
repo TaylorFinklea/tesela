@@ -2,10 +2,9 @@
   /*
    * Prism v5 — left sidebar.
    *
-   * NvimTree-shaped: a thin icon strip at the very left edge persists
-   * when the sidebar is collapsed; clicking an icon swaps which content
-   * surface is mounted. Five surfaces: tree, search, recent, pinned,
-   * tags. Plus a ◄ button at the bottom of the strip to collapse.
+   * Layout: a thin always-visible toggle strip on the far left edge
+   * (just a chevron when collapsed, plus the surface icons when
+   * expanded), with the active surface's content area to its right.
    *
    * State (collapsed + active surface) lives on the Workspace and
    * persists alongside the pane tree.
@@ -34,44 +33,48 @@
 </script>
 
 <aside class="v5-sidebar" class:collapsed={sidebar.collapsed}>
-  <nav class="v5-sidebar-strip">
-    {#each ICONS as { surface, glyph, title }}
+  {#if sidebar.collapsed}
+    <div class="v5-sidebar-collapsed">
       <button
         type="button"
-        class:active={sidebar.activeSurface === surface && !sidebar.collapsed}
-        {title}
-        onclick={() => {
-          if (sidebar.collapsed) {
-            setSidebarCollapsed(false);
-            setSidebarSurface(surface);
-          } else if (sidebar.activeSurface === surface) {
-            setSidebarCollapsed(true);
-          } else {
-            setSidebarSurface(surface);
-          }
-        }}
-      >{glyph}</button>
-    {/each}
-    <button
-      type="button"
-      class="collapse"
-      title={sidebar.collapsed ? "expand sidebar · ⌘B" : "collapse sidebar · ⌘B"}
-      onclick={() => setSidebarCollapsed(!sidebar.collapsed)}
-    >{sidebar.collapsed ? "►" : "◄"}</button>
-  </nav>
-  {#if !sidebar.collapsed}
-    <div class="v5-sidebar-content">
-      {#if sidebar.activeSurface === "tree"}
-        <NotesTree />
-      {:else if sidebar.activeSurface === "search"}
-        <SearchSurface />
-      {:else if sidebar.activeSurface === "recent"}
-        <RecentSurface />
-      {:else if sidebar.activeSurface === "pinned"}
-        <PinnedSurface />
-      {:else if sidebar.activeSurface === "tags"}
-        <TagsSurface />
-      {/if}
+        class="toggle"
+        title="expand sidebar · ⌘B"
+        onclick={() => setSidebarCollapsed(false)}
+      >►</button>
+    </div>
+  {:else}
+    <div class="v5-sidebar-expanded">
+      <header class="v5-sidebar-header">
+        <nav class="v5-sidebar-strip">
+          {#each ICONS as { surface, glyph, title }}
+            <button
+              type="button"
+              class:active={sidebar.activeSurface === surface}
+              {title}
+              onclick={() => setSidebarSurface(surface)}
+            >{glyph}</button>
+          {/each}
+        </nav>
+        <button
+          type="button"
+          class="toggle"
+          title="collapse sidebar · ⌘B"
+          onclick={() => setSidebarCollapsed(true)}
+        >◄</button>
+      </header>
+      <div class="v5-sidebar-content">
+        {#if sidebar.activeSurface === "tree"}
+          <NotesTree />
+        {:else if sidebar.activeSurface === "search"}
+          <SearchSurface />
+        {:else if sidebar.activeSurface === "recent"}
+          <RecentSurface />
+        {:else if sidebar.activeSurface === "pinned"}
+          <PinnedSurface />
+        {:else if sidebar.activeSurface === "tags"}
+          <TagsSurface />
+        {/if}
+      </div>
     </div>
   {/if}
 </aside>
@@ -84,47 +87,63 @@
     min-height: 0;
     overflow: hidden;
   }
-  .v5-sidebar-strip {
+  .v5-sidebar-collapsed {
+    width: 22px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 6px;
+  }
+  .v5-sidebar-expanded {
+    width: 240px;
     display: flex;
     flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
+  }
+  .v5-sidebar-header {
+    display: flex;
     align-items: center;
-    width: 36px;
+    justify-content: space-between;
+    gap: 4px;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--v4-hair);
     flex-shrink: 0;
-    border-right: 1px solid var(--v4-hair);
-    padding: 6px 0;
+  }
+  .v5-sidebar-strip {
+    display: flex;
+    flex-direction: row;
     gap: 2px;
   }
-  .v5-sidebar-strip button {
+  .v5-sidebar button {
     background: transparent;
     border: 0;
     color: var(--v4-ink5);
-    width: 28px;
-    height: 28px;
-    line-height: 28px;
+    width: 22px;
+    height: 22px;
+    line-height: 22px;
     text-align: center;
-    border-radius: 5px;
+    border-radius: 4px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 12px;
     padding: 0;
   }
-  .v5-sidebar-strip button:hover {
+  .v5-sidebar button:hover {
     color: var(--v4-ink2);
     background: var(--v4-surface-lo);
   }
   .v5-sidebar-strip button.active {
     color: var(--v4-accent);
-    background: color-mix(in srgb, var(--v4-accent) 12%, transparent);
+    background: color-mix(in srgb, var(--v4-accent) 14%, transparent);
   }
-  .v5-sidebar-strip .collapse {
-    margin-top: auto;
+  .v5-sidebar-header .toggle {
     color: var(--v4-ink6);
-    font-size: 12px;
   }
   .v5-sidebar-content {
-    width: 240px;
+    flex: 1;
+    min-height: 0;
     display: flex;
     flex-direction: column;
-    min-height: 0;
     overflow: hidden;
   }
 </style>
