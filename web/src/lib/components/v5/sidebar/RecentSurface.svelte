@@ -1,20 +1,39 @@
 <script lang="ts">
   /* Recent surface — reads the shared LRU populated by the focusPane
-   * chokepoint. */
+   * chokepoint, filters out scratch pages at render time. */
+  import { createQuery } from "@tanstack/svelte-query";
+  import { api } from "$lib/api-client";
+  import type { Note } from "$lib/types/Note";
   import { getRecent } from "$lib/state/shared.svelte";
   import { openPageInFocused } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
 
   const recent = $derived(getRecent());
+
+  // Fetch the full notes list so we can look up note_type per id and
+  // hide scratches from the recent surface. Cached query — typically a
+  // single fetch shared with NotesTree + SearchSurface.
+  const allQ = createQuery(() => ({
+    queryKey: ["notes", { limit: 500 }] as const,
+    queryFn: () => api.listNotes({ limit: 500 }),
+  }));
+  const scratchIds = $derived.by(() => {
+    const all = (allQ.data ?? []) as Note[];
+    const s = new Set<string>();
+    for (const n of all) if (n.metadata.note_type === "scratch") s.add(n.id);
+    return s;
+  });
+
+  const visible = $derived(recent.filter((id) => !scratchIds.has(id)));
 </script>
 
 <div class="v5-side-surface">
   <header>Recent</header>
-  {#if recent.length === 0}
+  {#if visible.length === 0}
     <p class="muted">no recent</p>
   {:else}
     <ul>
-      {#each recent as id (id)}
+      {#each visible as id (id)}
         <li>
           <button
             type="button"

@@ -1,6 +1,6 @@
 <script lang="ts">
-  /* Notes tree surface. Phase 6: alphabetical flat list of pages (no
-   * folder hierarchy yet). Phase 11 wires scratch-filtering. */
+  /* Notes tree surface. Alphabetical list of pages, scratches filtered
+   * out by default (toggle to show). Phase 11. */
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import type { Note } from "$lib/types/Note";
@@ -12,10 +12,20 @@
     queryKey: ["notes", { limit: 500 }] as const,
     queryFn: () => api.listNotes({ limit: 500 }),
   }));
-  const notes = $derived(
-    ((q.data ?? []) as Note[])
-      .slice()
-      .sort((a, b) => a.title.localeCompare(b.title)),
+
+  let showScratches = $state(false);
+
+  const notes = $derived.by(() => {
+    const all = (q.data ?? []) as Note[];
+    const filtered = showScratches
+      ? all
+      : all.filter((n) => n.metadata.note_type !== "scratch");
+    return filtered.slice().sort((a, b) => a.title.localeCompare(b.title));
+  });
+  const scratchCount = $derived(
+    ((q.data ?? []) as Note[]).filter(
+      (n) => n.metadata.note_type === "scratch",
+    ).length,
   );
 
   function open(id: string) {
@@ -24,7 +34,20 @@
 </script>
 
 <div class="v5-side-surface">
-  <header>Notes</header>
+  <header>
+    Notes
+    {#if scratchCount > 0}
+      <button
+        type="button"
+        class="toggle"
+        class:on={showScratches}
+        title="show / hide scratch pages"
+        onclick={() => (showScratches = !showScratches)}
+      >
+        {showScratches ? "✓" : "·"} scratches · {scratchCount}
+      </button>
+    {/if}
+  </header>
   {#if q.isLoading}
     <p class="muted">loading…</p>
   {:else if notes.length === 0}
@@ -33,8 +56,16 @@
     <ul>
       {#each notes as n (n.id)}
         <li>
-          <button type="button" class="row" onclick={() => open(n.id)}>
+          <button
+            type="button"
+            class="row"
+            class:scratch={n.metadata.note_type === "scratch"}
+            onclick={() => open(n.id)}
+          >
             <span class="title">{n.title}</span>
+            {#if n.metadata.note_type === "scratch"}
+              <span class="chip">scratch</span>
+            {/if}
           </button>
           <button
             type="button"
@@ -60,11 +91,31 @@
     color: var(--v4-ink2);
   }
   header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
     color: var(--v4-ink);
     text-transform: uppercase;
     font-size: 10px;
     letter-spacing: 0.7px;
     margin-bottom: 8px;
+  }
+  .toggle {
+    background: transparent;
+    border: 1px solid var(--v4-hair);
+    color: var(--v4-ink5);
+    border-radius: 4px;
+    padding: 1px 6px;
+    cursor: pointer;
+    font-family: var(--v4-mono);
+    font-size: 9.5px;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .toggle.on {
+    color: var(--v4-accent);
+    border-color: var(--v4-accent-dim);
   }
   ul {
     list-style: none;
@@ -92,10 +143,32 @@
     white-space: nowrap;
     font-family: var(--v4-mono);
     font-size: 11px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
   .row:hover {
     border-color: var(--v4-hair);
     color: var(--v4-ink);
+  }
+  .row.scratch .title {
+    color: var(--v4-ink5);
+    font-style: italic;
+  }
+  .chip {
+    color: var(--v4-ink5);
+    border: 1px solid var(--v4-hair);
+    border-radius: 3px;
+    padding: 0 4px;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
   .pin {
     background: transparent;

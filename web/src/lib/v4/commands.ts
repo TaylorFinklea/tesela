@@ -10,6 +10,7 @@ import { api } from "$lib/api-client";
 import {
   closeFocusedLeaf,
   closeTab,
+  getFocusedBuffer,
   getWorkspace,
   hsplit,
   movePane,
@@ -74,6 +75,31 @@ async function jumpToDaily() {
 async function createNoteAndJump(title: string) {
   const note = await api.createNote(title, "");
   openPageInFocused(asPageId(note.id));
+}
+
+async function createScratchAndJump() {
+  // Auto-named by timestamp; `type: scratch` frontmatter so the page-type
+  // dispatch can render the chip + so the sidebar/search filters can
+  // hide it.
+  const d = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const stamp = `scratch/${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  const content = `---\ntitle: "${stamp}"\ntype: scratch\ntags: []\n---\n`;
+  const note = await api.createNote(stamp, content);
+  openPageInFocused(asPageId(note.id));
+}
+
+async function promoteFocusedScratch() {
+  const buffer = getFocusedBuffer();
+  if (!buffer || buffer.kind !== "page" || !buffer.pageId) return;
+  const note = await api.getNote(buffer.pageId);
+  // Strip `type: scratch` from the YAML frontmatter. Idempotent: a note
+  // that doesn't have it is a no-op.
+  const next = note.content.replace(/^type:\s*scratch\s*\n/m, "");
+  if (next === note.content) return;
+  await api.updateNote(buffer.pageId, next);
+  // Re-open to refresh the buffer's view of the note.
+  openPageInFocused(asPageId(buffer.pageId));
 }
 
 function followBinding(): DerivedBinding {
@@ -203,13 +229,16 @@ export function buildV4Commands(): V4Command[] {
       category: "create",
       shortcut: "Space n s",
       keywords: ["scratch", "draft", "throwaway", "new"],
-      run: async () => {
-        // Scratch impl proper lands in Phase 11. For now: create a
-        // timestamped note with no special type and open it.
-        const d = new Date();
-        const stamp = `scratch/${d.toISOString().slice(0, 16).replace(":", "-")}`;
-        await createNoteAndJump(stamp);
-      },
+      run: () => createScratchAndJump(),
+    },
+    {
+      id: "promote",
+      verb: "promote",
+      label: "Promote focused scratch to a regular page",
+      glyph: "↑",
+      category: "create",
+      keywords: ["promote", "keep", "save", "scratch"],
+      run: () => promoteFocusedScratch(),
     },
     ...SETTINGS_PAGES.map(({ slug, label }) => ({
       id: `settings-${slug}`,

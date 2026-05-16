@@ -17,12 +17,14 @@
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
   import DocumentEditor from "$lib/components/DocumentEditor.svelte";
   import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
+  import CompactQueryView from "$lib/components/v5/CompactQueryView.svelte";
   import TagTable from "$lib/components/TagTable.svelte";
   import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
 
   let {
     note,
     paneId,
+    size,
     onContentChange,
     onCancelAndFlush,
     onfocusedblockchange,
@@ -30,12 +32,25 @@
   }: {
     note: Note;
     paneId: string;
+    /** Cell-units size of the hosting buffer, passed through from
+     *  BufferShell. Optional — when omitted, renderers pick their full
+     *  mode (back-compat with v4 callers). Phase 13a wires v5 BufferShell
+     *  to always pass this so cascade modes can fire. */
+    size?: { cols: number; rows: number };
     onContentChange: (fullContent: string) => void;
     onCancelAndFlush?: (fullContent: string) => void;
     onfocusedblockchange?: (block: ParsedBlock | null) => void;
     /** Row activation inside a Query-note widget view. */
     onOpenNote?: (noteId: string) => void;
   } = $props();
+
+  /** Query notes render as a wide table by default. Below ~50 cols
+   *  (cell-units) we drop to the compact list mode. Matches the v5
+   *  cascade pattern from Phase 10. */
+  const QUERY_FULL_MIN_COLS = 50;
+  const useCompactQuery = $derived(
+    !!size && size.cols < QUERY_FULL_MIN_COLS,
+  );
 
   function splitContent(content: string): { frontmatter: string; body: string } {
     if (!content.startsWith("---")) return { frontmatter: "", body: content };
@@ -53,10 +68,14 @@
 </script>
 
 {#if noteType === "Query"}
-  <QueryWidgetView
-    widget={widgetFromNote(note)}
-    onOpenRow={onOpenNote ? (pageId) => onOpenNote(pageId) : undefined}
-  />
+  {#if useCompactQuery}
+    <CompactQueryView {note} onOpenRow={onOpenNote} />
+  {:else}
+    <QueryWidgetView
+      widget={widgetFromNote(note)}
+      onOpenRow={onOpenNote ? (pageId) => onOpenNote(pageId) : undefined}
+    />
+  {/if}
 {:else if noteType === "Tag"}
   <TagTable tagName={note.title} noteId={note.id} />
 {:else if noteType === "Property"}

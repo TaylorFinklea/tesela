@@ -239,6 +239,11 @@
       <span class="v5-focus-dot">{focused ? "●" : "○"}</span>
       {#if buffer.kind === "page"}
         <span class="v5-buffer-title">{activePageId || "empty"}</span>
+        {#if note?.metadata.note_type === "scratch"}
+          <span class="v5-scratch-chip" title="scratch · :promote to keep"
+            >scratch</span
+          >
+        {/if}
       {:else if buffer.kind === "derived"}
         <span class="v5-buffer-title">{buffer.rendererName}</span>
         <span class="v5-buffer-sub">
@@ -292,6 +297,7 @@
               <NoteRenderer
                 {note}
                 paneId={leafId as unknown as string}
+                size={measuredSize}
                 onContentChange={handleContentChange}
                 onCancelAndFlush={cancelAndFlush}
                 onfocusedblockchange={(b) =>
@@ -418,6 +424,17 @@
     border-radius: 5px;
     padding: 0 6px;
     line-height: 16px;
+  }
+  .v5-scratch-chip {
+    font-family: var(--v4-mono);
+    font-size: 9.5px;
+    color: var(--v4-accent);
+    border: 1px solid var(--v4-accent-dim);
+    border-radius: 4px;
+    padding: 0 6px;
+    line-height: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
   }
   .v5-buffer-close {
     background: transparent;

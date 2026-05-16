@@ -19,6 +19,14 @@
     if (!term) return [];
     return all
       .filter((n) => n.title.toLowerCase().includes(term))
+      // Scratches are hidden from default search; users can find them
+      // by explicitly typing `scratch/` as the query (which still matches
+      // because we filter on title).
+      .filter(
+        (n) =>
+          n.metadata.note_type !== "scratch" ||
+          term.startsWith("scratch"),
+      )
       .slice(0, 40);
   });
 </script>
