@@ -2,38 +2,57 @@
   /*
    * Peek popover — Telescope-shaped quick lookup.
    *
-   * Rewritten for v5: resolves the target page via the v5 buffer state's
-   * `lastFocusedPageId` rather than the v4 pane tree, and hosts derived
-   * renderers through the v5 registry so the same renderer code path
-   * runs here as in a derived buffer pane.
+   * Hosts derived renderers via the v5 registry — the SAME Svelte
+   * component instances that mount inside a derived-buffer pane. The
+   * goal is host-agnosticism: a renderer doesn't know whether it's in
+   * Peek or a pane. Different hosts wrap the renderer in different
+   * chrome; that's the only place behavior diverges.
    *
-   * `Tab` / `Shift-Tab` cycles renderer; Esc dismisses; Enter is
-   * delegated to the inner renderer.
+   * `Tab` / `Shift-Tab` cycles renderer; Esc dismisses; Enter delegates
+   * to the inner renderer (most rows already accept Enter). Peek's
+   * `onNavigate` closes the popover before navigating; a pane's
+   * `onNavigate` just navigates. Renderers themselves are identical.
+   *
+   * Workspace state owns: per-page-type first-shown renderer (so daily
+   * pages can open Peek on outline by default, regularly notes can open
+   * on backlinks, etc.) and a hide-list of renderers to skip in the
+   * cycle.
    */
   import { onMount } from "svelte";
-  import BacklinksTab from "$lib/components/v4/BacklinksTab.svelte";
-  import OutlineTab from "$lib/components/v4/OutlineTab.svelte";
-  import PropertiesView from "$lib/components/v4/PropertiesView.svelte";
-  import LinkedTasksTab from "$lib/components/LinkedTasksTab.svelte";
+  import { createQuery } from "@tanstack/svelte-query";
+  import { api } from "$lib/api-client";
+  import type { Note } from "$lib/types/Note";
   import {
     closePeek,
+    cyclePeek,
     getPeekKind,
     isPeekOpen,
     setPeekKind,
+    DEFAULT_PEEK_CYCLE,
     type PeekKind,
   } from "$lib/stores/peek.svelte";
   import {
     getLastFocusedPageId,
+    getPeekFirstRendererFor,
+    getPeekHideList,
     openPageInFocused,
+    setPeekFirstRendererFor,
   } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
   import {
     getJourneyEntries,
     jumpToJourneyEntry,
   } from "$lib/stores/journey.svelte";
+  import "$lib/renderers/register"; // side-effect: ensure registries are populated
+  import { mount as mountDerived } from "$lib/renderers/derived";
+  import {
+    pickCascadeMember,
+    type NavigationIntent,
+  } from "$lib/buffer/protocol";
 
   const open = $derived(isPeekOpen());
   const kind = $derived(getPeekKind());
+  const hideList = $derived(new Set(getPeekHideList()));
 
   // Resolve the target page from v5 buffer state.
   const pageId = $derived.by(() => {
@@ -44,19 +63,48 @@
 
   const entries = $derived(getJourneyEntries());
 
-  // Cycle order — `Tab` walks forward; `Shift-Tab` walks back.
-  const CYCLE: PeekKind[] = [
-    "backlinks",
-    "outline",
-    "properties",
-    "journey",
-  ];
+  // Fetch the focused note to read its type for the per-page-type
+  // first-shown lookup. Cheap query; cache hit when the page is already
+  // open in a buffer.
+  const noteQuery = createQuery(() => ({
+    queryKey: ["note", pageId] as const,
+    queryFn: () => api.getNote(pageId as string),
+    enabled: !!pageId,
+  }));
+  const pageType = $derived.by(() => {
+    const n = noteQuery.data as Note | undefined;
+    return n?.metadata.note_type ?? "note";
+  });
 
-  function cycle(dir: 1 | -1) {
-    const i = CYCLE.indexOf(kind);
-    const next = (i + dir + CYCLE.length) % CYCLE.length;
-    setPeekKind(CYCLE[next]);
+  // When Peek opens (or the focused page changes while open), consult
+  // the workspace's per-page-type preferred first renderer. Only fires
+  // on the OPEN transition — once open, the user's Tab choices stick.
+  let lastOpenedFor: string | undefined = undefined;
+  $effect(() => {
+    if (!open) {
+      lastOpenedFor = undefined;
+      return;
+    }
+    if (!pageId) return;
+    if (lastOpenedFor === pageId) return;
+    lastOpenedFor = pageId;
+    const pref = getPeekFirstRendererFor(pageType);
+    if (pref) setPeekKind(pref);
+  });
+
+  // When the user picks a different renderer from the dropdown while
+  // peeking a page of a given type, remember it as the new first-shown
+  // for that page type. Tab cycling does NOT update the preference (it's
+  // exploration, not commitment).
+  function onKindChange(e: Event) {
+    const v = (e.currentTarget as HTMLSelectElement).value as PeekKind;
+    setPeekKind(v);
+    if (pageType) setPeekFirstRendererFor(pageType, v);
   }
+
+  // Peek-constrained size — small enough that cascade-aware renderers
+  // pick a compact mode when Phase 10 lands.
+  const PEEK_SIZE = { cols: 50, rows: 18 };
 
   function onKey(e: KeyboardEvent) {
     if (!open) return;
@@ -69,7 +117,7 @@
     if (e.key === "Tab") {
       e.preventDefault();
       e.stopPropagation();
-      cycle(e.shiftKey ? -1 : 1);
+      cyclePeek(e.shiftKey ? -1 : 1, hideList);
       return;
     }
   }
@@ -82,9 +130,15 @@
     }
   }
 
-  function openHere(id: string) {
-    openPageInFocused(asPageId(id));
+  /** Peek's onNavigate: close-then-navigate. The renderer doesn't know
+   *  this is Peek; the host translates intent into "dismiss popover +
+   *  open page in the user's last editor". */
+  function handleIntent(i: NavigationIntent) {
     closePeek();
+    if (i.kind === "open-page") {
+      openPageInFocused(asPageId(i.path));
+    }
+    // tag/query intents not yet wired
   }
 
   onMount(() => {
@@ -114,10 +168,9 @@
           <select
             class="peek-kind"
             value={kind}
-            onchange={(e) =>
-              setPeekKind(e.currentTarget.value as PeekKind)}
+            onchange={onKindChange}
           >
-            {#each CYCLE as k (k)}
+            {#each DEFAULT_PEEK_CYCLE.filter((k) => !hideList.has(k)) as k (k)}
               <option value={k}>{k}</option>
             {/each}
           </select>
@@ -130,17 +183,11 @@
         </div>
       </header>
       <div class="peek-hint">
-        Tab / Shift-Tab to cycle renderer
+        Tab / Shift-Tab to cycle · Esc to close
       </div>
       <div class="peek-body">
         {#if !pageId && kind !== "journey"}
           <p class="peek-empty">no focused page to peek at</p>
-        {:else if kind === "backlinks"}
-          <BacklinksTab noteId={pageId} onOpenNote={openHere} />
-        {:else if kind === "outline"}
-          <OutlineTab noteId={pageId} onOpenNote={openHere} />
-        {:else if kind === "properties"}
-          <PropertiesView noteId={pageId} focusedBlock={null} />
         {:else if kind === "journey"}
           {#if entries.length === 0}
             <p class="peek-empty">no journey entries yet</p>
@@ -160,6 +207,23 @@
               {/each}
             </ul>
           {/if}
+        {:else}
+          <!-- Mount the derived renderer via the registry. Same component
+               that a derived-buffer pane mounts; only the host chrome and
+               onNavigate semantics differ. -->
+          {@const ref = { kind: "page" as const, path: pageId as string }}
+          {#await Promise.resolve(mountDerived(kind, ref)) then renderer}
+            {@const C = pickCascadeMember(renderer.cascade, PEEK_SIZE)}
+            <C
+              reference={ref}
+              size={PEEK_SIZE}
+              onNavigate={handleIntent}
+            />
+          {:catch err}
+            <p class="peek-empty">
+              renderer error: {err instanceof Error ? err.message : String(err)}
+            </p>
+          {/await}
         {/if}
       </div>
     </div>
@@ -179,7 +243,7 @@
     animation: v4-fade-in var(--v4-dur-fast) var(--v4-ease-overlay);
   }
   .peek {
-    width: min(420px, calc(100vw - 80px));
+    width: min(460px, calc(100vw - 80px));
     max-height: calc(100vh - 120px);
     background: var(--v4-bg);
     border: 1px solid var(--v4-hair);

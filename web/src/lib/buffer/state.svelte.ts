@@ -283,6 +283,35 @@ export function setSidebarSurface(surface: Workspace["sidebar"]["activeSurface"]
   commit({ ...workspace, sidebar: { ...workspace.sidebar, activeSurface: surface } });
 }
 
+// ── peek prefs ─────────────────────────────────────────────────────────────
+
+/** First Peek renderer shown for a given page type. Falls back to `undefined`
+ *  so callers can use the default cycle's first entry. */
+export function getPeekFirstRendererFor(pageType: string): string | undefined {
+  return workspace.peekFirstRendererByPageType?.[pageType];
+}
+
+export function setPeekFirstRendererFor(pageType: string, rendererName: string) {
+  const cur = workspace.peekFirstRendererByPageType ?? {};
+  if (cur[pageType] === rendererName) return;
+  commit({
+    ...workspace,
+    peekFirstRendererByPageType: { ...cur, [pageType]: rendererName },
+  });
+}
+
+export function getPeekHideList(): string[] {
+  return workspace.peekHideList ?? [];
+}
+
+export function togglePeekHide(rendererName: string) {
+  const cur = workspace.peekHideList ?? [];
+  const next = cur.includes(rendererName)
+    ? cur.filter((n) => n !== rendererName)
+    : [...cur, rendererName].sort();
+  commit({ ...workspace, peekHideList: next });
+}
+
 // ── reset (testing / dev) ──────────────────────────────────────────────────
 
 export function resetWorkspace() {

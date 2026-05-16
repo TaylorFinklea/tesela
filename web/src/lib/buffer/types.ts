@@ -82,6 +82,9 @@ export type Workspace = {
   sidebar: SidebarState;
   /** pageType → preferred-first Peek renderer name. Overrides default cycle order. */
   peekFirstRendererByPageType: Record<string, string>;
+  /** Renderer names the user hid from the Peek cycle. Stored as a sorted
+   *  array (not Set) for JSON serializability. */
+  peekHideList?: string[];
 };
 
 // ── id mints + brand-blind constructors ────────────────────────────────────
