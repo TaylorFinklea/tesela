@@ -57,21 +57,39 @@
   // into the inner cm-editor so the user can immediately start typing.
   // For non-page buffers (derived, ambient), focus stays on the shell —
   // there's nothing to type into.
+  //
+  // We poll briefly because freshly-created notes (e.g. `:scratch`) take
+  // a few ticks to: fetch the note, mount NoteRenderer, mount BlockOutliner,
+  // and mount the first BlockEditor's cm-editor. A single `setTimeout(0)`
+  // races with that. The poll gives up after ~500ms.
   $effect(() => {
     if (!focused || !shellEl) return;
     if (buffer.kind !== "page") return;
-    // Defer one tick so freshly-mounted editors finish their setup.
-    const t = setTimeout(() => {
-      if (!shellEl) return;
-      // Skip if user's already focused something inside (e.g. clicked a
-      // chip, the sidebar, the search box).
+    // Track buffer.pageId so the effect re-runs whenever the focused
+    // buffer's page changes (incl. when `:scratch` creates a new page
+    // and points the focused leaf at it).
+    const _trigger = (buffer as { pageId?: string }).pageId;
+    let cancelled = false;
+    let elapsed = 0;
+    const tick = () => {
+      if (cancelled || !shellEl) return;
       if (shellEl.contains(document.activeElement)) {
         if (document.activeElement?.classList.contains("cm-content")) return;
       }
       const cmContent = shellEl.querySelector(".cm-content");
-      if (cmContent instanceof HTMLElement) cmContent.focus();
-    }, 0);
-    return () => clearTimeout(t);
+      if (cmContent instanceof HTMLElement) {
+        cmContent.focus();
+        return;
+      }
+      elapsed += 50;
+      if (elapsed > 500) return;
+      setTimeout(tick, 50);
+    };
+    const start = setTimeout(tick, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(start);
+    };
   });
 
   // ── page buffer: TanStack Query for the note ──────────────────────────

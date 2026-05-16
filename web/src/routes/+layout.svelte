@@ -18,6 +18,7 @@
    * never reached in practice.
    */
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
+  import { registerAppQueryClient } from "$lib/app-query-client.svelte";
   import { onMount } from "svelte";
   import { connect, setHandlers } from "$lib/ws-client.svelte";
   import {
@@ -40,6 +41,9 @@
       },
     },
   });
+  // Expose to plain-TS modules (commands.ts etc.) so verbs can invalidate
+  // cache entries without going through Svelte context.
+  registerAppQueryClient(queryClient);
 
   const activeToast = $derived(getToast());
 

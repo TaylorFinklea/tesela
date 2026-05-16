@@ -7,6 +7,7 @@
  */
 
 import { api } from "$lib/api-client";
+import { getAppQueryClient } from "$lib/app-query-client.svelte";
 import {
   closeFocusedLeaf,
   closeTab,
@@ -80,11 +81,13 @@ async function createNoteAndJump(title: string) {
 async function createScratchAndJump() {
   // Auto-named by timestamp; `type: scratch` frontmatter so the page-type
   // dispatch can render the chip + so the sidebar/search filters can
-  // hide it.
+  // hide it. Seed one empty bullet so BlockOutliner has a block to mount
+  // a BlockEditor against — otherwise the user lands on "↓ to insert"
+  // placeholder text with no cm-editor to type into.
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
   const stamp = `scratch/${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
-  const content = `---\ntitle: "${stamp}"\ntype: scratch\ntags: []\n---\n`;
+  const content = `---\ntitle: "${stamp}"\ntype: scratch\ntags: []\n---\n- \n`;
   const note = await api.createNote(stamp, content);
   openPageInFocused(asPageId(note.id));
 }
@@ -97,9 +100,16 @@ async function promoteFocusedScratch() {
   // that doesn't have it is a no-op.
   const next = note.content.replace(/^type:\s*scratch\s*\n/m, "");
   if (next === note.content) return;
-  await api.updateNote(buffer.pageId, next);
-  // Re-open to refresh the buffer's view of the note.
-  openPageInFocused(asPageId(buffer.pageId));
+  const updated = await api.updateNote(buffer.pageId, next);
+  // Refresh the TanStack cache so BufferShell + sidebar surfaces re-read
+  // the updated note (chip disappears, scratch leaves the tree's hidden
+  // bucket, etc.). Without this, the UI keeps the old note_type === "scratch"
+  // value from the previous fetch.
+  const qc = getAppQueryClient();
+  if (qc) {
+    qc.setQueryData(["note", buffer.pageId], updated);
+    qc.invalidateQueries({ queryKey: ["notes"] });
+  }
 }
 
 function followBinding(): DerivedBinding {
