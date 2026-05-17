@@ -90,12 +90,17 @@
 
   const split = $derived(splitContent(note.content));
   const noteType = $derived(note.metadata.note_type);
+  /** Lowercased note type for case-insensitive dispatch. The tag-system spec
+   *  uses `type: tag` (lowercase) but earlier auto-creates wrote `type: "Tag"`
+   *  capitalized; matching lowercase here keeps both forms rendering correctly
+   *  without an on-disk migration sweep. */
+  const noteTypeLc = $derived((noteType ?? "").toLowerCase());
   const isDocumentMode = $derived(note.metadata.custom?.mode === "document");
 </script>
 
 {#if useJournalFeed}
   <JournalView anchorDate={note.title} />
-{:else if noteType === "Query"}
+{:else if noteTypeLc === "query"}
   {#if useCompactQuery}
     <CompactQueryView {note} onOpenRow={onOpenNote} />
   {:else}
@@ -104,9 +109,9 @@
       onOpenRow={onOpenNote ? (pageId) => onOpenNote(pageId) : undefined}
     />
   {/if}
-{:else if noteType === "Tag"}
+{:else if noteTypeLc === "tag"}
   <TagTable tagName={note.title} noteId={note.id} />
-{:else if noteType === "Property"}
+{:else if noteTypeLc === "property"}
   <PropertyTypeConfig {note} />
 {:else if isDocumentMode}
   <DocumentEditor

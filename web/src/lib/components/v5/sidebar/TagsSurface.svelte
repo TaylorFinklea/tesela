@@ -1,8 +1,13 @@
 <script lang="ts">
-  /* Tags surface — flat tag list extracted from note metadata. */
+  /* Tags surface — flat tag list extracted from note metadata.
+   * Clicking a tag opens its tag page in the focused buffer. Tags page
+   * resolution mirrors BufferShell's `open-tag` intent handler: the tag's
+   * NoteId is the slug, lowercased. */
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import type { Note } from "$lib/types/Note";
+  import { openPageInFocused } from "$lib/buffer/state.svelte";
+  import { asPageId } from "$lib/buffer/types";
 
   const q = createQuery(() => ({
     queryKey: ["notes", { limit: 500 }] as const,
@@ -17,6 +22,10 @@
     }
     return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
   });
+
+  function openTag(name: string) {
+    openPageInFocused(asPageId(name.toLowerCase()));
+  }
 </script>
 
 <div class="v5-side-surface">
@@ -29,8 +38,15 @@
     <ul>
       {#each tags as [name, count] (name)}
         <li>
-          <span class="name">{name}</span>
-          <span class="count">{count}</span>
+          <button
+            type="button"
+            class="row"
+            onclick={() => openTag(name)}
+            title="open {name}"
+          >
+            <span class="name">#{name}</span>
+            <span class="count">{count}</span>
+          </button>
         </li>
       {/each}
     </ul>
@@ -63,13 +79,24 @@
     gap: 2px;
   }
   li {
+    display: block;
+  }
+  .row {
     display: grid;
     grid-template-columns: 1fr auto;
     gap: 4px;
     padding: 3px 6px;
     border-radius: 4px;
+    background: transparent;
+    border: 0;
+    color: inherit;
+    text-align: left;
+    font-family: inherit;
+    font-size: inherit;
+    width: 100%;
+    cursor: pointer;
   }
-  li:hover {
+  .row:hover {
     background: var(--v4-surface-lo);
   }
   .name {

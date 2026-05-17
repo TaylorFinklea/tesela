@@ -137,8 +137,12 @@
     closePeek();
     if (i.kind === "open-page") {
       openPageInFocused(asPageId(i.path));
+    } else if (i.kind === "open-tag") {
+      // Same resolution as BufferShell: the tag's page is at NoteId
+      // `<slug>` (lowercased). Phase 2 moves the file location.
+      openPageInFocused(asPageId(i.value.toLowerCase()));
     }
-    // tag/query intents not yet wired
+    // query intent not yet wired
   }
 
   onMount(() => {

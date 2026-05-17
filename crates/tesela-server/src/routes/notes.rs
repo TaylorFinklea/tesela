@@ -987,9 +987,13 @@ async fn ensure_tag_pages(s: &Arc<AppState>, note: &Note) {
         match s.store.get(&tag_id).await {
             Ok(Some(_)) => {} // Page already exists
             Ok(None) => {
-                // Auto-create tag page
+                // Auto-create tag page. `type: tag` (lowercase, bare) is the
+                // canonical form per the tag-system spec. The capitalized
+                // `"Tag"` form may still exist on disk from earlier auto-creates;
+                // the frontend dispatcher matches both case-insensitively, so
+                // we don't migrate older pages on read.
                 let content = format!(
-                    "---\ntitle: \"{}\"\ntype: \"Tag\"\nextends: \"Root Tag\"\ntag_properties: []\ntags: []\n---\n- Tag properties are inherited by all nodes using the tag.\n",
+                    "---\ntitle: \"{}\"\ntype: tag\nextends: \"Root Tag\"\ntag_properties: []\ntags: []\n---\n- Tag properties are inherited by all nodes using the tag.\n",
                     tag
                 );
                 match s.store.create(tag, &content, &[]).await {

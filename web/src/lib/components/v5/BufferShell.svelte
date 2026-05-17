@@ -180,8 +180,14 @@
       // "split-right", "split-down", "new-tab" are deferred to Phase 9
       // when Peek navigation lands; default everything to replace.
       openPageInFocused(i.path as PageId);
+    } else if (i.kind === "open-tag") {
+      // Reference: tag resolution. The tag's page lives at NoteId
+      // `<slug>`; opening it routes through the same page-open path as
+      // any other note. Phase 2 moves the file to `tags/<slug>.md`; the
+      // NoteId stays a bare slug until then.
+      openPageInFocused(i.value.toLowerCase() as PageId);
     }
-    // tag and query navigation intents are no-ops for Phase 4.
+    // query navigation intents remain deferred.
   }
 
   // Resolve a derived buffer's binding into a concrete Reference.
@@ -262,6 +268,8 @@
           <span class="v5-scratch-chip" title="scratch · :promote to keep"
             >scratch</span
           >
+        {:else if (note?.metadata.note_type ?? "").toLowerCase() === "tag"}
+          <span class="v5-tag-chip" title="tag page">tag</span>
         {/if}
       {:else if buffer.kind === "derived"}
         <span class="v5-buffer-title">{buffer.rendererName}</span>
@@ -448,6 +456,17 @@
     font-size: 9.5px;
     color: var(--v4-accent);
     border: 1px solid var(--v4-accent-dim);
+    border-radius: 4px;
+    padding: 0 6px;
+    line-height: 16px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .v5-tag-chip {
+    font-family: var(--v4-mono);
+    font-size: 9.5px;
+    color: var(--v4-ink2);
+    border: 1px solid var(--v4-hair2);
     border-radius: 4px;
     padding: 0 6px;
     line-height: 16px;
