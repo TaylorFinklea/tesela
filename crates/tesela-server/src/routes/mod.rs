@@ -39,6 +39,10 @@ pub fn build(state: AppState) -> Router {
         .route("/tags/rename", post(notes::rename_tag))
         .route("/tags/resolve", post(notes::resolve_tag))
         .route("/tags/{slug}/usage", get(notes::get_tag_usage))
+        .route(
+            "/tags/{slug}/cleanup-references",
+            post(notes::cleanup_tag_references),
+        )
         .route("/notes/{id}/versions", get(history::list_versions))
         .route(
             "/notes/{id}/versions/{version_id}",

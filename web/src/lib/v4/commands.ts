@@ -141,13 +141,10 @@ async function createScratchAndJump() {
   openPageInFocused(asPageId(note.id));
 }
 
-/** Phase 15 — `:delete-tag` verb. Fetches usage counts, confirms via the
- *  browser dialog (MVP — a richer choice UI is a follow-up), and deletes
- *  the tag page if confirmed. References / page-instances / block-instances
- *  are NOT auto-cleaned; the user sees the count and decides whether to
- *  delete-anyway or not. Children are orphaned (their `parent:` becomes
- *  invalid but isn't rewritten). Phase 13 (cascade rename) will provide a
- *  proper rewrite path. */
+/** Phase 13 + 15 — `:delete-tag` verb. Fetches usage counts, confirms via a
+ *  two-step dialog (1: show counts + ask whether to also clean up refs;
+ *  2: confirm final delete), then performs cleanup-if-requested followed by
+ *  the note delete. */
 async function deleteFocusedTag() {
   const buffer = getFocusedBuffer();
   if (!buffer || buffer.kind !== "page" || !buffer.pageId) {
@@ -161,24 +158,49 @@ async function deleteFocusedTag() {
     return;
   }
   const usage = await api.getTagUsage(buffer.pageId);
+
+  // Step 1 — show counts and ask about reference cleanup. `confirm` returns
+  // true → also clean refs; false → leave them as broken text. (`prompt`
+  // would let us collect text but we just want a yes/no, so the message
+  // describes the consequence and OK = clean, Cancel = leave.)
   const summary =
     `Delete tag "${buffer.pageId}"?\n\n` +
-    `References:        ${usage.references} (left as broken)\n` +
-    `Page instances:    ${usage.page_instances}\n` +
-    `Block instances:   ${usage.block_instances}\n` +
-    `Child tags:        ${usage.children} (orphaned)\n\n` +
-    `Phase 15 MVP: deletes the tag page only. Mentions in markdown stay\n` +
-    `as plain text. Children's parent: frontmatter is NOT rewritten.\n\n` +
-    `Proceed?`;
-  if (!window.confirm(summary)) return;
-  await fetch(
-    `/api/notes/${encodeURIComponent(buffer.pageId)}`,
-    { method: "DELETE" },
-  );
+    `References (#tag, [[tag]]):  ${usage.references}\n` +
+    `Page instances:                ${usage.page_instances}\n` +
+    `Block instances:               ${usage.block_instances}\n` +
+    `Child tags (will be orphaned): ${usage.children}\n\n` +
+    `Press OK to ALSO clean up references in the corpus\n` +
+    `(strip #tag tokens, unwrap [[tag]] to plain text,\n` +
+    `clear children's parent: frontmatter).\n\n` +
+    `Press Cancel to leave references as-is.`;
+  const cleanup = window.confirm(summary);
+
+  // Step 2 — final confirmation.
+  const finalPrompt = cleanup
+    ? `Confirm: delete tag "${buffer.pageId}" AND clean up references.`
+    : `Confirm: delete tag "${buffer.pageId}" (references will remain as broken tokens).`;
+  if (!window.confirm(finalPrompt)) return;
+
+  if (cleanup) {
+    try {
+      const result = await api.cleanupTagReferences(buffer.pageId, true);
+      console.info(
+        `cleanup-tag-references: stripped ${result.refs} ref(s) across ${result.notes} note(s)`,
+      );
+    } catch (e) {
+      console.warn("cleanup-tag-references failed:", e);
+      // Continue with the delete anyway — the user already confirmed.
+    }
+  }
+
+  await fetch(`/api/notes/${encodeURIComponent(buffer.pageId)}`, {
+    method: "DELETE",
+  });
   const qc = getAppQueryClient();
   if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
 }
 
+/** Phase 13 — `:rename-slug` with preview/confirm/commit flow. */
 async function renameFocusedTagSlug(toSlug: string) {
   const buffer = getFocusedBuffer();
   if (!buffer || buffer.kind !== "page" || !buffer.pageId) {
@@ -193,7 +215,22 @@ async function renameFocusedTagSlug(toSlug: string) {
   }
   const newSlug = toSlug.trim().toLowerCase();
   if (!newSlug || newSlug === buffer.pageId) return;
-  await api.renameTagSlug(buffer.pageId, newSlug);
+
+  // Phase 13 — preview rewrite counts, confirm with user, then commit.
+  let preview;
+  try {
+    preview = await api.renameTagSlug(buffer.pageId, newSlug, false);
+  } catch (e) {
+    console.warn("rename-slug preview failed:", e);
+    return;
+  }
+  const summary =
+    `Rename tag "${buffer.pageId}" → "${newSlug}"?\n\n` +
+    `Will rewrite ${preview.refs} reference(s) across ${preview.notes} note(s).\n` +
+    `Plus move the tag's own file from ${buffer.pageId}.md to ${newSlug}.md.`;
+  if (!window.confirm(summary)) return;
+
+  await api.renameTagSlug(buffer.pageId, newSlug, true);
   openPageInFocused(asPageId(newSlug));
   const qc = getAppQueryClient();
   if (qc) qc.invalidateQueries({ queryKey: ["notes"] });

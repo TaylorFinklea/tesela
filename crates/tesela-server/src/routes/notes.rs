@@ -43,12 +43,24 @@ pub struct CreateNoteReq {
 pub struct RenameTagReq {
     pub from_slug: String,
     pub to_slug: String,
+    /// When `false`, walk the corpus and return the rewrite count without
+    /// touching any file. When `true`, apply the rewrite + the file move.
+    /// Defaults to `false` so accidental calls don't mutate.
+    #[serde(default)]
+    pub commit: bool,
 }
 
 #[derive(Deserialize)]
 pub struct ResolveTagReq {
     /// Path-form (`nature/birds/cardinal`) or bare (`cardinal`).
     pub path: String,
+}
+
+#[derive(Deserialize)]
+pub struct CleanupTagReq {
+    /// Same two-phase contract as `RenameTagReq.commit`.
+    #[serde(default)]
+    pub commit: bool,
 }
 
 #[derive(Deserialize)]
@@ -474,22 +486,37 @@ async fn resolve_one_segment(
     Ok(SegmentResolution::Created(resolved_slug))
 }
 
-/// Rename a tag page's slug. The tag's `title:` (display name) is preserved
-/// — only the on-disk slug changes.
+/// Rename a tag page's slug and rewrite references across the corpus.
 ///
-/// Phase 2 scope: file move only. References in the corpus (`#old`,
-/// `[[old]]`, and children's `parent: old`) are NOT rewritten yet; that's
-/// Phase 13's cascade-rename work. Calling this verb before Phase 13 lands
-/// will leave outbound references pointing at the old slug.
+/// Two-phase contract: when `req.commit == false` the handler returns the
+/// rewrite counts (refs touched, notes affected) without mutating anything,
+/// so the frontend can show a confirm dialog. When `req.commit == true` the
+/// rewrite is applied for real.
+///
+/// Rewrite scope (per the 2026-05-17 product decisions):
+/// - `#<oldslug>` tokens in note bodies → `#<newslug>`
+/// - `[[<oldslug>]]` wiki links → `[[<newslug>]]` (alias preserved)
+/// - Children's `parent: <oldslug>` frontmatter → `parent: <newslug>`
+/// - Source tag's own file moves from `<oldslug>.md` to `<newslug>.md`
+///
+/// NOT touched:
+/// - Page-level `tags: [oldslug, ...]` frontmatter arrays — by explicit
+///   product decision (those are page-level, the rename targets the
+///   tag-entity slug only).
+/// - References inside fenced code blocks (` ``` ... ``` `).
 pub async fn rename_tag(
     State(s): State<Arc<AppState>>,
     Json(req): Json<RenameTagReq>,
 ) -> AppResult<Json<serde_json::Value>> {
     let from_id = NoteId::new(&req.from_slug);
     let to_id = NoteId::new(&req.to_slug);
+    let from_slug_lc = req.from_slug.to_lowercase();
+    let to_slug_lc = req.to_slug.to_lowercase();
 
-    if req.from_slug == req.to_slug {
-        return Err(AppError::Validation("from_slug and to_slug are identical".into()));
+    if from_slug_lc == to_slug_lc {
+        return Err(AppError::Validation(
+            "from_slug and to_slug are identical".into(),
+        ));
     }
 
     let source = s
@@ -518,8 +545,75 @@ pub async fn rename_tag(
         )));
     }
 
-    // Create the target file using the source content verbatim (preserves
-    // frontmatter, including title and parent).
+    // Walk the corpus and compute rewrites. For each note we record:
+    //   - the new content (after rewrite)
+    //   - count of refs rewritten on this note
+    // The source tag's own file is excluded — it'll be deleted in the
+    // file-move step regardless.
+    use tesela_core::tag_rewrite::{
+        rewrite_inline_tag, rewrite_parent_frontmatter, rewrite_wiki_link,
+    };
+    let all = s.store.list(None, 100_000, 0).await?;
+    let mut plan: Vec<(Note, String, usize)> = Vec::new();
+    let mut total_refs = 0usize;
+    for note in all {
+        if note.id.as_str().eq_ignore_ascii_case(&from_slug_lc) {
+            continue;
+        }
+        let (body_after_inline, n_inline) =
+            rewrite_inline_tag(&note.body, &from_slug_lc, &to_slug_lc);
+        let (body_after_wiki, n_wiki) =
+            rewrite_wiki_link(&body_after_inline, &from_slug_lc, &to_slug_lc);
+        // Frontmatter parent rewrite runs on the full content so the
+        // frontmatter block is correctly delimited.
+        let (full_content_for_parent, _) =
+            rewrite_parent_frontmatter(&note.content, &from_slug_lc, &to_slug_lc);
+        // We want to assemble: frontmatter (potentially rewritten) + body
+        // (rewritten). Easiest: rebuild the full content as frontmatter +
+        // body. The store's `update` writes the whole content blob to disk.
+        let n_total = n_inline + n_wiki;
+        // If neither the body nor the frontmatter changed, skip.
+        let body_changed = n_total > 0;
+        let parent_changed = full_content_for_parent != note.content;
+        if !body_changed && !parent_changed {
+            continue;
+        }
+        // Take the parent-rewritten frontmatter (if any) and splice on the
+        // body-rewritten body.
+        let new_content = splice_body_into_content(&full_content_for_parent, &body_after_wiki);
+        total_refs += n_total + if parent_changed { 1 } else { 0 };
+        plan.push((note, new_content, n_total));
+    }
+
+    let notes_affected = plan.len();
+
+    if !req.commit {
+        return Ok(Json(serde_json::json!({
+            "commit": false,
+            "from_slug": req.from_slug,
+            "to_slug": req.to_slug,
+            "refs": total_refs,
+            "notes": notes_affected,
+        })));
+    }
+
+    // Commit phase. Apply each plan entry through the store's update path,
+    // reindex, and emit sync ops. Errors abort the rest of the rewrite —
+    // partial state is acceptable since each note is independently valid.
+    for (note, new_content, _n) in plan {
+        let updated_note = Note {
+            content: new_content,
+            ..note.clone()
+        };
+        s.store.update(&updated_note).await?;
+        s.index.reindex(&updated_note).await?;
+        record_sync_update(&s, &note.content, &updated_note).await;
+        let _ = s.ws_tx.send(WsEvent::NoteUpdated {
+            note: updated_note,
+        });
+    }
+
+    // Now move the source tag's own file.
     let renamed = s
         .store
         .create(&req.to_slug, &source.content, &[])
@@ -538,9 +632,119 @@ pub async fn rename_tag(
     });
 
     Ok(Json(serde_json::json!({
+        "commit": true,
         "from_slug": req.from_slug,
         "to_slug": req.to_slug,
+        "refs": total_refs,
+        "notes": notes_affected,
     })))
+}
+
+/// `:delete-tag` cleanup path — strip every `#<slug>` and `[[<slug>]]`
+/// reference from the corpus, and clear children's `parent: <slug>`
+/// frontmatter so they orphan cleanly.
+///
+/// Same two-phase contract as `rename_tag`: `commit=false` previews,
+/// `commit=true` applies. Returns counts.
+///
+/// This is intentionally a separate verb from the delete: the frontend
+/// calls cleanup THEN delete-note. The tag's own file is NOT deleted by
+/// this handler.
+pub async fn cleanup_tag_references(
+    Path(slug): Path<String>,
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<CleanupTagReq>,
+) -> AppResult<Json<serde_json::Value>> {
+    let slug_lc = slug.to_lowercase();
+
+    use tesela_core::tag_rewrite::{
+        clear_parent_frontmatter, strip_inline_tag, strip_wiki_link,
+    };
+
+    let all = s.store.list(None, 100_000, 0).await?;
+    let mut plan: Vec<(Note, String, usize)> = Vec::new();
+    let mut total_refs = 0usize;
+
+    for note in all {
+        // Skip the tag's own file — the caller will delete it next.
+        if note.id.as_str().eq_ignore_ascii_case(&slug_lc) {
+            continue;
+        }
+        let (body_after_inline, n_inline) = strip_inline_tag(&note.body, &slug_lc);
+        let (body_after_wiki, n_wiki) = strip_wiki_link(&body_after_inline, &slug_lc);
+        let (content_after_parent, parent_cleared) =
+            clear_parent_frontmatter(&note.content, &slug_lc);
+        let n_total = n_inline + n_wiki;
+        let body_changed = n_total > 0;
+        if !body_changed && !parent_cleared {
+            continue;
+        }
+        let new_content = splice_body_into_content(&content_after_parent, &body_after_wiki);
+        total_refs += n_total + if parent_cleared { 1 } else { 0 };
+        plan.push((note, new_content, n_total));
+    }
+
+    let notes_affected = plan.len();
+
+    if !req.commit {
+        return Ok(Json(serde_json::json!({
+            "commit": false,
+            "slug": slug_lc,
+            "refs": total_refs,
+            "notes": notes_affected,
+        })));
+    }
+
+    for (note, new_content, _) in plan {
+        let updated_note = Note {
+            content: new_content,
+            ..note.clone()
+        };
+        s.store.update(&updated_note).await?;
+        s.index.reindex(&updated_note).await?;
+        record_sync_update(&s, &note.content, &updated_note).await;
+        let _ = s.ws_tx.send(WsEvent::NoteUpdated {
+            note: updated_note,
+        });
+    }
+
+    Ok(Json(serde_json::json!({
+        "commit": true,
+        "slug": slug_lc,
+        "refs": total_refs,
+        "notes": notes_affected,
+    })))
+}
+
+/// Helper for the rename / cleanup handlers: given a full note `content`
+/// (frontmatter + body) and a new body, produce a content string that uses
+/// the original frontmatter plus the new body.
+///
+/// If `content` has no frontmatter block, the new body becomes the whole
+/// content.
+fn splice_body_into_content(content: &str, new_body: &str) -> String {
+    // Find the closing `---` of the frontmatter block. Same logic as the
+    // frontend's splitContent.
+    if !content.starts_with("---\n") && !content.starts_with("---\r\n") {
+        return new_body.to_string();
+    }
+    let after_first_newline = match content.find('\n') {
+        Some(idx) => idx + 1,
+        None => return new_body.to_string(),
+    };
+    let rest = &content[after_first_newline..];
+    let close = rest.find("\n---\n").or_else(|| rest.find("\n---\r\n"));
+    let close = match close {
+        Some(off) => after_first_newline + off + 1, // position of `---`
+        None => return new_body.to_string(),
+    };
+    // close points at the `---`; the line ends after `\n`.
+    let line_end = match content[close..].find('\n') {
+        Some(n) => close + n + 1,
+        None => content.len(),
+    };
+    let frontmatter = &content[..line_end];
+    format!("{}{}", frontmatter, new_body)
 }
 
 /// Producer path for note creation. Emits one NoteUpsert that carries

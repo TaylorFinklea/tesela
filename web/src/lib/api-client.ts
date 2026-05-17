@@ -101,14 +101,28 @@ export const api = {
     get<Link[]>(`/notes/${encodeURIComponent(id)}/links`),
   getUnlinkedReferences: (id: string) =>
     get<Link[]>(`/notes/${encodeURIComponent(id)}/unlinked`),
-  /** Rename a tag page's slug. The title (display name) is preserved; only
-   *  the on-disk slug changes. Phase 2 scope: file rename only — corpus
-   *  references aren't yet rewritten (Phase 13). */
-  renameTagSlug: (fromSlug: string, toSlug: string) =>
-    post<{ from_slug: string; to_slug: string }>("/tags/rename", {
-      from_slug: fromSlug,
-      to_slug: toSlug,
-    }),
+  /** Rename a tag page's slug. Two-phase: with `commit: false` returns the
+   *  rewrite counts (refs touched, notes affected) without mutating anything,
+   *  so the caller can show a confirmation. With `commit: true` applies the
+   *  rewrite (corpus `#tag`/`[[tag]]` rewrite, children's `parent:` rewrite,
+   *  and the file move). */
+  renameTagSlug: (fromSlug: string, toSlug: string, commit = false) =>
+    post<{
+      commit: boolean;
+      from_slug: string;
+      to_slug: string;
+      refs: number;
+      notes: number;
+    }>("/tags/rename", { from_slug: fromSlug, to_slug: toSlug, commit }),
+  /** Strip references to a tag from the corpus. Same two-phase contract as
+   *  `renameTagSlug`. Used by `:delete-tag` when the user opts into cleanup.
+   *  The tag's own page is NOT deleted by this — call `deleteNote(slug)`
+   *  after the cleanup completes. */
+  cleanupTagReferences: (slug: string, commit = false) =>
+    post<{ commit: boolean; slug: string; refs: number; notes: number }>(
+      `/tags/${encodeURIComponent(slug)}/cleanup-references`,
+      { commit },
+    ),
   /** Resolve a path-form tag reference (`nature/birds/cardinal`) or bare
    *  (`cardinal`) into a concrete slug. Missing ancestors are cascade-
    *  created top-down. Returns the resolved leaf slug plus an audit of

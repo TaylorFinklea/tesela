@@ -15,6 +15,7 @@ pub mod regex_cache;
 pub mod storage;
 pub mod system_widgets;
 pub mod tag;
+pub mod tag_rewrite;
 pub mod traits;
 pub mod types;
 
