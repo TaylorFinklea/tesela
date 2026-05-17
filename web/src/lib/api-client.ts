@@ -99,6 +99,8 @@ export const api = {
     get<Link[]>(`/notes/${encodeURIComponent(id)}/backlinks`),
   getForwardLinks: (id: string) =>
     get<Link[]>(`/notes/${encodeURIComponent(id)}/links`),
+  getUnlinkedReferences: (id: string) =>
+    get<Link[]>(`/notes/${encodeURIComponent(id)}/unlinked`),
   getAllEdges: () => get<GraphEdge[]>("/links"),
   getType: (name: string) =>
     get<TypeDefinition>(`/types/${encodeURIComponent(name)}`),

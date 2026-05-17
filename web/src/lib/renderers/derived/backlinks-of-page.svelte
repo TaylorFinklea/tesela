@@ -25,6 +25,9 @@
   // size-prop driven branch is just within-mode polish.
   const showUnlinkedSection = $derived(size.cols >= 70);
 
+  import { useQueryClient } from "@tanstack/svelte-query";
+  const queryClient = useQueryClient();
+
   const backlinksQuery = createQuery(() => ({
     queryKey: ["backlinks", pageId] as const,
     queryFn: () => api.getBacklinks(pageId as string),
@@ -35,9 +38,62 @@
     queryFn: () => api.getForwardLinks(pageId as string),
     enabled: !!pageId,
   }));
+  const unlinkedQuery = createQuery(() => ({
+    queryKey: ["unlinked", pageId] as const,
+    queryFn: () => api.getUnlinkedReferences(pageId as string),
+    enabled: !!pageId,
+  }));
 
   const backlinks = $derived((backlinksQuery.data ?? []) as Link[]);
   const forwardLinks = $derived((forwardLinksQuery.data ?? []) as Link[]);
+  const unlinked = $derived((unlinkedQuery.data ?? []) as Link[]);
+
+  /** Promote one unlinked reference to a real `[[wiki-link]]`. Reads the
+   *  source note, finds the first plain-text occurrence of the focused
+   *  page's title on the row's line, wraps it with `[[ ]]`, writes back.
+   *  After save, refetch backlinks + unlinked so the UI shifts the row
+   *  from "unlinked" to "backlinks". */
+  async function promoteToLink(row: Link): Promise<void> {
+    if (!pageId) return;
+    const sourceId = row.target;
+    const src = await api.getNote(sourceId);
+    const needle = pageId;
+    // Use the row's line text as the anchor — same line in the source.
+    // The case-insensitive backend match means the title in the source
+    // may differ in case; we wrap whatever literally appears.
+    const lines = src.content.split("\n");
+    let replaced = false;
+    const next = lines
+      .map((line) => {
+        if (replaced) return line;
+        // Skip lines already containing a wiki-link to this page.
+        if (line.toLowerCase().includes(`[[${needle.toLowerCase()}]]`)) {
+          return line;
+        }
+        // Find first standalone occurrence (word-boundary-ish).
+        const lower = line.toLowerCase();
+        const at = lower.indexOf(needle.toLowerCase());
+        if (at < 0) return line;
+        const before = at === 0 ? "" : line[at - 1];
+        const after = line[at + needle.length] ?? "";
+        const beforeOk = !/[A-Za-z0-9_]/.test(before);
+        const afterOk = !/[A-Za-z0-9_]/.test(after);
+        if (!beforeOk || !afterOk) return line;
+        replaced = true;
+        return (
+          line.slice(0, at) +
+          "[[" +
+          line.slice(at, at + needle.length) +
+          "]]" +
+          line.slice(at + needle.length)
+        );
+      })
+      .join("\n");
+    if (!replaced) return;
+    await api.updateNote(sourceId, next);
+    queryClient.invalidateQueries({ queryKey: ["backlinks", pageId] });
+    queryClient.invalidateQueries({ queryKey: ["unlinked", pageId] });
+  }
 
   function open(p: string) {
     onNavigate({ kind: "open-page", path: p, how: "replace" });
@@ -103,13 +159,33 @@
 
     {#if showUnlinkedSection}
       <section>
-        <h3>Unlinked references <span class="badge">soon</span></h3>
-        <p class="muted">
-          Coming soon — like Logseq's unlinked references, this will surface
-          places that mention this page's title or any of its aliases but
-          aren't formally `[[wiki-linked]]`. Roadmap: fuzzy-match against
-          page corpus on the backend, surface here for one-click linking.
-        </p>
+        <h3>Unlinked references <span class="count">{unlinked.length}</span></h3>
+        {#if unlinkedQuery.isLoading}
+          <p class="muted">scanning…</p>
+        {:else if unlinked.length === 0}
+          <p class="muted">no unlinked mentions</p>
+        {:else}
+          <ul>
+            {#each unlinked as u, i (u.target + ":" + u.position + ":" + i)}
+              <li class="unlinked-row">
+                <button
+                  type="button"
+                  class="row-open"
+                  onclick={() => open(u.target)}
+                >
+                  <span class="src">{u.target}</span>
+                  <span class="ctx">{cleanContext(u.text)}</span>
+                </button>
+                <button
+                  type="button"
+                  class="row-promote"
+                  title="Promote this mention to a [[wiki-link]]"
+                  onclick={() => void promoteToLink(u)}
+                >Link</button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       </section>
     {/if}
   </div>
@@ -195,6 +271,37 @@
     color: var(--v4-ink5);
     font-family: var(--v4-mono);
     font-size: 11px;
+  }
+  .unlinked-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 6px;
+    align-items: stretch;
+  }
+  .row-open {
+    /* Reset the default li button styles so the open + Link buttons sit
+     * cleanly side-by-side. */
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    text-align: left;
+  }
+  .row-promote {
+    background: transparent;
+    border: 1px solid var(--v4-hair);
+    border-radius: 5px;
+    color: var(--v4-accent);
+    padding: 0 10px;
+    cursor: pointer;
+    font-family: var(--v4-mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    align-self: center;
+  }
+  .row-promote:hover {
+    border-color: var(--v4-accent-dim);
+    background: color-mix(in srgb, var(--v4-accent) 12%, transparent);
   }
   .empty {
     color: var(--v4-ink5);

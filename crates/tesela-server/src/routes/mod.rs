@@ -35,6 +35,7 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/notes/{id}/backlinks", get(notes::get_backlinks))
         .route("/notes/{id}/links", get(notes::get_forward_links))
+        .route("/notes/{id}/unlinked", get(notes::get_unlinked))
         .route("/notes/{id}/versions", get(history::list_versions))
         .route(
             "/notes/{id}/versions/{version_id}",

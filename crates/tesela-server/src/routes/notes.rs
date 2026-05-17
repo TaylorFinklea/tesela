@@ -10,7 +10,7 @@ use serde::Deserialize;
 use tesela_core::{
     block::parse_blocks,
     daily::DailyNoteConfig,
-    link::{GraphEdge, Link},
+    link::{GraphEdge, Link, LinkType},
     note::NoteId,
     note_tree::{parse_note, serialize_note},
     recurrence::{self, Recurrence},
@@ -359,6 +359,96 @@ pub async fn get_forward_links(
     let note_id = NoteId::new(&id);
     let links = s.index.get_forward_links(&note_id).await?;
     Ok(Json(links))
+}
+
+/// GET `/notes/:id/unlinked` — pages that mention this page's title in
+/// plain text without `[[...]]` wrapping. Logseq-style. Useful for
+/// discovering implicit references the user hasn't yet promoted to a
+/// real wiki link.
+///
+/// Returns `Link[]` where `target` is the SOURCE note's id (matching the
+/// `get_backlinks` shape so the frontend can reuse its row renderer),
+/// `text` is the full line of context, and `position` is the byte offset
+/// of the match within the source note.
+pub async fn get_unlinked(
+    Path(id): Path<String>,
+    State(s): State<Arc<AppState>>,
+) -> AppResult<Json<Vec<Link>>> {
+    let note_id = NoteId::new(&id);
+    let focused = s
+        .store
+        .get(&note_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Note not found: {}", id)))?;
+    let title = focused
+        .metadata
+        .title
+        .clone()
+        .unwrap_or_else(|| focused.id.as_str().to_string());
+    if title.trim().is_empty() {
+        return Ok(Json(Vec::new()));
+    }
+
+    // Pull every note in the store (cap at a generous limit — same as the
+    // notes list). We linear-scan because the link index doesn't track
+    // unlinked mentions; a real index lives behind a TODO.
+    let all = s.store.list(None, 5000, 0).await?;
+    let needle = title.to_lowercase();
+    let mut out: Vec<Link> = Vec::new();
+    for n in &all {
+        if n.id.as_str() == note_id.as_str() {
+            continue; // skip the page itself
+        }
+        let body = n.content.to_lowercase();
+        // Build a small set of byte offsets where the title appears.
+        let mut search_from = 0usize;
+        while let Some(found) = body[search_from..].find(&needle) {
+            let pos = search_from + found;
+            search_from = pos + needle.len();
+            // Word boundary: char before+after must NOT be ascii-alphanumeric
+            // (covers most real cases without dragging in a regex crate).
+            let before_ok = pos == 0
+                || !body
+                    .as_bytes()
+                    .get(pos - 1)
+                    .map(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                    .unwrap_or(false);
+            let after = pos + needle.len();
+            let after_ok = after >= body.len()
+                || !body
+                    .as_bytes()
+                    .get(after)
+                    .map(|b| b.is_ascii_alphanumeric() || *b == b'_')
+                    .unwrap_or(false);
+            if !before_ok || !after_ok {
+                continue;
+            }
+            // Extract the line containing the match.
+            let line_start = n.content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let line_end = n.content[pos..]
+                .find('\n')
+                .map(|i| pos + i)
+                .unwrap_or(n.content.len());
+            let line = &n.content[line_start..line_end];
+            // Skip if the line already has a [[title]] wiki link to the
+            // focused note — that's a regular backlink, not unlinked.
+            let line_lc = line.to_lowercase();
+            let wiki_marker = format!("[[{}]]", needle);
+            if line_lc.contains(&wiki_marker) {
+                continue;
+            }
+            out.push(Link {
+                link_type: LinkType::Internal,
+                target: n.id.as_str().to_string(),
+                text: line.trim().to_string(),
+                position: pos,
+            });
+            // Only one row per source note + position; loop continues to
+            // find additional matches in the SAME source note on different
+            // lines, which is what we want.
+        }
+    }
+    Ok(Json(out))
 }
 
 pub async fn get_all_edges(State(s): State<Arc<AppState>>) -> AppResult<Json<Vec<GraphEdge>>> {
