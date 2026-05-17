@@ -1106,11 +1106,15 @@ impl SqliteIndex {
             }
 
             // Synthetic page-block for matcher. inherited_tags is empty for pages.
+            // inline/trailing tags are treated as empty here — page-level tags
+            // come from frontmatter, not from positional `#tag` tokens in body.
             let pseudo = ParsedBlock {
                 id: id.clone(),
                 text: title.clone(),
                 raw_text: title.clone(),
                 tags: tags.clone(),
+                inline_tags: vec![],
+                trailing_tags: vec![],
                 inherited_tags: vec![],
                 properties: props.clone(),
                 indent_level: 0,

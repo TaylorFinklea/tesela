@@ -80,16 +80,57 @@ function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText
   const firstLine = rawText.split("\n")[0] ?? rawText;
   const text = firstLine.replace(TAG_RE, "").trim();
 
+  const { inline: inline_tags, trailing: trailing_tags } = splitInlineAndTrailingTags(rawText);
+
   return {
     id: `${noteId}:${lineNum}`,
     text,
     raw_text: rawText,
     tags,
+    inline_tags,
+    trailing_tags,
     inherited_tags,
     properties,
     indent_level: indentLevel,
     note_id: noteId,
   };
+}
+
+/** Split `#tag` tokens into (inline, trailing). Mirrors the Rust impl in
+ *  crates/tesela-core/src/block.rs:split_inline_and_trailing_tags. */
+export function splitInlineAndTrailingTags(rawText: string): { inline: string[]; trailing: string[] } {
+  let cursor = rawText.replace(/\s+$/, "").length;
+  let clusterStart = cursor;
+  const trailingStarts: number[] = [];
+
+  for (;;) {
+    while (cursor > 0 && /[ \t\n\r]/.test(rawText[cursor - 1] ?? "")) cursor -= 1;
+    const nameEnd = cursor;
+    while (cursor > 0 && /[A-Za-z0-9_/\-]/.test(rawText[cursor - 1] ?? "")) cursor -= 1;
+    const nameStart = cursor;
+    if (nameEnd === nameStart || cursor === 0 || rawText[cursor - 1] !== "#") break;
+    cursor -= 1;
+    clusterStart = cursor;
+    trailingStarts.push(cursor);
+  }
+
+  const inlineText = rawText.slice(0, clusterStart);
+  const inline: string[] = [];
+  const inlineRe = /#([A-Za-z0-9_/-]+)/g;
+  let im: RegExpExecArray | null;
+  while ((im = inlineRe.exec(inlineText)) !== null) inline.push(im[1]);
+
+  const trailing: string[] = trailingStarts
+    .slice()
+    .reverse()
+    .map((pos) => {
+      const after = rawText.slice(pos + 1);
+      const mm = /^[A-Za-z0-9_/-]+/.exec(after);
+      return mm ? mm[0] : "";
+    })
+    .filter((s) => s.length > 0);
+
+  return { inline, trailing };
 }
 
 function extractTags(text: string): string[] {

@@ -21,8 +21,19 @@ pub struct ParsedBlock {
     pub text: String,
     /// Full raw text including continuation lines
     pub raw_text: String,
-    /// Tags found directly on this block (e.g., ["Task", "urgent"])
+    /// Tags found directly on this block (e.g., ["Task", "urgent"]).
+    /// Union of `inline_tags`, `trailing_tags`, and any `tags::` property
+    /// value. Kept as a single flat list for back-compat with surfaces that
+    /// don't care about position.
     pub tags: Vec<String>,
+    /// `#tag` tokens that appear inside the block's text content (not at the
+    /// trailing cluster). These render inline in the editor.
+    pub inline_tags: Vec<String>,
+    /// `#tag` tokens that appear in the trailing-cluster (one or more
+    /// `#tag` tokens at the very end of the block's raw text, separated
+    /// only by whitespace). These render as chips at the end of the block.
+    /// Drives the tag-system spec's chip-vs-inline rendering.
+    pub trailing_tags: Vec<String>,
     /// Tags inherited from ancestor blocks (parent, grandparent, etc.)
     pub inherited_tags: Vec<String>,
     /// Properties extracted from the block (e.g., {"status": "todo"})
@@ -115,10 +126,21 @@ fn make_block(
 ) -> ParsedBlock {
     let mut properties = extract_properties(raw_text);
 
-    // Merge tags from two sources, preserving order, deduplicated:
-    // 1. `tags::` property (new format) — owns this slot, removed from properties so
-    //    the right-sidebar property pane doesn't double-display it next to the pill UI
-    // 2. legacy `#tag` tokens from the raw text
+    // Position-aware tag classification (tag-system spec):
+    //
+    //   trailing-cluster = one or more `#tag` tokens at the end of the
+    //   block's raw text, separated only by whitespace. These render as
+    //   chips. All other `#tag` tokens are inline and render inline.
+    //
+    // The split runs on raw_text (the full block content). The trailing
+    // cluster is consumed left-to-right after the last non-tag/non-
+    // whitespace character.
+    let (inline_tags, trailing_tags) = split_inline_and_trailing_tags(raw_text);
+
+    // Merge tags from three sources, preserving order, deduplicated:
+    //   1. `tags::` property line — legacy back-compat read path
+    //   2. inline `#tag` tokens (position rule above)
+    //   3. trailing-cluster `#tag` tokens
     let mut seen = std::collections::HashSet::new();
     let mut tags: Vec<String> = Vec::new();
     if let Some(tags_value) = properties.remove("tags") {
@@ -132,9 +154,9 @@ fn make_block(
             }
         }
     }
-    for t in extract_tags(raw_text) {
+    for t in inline_tags.iter().chain(trailing_tags.iter()) {
         if seen.insert(t.clone()) {
-            tags.push(t);
+            tags.push(t.clone());
         }
     }
 
@@ -147,11 +169,83 @@ fn make_block(
         text: display_text,
         raw_text: raw_text.to_string(),
         tags,
+        inline_tags,
+        trailing_tags,
         inherited_tags,
         properties,
         indent_level,
         note_id: note_id.to_string(),
     }
+}
+
+/// Split `#tag` tokens in `raw_text` into (inline, trailing).
+///
+/// The trailing cluster is one or more `#tag` tokens at the very end of
+/// the text, separated by whitespace only. All other `#tag` tokens are
+/// inline. Tag names match `[A-Za-z0-9_/-]+` (same alphabet as TAG_RE).
+pub fn split_inline_and_trailing_tags(raw_text: &str) -> (Vec<String>, Vec<String>) {
+    // Find the trailing-cluster region by scanning from the end of the
+    // trimmed text. A token is `#` followed by tag-name chars; tokens may
+    // be separated by horizontal whitespace or newlines; the cluster ends
+    // at the first non-tag, non-whitespace character.
+    let trimmed = raw_text.trim_end();
+    let bytes = trimmed.as_bytes();
+    let mut cursor = bytes.len();
+    let mut trailing_starts: Vec<usize> = Vec::new();
+
+    loop {
+        // Skip whitespace going left.
+        while cursor > 0 && (bytes[cursor - 1] as char).is_whitespace() {
+            cursor -= 1;
+        }
+        // We expect a tag-name suffix ending at `cursor` and preceded by `#`.
+        let name_end = cursor;
+        while cursor > 0 {
+            let c = bytes[cursor - 1] as char;
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '/' {
+                cursor -= 1;
+            } else {
+                break;
+            }
+        }
+        let name_start = cursor;
+        // Must have at least one name char, and a `#` immediately before.
+        if name_end == name_start || cursor == 0 || bytes[cursor - 1] != b'#' {
+            break;
+        }
+        cursor -= 1; // consume `#`
+        trailing_starts.push(cursor);
+    }
+
+    // Trailing cluster starts at the leftmost matched `#`. Anything to the
+    // left is inline.
+    let cluster_start = trailing_starts.last().copied().unwrap_or(trimmed.len());
+    let inline_text = &raw_text[..cluster_start];
+
+    let inline_tags: Vec<String> = TAG_RE
+        .captures_iter(inline_text)
+        .map(|cap| cap[1].to_string())
+        .collect();
+    let trailing_tags: Vec<String> = trailing_starts
+        .iter()
+        .rev() // back to left-to-right
+        .filter_map(|&pos| {
+            // Slice from after `#` to the end of the name, using the original
+            // text so we recover the exact name characters.
+            let after_hash = pos + 1;
+            let name = raw_text[after_hash..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-' || *c == '/')
+                .collect::<String>();
+            if name.is_empty() {
+                None
+            } else {
+                Some(name)
+            }
+        })
+        .collect();
+
+    (inline_tags, trailing_tags)
 }
 
 fn extract_tags(text: &str) -> Vec<String> {

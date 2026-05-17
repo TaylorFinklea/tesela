@@ -297,6 +297,7 @@
   // so they don't loop back through onChange as fake user edits.
   const externalSync = Annotation.define<boolean>();
   import { keymap, drawSelection } from "@codemirror/view";
+  import { promoteOrDemoteTag } from "$lib/cm-decorations";
   import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
   import { vim, getCM } from "@replit/codemirror-vim";
   import {
@@ -1298,6 +1299,29 @@
         },
       },
       { key: "Mod-Enter", run: () => { if (onCycleStatus) { onCycleStatus(); return true; } return false; } },
+      {
+        // Tag-system spec: Alt-Enter (Option-Enter on mac) toggles a `#tag`
+        // between inline-and-trailing. The spec calls this "Cmd-Enter promote/
+        // demote" but Cmd-Enter is already bound to status cycle here, so we
+        // route through Alt-Enter instead.
+        //
+        // Behavior:
+        //   - Cursor inside an inline `#tag` → cut it out of its position and
+        //     append it as a trailing chip. (Demote inline → chip.)
+        //   - Otherwise, if a trailing chip exists → pop the rightmost chip
+        //     and insert at the cursor position. (Promote chip → inline.)
+        //   - Nothing relevant in scope → no-op (returns false so cm-vim or
+        //     other handlers can keep going).
+        key: "Alt-Enter",
+        run: (v) => {
+          const doc = v.state.doc.toString();
+          const cursor = v.state.selection.main.head;
+          const result = promoteOrDemoteTag(doc, cursor);
+          if (!result) return false;
+          v.dispatch({ changes: result.changes, selection: { anchor: result.cursor } });
+          return true;
+        },
+      },
       { key: "Tab", run: () => { if (onIndent) { onIndent("indent"); return true; } return false; } },
       { key: "Shift-Tab", run: () => { if (onIndent) { onIndent("outdent"); return true; } return false; } },
       // Phase 9.9 follow-up — Ctrl+U / Ctrl+D as outliner page-jump in vim

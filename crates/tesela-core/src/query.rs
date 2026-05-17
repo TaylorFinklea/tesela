@@ -451,6 +451,8 @@ mod tests {
             text: "x".into(),
             raw_text: "- x".into(),
             tags: tags.iter().map(|s| (*s).into()).collect(),
+            inline_tags: vec![],
+            trailing_tags: vec![],
             inherited_tags: vec![],
             properties: p,
             indent_level: 0,

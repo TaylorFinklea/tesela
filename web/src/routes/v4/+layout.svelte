@@ -278,9 +278,25 @@
     const onLeaderEvent = () => openLeader();
     document.addEventListener("tesela:leader", onLeaderEvent);
 
+    // Tag-chip clicks (rendered by cm-decorations.ts as TagChipWidget) fire
+    // `tesela:open-tag` with `{ value: <slug> }`. Open the tag's page in
+    // the focused buffer, same as the v5 `open-tag` NavigationIntent.
+    const onOpenTag = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { value?: string } | null;
+      const value = detail?.value;
+      if (!value) return;
+      void import("$lib/buffer/state.svelte").then(({ openPageInFocused }) => {
+        void import("$lib/buffer/types").then(({ asPageId }) => {
+          openPageInFocused(asPageId(value.toLowerCase()));
+        });
+      });
+    };
+    document.addEventListener("tesela:open-tag", onOpenTag as EventListener);
+
     return () => {
       document.removeEventListener("keydown", onKey, true);
       document.removeEventListener("tesela:leader", onLeaderEvent);
+      document.removeEventListener("tesela:open-tag", onOpenTag as EventListener);
     };
   });
 

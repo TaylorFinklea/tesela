@@ -17,9 +17,24 @@ text: string,
  */
 raw_text: string, 
 /**
- * Tags found directly on this block (e.g., ["Task", "urgent"])
+ * Tags found directly on this block (e.g., ["Task", "urgent"]).
+ * Union of `inline_tags`, `trailing_tags`, and any `tags::` property
+ * value. Kept as a single flat list for back-compat with surfaces that
+ * don't care about position.
  */
 tags: Array<string>, 
+/**
+ * `#tag` tokens that appear inside the block's text content (not at the
+ * trailing cluster). These render inline in the editor.
+ */
+inline_tags: Array<string>, 
+/**
+ * `#tag` tokens that appear in the trailing-cluster (one or more
+ * `#tag` tokens at the very end of the block's raw text, separated
+ * only by whitespace). These render as chips at the end of the block.
+ * Drives the tag-system spec's chip-vs-inline rendering.
+ */
+trailing_tags: Array<string>, 
 /**
  * Tags inherited from ancestor blocks (parent, grandparent, etc.)
  */

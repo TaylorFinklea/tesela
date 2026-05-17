@@ -369,6 +369,8 @@
       text: row.label,
       raw_text: row.label,
       tags: row.primaryTag ? [row.primaryTag] : [],
+      inline_tags: [],
+      trailing_tags: [],
       inherited_tags: [],
       properties: row.status ? { status: row.status } : {},
       indent_level: 0,
