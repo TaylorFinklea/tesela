@@ -101,6 +101,23 @@ export const api = {
     get<Link[]>(`/notes/${encodeURIComponent(id)}/links`),
   getUnlinkedReferences: (id: string) =>
     get<Link[]>(`/notes/${encodeURIComponent(id)}/unlinked`),
+  /** Rename a tag page's slug. The title (display name) is preserved; only
+   *  the on-disk slug changes. Phase 2 scope: file rename only — corpus
+   *  references aren't yet rewritten (Phase 13). */
+  renameTagSlug: (fromSlug: string, toSlug: string) =>
+    post<{ from_slug: string; to_slug: string }>("/tags/rename", {
+      from_slug: fromSlug,
+      to_slug: toSlug,
+    }),
+  /** Resolve a path-form tag reference (`nature/birds/cardinal`) or bare
+   *  (`cardinal`) into a concrete slug. Missing ancestors are cascade-
+   *  created top-down. Returns the resolved leaf slug plus an audit of
+   *  newly-created ancestor slugs. */
+  resolveTag: (path: string) =>
+    post<{ slug: string; cascade_created: string[] }>(
+      "/tags/resolve",
+      { path },
+    ),
   getAllEdges: () => get<GraphEdge[]>("/links"),
   getType: (name: string) =>
     get<TypeDefinition>(`/types/${encodeURIComponent(name)}`),

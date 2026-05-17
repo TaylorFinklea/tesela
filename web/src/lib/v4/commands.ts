@@ -141,6 +141,26 @@ async function createScratchAndJump() {
   openPageInFocused(asPageId(note.id));
 }
 
+async function renameFocusedTagSlug(toSlug: string) {
+  const buffer = getFocusedBuffer();
+  if (!buffer || buffer.kind !== "page" || !buffer.pageId) {
+    console.warn("rename-slug: no focused page");
+    return;
+  }
+  const note = await api.getNote(buffer.pageId);
+  const isTag = (note.metadata.note_type ?? "").toLowerCase() === "tag";
+  if (!isTag) {
+    console.warn("rename-slug: focused page is not a tag");
+    return;
+  }
+  const newSlug = toSlug.trim().toLowerCase();
+  if (!newSlug || newSlug === buffer.pageId) return;
+  await api.renameTagSlug(buffer.pageId, newSlug);
+  openPageInFocused(asPageId(newSlug));
+  const qc = getAppQueryClient();
+  if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
+}
+
 async function promoteFocusedScratch() {
   const buffer = getFocusedBuffer();
   if (!buffer || buffer.kind !== "page" || !buffer.pageId) return;
@@ -310,6 +330,22 @@ export function buildV4Commands(): V4Command[] {
       category: "create",
       keywords: ["promote", "keep", "save", "scratch"],
       run: () => promoteFocusedScratch(),
+    },
+    {
+      id: "rename-slug",
+      verb: "rename-slug",
+      label: "Rename focused tag's slug",
+      glyph: "✎",
+      category: "create",
+      keywords: ["rename", "slug", "tag", "disambiguate"],
+      argPrompt: "new slug (e.g., cardinal-religion)",
+      run: async (arg) => {
+        if (!arg) {
+          console.warn("rename-slug: pass the new slug as an argument");
+          return;
+        }
+        await renameFocusedTagSlug(arg);
+      },
     },
     {
       id: "prune-scratches",

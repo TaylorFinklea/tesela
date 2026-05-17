@@ -4,6 +4,7 @@ use serde_json::json;
 /// Unified error type for all route handlers.
 pub enum AppError {
     NotFound(String),
+    Validation(String),
     Internal(anyhow::Error),
 }
 
@@ -14,6 +15,9 @@ impl IntoResponse for AppError {
         match self {
             AppError::NotFound(msg) => {
                 (StatusCode::NOT_FOUND, Json(json!({ "error": msg }))).into_response()
+            }
+            AppError::Validation(msg) => {
+                (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response()
             }
             AppError::Internal(e) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

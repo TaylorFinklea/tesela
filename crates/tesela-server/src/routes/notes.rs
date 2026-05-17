@@ -40,6 +40,18 @@ pub struct CreateNoteReq {
 }
 
 #[derive(Deserialize)]
+pub struct RenameTagReq {
+    pub from_slug: String,
+    pub to_slug: String,
+}
+
+#[derive(Deserialize)]
+pub struct ResolveTagReq {
+    /// Path-form (`nature/birds/cardinal`) or bare (`cardinal`).
+    pub path: String,
+}
+
+#[derive(Deserialize)]
 pub struct UpdateNoteReq {
     /// Full note content (including frontmatter). The store writes this directly to disk.
     pub content: String,
@@ -232,6 +244,200 @@ pub async fn delete_note(
     record_sync_delete(&s, &note_id).await;
     let _ = s.ws_tx.send(WsEvent::NoteDeleted { id });
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Resolve a path-form tag reference (`nature/birds/cardinal`) into a concrete
+/// slug, cascade-creating missing ancestors top-down.
+///
+/// Algorithm:
+///   1. Split the path by `/` into segments.
+///   2. Walk segments top-to-bottom. For each segment, look for an existing
+///      tag whose leaf name matches the segment AND whose `parent` matches
+///      the previous segment's resolved slug (or empty for top-level).
+///   3. If a matching tag exists, use it as the resolved slug for this
+///      segment. Otherwise, create a new tag with `parent` set to the
+///      previous segment's slug.
+///   4. After walking, the last segment's slug is the resolved target.
+///
+/// Returns the final resolved slug plus an audit trail of any new tags
+/// that were cascade-created. The frontend uses that audit trail to
+/// inform the user ("created 2 ancestor tags: nature, nature/birds").
+pub async fn resolve_tag(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<ResolveTagReq>,
+) -> AppResult<Json<serde_json::Value>> {
+    let path = req.path.trim().trim_matches('/');
+    if path.is_empty() {
+        return Err(AppError::Validation("path is empty".into()));
+    }
+    let segments: Vec<String> = path
+        .split('/')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.is_empty() {
+        return Err(AppError::Validation("path has no segments".into()));
+    }
+
+    let mut cascade_created: Vec<String> = Vec::new();
+    let mut parent_slug: String = String::new();
+
+    for (i, segment) in segments.iter().enumerate() {
+        let is_last = i + 1 == segments.len();
+        let resolved = resolve_one_segment(&s, segment, &parent_slug).await?;
+        parent_slug = match resolved {
+            SegmentResolution::Existing(slug) => slug,
+            SegmentResolution::Created(slug) => {
+                cascade_created.push(slug.clone());
+                slug
+            }
+        };
+        let _ = is_last; // currently only the final segment differs in usage; reserved for future hooks
+    }
+
+    Ok(Json(serde_json::json!({
+        "slug": parent_slug,
+        "cascade_created": cascade_created,
+    })))
+}
+
+enum SegmentResolution {
+    Existing(String),
+    Created(String),
+}
+
+/// Resolve one path segment against the existing tag corpus. Returns the
+/// segment's resolved slug, creating a new tag page if no match exists.
+///
+/// Match rule: an existing tag matches if its leaf name (lowercased) equals
+/// the segment AND its `parent` frontmatter (case-insensitive, empty for
+/// top-level) equals `parent_slug`.
+async fn resolve_one_segment(
+    s: &Arc<AppState>,
+    segment: &str,
+    parent_slug: &str,
+) -> AppResult<SegmentResolution> {
+    // List all tag pages. The corpus is small relative to per-segment cost,
+    // so a single list-and-filter is acceptable. If this becomes a hot path,
+    // add a name-indexed tag map in AppState.
+    let all = s.store.list(None, 10_000, 0).await?;
+    for note in &all {
+        let is_tag = note
+            .metadata
+            .note_type
+            .as_deref()
+            .map(|t| t.eq_ignore_ascii_case("tag"))
+            .unwrap_or(false);
+        if !is_tag {
+            continue;
+        }
+        let title_lc = note
+            .metadata
+            .title
+            .clone()
+            .unwrap_or_else(|| note.id.as_str().to_string())
+            .to_lowercase();
+        if title_lc != segment {
+            continue;
+        }
+        let parent = note
+            .metadata
+            .custom
+            .get("parent")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_lowercase())
+            .unwrap_or_default();
+        if parent == parent_slug.to_lowercase() {
+            return Ok(SegmentResolution::Existing(note.id.as_str().to_string()));
+        }
+    }
+
+    // No match — create a new tag at this segment with the resolved parent.
+    let slug_base = segment.to_string();
+    let resolved_slug = match resolve_free_tag_slug(s, &slug_base).await {
+        Ok(Some(slug)) => slug,
+        Ok(None) => slug_base.clone(), // shouldn't happen given our filter above
+        Err(e) => return Err(AppError::Internal(anyhow::anyhow!(e))),
+    };
+
+    let content = format!(
+        "---\ntitle: \"{}\"\ntype: tag\nextends: \"Root Tag\"\ntag_properties: []\nparent: \"{}\"\ntags: []\n---\n- Tag properties are inherited by all nodes using the tag.\n",
+        segment, parent_slug
+    );
+    let created = s.store.create(&resolved_slug, &content, &[]).await?;
+    s.index.reindex(&created).await?;
+    record_sync_create(s, &created).await;
+    let _ = s.ws_tx.send(WsEvent::NoteCreated { note: created });
+    Ok(SegmentResolution::Created(resolved_slug))
+}
+
+/// Rename a tag page's slug. The tag's `title:` (display name) is preserved
+/// — only the on-disk slug changes.
+///
+/// Phase 2 scope: file move only. References in the corpus (`#old`,
+/// `[[old]]`, and children's `parent: old`) are NOT rewritten yet; that's
+/// Phase 13's cascade-rename work. Calling this verb before Phase 13 lands
+/// will leave outbound references pointing at the old slug.
+pub async fn rename_tag(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<RenameTagReq>,
+) -> AppResult<Json<serde_json::Value>> {
+    let from_id = NoteId::new(&req.from_slug);
+    let to_id = NoteId::new(&req.to_slug);
+
+    if req.from_slug == req.to_slug {
+        return Err(AppError::Validation("from_slug and to_slug are identical".into()));
+    }
+
+    let source = s
+        .store
+        .get(&from_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("tag '{}'", req.from_slug)))?;
+
+    let is_tag = source
+        .metadata
+        .note_type
+        .as_deref()
+        .map(|t| t.eq_ignore_ascii_case("tag"))
+        .unwrap_or(false);
+    if !is_tag {
+        return Err(AppError::Validation(format!(
+            "page '{}' is not a tag (type: {:?})",
+            req.from_slug, source.metadata.note_type
+        )));
+    }
+
+    if s.store.get(&to_id).await?.is_some() {
+        return Err(AppError::Validation(format!(
+            "slug '{}' is already taken",
+            req.to_slug
+        )));
+    }
+
+    // Create the target file using the source content verbatim (preserves
+    // frontmatter, including title and parent).
+    let renamed = s
+        .store
+        .create(&req.to_slug, &source.content, &[])
+        .await?;
+    s.index.reindex(&renamed).await?;
+    record_sync_create(&s, &renamed).await;
+    let _ = s.ws_tx.send(WsEvent::NoteCreated {
+        note: renamed.clone(),
+    });
+
+    s.store.delete(&from_id).await?;
+    s.index.remove(&from_id).await?;
+    record_sync_delete(&s, &from_id).await;
+    let _ = s.ws_tx.send(WsEvent::NoteDeleted {
+        id: req.from_slug.clone(),
+    });
+
+    Ok(Json(serde_json::json!({
+        "from_slug": req.from_slug,
+        "to_slug": req.to_slug,
+    })))
 }
 
 /// Producer path for note creation. Emits one NoteUpsert that carries
@@ -983,37 +1189,103 @@ async fn ensure_tag_pages(s: &Arc<AppState>, note: &Note) {
             continue;
         }
 
-        let tag_id = NoteId::new(tag.to_lowercase());
-        match s.store.get(&tag_id).await {
-            Ok(Some(_)) => {} // Page already exists
-            Ok(None) => {
-                // Auto-create tag page. `type: tag` (lowercase, bare) is the
-                // canonical form per the tag-system spec. The capitalized
-                // `"Tag"` form may still exist on disk from earlier auto-creates;
-                // the frontend dispatcher matches both case-insensitively, so
-                // we don't migrate older pages on read.
-                let content = format!(
-                    "---\ntitle: \"{}\"\ntype: tag\nextends: \"Root Tag\"\ntag_properties: []\ntags: []\n---\n- Tag properties are inherited by all nodes using the tag.\n",
-                    tag
-                );
-                match s.store.create(tag, &content, &[]).await {
-                    Ok(tag_note) => {
-                        let _ = s.index.reindex(&tag_note).await;
-                        // Sync visibility: peers need a NoteUpsert in the
-                        // oplog so subsequent BlockUpserts against this
-                        // page can resolve its slug.
-                        record_sync_create(s, &tag_note).await;
-                        let _ = s.ws_tx.send(WsEvent::NoteCreated { note: tag_note });
-                        tracing::info!("Auto-created tag page: {}", tag);
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to auto-create tag page '{}': {}", tag, e);
-                    }
-                }
+        // Slug resolution per the tag-system spec: if a page already exists
+        // at the bare slug, two cases:
+        //   (a) it's itself a tag page → reuse, nothing to create.
+        //   (b) it's a different kind of page (note, etc.) → auto-number a
+        //       disambiguating slug (`fella-2.md`, `fella-3.md`, …) and
+        //       create the tag there. The display name is still `fella`.
+        let slug_base = tag.to_lowercase();
+        let resolved_slug = match resolve_free_tag_slug(s, &slug_base).await {
+            Ok(Some(slug)) => slug,
+            Ok(None) => continue, // existing tag at this slug — nothing to do
+            Err(e) => {
+                tracing::warn!("Failed to resolve tag slug '{}': {}", tag, e);
+                continue;
+            }
+        };
+
+        // Auto-create tag page. `type: tag` (lowercase, bare) is the
+        // canonical form per the tag-system spec.
+        let content = format!(
+            "---\ntitle: \"{}\"\ntype: tag\nextends: \"Root Tag\"\ntag_properties: []\nparent: \"\"\ntags: []\n---\n- Tag properties are inherited by all nodes using the tag.\n",
+            tag
+        );
+        match s.store.create(&resolved_slug, &content, &[]).await {
+            Ok(tag_note) => {
+                let _ = s.index.reindex(&tag_note).await;
+                // Sync visibility: peers need a NoteUpsert in the
+                // oplog so subsequent BlockUpserts against this
+                // page can resolve its slug.
+                record_sync_create(s, &tag_note).await;
+                let _ = s.ws_tx.send(WsEvent::NoteCreated { note: tag_note });
+                tracing::info!("Auto-created tag page at slug '{}' (display name: '{}')", resolved_slug, tag);
             }
             Err(e) => {
-                tracing::warn!("Failed to check tag page '{}': {}", tag, e);
+                tracing::warn!("Failed to auto-create tag page '{}' at slug '{}': {}", tag, resolved_slug, e);
             }
         }
+    }
+}
+
+/// Pick the slug to use for a tag page being auto-created.
+///
+/// Returns:
+///   - `Ok(Some(slug))` when a new file should be created at this slug
+///     (either the bare slug is free, or we picked `slug-N` after a
+///     collision with a non-tag page).
+///   - `Ok(None)` when the bare slug already holds a tag page; the caller
+///     should reuse it and skip creation.
+///   - `Err` on store errors.
+async fn resolve_free_tag_slug(s: &Arc<AppState>, slug_base: &str) -> Result<Option<String>, String> {
+    let bare = slug_base.to_string();
+    let bare_id = NoteId::new(bare.clone());
+    match s.store.get(&bare_id).await {
+        Ok(Some(existing)) => {
+            // If the existing page is itself a tag, reuse.
+            let is_tag = existing
+                .metadata
+                .note_type
+                .as_deref()
+                .map(|t| t.eq_ignore_ascii_case("tag"))
+                .unwrap_or(false);
+            if is_tag {
+                return Ok(None);
+            }
+            // Collision with a non-tag page. Walk `slug-2`, `slug-3`, … until
+            // we find a free slug. Bounded loop (1000) to avoid wedging on a
+            // pathological mosaic; in practice this terminates after one or
+            // two attempts.
+            for n in 2..1000 {
+                let candidate = format!("{}-{}", bare, n);
+                match s.store.get(&NoteId::new(candidate.clone())).await {
+                    Ok(Some(other)) => {
+                        // If this auto-numbered slug already holds a tag for
+                        // the same display name, reuse it instead of creating
+                        // yet another disambiguator.
+                        let is_tag = other
+                            .metadata
+                            .note_type
+                            .as_deref()
+                            .map(|t| t.eq_ignore_ascii_case("tag"))
+                            .unwrap_or(false);
+                        let display_match = other
+                            .metadata
+                            .title
+                            .as_deref()
+                            .map(|t| t.eq_ignore_ascii_case(slug_base))
+                            .unwrap_or(false);
+                        if is_tag && display_match {
+                            return Ok(None);
+                        }
+                    }
+                    Ok(None) => return Ok(Some(candidate)),
+                    Err(e) => return Err(format!("store.get: {}", e)),
+                }
+            }
+            Err(format!("exhausted slug suffixes for '{}'", slug_base))
+        }
+        Ok(None) => Ok(Some(bare)),
+        Err(e) => Err(format!("store.get: {}", e)),
     }
 }
