@@ -61,6 +61,53 @@ async function jumpDaily() {
   openPageInFocused(asPageId(d.id));
 }
 
+function fmtDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+async function jumpRelative(days: number): Promise<void> {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + days);
+  const note = await api.getDailyNote(fmtDate(d));
+  openPageInFocused(asPageId(note.id));
+  const qc = getAppQueryClient();
+  if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
+}
+
+async function jumpPromptDate(): Promise<void> {
+  const raw = window.prompt(
+    "date — YYYY-MM-DD, today, yesterday, tomorrow, or ±Nd",
+  );
+  if (!raw) return;
+  const a = raw.trim().toLowerCase();
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  let target: string | null = null;
+  if (a === "today") target = fmtDate(today);
+  else if (a === "yesterday") {
+    const d = new Date(today);
+    d.setDate(d.getDate() - 1);
+    target = fmtDate(d);
+  } else if (a === "tomorrow") {
+    const d = new Date(today);
+    d.setDate(d.getDate() + 1);
+    target = fmtDate(d);
+  } else if (/^[+-]?\d+d$/.test(a)) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + Number(a.replace(/d$/, "")));
+    target = fmtDate(d);
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(a)) target = a;
+  if (!target) return;
+  const note = await api.getDailyNote(target);
+  openPageInFocused(asPageId(note.id));
+  const qc = getAppQueryClient();
+  if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
+}
+
 async function newScratch() {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -96,6 +143,21 @@ export function getLeaderTree(): ChordNode[] {
       label: "go to…",
       children: [
         { key: "d", label: "today's daily", action: () => void jumpDaily() },
+        {
+          key: "y",
+          label: "yesterday's daily",
+          action: () => void jumpRelative(-1),
+        },
+        {
+          key: "t",
+          label: "tomorrow's daily",
+          action: () => void jumpRelative(1),
+        },
+        {
+          key: "D",
+          label: "date prompt…",
+          action: () => void jumpPromptDate(),
+        },
         {
           key: "c",
           label: "calendar",

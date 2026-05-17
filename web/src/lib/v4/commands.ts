@@ -75,6 +75,53 @@ async function jumpToDaily() {
   openPageInFocused(asPageId(daily.id));
 }
 
+/** Validate + normalize a user-supplied date arg to YYYY-MM-DD. Accepts
+ *  `today`, `yesterday`, `tomorrow`, a relative `-3d` / `+1d`, or an
+ *  explicit YYYY-MM-DD. Returns null when unparseable. */
+function resolveDateArg(arg: string): string | null {
+  const a = arg.trim().toLowerCase();
+  const today = new Date();
+  today.setHours(12, 0, 0, 0);
+  const fmt = (d: Date) => {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+  if (a === "today") return fmt(today);
+  if (a === "yesterday") {
+    const d = new Date(today);
+    d.setDate(d.getDate() - 1);
+    return fmt(d);
+  }
+  if (a === "tomorrow") {
+    const d = new Date(today);
+    d.setDate(d.getDate() + 1);
+    return fmt(d);
+  }
+  const rel = a.match(/^([+-]?\d+)d$/);
+  if (rel) {
+    const d = new Date(today);
+    d.setDate(d.getDate() + Number(rel[1]));
+    return fmt(d);
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(a)) return a;
+  return null;
+}
+
+async function jumpToDate(arg: string | undefined): Promise<void> {
+  const target = arg ? resolveDateArg(arg) : null;
+  if (!target) return;
+  // getDailyNote(date) auto-creates the file if missing. After it lands
+  // we open it as a page-buffer; the daily cascade decides whether to
+  // render it as JournalView (anchored to this date) or a single-day
+  // outliner based on pane size.
+  const note = await api.getDailyNote(target);
+  openPageInFocused(asPageId(note.id));
+  const qc = getAppQueryClient();
+  if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
+}
+
 async function createNoteAndJump(title: string) {
   const note = await api.createNote(title, "");
   openPageInFocused(asPageId(note.id));
@@ -232,6 +279,18 @@ export function buildV4Commands(): V4Command[] {
       category: "navigate",
       keywords: ["daily", "today", "journal"],
       run: () => jumpToDaily(),
+    },
+    {
+      id: "goto",
+      verb: "goto",
+      label: "Jump to a date (YYYY-MM-DD, today, yesterday, tomorrow, ±Nd)",
+      glyph: "→",
+      category: "navigate",
+      keywords: ["goto", "go", "jump", "date", "day", "daily"],
+      argPrompt: "date: YYYY-MM-DD, today, yesterday, tomorrow, ±Nd",
+      run: (arg) => {
+        if (arg) return jumpToDate(arg);
+      },
     },
     {
       id: "scratch",

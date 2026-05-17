@@ -408,6 +408,28 @@
       }
       const target = days[nextIdx] as HTMLElement;
       const dailyId = target.getAttribute("data-daily");
+      const isSynthetic = target.classList.contains("synthetic");
+
+      // Synthetic target (no file on disk yet) — keyboard-first hop into a
+      // calendar gap. Create the daily, invalidate the query so the
+      // section re-renders as a real BlockOutliner, then focus.
+      if (isSynthetic && dailyId) {
+        void api.getDailyNote(dailyId).then(() => {
+          queryClient.invalidateQueries({ queryKey: ["notes"] });
+          const tryFocus = (attempts: number) => {
+            // After invalidation, the DOM gets a fresh `.day` element at the
+            // same date — re-query rather than trust the stale ref.
+            const refreshed = scrollContainer?.querySelector(
+              `.day[data-daily="${dailyId}"]`,
+            ) as HTMLElement | null;
+            if (refreshed && focusCmInDay(refreshed, direction)) return;
+            if (attempts <= 0) return;
+            requestAnimationFrame(() => tryFocus(attempts - 1));
+          };
+          requestAnimationFrame(() => tryFocus(60));
+        });
+        return;
+      }
 
       // If the target day is still a virtualization placeholder (no
       // cm-editor mounted), force it to upgrade and retry focus next
