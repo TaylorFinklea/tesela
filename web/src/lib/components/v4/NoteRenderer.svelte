@@ -57,19 +57,25 @@
   );
 
   /** Daily-typed notes (`tags: [daily]` + title `YYYY-MM-DD`) render as
-   *  a single-day BlockOutliner by default, but swap to JournalView
-   *  (multi-day continuous scroll) when the host is wide enough. */
-  const DAILY_JOURNAL_MIN_COLS = 80;
-  const DAILY_JOURNAL_MIN_ROWS = 28;
+   *  JournalView (multi-day continuous scroll) when there's even a modest
+   *  amount of room. Below the threshold we fall back to a single-day
+   *  BlockOutliner. Earlier rev required 28 rows which was a too-strict
+   *  ceiling — having a derived pane below routinely pushed the daily
+   *  below the threshold. 16 rows ≈ 320px which is "you can read at
+   *  least one full day plus the next day's header." */
+  const DAILY_JOURNAL_MIN_COLS = 60;
+  const DAILY_JOURNAL_MIN_ROWS = 16;
   const isDaily = $derived(
     /^\d{4}-\d{2}-\d{2}$/.test(note.title) &&
       (note.metadata.tags ?? []).includes("daily"),
   );
   const useJournalFeed = $derived(
     isDaily &&
-      !!size &&
-      size.cols >= DAILY_JOURNAL_MIN_COLS &&
-      size.rows >= DAILY_JOURNAL_MIN_ROWS,
+      // Default to journal feed when size is unknown (matches the user's
+      // expectation that dailies are journal-shaped by default).
+      (!size ||
+        (size.cols >= DAILY_JOURNAL_MIN_COLS &&
+          size.rows >= DAILY_JOURNAL_MIN_ROWS)),
   );
 
   function splitContent(content: string): { frontmatter: string; body: string } {
