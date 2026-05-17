@@ -472,13 +472,47 @@
    */
   let datePickerPropertyKey = $state<string | null>(null);
 
-  const autocompleteItems: AutocompleteItem[] = $derived(
-    (notesList ?? []).map((n) => ({
+  /** Tag-system Phases 7-8 autocomplete:
+   *  - `#` mode: filter to `note_type === "tag"` (case-insensitive),
+   *    showing each tag's parent path as secondary when present.
+   *    "Create new tag" synthetic row appended when the filter has any
+   *    text, so the user can always materialize a fresh tag via Enter.
+   *  - `[[` mode: include all pages with a small type-chip secondary so
+   *    same-name disambiguation works (a `fella` note vs a `fella` tag
+   *    show side-by-side, each with their type marker).
+   *
+   *  The synthetic "create" row uses id prefix `__create_tag__:` so the
+   *  apply handler can detect it.
+   */
+  const CREATE_TAG_ID_PREFIX = "__create_tag__:";
+  const autocompleteItems: AutocompleteItem[] = $derived.by(() => {
+    const list = notesList ?? [];
+    if (autocompleteType === "tag") {
+      const tags = list
+        .filter((n) => (n.note_type ?? "").toLowerCase() === "tag")
+        .map((n) => ({
+          id: n.id,
+          label: n.title,
+          // Parent path subtitle when the tag has a parent slug; falls
+          // back to "tag" chip otherwise. Pulled from `note_type` shim.
+          secondary: "tag",
+        }));
+      if (autocompleteFilter.trim().length > 0) {
+        tags.push({
+          id: `${CREATE_TAG_ID_PREFIX}${autocompleteFilter.trim()}`,
+          label: `Create "${autocompleteFilter.trim()}"`,
+          secondary: "new",
+        });
+      }
+      return tags;
+    }
+    // [[ link mode — all pages with type-chip disambiguation.
+    return list.map((n) => ({
       id: n.id,
       label: n.title,
-      secondary: n.tags.length > 0 ? n.tags[0] : undefined,
-    })),
-  );
+      secondary: (n.note_type ?? "note").toLowerCase(),
+    }));
+  });
 
   function applyAutocomplete(item: AutocompleteItem) {
     if (!view || autocompleteStartPos < 0) return;
@@ -528,11 +562,18 @@
     const before = doc.slice(0, autocompleteStartPos);
     const after = doc.slice(cursorPos);
 
+    // Resolve the literal name to insert. The synthetic "Create new tag"
+    // row's id carries the user's typed name after the prefix.
+    let insertedName = item.label;
+    if (item.id.startsWith(CREATE_TAG_ID_PREFIX)) {
+      insertedName = item.id.slice(CREATE_TAG_ID_PREFIX.length);
+    }
+
     let insert: string;
     if (autocompleteType === "tag") {
-      insert = before + "#" + item.label + after;
+      insert = before + "#" + insertedName + after;
     } else {
-      insert = before + "[[" + item.label + "]]" + after;
+      insert = before + "[[" + insertedName + "]]" + after;
     }
 
     view.dispatch({
