@@ -159,9 +159,14 @@ export function blockMatches(block: ParsedBlock, query: ParsedQuery): boolean {
 }
 
 function filterMatches(block: ParsedBlock, f: QueryFilter): boolean {
-  if (f.key === "tag") {
+  // Tag-system Phase 16 — `tag:` (default), `pagetag:` (frontmatter alias),
+  // `blocktag:` (excludes inherited). Mirrors Rust crates/tesela-core/src/query.rs.
+  if (f.key === "tag" || f.key === "pagetag" || f.key === "blocktag") {
     const lower = f.value.toLowerCase();
-    const allTags = [...block.tags, ...block.inherited_tags].map((t) => t.toLowerCase());
+    const includeInherited = f.key !== "blocktag";
+    const allTags = includeInherited
+      ? [...block.tags, ...block.inherited_tags].map((t) => t.toLowerCase())
+      : block.tags.map((t) => t.toLowerCase());
     if (f.op === "=") return allTags.includes(lower);
     if (f.op === "!=") return !allTags.includes(lower);
     return false; // comparison ops not meaningful for tags

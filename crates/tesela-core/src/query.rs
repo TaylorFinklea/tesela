@@ -378,13 +378,32 @@ pub fn block_matches(block: &ParsedBlock, q: &ParsedQuery) -> bool {
 
 fn filter_matches(block: &ParsedBlock, f: &QueryFilter) -> bool {
     match f.key.as_str() {
-        "tag" => {
+        // Tag-system Phase 16 DSL extensions:
+        //   `tag:foo`      — either page-level or block-level (current default)
+        //   `pagetag:foo`  — page-level (frontmatter) only
+        //   `blocktag:foo` — block-level only (in content or via `tags::`)
+        //
+        // The synthetic page-block constructed in `SqliteIndex` for page-kind
+        // queries fills `tags` from the page's frontmatter, while real block-
+        // kind queries fill it from the block parser. The current behavior is
+        // already kind-dependent; `pagetag:` and `blocktag:` are aliases that
+        // make the intent explicit at the query level.
+        "tag" | "pagetag" | "blocktag" => {
             let needle = f.value.to_ascii_lowercase();
-            let has_tag = block
-                .tags
-                .iter()
-                .chain(block.inherited_tags.iter())
-                .any(|t| t.eq_ignore_ascii_case(&needle));
+            // For `blocktag:` we deliberately skip inherited_tags — block-level
+            // means "this block carries the tag," not "inherited from an
+            // ancestor." For `tag:` and `pagetag:` we keep the inherited chain
+            // so a child of a tagged parent still matches.
+            let include_inherited = f.key != "blocktag";
+            let has_tag = if include_inherited {
+                block
+                    .tags
+                    .iter()
+                    .chain(block.inherited_tags.iter())
+                    .any(|t| t.eq_ignore_ascii_case(&needle))
+            } else {
+                block.tags.iter().any(|t| t.eq_ignore_ascii_case(&needle))
+            };
             match f.op {
                 QueryOp::Eq => has_tag,
                 QueryOp::Ne => !has_tag,

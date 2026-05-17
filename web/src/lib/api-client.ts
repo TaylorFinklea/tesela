@@ -118,6 +118,16 @@ export const api = {
       "/tags/resolve",
       { path },
     ),
+  /** Tag usage counts. Phase 15 — surfaced by `:delete-tag` so the user
+   *  can see what would be affected before confirming. */
+  getTagUsage: (slug: string) =>
+    get<{
+      slug: string;
+      references: number;
+      page_instances: number;
+      block_instances: number;
+      children: number;
+    }>(`/tags/${encodeURIComponent(slug)}/usage`),
   getAllEdges: () => get<GraphEdge[]>("/links"),
   getType: (name: string) =>
     get<TypeDefinition>(`/types/${encodeURIComponent(name)}`),

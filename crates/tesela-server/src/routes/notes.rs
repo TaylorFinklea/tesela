@@ -246,6 +246,109 @@ pub async fn delete_note(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Tag usage counts — what would be affected by deleting this tag. Surfaced
+/// by `:delete-tag` so the user can decide how to handle refs / children.
+///
+/// `references` counts inline `#tag` occurrences across all note bodies.
+/// `page_instances` counts pages with the tag in their `tags:` frontmatter.
+/// `block_instances` counts blocks whose parsed `tags` include this tag.
+/// `children` counts tag pages whose `parent:` frontmatter is this tag.
+pub async fn get_tag_usage(
+    Path(slug): Path<String>,
+    State(s): State<Arc<AppState>>,
+) -> AppResult<Json<serde_json::Value>> {
+    let slug_lc = slug.to_lowercase();
+    let all = s.store.list(None, 10_000, 0).await?;
+
+    let mut references = 0usize;
+    let mut page_instances = 0usize;
+    let mut block_instances = 0usize;
+    let mut children = 0usize;
+
+    let needle_inline = format!("#{}", slug_lc);
+    let needle_wiki = format!("[[{}]]", slug_lc);
+
+    for note in &all {
+        // Self skip — don't count the tag's own page.
+        if note.id.as_str().eq_ignore_ascii_case(&slug_lc) {
+            continue;
+        }
+
+        // Page-level instance.
+        if note
+            .metadata
+            .tags
+            .iter()
+            .any(|t| t.eq_ignore_ascii_case(&slug_lc))
+        {
+            page_instances += 1;
+        }
+
+        // Block-level instances + references. We do a body scan per note —
+        // good enough for typical corpora.
+        let lower = note.body.to_lowercase();
+        for line in lower.lines() {
+            // Count `#tag` occurrences on this line.
+            for (idx, _) in line.match_indices(&needle_inline) {
+                // Word-boundary check: char before `#` must not be a tag-name
+                // char (already true since `#` is the delimiter); char after
+                // the slug must not extend the token.
+                let after_idx = idx + needle_inline.len();
+                let after = line.as_bytes().get(after_idx).copied().unwrap_or(b' ');
+                let extends = (after as char).is_ascii_alphanumeric()
+                    || after == b'_'
+                    || after == b'-'
+                    || after == b'/';
+                if !extends {
+                    references += 1;
+                }
+            }
+            // Don't count `[[slug]]` toward references — those are wiki links,
+            // separate concept. Tracked here just so we can mention them in
+            // the prompt if needed; not surfaced in the count for now.
+            let _ = needle_wiki;
+        }
+
+        // Block-level instance: any block whose parsed tags include the slug.
+        // Cheap re-parse using crate::block::parse_blocks.
+        let blocks = parse_blocks(note.id.as_str(), &note.body);
+        if blocks
+            .iter()
+            .any(|b| b.tags.iter().any(|t| t.eq_ignore_ascii_case(&slug_lc)))
+        {
+            block_instances += 1;
+        }
+
+        // Children: a tag page whose `parent:` frontmatter equals this slug.
+        let is_tag = note
+            .metadata
+            .note_type
+            .as_deref()
+            .map(|t| t.eq_ignore_ascii_case("tag"))
+            .unwrap_or(false);
+        if is_tag {
+            let parent = note
+                .metadata
+                .custom
+                .get("parent")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_lowercase())
+                .unwrap_or_default();
+            if parent == slug_lc {
+                children += 1;
+            }
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "slug": slug_lc,
+        "references": references,
+        "page_instances": page_instances,
+        "block_instances": block_instances,
+        "children": children,
+    })))
+}
+
 /// Resolve a path-form tag reference (`nature/birds/cardinal`) into a concrete
 /// slug, cascade-creating missing ancestors top-down.
 ///

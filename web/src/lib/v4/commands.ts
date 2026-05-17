@@ -141,6 +141,44 @@ async function createScratchAndJump() {
   openPageInFocused(asPageId(note.id));
 }
 
+/** Phase 15 — `:delete-tag` verb. Fetches usage counts, confirms via the
+ *  browser dialog (MVP — a richer choice UI is a follow-up), and deletes
+ *  the tag page if confirmed. References / page-instances / block-instances
+ *  are NOT auto-cleaned; the user sees the count and decides whether to
+ *  delete-anyway or not. Children are orphaned (their `parent:` becomes
+ *  invalid but isn't rewritten). Phase 13 (cascade rename) will provide a
+ *  proper rewrite path. */
+async function deleteFocusedTag() {
+  const buffer = getFocusedBuffer();
+  if (!buffer || buffer.kind !== "page" || !buffer.pageId) {
+    console.warn("delete-tag: no focused page");
+    return;
+  }
+  const note = await api.getNote(buffer.pageId);
+  const isTag = (note.metadata.note_type ?? "").toLowerCase() === "tag";
+  if (!isTag) {
+    console.warn("delete-tag: focused page is not a tag");
+    return;
+  }
+  const usage = await api.getTagUsage(buffer.pageId);
+  const summary =
+    `Delete tag "${buffer.pageId}"?\n\n` +
+    `References:        ${usage.references} (left as broken)\n` +
+    `Page instances:    ${usage.page_instances}\n` +
+    `Block instances:   ${usage.block_instances}\n` +
+    `Child tags:        ${usage.children} (orphaned)\n\n` +
+    `Phase 15 MVP: deletes the tag page only. Mentions in markdown stay\n` +
+    `as plain text. Children's parent: frontmatter is NOT rewritten.\n\n` +
+    `Proceed?`;
+  if (!window.confirm(summary)) return;
+  await fetch(
+    `/api/notes/${encodeURIComponent(buffer.pageId)}`,
+    { method: "DELETE" },
+  );
+  const qc = getAppQueryClient();
+  if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
+}
+
 async function renameFocusedTagSlug(toSlug: string) {
   const buffer = getFocusedBuffer();
   if (!buffer || buffer.kind !== "page" || !buffer.pageId) {
@@ -159,6 +197,41 @@ async function renameFocusedTagSlug(toSlug: string) {
   openPageInFocused(asPageId(newSlug));
   const qc = getAppQueryClient();
   if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
+}
+
+/** Phase 14 — convert verbs. Round-trippable: a note → tag → note returns to
+ *  the original `type: note` page with content and other frontmatter intact. */
+async function convertFocusedTo(newType: "tag" | "note") {
+  const buffer = getFocusedBuffer();
+  if (!buffer || buffer.kind !== "page" || !buffer.pageId) {
+    console.warn(`convert-to-${newType}: no focused page`);
+    return;
+  }
+  const note = await api.getNote(buffer.pageId);
+  const current = (note.metadata.note_type ?? "").toLowerCase();
+  if (current === newType) return; // idempotent
+
+  // Frontmatter rewrite: replace any existing `type: <value>` line, or
+  // insert one right after the opening `---` if absent. Keeps the rest of
+  // the frontmatter (parent, extends, tag_properties, etc.) intact so the
+  // convert round-trips.
+  let next = note.content;
+  if (/^type:\s*.+$/m.test(next)) {
+    next = next.replace(/^type:\s*.+$/m, `type: ${newType}`);
+  } else if (next.startsWith("---\n")) {
+    next = next.replace(/^---\n/, `---\ntype: ${newType}\n`);
+  } else {
+    // No frontmatter at all — synthesize one.
+    next = `---\ntype: ${newType}\n---\n${next}`;
+  }
+  if (next === note.content) return;
+
+  const updated = await api.updateNote(buffer.pageId, next);
+  const qc = getAppQueryClient();
+  if (qc) {
+    qc.setQueryData(["note", buffer.pageId], updated);
+    qc.invalidateQueries({ queryKey: ["notes"] });
+  }
 }
 
 async function promoteFocusedScratch() {
@@ -369,6 +442,33 @@ export function buildV4Commands(): V4Command[] {
       category: "create",
       keywords: ["promote", "keep", "save", "scratch"],
       run: () => promoteFocusedScratch(),
+    },
+    {
+      id: "delete-tag",
+      verb: "delete-tag",
+      label: "Delete focused tag (with usage confirmation)",
+      glyph: "✕",
+      category: "create",
+      keywords: ["delete", "tag", "remove"],
+      run: () => deleteFocusedTag(),
+    },
+    {
+      id: "convert-to-tag",
+      verb: "convert-to-tag",
+      label: "Convert focused page to a tag page",
+      glyph: "↻",
+      category: "create",
+      keywords: ["convert", "tag", "type"],
+      run: () => convertFocusedTo("tag"),
+    },
+    {
+      id: "convert-to-note",
+      verb: "convert-to-note",
+      label: "Convert focused tag page to a regular note",
+      glyph: "↻",
+      category: "create",
+      keywords: ["convert", "note", "type"],
+      run: () => convertFocusedTo("note"),
     },
     {
       id: "rename-slug",

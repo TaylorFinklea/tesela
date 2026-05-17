@@ -38,6 +38,7 @@ pub fn build(state: AppState) -> Router {
         .route("/notes/{id}/unlinked", get(notes::get_unlinked))
         .route("/tags/rename", post(notes::rename_tag))
         .route("/tags/resolve", post(notes::resolve_tag))
+        .route("/tags/{slug}/usage", get(notes::get_tag_usage))
         .route("/notes/{id}/versions", get(history::list_versions))
         .route(
             "/notes/{id}/versions/{version_id}",
