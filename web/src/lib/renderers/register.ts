@@ -20,6 +20,8 @@ import outlineOfPage from "./derived/outline-of-page";
 import propertiesOfPage from "./derived/properties-of-page";
 import tasksLinkedToPage from "./derived/tasks-linked-to-page";
 import localGraphOfPage from "./derived/local-graph-of-page";
+import instancesOfTag from "./derived/instances-of-tag";
+import backlinksOfTag from "./derived/backlinks-of-tag";
 
 import calendar from "../ambients/calendar";
 import todayInProgress from "../ambients/today-in-progress";
@@ -31,6 +33,8 @@ registerDerived("outline-of-page", outlineOfPage);
 registerDerived("properties-of-page", propertiesOfPage);
 registerDerived("tasks-linked-to-page", tasksLinkedToPage);
 registerDerived("local-graph-of-page", localGraphOfPage);
+registerDerived("instances-of-tag", instancesOfTag);
+registerDerived("backlinks-of-tag", backlinksOfTag);
 
 registerAmbient("calendar", calendar);
 registerAmbient("today-in-progress", todayInProgress);

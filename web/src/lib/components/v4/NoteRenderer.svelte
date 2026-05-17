@@ -20,6 +20,7 @@
   import CompactQueryView from "$lib/components/v5/CompactQueryView.svelte";
   import JournalView from "$lib/components/JournalView.svelte";
   import TagTable from "$lib/components/TagTable.svelte";
+  import TagPageRenderer from "$lib/components/v4/TagPageRenderer.svelte";
   import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
 
   let {
@@ -110,7 +111,14 @@
     />
   {/if}
 {:else if noteTypeLc === "tag"}
-  <TagTable tagName={note.title} noteId={note.id} />
+  <TagPageRenderer
+    {note}
+    {paneId}
+    {onContentChange}
+    {onCancelAndFlush}
+    {onfocusedblockchange}
+    onLeader={onLeader}
+  />
 {:else if noteTypeLc === "property"}
   <PropertyTypeConfig {note} />
 {:else if isDocumentMode}

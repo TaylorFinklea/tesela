@@ -279,6 +279,45 @@ export function buildV4Commands(): V4Command[] {
       run: () => hsplit(makeDerivedBuffer(d.name, followBinding()), 0.7),
     })),
 
+    // ── tag derived buffers ──────────────────────────────────────────
+    // Tag-typed derived renderers (`instances-of-tag`, `backlinks-of-tag`).
+    // Argument is the tag slug — pinned binding is used since there's no
+    // tag-follow source yet (lastFocusedTagPerTab is not tracked).
+    {
+      id: "instances-of-tag",
+      verb: "instances-of-tag",
+      label: "Open instances of a tag (pinned)",
+      glyph: "▦",
+      category: "derived" as const,
+      keywords: ["instances", "tag", "members", "uses"],
+      argPrompt: "tag slug",
+      run: (arg) => {
+        if (!arg) return;
+        const reference = { kind: "tag" as const, value: arg.toLowerCase() };
+        hsplit(
+          makeDerivedBuffer("instances-of-tag", { mode: "pinned", reference }),
+          0.7,
+        );
+      },
+    },
+    {
+      id: "backlinks-of-tag",
+      verb: "backlinks-of-tag",
+      label: "Open backlinks of a tag (pinned)",
+      glyph: "↩",
+      category: "derived" as const,
+      keywords: ["backlinks", "tag", "uses"],
+      argPrompt: "tag slug",
+      run: (arg) => {
+        if (!arg) return;
+        const reference = { kind: "tag" as const, value: arg.toLowerCase() };
+        hsplit(
+          makeDerivedBuffer("backlinks-of-tag", { mode: "pinned", reference }),
+          0.7,
+        );
+      },
+    },
+
     // ── ambient buffers ────────────────────────────────────────────────
     ...AMBIENTS.map((a) => ({
       id: a.verb,
