@@ -270,7 +270,18 @@
       // `:` is intercepted above before reaching this point.
     };
     document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
+
+    // JournalView's BlockOutliner fires `tesela:leader` when cm-vim's
+    // <Space> action runs (Logseq-style journal swallows the inline
+    // onLeader callback wiring because it owns its own outliner mounts).
+    // Catch the event at document level so the leader menu still opens.
+    const onLeaderEvent = () => openLeader();
+    document.addEventListener("tesela:leader", onLeaderEvent);
+
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("tesela:leader", onLeaderEvent);
+    };
   });
 
   // Migration modal state — surfaced once on the v4→v5 first boot.
