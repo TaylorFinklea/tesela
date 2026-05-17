@@ -33,14 +33,10 @@
     type StationTab,
   } from "$lib/stores/station.svelte";
   import {
-    focusPane,
-    getPaneById,
-    getPaneOutliner,
-    jumpToTile,
-    openInEditor,
-    setPaneWidget,
-    swapKind,
-  } from "$lib/stores/pane-tree.svelte";
+    focusLeaf,
+    openPageInFocused,
+  } from "$lib/buffer/state.svelte";
+  import { asPageId, type LeafId } from "$lib/buffer/types";
   import { buildV4Commands, matchesV4Command, type V4Command } from "$lib/v4/commands";
   import { scoreFuzzy } from "$lib/fuzzy";
   import { parseWidgets, widgetsBySection } from "$lib/widget-registry.svelte";
@@ -123,12 +119,9 @@
   function restoreFocus() {
     const prior = getStationPriorPaneId();
     if (!prior) return;
-    const el = getPaneOutliner(prior);
-    if (el) el.focus({ preventScroll: true });
-    else {
-      const hit = getPaneById(prior);
-      if (hit) focusPane(hit.pane.id);
-    }
+    // v5: prior is a leaf id; refocus its leaf and the BufferShell's
+    // auto-focus effect lands the cursor in the cm-editor.
+    focusLeaf(prior as LeafId);
   }
 
   function close() {
@@ -182,22 +175,18 @@
   }
 
   function openNoteRow(note: Note) {
-    // Note row → route through the unified resolver. If the prior pane was
-    // an editor, that wins; otherwise the last-focused editor in the tab
-    // wins. Falls back to converting the focused pane when no editor exists.
+    // Note row → restore prior focus, then open the page there.
     closeStation();
-    openInEditor(note.id, { preferredPaneId: getStationPriorPaneId(), via: "palette" });
+    const prior = getStationPriorPaneId();
+    if (prior) focusLeaf(prior as LeafId);
+    openPageInFocused(asPageId(note.id));
   }
 
   async function runCommand(cmd: V4Command) {
     // Most verbs operate on the focused pane. Restore that focus FIRST so
-    // (e.g.) `vsplit` happens relative to the user's prior pane, not the
-    // body. closeStation flips `open` false; the run runs after.
+    // (e.g.) `vsplit` happens relative to the user's prior pane.
     const prior = getStationPriorPaneId();
-    if (prior) {
-      const hit = getPaneById(prior);
-      if (hit) focusPane(hit.pane.id);
-    }
+    if (prior) focusLeaf(prior as LeafId);
     let arg: string | undefined;
     if (cmd.argPrompt) {
       arg = window.prompt(cmd.argPrompt)?.trim();
@@ -212,26 +201,20 @@
   }
 
   function pickWidget(widgetNoteId: string) {
-    // Click on a dashboard card swaps the prior pane to a widget pane
-    // pointing at that Query note. If no prior pane, jumpToTile to it
-    // as a fallback so the user still sees the note open.
-    const prior = getStationPriorPaneId();
-    if (prior) {
-      const hit = getPaneById(prior);
-      if (hit) {
-        focusPane(hit.pane.id);
-        swapKind(hit.pane.id, "widget");
-        setPaneWidget(hit.pane.id, widgetNoteId);
-      }
-    } else {
-      jumpToTile(widgetNoteId);
-    }
+    // Dashboard click → open the underlying Query note as a page buffer.
+    // v5 has no widget pane kind anymore; widget content surfaces via
+    // ambient buffers or query-typed page buffers instead.
     closeStation();
+    const prior = getStationPriorPaneId();
+    if (prior) focusLeaf(prior as LeafId);
+    openPageInFocused(asPageId(widgetNoteId));
   }
 
   function openTileFromWidget(noteId: string) {
     closeStation();
-    openInEditor(noteId, { preferredPaneId: getStationPriorPaneId(), via: "dashboard" });
+    const prior = getStationPriorPaneId();
+    if (prior) focusLeaf(prior as LeafId);
+    openPageInFocused(asPageId(noteId));
   }
 
   onMount(() => {

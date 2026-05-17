@@ -17,7 +17,11 @@
     goForwardInJourney,
     jumpToJourneyEntry,
   } from "$lib/stores/journey.svelte";
-  import { openInEditor } from "$lib/stores/pane-tree.svelte";
+  import { openPageInFocused } from "$lib/buffer/state.svelte";
+  import { asPageId } from "$lib/buffer/types";
+  // Thin shim — Journey only ever opens pages.
+  const openInEditor = (id: string, _opts?: { via?: string }) =>
+    openPageInFocused(asPageId(id));
 
   const entries = $derived(getJourneyEntries());
   const cursor = $derived(getJourneyCursor());

@@ -18,6 +18,7 @@
   import DocumentEditor from "$lib/components/DocumentEditor.svelte";
   import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
   import CompactQueryView from "$lib/components/v5/CompactQueryView.svelte";
+  import JournalView from "$lib/components/JournalView.svelte";
   import TagTable from "$lib/components/TagTable.svelte";
   import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
 
@@ -52,6 +53,22 @@
     !!size && size.cols < QUERY_FULL_MIN_COLS,
   );
 
+  /** Daily-typed notes (`tags: [daily]` + title `YYYY-MM-DD`) render as
+   *  a single-day BlockOutliner by default, but swap to JournalView
+   *  (multi-day continuous scroll) when the host is wide enough. */
+  const DAILY_JOURNAL_MIN_COLS = 80;
+  const DAILY_JOURNAL_MIN_ROWS = 28;
+  const isDaily = $derived(
+    /^\d{4}-\d{2}-\d{2}$/.test(note.title) &&
+      (note.metadata.tags ?? []).includes("daily"),
+  );
+  const useJournalFeed = $derived(
+    isDaily &&
+      !!size &&
+      size.cols >= DAILY_JOURNAL_MIN_COLS &&
+      size.rows >= DAILY_JOURNAL_MIN_ROWS,
+  );
+
   function splitContent(content: string): { frontmatter: string; body: string } {
     if (!content.startsWith("---")) return { frontmatter: "", body: content };
     const endIdx = content.indexOf("---", 3);
@@ -67,7 +84,9 @@
   const isDocumentMode = $derived(note.metadata.custom?.mode === "document");
 </script>
 
-{#if noteType === "Query"}
+{#if useJournalFeed}
+  <JournalView anchorDate={note.title} />
+{:else if noteType === "Query"}
   {#if useCompactQuery}
     <CompactQueryView {note} onOpenRow={onOpenNote} />
   {:else}

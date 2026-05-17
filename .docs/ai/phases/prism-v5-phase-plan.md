@@ -3,6 +3,11 @@
 Companion to `.docs/designs/2026-05-15-prism-v5-chrome.md` — the architecture
 spec. This file is the ordered cutover plan.
 
+**Status as of 2026-05-16:** Phases 0–13 all complete. v5 is live on `/v4`
+(file rename deferred). Backlog items below: page-registry formal refactor
+(currently NoteRenderer-dispatched inline), settings UI exposure of
+`scratchPruneAfterDays`, ⌘G overlay polish.
+
 ## Context
 
 Strict rip-and-replace cutover. Each phase ends with a phase completion

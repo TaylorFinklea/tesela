@@ -24,7 +24,10 @@
     getActiveOverlay,
     isOverlayOpen,
   } from "$lib/stores/fullscreen-overlay.svelte";
-  import { openInEditor } from "$lib/stores/pane-tree.svelte";
+  import { openPageInFocused } from "$lib/buffer/state.svelte";
+  import { asPageId } from "$lib/buffer/types";
+  const openInEditor = (id: string, _opts?: { via?: string }) =>
+    openPageInFocused(asPageId(id));
 
   const open = $derived(isOverlayOpen());
   const kind = $derived(getActiveOverlay());
