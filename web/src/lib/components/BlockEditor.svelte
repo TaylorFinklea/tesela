@@ -1092,7 +1092,17 @@
       ".cm-line": { padding: "2px 0" },
       ".cm-cursor, .cm-fat-cursor": { display: "none" },
       "&.cm-focused .cm-cursor": { display: "block", borderLeftColor: "var(--primary)", borderLeftWidth: "2px" },
-      "&.cm-focused .cm-fat-cursor": { display: "block", background: "color-mix(in srgb, var(--primary) 25%, transparent) !important" },
+      // cm-vim's fat cursor renders the char at the cursor position inside
+      // its own div. On lines whose visible text is empty (the bullet body
+      // is just a hidden `<!-- bid:... -->` comment), the cursor block
+      // ends up showing the literal `<` from the hidden comment. Hide the
+      // inner glyph via transparent color — the tinted block still marks
+      // cursor position, which is enough.
+      "&.cm-focused .cm-fat-cursor": {
+        display: "block",
+        background: "color-mix(in srgb, var(--primary) 25%, transparent) !important",
+        color: "transparent !important",
+      },
       "&.cm-focused .cm-selectionBackground, .cm-selectionBackground": { backgroundColor: "color-mix(in srgb, var(--primary) 15%, transparent) !important" },
       ".cm-gutters": { display: "none" },
       "&.cm-focused": { outline: "none" },

@@ -30,6 +30,7 @@
     onCancelAndFlush,
     onfocusedblockchange,
     onOpenNote,
+    onLeader,
   }: {
     note: Note;
     paneId: string;
@@ -43,6 +44,8 @@
     onfocusedblockchange?: (block: ParsedBlock | null) => void;
     /** Row activation inside a Query-note widget view. */
     onOpenNote?: (noteId: string) => void;
+    /** Space-in-NORMAL-mode trigger: opens the v5 leader chord menu. */
+    onLeader?: () => void;
   } = $props();
 
   /** Query notes render as a wide table by default. Below ~50 cols
@@ -114,5 +117,6 @@
     {onContentChange}
     {onCancelAndFlush}
     {onfocusedblockchange}
+    onleader={onLeader}
   />
 {/if}

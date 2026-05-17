@@ -42,6 +42,14 @@
   import Sidebar from "$lib/components/v5/Sidebar.svelte";
   import Station from "$lib/components/v4/Station.svelte";
   import StatusLine from "$lib/components/v5/StatusLine.svelte";
+  import ChordMenu from "$lib/components/ChordMenu.svelte";
+  import {
+    closeLeader,
+    getLeaderInitialPath,
+    getLeaderTree,
+    isLeaderOpen,
+    openLeader,
+  } from "$lib/v5/leader-tree.svelte";
   import { setSidebarCollapsed } from "$lib/buffer/state.svelte";
   import {
     canGoBackInJourney,
@@ -152,6 +160,22 @@
         e.preventDefault();
         e.stopPropagation();
         openColonMode();
+        return;
+      }
+
+      // Space opens the leader chord menu when NOT in a text entry. Inside
+      // cm-editor, cm-vim's `<Space>` action handles the same role (see
+      // BlockEditor's Vim.mapCommand) and calls openLeader() too.
+      if (
+        !mod &&
+        !e.altKey &&
+        !e.ctrlKey &&
+        e.key === " " &&
+        !isTextEntry(e.target)
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        openLeader();
         return;
       }
 
@@ -339,6 +363,13 @@
   <PeekPopover />
   <FullscreenOverlay />
   <ColonCommandLine />
+  {#if isLeaderOpen()}
+    <ChordMenu
+      tree={getLeaderTree()}
+      initialPath={getLeaderInitialPath()}
+      onclose={closeLeader}
+    />
+  {/if}
   {#if migrationReport}
     <MigrationModal
       report={migrationReport}

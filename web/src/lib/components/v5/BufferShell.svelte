@@ -36,6 +36,7 @@
   } from "$lib/stores/current-block.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
   import NoteRenderer from "$lib/components/v4/NoteRenderer.svelte";
+  import { openLeader } from "$lib/v5/leader-tree.svelte";
   import "$lib/renderers/register"; // side-effect: register all v5 renderers
   import { mount as mountDerived } from "$lib/renderers/derived";
   import { get as getAmbient } from "$lib/renderers/ambient";
@@ -321,6 +322,7 @@
                 onfocusedblockchange={(b) =>
                   setFocusedBlockForPane(leafId as unknown as string, b)}
                 onOpenNote={openNoteHere}
+                onLeader={() => openLeader()}
               />
             </div>
           {/key}
@@ -383,12 +385,10 @@
     outline: none;
   }
   .v5-buffer.focused {
+    /* The top border alone marks the active pane — no background tint.
+     * Earlier we had a vertical gradient overlay; Taylor preferred the
+     * single-line glow as a more readable focus signal. */
     border-top-color: var(--v4-accent);
-    background: linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--v4-accent) 5%, transparent),
-      transparent 30%
-    );
   }
   .v5-buffer-header {
     display: flex;
