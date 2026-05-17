@@ -119,6 +119,11 @@
   // Visible window — start with 30 most recent, expand on scroll.
   const PAGE = 30;
   let visibleCount = $state(PAGE);
+  // Days of empty placeholder past the oldest on-disk daily. The user
+  // expects an "infinite" calendar going back even when those days have
+  // no file on disk yet. Bumped on `loadMore()` once the on-disk list is
+  // exhausted.
+  let paddingDays = $state(60);
 
   // Virtual mounting: only sections that have entered the viewport
   // (or are explicit anchor/today) actually mount a BlockOutliner.
@@ -157,7 +162,7 @@
   }
   // Always include the anchor in the visible window even if it's past the
   // current paging horizon.
-  const visibleDailies = $derived.by((): Note[] => {
+  const onDiskVisible = $derived.by((): Note[] => {
     const pool = dailies.slice(0, visibleCount);
     if (pool.some((n) => n.title === anchorDate)) return pool;
     const idx = dailies.findIndex((n) => n.title === anchorDate);
@@ -165,19 +170,77 @@
     // Extend visibleCount so the anchor is on screen.
     return dailies.slice(0, Math.max(visibleCount, idx + 1));
   });
-  const hasMore = $derived(visibleDailies.length < dailies.length);
+
+  /** Generate a synthetic Note placeholder for a daily that doesn't exist
+   *  on disk yet. Used for the "infinite scroll back through the
+   *  calendar" UX — even days with no file get a header rendered so the
+   *  user can keep scrolling. Clicking into one will create the file via
+   *  the existing ensureTrailingEmpty path. */
+  function syntheticDaily(dateStr: string): Note {
+    return {
+      id: dateStr,
+      title: dateStr,
+      content: "",
+      body: "",
+      metadata: {
+        title: dateStr,
+        tags: ["daily"],
+        aliases: [],
+        note_type: null,
+        custom: {},
+        created: null,
+        modified: null,
+      },
+      path: `notes/${dateStr}.md`,
+      checksum: "",
+      created_at: "",
+      modified_at: "",
+      attachments: [],
+    } as unknown as Note;
+  }
+
+  /** Step `dateStr` back by one day. Pure UTC-friendly string math so the
+   *  calendar stays consistent regardless of TZ. */
+  function prevDate(dateStr: string): string {
+    const d = new Date(dateStr + "T12:00:00Z"); // noon UTC sidesteps DST edges
+    d.setUTCDate(d.getUTCDate() - 1);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(d.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  }
+
+  /** Visible list = on-disk window, then synthetic empty days going back
+   *  `paddingDays` from the oldest on-disk daily (or today if there are
+   *  none). The result is descending by date and gap-free. */
+  const visibleDailies = $derived.by((): Note[] => {
+    const real = onDiskVisible;
+    const lastRealDate = real.length > 0 ? real[real.length - 1].title : todayStr;
+    const onDiskDates = new Set(dailies.map((n) => n.title));
+    const synthetics: Note[] = [];
+    let cursor = lastRealDate;
+    for (let i = 0; i < paddingDays; i++) {
+      cursor = prevDate(cursor);
+      // Skip dates that DO have a daily on disk but were paged out — they
+      // belong in the on-disk list, not the synthetic tail.
+      if (onDiskDates.has(cursor)) continue;
+      synthetics.push(syntheticDaily(cursor));
+    }
+    return [...real, ...synthetics];
+  });
+  const hasMore = $derived(onDiskVisible.length < dailies.length);
 
   function loadMore() {
     if (!hasMore) {
-      // Already showing everything we've fetched — try fetching more
-      // from the server. The queryKey change triggers a refetch via
-      // TanStack.
+      // No more on-disk dailies to reveal — extend the synthetic tail so
+      // the user can keep scrolling back through the calendar.
+      paddingDays = paddingDays + 60;
+      // Also nudge the server in case it's holding more behind the
+      // current fetch limit (rare; mostly defensive).
       fetchLimit = fetchLimit + PAGE * 2;
       return;
     }
     visibleCount = Math.min(dailies.length, visibleCount + PAGE);
-    // Pre-fetch the next batch when we're approaching the end of what
-    // we have locally, so the next loadMore is instant.
     if (dailies.length - visibleCount < PAGE) {
       fetchLimit = fetchLimit + PAGE * 2;
     }
@@ -429,9 +492,11 @@
       {@const split = splitContent(note.content)}
       {@const isToday = note.title === todayStr}
       {@const isAnchor = note.title === anchorDate}
-      {@const isMounted = mountedSections.has(note.id) || shouldStartMounted(note.title)}
+      {@const isSynthetic = note.checksum === ""}
+      {@const isMounted = !isSynthetic && (mountedSections.has(note.id) || shouldStartMounted(note.title))}
       <section
         class="day"
+        class:synthetic={isSynthetic}
         data-daily={note.title}
         class:is-today={isToday}
         class:is-anchor={isAnchor}
@@ -444,7 +509,23 @@
           {/if}
           <span class="day-year">{formatYear(note.title)}</span>
         </header>
-        {#if isMounted}
+        {#if isSynthetic}
+          <!-- Day has no file on disk yet. Show a click-to-create hint;
+               the action creates the file via the daily endpoint and
+               TanStack invalidation re-renders this section as a real
+               BlockOutliner. -->
+          <button
+            type="button"
+            class="day-create"
+            onclick={async () => {
+              await api.getDailyNote(note.title);
+              queryClient.invalidateQueries({ queryKey: ["notes"] });
+            }}
+          >
+            empty day · click to add an entry
+          </button>
+        {/if}
+        {#if !isSynthetic && isMounted}
           <BlockOutliner
             noteId={note.id}
             body={split.body}
@@ -454,7 +535,7 @@
             onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
             onfocusedblockchange={(b) => setFocusedBlock(b)}
           />
-        {:else}
+        {:else if !isSynthetic}
           <!-- Cheap preview until the section scrolls near the viewport.
                No cm-editor is mounted yet — keeps initial paint fast on
                large imported journals (e.g. 459 Logseq dailies). -->
@@ -471,11 +552,11 @@
         {/if}
       </section>
     {/each}
-    {#if hasMore}
-      <div bind:this={sentinel} class="journal-sentinel">
-        <button class="journal-load-more" type="button" onclick={loadMore}>Load older entries</button>
-      </div>
-    {/if}
+    <div bind:this={sentinel} class="journal-sentinel">
+      <button class="journal-load-more" type="button" onclick={loadMore}
+        >Load older entries</button
+      >
+    </div>
   {/if}
 </div>
 
@@ -490,6 +571,26 @@
   .day { padding-top: 14px; padding-bottom: 80px; border-top: 1px solid var(--v9-line); }
   .day:first-child { border-top: 0; padding-top: 0; }
   .day:last-child { padding-bottom: 0; }
+  .day.synthetic { padding-bottom: 28px; opacity: 0.62; }
+  .day.synthetic .day-title { color: var(--v9-ink-faint); font-weight: 500; }
+  .day-create {
+    display: block;
+    margin-top: 8px;
+    background: transparent;
+    border: 1px dashed var(--v9-line);
+    border-radius: 6px;
+    color: var(--v9-ink-faint);
+    padding: 8px 12px;
+    cursor: pointer;
+    font-family: var(--v9-mono);
+    font-size: 11px;
+    width: 100%;
+    text-align: left;
+  }
+  .day-create:hover {
+    border-color: var(--v9-line-soft);
+    color: var(--v9-ink-muted);
+  }
   .day-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px; }
   .day-title { font-family: var(--theme-font-sans); font-size: 18px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg-default); }
   /* Today still gets a marker, but it's a soft brightening, not the
