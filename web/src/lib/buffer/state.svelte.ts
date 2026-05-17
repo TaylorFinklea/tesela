@@ -312,6 +312,18 @@ export function togglePeekHide(rendererName: string) {
   commit({ ...workspace, peekHideList: next });
 }
 
+// ── scratch prune ─────────────────────────────────────────────────────────
+
+export function getScratchPruneAfterDays(): number | undefined {
+  return workspace.scratchPruneAfterDays;
+}
+
+export function setScratchPruneAfterDays(days: number | undefined): void {
+  const cur = workspace.scratchPruneAfterDays;
+  if (cur === days) return;
+  commit({ ...workspace, scratchPruneAfterDays: days });
+}
+
 // ── reset (testing / dev) ──────────────────────────────────────────────────
 
 export function resetWorkspace() {

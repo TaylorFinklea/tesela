@@ -85,6 +85,10 @@ export type Workspace = {
   /** Renderer names the user hid from the Peek cycle. Stored as a sorted
    *  array (not Set) for JSON serializability. */
   peekHideList?: string[];
+  /** Days a scratch page can stay untouched before it's pruned on the
+   *  next app-boot sweep. `undefined` (or any non-positive number)
+   *  disables the sweep. Default off. */
+  scratchPruneAfterDays?: number;
 };
 
 // ── id mints + brand-blind constructors ────────────────────────────────────

@@ -12,6 +12,7 @@ import {
   closeFocusedLeaf,
   closeTab,
   getFocusedBuffer,
+  getScratchPruneAfterDays,
   getWorkspace,
   hsplit,
   movePane,
@@ -19,6 +20,7 @@ import {
   openPageInFocused,
   vsplit,
 } from "$lib/buffer/state.svelte";
+import { runScratchPrune } from "$lib/state/scratch-prune";
 import {
   asPageId,
   type DerivedBinding,
@@ -249,6 +251,30 @@ export function buildV4Commands(): V4Command[] {
       category: "create",
       keywords: ["promote", "keep", "save", "scratch"],
       run: () => promoteFocusedScratch(),
+    },
+    {
+      id: "prune-scratches",
+      verb: "prune-scratches",
+      label: "Prune stale scratch pages now",
+      glyph: "🧹",
+      category: "create",
+      keywords: ["prune", "clean", "sweep", "scratch", "delete"],
+      argPrompt: "days threshold (default: workspace setting)",
+      run: async (arg) => {
+        const fromArg = arg ? Number(arg) : NaN;
+        const days = Number.isFinite(fromArg) && fromArg > 0
+          ? fromArg
+          : getScratchPruneAfterDays();
+        const result = await runScratchPrune(days);
+        if (!result) {
+          console.warn("prune-scratches: no days threshold set");
+          return;
+        }
+        // eslint-disable-next-line no-console
+        console.info("scratch prune:", result);
+        const qc = getAppQueryClient();
+        if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
+      },
     },
     ...SETTINGS_PAGES.map(({ slug, label }) => ({
       id: `settings-${slug}`,

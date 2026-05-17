@@ -15,15 +15,30 @@
   import { api } from "$lib/api-client";
   import {
     getActiveTab,
+    getScratchPruneAfterDays,
     openPageInFocused,
     openPageInLeaf,
   } from "$lib/buffer/state.svelte";
   import { asPageId, type LeafId } from "$lib/buffer/types";
+  import { maybeRunScratchPruneAtBoot } from "$lib/state/scratch-prune";
 
   const seenTabs = new Set<string>();
   let consumedHash = false;
+  let prunedThisBoot = false;
 
   $effect(() => {
+    // ── (0) scratch prune sweep ─────────────────────────────────────
+    if (!prunedThisBoot) {
+      prunedThisBoot = true;
+      const days = getScratchPruneAfterDays();
+      if (days && days > 0) {
+        // Quiet: no toast on success. Errors logged inside the sweep.
+        maybeRunScratchPruneAtBoot(days).catch((e) =>
+          console.warn("scratch prune failed", e),
+        );
+      }
+    }
+
     // ── (1) hash consume ────────────────────────────────────────────
     if (typeof window !== "undefined" && !consumedHash) {
       consumedHash = true;
