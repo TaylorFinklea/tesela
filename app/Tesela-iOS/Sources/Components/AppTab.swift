@@ -7,7 +7,7 @@ import SwiftUI
 /// surfaces on tap. This keeps the tab bar focused on places, not
 /// actions.
 enum AppTab: Int, CaseIterable, Identifiable, Hashable {
-    case daily, inbox, library
+    case daily, inbox, library, search
 
     var id: Int { rawValue }
 
@@ -16,6 +16,7 @@ enum AppTab: Int, CaseIterable, Identifiable, Hashable {
         case .daily:   return "Daily"
         case .inbox:   return "Inbox"
         case .library: return "Library"
+        case .search:  return "Search"
         }
     }
 
@@ -24,6 +25,7 @@ enum AppTab: Int, CaseIterable, Identifiable, Hashable {
         case .daily:   return .daily
         case .inbox:   return .inbox
         case .library: return .page
+        case .search:  return .search
         }
     }
 }

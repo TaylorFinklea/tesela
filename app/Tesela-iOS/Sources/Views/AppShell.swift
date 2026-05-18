@@ -2,9 +2,8 @@ import SwiftUI
 
 /// Top-level scaffold using iOS 26's native Liquid Glass `TabView`.
 /// Three "place" tabs: Daily · Inbox · Library. Search and capture
-/// share a single Liquid Glass capsule in `tabViewBottomAccessory`
-/// with a visible divider between them — per Taylor's spec:
-///   (Daily Inbox Library)   (Search · Create)
+/// are NOT tabs — both live in `.tabViewBottomAccessory` as a Mail-
+/// style search field with an adjacent + capture button.
 struct AppShell: View {
     @StateObject private var appearance = AppearanceController()
     @StateObject private var mosaic = MockMosaicService()
@@ -13,7 +12,6 @@ struct AppShell: View {
     @StateObject private var backend = BackendSettings()
     @State private var activeTab: AppTab = .daily
     @State private var showCapture: Bool = false
-    @State private var showSearch: Bool = false
     @State private var captureSeed: String = ""
 
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
@@ -27,12 +25,6 @@ struct AppShell: View {
                             .environment(\.theme, appearance.theme)
                             .environment(\.density, appearance.density)
                             .onDisappear { captureSeed = "" }
-                    }
-                    .sheet(isPresented: $showSearch) {
-                        SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
-                            .environment(\.theme, appearance.theme)
-                            .environment(\.density, appearance.density)
-                            .presentationDetents([.large])
                     }
                     .task {
                         mosaic.attach(backend: backend.backend)
@@ -69,18 +61,55 @@ struct AppShell: View {
             } label: {
                 TabBarLabel(tab: .library, active: activeTab == .library)
             }
+
+            // iOS 26 renders a Tab with `role: .search` as a SEPARATE
+            // floating glass chip alongside the main tab group — exactly
+            // the "Single" treatment Taylor wants. Tapping this chip
+            // enters the search experience; we route to the SearchView
+            // sheet rather than letting iOS use the default expansion.
+            Tab(value: AppTab.search, role: .search) {
+                SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
+            } label: {
+                TabBarLabel(tab: .search, active: activeTab == .search)
+            }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
-        .tabViewBottomAccessory {
-            SearchCaptureGroup(
-                onTapSearch: { showSearch = true },
-                onTapCapture: { showCapture = true }
-            )
+        // Capture button floats as a third glass shape at the same Y as
+        // the tab bar group + search chip, right-aligned over the tab
+        // bar's safe-area inset. iOS 26 native tab bar handles the
+        // first two groups (tabs + search chip); we provide the third.
+        .overlay(alignment: .bottomTrailing) {
+            CaptureGlassButton { showCapture = true }
+                .padding(.trailing, 16)
+                .padding(.bottom, 14)
         }
     }
 }
 
-/// Tab label used inside each `Tab` — Tabler icon + text.
+/// Single brand-tinted Liquid Glass circle for capture. Floats at the
+/// bottom-trailing edge so it sits on the same line as the system tab
+/// bar group + search chip — three independent glass shapes on one row.
+private struct CaptureGlassButton: View {
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Button(action: action) {
+            Icon(name: .plus, size: 20, lineWidth: 2.2)
+                .foregroundStyle(theme.fgDefault)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.tint(theme.accentPrimary).interactive(), in: .circle)
+        .accessibilityLabel("Capture")
+    }
+}
+
+/// Label view used inside each `Tab` — pairs a Tabler-shaped icon with
+/// the tab's text. The native tab bar handles selection styling
+/// (`active` is passed through so we can tune the icon contrast if the
+/// system rendering needs it later).
 private struct TabBarLabel: View {
     let tab: AppTab
     let active: Bool
@@ -94,64 +123,3 @@ private struct TabBarLabel: View {
     }
 }
 
-/// One Liquid Glass capsule containing both the search field (left,
-/// wide) and the capture button (right, small) with a thin vertical
-/// divider between them. Per Taylor's intent: "capsule with a
-/// divider between them" — one group, two tappable halves.
-private struct SearchCaptureGroup: View {
-    let onTapSearch: () -> Void
-    let onTapCapture: () -> Void
-
-    @Environment(\.theme) private var theme
-
-    var body: some View {
-        HStack(spacing: 0) {
-            searchHalf
-            divider
-            captureHalf
-        }
-        .glassEffect(.regular.interactive(), in: .capsule)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
-    }
-
-    private var searchHalf: some View {
-        Button(action: onTapSearch) {
-            HStack(spacing: 8) {
-                Icon(name: .search, size: 16)
-                    .foregroundStyle(theme.fgMuted)
-                Text("Search")
-                    .font(.system(size: 15))
-                    .foregroundStyle(theme.fgSubtle)
-                Spacer(minLength: 0)
-                Icon(name: .mic, size: 16)
-                    .foregroundStyle(theme.fgMuted)
-            }
-            .padding(.leading, 16)
-            .padding(.trailing, 12)
-            .padding(.vertical, 10)
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Search")
-    }
-
-    private var divider: some View {
-        Capsule()
-            .fill(theme.fgFaint.opacity(0.45))
-            .frame(width: 1, height: 22)
-    }
-
-    private var captureHalf: some View {
-        Button(action: onTapCapture) {
-            Icon(name: .plus, size: 20, lineWidth: 2.2)
-                .foregroundStyle(theme.accentPrimary)
-                .padding(.horizontal, 18)
-                .frame(maxHeight: .infinity)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Capture")
-    }
-}
