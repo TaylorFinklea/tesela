@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// Top-level scaffold. Three Liquid Glass groups along the bottom on a
-/// single horizontal row: tab group (Daily · Inbox · Library), a
-/// search singleton, and a capture singleton. Each is its own
-/// `GlassEffectContainer`, side-by-side as proper layout siblings —
-/// no overlay tricks.
+/// Top-level scaffold using iOS 26's native Liquid Glass `TabView`.
+/// Three "place" tabs: Daily · Inbox · Library. Search and capture
+/// share a single Liquid Glass capsule in `tabViewBottomAccessory`
+/// with a visible divider between them — per Taylor's spec:
+///   (Daily Inbox Library)   (Search · Create)
 struct AppShell: View {
     @StateObject private var appearance = AppearanceController()
     @StateObject private var mosaic = MockMosaicService()
@@ -21,7 +21,7 @@ struct AppShell: View {
     var body: some View {
         TeselaAppearance(controller: appearance) {
             if onboardingComplete {
-                shell
+                tabView
                     .sheet(isPresented: $showCapture) {
                         CaptureSheet(mosaic: mosaic, seed: captureSeed)
                             .environment(\.theme, appearance.theme)
@@ -44,133 +44,114 @@ struct AppShell: View {
         }
     }
 
-    /// The main screen: active tab content + a bottom chrome row.
-    private var shell: some View {
-        ZStack(alignment: .bottom) {
-            activeContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(appearance.theme.bg)
-            BottomChrome(
-                activeTab: $activeTab,
-                onSearch: { showSearch = true },
-                onCapture: { showCapture = true }
-            )
-        }
-    }
+    private var tabView: some View {
+        TabView(selection: $activeTab) {
+            Tab(value: AppTab.daily) {
+                DailyView(mosaic: mosaic, backend: backend)
+            } label: {
+                TabBarLabel(tab: .daily, active: activeTab == .daily)
+            }
 
-    /// Switch on the active tab to render that tab's content. Done as
-    /// a `switch` rather than via `TabView` so the bottom chrome below
-    /// is fully custom — we own the layout, not iOS's tab-bar engine.
-    @ViewBuilder
-    private var activeContent: some View {
-        switch activeTab {
-        case .daily:
-            DailyView(mosaic: mosaic, backend: backend)
-        case .inbox:
-            InboxView(mosaic: mosaic, backend: backend)
-        case .library:
-            LibraryView(
-                mosaic: mosaic,
-                appearance: appearance,
-                pageStack: pageStack,
-                syncState: syncState,
-                backend: backend
+            Tab(value: AppTab.inbox) {
+                InboxView(mosaic: mosaic, backend: backend)
+            } label: {
+                TabBarLabel(tab: .inbox, active: activeTab == .inbox)
+            }
+
+            Tab(value: AppTab.library) {
+                LibraryView(
+                    mosaic: mosaic,
+                    appearance: appearance,
+                    pageStack: pageStack,
+                    syncState: syncState,
+                    backend: backend
+                )
+            } label: {
+                TabBarLabel(tab: .library, active: activeTab == .library)
+            }
+        }
+        .tabBarMinimizeBehavior(.onScrollDown)
+        .tabViewBottomAccessory {
+            SearchCaptureGroup(
+                onTapSearch: { showSearch = true },
+                onTapCapture: { showCapture = true }
             )
         }
     }
 }
 
-// MARK: - Bottom chrome — three sibling Liquid Glass groups
+/// Tab label used inside each `Tab` — Tabler icon + text.
+private struct TabBarLabel: View {
+    let tab: AppTab
+    let active: Bool
 
-/// Renders the three glass groups: tab pill on the left, search on
-/// the right, capture on the far right. Each lives inside its own
-/// `GlassEffectContainer` so SwiftUI renders them as distinct
-/// floating shapes (rather than merging them into one bar).
-private struct BottomChrome: View {
-    @Binding var activeTab: AppTab
-    let onSearch: () -> Void
-    let onCapture: () -> Void
+    var body: some View {
+        Label {
+            Text(tab.label)
+        } icon: {
+            Icon(name: tab.icon, size: 22)
+        }
+    }
+}
+
+/// One Liquid Glass capsule containing both the search field (left,
+/// wide) and the capture button (right, small) with a thin vertical
+/// divider between them. Per Taylor's intent: "capsule with a
+/// divider between them" — one group, two tappable halves.
+private struct SearchCaptureGroup: View {
+    let onTapSearch: () -> Void
+    let onTapCapture: () -> Void
 
     @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(spacing: 10) {
-            tabGroup
-            Spacer(minLength: 8)
-            searchGroup
-            captureGroup
+        HStack(spacing: 0) {
+            searchHalf
+            divider
+            captureHalf
         }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 16)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
     }
 
-    /// Group 1 — the tab pill containing Daily · Inbox · Library.
-    private var tabGroup: some View {
-        GlassEffectContainer(spacing: 0) {
-            HStack(spacing: 4) {
-                ForEach(AppTab.allCases) { tab in
-                    tabButton(tab)
-                }
+    private var searchHalf: some View {
+        Button(action: onTapSearch) {
+            HStack(spacing: 8) {
+                Icon(name: .search, size: 16)
+                    .foregroundStyle(theme.fgMuted)
+                Text("Search")
+                    .font(.system(size: 15))
+                    .foregroundStyle(theme.fgSubtle)
+                Spacer(minLength: 0)
+                Icon(name: .mic, size: 16)
+                    .foregroundStyle(theme.fgMuted)
             }
-            .padding(.horizontal, 6)
-            .padding(.vertical, 4)
-            .glassEffect(.regular.interactive(), in: .capsule)
-        }
-    }
-
-    private func tabButton(_ tab: AppTab) -> some View {
-        let on = (activeTab == tab)
-        return Button {
-            withAnimation(.snappy(duration: 0.18)) { activeTab = tab }
-        } label: {
-            VStack(spacing: 1) {
-                Icon(name: tab.icon, size: 18)
-                Text(tab.label)
-                    .font(.system(size: 10, weight: on ? .semibold : .regular, design: .default))
-                    .tracking(0)
-            }
-            .foregroundStyle(on ? theme.accentPrimary : theme.fgMuted)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .frame(minWidth: 60)
-            .background {
-                if on {
-                    Capsule()
-                        .fill(theme.accentPrimary.opacity(0.16))
-                }
-            }
-            .contentShape(Capsule())
+            .padding(.leading, 16)
+            .padding(.trailing, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Search")
     }
 
-    /// Group 2 — search singleton glass circle.
-    private var searchGroup: some View {
-        GlassEffectContainer(spacing: 0) {
-            Button(action: onSearch) {
-                Icon(name: .search, size: 20, lineWidth: 2)
-                    .foregroundStyle(theme.fgDefault)
-                    .frame(width: 48, height: 48)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .glassEffect(.regular.interactive(), in: .circle)
-            .accessibilityLabel("Search")
-        }
+    private var divider: some View {
+        Capsule()
+            .fill(theme.fgFaint.opacity(0.45))
+            .frame(width: 1, height: 22)
     }
 
-    /// Group 3 — capture singleton glass circle, brand-tinted.
-    private var captureGroup: some View {
-        GlassEffectContainer(spacing: 0) {
-            Button(action: onCapture) {
-                Icon(name: .plus, size: 22, lineWidth: 2.2)
-                    .foregroundStyle(theme.fgDefault)
-                    .frame(width: 48, height: 48)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .glassEffect(.regular.tint(theme.accentPrimary).interactive(), in: .circle)
-            .accessibilityLabel("Capture")
+    private var captureHalf: some View {
+        Button(action: onTapCapture) {
+            Icon(name: .plus, size: 20, lineWidth: 2.2)
+                .foregroundStyle(theme.accentPrimary)
+                .padding(.horizontal, 18)
+                .frame(maxHeight: .infinity)
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Capture")
     }
 }
