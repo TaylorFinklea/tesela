@@ -22,6 +22,18 @@ struct Block: Identifiable, Equatable, Hashable, Codable {
     var done: Bool = false
     var indent: Int = 0
     var tags: [String] = []
+    /// Block-level properties parsed from indented `key:: value`
+    /// sub-lines. Matches the web's Logseq-shaped block convention.
+    /// Always kept in render order so we round-trip non-task keys
+    /// (e.g. `priority::`, `due::`) on save.
+    var properties: [BlockProperty] = []
+}
+
+/// One `key:: value` property attached to a block. The web client
+/// renders these as block-properties under the parent bullet.
+struct BlockProperty: Equatable, Hashable, Codable {
+    var key: String
+    var value: String
 }
 
 /// A markdown page. `type` is the frontmatter discriminator (note,

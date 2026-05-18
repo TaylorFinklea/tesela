@@ -287,70 +287,130 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     // MARK: - Block parsing and writeback
 
+    /// Parses the body of a daily into iOS Blocks. Recognizes two task
+    /// formats:
+    ///   1. **Property-based** (web canonical) — `- text` followed by
+    ///      indented `  status:: todo|done|…` and/or `  tags:: Task`
+    ///      sub-lines.
+    ///   2. **Markdown checkbox** (legacy / hand-typed) — `- [ ]` or
+    ///      `- [x]`. Read for tolerance; writeback always uses format 1.
+    ///
+    /// Properties attached to a block are preserved so non-task keys
+    /// (priority, due, etc.) round-trip cleanly.
     private func parseBlocks(from body: String) -> [Block] {
+        let lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var blocks: [Block] = []
-        for rawLine in body.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = String(rawLine)
+        var i = 0
+        while i < lines.count {
+            let line = lines[i]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.hasPrefix("- ") else { continue }
+            guard trimmed.hasPrefix("- ") else { i += 1; continue }
 
             let indent = leadingSpaces(line) / 2
-            let withoutBullet = String(trimmed.dropFirst(2))
+            let parsed = parseBlockLine(line, indent: indent)
 
-            // Pull the bid out of the trailing HTML comment if it's there
-            // UUIDs have dashes, so the capture group must allow them.
-            // The previous `[^\s-]+` exclusion truncated bid values at
-            // the first hyphen.
-            // Accept any non-whitespace, non-`>` bid value so blocks
-            // captured before they hit the server (with a placeholder
-            // bid) parse cleanly. The server rewrites placeholder bids
-            // to UUIDv7 on next save anyway.
-            let bidPattern = #"<!--\s*bid:([^\s>]+)\s*-->"#
-            let visible: String
-            let bid: String
-            if let re = try? NSRegularExpression(pattern: bidPattern),
-               let match = re.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length))
-            {
-                let ns = line as NSString
-                bid = ns.substring(with: match.range(at: 1))
-                let stripped = re.stringByReplacingMatches(
-                    in: withoutBullet,
-                    options: [],
-                    range: NSRange(location: 0, length: (withoutBullet as NSString).length),
-                    withTemplate: ""
-                )
-                visible = stripped
-            } else {
-                bid = UUID().uuidString
-                visible = withoutBullet
+            // Collect the property sub-lines that follow this block
+            // (indent deeper than the bullet, no leading `- `).
+            var properties: [BlockProperty] = []
+            i += 1
+            while i < lines.count {
+                let next = lines[i]
+                let nextIndent = leadingSpaces(next) / 2
+                let nextTrim = next.trimmingCharacters(in: .whitespaces)
+                if nextTrim.hasPrefix("- ") { break }
+                if nextIndent <= indent && !nextTrim.isEmpty { break }
+                if let prop = parseProperty(nextTrim) {
+                    properties.append(prop)
+                }
+                i += 1
             }
 
-            let cleaned = visible.trimmingCharacters(in: .whitespaces)
-            var kind: BlockKind = .note
-            var done = false
-            var text = cleaned
-            if cleaned.hasPrefix("[ ]") {
-                kind = .task
-                text = String(cleaned.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-            } else if cleaned.hasPrefix("[x]") || cleaned.hasPrefix("[X]") {
-                kind = .task
-                done = true
-                text = String(cleaned.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+            // Resolve task kind / done from properties + markdown.
+            var kind = parsed.kind
+            var done = parsed.done
+            if let tagsProp = properties.first(where: { $0.key.lowercased() == "tags" }) {
+                if tagsProp.value.lowercased().split(separator: ",").map({ $0.trimmingCharacters(in: .whitespaces).lowercased() }).contains("task") {
+                    kind = .task
+                }
             }
-
-            let tags = trailingTagCluster(in: text)
-            let bodyText = strip(trailingTags: tags, from: text)
+            if let statusProp = properties.first(where: { $0.key.lowercased() == "status" }) {
+                let v = statusProp.value.lowercased()
+                if v == "done" || v == "completed" {
+                    kind = .task
+                    done = true
+                } else if v == "todo" || v == "doing" || v == "backlog" || v == "blocked" {
+                    kind = .task
+                }
+            }
 
             blocks.append(Block(
-                id: bid,
+                id: parsed.bid,
                 kind: kind,
-                text: bodyText,
+                text: parsed.text,
                 done: done,
                 indent: indent,
-                tags: tags
+                tags: parsed.tags,
+                properties: properties
             ))
         }
         return blocks
+    }
+
+    /// Parses one `- ` bullet line into (bid, text, tags, base kind).
+    /// Kind detection here only looks at markdown checkbox syntax;
+    /// property-based task detection happens in `parseBlocks` after
+    /// sub-lines are collected.
+    private func parseBlockLine(_ line: String, indent: Int) -> (bid: String, text: String, kind: BlockKind, done: Bool, tags: [String]) {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        let withoutBullet = String(trimmed.dropFirst(2))
+
+        // Pull the bid out of the trailing HTML comment if present.
+        let bidPattern = #"<!--\s*bid:([^\s>]+)\s*-->"#
+        let visible: String
+        let bid: String
+        if let re = try? NSRegularExpression(pattern: bidPattern),
+           let match = re.firstMatch(in: line, range: NSRange(location: 0, length: (line as NSString).length))
+        {
+            let ns = line as NSString
+            bid = ns.substring(with: match.range(at: 1))
+            let stripped = re.stringByReplacingMatches(
+                in: withoutBullet,
+                options: [],
+                range: NSRange(location: 0, length: (withoutBullet as NSString).length),
+                withTemplate: ""
+            )
+            visible = stripped
+        } else {
+            bid = UUID().uuidString
+            visible = withoutBullet
+        }
+
+        let cleaned = visible.trimmingCharacters(in: .whitespaces)
+        var kind: BlockKind = .note
+        var done = false
+        var text = cleaned
+        if cleaned.hasPrefix("[ ]") {
+            kind = .task
+            text = String(cleaned.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        } else if cleaned.hasPrefix("[x]") || cleaned.hasPrefix("[X]") {
+            kind = .task
+            done = true
+            text = String(cleaned.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        }
+
+        let tags = trailingTagCluster(in: text)
+        let bodyText = strip(trailingTags: tags, from: text)
+        return (bid, bodyText, kind, done, tags)
+    }
+
+    /// Parses a `key:: value` line (already trimmed) into a property.
+    /// Returns nil if the line doesn't match the property shape.
+    private func parseProperty(_ line: String) -> BlockProperty? {
+        guard let sep = line.range(of: "::") else { return nil }
+        let key = String(line[..<sep.lowerBound]).trimmingCharacters(in: .whitespaces)
+        let value = String(line[sep.upperBound...]).trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return nil }
+        return BlockProperty(key: key, value: value)
     }
 
     private func leadingSpaces(_ s: String) -> Int {
@@ -408,13 +468,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
 
     private func renderBody(from blocks: [Block]) -> String {
-        blocks.map { block in
+        var out: [String] = []
+        for block in blocks {
             let indent = String(repeating: "  ", count: block.indent)
-            let bullet: String
-            switch block.kind {
-            case .task: bullet = block.done ? "- [x]" : "- [ ]"
-            default:    bullet = "-"
-            }
             let trailingTags = block.tags.isEmpty ? "" : " " + block.tags.joined(separator: " ")
             // Only emit a bid comment for ids that look like real UUIDs.
             // The Rust core's `stamp_block_ids` appends *new* bids
@@ -424,9 +480,54 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // Letting the server stamp these on save keeps the on-disk
             // form canonical and avoids the duplicate-bid leak.
             let bidSuffix = isCanonicalUUID(block.id) ? " <!-- bid:\(block.id) -->" : ""
-            return "\(indent)\(bullet) \(block.text)\(trailingTags)\(bidSuffix)"
+
+            // Always use a plain `- ` bullet. Task state is expressed
+            // via the canonical property format the web client expects:
+            //   - text
+            //     status:: todo|done
+            //     tags:: Task
+            // The legacy `- [ ]` / `- [x]` markdown is read for input
+            // tolerance but never written back.
+            out.append("\(indent)- \(block.text)\(trailingTags)\(bidSuffix)")
+
+            let propLines = renderProperties(for: block, indent: indent)
+            out.append(contentsOf: propLines)
         }
-        .joined(separator: "\n")
+        return out.joined(separator: "\n")
+    }
+
+    /// Build the `key:: value` sub-lines for a block. Merges the
+    /// block's existing `properties` with task-derived properties
+    /// (`status::`, `tags::`) so a toggle updates the canonical
+    /// representation without dropping user-set keys (priority, due,
+    /// etc.).
+    private func renderProperties(for block: Block, indent: String) -> [String] {
+        var merged = block.properties
+
+        // Update or insert status:: and tags:: for task blocks.
+        if block.kind == .task {
+            upsert(&merged, key: "status", value: block.done ? "done" : "todo")
+            if !merged.contains(where: { $0.key.lowercased() == "tags" }) {
+                merged.append(BlockProperty(key: "tags", value: "Task"))
+            }
+        } else {
+            // Non-task block: strip any inherited task-state properties
+            // so converting a task → note doesn't leave stale state.
+            merged.removeAll {
+                $0.key.lowercased() == "status" ||
+                ($0.key.lowercased() == "tags" && $0.value.lowercased() == "task")
+            }
+        }
+
+        return merged.map { "\(indent)  \($0.key):: \($0.value)" }
+    }
+
+    private func upsert(_ props: inout [BlockProperty], key: String, value: String) {
+        if let idx = props.firstIndex(where: { $0.key.lowercased() == key.lowercased() }) {
+            props[idx].value = value
+        } else {
+            props.append(BlockProperty(key: key, value: value))
+        }
     }
 
     /// True iff `id` matches the 8-4-4-4-12 hex UUID shape (v4 or v7).
