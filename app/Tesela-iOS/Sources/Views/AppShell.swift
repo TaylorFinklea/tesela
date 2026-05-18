@@ -1,12 +1,9 @@
 import SwiftUI
 
-/// Top-level three-tab scaffold using iOS 26's native Liquid Glass
-/// `TabView`. The persistent capture trigger lives in
-/// `.tabViewBottomAccessory` above the tab bar — tapping it opens
-/// `CaptureSheet` rather than switching tabs.
-///
-/// Custom Tabler icons are supplied via the `Tab(value:role:content:label:)`
-/// overload, so we stay off SF Symbols entirely per the brand brief.
+/// Top-level scaffold using iOS 26's native Liquid Glass `TabView`.
+/// Three "place" tabs: Daily · Inbox · Library. Search and capture
+/// are NOT tabs — both live in `.tabViewBottomAccessory` as a Mail-
+/// style search field with an adjacent + capture button.
 struct AppShell: View {
     @StateObject private var appearance = AppearanceController()
     @StateObject private var mosaic = MockMosaicService()
@@ -15,6 +12,7 @@ struct AppShell: View {
     @StateObject private var backend = BackendSettings()
     @State private var activeTab: AppTab = .daily
     @State private var showCapture: Bool = false
+    @State private var showSearch: Bool = false
     @State private var captureSeed: String = ""
 
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
@@ -29,8 +27,13 @@ struct AppShell: View {
                             .environment(\.density, appearance.density)
                             .onDisappear { captureSeed = "" }
                     }
+                    .sheet(isPresented: $showSearch) {
+                        SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
+                            .environment(\.theme, appearance.theme)
+                            .environment(\.density, appearance.density)
+                            .presentationDetents([.large])
+                    }
                     .task {
-                        // First-launch hydrate from the chosen backend.
                         mosaic.attach(backend: backend.backend)
                         await mosaic.refresh(from: backend.backend)
                     }
@@ -48,6 +51,12 @@ struct AppShell: View {
                 TabBarLabel(tab: .daily, active: activeTab == .daily)
             }
 
+            Tab(value: AppTab.inbox) {
+                InboxView(mosaic: mosaic, backend: backend)
+            } label: {
+                TabBarLabel(tab: .inbox, active: activeTab == .inbox)
+            }
+
             Tab(value: AppTab.library) {
                 LibraryView(
                     mosaic: mosaic,
@@ -59,36 +68,14 @@ struct AppShell: View {
             } label: {
                 TabBarLabel(tab: .library, active: activeTab == .library)
             }
-
-            Tab(value: AppTab.search, role: .search) {
-                SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
-            } label: {
-                TabBarLabel(tab: .search, active: activeTab == .search)
-            }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
         .tabViewBottomAccessory {
-            CaptureAccessory(
-                seed: $captureSeed,
-                onTap: { showCapture = true }
+            SearchAndCaptureAccessory(
+                onTapSearch: { showSearch = true },
+                onTapCapture: { showCapture = true }
             )
         }
-    }
-
-    @ViewBuilder
-    private func placeholderView(title: String, hint: String) -> some View {
-        VStack(spacing: 10) {
-            Text(title)
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(appearance.theme.fgDefault)
-            Text(hint)
-                .font(.system(size: 11.5, design: .monospaced))
-                .foregroundStyle(appearance.theme.fgFaint)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(appearance.theme.bg)
     }
 }
 
@@ -109,43 +96,60 @@ private struct TabBarLabel: View {
     }
 }
 
-/// The pill-shaped capture trigger that lives in the tab-view's bottom
-/// accessory slot. Visually mirrors the canvas's persistent capture bar
-/// (placeholder text on the left, mic affordance on the right) but uses
-/// the system's Liquid Glass treatment rather than a hand-built bar.
-///
-/// Tapping anywhere opens the full `CaptureSheet` modal; the leading
-/// `+` button and trailing mic both route through the same `onTap`
-/// closure for consistency.
-private struct CaptureAccessory: View {
-    @Binding var seed: String
-    let onTap: () -> Void
+/// Mail-style search bar with an adjacent + capture button. Replaces
+/// the earlier always-visible capture pill. The search field is
+/// tappable — taps open the SearchView as a sheet so the keyboard +
+/// results appear over the active tab without leaving it.
+private struct SearchAndCaptureAccessory: View {
+    let onTapSearch: () -> Void
+    let onTapCapture: () -> Void
 
     @Environment(\.theme) private var theme
-    @Environment(\.tabViewBottomAccessoryPlacement) private var placement
 
     var body: some View {
-        Button(action: onTap) {
-            HStack(spacing: 10) {
-                Icon(name: .plus, size: 18)
-                    .foregroundStyle(theme.accentPrimary)
-                    .frame(width: 28, height: 28)
+        HStack(spacing: 10) {
+            searchField
+            captureButton
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
 
-                Text("capture to today…")
-                    .italic()
-                    .font(.system(size: 14))
-                    .foregroundStyle(theme.fgFaint)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(1)
-
-                Icon(name: .mic, size: 18)
+    private var searchField: some View {
+        Button(action: onTapSearch) {
+            HStack(spacing: 8) {
+                Icon(name: .search, size: 16)
                     .foregroundStyle(theme.fgSubtle)
-                    .frame(width: 28, height: 28)
+                Text("Search")
+                    .font(.system(size: 15))
+                    .foregroundStyle(theme.fgFaint)
+                Spacer(minLength: 0)
+                Icon(name: .mic, size: 16)
+                    .foregroundStyle(theme.fgSubtle)
             }
             .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+            .padding(.vertical, 8)
+            .background(
+                Capsule()
+                    .fill(theme.bg3.opacity(0.6))
+            )
+            .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Search")
+    }
+
+    private var captureButton: some View {
+        Button(action: onTapCapture) {
+            Icon(name: .plus, size: 18, lineWidth: 2)
+                .foregroundStyle(theme.bg)
+                .frame(width: 34, height: 34)
+                .background(
+                    Circle().fill(theme.accentPrimary)
+                )
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Capture")
     }
 }

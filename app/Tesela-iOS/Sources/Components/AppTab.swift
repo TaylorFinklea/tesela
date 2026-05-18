@@ -1,29 +1,29 @@
 import SwiftUI
 
-/// The three top-level tabs on the iPhone app: Daily · Library · Search.
-/// The capture action is NOT a tab — it lives in the
-/// `.tabViewBottomAccessory` slot of `AppShell` (a pill above the tab
-/// bar) and opens `CaptureSheet` on tap. This keeps the native
-/// `TabView` semantics clean while preserving the canvas's
-/// always-visible-capture pattern.
+/// The top-level tabs on the iPhone app: Daily · Inbox · Library.
+/// Search and capture are NOT tabs — both live in the
+/// `.tabViewBottomAccessory` slot of `AppShell` (a Mail-style search
+/// field plus an adjacent capture button) and open their respective
+/// surfaces on tap. This keeps the tab bar focused on places, not
+/// actions.
 enum AppTab: Int, CaseIterable, Identifiable, Hashable {
-    case daily, library, search
+    case daily, inbox, library
 
     var id: Int { rawValue }
 
     var label: String {
         switch self {
         case .daily:   return "Daily"
+        case .inbox:   return "Inbox"
         case .library: return "Library"
-        case .search:  return "Search"
         }
     }
 
     var icon: IconName {
         switch self {
         case .daily:   return .daily
+        case .inbox:   return .inbox
         case .library: return .page
-        case .search:  return .search
         }
     }
 }

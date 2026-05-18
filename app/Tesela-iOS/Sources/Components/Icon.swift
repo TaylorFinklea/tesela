@@ -9,7 +9,7 @@ import SwiftUI
 /// SVG parsing — so the file stays greppable and previewable.
 enum IconName: String, CaseIterable {
     case plus, mic, search
-    case daily, page, tag, hash
+    case daily, page, tag, hash, inbox
     case chevLeft, chevRight, chevDown, chevUp
     case check, pin, more, link
     case cal, bolt, sync, settings
@@ -68,6 +68,11 @@ struct IconShape: Shape, @unchecked Sendable {
             line(&p, (4, 15), (20, 15))
             line(&p, (10, 3), (8, 21))
             line(&p, (16, 3), (14, 21))
+        case .inbox:
+            // Open inbox tray: angled top, flat bottom, opening lip.
+            polyline(&p, [(3, 13), (6, 5), (18, 5), (21, 13)])
+            polyline(&p, [(3, 13), (3, 19), (21, 19), (21, 13)])
+            polyline(&p, [(3, 13), (8, 13), (10, 16), (14, 16), (16, 13), (21, 13)])
         case .search:
             circle(&p, cx: 10, cy: 10, r: 7)
             line(&p, (21, 21), (15, 15))
