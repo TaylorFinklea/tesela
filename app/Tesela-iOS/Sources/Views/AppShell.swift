@@ -19,6 +19,7 @@ struct AppShell: View {
     @State private var captureSeed: String = ""
 
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         TeselaAppearance(controller: appearance) {
@@ -39,6 +40,18 @@ struct AppShell: View {
                     .task {
                         mosaic.attach(backend: backend.backend)
                         await mosaic.refresh(from: backend.backend)
+                    }
+                    .onChange(of: scenePhase) { _, newPhase in
+                        // Foreground auto-refresh: when the user
+                        // brings the app back, pull both the daily
+                        // and any pages they had open so cross-device
+                        // edits land without manual pull-to-refresh.
+                        if newPhase == .active {
+                            Task {
+                                await mosaic.refresh(from: backend.backend)
+                                await mosaic.refreshLoadedPages()
+                            }
+                        }
                     }
             } else {
                 OnboardingView(onboardingComplete: $onboardingComplete)

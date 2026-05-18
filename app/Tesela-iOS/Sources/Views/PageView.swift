@@ -113,29 +113,104 @@ struct PageView: View {
 
     // ── Body ────────────────────────────────────────────────────────────
 
+    /// Real page body — fetched via `mosaic.loadPage` on appear and
+    /// rendered from `mosaic.loadedPageBlocks[page.id]`. Shows a
+    /// loading shimmer while the request is in flight and a failure
+    /// banner if the fetch errored.
     private var pageBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             Spacer().frame(height: 12)
-            ForEach(Array(page.body.enumerated()), id: \.offset) { _, line in
-                BlockRow(
-                    id: UUID().uuidString,
-                    kind: .note,
-                    text: line,
-                    indent: 0,
-                    isDone: false,
-                    tags: []
-                )
+            switch mosaic.pageLoadStates[page.id] {
+            case .loading:
+                pageBodyLoading
+            case .failed(let message):
+                pageBodyError(message)
+            case .ready, .idle, nil:
+                renderedBlocks
             }
-            // A couple of stub blocks so a tag-light page still looks
-            // like a real page in the mock. Real bodies come in Phase 15.
-            if page.body.isEmpty {
+        }
+        .task(id: page.id) {
+            await mosaic.loadPage(id: page.id)
+        }
+    }
+
+    @ViewBuilder
+    private var renderedBlocks: some View {
+        let blocks = mosaic.loadedPageBlocks[page.id] ?? []
+        if blocks.isEmpty {
+            // Empty body — keep the page rendering visible but quiet.
+            Text("Empty page")
+                .font(.system(size: 13, design: .monospaced))
+                .foregroundStyle(theme.fgFaint)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
+        } else {
+            ForEach(blocks) { block in
                 BlockRow(
-                    id: "stub-1", kind: .note,
-                    text: "Body content placeholder — Phase 15 wires the real markdown body through FFI.",
-                    tags: []
+                    id: block.id,
+                    kind: block.kind,
+                    text: block.text,
+                    indent: block.indent,
+                    isDone: block.done,
+                    tags: block.tags,
+                    onToggleTask: { togglePageTask(block.id) }
                 )
             }
         }
+    }
+
+    private var pageBodyLoading: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(0..<5, id: \.self) { _ in
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(theme.bg2)
+                    .frame(height: 14)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .opacity(0.6)
+    }
+
+    private func pageBodyError(_ message: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(theme.typeTask)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Couldn't load this page")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(theme.fgDefault)
+                Text(message)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(theme.fgFaint)
+            }
+            Spacer()
+            Button {
+                Task { await mosaic.loadPage(id: page.id, force: true) }
+            } label: {
+                Text("Retry")
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(theme.accentPrimary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(14)
+        .background(theme.bg2)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    /// Toggle a task block inside the loaded page body, then push the
+    /// new blocks list back to the server.
+    private func togglePageTask(_ blockId: String) {
+        var blocks = mosaic.loadedPageBlocks[page.id] ?? []
+        guard let idx = blocks.firstIndex(where: { $0.id == blockId }),
+              blocks[idx].kind == .task
+        else { return }
+        blocks[idx].done.toggle()
+        Task { await mosaic.pushPage(id: page.id, blocks: blocks) }
     }
 
     // ── Peek (derived-only) ─────────────────────────────────────────────

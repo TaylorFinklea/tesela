@@ -52,6 +52,26 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
     @Published var connection: ConnectionState = .idle
 
+    /// Per-page load state, keyed by note id. PageView reads this to
+    /// show a loading skeleton while the body is being fetched.
+    enum PageLoadState: Equatable {
+        case idle
+        case loading
+        case ready
+        case failed(String)
+    }
+    @Published private(set) var pageLoadStates: [String: PageLoadState] = [:]
+
+    /// Parsed blocks for pages opened from Library/Search. Filled by
+    /// `loadPage(id:)`. The Daily tab has its own `todayBlocks` field;
+    /// this dictionary holds the bodies of every other page the user
+    /// has navigated into so they re-open instantly.
+    @Published private(set) var loadedPageBlocks: [String: [Block]] = [:]
+
+    /// Raw frontmatter for each loaded page, so writeback can splice
+    /// new body content without stomping `tags:`, `title:`, etc.
+    private var loadedPageFrontmatter: [String: String] = [:]
+
     private let session = URLSession(configuration: .default)
     private let iso = ISO8601DateFormatter()
     private var serverDailyId: String = ""
@@ -100,6 +120,76 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return searchResults.filter {
             $0.title.lowercased().contains(q) || $0.snippet.lowercased().contains(q)
         }
+    }
+
+    /// Fetch a page's real body content and populate the cache.
+    /// Idempotent — calling again while loading or ready is a no-op.
+    /// Pass `force: true` to bust the cache (used on app foreground).
+    func loadPage(id: String, force: Bool = false) async {
+        if !force {
+            switch pageLoadStates[id] {
+            case .loading, .ready: return
+            default: break
+            }
+        }
+        pageLoadStates[id] = .loading
+        switch currentBackend {
+        case .mock:
+            // Use the in-memory mock body if available; otherwise an
+            // empty placeholder so the load state still resolves.
+            if let page = pages.first(where: { $0.id == id }) {
+                let blocks = page.body.enumerated().map { idx, line in
+                    Block(id: "mock-\(id)-\(idx)", kind: .note, text: line)
+                }
+                loadedPageBlocks[id] = blocks
+            } else {
+                loadedPageBlocks[id] = []
+            }
+            pageLoadStates[id] = .ready
+        case .http(let baseURL):
+            do {
+                let note: APINote = try await httpGet("/notes/\(id)", baseURL: baseURL)
+                loadedPageBlocks[id] = parseBlocks(from: note.body)
+                loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
+                pageLoadStates[id] = .ready
+            } catch {
+                pageLoadStates[id] = .failed(humanizeError(error, host: baseURL.host))
+            }
+        }
+    }
+
+    /// Refresh every currently-loaded page from the server. Cheap when
+    /// the cache is small; safe to call on app foreground.
+    func refreshLoadedPages() async {
+        let ids = Array(loadedPageBlocks.keys)
+        for id in ids {
+            await loadPage(id: id, force: true)
+        }
+    }
+
+    /// Write a page's block list back to the server. Preserves the
+    /// page's existing frontmatter from `loadedPageFrontmatter` so we
+    /// don't stomp tags / title / status.
+    func pushPage(id: String, blocks: [Block]) async {
+        loadedPageBlocks[id] = blocks
+        guard case .http(let baseURL) = currentBackend else { return }
+        let body = renderBody(from: blocks)
+        let frontmatter = loadedPageFrontmatter[id] ?? "---\ntitle: \(id)\n---"
+        let content = "\(frontmatter)\n\n\(body)\n"
+        do {
+            try await httpPut("/notes/\(id)", baseURL: baseURL, body: ["content": content])
+        } catch {
+            connection = .failed(humanizeError(error, host: baseURL.host))
+        }
+    }
+
+    private func extractFrontmatter(from content: String) -> String {
+        guard content.hasPrefix("---") else { return "---\n---" }
+        let afterOpen = content.index(content.startIndex, offsetBy: 3)
+        guard let closeRange = content.range(of: "\n---", options: [], range: afterOpen..<content.endIndex) else {
+            return "---\n---"
+        }
+        return String(content[content.startIndex..<closeRange.upperBound])
     }
 
     // MARK: - HTTP refresh
