@@ -35,10 +35,7 @@ struct AppShell: View {
             }
 
             Tab(value: AppTab.library) {
-                placeholderView(
-                    title: "Library",
-                    hint: "Phase 5 — flat list + type-filter strip"
-                )
+                LibraryView(mosaic: mosaic)
             } label: {
                 TabBarLabel(tab: .library, active: activeTab == .library)
             }
