@@ -1,9 +1,12 @@
 import SwiftUI
 
-/// Top-level scaffold using iOS 26's native Liquid Glass `TabView`.
-/// Three "place" tabs: Daily · Inbox · Library. Search and capture
-/// are NOT tabs — both live in `.tabViewBottomAccessory` as a Mail-
-/// style search field with an adjacent + capture button.
+/// Top-level scaffold. Custom bottom chrome with three Liquid Glass
+/// shapes on one row (mockup E): tab capsule (Daily · Inbox · Library)
+/// on the left, search circle and capture circle on the right.
+///
+/// We render the bottom bar ourselves rather than using SwiftUI's
+/// `TabView` because the native tab bar pill auto-expands to nearly
+/// the full screen width, which causes overlap with floating buttons.
 struct AppShell: View {
     @StateObject private var appearance = AppearanceController()
     @StateObject private var mosaic = MockMosaicService()
@@ -20,12 +23,18 @@ struct AppShell: View {
     var body: some View {
         TeselaAppearance(controller: appearance) {
             if onboardingComplete {
-                tabView
+                shell
                     .sheet(isPresented: $showCapture) {
                         CaptureSheet(mosaic: mosaic, seed: captureSeed)
                             .environment(\.theme, appearance.theme)
                             .environment(\.density, appearance.density)
                             .onDisappear { captureSeed = "" }
+                    }
+                    .sheet(isPresented: $showSearch) {
+                        SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
+                            .environment(\.theme, appearance.theme)
+                            .environment(\.density, appearance.density)
+                            .presentationDetents([.large])
                     }
                     .task {
                         mosaic.attach(backend: backend.backend)
@@ -37,64 +46,108 @@ struct AppShell: View {
         }
     }
 
-    private var tabView: some View {
-        TabView(selection: $activeTab) {
-            Tab("Daily", systemImage: "calendar", value: AppTab.daily) {
-                DailyView(mosaic: mosaic, backend: backend)
-            }
-            Tab("Inbox", systemImage: "tray", value: AppTab.inbox) {
-                InboxView(mosaic: mosaic, backend: backend)
-            }
-            Tab("Library", systemImage: "doc.text", value: AppTab.library) {
-                LibraryView(
-                    mosaic: mosaic,
-                    appearance: appearance,
-                    pageStack: pageStack,
-                    syncState: syncState,
-                    backend: backend
-                )
-            }
+    private var shell: some View {
+        ZStack(alignment: .bottom) {
+            activeContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(appearance.theme.bg)
+                .ignoresSafeArea(.container, edges: .bottom)
+            BottomChrome(
+                activeTab: $activeTab,
+                onSearch: { showSearch = true },
+                onCapture: { showCapture = true }
+            )
         }
-        .tabBarMinimizeBehavior(.onScrollDown)
-        // Mockup variant E — two single Liquid Glass circles floating
-        // at bottom-trailing, on the same row as the tab bar group.
-        // Search circle (untinted) + Capture circle (brand-tinted).
-        .overlay(alignment: .bottomTrailing) {
-            HStack(spacing: 8) {
-                SingleGlassButton(
-                    systemImage: "magnifyingglass",
-                    accessibilityLabel: "Search",
-                    action: { showSearch = true }
-                )
-                SingleGlassButton(
-                    systemImage: "plus",
-                    accessibilityLabel: "Capture",
-                    tint: appearance.theme.accentPrimary,
-                    action: { showCapture = true }
-                )
-            }
-            .padding(.trailing, 16)
-            .padding(.bottom, 14)
-        }
-        .sheet(isPresented: $showSearch) {
-            SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
-                .environment(\.theme, appearance.theme)
-                .environment(\.density, appearance.density)
-                .presentationDetents([.large])
+    }
+
+    @ViewBuilder
+    private var activeContent: some View {
+        switch activeTab {
+        case .daily:
+            DailyView(mosaic: mosaic, backend: backend)
+        case .inbox:
+            InboxView(mosaic: mosaic, backend: backend)
+        case .library:
+            LibraryView(
+                mosaic: mosaic,
+                appearance: appearance,
+                pageStack: pageStack,
+                syncState: syncState,
+                backend: backend
+            )
         }
     }
 }
 
-/// One Liquid Glass circle button. Used for the search and capture
-/// singletons. SF Symbol inside (system-rendered glyph) per Taylor's
-/// "use the SF equivalents on iOS" direction.
-private struct SingleGlassButton: View {
-    let systemImage: String
-    let accessibilityLabel: String
-    var tint: Color? = nil
-    let action: () -> Void
+// MARK: - Bottom chrome (mockup E)
+
+/// Tab capsule on the left, search circle + capture circle on the
+/// right. Each is its own Liquid Glass shape; layout is a real HStack
+/// so the tab capsule is sized to its content rather than expanding
+/// over the action buttons.
+private struct BottomChrome: View {
+    @Binding var activeTab: AppTab
+    let onSearch: () -> Void
+    let onCapture: () -> Void
+
+    @Environment(\.theme) private var theme
 
     var body: some View {
+        HStack(spacing: 8) {
+            tabCapsule
+            Spacer(minLength: 6)
+            actionCircle(systemImage: "magnifyingglass", label: "Search", action: onSearch)
+            actionCircle(systemImage: "plus", label: "Capture", tint: theme.accentPrimary, action: onCapture)
+        }
+        .padding(.horizontal, 14)
+        .padding(.bottom, 16)
+    }
+
+    /// Group 1 — three tab buttons in one glass capsule.
+    private var tabCapsule: some View {
+        HStack(spacing: 2) {
+            ForEach(AppTab.allCases) { tab in
+                tabButton(tab)
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 5)
+        .glassEffect(.regular.interactive(), in: .capsule)
+    }
+
+    private func tabButton(_ tab: AppTab) -> some View {
+        let on = (activeTab == tab)
+        return Button {
+            withAnimation(.snappy(duration: 0.18)) { activeTab = tab }
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: tab.systemImage)
+                    .font(.system(size: 17, weight: on ? .semibold : .regular))
+                Text(tab.label)
+                    .font(.system(size: 10, weight: on ? .semibold : .regular))
+            }
+            .foregroundStyle(on ? theme.accentPrimary : theme.fgMuted)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .frame(minWidth: 56)
+            .background {
+                if on {
+                    Capsule().fill(theme.accentPrimary.opacity(0.16))
+                }
+            }
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Single Liquid Glass circle for an action button. Optional tint
+    /// for the brand-tinted capture button.
+    private func actionCircle(
+        systemImage: String,
+        label: String,
+        tint: Color? = nil,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 18, weight: .semibold))
@@ -102,32 +155,24 @@ private struct SingleGlassButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .glassEffect(glassStyle, in: .circle)
-        .accessibilityLabel(accessibilityLabel)
-    }
-
-    private var glassStyle: Glass {
-        if let tint {
-            return .regular.tint(tint).interactive()
-        }
-        return .regular.interactive()
+        .glassEffect(
+            tint.map { Glass.regular.tint($0).interactive() } ?? .regular.interactive(),
+            in: .circle
+        )
+        .accessibilityLabel(label)
     }
 }
 
-/// Label view used inside each `Tab` — pairs a Tabler-shaped icon with
-/// the tab's text. The native tab bar handles selection styling
-/// (`active` is passed through so we can tune the icon contrast if the
-/// system rendering needs it later).
-private struct TabBarLabel: View {
-    let tab: AppTab
-    let active: Bool
+// MARK: - Tab SF-Symbol mapping
 
-    var body: some View {
-        Label {
-            Text(tab.label)
-        } icon: {
-            Icon(name: tab.icon, size: 22)
+extension AppTab {
+    /// SF Symbol name for the tab's glyph. Native system icons on
+    /// iOS per Taylor's "use the SF equivalents" direction.
+    var systemImage: String {
+        switch self {
+        case .daily:   return "calendar"
+        case .inbox:   return "tray"
+        case .library: return "doc.text"
         }
     }
 }
-
