@@ -1,15 +1,15 @@
 import SwiftUI
 
-/// Modal capture composer presented from the bottom-accessory capture
-/// trigger. Holds the text field, microphone, and Save action. Replaces
-/// the always-on `CaptureBar` chrome with a native iOS 26 sheet.
+/// Modal capture composer presented from the bottom-accessory pill.
+/// Two modes:
+///   • **Capture** (default) — text prepends a block to today's daily.
+///   • **Palette** — typing `:` switches the sheet into verb mode;
+///     matching verbs from `mosaic.palette` appear as chip rows above the
+///     composer, the Save button becomes "Run" and dispatches the verb.
 ///
-/// Voice (Parakeet v3) recording UI lives here too in a later phase —
-/// for now the mic button is a no-op placeholder.
+/// Per decision #6 (`.docs/designs/2026-05-18-ios-design-followup.md`).
 struct CaptureSheet: View {
     @ObservedObject var mosaic: MockMosaicService
-    /// Optional seed text — used when the user already typed something
-    /// in the bottom accessory pill (Phase 7 palette-mode prep).
     var seed: String = ""
 
     @Environment(\.theme) private var theme
@@ -18,32 +18,58 @@ struct CaptureSheet: View {
     @State private var isRecording: Bool = false
     @FocusState private var isFieldFocused: Bool
 
+    /// Palette mode active iff the first character is `:`.
+    private var paletteActive: Bool { text.hasPrefix(":") }
+
+    /// Verb filter — the text after `:`.
+    private var paletteFilter: String {
+        guard text.hasPrefix(":") else { return "" }
+        return String(text.dropFirst()).lowercased()
+    }
+
+    private var matchingVerbs: [PaletteVerb] {
+        guard paletteActive else { return [] }
+        let f = paletteFilter
+        return mosaic.palette.filter {
+            f.isEmpty || $0.name.dropFirst().lowercased().hasPrefix(f)
+        }
+    }
+
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 16) {
-                // Composer
-                TextField("capture to today…", text: $text, axis: .vertical)
-                    .font(.system(size: 17))
-                    .foregroundStyle(theme.fgDefault)
-                    .tint(theme.accentPrimary)
-                    .focused($isFieldFocused)
-                    .lineLimit(3 ... 8)
-                    .padding(14)
-                    .background(theme.bg2)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(theme.line, lineWidth: 1)
-                    )
+                if paletteActive {
+                    paletteChipStrip
+                }
+
+                TextField(
+                    paletteActive ? "verb command…" : "capture to today…",
+                    text: $text,
+                    axis: .vertical
+                )
+                .font(.system(size: 17, design: paletteActive ? .monospaced : .default))
+                .foregroundStyle(theme.fgDefault)
+                .tint(theme.accentPrimary)
+                .focused($isFieldFocused)
+                .lineLimit(3 ... 8)
+                .padding(14)
+                .background(theme.bg2)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(
+                            paletteActive ? theme.accentPrimary.opacity(0.6) : theme.line,
+                            lineWidth: 1
+                        )
+                )
 
                 helperRow
-
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
             .background(theme.bg)
-            .navigationTitle("Capture")
+            .navigationTitle(paletteActive ? "Palette" : "Capture")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbar }
         }
@@ -55,16 +81,58 @@ struct CaptureSheet: View {
         }
     }
 
+    // ── Palette chip strip ──────────────────────────────────────────────
+
+    private var paletteChipStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(matchingVerbs) { verb in
+                    Button {
+                        text = verb.name
+                    } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(verb.name)
+                                .font(.system(size: 11.5, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(theme.accentPrimary)
+                            Text(verb.hint)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(theme.fgFaint)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .frame(minWidth: 140, maxWidth: 220, alignment: .leading)
+                        .background(theme.bg3)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(theme.line, lineWidth: 1)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    }
+                    .buttonStyle(.plain)
+                }
+                if matchingVerbs.isEmpty {
+                    Text("no matching verbs")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.fgFaint)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                }
+            }
+        }
+        .scrollClipDisabled()
+    }
+
     // ── Helper row beneath the composer ─────────────────────────────────
 
     private var helperRow: some View {
         HStack(spacing: 12) {
             Label {
-                Text("prepends to today")
+                Text(paletteActive ? "run a verb" : "prepends to today")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(theme.fgFaint)
             } icon: {
-                Icon(name: .daily, size: 14)
+                Icon(name: paletteActive ? .bolt : .daily, size: 14)
                     .foregroundStyle(theme.fgFaint)
             }
             Spacer()
@@ -74,7 +142,7 @@ struct CaptureSheet: View {
         }
     }
 
-    // ── Toolbar — Cancel · Mic · Save ───────────────────────────────────
+    // ── Toolbar — Cancel · Mic · Save / Run ─────────────────────────────
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
@@ -96,19 +164,26 @@ struct CaptureSheet: View {
                 .accessibilityLabel("Voice capture")
 
                 Button {
-                    send()
+                    run()
                 } label: {
-                    Text("Save")
+                    Text(paletteActive ? "Run" : "Save")
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(text.isEmpty ? theme.fgFaint : theme.accentPrimary)
                 }
-                .disabled(text.isEmpty)
+                .disabled(text.isEmpty || (paletteActive && matchingVerbs.isEmpty))
             }
         }
     }
 
-    private func send() {
-        mosaic.capture(text)
-        dismiss()
+    private func run() {
+        if paletteActive {
+            // Verb dispatch is a stub — real implementations land in
+            // Phase 15 alongside the FFI surface. For now we close
+            // the sheet so the user sees the action terminated.
+            dismiss()
+        } else {
+            mosaic.capture(text)
+            dismiss()
+        }
     }
 }

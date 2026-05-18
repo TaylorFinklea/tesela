@@ -38,6 +38,9 @@ struct BlockRow: View {
         .onTapGesture {
             if kind == .task { onToggleTask?() }
         }
+        .contextMenu {
+            BlockContextMenu(blockId: id)
+        }
     }
 
     // ── Bullet (task checkbox or project dot or note dot) ───────────────

@@ -6,10 +6,12 @@ import SwiftUI
 /// All page types appear in one stream; the strip chooses which subset.
 struct LibraryView: View {
     @ObservedObject var mosaic: MockMosaicService
+    @ObservedObject var appearance: AppearanceController
 
     @Environment(\.theme) private var theme
     @State private var activeFilter: LibraryFilter = .all
     @State private var navigationPath = NavigationPath()
+    @State private var showSettings: Bool = false
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -20,6 +22,22 @@ struct LibraryView: View {
             .background(theme.bg)
             .navigationTitle("Library")
             .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Icon(name: .settings, size: 20)
+                            .foregroundStyle(theme.fgMuted)
+                    }
+                    .accessibilityLabel("Settings")
+                }
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView(appearance: appearance, mosaic: mosaic)
+                    .environment(\.theme, theme)
+                    .environment(\.density, appearance.density)
+            }
             .navigationDestination(for: Page.self) { page in
                 PageView(page: page, mosaic: mosaic)
                     .environment(\.theme, theme)

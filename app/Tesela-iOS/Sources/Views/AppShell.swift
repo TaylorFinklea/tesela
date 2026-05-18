@@ -35,16 +35,13 @@ struct AppShell: View {
             }
 
             Tab(value: AppTab.library) {
-                LibraryView(mosaic: mosaic)
+                LibraryView(mosaic: mosaic, appearance: appearance)
             } label: {
                 TabBarLabel(tab: .library, active: activeTab == .library)
             }
 
             Tab(value: AppTab.search, role: .search) {
-                placeholderView(
-                    title: "Search",
-                    hint: "Phase 7 — fused with capture-bar palette mode"
-                )
+                SearchView(mosaic: mosaic)
             } label: {
                 TabBarLabel(tab: .search, active: activeTab == .search)
             }

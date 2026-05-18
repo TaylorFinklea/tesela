@@ -17,6 +17,7 @@ struct PageView: View {
     @State private var tags: [String] = []
     @State private var peekOpen: Bool = false
     @State private var peekSegment: PeekSegment = .backlinks
+    @State private var showProperties: Bool = false
 
     var body: some View {
         ScrollView {
@@ -46,12 +47,16 @@ struct PageView: View {
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    // Phase 8 — properties sheet entry
+                    showProperties = true
                 } label: {
                     Icon(name: .more, size: 20)
                         .foregroundStyle(theme.fgMuted)
                 }
             }
+        }
+        .sheet(isPresented: $showProperties) {
+            PagePropertiesSheet(page: page, tags: $tags)
+                .environment(\.theme, theme)
         }
         .onAppear {
             // Mock: pre-populate with a couple of tags so the strip
