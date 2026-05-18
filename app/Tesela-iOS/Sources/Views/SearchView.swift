@@ -23,15 +23,41 @@ struct SearchView: View {
                         .environment(\.theme, theme)
                         .onAppear { pageStack.open(page) }
                 }
+                .task(id: query) {
+                    // Debounce: pause briefly so we don't spam the
+                    // server while the user is typing.
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    if !Task.isCancelled {
+                        await mosaic.runSearch(query)
+                    }
+                }
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        let results = mosaic.search(query)
+        let results = mosaic.searchHits
         let grouped = Dictionary(grouping: results, by: \.kind)
 
-        if results.isEmpty && !query.isEmpty {
+        if query.isEmpty {
+            ContentUnavailableView {
+                Label("Search the mosaic", systemImage: "magnifyingglass")
+            } description: {
+                Text("Search for pages, daily entries, or block content.")
+            }
+            .background(theme.bg)
+        } else if let err = mosaic.searchError {
+            ContentUnavailableView {
+                Label("Search failed", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(err)
+            }
+            .background(theme.bg)
+        } else if mosaic.searchInFlight && results.isEmpty {
+            ProgressView()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(theme.bg)
+        } else if results.isEmpty {
             ContentUnavailableView(
                 "No results",
                 systemImage: "doc.text.magnifyingglass",

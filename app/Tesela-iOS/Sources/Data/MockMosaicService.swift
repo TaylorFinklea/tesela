@@ -102,6 +102,71 @@ final class MockMosaicService: ObservableObject, MosaicService {
         }
     }
 
+    /// Replace the body text of a block on today's daily, then push.
+    func editTodayBlock(id: String, text: String) {
+        guard let idx = todayBlocks.firstIndex(where: { $0.id == id }) else { return }
+        todayBlocks[idx].text = text
+        scheduleWriteback()
+    }
+
+    /// Append a fresh empty block to today and push. Returns the new
+    /// block's id so the caller can flip it into edit mode immediately.
+    @discardableResult
+    func appendTodayBlock(kind: BlockKind = .note) -> String {
+        let id = "ios-\(UUID().uuidString.prefix(12).lowercased())"
+        todayBlocks.append(Block(id: id, kind: kind, text: ""))
+        scheduleWriteback()
+        return id
+    }
+
+    /// Delete a block from today and push.
+    func deleteTodayBlock(id: String) {
+        todayBlocks.removeAll { $0.id == id }
+        scheduleWriteback()
+    }
+
+    /// Indent (or outdent) a block on today. Pass a positive `by`
+    /// for indent, negative for outdent. Clamps to [0, 8].
+    func indentTodayBlock(id: String, by delta: Int) {
+        guard let idx = todayBlocks.firstIndex(where: { $0.id == id }) else { return }
+        let next = max(0, min(8, todayBlocks[idx].indent + delta))
+        todayBlocks[idx].indent = next
+        scheduleWriteback()
+    }
+
+    /// Same for a non-daily page.
+    func indentPageBlock(pageId: String, blockId: String, by delta: Int) {
+        var blocks = loadedPageBlocks[pageId] ?? []
+        guard let idx = blocks.firstIndex(where: { $0.id == blockId }) else { return }
+        blocks[idx].indent = max(0, min(8, blocks[idx].indent + delta))
+        Task { await pushPage(id: pageId, blocks: blocks) }
+    }
+
+    /// Same shape as editTodayBlock, but for any opened page.
+    func editPageBlock(pageId: String, blockId: String, text: String) {
+        var blocks = loadedPageBlocks[pageId] ?? []
+        guard let idx = blocks.firstIndex(where: { $0.id == blockId }) else { return }
+        blocks[idx].text = text
+        Task { await pushPage(id: pageId, blocks: blocks) }
+    }
+
+    /// Append a new empty block on a non-daily page.
+    @discardableResult
+    func appendPageBlock(pageId: String, kind: BlockKind = .note) -> String {
+        let id = "ios-\(UUID().uuidString.prefix(12).lowercased())"
+        var blocks = loadedPageBlocks[pageId] ?? []
+        blocks.append(Block(id: id, kind: kind, text: ""))
+        Task { await pushPage(id: pageId, blocks: blocks) }
+        return id
+    }
+
+    /// Delete a block from a page.
+    func deletePageBlock(pageId: String, blockId: String) {
+        var blocks = loadedPageBlocks[pageId] ?? []
+        blocks.removeAll { $0.id == blockId }
+        Task { await pushPage(id: pageId, blocks: blocks) }
+    }
+
     func capture(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -120,6 +185,80 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return searchResults.filter {
             $0.title.lowercased().contains(q) || $0.snippet.lowercased().contains(q)
         }
+    }
+
+    /// Live search hits + state for the SearchView. Filled by
+    /// `runSearch`; the existing `searchResults` snapshot stays as
+    /// the mock fallback.
+    @Published private(set) var searchHits: [SearchResult] = []
+    @Published private(set) var searchError: String? = nil
+    @Published private(set) var searchInFlight: Bool = false
+
+    /// Hit GET /search?q={query} on the backend. Stores parsed hits
+    /// in `searchHits`. The web client's snippets contain `<b>...</b>`
+    /// for highlighted matches; we rewrite those to `**...**` so the
+    /// existing bold-span rendering picks them up.
+    func runSearch(_ query: String) async {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else {
+            searchHits = []
+            searchError = nil
+            searchInFlight = false
+            return
+        }
+        switch currentBackend {
+        case .mock:
+            searchHits = search(q)
+            searchError = nil
+            return
+        case .http(let baseURL):
+            searchInFlight = true
+            do {
+                let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
+                let hits: [APISearchHit] = try await httpGet("/search?q=\(encoded)", baseURL: baseURL)
+                searchHits = hits.map(mapSearchHit)
+                searchError = nil
+            } catch {
+                searchError = humanizeError(error, host: baseURL.host)
+                searchHits = []
+            }
+            searchInFlight = false
+        }
+    }
+
+    private struct APISearchHit: Decodable {
+        let note_id: String
+        let title: String
+        let snippet: String
+        let rank: Double
+        let tags: [String]
+        let path: String
+    }
+
+    private func mapSearchHit(_ hit: APISearchHit) -> SearchResult {
+        // The server marks matches with <b>…</b>. Rewrite to **…**
+        // so the existing markdown bold span rendering applies, and
+        // strip bid comments while we're at it.
+        var snippet = hit.snippet
+            .replacingOccurrences(of: "<b>", with: "**")
+            .replacingOccurrences(of: "</b>", with: "**")
+        snippet = snippet.replacingOccurrences(
+            of: #"<!--\s*bid:[^\s>]+\s*-->"#,
+            with: "",
+            options: .regularExpression
+        )
+        // Single-line snippets read better in the result list.
+        snippet = snippet
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+
+        let kind: SearchResult.Kind = hit.tags.contains("daily") ? .page : .page
+        return SearchResult(
+            id: hit.note_id,
+            kind: kind,
+            title: hit.title,
+            snippet: snippet
+        )
     }
 
     /// Fetch a page's real body content and populate the cache.

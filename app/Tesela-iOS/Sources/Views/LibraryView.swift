@@ -51,6 +51,20 @@ struct LibraryView: View {
                     .environment(\.theme, theme)
                     .onAppear { pageStack.open(page) }
             }
+            .navigationDestination(for: DailyPageRoute.self) { route in
+                if let page = route.resolvedPage(mosaic) {
+                    PageView(page: page, mosaic: mosaic, pageStack: pageStack, syncState: syncState)
+                        .environment(\.theme, theme)
+                        .onAppear { pageStack.open(page) }
+                }
+            }
+            .environment(\.openURL, OpenURLAction { url in
+                if let slug = TeselaLink.pageSlug(from: url) {
+                    navigationPath.append(DailyPageRoute(slug: slug))
+                    return .handled
+                }
+                return .systemAction
+            })
             .navigationDestination(for: Tag.self) { tag in
                 TagViewPlaceholder(tag: tag)
                     .environment(\.theme, theme)

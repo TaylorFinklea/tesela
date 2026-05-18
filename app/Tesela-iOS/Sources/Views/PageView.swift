@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// PageView — the page-renderer host. Mirrors the canvas's Tile-Page
 /// screen with:
@@ -21,6 +22,7 @@ struct PageView: View {
     @State private var peekSegment: PeekSegment = .backlinks
     @State private var showProperties: Bool = false
     @State private var showOpenPages: Bool = false
+    @State private var editingBlockId: String? = nil
 
     var body: some View {
         ScrollView {
@@ -137,26 +139,47 @@ struct PageView: View {
     @ViewBuilder
     private var renderedBlocks: some View {
         let blocks = mosaic.loadedPageBlocks[page.id] ?? []
-        if blocks.isEmpty {
-            // Empty body — keep the page rendering visible but quiet.
-            Text("Empty page")
-                .font(.system(size: 13, design: .monospaced))
-                .foregroundStyle(theme.fgFaint)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
-        } else {
-            ForEach(blocks) { block in
-                BlockRow(
-                    id: block.id,
-                    kind: block.kind,
-                    text: block.text,
-                    indent: block.indent,
-                    isDone: block.done,
-                    tags: block.tags,
-                    onToggleTask: { togglePageTask(block.id) }
-                )
-            }
+        ForEach(blocks) { block in
+            BlockRow(
+                id: block.id,
+                kind: block.kind,
+                text: block.text,
+                indent: block.indent,
+                isDone: block.done,
+                tags: block.tags,
+                isEditing: editingBlockId == block.id,
+                onToggleTask: { togglePageTask(block.id) },
+                onTap: { editingBlockId = block.id },
+                onCommitEdit: { newText in
+                    mosaic.editPageBlock(pageId: page.id, blockId: block.id, text: newText)
+                    editingBlockId = nil
+                },
+                onMenuAction: { action in
+                    handlePageAction(action, on: block)
+                }
+            )
         }
+        // "+ add block" affordance, always visible at the bottom.
+        Button {
+            let newId = mosaic.appendPageBlock(pageId: page.id)
+            editingBlockId = newId
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "plus.circle")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundStyle(theme.fgFaint)
+                    .frame(width: 14, alignment: .center)
+                Text("Add block")
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.fgFaint)
+                Spacer()
+            }
+            .padding(.leading, 18)
+            .padding(.trailing, 18)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var pageBodyLoading: some View {
@@ -211,6 +234,21 @@ struct PageView: View {
         else { return }
         blocks[idx].done.toggle()
         Task { await mosaic.pushPage(id: page.id, blocks: blocks) }
+    }
+
+    private func handlePageAction(_ action: BlockAction, on block: Block) {
+        switch action {
+        case .edit:
+            editingBlockId = block.id
+        case .delete, .archive:
+            mosaic.deletePageBlock(pageId: page.id, blockId: block.id)
+        case .yankLink:
+            UIPasteboard.general.string = "tesela://block/\(block.id)"
+        case .indent:
+            mosaic.indentPageBlock(pageId: page.id, blockId: block.id, by: 1)
+        case .promote, .convertToTag, .moveTo:
+            break
+        }
     }
 
     // ── Peek (derived-only) ─────────────────────────────────────────────
