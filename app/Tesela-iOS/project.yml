@@ -53,9 +53,16 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         # Dev-mode ATS relaxation so the iOS app can hit the
-        # plaintext-HTTP tesela-server on the host (simulator → 127.0.0.1)
-        # or on the LAN (real device → 192.168.x.x). Tighten this to a
-        # domain allow-list before any App Store submission.
+        # plaintext-HTTP tesela-server over loopback (simulator),
+        # LAN (192.168/10/172.16), and Tailscale (100.64/10 CGNAT).
+        #
+        # IMPORTANT — only set NSAllowsArbitraryLoads. Setting
+        # NSAllowsLocalNetworking together with it actually NARROWS
+        # arbitrary loads to local-networking IP ranges only, which
+        # blocks Tailscale's 100.64/10 CGNAT addresses with error -1022.
+        # Single-key is correct here.
+        #
+        # Tighten this to NSExceptionDomains before any App Store
+        # submission.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
-          NSAllowsLocalNetworking: true

@@ -416,9 +416,23 @@ final class MockMosaicService: ObservableObject, MosaicService {
             default:    bullet = "-"
             }
             let trailingTags = block.tags.isEmpty ? "" : " " + block.tags.joined(separator: " ")
-            return "\(indent)\(bullet) \(block.text)\(trailingTags) <!-- bid:\(block.id) -->"
+            // Only emit a bid comment for ids that look like real UUIDs.
+            // The Rust core's `stamp_block_ids` appends *new* bids
+            // without removing existing ones, so emitting placeholder
+            // bids (like `ios-…` or `captured-…`) leaves a stale
+            // comment on disk that the web client renders verbatim.
+            // Letting the server stamp these on save keeps the on-disk
+            // form canonical and avoids the duplicate-bid leak.
+            let bidSuffix = isCanonicalUUID(block.id) ? " <!-- bid:\(block.id) -->" : ""
+            return "\(indent)\(bullet) \(block.text)\(trailingTags)\(bidSuffix)"
         }
         .joined(separator: "\n")
+    }
+
+    /// True iff `id` matches the 8-4-4-4-12 hex UUID shape (v4 or v7).
+    private func isCanonicalUUID(_ id: String) -> Bool {
+        let pattern = #"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"#
+        return id.range(of: pattern, options: .regularExpression) != nil
     }
 
     private func combine(frontmatter original: String, body: String) -> String {
