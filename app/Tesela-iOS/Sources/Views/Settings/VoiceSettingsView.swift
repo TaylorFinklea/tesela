@@ -7,27 +7,44 @@ import SwiftUI
 /// Model integration ships in a later phase; this is the configuration
 /// surface (toggles + language picker + status row).
 struct VoiceSettingsView: View {
+    var transcription: TranscriptionStore? = nil
+
     @AppStorage("voice.autoPunctuation") private var autoPunctuation = true
     @AppStorage("voice.splitOnPauses") private var splitOnPauses = false
     @AppStorage("voice.language") private var language = "en-US"
 
     @Environment(\.theme) private var theme
 
+    private var activeModel: TranscriptionModel? {
+        guard let id = transcription?.activeModelId, !id.isEmpty else { return nil }
+        return TranscriptionCatalog.find(id)
+    }
+
     var body: some View {
         Form {
             Section {
                 LabeledContent {
                     HStack(spacing: 6) {
-                        Circle().fill(theme.typeQuery).frame(width: 6, height: 6)
-                        Text("ready")
-                            .foregroundStyle(theme.typeQuery)
+                        Circle()
+                            .fill(activeModel == nil ? theme.fgFaint : theme.typeQuery)
+                            .frame(width: 6, height: 6)
+                        Text(activeModel == nil ? "no model" : "ready")
+                            .foregroundStyle(activeModel == nil ? theme.fgMuted : theme.typeQuery)
                     }
                 } label: {
                     VStack(alignment: .leading) {
-                        Text("Parakeet v3")
-                        Text("NVIDIA NeMo · 600M params · 0.6 GB")
+                        Text(activeModel?.displayName ?? "No active model")
+                        Text(activeModel?.shortDescription ?? "Pick a model from Manage models")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(theme.fgFaint)
+                            .lineLimit(2)
+                    }
+                }
+                if let transcription {
+                    NavigationLink {
+                        TranscriptionModelsView(store: transcription)
+                    } label: {
+                        Label("Manage models", systemImage: "arrow.down.circle")
                     }
                 }
                 Picker("Language", selection: $language) {

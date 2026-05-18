@@ -26,6 +26,7 @@
   import DataPage from "../../../routes/settings/data/+page.svelte";
   import SyncPage from "../../../routes/settings/sync/+page.svelte";
   import DevicesPage from "../../../routes/settings/devices/+page.svelte";
+  import VoicePage from "../../../routes/settings/voice/+page.svelte";
 
   type Tab = { slug: SettingsSlug; label: string; hint: string };
   const TABS: Tab[] = [
@@ -34,6 +35,7 @@
     { slug: "data",    label: "Data",    hint: "Backups, export, import" },
     { slug: "sync",    label: "Sync",    hint: "Notifications" },
     { slug: "devices", label: "Devices", hint: "LAN peers, device sync" },
+    { slug: "voice",   label: "Voice",   hint: "Transcription models" },
   ];
 
   const slug = $derived(getSettingsSlug());
@@ -72,6 +74,8 @@
         <SyncPage />
       {:else if slug === "devices"}
         <DevicesPage />
+      {:else if slug === "voice"}
+        <VoicePage />
       {/if}
     </div>
   </div>

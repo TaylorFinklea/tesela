@@ -7,6 +7,7 @@ mod search;
 mod search_query;
 mod sync;
 mod tags;
+mod transcription;
 mod types;
 mod ws;
 
@@ -108,6 +109,21 @@ pub fn build(state: AppState) -> Router {
         .route("/mosaics", post(data_ops::create_mosaic))
         .route("/mosaics/switch", post(data_ops::switch_mosaic))
         .route("/server/restart", post(data_ops::restart_server))
+        // Phase 25 — transcription model management
+        .route("/transcription/models", get(transcription::list_models))
+        .route(
+            "/transcription/models/{id}/download",
+            post(transcription::download_model),
+        )
+        .route(
+            "/transcription/models/{id}",
+            axum::routing::delete(transcription::delete_model),
+        )
+        .route(
+            "/transcription/models/{id}/activate",
+            post(transcription::activate_model),
+        )
+        .route("/transcription/active", get(transcription::get_active))
         .route("/ws", get(ws::ws_handler))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))

@@ -10,6 +10,7 @@ struct SettingsView: View {
     @ObservedObject var mosaic: MockMosaicService
     @ObservedObject var syncState: SyncState
     @ObservedObject var backend: BackendSettings
+    var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
@@ -87,9 +88,20 @@ struct SettingsView: View {
                 // Voice (top-level — decision #12)
                 Section("Voice") {
                     NavigationLink {
-                        VoiceSettingsView()
+                        VoiceSettingsView(transcription: transcription)
                     } label: {
-                        LabeledContent("Parakeet v3", value: "ready")
+                        LabeledContent("Transcription", value: voiceModelLabel)
+                    }
+                    if let transcription {
+                        NavigationLink {
+                            TranscriptionModelsView(store: transcription)
+                        } label: {
+                            LabeledContent("Manage models") {
+                                Text(modelsCountLabel(transcription))
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundStyle(theme.fgSubtle)
+                            }
+                        }
                     }
                 }
 
@@ -136,5 +148,19 @@ struct SettingsView: View {
         case .mock: return "Mock"
         case .http: return backend.serverURL
         }
+    }
+
+    private var voiceModelLabel: String {
+        guard let transcription, !transcription.activeModelId.isEmpty else {
+            return "no model"
+        }
+        return TranscriptionCatalog.find(transcription.activeModelId)?.displayName ?? transcription.activeModelId
+    }
+
+    private func modelsCountLabel(_ store: TranscriptionStore) -> String {
+        let downloaded = store.states.values.filter {
+            if case .downloaded = $0 { return true } else { return false }
+        }.count
+        return "\(downloaded)/\(TranscriptionCatalog.all.count) downloaded"
     }
 }

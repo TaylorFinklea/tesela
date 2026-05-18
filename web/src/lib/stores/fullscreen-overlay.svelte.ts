@@ -13,7 +13,8 @@ export type SettingsSlug =
   | "mosaic"
   | "data"
   | "sync"
-  | "devices";
+  | "devices"
+  | "voice";
 
 let active = $state<OverlayKind | null>(null);
 let settingsSlug = $state<SettingsSlug>("general");

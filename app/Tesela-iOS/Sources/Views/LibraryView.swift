@@ -10,6 +10,7 @@ struct LibraryView: View {
     @ObservedObject var pageStack: PageStack
     @ObservedObject var syncState: SyncState
     @ObservedObject var backend: BackendSettings
+    var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
     @State private var activeFilter: LibraryFilter = .all
@@ -41,7 +42,8 @@ struct LibraryView: View {
                     appearance: appearance,
                     mosaic: mosaic,
                     syncState: syncState,
-                    backend: backend
+                    backend: backend,
+                    transcription: transcription
                 )
                 .environment(\.theme, theme)
                 .environment(\.density, appearance.density)

@@ -26,6 +26,7 @@ tracing-subscriber = { workspace = true }
 chrono.workspace = true
 regex.workspace = true
 reqwest = { workspace = true }
+futures = { workspace = true }
 postcard.workspace = true
 uuid.workspace = true
 blake3.workspace = true

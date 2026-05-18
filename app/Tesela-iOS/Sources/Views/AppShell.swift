@@ -13,6 +13,7 @@ struct AppShell: View {
     @StateObject private var pageStack = PageStack()
     @StateObject private var syncState = SyncState()
     @StateObject private var backend = BackendSettings()
+    @StateObject private var transcription = TranscriptionStore()
     @State private var activeTab: AppTab = .daily
     @State private var showCapture: Bool = false
     @State private var showSearch: Bool = false
@@ -86,7 +87,8 @@ struct AppShell: View {
                 appearance: appearance,
                 pageStack: pageStack,
                 syncState: syncState,
-                backend: backend
+                backend: backend,
+                transcription: transcription
             )
         }
     }
