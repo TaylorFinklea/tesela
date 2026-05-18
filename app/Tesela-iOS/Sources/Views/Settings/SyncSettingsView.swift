@@ -4,7 +4,9 @@ import SwiftUI
 /// retry + diagnostics). Symmetric P2P language only — no host /
 /// relay / source-of-truth roles. Per decision #4.
 struct SyncSettingsView: View {
+    @ObservedObject var syncState: SyncState
     @State private var simulatedOffline: Bool = false
+    @State private var simulatedPending: Bool = false
 
     @Environment(\.theme) private var theme
 
@@ -38,9 +40,23 @@ struct SyncSettingsView: View {
                 LabeledContent("History retention", value: "90 days")
             }
 
-            Section("Debug") {
+            Section {
                 Toggle("Simulate offline", isOn: $simulatedOffline)
                     .tint(theme.accentPrimary)
+                    .onChange(of: simulatedOffline) { _, newValue in
+                        syncState.isReachable = !newValue
+                    }
+                Toggle("Simulate pending edits", isOn: $simulatedPending)
+                    .tint(theme.accentPrimary)
+                    .onChange(of: simulatedPending) { _, newValue in
+                        syncState.hasPendingEdits = newValue
+                    }
+            } header: {
+                Text("Debug")
+            } footer: {
+                Text("Enable both to surface the ● indicator on every page title.")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(theme.fgFaint)
             }
 
             Section("Advanced") {

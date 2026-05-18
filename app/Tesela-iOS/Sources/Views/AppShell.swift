@@ -10,19 +10,27 @@ import SwiftUI
 struct AppShell: View {
     @StateObject private var appearance = AppearanceController()
     @StateObject private var mosaic = MockMosaicService()
+    @StateObject private var pageStack = PageStack()
+    @StateObject private var syncState = SyncState()
     @State private var activeTab: AppTab = .daily
     @State private var showCapture: Bool = false
     @State private var captureSeed: String = ""
 
+    @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
+
     var body: some View {
         TeselaAppearance(controller: appearance) {
-            tabView
-                .sheet(isPresented: $showCapture) {
-                    CaptureSheet(mosaic: mosaic, seed: captureSeed)
-                        .environment(\.theme, appearance.theme)
-                        .environment(\.density, appearance.density)
-                        .onDisappear { captureSeed = "" }
-                }
+            if onboardingComplete {
+                tabView
+                    .sheet(isPresented: $showCapture) {
+                        CaptureSheet(mosaic: mosaic, seed: captureSeed)
+                            .environment(\.theme, appearance.theme)
+                            .environment(\.density, appearance.density)
+                            .onDisappear { captureSeed = "" }
+                    }
+            } else {
+                OnboardingView(onboardingComplete: $onboardingComplete)
+            }
         }
     }
 
@@ -35,13 +43,18 @@ struct AppShell: View {
             }
 
             Tab(value: AppTab.library) {
-                LibraryView(mosaic: mosaic, appearance: appearance)
+                LibraryView(
+                    mosaic: mosaic,
+                    appearance: appearance,
+                    pageStack: pageStack,
+                    syncState: syncState
+                )
             } label: {
                 TabBarLabel(tab: .library, active: activeTab == .library)
             }
 
             Tab(value: AppTab.search, role: .search) {
-                SearchView(mosaic: mosaic)
+                SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
             } label: {
                 TabBarLabel(tab: .search, active: activeTab == .search)
             }

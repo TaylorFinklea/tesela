@@ -6,6 +6,8 @@ import SwiftUI
 /// capture sheet's palette mode triggered by typing `:`.
 struct SearchView: View {
     @ObservedObject var mosaic: MockMosaicService
+    @ObservedObject var pageStack: PageStack
+    @ObservedObject var syncState: SyncState
 
     @Environment(\.theme) private var theme
     @State private var query: String = ""
@@ -17,8 +19,9 @@ struct SearchView: View {
                 .navigationBarTitleDisplayMode(.large)
                 .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search pages, blocks, tags…")
                 .navigationDestination(for: Page.self) { page in
-                    PageView(page: page, mosaic: mosaic)
+                    PageView(page: page, mosaic: mosaic, pageStack: pageStack, syncState: syncState)
                         .environment(\.theme, theme)
+                        .onAppear { pageStack.open(page) }
                 }
         }
     }

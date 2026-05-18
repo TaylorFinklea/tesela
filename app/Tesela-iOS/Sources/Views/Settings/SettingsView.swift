@@ -8,6 +8,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var appearance: AppearanceController
     @ObservedObject var mosaic: MockMosaicService
+    @ObservedObject var syncState: SyncState
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
@@ -55,7 +56,7 @@ struct SettingsView: View {
                 // Sync
                 Section("Sync") {
                     NavigationLink {
-                        SyncSettingsView()
+                        SyncSettingsView(syncState: syncState)
                     } label: {
                         LabeledContent("Sync") {
                             HStack(spacing: 6) {

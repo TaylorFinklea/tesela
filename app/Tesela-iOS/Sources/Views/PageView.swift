@@ -11,6 +11,8 @@ import SwiftUI
 struct PageView: View {
     let page: Page
     @ObservedObject var mosaic: MockMosaicService
+    @ObservedObject var pageStack: PageStack
+    @ObservedObject var syncState: SyncState
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
@@ -18,6 +20,7 @@ struct PageView: View {
     @State private var peekOpen: Bool = false
     @State private var peekSegment: PeekSegment = .backlinks
     @State private var showProperties: Bool = false
+    @State private var showOpenPages: Bool = false
 
     var body: some View {
         ScrollView {
@@ -39,11 +42,13 @@ struct PageView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    // Phase 8 — pin
+                    showOpenPages = true
                 } label: {
-                    Icon(name: .pin, size: 20)
+                    Image(systemName: "square.stack.3d.up")
+                        .font(.system(size: 18))
                         .foregroundStyle(theme.fgMuted)
                 }
+                .accessibilityLabel("Open pages")
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
@@ -57,6 +62,14 @@ struct PageView: View {
         .sheet(isPresented: $showProperties) {
             PagePropertiesSheet(page: page, tags: $tags)
                 .environment(\.theme, theme)
+        }
+        .sheet(isPresented: $showOpenPages) {
+            OpenPagesOverlay(
+                stack: pageStack,
+                isPresented: $showOpenPages,
+                onJump: { _ in /* Phase 15: navigate to a different page */ }
+            )
+            .environment(\.theme, theme)
         }
         .onAppear {
             // Mock: pre-populate with a couple of tags so the strip
@@ -78,10 +91,18 @@ struct PageView: View {
                     .foregroundStyle(theme.fgSubtle)
                 Spacer()
             }
-            Text(page.title)
-                .font(.system(size: 26, weight: .semibold))
-                .tracking(-0.26)
-                .foregroundStyle(theme.fgDefault)
+            HStack(spacing: 8) {
+                if syncState.showsModifiedMarker {
+                    Circle()
+                        .fill(theme.typeTask)
+                        .frame(width: 8, height: 8)
+                        .accessibilityLabel("Local edits pending sync")
+                }
+                Text(page.title)
+                    .font(.system(size: 26, weight: .semibold))
+                    .tracking(-0.26)
+                    .foregroundStyle(theme.fgDefault)
+            }
             Text("\(page.blocks) blocks · \(page.refs) refs · edited \(page.edited)")
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundStyle(theme.fgFaint)

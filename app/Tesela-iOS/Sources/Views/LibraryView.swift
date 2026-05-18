@@ -7,6 +7,8 @@ import SwiftUI
 struct LibraryView: View {
     @ObservedObject var mosaic: MockMosaicService
     @ObservedObject var appearance: AppearanceController
+    @ObservedObject var pageStack: PageStack
+    @ObservedObject var syncState: SyncState
 
     @Environment(\.theme) private var theme
     @State private var activeFilter: LibraryFilter = .all
@@ -34,13 +36,14 @@ struct LibraryView: View {
                 }
             }
             .sheet(isPresented: $showSettings) {
-                SettingsView(appearance: appearance, mosaic: mosaic)
+                SettingsView(appearance: appearance, mosaic: mosaic, syncState: syncState)
                     .environment(\.theme, theme)
                     .environment(\.density, appearance.density)
             }
             .navigationDestination(for: Page.self) { page in
-                PageView(page: page, mosaic: mosaic)
+                PageView(page: page, mosaic: mosaic, pageStack: pageStack, syncState: syncState)
                     .environment(\.theme, theme)
+                    .onAppear { pageStack.open(page) }
             }
             .navigationDestination(for: Tag.self) { tag in
                 TagViewPlaceholder(tag: tag)
@@ -203,10 +206,7 @@ struct LibraryView: View {
     }
 
     private var workspacePlaceholder: some View {
-        emptyState(
-            title: "Workspace",
-            hint: "Phase 12 — Calendar · In Progress · Dashboard · AI"
-        )
+        WorkspaceGridView(mosaic: mosaic)
     }
 
     private func emptyState(title: String, hint: String) -> some View {
