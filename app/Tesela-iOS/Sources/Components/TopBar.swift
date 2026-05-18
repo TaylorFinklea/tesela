@@ -4,12 +4,24 @@ import SwiftUI
 /// subtitle in mono, calendar button on the right, plus a sync dot.
 /// Mirrors the canvas's `P2_TopBar` chrome.
 struct DailyTopBar: View {
+    /// Sync indicator state. `ok` = connected to backend; `warn` =
+    /// connecting / mid-refresh; `err` = backend unreachable.
+    enum SyncDotState { case ok, warn, err }
+
     let title: String
     let dateLabel: String
-    var syncStatus: Pill.Status = .synced(at: "12:14")
+    var syncStatus: SyncDotState = .ok
     var onTapCalendar: () -> Void = {}
 
     @Environment(\.theme) private var theme
+
+    private var dotColor: Color {
+        switch syncStatus {
+        case .ok:   return theme.typeQuery
+        case .warn: return theme.typeNote
+        case .err:  return theme.typeTask
+        }
+    }
 
     var body: some View {
         HStack(alignment: .center) {
@@ -28,10 +40,10 @@ struct DailyTopBar: View {
                     .accessibilityLabel("Calendar")
                 ZStack {
                     Circle()
-                        .fill(theme.typeQuery.opacity(0.24))
+                        .fill(dotColor.opacity(0.24))
                         .frame(width: 14, height: 14)
                     Circle()
-                        .fill(theme.typeQuery)
+                        .fill(dotColor)
                         .frame(width: 8, height: 8)
                 }
                 .frame(width: 36, height: 36)

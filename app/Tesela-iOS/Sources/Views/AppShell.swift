@@ -12,6 +12,7 @@ struct AppShell: View {
     @StateObject private var mosaic = MockMosaicService()
     @StateObject private var pageStack = PageStack()
     @StateObject private var syncState = SyncState()
+    @StateObject private var backend = BackendSettings()
     @State private var activeTab: AppTab = .daily
     @State private var showCapture: Bool = false
     @State private var captureSeed: String = ""
@@ -28,6 +29,11 @@ struct AppShell: View {
                             .environment(\.density, appearance.density)
                             .onDisappear { captureSeed = "" }
                     }
+                    .task {
+                        // First-launch hydrate from the chosen backend.
+                        mosaic.attach(backend: backend.backend)
+                        await mosaic.refresh(from: backend.backend)
+                    }
             } else {
                 OnboardingView(onboardingComplete: $onboardingComplete)
             }
@@ -37,7 +43,7 @@ struct AppShell: View {
     private var tabView: some View {
         TabView(selection: $activeTab) {
             Tab(value: AppTab.daily) {
-                DailyView(mosaic: mosaic)
+                DailyView(mosaic: mosaic, backend: backend)
             } label: {
                 TabBarLabel(tab: .daily, active: activeTab == .daily)
             }
@@ -47,7 +53,8 @@ struct AppShell: View {
                     mosaic: mosaic,
                     appearance: appearance,
                     pageStack: pageStack,
-                    syncState: syncState
+                    syncState: syncState,
+                    backend: backend
                 )
             } label: {
                 TabBarLabel(tab: .library, active: activeTab == .library)

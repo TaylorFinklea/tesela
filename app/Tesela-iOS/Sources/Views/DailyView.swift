@@ -7,6 +7,9 @@ import SwiftUI
 /// and Search.
 struct DailyView: View {
     @ObservedObject var mosaic: MockMosaicService
+    /// Optional — when provided, drives pull-to-refresh and the
+    /// dynamic sync dot in the top bar.
+    var backend: BackendSettings? = nil
 
     @Environment(\.theme) private var theme
 
@@ -14,7 +17,8 @@ struct DailyView: View {
         VStack(spacing: 0) {
             DailyTopBar(
                 title: mosaic.todayLongLabel,
-                dateLabel: mosaic.todayLabel
+                dateLabel: mosaic.todayLabel,
+                syncStatus: syncStatus
             )
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
@@ -50,7 +54,21 @@ struct DailyView: View {
                     Spacer().frame(height: 24)
                 }
             }
+            .refreshable {
+                if let backend {
+                    await mosaic.refresh(from: backend.backend)
+                }
+            }
         }
         .background(theme.bg)
+    }
+
+    /// Maps the mosaic's HTTP connection state to a dot color.
+    private var syncStatus: DailyTopBar.SyncDotState {
+        switch mosaic.connection {
+        case .ready, .idle:    return .ok
+        case .connecting:      return .warn
+        case .failed:          return .err
+        }
     }
 }

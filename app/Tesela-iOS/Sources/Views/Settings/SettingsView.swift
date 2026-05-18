@@ -9,6 +9,7 @@ struct SettingsView: View {
     @ObservedObject var appearance: AppearanceController
     @ObservedObject var mosaic: MockMosaicService
     @ObservedObject var syncState: SyncState
+    @ObservedObject var backend: BackendSettings
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
@@ -93,6 +94,15 @@ struct SettingsView: View {
                 }
 
                 Section("Advanced") {
+                    NavigationLink {
+                        BackendSettingsView(backend: backend, mosaic: mosaic)
+                    } label: {
+                        LabeledContent("Backend") {
+                            Text(backendLabel)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(theme.fgSubtle)
+                        }
+                    }
                     NavigationLink("Export mosaic")     { Text("placeholder").padding() }
                     NavigationLink("Diagnostics")        { Text("placeholder").padding() }
                     Button(role: .destructive) {
@@ -118,6 +128,13 @@ struct SettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+        }
+    }
+
+    private var backendLabel: String {
+        switch backend.mode {
+        case .mock: return "Mock"
+        case .http: return backend.serverURL
         }
     }
 }

@@ -9,6 +9,7 @@ struct LibraryView: View {
     @ObservedObject var appearance: AppearanceController
     @ObservedObject var pageStack: PageStack
     @ObservedObject var syncState: SyncState
+    @ObservedObject var backend: BackendSettings
 
     @Environment(\.theme) private var theme
     @State private var activeFilter: LibraryFilter = .all
@@ -36,9 +37,14 @@ struct LibraryView: View {
                 }
             }
             .sheet(isPresented: $showSettings) {
-                SettingsView(appearance: appearance, mosaic: mosaic, syncState: syncState)
-                    .environment(\.theme, theme)
-                    .environment(\.density, appearance.density)
+                SettingsView(
+                    appearance: appearance,
+                    mosaic: mosaic,
+                    syncState: syncState,
+                    backend: backend
+                )
+                .environment(\.theme, theme)
+                .environment(\.density, appearance.density)
             }
             .navigationDestination(for: Page.self) { page in
                 PageView(page: page, mosaic: mosaic, pageStack: pageStack, syncState: syncState)

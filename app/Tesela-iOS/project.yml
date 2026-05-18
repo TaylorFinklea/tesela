@@ -52,3 +52,10 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        # Dev-mode ATS relaxation so the iOS app can hit the
+        # plaintext-HTTP tesela-server on the host (simulator → 127.0.0.1)
+        # or on the LAN (real device → 192.168.x.x). Tighten this to a
+        # domain allow-list before any App Store submission.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+          NSAllowsLocalNetworking: true
