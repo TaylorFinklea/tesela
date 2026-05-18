@@ -424,4 +424,80 @@ mod tests {
         assert_eq!(blocks1[0].id, blocks2[0].id);
         assert_eq!(blocks1[1].id, blocks2[1].id);
     }
+
+    // ── split_inline_and_trailing_tags ────────────────────────────────────
+
+    #[test]
+    fn split_no_tags_returns_empty() {
+        let (inline, trailing) = split_inline_and_trailing_tags("just text");
+        assert!(inline.is_empty());
+        assert!(trailing.is_empty());
+    }
+
+    #[test]
+    fn split_pure_inline_tag() {
+        let (inline, trailing) = split_inline_and_trailing_tags("see #foo here");
+        assert_eq!(inline, vec!["foo"]);
+        assert!(trailing.is_empty());
+    }
+
+    #[test]
+    fn split_pure_trailing_tag() {
+        let (inline, trailing) = split_inline_and_trailing_tags("task name #important");
+        assert!(inline.is_empty());
+        assert_eq!(trailing, vec!["important"]);
+    }
+
+    #[test]
+    fn split_multiple_trailing_tags_one_cluster() {
+        let (inline, trailing) = split_inline_and_trailing_tags("task #foo #bar #baz");
+        assert!(inline.is_empty());
+        assert_eq!(trailing, vec!["foo", "bar", "baz"]);
+    }
+
+    #[test]
+    fn split_inline_plus_trailing() {
+        let (inline, trailing) = split_inline_and_trailing_tags("see #foo here #bar");
+        assert_eq!(inline, vec!["foo"]);
+        assert_eq!(trailing, vec!["bar"]);
+    }
+
+    #[test]
+    fn split_trailing_whitespace_doesnt_break_cluster() {
+        let (_, trailing) = split_inline_and_trailing_tags("x #a   ");
+        assert_eq!(trailing, vec!["a"]);
+    }
+
+    #[test]
+    fn split_cluster_halts_at_first_non_tag_non_whitespace() {
+        let (inline, trailing) = split_inline_and_trailing_tags("x #a y #b");
+        assert_eq!(inline, vec!["a"]);
+        assert_eq!(trailing, vec!["b"]);
+    }
+
+    #[test]
+    fn split_bare_hash_is_not_a_tag() {
+        let (inline, trailing) = split_inline_and_trailing_tags("value is #");
+        assert!(inline.is_empty());
+        assert!(trailing.is_empty());
+    }
+
+    #[test]
+    fn split_path_form_tag_with_slashes() {
+        let (_, trailing) = split_inline_and_trailing_tags("task #nature/birds/cardinal");
+        assert_eq!(trailing, vec!["nature/birds/cardinal"]);
+    }
+
+    #[test]
+    fn split_newlines_within_cluster() {
+        let (_, trailing) = split_inline_and_trailing_tags("- a\n#tag1\n#tag2");
+        assert_eq!(trailing, vec!["tag1", "tag2"]);
+    }
+
+    #[test]
+    fn split_same_tag_inline_and_trailing_yields_both() {
+        let (inline, trailing) = split_inline_and_trailing_tags("#foo bar #foo");
+        assert_eq!(inline, vec!["foo"]);
+        assert_eq!(trailing, vec!["foo"]);
+    }
 }

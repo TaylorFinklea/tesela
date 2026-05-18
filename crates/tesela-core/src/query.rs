@@ -553,6 +553,73 @@ mod tests {
         assert!(!block_matches(&block_with(vec!["Done"], &[]), &q));
     }
 
+    // Tag-system Phase 16 — pagetag / blocktag DSL keys.
+
+    fn block_with_inherited(
+        tags: Vec<&str>,
+        inherited: Vec<&str>,
+    ) -> ParsedBlock {
+        let mut b = block_with(tags, &[]);
+        b.inherited_tags = inherited.iter().map(|s| (*s).into()).collect();
+        b
+    }
+
+    #[test]
+    fn pagetag_filter_aliases_tag_on_block_tags() {
+        // `pagetag:` resolves through the same `tags` field as `tag:`. The
+        // semantic distinction lives in the caller (page-kind query fills
+        // `tags` from frontmatter); the filter itself behaves like `tag:`.
+        let q = parse_query("pagetag:Task");
+        assert!(block_matches(&block_with(vec!["Task"], &[]), &q));
+        assert!(!block_matches(&block_with(vec!["Other"], &[]), &q));
+    }
+
+    #[test]
+    fn pagetag_filter_matches_via_inherited_chain() {
+        // `pagetag:` keeps the inherited chain (frontmatter-style "tag is on
+        // the page" semantics).
+        let q = parse_query("pagetag:Project");
+        let b = block_with_inherited(vec![], vec!["Project"]);
+        assert!(block_matches(&b, &q));
+    }
+
+    #[test]
+    fn blocktag_filter_matches_only_direct_block_tags() {
+        // `blocktag:` excludes inherited tags — must be literally on this block.
+        let q = parse_query("blocktag:Task");
+        let direct = block_with(vec!["Task"], &[]);
+        assert!(block_matches(&direct, &q));
+
+        let inherited_only = block_with_inherited(vec![], vec!["Task"]);
+        assert!(!block_matches(&inherited_only, &q));
+    }
+
+    #[test]
+    fn blocktag_filter_negation_works() {
+        let q = parse_query("-blocktag:Done");
+        let direct = block_with(vec!["Task"], &[]);
+        assert!(block_matches(&direct, &q));
+
+        let done_direct = block_with(vec!["Done"], &[]);
+        assert!(!block_matches(&done_direct, &q));
+
+        // Done in inherited chain only — `-blocktag:Done` still matches
+        // because the literal-block check returns false.
+        let done_inherited = block_with_inherited(vec!["Task"], vec!["Done"]);
+        assert!(block_matches(&done_inherited, &q));
+    }
+
+    #[test]
+    fn pagetag_filter_negation_works() {
+        let q = parse_query("-pagetag:Done");
+        let direct = block_with(vec!["Task"], &[]);
+        assert!(block_matches(&direct, &q));
+
+        let done_inherited = block_with_inherited(vec!["Task"], vec!["Done"]);
+        // pagetag includes inherited chain — Done is present → -pagetag:Done false
+        assert!(!block_matches(&done_inherited, &q));
+    }
+
     #[test]
     fn block_matches_property_eq() {
         let q = parse_query("status:doing");

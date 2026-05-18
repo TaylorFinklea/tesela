@@ -9,17 +9,36 @@ import { strict as assert } from "node:assert";
 import {
   findAtomicCursorRanges,
   snapHeadOutOfAtomicRanges,
+  findTrailingClusterStart,
+  promoteOrDemoteTag,
 } from "../../src/lib/cm-decorations.ts";
 
 const EMPTY = { hide: new Set(), hideEmpty: new Set() };
 
-test("findAtomicCursorRanges finds inline #tags", () => {
-  const doc = "hello #bug there #urgent end";
+test("findAtomicCursorRanges finds trailing-cluster #tags only (inline are editable)", () => {
+  // Tag-system Phase 5: only the trailing cluster is atomic. The mid-block
+  // `#bug` here is inline (followed by " there") — should NOT be atomic.
+  // The trailing `#urgent #end` are in the trailing cluster — should be.
+  const doc = "hello #bug there #urgent #end";
   const r = findAtomicCursorRanges(doc, EMPTY);
   assert.deepEqual(r, [
-    [6, 10],
-    [17, 24],
+    [17, 24], // #urgent
+    [25, 29], // #end
   ]);
+});
+
+test("findAtomicCursorRanges treats a doc that is only tags as one cluster", () => {
+  // All four tokens are at the trailing edge → all atomic.
+  const doc = "#a #b #c #d";
+  const r = findAtomicCursorRanges(doc, EMPTY);
+  assert.equal(r.length, 4);
+});
+
+test("findAtomicCursorRanges treats no-trailing-cluster docs as having no atomic tag ranges", () => {
+  // Tag mid-block, then plain text at the end → cluster is empty.
+  const doc = "hello #bug there end";
+  const r = findAtomicCursorRanges(doc, EMPTY);
+  assert.equal(r.filter((range) => range[1] - range[0] === 4).length, 0);
 });
 
 test("findAtomicCursorRanges finds bid comments with leading space", () => {
@@ -133,11 +152,108 @@ test("snap: only the first matching range fires (ranges are non-overlapping)", (
   assert.equal(snapHeadOutOfAtomicRanges(35, 0, ranges), 40);
 });
 
-test("snap: cm-vim `l` step from before-tag lands past the tag", () => {
-  // Doc: "abc #bug rest". Tag at [4, 8]. Cursor at ch=4 ('#').
-  // Pressing `l` in cm-vim: newHead = 5, oldHead = 4. After our filter:
-  // head should snap forward to 8.
-  const ranges = findAtomicCursorRanges("abc #bug rest", EMPTY);
+test("snap: cm-vim `l` step from before-tag lands past the tag (trailing cluster)", () => {
+  // Tag-system Phase 5: only trailing-cluster tags are atomic. Use a doc
+  // whose tag is at the trailing edge.
+  const doc = "abc #bug";
+  const ranges = findAtomicCursorRanges(doc, EMPTY);
   assert.deepEqual(ranges, [[4, 8]]);
   assert.equal(snapHeadOutOfAtomicRanges(5, 4, ranges), 8);
+});
+
+// ── findTrailingClusterStart ─────────────────────────────────────────────
+
+test("findTrailingClusterStart: returns doc.length when no trailing tags", () => {
+  assert.equal(findTrailingClusterStart("hello world"), "hello world".length);
+});
+
+test("findTrailingClusterStart: returns the position of the first # in the cluster", () => {
+  const doc = "some text #foo";
+  // Cluster starts at '#'
+  assert.equal(findTrailingClusterStart(doc), 10);
+});
+
+test("findTrailingClusterStart: multiple trailing tags share one cluster", () => {
+  const doc = "some text #foo #bar #baz";
+  // Cluster starts at the first # of the run
+  assert.equal(findTrailingClusterStart(doc), 10);
+});
+
+test("findTrailingClusterStart: trailing whitespace doesn't break the cluster", () => {
+  const doc = "x #a   ";
+  // The trailing spaces are trimmed first, then the cluster is found.
+  assert.equal(findTrailingClusterStart(doc), 2);
+});
+
+test("findTrailingClusterStart: inline #tag mid-block is NOT in the cluster", () => {
+  const doc = "hello #bug there";
+  // The '#bug' is mid-block; cluster is empty → returns doc.length.
+  assert.equal(findTrailingClusterStart(doc), doc.length);
+});
+
+test("findTrailingClusterStart: bare # is not a tag", () => {
+  const doc = "value is #";
+  // No tag-name chars after `#` → no cluster.
+  assert.equal(findTrailingClusterStart(doc), doc.length);
+});
+
+// ── promoteOrDemoteTag ────────────────────────────────────────────────────
+
+test("promoteOrDemoteTag: cursor inside an inline tag demotes to trailing", () => {
+  const doc = "hello #foo there";
+  // Cursor at the 'o' of '#foo' (position 9)
+  const result = promoteOrDemoteTag(doc, 9);
+  assert.ok(result, "should return a change set");
+  // Two changes: delete the inline range, insert at trailing position
+  assert.equal(result.changes.length, 2);
+  // Apply manually: assembled doc should have #foo at end
+  const sorted = [...result.changes].sort((a, b) => a.from - b.from);
+  // After applying both edits, document content should be `hello there #foo`
+  // (or similar — the helper guarantees the trailing chip is at the end)
+  const delEdit = sorted.find((c) => c.from === 6);
+  const insEdit = sorted.find((c) => c.insert.includes("#foo"));
+  assert.ok(delEdit, "should have a delete edit at inline tag");
+  assert.ok(insEdit, "should have an insert edit with the tag");
+});
+
+test("promoteOrDemoteTag: cursor outside any tag promotes the rightmost trailing chip", () => {
+  const doc = "hello world #foo";
+  // Cursor at the 'l' of 'world' (position 9)
+  const result = promoteOrDemoteTag(doc, 9);
+  assert.ok(result, "should return a change set");
+  assert.equal(result.changes.length, 2);
+  // Should have a delete edit covering the trailing token, and an insert
+  // edit at the cursor with #foo
+  const insEdit = result.changes.find((c) => c.from === 9 && c.to === 9);
+  assert.ok(insEdit, "should insert at cursor");
+  assert.ok(insEdit.insert.includes("#foo"), "insert should contain the tag");
+});
+
+test("promoteOrDemoteTag: no inline tags and no trailing cluster returns null", () => {
+  assert.equal(promoteOrDemoteTag("hello world", 5), null);
+});
+
+test("promoteOrDemoteTag: cursor between tags in trailing cluster pops the rightmost", () => {
+  const doc = "task #foo #bar";
+  // Cursor at end of doc (no inline tag; cluster has two tags)
+  const result = promoteOrDemoteTag(doc, doc.length);
+  assert.ok(result, "should pop the rightmost trailing chip");
+  // Inserted piece should reference #bar (the rightmost)
+  const insEdit = result.changes.find((c) => c.insert.includes("#"));
+  assert.ok(insEdit?.insert.includes("#bar"), "should pop #bar (rightmost)");
+});
+
+test("promoteOrDemoteTag: idempotent toggle round-trip", () => {
+  // Demote #foo inline → trailing → promote it back to inline.
+  const start = "hello #foo there";
+  const demoted = promoteOrDemoteTag(start, 8);
+  assert.ok(demoted);
+  // Apply the changes manually
+  let doc = start;
+  const sorted = [...demoted.changes].sort((a, b) => b.from - a.from);
+  for (const e of sorted) {
+    doc = doc.slice(0, e.from) + e.insert + doc.slice(e.to);
+  }
+  // After demote, doc has #foo at the end
+  assert.ok(doc.endsWith("#foo"), `expected trailing #foo, got: ${doc}`);
 });

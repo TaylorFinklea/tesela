@@ -21,6 +21,7 @@
   import JournalView from "$lib/components/JournalView.svelte";
   import TagTable from "$lib/components/TagTable.svelte";
   import TagPageRenderer from "$lib/components/v4/TagPageRenderer.svelte";
+  import PageTagsChips from "$lib/components/v4/PageTagsChips.svelte";
   import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
 
   let {
@@ -97,8 +98,23 @@
    *  without an on-disk migration sweep. */
   const noteTypeLc = $derived((noteType ?? "").toLowerCase());
   const isDocumentMode = $derived(note.metadata.custom?.mode === "document");
+
+  /** Show the page-level frontmatter tag-chip strip above the per-type
+   *  renderer for body-text pages. Hidden for query/property pages (they
+   *  manage their own frontmatter UI) and for the multi-day journal feed
+   *  rollup (which isn't a single-page surface).
+   *
+   *  Tag-system Phase 12. */
+  const showTagChips = $derived(
+    !useJournalFeed &&
+      noteTypeLc !== "query" &&
+      noteTypeLc !== "property",
+  );
 </script>
 
+{#if showTagChips}
+  <PageTagsChips {note} {onContentChange} />
+{/if}
 {#if useJournalFeed}
   <JournalView anchorDate={note.title} />
 {:else if noteTypeLc === "query"}
