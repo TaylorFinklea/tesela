@@ -12,6 +12,7 @@ struct AppShell: View {
     @StateObject private var backend = BackendSettings()
     @State private var activeTab: AppTab = .daily
     @State private var showCapture: Bool = false
+    @State private var showSearch: Bool = false
     @State private var captureSeed: String = ""
 
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
@@ -61,48 +62,60 @@ struct AppShell: View {
             } label: {
                 TabBarLabel(tab: .library, active: activeTab == .library)
             }
-
-            // iOS 26 renders a Tab with `role: .search` as a SEPARATE
-            // floating glass chip alongside the main tab group — exactly
-            // the "Single" treatment Taylor wants. Tapping this chip
-            // enters the search experience; we route to the SearchView
-            // sheet rather than letting iOS use the default expansion.
-            Tab(value: AppTab.search, role: .search) {
-                SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
-            } label: {
-                TabBarLabel(tab: .search, active: activeTab == .search)
-            }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
-        // Capture button floats as a third glass shape at the same Y as
-        // the tab bar group + search chip, right-aligned over the tab
-        // bar's safe-area inset. iOS 26 native tab bar handles the
-        // first two groups (tabs + search chip); we provide the third.
+        // Group 2 — search+capture capsule. Same visual treatment as
+        // the system tab bar group (Daily/Inbox/Library) but as a
+        // separate Liquid Glass capsule. Floats at the bottom-trailing
+        // edge so it sits on the same row as the tab bar.
         .overlay(alignment: .bottomTrailing) {
-            CaptureGlassButton { showCapture = true }
-                .padding(.trailing, 16)
-                .padding(.bottom, 14)
+            SearchCaptureCapsule(
+                onTapSearch: { showSearch = true },
+                onTapCapture: { showCapture = true }
+            )
+            .padding(.trailing, 16)
+            .padding(.bottom, 14)
+        }
+        .sheet(isPresented: $showSearch) {
+            SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
+                .environment(\.theme, appearance.theme)
+                .environment(\.density, appearance.density)
+                .presentationDetents([.large])
         }
     }
 }
 
-/// Single brand-tinted Liquid Glass circle for capture. Floats at the
-/// bottom-trailing edge so it sits on the same line as the system tab
-/// bar group + search chip — three independent glass shapes on one row.
-private struct CaptureGlassButton: View {
-    let action: () -> Void
+/// Group 2 — a Liquid Glass capsule containing two action buttons,
+/// rendered identically to the tab bar group (Daily/Inbox/Library) but
+/// as a separate floating capsule. Search on the left, Capture on the
+/// right. Same shape, same glass treatment, same height.
+private struct SearchCaptureCapsule: View {
+    let onTapSearch: () -> Void
+    let onTapCapture: () -> Void
     @Environment(\.theme) private var theme
 
     var body: some View {
+        HStack(spacing: 0) {
+            actionButton(icon: .search, action: onTapSearch, label: "Search")
+            actionButton(icon: .plus, action: onTapCapture, label: "Capture", tinted: true)
+        }
+        .glassEffect(.regular.interactive(), in: .capsule)
+    }
+
+    private func actionButton(
+        icon: IconName,
+        action: @escaping () -> Void,
+        label: String,
+        tinted: Bool = false
+    ) -> some View {
         Button(action: action) {
-            Icon(name: .plus, size: 20, lineWidth: 2.2)
-                .foregroundStyle(theme.fgDefault)
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
+            Icon(name: icon, size: 20, lineWidth: 2)
+                .foregroundStyle(tinted ? theme.accentPrimary : theme.fgDefault)
+                .frame(width: 50, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .glassEffect(.regular.tint(theme.accentPrimary).interactive(), in: .circle)
-        .accessibilityLabel("Capture")
+        .accessibilityLabel(label)
     }
 }
 
