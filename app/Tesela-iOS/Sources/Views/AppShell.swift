@@ -12,7 +12,6 @@ struct AppShell: View {
     @StateObject private var backend = BackendSettings()
     @State private var activeTab: AppTab = .daily
     @State private var showCapture: Bool = false
-    @State private var showSearch: Bool = false
     @State private var captureSeed: String = ""
 
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
@@ -26,12 +25,6 @@ struct AppShell: View {
                             .environment(\.theme, appearance.theme)
                             .environment(\.density, appearance.density)
                             .onDisappear { captureSeed = "" }
-                    }
-                    .sheet(isPresented: $showSearch) {
-                        SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
-                            .environment(\.theme, appearance.theme)
-                            .environment(\.density, appearance.density)
-                            .presentationDetents([.large])
                     }
                     .task {
                         mosaic.attach(backend: backend.backend)
@@ -68,14 +61,48 @@ struct AppShell: View {
             } label: {
                 TabBarLabel(tab: .library, active: activeTab == .library)
             }
+
+            // iOS 26 renders a Tab with `role: .search` as a SEPARATE
+            // floating glass chip alongside the main tab group — exactly
+            // the "Single" treatment Taylor wants. Tapping this chip
+            // enters the search experience; we route to the SearchView
+            // sheet rather than letting iOS use the default expansion.
+            Tab(value: AppTab.search, role: .search) {
+                SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
+            } label: {
+                TabBarLabel(tab: .search, active: activeTab == .search)
+            }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
-        .tabViewBottomAccessory {
-            SearchAndCaptureAccessory(
-                onTapSearch: { showSearch = true },
-                onTapCapture: { showCapture = true }
-            )
+        // Capture button floats as a third glass shape at the same Y as
+        // the tab bar group + search chip, right-aligned over the tab
+        // bar's safe-area inset. iOS 26 native tab bar handles the
+        // first two groups (tabs + search chip); we provide the third.
+        .overlay(alignment: .bottomTrailing) {
+            CaptureGlassButton { showCapture = true }
+                .padding(.trailing, 16)
+                .padding(.bottom, 14)
         }
+    }
+}
+
+/// Single brand-tinted Liquid Glass circle for capture. Floats at the
+/// bottom-trailing edge so it sits on the same line as the system tab
+/// bar group + search chip — three independent glass shapes on one row.
+private struct CaptureGlassButton: View {
+    let action: () -> Void
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Button(action: action) {
+            Icon(name: .plus, size: 20, lineWidth: 2.2)
+                .foregroundStyle(theme.fgDefault)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.tint(theme.accentPrimary).interactive(), in: .circle)
+        .accessibilityLabel("Capture")
     }
 }
 
@@ -96,67 +123,3 @@ private struct TabBarLabel: View {
     }
 }
 
-/// Three distinct Liquid Glass groups along the bottom: the tab bar
-/// itself (Daily · Inbox · Library, grouped), a search pill (single),
-/// and a capture circle (single). Per Taylor's vision — iOS 26
-/// Liquid Glass buttons grouped vs. singletons.
-///
-/// The tab bar group is owned by SwiftUI's `TabView` Liquid Glass
-/// chrome. This accessory provides the two right-side singletons,
-/// each with its own `.glassEffect()` so they read as separate
-/// floating pills rather than one merged bar.
-private struct SearchAndCaptureAccessory: View {
-    let onTapSearch: () -> Void
-    let onTapCapture: () -> Void
-
-    @Environment(\.theme) private var theme
-    @Namespace private var glassNS
-
-    var body: some View {
-        // Two separate GlassEffectContainers so the system can NOT
-        // merge them into a single morphed shape. Each container has
-        // exactly one glass child, which forces independent rendering.
-        HStack(spacing: 16) {
-            GlassEffectContainer(spacing: 0) { searchPill }
-            GlassEffectContainer(spacing: 0) { captureCircle }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 4)
-    }
-
-    /// Single Liquid Glass capsule for search.
-    private var searchPill: some View {
-        Button(action: onTapSearch) {
-            HStack(spacing: 8) {
-                Icon(name: .search, size: 16)
-                    .foregroundStyle(theme.fgMuted)
-                Text("Search")
-                    .font(.system(size: 15))
-                    .foregroundStyle(theme.fgSubtle)
-                Spacer(minLength: 0)
-                Icon(name: .mic, size: 16)
-                    .foregroundStyle(theme.fgMuted)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 9)
-            .frame(maxWidth: .infinity)
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-        .glassEffect(.regular.interactive(), in: .capsule)
-        .accessibilityLabel("Search")
-    }
-
-    /// Single brand-tinted Liquid Glass circle for capture.
-    private var captureCircle: some View {
-        Button(action: onTapCapture) {
-            Icon(name: .plus, size: 20, lineWidth: 2.2)
-                .foregroundStyle(theme.fgDefault)
-                .frame(width: 40, height: 40)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .glassEffect(.regular.tint(theme.accentPrimary).interactive(), in: .circle)
-        .accessibilityLabel("Capture")
-    }
-}
