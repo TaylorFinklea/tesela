@@ -96,60 +96,70 @@ private struct TabBarLabel: View {
     }
 }
 
-/// Mail-style search bar with an adjacent + capture button. Replaces
-/// the earlier always-visible capture pill. The search field is
-/// tappable — taps open the SearchView as a sheet so the keyboard +
-/// results appear over the active tab without leaving it.
+/// Three distinct Liquid Glass groups along the bottom: the tab bar
+/// itself (Daily · Inbox · Library, grouped), a search pill (single),
+/// and a capture circle (single). Per Taylor's vision — iOS 26
+/// Liquid Glass buttons grouped vs. singletons.
+///
+/// The tab bar group is owned by SwiftUI's `TabView` Liquid Glass
+/// chrome. This accessory provides the two right-side singletons,
+/// each with its own `.glassEffect()` so they read as separate
+/// floating pills rather than one merged bar.
 private struct SearchAndCaptureAccessory: View {
     let onTapSearch: () -> Void
     let onTapCapture: () -> Void
 
     @Environment(\.theme) private var theme
+    @Namespace private var glassNamespace
 
     var body: some View {
-        HStack(spacing: 10) {
-            searchField
-            captureButton
+        GlassEffectContainer(spacing: 12) {
+            HStack(spacing: 12) {
+                searchPill
+                captureCircle
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
 
-    private var searchField: some View {
+    /// Single Liquid Glass capsule for search. Wide enough to read
+    /// as a search field; tapping anywhere opens SearchView.
+    private var searchPill: some View {
         Button(action: onTapSearch) {
             HStack(spacing: 8) {
                 Icon(name: .search, size: 16)
-                    .foregroundStyle(theme.fgSubtle)
+                    .foregroundStyle(theme.fgMuted)
                 Text("Search")
                     .font(.system(size: 15))
-                    .foregroundStyle(theme.fgFaint)
+                    .foregroundStyle(theme.fgSubtle)
                 Spacer(minLength: 0)
                 Icon(name: .mic, size: 16)
-                    .foregroundStyle(theme.fgSubtle)
+                    .foregroundStyle(theme.fgMuted)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(
-                Capsule()
-                    .fill(theme.bg3.opacity(0.6))
-            )
+            .padding(.horizontal, 14)
+            .padding(.vertical, 9)
+            .frame(maxWidth: .infinity)
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .glassEffectID("search", in: glassNamespace)
         .accessibilityLabel("Search")
     }
 
-    private var captureButton: some View {
+    /// Single Liquid Glass circle for capture. Tinted with the brand
+    /// primary so it reads as the primary action.
+    private var captureCircle: some View {
         Button(action: onTapCapture) {
             Icon(name: .plus, size: 18, lineWidth: 2)
-                .foregroundStyle(theme.bg)
-                .frame(width: 34, height: 34)
-                .background(
-                    Circle().fill(theme.accentPrimary)
-                )
+                .foregroundStyle(theme.fgDefault)
+                .frame(width: 38, height: 38)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .glassEffect(.regular.tint(theme.accentPrimary).interactive(), in: .circle)
+        .glassEffectID("capture", in: glassNamespace)
         .accessibilityLabel("Capture")
     }
 }
