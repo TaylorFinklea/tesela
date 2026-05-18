@@ -39,19 +39,13 @@ struct AppShell: View {
 
     private var tabView: some View {
         TabView(selection: $activeTab) {
-            Tab(value: AppTab.daily) {
+            Tab("Daily", systemImage: "calendar", value: AppTab.daily) {
                 DailyView(mosaic: mosaic, backend: backend)
-            } label: {
-                TabBarLabel(tab: .daily, active: activeTab == .daily)
             }
-
-            Tab(value: AppTab.inbox) {
+            Tab("Inbox", systemImage: "tray", value: AppTab.inbox) {
                 InboxView(mosaic: mosaic, backend: backend)
-            } label: {
-                TabBarLabel(tab: .inbox, active: activeTab == .inbox)
             }
-
-            Tab(value: AppTab.library) {
+            Tab("Library", systemImage: "doc.text", value: AppTab.library) {
                 LibraryView(
                     mosaic: mosaic,
                     appearance: appearance,
@@ -59,20 +53,26 @@ struct AppShell: View {
                     syncState: syncState,
                     backend: backend
                 )
-            } label: {
-                TabBarLabel(tab: .library, active: activeTab == .library)
             }
         }
         .tabBarMinimizeBehavior(.onScrollDown)
-        // Group 2 — search+capture capsule. Same visual treatment as
-        // the system tab bar group (Daily/Inbox/Library) but as a
-        // separate Liquid Glass capsule. Floats at the bottom-trailing
-        // edge so it sits on the same row as the tab bar.
+        // Mockup variant E — two single Liquid Glass circles floating
+        // at bottom-trailing, on the same row as the tab bar group.
+        // Search circle (untinted) + Capture circle (brand-tinted).
         .overlay(alignment: .bottomTrailing) {
-            SearchCaptureCapsule(
-                onTapSearch: { showSearch = true },
-                onTapCapture: { showCapture = true }
-            )
+            HStack(spacing: 8) {
+                SingleGlassButton(
+                    systemImage: "magnifyingglass",
+                    accessibilityLabel: "Search",
+                    action: { showSearch = true }
+                )
+                SingleGlassButton(
+                    systemImage: "plus",
+                    accessibilityLabel: "Capture",
+                    tint: appearance.theme.accentPrimary,
+                    action: { showCapture = true }
+                )
+            }
             .padding(.trailing, 16)
             .padding(.bottom, 14)
         }
@@ -85,37 +85,32 @@ struct AppShell: View {
     }
 }
 
-/// Group 2 — a Liquid Glass capsule containing two action buttons,
-/// rendered identically to the tab bar group (Daily/Inbox/Library) but
-/// as a separate floating capsule. Search on the left, Capture on the
-/// right. Same shape, same glass treatment, same height.
-private struct SearchCaptureCapsule: View {
-    let onTapSearch: () -> Void
-    let onTapCapture: () -> Void
-    @Environment(\.theme) private var theme
+/// One Liquid Glass circle button. Used for the search and capture
+/// singletons. SF Symbol inside (system-rendered glyph) per Taylor's
+/// "use the SF equivalents on iOS" direction.
+private struct SingleGlassButton: View {
+    let systemImage: String
+    let accessibilityLabel: String
+    var tint: Color? = nil
+    let action: () -> Void
 
     var body: some View {
-        HStack(spacing: 0) {
-            actionButton(icon: .search, action: onTapSearch, label: "Search")
-            actionButton(icon: .plus, action: onTapCapture, label: "Capture", tinted: true)
-        }
-        .glassEffect(.regular.interactive(), in: .capsule)
-    }
-
-    private func actionButton(
-        icon: IconName,
-        action: @escaping () -> Void,
-        label: String,
-        tinted: Bool = false
-    ) -> some View {
         Button(action: action) {
-            Icon(name: icon, size: 20, lineWidth: 2)
-                .foregroundStyle(tinted ? theme.accentPrimary : theme.fgDefault)
-                .frame(width: 50, height: 44)
-                .contentShape(Rectangle())
+            Image(systemName: systemImage)
+                .font(.system(size: 18, weight: .semibold))
+                .frame(width: 48, height: 48)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(label)
+        .glassEffect(glassStyle, in: .circle)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var glassStyle: Glass {
+        if let tint {
+            return .regular.tint(tint).interactive()
+        }
+        return .regular.interactive()
     }
 }
 
