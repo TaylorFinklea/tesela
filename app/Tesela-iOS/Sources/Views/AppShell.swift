@@ -110,21 +110,21 @@ private struct SearchAndCaptureAccessory: View {
     let onTapCapture: () -> Void
 
     @Environment(\.theme) private var theme
-    @Namespace private var glassNamespace
+    @Namespace private var glassNS
 
     var body: some View {
-        GlassEffectContainer(spacing: 12) {
-            HStack(spacing: 12) {
-                searchPill
-                captureCircle
-            }
+        // Two separate GlassEffectContainers so the system can NOT
+        // merge them into a single morphed shape. Each container has
+        // exactly one glass child, which forces independent rendering.
+        HStack(spacing: 16) {
+            GlassEffectContainer(spacing: 0) { searchPill }
+            GlassEffectContainer(spacing: 0) { captureCircle }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .padding(.vertical, 4)
     }
 
-    /// Single Liquid Glass capsule for search. Wide enough to read
-    /// as a search field; tapping anywhere opens SearchView.
+    /// Single Liquid Glass capsule for search.
     private var searchPill: some View {
         Button(action: onTapSearch) {
             HStack(spacing: 8) {
@@ -144,22 +144,19 @@ private struct SearchAndCaptureAccessory: View {
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .capsule)
-        .glassEffectID("search", in: glassNamespace)
         .accessibilityLabel("Search")
     }
 
-    /// Single Liquid Glass circle for capture. Tinted with the brand
-    /// primary so it reads as the primary action.
+    /// Single brand-tinted Liquid Glass circle for capture.
     private var captureCircle: some View {
         Button(action: onTapCapture) {
-            Icon(name: .plus, size: 18, lineWidth: 2)
+            Icon(name: .plus, size: 20, lineWidth: 2.2)
                 .foregroundStyle(theme.fgDefault)
-                .frame(width: 38, height: 38)
+                .frame(width: 40, height: 40)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .glassEffect(.regular.tint(theme.accentPrimary).interactive(), in: .circle)
-        .glassEffectID("capture", in: glassNamespace)
         .accessibilityLabel("Capture")
     }
 }
