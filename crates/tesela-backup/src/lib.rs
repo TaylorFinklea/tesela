@@ -503,6 +503,41 @@ mod tests {
 
         let plain = std::fs::read_to_string(restored.target.join("notes/2026-05-10.md")).unwrap();
         assert!(plain.contains("hello"));
+
+        // Byte-exact diff across the captured set — every file that
+        // the backup pipeline is supposed to preserve (`notes/`,
+        // `attachments/`, `templates/`, `.tesela/config.toml`) must
+        // round-trip identically. Transient state (locks, search
+        // history, the rebuildable SQLite db) is intentionally not in
+        // the backup, so we filter the walk to the captured set.
+        let captured = |rel: &std::path::Path| -> bool {
+            let s = rel.to_string_lossy();
+            s.starts_with("notes/")
+                || s.starts_with("attachments/")
+                || s.starts_with("templates/")
+                || s == ".tesela/config.toml"
+        };
+
+        let mut original_files = walkdir::WalkDir::new(&mosaic)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_file())
+            .map(|e| e.path().strip_prefix(&mosaic).unwrap().to_path_buf())
+            .filter(|rel| captured(rel))
+            .collect::<Vec<_>>();
+        original_files.sort();
+        assert!(
+            !original_files.is_empty(),
+            "fixture should produce captured files"
+        );
+
+        for rel in &original_files {
+            let orig = std::fs::read(mosaic.join(rel))
+                .unwrap_or_else(|e| panic!("read original {}: {}", rel.display(), e));
+            let rest = std::fs::read(restored.target.join(rel))
+                .unwrap_or_else(|e| panic!("read restored {}: {}", rel.display(), e));
+            assert_eq!(orig, rest, "byte mismatch in {}", rel.display());
+        }
     }
 
     #[test]

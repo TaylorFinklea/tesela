@@ -19,12 +19,13 @@ struct DailyView: View {
     var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
-    @Environment(\.openSearch) private var openSearch
     @Environment(\.captureContext) private var captureContext
+    @EnvironmentObject private var mosaicRegistry: MosaicRegistry
     @State private var editingBlockId: String? = nil
     @State private var navigationPath = NavigationPath()
     @State private var showDatePicker: Bool = false
     @State private var showSettings: Bool = false
+    @State private var showMosaicSwitcher: Bool = false
     @State private var pickedDate: Date = Date()
 
     var body: some View {
@@ -34,10 +35,9 @@ struct DailyView: View {
                     title: mosaic.todayLongLabel,
                     dateLabel: mosaic.todayLabel,
                     syncStatus: syncStatus,
-                    onTapSearch: openSearch,
                     onTapCalendar: { showDatePicker = true },
                     onTapSettings: { showSettings = true },
-                    onTapSync: { showSettings = true }
+                    onTapMosaic: { showMosaicSwitcher = true }
                 )
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -91,6 +91,10 @@ struct DailyView: View {
             }
             .sheet(isPresented: $showDatePicker) {
                 datePickerSheet
+            }
+            .sheet(isPresented: $showMosaicSwitcher) {
+                MosaicSwitcherSheet(registry: mosaicRegistry)
+                    .environment(\.theme, theme)
             }
             .sheet(isPresented: $showSettings) {
                 if let appearance, let backend, let syncState {

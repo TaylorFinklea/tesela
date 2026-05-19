@@ -10,12 +10,16 @@ struct KeyboardToolbarSettingsView: View {
     @Environment(\.theme) private var theme
 
     private var enabled: [KeyboardToolbarItem] {
-        decodeKeyboardToolbarItems(itemsRaw)
+        decodeKeyboardToolbarItems(itemsRaw).filter { $0 != .hideKeyboard }
     }
 
     private var available: [KeyboardToolbarItem] {
         let on = Set(enabled)
-        return KeyboardToolbarItem.allCases.filter { !on.contains($0) }
+        // Hide-keyboard is always pinned to the right of the toolbar
+        // and is not user-configurable, so it doesn't appear here.
+        return KeyboardToolbarItem.allCases.filter {
+            $0 != .hideKeyboard && !on.contains($0)
+        }
     }
 
     var body: some View {
@@ -47,7 +51,7 @@ struct KeyboardToolbarSettingsView: View {
             } header: {
                 Text("Enabled")
             } footer: {
-                Text("Drag the handle on the right to reorder. The first item appears on the left of the toolbar.")
+                Text("Drag the handle on the right to reorder. The first item appears on the left of the scrollable toolbar; the Hide-keyboard button is always pinned to the right edge.")
                     .font(.caption2)
             }
 

@@ -14,9 +14,11 @@ struct LibraryView: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.captureContext) private var captureContext
+    @EnvironmentObject private var mosaicRegistry: MosaicRegistry
     @State private var activeFilter: LibraryFilter = .all
     @State private var navigationPath = NavigationPath()
     @State private var showSettings: Bool = false
+    @State private var showMosaicSwitcher: Bool = false
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -28,6 +30,13 @@ struct LibraryView: View {
             .navigationTitle("Library")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    MosaicChromeButton(
+                        registry: mosaicRegistry,
+                        syncStatus: syncState.isReachable ? .ok : .err,
+                        onTap: { showMosaicSwitcher = true }
+                    )
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showSettings = true
@@ -37,6 +46,10 @@ struct LibraryView: View {
                     }
                     .accessibilityLabel("Settings")
                 }
+            }
+            .sheet(isPresented: $showMosaicSwitcher) {
+                MosaicSwitcherSheet(registry: mosaicRegistry)
+                    .environment(\.theme, theme)
             }
             .sheet(isPresented: $showSettings) {
                 SettingsView(

@@ -192,12 +192,30 @@ struct BlockRow: View {
 
     @ViewBuilder
     private var keyboardAccessory: some View {
-        HStack(spacing: 18) {
-            ForEach(configuredToolbarItems) { item in
-                toolbarButton(for: item)
+        HStack(spacing: 12) {
+            // Scrollable middle — user-configurable items. If the user
+            // enables more buttons than fit, this scrolls horizontally
+            // so the toolbar pill stays a normal width and the pinned
+            // Hide-keyboard button on the right is always reachable.
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 18) {
+                    ForEach(scrollableToolbarItems) { item in
+                        toolbarButton(for: item)
+                    }
+                }
+                .padding(.horizontal, 2)
             }
-            Spacer()
+            // Always pinned right — never scrolls, never configurable.
+            toolbarButton(for: .hideKeyboard)
         }
+    }
+
+    /// Items rendered inside the scrollable middle. We filter out
+    /// `.hideKeyboard` defensively — even if a legacy preference still
+    /// has it in the stored list, it shouldn't double-render with the
+    /// pinned trailing button.
+    private var scrollableToolbarItems: [KeyboardToolbarItem] {
+        configuredToolbarItems.filter { $0 != .hideKeyboard }
     }
 
     private func toolbarButton(for item: KeyboardToolbarItem) -> some View {
@@ -215,6 +233,13 @@ struct BlockRow: View {
             editFocused = false
         case .slashCommand:
             if !editBuffer.hasSuffix("/") { editBuffer += "/" }
+        case .backlink:
+            // Insert an empty wikilink so the user types straight into
+            // the link target. SwiftUI's TextField doesn't expose a
+            // cursor offset, so we append at the end — caret lands
+            // there naturally on next keystroke.
+            let spacer = (editBuffer.hasSuffix(" ") || editBuffer.isEmpty) ? "" : " "
+            editBuffer += spacer + "[[]]"
         case .tags:
             if !editBuffer.hasSuffix("#") {
                 editBuffer += (editBuffer.hasSuffix(" ") || editBuffer.isEmpty ? "" : " ") + "#"

@@ -33,6 +33,9 @@ The web client is feature-complete through Phase 2 (Navigation & Discovery): out
 - Breadcrumb improvements — clickable path segments.
 - Mobile/responsive layout considerations.
 
+**3E: Code blocks (rendering)**
+Fenced ``` ```lang ... ``` ``` spans inside a block today are stored verbatim but rendered as plain paragraph text. Smallest viable change: detect the fence in BlockText (web + iOS) and render the span in a monospaced, themed code surface (no syntax highlighting yet). Tags and wikilinks inside a code fence must not be parsed. A separate **executable code blocks** track lives in `Later` — see below.
+
 **3D: Task Management Depth (Apple Reminders / Todoist parity) — promote sooner**
 The user is daily-driving Tesela for tasks; three threads need to ship soon so the system can compete with Apple Reminders / Todoist while preserving the database-first foundation. Detailed scope in **Phase 12** below.
 - **Apple Reminders bidirectional sync (priority)** — lets the user lean on iOS location-based reminders, Watch, and Siri while editing in Tesela.
@@ -42,6 +45,12 @@ The user is daily-driving Tesela for tasks; three threads need to ship soon so t
 
 ### Later
 Rust backlog (parallel work) lives in the Backlog section below — Mechanical and Architectural items are safe for parallel work.
+
+**Executable code blocks (org-babel parity)** — fenced ``` ```lang ... ``` ``` blocks become "runnable" units the user can execute in place (a la Emacs org-mode babel / Jupyter cells). Output gets pinned under the block. Languages to support first: shell, Python, JavaScript. Hard parts: sandboxing, output streaming back into the block tree, deciding which interpreter the host vs. user trusts. Design needed before implementation.
+
+**iOS on-device Parakeet inference via FluidAudio** — Tesela's TranscriptionCatalog currently lists Parakeet variants pointed at NVIDIA's raw `.nemo` training-format files (not iOS-runnable). VoiceInk and Handy ship the same model (parakeet-tdt-0.6b-v2) via the FluidAudio Swift package, which bundles a CoreML-converted variant (~450MB on disk). Pull FluidAudio in as a dependency, swap the LocalTranscriptionEngine to dispatch to it for Parakeet IDs, flip `inferenceSupported` to true on those catalog entries.
+
+**iOS multi-mosaic support** — iOS currently assumes a single mosaic. Need: picker in Settings to switch between mosaics, persistence of selected-mosaic ID, plumbing through MockMosaicService so changing the active mosaic re-attaches the backend cleanly. Coordinate with sync (each device sees the same set of mosaics as the user's other clients).
 
 ### When Picking Up Work
 1. Read `.docs/ai/current-state.md` and the section above.

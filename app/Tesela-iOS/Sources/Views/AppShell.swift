@@ -14,6 +14,7 @@ struct AppShell: View {
     @StateObject private var syncState = SyncState()
     @StateObject private var backend = BackendSettings()
     @StateObject private var transcription = TranscriptionStore()
+    @StateObject private var mosaicRegistry = MosaicRegistry()
     @State private var activeTab: AppTab = .daily
     @State private var captureContext: CaptureContext = .init()
     /// Lifted out of CaptureBar so the AVAudioEngine init isn't paid
@@ -29,8 +30,22 @@ struct AppShell: View {
             if onboardingComplete {
                 shell
                     .task {
+                        // First launch: if no mosaic profiles exist
+                        // yet, seed one from the legacy
+                        // `backend.serverURL` value so existing users
+                        // don't lose their connection.
+                        mosaicRegistry.seedFromLegacyIfNeeded(
+                            legacyURL: backend.serverURL,
+                            defaultName: "My mosaic"
+                        )
+                        applyActiveMosaic()
                         mosaic.attach(backend: backend.backend)
                         await mosaic.refresh(from: backend.backend)
+                    }
+                    .onChange(of: mosaicRegistry.activeID) { _, _ in
+                        applyActiveMosaic()
+                        mosaic.attach(backend: backend.backend)
+                        Task { await mosaic.refresh(from: backend.backend) }
                     }
                     .onChange(of: scenePhase) { _, newPhase in
                         // Foreground auto-refresh: when the user
@@ -51,6 +66,15 @@ struct AppShell: View {
                     mosaic: mosaic
                 )
             }
+        }
+    }
+
+    /// Sync `BackendSettings.serverURL` with the active mosaic's URL.
+    /// Called on first launch and whenever the user switches profiles.
+    private func applyActiveMosaic() {
+        guard let active = mosaicRegistry.activeProfile else { return }
+        if backend.serverURL != active.serverURL {
+            backend.serverURL = active.serverURL
         }
     }
 
@@ -105,6 +129,7 @@ struct AppShell: View {
         }
         .environment(\.captureContext, captureContext)
         .environment(\.openSearch, { activeTab = .search })
+        .environmentObject(mosaicRegistry)
     }
 }
 

@@ -14,24 +14,46 @@ struct SettingsView: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var mosaicRegistry: MosaicRegistry
 
     @AppStorage("captureDefaultTarget") private var captureDefault: CaptureDefault = .contextAware
+    @State private var showMosaicSwitcher: Bool = false
 
     var body: some View {
         NavigationStack {
             Form {
-                // Mosaic identity
-                Section("Mosaic") {
-                    LabeledContent("Workspace") {
-                        Text("design-mosaic")
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(theme.fgMuted)
+                // Mosaic — list, switch, add/edit (replaces the old
+                // placeholder workspace/device chips).
+                Section("Mosaics") {
+                    Button {
+                        showMosaicSwitcher = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            if let active = mosaicRegistry.activeProfile {
+                                Image(systemName: active.iconSymbol)
+                                    .frame(width: 24)
+                                    .foregroundStyle(theme.accentPrimary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(active.name)
+                                        .foregroundStyle(theme.fgDefault)
+                                    Text("\(mosaicRegistry.profiles.count) \(mosaicRegistry.profiles.count == 1 ? "mosaic" : "mosaics")")
+                                        .font(.caption2)
+                                        .foregroundStyle(theme.fgSubtle)
+                                }
+                            } else {
+                                Image(systemName: "circle.grid.3x3")
+                                    .frame(width: 24)
+                                    .foregroundStyle(theme.fgMuted)
+                                Text("No mosaic selected")
+                                    .foregroundStyle(theme.fgMuted)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(theme.fgFaint)
+                        }
                     }
-                    LabeledContent("This device") {
-                        Text("tesela-ios-7f3")
-                            .font(.system(.body, design: .monospaced))
-                            .foregroundStyle(theme.fgMuted)
-                    }
+                    .buttonStyle(.plain)
                 }
 
                 Section("Workspace") {
@@ -153,6 +175,10 @@ struct SettingsView: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Done") { dismiss() }
                 }
+            }
+            .sheet(isPresented: $showMosaicSwitcher) {
+                MosaicSwitcherSheet(registry: mosaicRegistry)
+                    .environment(\.theme, theme)
             }
         }
     }

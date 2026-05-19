@@ -215,6 +215,169 @@ fn test_completions() {
         .success();
 }
 
+/// Trust artifact: full end-to-end flow proving an imported Logseq
+/// graph round-trips losslessly through the backup pipeline.
+///
+/// Logseq vault → `import-logseq` → mosaic → `backup` → wipe → `restore`
+/// → byte-exact diff against the imported mosaic.
+///
+/// If this test ever fails, the user can't trust the system with real
+/// notes — that's by design: it's the gate.
+#[test]
+fn logseq_import_backup_restore_byte_exact_round_trip() {
+    let tmp = TempDir::new().unwrap();
+    let source = tmp.path().join("logseq-source");
+    let mosaic = tmp.path().join("mosaic");
+    let backups = tmp.path().join("backups");
+    let restored_parent = tmp.path().join("restored-parent");
+
+    // 1. Build a Logseq fixture vault that exercises the features
+    //    found in the user's real graph.
+    std::fs::create_dir_all(source.join("journals")).unwrap();
+    std::fs::create_dir_all(source.join("pages")).unwrap();
+    std::fs::create_dir_all(source.join("assets")).unwrap();
+    std::fs::write(
+        source.join("journals/2026_05_19.md"),
+        "- TODO [#A] Write tests\n  SCHEDULED: <2026-05-20 Wed>\n- DONE Eat lunch\n",
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("pages/Coverage.md"),
+        "title:: Coverage\n- Hello [[Foo]] with #tag\n- ![img](../assets/diagram.png)\n- See ((675f6317-aaa6-4301-8ebb-df2b414dec4c))\n",
+    )
+    .unwrap();
+    std::fs::write(source.join("pages/Foo.md"), "title:: Foo\n- regular page\n").unwrap();
+    std::fs::write(
+        source.join("pages/Parent___Child.md"),
+        "- Nested namespace page\n",
+    )
+    .unwrap();
+    std::fs::write(source.join("assets/diagram.png"), b"\x89PNG\r\nfake").unwrap();
+
+    // 2. init mosaic + import the Logseq vault.
+    init_mosaic(&TempDir::new_in(tmp.path()).unwrap()); // creates a dummy mosaic elsewhere to seed env state; ignore
+    Command::cargo_bin("tesela")
+        .unwrap()
+        .arg("init")
+        .arg(&mosaic)
+        .assert()
+        .success();
+    Command::cargo_bin("tesela")
+        .unwrap()
+        .arg("--mosaic")
+        .arg(&mosaic)
+        .arg("import-logseq")
+        .arg("--source")
+        .arg(&source)
+        .assert()
+        .success();
+
+    // 3. Backup (default local destination — `--output` outside the
+    //    mosaic triggers auto-encryption which needs a Keychain
+    //    identity; that path is round-tripped at the library level
+    //    so the CLI test stays portable).
+    let _ = &backups; // silence unused-var for the explicit-path variant.
+    Command::cargo_bin("tesela")
+        .unwrap()
+        .arg("--mosaic")
+        .arg(&mosaic)
+        .arg("backup")
+        .arg("--no-prune")
+        .assert()
+        .success();
+
+    // 4. Locate the timestamped backup directory under the default
+    //    in-mosaic location.
+    let default_backups = mosaic.join(".tesela").join("backups");
+    let backup_dir = std::fs::read_dir(&default_backups)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .find(|e| {
+            e.file_type().map(|t| t.is_dir()).unwrap_or(false)
+                && e.file_name().to_string_lossy().starts_with("backup-")
+        })
+        .expect("backup directory created")
+        .path();
+
+    // 5. Restore into a sibling location of the (still-intact) mosaic.
+    //    The CLI restores adjacent to --mosaic when --in-place is not
+    //    set, producing a directory like `<mosaic>.restored-<ts>`.
+    std::fs::create_dir_all(&restored_parent).unwrap();
+    Command::cargo_bin("tesela")
+        .unwrap()
+        .arg("--mosaic")
+        .arg(restored_parent.join("dest"))
+        .arg("restore")
+        .arg(&backup_dir)
+        .assert()
+        .success();
+
+    // Restore writes to `<mosaic-basename>-restored` next to the
+    // mosaic path we passed (per `tesela_backup::restore` default).
+    let restored = restored_parent.join("dest-restored");
+    assert!(
+        restored.exists(),
+        "expected restore target at {}",
+        restored.display()
+    );
+
+    // 6. Byte-exact diff across the captured set.
+    let captured = |rel: &std::path::Path| -> bool {
+        let s = rel.to_string_lossy();
+        s.starts_with("notes/")
+            || s.starts_with("attachments/")
+            || s.starts_with("templates/")
+            || s == ".tesela/config.toml"
+    };
+    let mut captured_files: Vec<std::path::PathBuf> = walkdir::WalkDir::new(&mosaic)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.path().strip_prefix(&mosaic).unwrap().to_path_buf())
+        .filter(|rel| captured(rel))
+        .collect();
+    captured_files.sort();
+    assert!(
+        !captured_files.is_empty(),
+        "fixture import should produce captured files"
+    );
+
+    for rel in &captured_files {
+        let orig = std::fs::read(mosaic.join(rel))
+            .unwrap_or_else(|e| panic!("read original {}: {}", rel.display(), e));
+        let rest = std::fs::read(restored.join(rel)).unwrap_or_else(|e| {
+            panic!(
+                "restore missing {} (or unreadable): {}",
+                rel.display(),
+                e
+            )
+        });
+        assert_eq!(orig, rest, "byte mismatch in {}", rel.display());
+    }
+
+    // Sanity check: the imported note bodies show the expected Logseq
+    // conversions made it through both pipelines. Coverage.md holds
+    // the link/asset/block-ref features; the journal holds tasks.
+    let coverage = std::fs::read_to_string(restored.join("notes/coverage.md")).unwrap();
+    assert!(coverage.contains("[[Foo]]"), "wikilink lost");
+    assert!(
+        coverage.contains("../attachments/"),
+        "asset URL not rewritten\n{}",
+        coverage
+    );
+    assert!(
+        coverage.contains("((675f6317-"),
+        "block ref uuid lost in round trip\n{}",
+        coverage
+    );
+
+    let journal = std::fs::read_to_string(restored.join("notes/2026-05-19.md")).unwrap();
+    assert!(journal.contains("status:: todo"), "TODO state lost\n{}", journal);
+    assert!(journal.contains("status:: done"), "DONE state lost");
+    assert!(journal.contains("priority:: high"), "priority [#A] lost");
+    assert!(journal.contains("scheduled:: 2026-05-20"), "SCHEDULED date lost");
+}
+
 #[test]
 fn test_cat_nonexistent() {
     let tmp = TempDir::new().unwrap();

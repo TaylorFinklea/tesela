@@ -16,7 +16,9 @@ struct InboxView: View {
     var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
+    @EnvironmentObject private var mosaicRegistry: MosaicRegistry
     @State private var showSettings: Bool = false
+    @State private var showMosaicSwitcher: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -28,6 +30,13 @@ struct InboxView: View {
                 }
                 .background(theme.bg)
                 .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        MosaicChromeButton(
+                            registry: mosaicRegistry,
+                            syncStatus: syncState?.isReachable == false ? .err : .ok,
+                            onTap: { showMosaicSwitcher = true }
+                        )
+                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button {
                             showSettings = true
@@ -37,6 +46,10 @@ struct InboxView: View {
                         }
                         .accessibilityLabel("Settings")
                     }
+                }
+                .sheet(isPresented: $showMosaicSwitcher) {
+                    MosaicSwitcherSheet(registry: mosaicRegistry)
+                        .environment(\.theme, theme)
                 }
                 .sheet(isPresented: $showSettings) {
                     if let appearance, let syncState {

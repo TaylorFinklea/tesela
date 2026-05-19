@@ -1,4 +1,4 @@
-use crate::regex_cache::{BLOCK_REF_RE, LOGSEQ_DATE_RE, PRIORITY_RE};
+use crate::regex_cache::{LOGSEQ_DATE_RE, PRIORITY_RE};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -574,40 +574,61 @@ fn extract_frontmatter_value(content: &str, key: &str) -> Option<String> {
 fn convert_content(content: &str) -> String {
     let mut lines: Vec<String> = Vec::new();
     let mut in_query = false;
+    // Track triple-backtick fences so we don't convert markdown that's
+    // inside a code block. Logseq nests its `#+BEGIN_QUERY` blocks via
+    // a leading `- `, so we strip that bullet from the marker check.
+    let mut in_code_block = false;
 
     for line in content.lines() {
         let trimmed = line.trim();
+        let leading = line.len() - line.trim_start().len();
+        let indent_str = &line[..leading];
 
-        // Skip LogSeq queries
-        if trimmed.starts_with("#+BEGIN_QUERY") {
-            in_query = true;
+        // Toggle triple-backtick code fences. Inside a fence we
+        // pass content through verbatim — task/block-ref/asset URL
+        // conversions are syntactic so they must not touch user code.
+        if trimmed.starts_with("```") {
+            in_code_block = !in_code_block;
+            lines.push(line.to_string());
             continue;
         }
-        if trimmed.contains("#+END_QUERY") {
-            in_query = false;
+        if in_code_block {
+            lines.push(line.to_string());
+            continue;
+        }
+
+        // Logseq queries — preserve the datalog inside a fenced
+        // ```query block so the content is still visible. Logseq
+        // wraps `#+BEGIN_QUERY` lines with `- ` when the query is a
+        // block child, so we accept both forms.
+        let query_marker = trimmed.trim_start_matches("- ");
+        if query_marker.starts_with("#+BEGIN_QUERY") {
+            in_query = true;
+            lines.push(format!("{}```query", indent_str));
             continue;
         }
         if in_query {
+            if query_marker.starts_with("#+END_QUERY") {
+                in_query = false;
+                lines.push(format!("{}```", indent_str));
+                continue;
+            }
+            lines.push(line.to_string());
             continue;
         }
 
-        // Skip logseq-specific properties
-        if trimmed.starts_with("collapsed:: ") {
+        // Skip Logseq-specific metadata properties that have no
+        // Tesela equivalent. Other properties (status:: etc.) pass
+        // through. We strip a leading `- ` so both bullet-form and
+        // bare-form properties match (Logseq uses both).
+        let prop_check = trimmed.trim_start_matches("- ");
+        if prop_check.starts_with("collapsed:: ")
+            || prop_check.starts_with("id:: ")
+            || prop_check.starts_with("file:: ")
+            || prop_check.starts_with("file-path:: ")
+        {
             continue;
         }
-        if trimmed.starts_with("id:: ") {
-            continue;
-        }
-        if trimmed.starts_with("file:: ") {
-            continue;
-        }
-        if trimmed.starts_with("file-path:: ") {
-            continue;
-        }
-
-        // Calculate leading whitespace
-        let leading = line.len() - line.trim_start().len();
-        let indent_str = &line[..leading];
 
         // Convert task markers
         if let Some((status, rest_text)) = strip_task_marker(trimmed) {
@@ -637,8 +658,17 @@ fn convert_content(content: &str) -> String {
             }
         }
 
-        // Convert ((block-ref-uuid)) → [ref]
-        result = BLOCK_REF_RE.replace_all(&result, "[ref]").to_string();
+        // Preserve block refs `((uuid))` literally rather than
+        // collapsing to `[ref]`. The uuid is the only handle the user
+        // has to recover the link target in their original graph if
+        // Tesela's link resolver doesn't grok the format yet.
+        // (No-op: we used to do `BLOCK_REF_RE.replace_all(_, "[ref]")`.)
+
+        // Rewrite asset URLs from Logseq's `../assets/` convention to
+        // Tesela's `../attachments/` so imported pages can find their
+        // referenced images / PDFs (the files themselves are copied in
+        // `apply_plan`).
+        result = result.replace("../assets/", "../attachments/");
 
         // Convert tab indentation to 2-space
         result = result.replace('\t', "  ");
@@ -777,6 +807,158 @@ mod tests {
             .expect("foo plan item");
         assert!(matches!(foreign.kind, PlanKind::ConflictForeign));
         assert!(foreign.existing_preview.is_some());
+    }
+
+    /// Comprehensive feature fixture — exercises every Logseq construct
+    /// observed in the user's real graph, plus a few we want to be sure
+    /// don't regress. Used by `feature_coverage_audit` below to assert
+    /// the importer preserves each one. Add a new feature to this
+    /// fixture and a corresponding `assert!` below when you add support
+    /// for the next thing.
+    fn make_coverage_graph(root: &Path) {
+        fs::create_dir_all(root.join("journals")).unwrap();
+        fs::create_dir_all(root.join("pages")).unwrap();
+        fs::create_dir_all(root.join("assets")).unwrap();
+
+        // One page that hits every text-level feature in one file.
+        let body = "\
+title:: Coverage
+tags:: idea, project
+- TODO [#A] Write tests
+  SCHEDULED: <2026-05-19 Tue>
+  DEADLINE: <2026-05-21 Thu>
+- DOING Implementing
+- DONE Eat lunch
+- LATER Sleep on it
+- CANCELED Bad plan
+- Plain note with a [[Wikilink]] and a #hashtag
+- Reference to another block: ((675f6317-aaa6-4301-8ebb-df2b414dec4c))
+- External link: [Apple](https://apple.com)
+- An image: ![diagram](../assets/diagram.png)
+- A code block follows; nothing inside should be touched:
+  ```rust
+  fn TODO_should_not_match() {}
+  let s = \"((not-a-block-ref))\";
+  ```
+- ![pdf](../assets/notes.pdf)
+- #+BEGIN_QUERY
+  {:title \"Today's Deadline\"
+   :query [:find (pull ?b [*])
+           :in $ ?today
+           :where ...]}
+  #+END_QUERY
+- collapsed:: true
+  id:: 11111111-2222-3333-4444-555555555555
+  file:: /should/be/stripped
+- Multi-paragraph block.
+  Continuation line stays attached.
+";
+        fs::write(root.join("pages/Coverage.md"), body).unwrap();
+        fs::write(
+            root.join("pages/Parent___Child.md"),
+            "- Nested namespace page\n  - Links back to [[Coverage]]\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("journals/2026_05_19.md"),
+            "- Daily journal entry\n- TODO Daily task\n",
+        )
+        .unwrap();
+        fs::write(root.join("assets/diagram.png"), b"\x89PNG\r\nfake").unwrap();
+        fs::write(root.join("assets/notes.pdf"), b"%PDF-fake").unwrap();
+    }
+
+    #[tokio::test]
+    async fn feature_coverage_audit() {
+        let temp = TempDir::new().unwrap();
+        let graph = temp.path().join("graph");
+        let mosaic = temp.path().join("mosaic");
+        fs::create_dir_all(mosaic.join("notes")).unwrap();
+        make_coverage_graph(&graph);
+
+        run(&mosaic, graph.clone(), false).await.unwrap();
+
+        let coverage = fs::read_to_string(mosaic.join("notes/coverage.md")).unwrap();
+
+        // ── Tasks — all five states observed in the user's vault ──
+        assert!(coverage.contains("status:: todo"), "missing TODO state\n{}", coverage);
+        assert!(coverage.contains("status:: doing"), "missing DOING state");
+        assert!(coverage.contains("status:: done"), "missing DONE state");
+        assert!(coverage.contains("status:: backlog"), "missing LATER → backlog");
+        assert!(coverage.contains("status:: canceled"), "missing CANCELED state");
+
+        // ── Priority ──
+        assert!(coverage.contains("priority:: high"), "missing [#A] → priority high");
+
+        // ── DEADLINE / SCHEDULED ──
+        assert!(coverage.contains("scheduled:: 2026-05-19"), "missing SCHEDULED conversion");
+        assert!(coverage.contains("deadline:: 2026-05-21"), "missing DEADLINE conversion");
+
+        // ── Wikilinks + hashtags + external links pass through ──
+        assert!(coverage.contains("[[Wikilink]]"), "wikilink mangled");
+        assert!(coverage.contains("#hashtag"), "hashtag mangled");
+        assert!(coverage.contains("[Apple](https://apple.com)"), "external link mangled");
+
+        // ── Block refs preserve the uuid (was lossy: replaced with `[ref]`) ──
+        assert!(
+            coverage.contains("((675f6317-aaa6-4301-8ebb-df2b414dec4c))"),
+            "block ref uuid lost\n{}",
+            coverage
+        );
+
+        // ── Asset URL rewritten from ../assets/ to ../attachments/ ──
+        assert!(
+            coverage.contains("![diagram](../attachments/diagram.png)"),
+            "asset URL not rewritten\n{}",
+            coverage
+        );
+        assert!(
+            coverage.contains("![pdf](../attachments/notes.pdf)"),
+            "pdf URL not rewritten"
+        );
+
+        // ── Queries preserved (as a code block — content stays visible) ──
+        assert!(
+            coverage.contains("```query") || coverage.contains("BEGIN_QUERY"),
+            "query block dropped entirely\n{}",
+            coverage
+        );
+        assert!(
+            coverage.contains("Today's Deadline"),
+            "query content lost\n{}",
+            coverage
+        );
+
+        // ── Code-block fence respected — content inside is NOT
+        //    converted. The fake TODO/block-ref inside ```rust``` must
+        //    survive verbatim. ──
+        assert!(
+            coverage.contains("fn TODO_should_not_match()"),
+            "code block mangled by task conversion"
+        );
+        assert!(
+            coverage.contains("\"((not-a-block-ref))\""),
+            "code block mangled by block-ref conversion"
+        );
+
+        // ── Logseq-specific metadata properties stripped ──
+        assert!(!coverage.contains("collapsed::"), "collapsed should be stripped");
+        assert!(!coverage.contains("id::"), "id should be stripped");
+        assert!(!coverage.contains("file::"), "file should be stripped");
+
+        // ── Assets copied + attachments dir exists ──
+        assert!(mosaic.join("attachments/diagram.png").exists(), "diagram not copied");
+        assert!(mosaic.join("attachments/notes.pdf").exists(), "pdf not copied");
+
+        // ── Namespace flattening ──
+        let nested = fs::read_to_string(mosaic.join("notes/parent-child.md")).unwrap();
+        assert!(nested.contains("Nested namespace"), "namespace page body lost");
+
+        // ── Journal renamed to ISO date ──
+        assert!(
+            mosaic.join("notes/2026-05-19.md").exists(),
+            "journal not renamed to ISO"
+        );
     }
 
     #[test]

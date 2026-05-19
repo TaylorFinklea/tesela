@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Sync surface — connected (with peer list) and disconnected (with
 /// retry + diagnostics). Symmetric P2P language only — no host /
@@ -8,10 +11,19 @@ struct SyncSettingsView: View {
     @State private var simulatedOffline: Bool = false
     @State private var simulatedPending: Bool = false
 
+    /// User-facing name for this device. Advertised to peers once the
+    /// sync backend is wired (see roadmap "iOS sync"); for now it's
+    /// just a local setting so the user can see their own label in
+    /// other clients when sync lands. Default seeded from the iOS
+    /// device name (e.g. "Roshar") on first read.
+    @AppStorage("device.friendlyName") private var deviceName: String = ""
+
     @Environment(\.theme) private var theme
 
     var body: some View {
         Form {
+            deviceNameSection
+
             if simulatedOffline {
                 disconnectedBanner
                 disconnectedPeerList
@@ -82,6 +94,34 @@ struct SyncSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
+    // ── This device ─────────────────────────────────────────────────────
+
+    private var deviceNameSection: some View {
+        Section {
+            TextField("Device name", text: $deviceName, prompt: Text(systemDeviceName))
+                .textInputAutocapitalization(.words)
+                .submitLabel(.done)
+                .onAppear {
+                    if deviceName.isEmpty {
+                        deviceName = systemDeviceName
+                    }
+                }
+        } header: {
+            Text("This device")
+        } footer: {
+            Text("Shown to other devices once they pair. Leave blank to fall back to the iOS device name.")
+                .font(.caption2)
+        }
+    }
+
+    private var systemDeviceName: String {
+        #if canImport(UIKit)
+        UIDevice.current.name
+        #else
+        "This device"
+        #endif
+    }
+
     // ── Connected banner ────────────────────────────────────────────────
 
     private var connectedBanner: some View {
@@ -113,12 +153,40 @@ struct SyncSettingsView: View {
 
     private var peerListSection: some View {
         Section {
-            ForEach(MockPeers.connected) { peer in
-                peerRow(peer, online: true)
-            }
+            // Local device — always present, even before any pairing.
+            peerRow(
+                MockPeer(
+                    name: deviceName.isEmpty ? systemDeviceName : deviceName,
+                    host: "This device · \(systemPlatformLabel)",
+                    systemSymbol: localDeviceSymbol,
+                    lastSeen: "now"
+                ),
+                online: true
+            )
         } header: {
-            Text("\(MockPeers.connected.count) devices")
+            Text("Paired devices")
+        } footer: {
+            Text("Pair another device from the Pair button to start syncing. Devices you've paired appear here once the LAN sync backend ships.")
+                .font(.caption2)
         }
+    }
+
+    private var localDeviceSymbol: String {
+        #if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
+        #elseif os(macOS)
+        "laptopcomputer"
+        #else
+        "questionmark.circle"
+        #endif
+    }
+
+    private var systemPlatformLabel: String {
+        #if canImport(UIKit)
+        "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)"
+        #else
+        "macOS"
+        #endif
     }
 
     // ── Disconnected banner ─────────────────────────────────────────────
@@ -173,11 +241,17 @@ struct SyncSettingsView: View {
 
     private var disconnectedPeerList: some View {
         Section {
-            ForEach(MockPeers.connected) { peer in
-                peerRow(peer, online: false)
-            }
+            peerRow(
+                MockPeer(
+                    name: deviceName.isEmpty ? systemDeviceName : deviceName,
+                    host: "This device · \(systemPlatformLabel)",
+                    systemSymbol: localDeviceSymbol,
+                    lastSeen: "—"
+                ),
+                online: false
+            )
         } header: {
-            Text("0 reachable")
+            Text("Offline")
         }
     }
 

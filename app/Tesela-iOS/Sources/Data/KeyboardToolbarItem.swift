@@ -6,6 +6,7 @@ import Foundation
 enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable {
     case hideKeyboard = "hide"
     case slashCommand = "slash"
+    case backlink
     case dedent
     case indent
     case cycleStatus = "status"
@@ -22,6 +23,7 @@ enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable 
         switch self {
         case .hideKeyboard: return "Hide keyboard"
         case .slashCommand: return "Slash command"
+        case .backlink:     return "Wikilink"
         case .dedent:       return "Dedent"
         case .indent:       return "Indent"
         case .cycleStatus:  return "Cycle status"
@@ -37,6 +39,7 @@ enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable 
         switch self {
         case .hideKeyboard: return "keyboard.chevron.compact.down"
         case .slashCommand: return "slash.circle"
+        case .backlink:     return "link"
         case .dedent:       return "decrease.indent"
         case .indent:       return "increase.indent"
         case .cycleStatus:  return "circle.dotted"
@@ -48,10 +51,12 @@ enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable 
     }
 }
 
-/// Default keyboard toolbar layout. Matches the originally-shipped
-/// ordering before customization landed.
+/// Default keyboard toolbar layout for the scrollable middle section.
+/// The Hide-keyboard button is **not** in this list — it's pinned to
+/// the trailing edge of the toolbar in `BlockRow` and not user-
+/// configurable, so it can't be removed or buried by reordering.
 let defaultKeyboardToolbarItems: [KeyboardToolbarItem] =
-    [.hideKeyboard, .slashCommand, .dedent, .indent, .cycleStatus, .mic]
+    [.slashCommand, .backlink, .dedent, .indent, .cycleStatus, .mic]
 
 /// Encode an item list as the comma-separated raw-value string stored
 /// in `@AppStorage("keyboardToolbarItems")`.

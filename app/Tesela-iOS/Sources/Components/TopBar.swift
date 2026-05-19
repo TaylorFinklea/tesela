@@ -11,13 +11,13 @@ struct DailyTopBar: View {
     let title: String
     let dateLabel: String
     var syncStatus: SyncDotState = .ok
-    var onTapSearch: () -> Void = {}
     var onTapCalendar: () -> Void = {}
     var onTapSettings: () -> Void = {}
-    /// Tap-target for the sync dot. When unreachable, jumping straight
-    /// into Settings → Backend is the only way out — so we make the red
-    /// dot itself a button.
-    var onTapSync: () -> Void = {}
+    /// Tap-target for the mosaic chrome button (replaces the old sync
+    /// dot). Opens the mosaic switcher sheet.
+    var onTapMosaic: () -> Void = {}
+
+    @EnvironmentObject private var mosaicRegistry: MosaicRegistry
 
     @Environment(\.theme) private var theme
 
@@ -42,26 +42,15 @@ struct DailyTopBar: View {
             }
             Spacer()
             HStack(spacing: 4) {
-                IconButton(name: .search, action: onTapSearch)
-                    .accessibilityLabel("Search")
                 IconButton(name: .cal, action: onTapCalendar)
                     .accessibilityLabel("Calendar")
                 IconButton(name: .settings, action: onTapSettings)
                     .accessibilityLabel("Settings")
-                Button(action: onTapSync) {
-                    ZStack {
-                        Circle()
-                            .fill(dotColor.opacity(0.24))
-                            .frame(width: 14, height: 14)
-                        Circle()
-                            .fill(dotColor)
-                            .frame(width: 8, height: 8)
-                    }
-                    .frame(width: 36, height: 36)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(syncStatusAccessibilityLabel)
+                MosaicChromeButton(
+                    registry: mosaicRegistry,
+                    syncStatus: syncStatus,
+                    onTap: onTapMosaic
+                )
             }
         }
         .padding(.horizontal, 18)

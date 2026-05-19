@@ -107,30 +107,32 @@ enum TranscriptionCatalog {
             inferenceSupported: true
         ),
 
-        // ── Parakeet (NVIDIA NeMo) ──────────────────────────────────
-        // Parakeet ships as a .nemo bundle. On iOS, integration goes
-        // through CoreML conversion; for now the entry exists so the
-        // manage-models UI can show it. Actual model loading lands
-        // with the voice-capture integration.
+        // ── Parakeet (NVIDIA, packaged for iOS by FluidAudio) ───────
+        // The catalog used to point at NVIDIA's raw `.nemo` training
+        // bundles, which can't run on iOS. The same model used by
+        // VoiceInk and Handy is parakeet-tdt-0.6b, repackaged as
+        // CoreML by FluidInference — that's the ~450 MB on-device
+        // build. `inferenceSupported` stays false until we pull
+        // FluidAudio in as a Swift package (see roadmap "Later").
         TranscriptionModel(
-            id: "parakeet-tdt-0.6b",
+            id: "parakeet-tdt-0.6b-v2",
             family: .parakeet,
-            displayName: "Parakeet · TDT 0.6B",
-            shortDescription: "NVIDIA NeMo · fast streaming transcription.",
-            sizeBytes: 620_000_000,
-            downloadURL: URL(string: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2/resolve/main/parakeet-tdt-0.6b-v2.nemo")!,
+            displayName: "Parakeet · TDT 0.6B (v2)",
+            shortDescription: "FluidAudio CoreML build. Same model VoiceInk + Handy ship.",
+            sizeBytes: 450_000_000,
+            downloadURL: URL(string: "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-coreml/resolve/main/parakeet-tdt-0.6b-v2-coreml.zip")!,
             suggestedFor: ["streaming", "low latency"],
             onDevice: true,
             inferenceSupported: false
         ),
         TranscriptionModel(
-            id: "parakeet-tdt-1.1b",
+            id: "parakeet-tdt-0.6b-v3",
             family: .parakeet,
-            displayName: "Parakeet · TDT 1.1B",
-            shortDescription: "Larger Parakeet. Higher accuracy than 0.6B.",
-            sizeBytes: 1_100_000_000,
-            downloadURL: URL(string: "https://huggingface.co/nvidia/parakeet-tdt-1.1b/resolve/main/parakeet-tdt-1.1b.nemo")!,
-            suggestedFor: ["accuracy"],
+            displayName: "Parakeet · TDT 0.6B (v3)",
+            shortDescription: "Newer FluidAudio CoreML build. Same on-device cost as v2.",
+            sizeBytes: 450_000_000,
+            downloadURL: URL(string: "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml/resolve/main/parakeet-tdt-0.6b-v3-coreml.zip")!,
+            suggestedFor: ["streaming", "low latency", "accuracy"],
             onDevice: true,
             inferenceSupported: false
         ),
