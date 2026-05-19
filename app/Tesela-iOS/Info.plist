@@ -25,6 +25,8 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Tesela uses the camera only to scan a pairing QR code from another device. Frames are decoded on-device and not stored.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Tesela uses the microphone for voice notes — recordings are transcribed and saved to today's daily, then discarded.</string>
 	<key>UILaunchScreen</key>

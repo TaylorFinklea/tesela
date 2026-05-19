@@ -8,11 +8,15 @@ import UIKit
 /// Symmetric language per decision #4: "Pair this iPhone with another
 /// device" — never "source of truth", never "host", never "relay".
 struct PairDeviceView: View {
+    @ObservedObject var backend: BackendSettings
+    @ObservedObject var mosaic: MockMosaicService
+
     @Environment(\.theme) private var theme
 
     @State private var pairingCode: String = ""
     @State private var shortCode: String = ""
     @State private var error: String?
+    @State private var showScanner: Bool = false
 
     var body: some View {
         ScrollView {
@@ -20,6 +24,8 @@ struct PairDeviceView: View {
                 Text("Pair this iPhone with another device on your network. Either device can be the one starting the pair — sync is fully symmetric.")
                     .font(.system(size: 13))
                     .foregroundStyle(theme.fgMuted)
+
+                scanCard
 
                 qrCard
 
@@ -35,6 +41,46 @@ struct PairDeviceView: View {
         .navigationTitle("Pair a device")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { generateCode() }
+        .fullScreenCover(isPresented: $showScanner) {
+            NavigationStack {
+                PairScanView(backend: backend, mosaic: mosaic)
+            }
+        }
+    }
+
+    // ── Scan card (join via another device's QR) ────────────────────────
+
+    private var scanCard: some View {
+        Button {
+            showScanner = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "qrcode.viewfinder")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(theme.accentPrimary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Scan a pairing QR")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(theme.fgDefault)
+                    Text("Point at the other device's pairing screen.")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.fgFaint)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.fgFaint)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(theme.bg2)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(theme.line, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
     }
 
     // ── QR code + short code card ───────────────────────────────────────

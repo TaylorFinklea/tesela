@@ -59,7 +59,11 @@ struct AppShell: View {
                         }
                     }
             } else {
-                OnboardingView(onboardingComplete: $onboardingComplete)
+                OnboardingView(
+                    onboardingComplete: $onboardingComplete,
+                    backend: backend,
+                    mosaic: mosaic
+                )
             }
         }
     }

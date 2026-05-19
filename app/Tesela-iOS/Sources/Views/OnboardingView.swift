@@ -9,6 +9,8 @@ import SwiftUI
 /// app launches into `AppShell` directly.
 struct OnboardingView: View {
     @Binding var onboardingComplete: Bool
+    @ObservedObject var backend: BackendSettings
+    @ObservedObject var mosaic: MockMosaicService
     @State private var showPair: Bool = false
 
     @Environment(\.theme) private var theme
@@ -29,7 +31,7 @@ struct OnboardingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(theme.bg)
             .navigationDestination(isPresented: $showPair) {
-                PairDeviceView()
+                PairDeviceView(backend: backend, mosaic: mosaic)
                     .environment(\.theme, theme)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {

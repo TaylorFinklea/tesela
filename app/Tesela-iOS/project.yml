@@ -101,3 +101,7 @@ targets:
         # sheet records to a WAV file that's uploaded to the
         # tesela-server's /transcription/transcribe endpoint.
         NSMicrophoneUsageDescription: "Tesela uses the microphone for voice notes — recordings are transcribed and saved to today's daily, then discarded."
+        # Pair-via-QR. The Settings → Devices → Pair flow opens a
+        # camera view to scan a pairing QR shown on another device.
+        # The frames never leave the device and aren't stored.
+        NSCameraUsageDescription: "Tesela uses the camera only to scan a pairing QR code from another device. Frames are decoded on-device and not stored."
