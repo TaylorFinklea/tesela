@@ -121,11 +121,65 @@ final class MockMosaicService: ObservableObject, MosaicService {
         }
     }
 
+    /// Cycle a block's status: note → open task → done task → note.
+    /// Used by the keyboard accessory toolbar so the user can convert
+    /// between note and task without leaving the keyboard.
+    func cycleBlockStatus(id: String, pageSlug: String? = nil) {
+        if let slug = pageSlug {
+            var blocks = loadedPageBlocks[slug] ?? []
+            guard let idx = blocks.firstIndex(where: { $0.id == id }) else { return }
+            blocks[idx] = nextStatus(blocks[idx])
+            Task { await pushPage(id: slug, blocks: blocks) }
+        } else if let idx = todayBlocks.firstIndex(where: { $0.id == id }) {
+            todayBlocks[idx] = nextStatus(todayBlocks[idx])
+            scheduleWriteback()
+        }
+    }
+
+    private func nextStatus(_ block: Block) -> Block {
+        var next = block
+        switch (block.kind, block.done) {
+        case (.note, _):       next.kind = .task; next.done = false
+        case (.task, false):   next.done = true
+        case (.task, true):    next.kind = .note; next.done = false
+        default:               next.kind = .note; next.done = false
+        }
+        return next
+    }
+
     /// Replace the body text of a block on today's daily, then push.
+    /// The raw text may contain inline `#tag` hashtags; we split those
+    /// out into `block.tags` and store only the body in `block.text`.
     func editTodayBlock(id: String, text: String) {
         guard let idx = todayBlocks.firstIndex(where: { $0.id == id }) else { return }
-        todayBlocks[idx].text = text
+        let (body, tags) = Self.splitInlineTags(text)
+        todayBlocks[idx].text = body
+        todayBlocks[idx].tags = tags
         scheduleWriteback()
+    }
+
+    /// Pull `#tag` tokens out of `raw` and return (bodyWithoutTags, tags).
+    /// Hashtags are recognized as `#` followed by 1+ characters from
+    /// `[A-Za-z0-9_-]`. Tags preserve their `#` prefix to match the web
+    /// client's storage convention.
+    static func splitInlineTags(_ raw: String) -> (body: String, tags: [String]) {
+        let pattern = "#[A-Za-z0-9_-]+"
+        guard let re = try? NSRegularExpression(pattern: pattern) else {
+            return (raw.trimmingCharacters(in: .whitespacesAndNewlines), [])
+        }
+        let ns = raw as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        var tags: [String] = []
+        re.enumerateMatches(in: raw, range: range) { match, _, _ in
+            guard let r = match?.range else { return }
+            tags.append(ns.substring(with: r))
+        }
+        // Remove all matches from the body in a single pass.
+        let body = re.stringByReplacingMatches(in: raw, range: range, withTemplate: "")
+        let trimmedBody = body
+            .replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmedBody, tags)
     }
 
     /// Append a fresh empty block to today and push. Returns the new
@@ -187,15 +241,67 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
 
     func capture(_ text: String) {
+        capture(text, target: .today)
+    }
+
+    /// Route a capture to the chosen target. `.today` and `.inbox` both
+    /// land in today's daily — `.inbox` adds a `#inbox` tag so the
+    /// block surfaces in `InboxView`'s tagged section. `.page` appends
+    /// to the named page via the existing per-page push.
+    func capture(_ text: String, target: CaptureTarget) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let block = Block(
-            id: "captured-\(UUID().uuidString.prefix(12).lowercased())",
-            kind: .note,
-            text: trimmed
-        )
-        todayBlocks.insert(block, at: 0)
-        scheduleWriteback()
+        let id = "captured-\(UUID().uuidString.prefix(12).lowercased())"
+        switch target {
+        case .today:
+            todayBlocks.insert(Block(id: id, kind: .note, text: trimmed), at: 0)
+            scheduleWriteback()
+        case .inbox:
+            todayBlocks.insert(
+                Block(id: id, kind: .note, text: trimmed, tags: ["#inbox"]),
+                at: 0
+            )
+            scheduleWriteback()
+        case .page(let slug, _):
+            var blocks = loadedPageBlocks[slug] ?? []
+            blocks.append(Block(id: id, kind: .note, text: trimmed))
+            Task { await pushPage(id: slug, blocks: blocks) }
+        case .childOf(let parentId, _, let pageSlug):
+            insertChildBlock(
+                parentId: parentId,
+                pageSlug: pageSlug,
+                newId: id,
+                text: trimmed
+            )
+        }
+    }
+
+    /// Insert a new block directly after `parentId` with indent one
+    /// deeper than the parent. `pageSlug == nil` means today's daily.
+    private func insertChildBlock(
+        parentId: String,
+        pageSlug: String?,
+        newId: String,
+        text: String
+    ) {
+        if let slug = pageSlug {
+            var blocks = loadedPageBlocks[slug] ?? []
+            guard let idx = blocks.firstIndex(where: { $0.id == parentId }) else { return }
+            let childIndent = blocks[idx].indent + 1
+            blocks.insert(
+                Block(id: newId, kind: .note, text: text, indent: childIndent),
+                at: idx + 1
+            )
+            Task { await pushPage(id: slug, blocks: blocks) }
+        } else {
+            guard let idx = todayBlocks.firstIndex(where: { $0.id == parentId }) else { return }
+            let childIndent = todayBlocks[idx].indent + 1
+            todayBlocks.insert(
+                Block(id: newId, kind: .note, text: text, indent: childIndent),
+                at: idx + 1
+            )
+            scheduleWriteback()
+        }
     }
 
     func search(_ query: String) -> [SearchResult] {

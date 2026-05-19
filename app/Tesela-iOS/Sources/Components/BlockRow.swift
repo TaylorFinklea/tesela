@@ -26,10 +26,26 @@ struct BlockRow: View {
     var onCommitEdit: ((String) -> Void)? = nil
     var onCancelEdit: (() -> Void)? = nil
     var onMenuAction: ((BlockAction) -> Void)? = nil
+    /// Commit current text and append a new sibling block immediately
+    /// after this one, then transfer focus to it. Wired by parents that
+    /// own the outline (Daily, Page) so the keyboard accessory's Enter
+    /// behaviour can split a block.
+    var onSplitToNewBlock: ((String) -> Void)? = nil
+    /// Apply an indent delta to this block (+1 or -1). Used by the
+    /// keyboard accessory toolbar's indent/dedent buttons.
+    var onIndent: ((Int) -> Void)? = nil
+    /// Cycle the block's kind/status (note → open task → done → note).
+    var onCycleStatus: (() -> Void)? = nil
 
     @Environment(\.theme) private var theme
     @State private var editBuffer: String = ""
     @FocusState private var editFocused: Bool
+
+    @AppStorage("keyboardToolbarItems") private var keyboardToolbarRaw: String = defaultKeyboardToolbarItemsRaw
+
+    private var configuredToolbarItems: [KeyboardToolbarItem] {
+        decodeKeyboardToolbarItems(keyboardToolbarRaw)
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -61,13 +77,10 @@ struct BlockRow: View {
     }
 
     private func handleTap() {
-        // Tap on a task's row toggles done. Tap on a non-task row
-        // enters edit mode if an onTap handler is wired up.
-        if kind == .task {
-            onToggleTask?()
-        } else {
-            onTap?()
-        }
+        // Tap anywhere on the row enters edit mode, regardless of kind.
+        // Tap-to-toggle for tasks is handled by the checkbox's own
+        // gesture so tapping the text body still lets you edit a task.
+        onTap?()
     }
 
     // ── Bullet (task checkbox or project dot or note dot) ───────────────
@@ -143,15 +156,23 @@ struct BlockRow: View {
             .focused($editFocused)
             .submitLabel(.done)
             .onAppear {
-                editBuffer = text
-                // Defer the focus so SwiftUI has time to lay out the
-                // TextField before pulling the keyboard up.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    editFocused = true
-                }
+                // When entering edit mode, inline the tags so the
+                // user can edit them as raw `#tag` text alongside the
+                // body. They're parsed back out in `commitEdit`.
+                editBuffer = combinedEditableText()
+                editFocused = true
             }
-            .onSubmit {
-                commitEdit()
+            .onSubmit { commitEdit() }
+            .onChange(of: editBuffer) { _, newValue in
+                // Detect "Enter on an empty line" by looking for a
+                // trailing double-newline. Strip it from the current
+                // block and ask the parent to split: commit this block
+                // (without the trailing blank line) and append a new
+                // empty block with focus.
+                if newValue.hasSuffix("\n\n") {
+                    let stripped = String(newValue.dropLast(2))
+                    onSplitToNewBlock?(stripped.trimmingCharacters(in: .whitespacesAndNewlines))
+                }
             }
             .onChange(of: editFocused) { _, focused in
                 // Blurring the field commits whatever's there. Mirrors
@@ -160,10 +181,70 @@ struct BlockRow: View {
                     commitEdit()
                 }
             }
+            .toolbar {
+                if isEditing {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        keyboardAccessory
+                    }
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var keyboardAccessory: some View {
+        HStack(spacing: 18) {
+            ForEach(configuredToolbarItems) { item in
+                toolbarButton(for: item)
+            }
+            Spacer()
+        }
+    }
+
+    private func toolbarButton(for item: KeyboardToolbarItem) -> some View {
+        Button {
+            handleToolbarAction(item)
+        } label: {
+            Image(systemName: item.systemImage)
+        }
+        .accessibilityLabel(item.label)
+    }
+
+    private func handleToolbarAction(_ item: KeyboardToolbarItem) {
+        switch item {
+        case .hideKeyboard:
+            editFocused = false
+        case .slashCommand:
+            if !editBuffer.hasSuffix("/") { editBuffer += "/" }
+        case .tags:
+            if !editBuffer.hasSuffix("#") {
+                editBuffer += (editBuffer.hasSuffix(" ") || editBuffer.isEmpty ? "" : " ") + "#"
+            }
+        case .dedent:
+            onIndent?(-1)
+        case .indent:
+            onIndent?(1)
+        case .cycleStatus:
+            onCycleStatus?()
+        case .mic, .deadline, .schedule:
+            // Stubs — these UI affordances surface in the toolbar so
+            // users can opt in, but the actions land in later phases
+            // (voice-into-block, due date picker, scheduled picker).
+            break
+        }
     }
 
     private func commitEdit() {
         let trimmed = editBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
         onCommitEdit?(trimmed)
+    }
+
+    /// Body text + inline `#tags` so the user can edit tags as raw
+    /// text in the same TextField. Tags are joined with a separating
+    /// space; if the body is empty we just emit the tags.
+    private func combinedEditableText() -> String {
+        let normalized = tags.map { $0.hasPrefix("#") ? $0 : "#\($0)" }.joined(separator: " ")
+        if normalized.isEmpty { return text }
+        if text.isEmpty { return normalized }
+        return text + " " + normalized
     }
 }

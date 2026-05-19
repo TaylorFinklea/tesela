@@ -1,6 +1,6 @@
 # Current State
 
-*Last updated: 2026-05-11*
+*Last updated: 2026-05-19*
 
 ## Active Branch
 
@@ -57,6 +57,7 @@
 - Phase 14.2 frontend perf smoke suite is in place under `web/tests/perf/`, with a runner that creates a medium fixture mosaic, starts `tesela-server` and Vite on dynamic localhost ports, runs Playwright, and records JSONL timings.
 - `tesela-fixtures` now seeds built-in Task/Status/Priority/Deadline/Scheduled pages so generated mosaics have task board property metadata before the server's initial index.
 - Phase 14.3 perf workflow is in `.github/workflows/perf.yml`: nightly/main uploads Criterion baselines, PRs diff with `critcmp`, and comments only when a benchmark regression exceeds 10%.
+- **2026-05-19 — iOS bottom chrome rewrite**: `app/Tesela-iOS/Sources/Views/AppShell.swift` now uses iOS 26 native `TabView` with `Tab(role: .search)` for the search slot, replacing the prior hand-rolled `BottomChrome` HStack (which had wrong proportions, materials, and safe-area positioning compared to Apple's Mail/Phone/Music). Search is now a tab destination (not a sheet); the system pins it trailing as a standalone Liquid Glass circle. Search & capture also added to `DailyTopBar` via new `\.openSearch` / `\.openCapture` environment values. Build green on Tesela-Test sim. Capture stays as a sheet (no chrome slot — iOS 26 has no `.capture` tab role and `tabViewBottomAccessory` always renders above the pill at rest on iPhone, so a one-row [pill][search][capture] layout is not possible without abandoning the native chrome — that experiment was tried and reverted).
 
 ## Blockers
 

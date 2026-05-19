@@ -11,6 +11,7 @@ struct DailyTopBar: View {
     let title: String
     let dateLabel: String
     var syncStatus: SyncDotState = .ok
+    var onTapSearch: () -> Void = {}
     var onTapCalendar: () -> Void = {}
     var onTapSettings: () -> Void = {}
     /// Tap-target for the sync dot. When unreachable, jumping straight
@@ -41,6 +42,8 @@ struct DailyTopBar: View {
             }
             Spacer()
             HStack(spacing: 4) {
+                IconButton(name: .search, action: onTapSearch)
+                    .accessibilityLabel("Search")
                 IconButton(name: .cal, action: onTapCalendar)
                     .accessibilityLabel("Calendar")
                 IconButton(name: .settings, action: onTapSettings)

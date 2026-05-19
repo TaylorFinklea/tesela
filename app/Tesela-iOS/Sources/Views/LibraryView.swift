@@ -13,6 +13,7 @@ struct LibraryView: View {
     var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
+    @Environment(\.captureContext) private var captureContext
     @State private var activeFilter: LibraryFilter = .all
     @State private var navigationPath = NavigationPath()
     @State private var showSettings: Bool = false
@@ -51,13 +52,21 @@ struct LibraryView: View {
             .navigationDestination(for: Page.self) { page in
                 PageView(page: page, mosaic: mosaic, pageStack: pageStack, syncState: syncState)
                     .environment(\.theme, theme)
-                    .onAppear { pageStack.open(page) }
+                    .onAppear {
+                        pageStack.open(page)
+                        captureContext.currentPage = CapturePageRef(slug: page.slug, title: page.title)
+                    }
+                    .onDisappear { captureContext.currentPage = nil }
             }
             .navigationDestination(for: DailyPageRoute.self) { route in
                 if let page = route.resolvedPage(mosaic) {
                     PageView(page: page, mosaic: mosaic, pageStack: pageStack, syncState: syncState)
                         .environment(\.theme, theme)
-                        .onAppear { pageStack.open(page) }
+                        .onAppear {
+                            pageStack.open(page)
+                            captureContext.currentPage = CapturePageRef(slug: page.slug, title: page.title)
+                        }
+                        .onDisappear { captureContext.currentPage = nil }
                 }
             }
             .environment(\.openURL, OpenURLAction { url in

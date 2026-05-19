@@ -19,6 +19,8 @@ struct DailyView: View {
     var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
+    @Environment(\.openSearch) private var openSearch
+    @Environment(\.captureContext) private var captureContext
     @State private var editingBlockId: String? = nil
     @State private var navigationPath = NavigationPath()
     @State private var showDatePicker: Bool = false
@@ -32,6 +34,7 @@ struct DailyView: View {
                     title: mosaic.todayLongLabel,
                     dateLabel: mosaic.todayLabel,
                     syncStatus: syncStatus,
+                    onTapSearch: openSearch,
                     onTapCalendar: { showDatePicker = true },
                     onTapSettings: { showSettings = true },
                     onTapSync: { showSettings = true }
@@ -53,6 +56,20 @@ struct DailyView: View {
                 }
             }
             .background(theme.bg)
+            .onChange(of: editingBlockId) { _, newValue in
+                if let id = newValue, let block = mosaic.todayBlocks.first(where: { $0.id == id })
+                    ?? mosaic.yesterdayBlocks.first(where: { $0.id == id })
+                {
+                    captureContext.focusedBlock = CaptureBlockRef(
+                        id: id,
+                        preview: block.text,
+                        pageSlug: nil
+                    )
+                } else {
+                    captureContext.focusedBlock = nil
+                }
+            }
+            .onDisappear { captureContext.focusedBlock = nil }
             .environment(\.openURL, OpenURLAction { url in
                 if let slug = TeselaLink.pageSlug(from: url) {
                     pushPage(slug: slug)
@@ -113,6 +130,17 @@ struct DailyView: View {
                 },
                 onMenuAction: { action in
                     handleTodayAction(action, on: block)
+                },
+                onSplitToNewBlock: { committedText in
+                    mosaic.editTodayBlock(id: block.id, text: committedText)
+                    let newId = mosaic.appendTodayBlock(kind: .note)
+                    editingBlockId = newId
+                },
+                onIndent: { delta in
+                    mosaic.indentTodayBlock(id: block.id, by: delta)
+                },
+                onCycleStatus: {
+                    mosaic.cycleBlockStatus(id: block.id)
                 }
             )
         }

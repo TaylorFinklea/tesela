@@ -17,6 +17,7 @@ struct PageView: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.captureContext) private var captureContext
     @State private var tags: [String] = []
     @State private var peekOpen: Bool = false
     @State private var peekSegment: PeekSegment = .backlinks
@@ -40,6 +41,20 @@ struct PageView: View {
             }
         }
         .background(theme.bg)
+        .onChange(of: editingBlockId) { _, newValue in
+            if let id = newValue,
+               let block = mosaic.loadedPageBlocks[page.id]?.first(where: { $0.id == id })
+            {
+                captureContext.focusedBlock = CaptureBlockRef(
+                    id: id,
+                    preview: block.text,
+                    pageSlug: page.id
+                )
+            } else {
+                captureContext.focusedBlock = nil
+            }
+        }
+        .onDisappear { captureContext.focusedBlock = nil }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

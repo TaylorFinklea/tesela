@@ -15,6 +15,8 @@ struct SettingsView: View {
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
 
+    @AppStorage("captureDefaultTarget") private var captureDefault: CaptureDefault = .contextAware
+
     var body: some View {
         NavigationStack {
             Form {
@@ -83,6 +85,18 @@ struct SettingsView: View {
                     NavigationLink("Share extension")  { Text("placeholder").padding() }
                     NavigationLink("Files")            { Text("placeholder").padding() }
                     NavigationLink("API webhooks")     { Text("placeholder").padding() }
+                }
+
+                Section("Capture") {
+                    Picker("Default target", selection: $captureDefault) {
+                        ForEach(CaptureDefault.allCases, id: \.self) { option in
+                            Text(option.label).tag(option)
+                        }
+                    }
+                    NavigationLink("Keyboard toolbar") {
+                        KeyboardToolbarSettingsView()
+                            .environment(\.theme, theme)
+                    }
                 }
 
                 // Voice (top-level — decision #12)

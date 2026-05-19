@@ -1,12 +1,12 @@
 import SwiftUI
 
-/// Top-level scaffold. Custom bottom chrome with three Liquid Glass
-/// shapes on one row (mockup E): tab capsule (Daily · Inbox · Library)
-/// on the left, search circle and capture circle on the right.
-///
-/// We render the bottom bar ourselves rather than using SwiftUI's
-/// `TabView` because the native tab bar pill auto-expands to nearly
-/// the full screen width, which causes overlap with floating buttons.
+/// Top-level scaffold. Uses iOS 26's native `TabView` so the bottom
+/// chrome is a real system-managed Liquid Glass tab bar — correct
+/// height, safe-area offset, scroll-edge blur, and minimize-on-scroll
+/// all come from the system. Search uses iOS 26's `Tab(role: .search)`
+/// so the system pins it as a standalone Liquid Glass circle at the
+/// trailing edge (Phone/Mail/Photos pattern). Capture stays a sheet,
+/// triggered from the TopBar.
 struct AppShell: View {
     @StateObject private var appearance = AppearanceController()
     @StateObject private var mosaic = MockMosaicService()
@@ -15,9 +15,11 @@ struct AppShell: View {
     @StateObject private var backend = BackendSettings()
     @StateObject private var transcription = TranscriptionStore()
     @State private var activeTab: AppTab = .daily
-    @State private var showCapture: Bool = false
-    @State private var showSearch: Bool = false
-    @State private var captureSeed: String = ""
+    @State private var captureContext: CaptureContext = .init()
+    /// Lifted out of CaptureBar so the AVAudioEngine init isn't paid
+    /// every time the bar is added/removed from `tabViewBottomAccessory`
+    /// (e.g., when a block enters/leaves edit mode).
+    @StateObject private var streamRecorder = StreamingVoiceRecorder()
 
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
     @Environment(\.scenePhase) private var scenePhase
@@ -26,22 +28,6 @@ struct AppShell: View {
         TeselaAppearance(controller: appearance) {
             if onboardingComplete {
                 shell
-                    .sheet(isPresented: $showCapture) {
-                        CaptureSheet(
-                            mosaic: mosaic,
-                            transcription: transcription,
-                            seed: captureSeed
-                        )
-                        .environment(\.theme, appearance.theme)
-                        .environment(\.density, appearance.density)
-                        .onDisappear { captureSeed = "" }
-                    }
-                    .sheet(isPresented: $showSearch) {
-                        SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
-                            .environment(\.theme, appearance.theme)
-                            .environment(\.density, appearance.density)
-                            .presentationDetents([.large])
-                    }
                     .task {
                         mosaic.attach(backend: backend.backend)
                         await mosaic.refresh(from: backend.backend)
@@ -69,142 +55,113 @@ struct AppShell: View {
     }
 
     private var shell: some View {
-        ZStack(alignment: .bottom) {
-            activeContent
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(appearance.theme.bg)
-                .ignoresSafeArea(.container, edges: .bottom)
-            BottomChrome(
-                activeTab: $activeTab,
-                onSearch: { showSearch = true },
-                onCapture: { showCapture = true }
-            )
+        TabView(selection: $activeTab) {
+            Tab(AppTab.daily.label, systemImage: AppTab.daily.systemImage, value: AppTab.daily) {
+                DailyView(
+                    mosaic: mosaic,
+                    backend: backend,
+                    appearance: appearance,
+                    syncState: syncState,
+                    transcription: transcription
+                )
+            }
+            Tab(AppTab.inbox.label, systemImage: AppTab.inbox.systemImage, value: AppTab.inbox) {
+                InboxView(
+                    mosaic: mosaic,
+                    backend: backend,
+                    appearance: appearance,
+                    syncState: syncState,
+                    transcription: transcription
+                )
+            }
+            Tab(AppTab.library.label, systemImage: AppTab.library.systemImage, value: AppTab.library) {
+                LibraryView(
+                    mosaic: mosaic,
+                    appearance: appearance,
+                    pageStack: pageStack,
+                    syncState: syncState,
+                    backend: backend,
+                    transcription: transcription
+                )
+            }
+            Tab(value: AppTab.search, role: .search) {
+                SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
+            }
         }
-    }
-
-    @ViewBuilder
-    private var activeContent: some View {
-        switch activeTab {
-        case .daily:
-            DailyView(
+        .tint(appearance.theme.accentPrimary)
+        .tabViewBottomAccessory {
+            // Always show the bar. iOS lifts it above the keyboard
+            // automatically when a TextField is focused (Slack
+            // composer pattern). Hiding it during edits left a weird
+            // empty zone above the keyboard, so we keep it visible.
+            CaptureBar(
                 mosaic: mosaic,
-                backend: backend,
-                appearance: appearance,
-                syncState: syncState,
-                transcription: transcription
+                activeTab: activeTab,
+                transcription: transcription,
+                context: captureContext,
+                recorder: streamRecorder
             )
-        case .inbox:
-            InboxView(
-                mosaic: mosaic,
-                backend: backend,
-                appearance: appearance,
-                syncState: syncState,
-                transcription: transcription
-            )
-        case .library:
-            LibraryView(
-                mosaic: mosaic,
-                appearance: appearance,
-                pageStack: pageStack,
-                syncState: syncState,
-                backend: backend,
-                transcription: transcription
-            )
+            .environment(\.theme, appearance.theme)
         }
+        .environment(\.captureContext, captureContext)
+        .environment(\.openSearch, { activeTab = .search })
     }
 }
 
-// MARK: - Bottom chrome (mockup E)
+// MARK: - Capture context
 
-/// Tab capsule on the left, search circle + capture circle on the
-/// right. Each is its own Liquid Glass shape; layout is a real HStack
-/// so the tab capsule is sized to its content rather than expanding
-/// over the action buttons.
-private struct BottomChrome: View {
-    @Binding var activeTab: AppTab
-    let onSearch: () -> Void
-    let onCapture: () -> Void
+/// Lightweight reference to a page so the capture bar's target menu
+/// can offer "Add to <this page>" when applicable.
+struct CapturePageRef: Hashable, Sendable {
+    let slug: String
+    let title: String
+}
 
-    @Environment(\.theme) private var theme
+/// Lightweight reference to a focused block so the capture bar's
+/// target menu can offer "Add as child of <this block>". `pageSlug`
+/// is `nil` for today's daily.
+struct CaptureBlockRef: Hashable, Sendable {
+    let id: String
+    let preview: String
+    let pageSlug: String?
+}
 
-    var body: some View {
-        HStack(spacing: 10) {
-            tabCapsule
-            Spacer(minLength: 6)
-            HStack(spacing: 8) {
-                actionCircle(systemImage: "magnifyingglass", label: "Search", action: onSearch)
-                actionCircle(
-                    systemImage: "plus",
-                    label: "Capture",
-                    tint: theme.accentPrimary,
-                    action: onCapture
-                )
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.bottom, 16)
+/// Single source of truth for the ambient capture context: the page
+/// currently being viewed (Library) and the block currently being
+/// edited. The capture bar reads this to build its target menu.
+///
+/// Note: an earlier decision hid the bar entirely while a block was
+/// being edited. We reversed that here because the user wants
+/// "Add as child of <focused block>" available from the menu — which
+/// only makes sense if the bar is visible during the edit.
+@Observable
+final class CaptureContext {
+    var currentPage: CapturePageRef? = nil
+    var focusedBlock: CaptureBlockRef? = nil
+}
+
+private struct CaptureContextKey: EnvironmentKey {
+    static let defaultValue: CaptureContext = .init()
+}
+
+// MARK: - Action environment values
+
+/// Search-tab switcher exposed to TopBar. Capture no longer needs an
+/// equivalent — the persistent `CaptureBar` is always visible (except
+/// during block edits) and reachable by tap.
+private struct OpenSearchKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+extension EnvironmentValues {
+    var captureContext: CaptureContext {
+        get { self[CaptureContextKey.self] }
+        set { self[CaptureContextKey.self] = newValue }
     }
 
-    /// Group 1 — three tab buttons in one glass capsule.
-    private var tabCapsule: some View {
-        HStack(spacing: 2) {
-            ForEach(AppTab.allCases) { tab in
-                tabButton(tab)
-            }
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .glassEffect(.regular.interactive(), in: .capsule)
-    }
-
-    private func tabButton(_ tab: AppTab) -> some View {
-        let on = (activeTab == tab)
-        return Button {
-            withAnimation(.snappy(duration: 0.18)) { activeTab = tab }
-        } label: {
-            VStack(spacing: 3) {
-                Image(systemName: tab.systemImage)
-                    .font(.system(size: 18, weight: on ? .semibold : .regular))
-                Text(tab.label)
-                    .font(.system(size: 10.5, weight: on ? .semibold : .regular))
-            }
-            .foregroundStyle(on ? theme.accentPrimary : theme.fgMuted)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
-            .frame(minWidth: 62)
-            .background {
-                if on {
-                    Capsule().fill(theme.accentPrimary.opacity(0.16))
-                }
-            }
-            .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// Single Liquid Glass circle for an action button. Optional tint
-    /// for the brand-tinted capture button. The icon size and circle
-    /// dimensions are picked so the visual height matches the tab
-    /// capsule's height (so the row reads as one bar of three groups
-    /// rather than a tall capsule with two small circles floating).
-    private func actionCircle(
-        systemImage: String,
-        label: String,
-        tint: Color? = nil,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 19, weight: .semibold))
-                .frame(width: 52, height: 52)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.plain)
-        .glassEffect(
-            tint.map { Glass.regular.tint($0).interactive() } ?? .regular.interactive(),
-            in: .circle
-        )
-        .accessibilityLabel(label)
+    var openSearch: () -> Void {
+        get { self[OpenSearchKey.self] }
+        set { self[OpenSearchKey.self] = newValue }
     }
 }
 
@@ -218,6 +175,7 @@ extension AppTab {
         case .daily:   return "calendar"
         case .inbox:   return "tray"
         case .library: return "doc.text"
+        case .search:  return "magnifyingglass"
         }
     }
 }
