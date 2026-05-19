@@ -15,6 +15,12 @@ struct TranscriptionModel: Identifiable, Codable, Hashable {
     let suggestedFor: [String]
     /// True if the model is intended to run on-device (vs. server-only).
     let onDevice: Bool
+    /// True if Tesela can actually run inference for this model yet.
+    /// Whisper variants flip to true once the SwiftWhisper integration
+    /// is shipping (Phase 29). Parakeet variants stay false until a
+    /// NeMo runtime is wired up — they show in the catalog so users
+    /// can see what's planned, but Set Active is disabled.
+    let inferenceSupported: Bool
 }
 
 enum ModelFamily: String, Codable, Hashable {
@@ -42,7 +48,8 @@ enum TranscriptionCatalog {
             sizeBytes: 39 * 1024 * 1024,
             downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin")!,
             suggestedFor: ["fast capture"],
-            onDevice: true
+            onDevice: true,
+            inferenceSupported: true
         ),
         TranscriptionModel(
             id: "whisper-base",
@@ -52,7 +59,8 @@ enum TranscriptionCatalog {
             sizeBytes: 142 * 1024 * 1024,
             downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin")!,
             suggestedFor: ["default"],
-            onDevice: true
+            onDevice: true,
+            inferenceSupported: true
         ),
         TranscriptionModel(
             id: "whisper-small",
@@ -62,7 +70,8 @@ enum TranscriptionCatalog {
             sizeBytes: 466 * 1024 * 1024,
             downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin")!,
             suggestedFor: ["accuracy"],
-            onDevice: true
+            onDevice: true,
+            inferenceSupported: true
         ),
         TranscriptionModel(
             id: "whisper-medium",
@@ -72,7 +81,8 @@ enum TranscriptionCatalog {
             sizeBytes: 1_500_000_000,
             downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin")!,
             suggestedFor: ["accuracy"],
-            onDevice: true
+            onDevice: true,
+            inferenceSupported: true
         ),
         TranscriptionModel(
             id: "whisper-large-v3-turbo",
@@ -82,7 +92,8 @@ enum TranscriptionCatalog {
             sizeBytes: 1_700_000_000,
             downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin")!,
             suggestedFor: ["best on-device"],
-            onDevice: true
+            onDevice: true,
+            inferenceSupported: true
         ),
         TranscriptionModel(
             id: "whisper-large-v3",
@@ -92,7 +103,8 @@ enum TranscriptionCatalog {
             sizeBytes: 3_100_000_000,
             downloadURL: URL(string: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin")!,
             suggestedFor: ["best accuracy"],
-            onDevice: true
+            onDevice: true,
+            inferenceSupported: true
         ),
 
         // ── Parakeet (NVIDIA NeMo) ──────────────────────────────────
@@ -108,7 +120,8 @@ enum TranscriptionCatalog {
             sizeBytes: 620_000_000,
             downloadURL: URL(string: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2/resolve/main/parakeet-tdt-0.6b-v2.nemo")!,
             suggestedFor: ["streaming", "low latency"],
-            onDevice: true
+            onDevice: true,
+            inferenceSupported: false
         ),
         TranscriptionModel(
             id: "parakeet-tdt-1.1b",
@@ -118,7 +131,8 @@ enum TranscriptionCatalog {
             sizeBytes: 1_100_000_000,
             downloadURL: URL(string: "https://huggingface.co/nvidia/parakeet-tdt-1.1b/resolve/main/parakeet-tdt-1.1b.nemo")!,
             suggestedFor: ["accuracy"],
-            onDevice: true
+            onDevice: true,
+            inferenceSupported: false
         ),
     ]
 

@@ -1,0 +1,242 @@
+import Foundation
+import AVFoundation
+import SwiftWhisper
+
+/// Abstraction over the two transcription paths Tesela ships:
+///   • `LocalTranscriptionEngine` — runs whisper.cpp on-device via
+///     SwiftWhisper. Works offline; requires the active model file
+///     to be downloaded.
+///   • `ServerTranscriptionEngine` — uploads the audio to the
+///     tesela-server's /transcription/transcribe endpoint.
+///
+/// `CaptureSheet` reads the active engine choice from
+/// `@AppStorage("voice.useOnDevice")` and picks the right impl.
+protocol TranscriptionEngine: AnyObject {
+    /// Transcribe a WAV file at `url`. Returns the joined transcript.
+    func transcribe(audio url: URL) async throws -> String
+
+    /// Transcribe an in-memory PCM sample buffer (16 kHz mono floats).
+    /// Used by the streaming path which can avoid the WAV round-trip.
+    func transcribe(samples: [Float]) async throws -> String
+
+    /// Human-readable label for the active engine — shown in the
+    /// composer's helper row.
+    var displayLabel: String { get }
+}
+
+// MARK: - Local engine (whisper.cpp via SwiftWhisper)
+
+@MainActor
+final class LocalTranscriptionEngine: TranscriptionEngine {
+    /// Resolves the active model id from `TranscriptionStore` and
+    /// the file URL it maps to.
+    private let store: TranscriptionStore
+    /// Cached SwiftWhisper context, keyed by the model id it was
+    /// initialized with. Loading a model takes hundreds of ms; we
+    /// reuse it across requests until the user picks a different one.
+    private var cached: (id: String, whisper: Whisper)? = nil
+
+    init(store: TranscriptionStore) {
+        self.store = store
+    }
+
+    var displayLabel: String {
+        let modelId = store.activeModelId
+        if modelId.isEmpty {
+            return "on-device · no model"
+        }
+        let name = TranscriptionCatalog.find(modelId)?.displayName ?? modelId
+        return "on-device · \(name)"
+    }
+
+    func transcribe(audio url: URL) async throws -> String {
+        let samples = try Self.readWavSamples(at: url)
+        return try await transcribe(samples: samples)
+    }
+
+    func transcribe(samples: [Float]) async throws -> String {
+        guard !samples.isEmpty else { return "" }
+        let whisper = try await loadWhisper()
+        let segments = try await whisper.transcribe(audioFrames: samples)
+        return segments
+            .map { $0.text }
+            .joined()
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    // MARK: - Helpers
+
+    private func loadWhisper() async throws -> Whisper {
+        let id = store.activeModelId
+        guard !id.isEmpty else {
+            throw NSError(
+                domain: "Tesela.Transcription",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "No active model picked. Open Settings → Voice → Manage models."]
+            )
+        }
+        if let cached, cached.id == id {
+            return cached.whisper
+        }
+        let url = store.localURL(for: id)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw NSError(
+                domain: "Tesela.Transcription",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Model \(id) isn't downloaded yet."]
+            )
+        }
+        // SwiftWhisper.Whisper(fromFileURL:) — synchronous, model load.
+        // Offload to a background queue to avoid blocking the main
+        // actor while several hundred MB of GGML are mmapped.
+        let whisper: Whisper = try await Task.detached(priority: .userInitiated) {
+            try Whisper(fromFileURL: url)
+        }.value
+        cached = (id, whisper)
+        return whisper
+    }
+
+    /// Read a 16-bit PCM WAV at `url` and return 16 kHz mono floats.
+    /// Uses AVAudioFile so any sample rate / channel layout AVFoundation
+    /// can decode works (M4A, AAC, etc. — though VoiceRecorder always
+    /// writes 16k mono WAV).
+    private static func readWavSamples(at url: URL) throws -> [Float] {
+        let file = try AVAudioFile(forReading: url)
+        guard let pcmFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: 16_000,
+            channels: 1,
+            interleaved: false
+        ) else {
+            throw NSError(
+                domain: "Tesela.Transcription",
+                code: -2,
+                userInfo: [NSLocalizedDescriptionKey: "Couldn't create target PCM format"]
+            )
+        }
+        // Convert to 16 kHz mono float32 via AVAudioConverter.
+        guard let converter = AVAudioConverter(from: file.processingFormat, to: pcmFormat) else {
+            throw NSError(
+                domain: "Tesela.Transcription",
+                code: -3,
+                userInfo: [NSLocalizedDescriptionKey: "Couldn't build audio converter"]
+            )
+        }
+        let frameCount = AVAudioFrameCount(file.length)
+        guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount) else {
+            throw NSError(
+                domain: "Tesela.Transcription",
+                code: -4,
+                userInfo: [NSLocalizedDescriptionKey: "Couldn't allocate input buffer"]
+            )
+        }
+        try file.read(into: inputBuffer)
+        // Estimate output capacity: ratio of sample rates.
+        let ratio = pcmFormat.sampleRate / file.processingFormat.sampleRate
+        let outFrames = AVAudioFrameCount(Double(frameCount) * ratio) + 1024
+        guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: outFrames) else {
+            throw NSError(
+                domain: "Tesela.Transcription",
+                code: -5,
+                userInfo: [NSLocalizedDescriptionKey: "Couldn't allocate output buffer"]
+            )
+        }
+        var error: NSError?
+        var supplied = false
+        converter.convert(to: outputBuffer, error: &error) { _, statusOut in
+            if supplied {
+                statusOut.pointee = .endOfStream
+                return nil
+            }
+            supplied = true
+            statusOut.pointee = .haveData
+            return inputBuffer
+        }
+        if let error { throw error }
+        guard let ptr = outputBuffer.floatChannelData?.pointee else {
+            throw NSError(
+                domain: "Tesela.Transcription",
+                code: -6,
+                userInfo: [NSLocalizedDescriptionKey: "Output buffer has no float channel data"]
+            )
+        }
+        let n = Int(outputBuffer.frameLength)
+        return Array(UnsafeBufferPointer(start: ptr, count: n))
+    }
+}
+
+// MARK: - Server engine (HTTP upload)
+
+@MainActor
+final class ServerTranscriptionEngine: TranscriptionEngine {
+    private let mosaic: MockMosaicService
+
+    init(mosaic: MockMosaicService) {
+        self.mosaic = mosaic
+    }
+
+    var displayLabel: String {
+        "server · /transcription/transcribe"
+    }
+
+    func transcribe(audio url: URL) async throws -> String {
+        try await mosaic.transcribe(audio: url)
+    }
+
+    func transcribe(samples: [Float]) async throws -> String {
+        // Server path expects a WAV file. Encode the buffer to a
+        // temp WAV and reuse the upload path.
+        let url = try Self.writeWav(samples: samples)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return try await mosaic.transcribe(audio: url)
+    }
+
+    private static func writeWav(samples: [Float]) throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("voice-stream", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("chunk-\(UUID().uuidString.prefix(8)).wav")
+        let sampleRate: Double = 16_000
+        let bytesPerSample = 2
+        let dataSize = UInt32(samples.count * bytesPerSample)
+        var header = Data()
+        header.append("RIFF".data(using: .ascii)!)
+        header.append(UInt32(36 + dataSize).littleEndianBytes)
+        header.append("WAVEfmt ".data(using: .ascii)!)
+        header.append(UInt32(16).littleEndianBytes)
+        header.append(UInt16(1).littleEndianBytes) // PCM
+        header.append(UInt16(1).littleEndianBytes) // mono
+        header.append(UInt32(sampleRate).littleEndianBytes)
+        header.append(UInt32(sampleRate * Double(bytesPerSample)).littleEndianBytes)
+        header.append(UInt16(bytesPerSample).littleEndianBytes)
+        header.append(UInt16(16).littleEndianBytes) // bits/sample
+        header.append("data".data(using: .ascii)!)
+        header.append(dataSize.littleEndianBytes)
+        var body = Data(capacity: Int(dataSize))
+        for f in samples {
+            let s = Int16(max(-1, min(1, f)) * Float(Int16.max))
+            body.append(s.littleEndianBytes)
+        }
+        try (header + body).write(to: url)
+        return url
+    }
+}
+
+private extension UInt32 {
+    var littleEndianBytes: Data {
+        var v = littleEndian
+        return Data(bytes: &v, count: MemoryLayout<UInt32>.size)
+    }
+}
+private extension UInt16 {
+    var littleEndianBytes: Data {
+        var v = littleEndian
+        return Data(bytes: &v, count: MemoryLayout<UInt16>.size)
+    }
+}
+private extension Int16 {
+    var littleEndianBytes: Data {
+        var v = littleEndian
+        return Data(bytes: &v, count: MemoryLayout<Int16>.size)
+    }
+}

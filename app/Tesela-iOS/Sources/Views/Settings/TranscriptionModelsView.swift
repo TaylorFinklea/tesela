@@ -174,6 +174,20 @@ struct TranscriptionModelsView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                } else if !model.inferenceSupported {
+                    // Downloaded but iOS can't run it yet (Parakeet).
+                    Text("Inference not yet supported on iOS")
+                        .font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(theme.typeNote)
+                    Spacer()
+                    Button(role: .destructive) {
+                        confirmDeleteId = model.id
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 16))
+                            .foregroundStyle(theme.fgMuted)
+                    }
+                    .buttonStyle(.plain)
                 } else {
                     Button {
                         store.activate(model.id)

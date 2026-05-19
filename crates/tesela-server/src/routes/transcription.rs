@@ -33,6 +33,7 @@ pub struct ModelCatalogEntry {
     pub download_url: String,
     pub suggested_for: Vec<String>,
     pub on_device: bool,
+    pub inference_supported: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,6 +50,7 @@ pub struct ModelStatus {
     pub state: String,
     pub on_disk_bytes: Option<u64>,
     pub active: bool,
+    pub inference_supported: bool,
 }
 
 /// Same catalog the iOS app ships with. Keeping this hand-mirrored
@@ -64,6 +66,7 @@ fn catalog() -> Vec<ModelCatalogEntry> {
             download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin".into(),
             suggested_for: vec!["fast capture".into()],
             on_device: true,
+            inference_supported: true,
         },
         ModelCatalogEntry {
             id: "whisper-base".into(),
@@ -74,6 +77,7 @@ fn catalog() -> Vec<ModelCatalogEntry> {
             download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin".into(),
             suggested_for: vec!["default".into()],
             on_device: true,
+            inference_supported: true,
         },
         ModelCatalogEntry {
             id: "whisper-small".into(),
@@ -84,6 +88,7 @@ fn catalog() -> Vec<ModelCatalogEntry> {
             download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin".into(),
             suggested_for: vec!["accuracy".into()],
             on_device: true,
+            inference_supported: true,
         },
         ModelCatalogEntry {
             id: "whisper-medium".into(),
@@ -94,6 +99,7 @@ fn catalog() -> Vec<ModelCatalogEntry> {
             download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin".into(),
             suggested_for: vec!["accuracy".into()],
             on_device: true,
+            inference_supported: true,
         },
         ModelCatalogEntry {
             id: "whisper-large-v3-turbo".into(),
@@ -104,6 +110,7 @@ fn catalog() -> Vec<ModelCatalogEntry> {
             download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin".into(),
             suggested_for: vec!["best on-device".into()],
             on_device: true,
+            inference_supported: true,
         },
         ModelCatalogEntry {
             id: "whisper-large-v3".into(),
@@ -114,6 +121,7 @@ fn catalog() -> Vec<ModelCatalogEntry> {
             download_url: "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3.bin".into(),
             suggested_for: vec!["best accuracy".into()],
             on_device: true,
+            inference_supported: true,
         },
         ModelCatalogEntry {
             id: "parakeet-tdt-0.6b".into(),
@@ -124,6 +132,7 @@ fn catalog() -> Vec<ModelCatalogEntry> {
             download_url: "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2/resolve/main/parakeet-tdt-0.6b-v2.nemo".into(),
             suggested_for: vec!["streaming".into(), "low latency".into()],
             on_device: true,
+            inference_supported: false,
         },
         ModelCatalogEntry {
             id: "parakeet-tdt-1.1b".into(),
@@ -134,6 +143,7 @@ fn catalog() -> Vec<ModelCatalogEntry> {
             download_url: "https://huggingface.co/nvidia/parakeet-tdt-1.1b/resolve/main/parakeet-tdt-1.1b.nemo".into(),
             suggested_for: vec!["accuracy".into()],
             on_device: true,
+            inference_supported: false,
         },
     ]
 }
@@ -187,6 +197,7 @@ pub async fn list_models(State(s): State<Arc<AppState>>) -> AppResult<Json<Vec<M
             state: state.into(),
             on_disk_bytes,
             active: active.as_deref() == Some(entry.id.as_str()),
+            inference_supported: entry.inference_supported,
         });
     }
     Ok(Json(out))
@@ -253,6 +264,7 @@ pub async fn download_model(
         state: "downloaded".into(),
         on_disk_bytes: Some(size),
         active: active.as_deref() == Some(entry.id.as_str()),
+        inference_supported: entry.inference_supported,
     }))
 }
 
@@ -277,6 +289,15 @@ pub async fn activate_model(
     Path(id): Path<String>,
     State(s): State<Arc<AppState>>,
 ) -> AppResult<Json<serde_json::Value>> {
+    let entry = catalog()
+        .into_iter()
+        .find(|e| e.id == id)
+        .ok_or_else(|| AppError::NotFound(format!("Unknown model: {id}")))?;
+    if !entry.inference_supported {
+        return Err(AppError::Validation(format!(
+            "Inference for {id} isn't supported on this Tesela build yet"
+        )));
+    }
     let path = model_path(&s, &id);
     if fs::metadata(&path).await.is_err() {
         return Err(AppError::Validation(format!(

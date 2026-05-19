@@ -7,15 +7,26 @@ import SwiftUI
 ///     Whisper transcription on stop.
 struct CaptureSheet: View {
     @ObservedObject var mosaic: MockMosaicService
+    var transcription: TranscriptionStore? = nil
     var seed: String = ""
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
+    @AppStorage("voice.useOnDevice") private var useOnDevice: Bool = true
+    @AppStorage("voice.streaming") private var streaming: Bool = true
     @State private var text: String = ""
     @State private var transcribing: Bool = false
     @State private var transcribeError: String? = nil
     @StateObject private var recorder = VoiceRecorder()
+    @StateObject private var streamRecorder = StreamingVoiceRecorder()
     @FocusState private var isFieldFocused: Bool
+
+    private var engine: TranscriptionEngine {
+        if useOnDevice, let transcription {
+            return LocalTranscriptionEngine(store: transcription)
+        }
+        return ServerTranscriptionEngine(mosaic: mosaic)
+    }
 
     private var paletteActive: Bool { text.hasPrefix(":") }
     private var paletteFilter: String {
@@ -30,6 +41,10 @@ struct CaptureSheet: View {
         }
     }
     private var isRecording: Bool {
+        if streaming {
+            if case .recording = streamRecorder.state { return true }
+            return false
+        }
         if case .recording = recorder.state { return true }
         return false
     }
@@ -74,6 +89,7 @@ struct CaptureSheet: View {
         }
         .onDisappear {
             recorder.cancel()
+            streamRecorder.cancel()
         }
     }
 
@@ -147,11 +163,9 @@ struct CaptureSheet: View {
             let barW = (proxy.size.width - spacing * CGFloat(bars - 1)) / CGFloat(bars)
             HStack(spacing: spacing) {
                 ForEach(0..<bars, id: \.self) { i in
-                    // Stagger heights to give the bars some shape — the
-                    // most recent bars (right side) reflect current
-                    // meter level.
                     let recent = i > bars - 6
-                    let base: Float = recent ? recorder.meterLevel : Float.random(in: 0.1 ... 0.35)
+                    let level: Float = streaming ? streamRecorder.meterLevel : recorder.meterLevel
+                    let base: Float = recent ? level : Float.random(in: 0.1 ... 0.35)
                     let height = CGFloat(max(0.08, base)) * proxy.size.height
                     RoundedRectangle(cornerRadius: 1.5)
                         .fill(recent ? theme.accentPrimary : theme.fgFaint.opacity(0.6))
@@ -164,18 +178,18 @@ struct CaptureSheet: View {
     }
 
     private var elapsedLabel: String {
-        guard case .recording(let elapsed) = recorder.state else { return "00:00" }
+        let elapsed: TimeInterval = {
+            if streaming, case .recording(let e) = streamRecorder.state { return e }
+            if case .recording(let e) = recorder.state { return e }
+            return 0
+        }()
         let s = Int(elapsed) % 60
         let m = Int(elapsed) / 60
         return String(format: "%02d:%02d", m, s)
     }
 
     private var modelLabel: String {
-        // Best-effort — the active model is server-managed; iOS knows
-        // the most-recent picked id via TranscriptionStore. CaptureSheet
-        // doesn't currently take a TranscriptionStore reference, so
-        // surface a generic label.
-        "whisper · server"
+        engine.displayLabel
     }
 
     private var transcribingPanel: some View {
@@ -218,6 +232,7 @@ struct CaptureSheet: View {
         ToolbarItem(placement: .cancellationAction) {
             Button("Cancel") {
                 recorder.cancel()
+                streamRecorder.cancel()
                 dismiss()
             }
             .tint(theme.fgMuted)
@@ -264,34 +279,54 @@ struct CaptureSheet: View {
             await stopAndTranscribe()
         } else {
             transcribeError = nil
-            _ = await recorder.start()
-            if case .denied = recorder.state {
-                transcribeError = "Microphone access denied. Enable in Settings → Tesela."
+            if streaming {
+                streamRecorder.onChunk = { transcript in
+                    appendTranscript(transcript)
+                }
+                streamRecorder.onError = { msg in
+                    transcribeError = msg
+                }
+                _ = await streamRecorder.start(using: engine)
+                if case .denied = streamRecorder.state {
+                    transcribeError = "Microphone access denied. Enable in Settings → Tesela."
+                }
+            } else {
+                _ = await recorder.start()
+                if case .denied = recorder.state {
+                    transcribeError = "Microphone access denied. Enable in Settings → Tesela."
+                }
             }
         }
     }
 
     private func stopAndTranscribe() async {
+        if streaming {
+            // Final chunk + cleanup runs inside StreamingVoiceRecorder.stop.
+            await streamRecorder.stop()
+            return
+        }
         guard let url = recorder.stop() else { return }
         transcribing = true
         defer { transcribing = false }
         do {
-            let transcript = try await mosaic.transcribe(audio: url)
+            let transcript = try await engine.transcribe(audio: url)
             recorder.discardFile()
             let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 transcribeError = "No speech recognized."
             } else {
-                // Append to whatever's in the text field so the user
-                // can add more, or hit Save to commit immediately.
-                if text.isEmpty {
-                    text = trimmed
-                } else {
-                    text += (text.hasSuffix(" ") ? "" : " ") + trimmed
-                }
+                appendTranscript(trimmed)
             }
         } catch {
             transcribeError = (error as NSError).localizedDescription
+        }
+    }
+
+    private func appendTranscript(_ transcript: String) {
+        if text.isEmpty {
+            text = transcript
+        } else {
+            text += (text.hasSuffix(" ") ? "" : " ") + transcript
         }
     }
 

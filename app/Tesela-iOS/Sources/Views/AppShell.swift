@@ -27,10 +27,14 @@ struct AppShell: View {
             if onboardingComplete {
                 shell
                     .sheet(isPresented: $showCapture) {
-                        CaptureSheet(mosaic: mosaic, seed: captureSeed)
-                            .environment(\.theme, appearance.theme)
-                            .environment(\.density, appearance.density)
-                            .onDisappear { captureSeed = "" }
+                        CaptureSheet(
+                            mosaic: mosaic,
+                            transcription: transcription,
+                            seed: captureSeed
+                        )
+                        .environment(\.theme, appearance.theme)
+                        .environment(\.density, appearance.density)
+                        .onDisappear { captureSeed = "" }
                     }
                     .sheet(isPresented: $showSearch) {
                         SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)

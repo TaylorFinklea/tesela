@@ -94,6 +94,12 @@ final class TranscriptionStore: NSObject, ObservableObject {
 
     func activate(_ modelId: String) {
         guard case .downloaded = state(for: modelId) else { return }
+        // Block activation for models we can't actually run yet.
+        // The Manage Models UI hides the Set Active button for these,
+        // but a programmatic call could still get here.
+        if let model = TranscriptionCatalog.find(modelId), !model.inferenceSupported {
+            return
+        }
         activeModelId = modelId
     }
 

@@ -10,6 +10,15 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
 
+# Phase 29 — Whisper.cpp via Swift Package Manager so iOS can run
+# transcription on-device without a server round-trip. SwiftWhisper
+# wraps the whisper.cpp C++ source and adds Accelerate + CoreML
+# acceleration when available.
+packages:
+  SwiftWhisper:
+    url: https://github.com/exPHAT/SwiftWhisper
+    branch: master
+
 targets:
   Tesela:
     type: application
@@ -17,6 +26,9 @@ targets:
     sources:
       - path: Sources
       - path: Generated
+    dependencies:
+      - package: SwiftWhisper
+        product: SwiftWhisper
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.tesela.ios

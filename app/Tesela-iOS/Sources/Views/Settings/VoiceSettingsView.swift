@@ -12,6 +12,8 @@ struct VoiceSettingsView: View {
     @AppStorage("voice.autoPunctuation") private var autoPunctuation = true
     @AppStorage("voice.splitOnPauses") private var splitOnPauses = false
     @AppStorage("voice.language") private var language = "en-US"
+    @AppStorage("voice.useOnDevice") private var useOnDevice = true
+    @AppStorage("voice.streaming") private var streaming = true
 
     @Environment(\.theme) private var theme
 
@@ -58,12 +60,14 @@ struct VoiceSettingsView: View {
             }
 
             Section {
+                Toggle("Run on this device", isOn: $useOnDevice)
+                Toggle("Stream transcription", isOn: $streaming)
                 Toggle("Auto-punctuation", isOn: $autoPunctuation)
                 Toggle("Split on long pauses", isOn: $splitOnPauses)
             } header: {
                 Text("Behavior")
             } footer: {
-                Text("Auto-punctuation is heuristic only — no model call. Split on pauses adds a new block whenever you pause for over 1.5s.")
+                Text("On-device runs whisper.cpp through Accelerate + CoreML — works offline. Otherwise transcription rides the tesela-server. Auto-punctuation is heuristic only; split-on-pauses adds a block when you pause >1.5s.")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(theme.fgFaint)
             }

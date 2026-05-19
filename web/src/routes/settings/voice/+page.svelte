@@ -19,6 +19,7 @@
     state: "available" | "downloading" | "downloaded" | "failed";
     on_disk_bytes: number | null;
     active: boolean;
+    inference_supported: boolean;
   };
 
   let models = $state<ModelStatus[]>([]);
@@ -164,13 +165,17 @@
                 <div class="actions">
                   {#if m.state === "downloaded"}
                     {#if !m.active}
-                      <button
-                        class="btn primary"
-                        onclick={() => activateModel(m)}
-                        disabled={busy[m.id] !== null && busy[m.id] !== undefined}
-                      >
-                        {busy[m.id] === "activate" ? "Activating…" : "Set active"}
-                      </button>
+                      {#if m.inference_supported}
+                        <button
+                          class="btn primary"
+                          onclick={() => activateModel(m)}
+                          disabled={busy[m.id] !== null && busy[m.id] !== undefined}
+                        >
+                          {busy[m.id] === "activate" ? "Activating…" : "Set active"}
+                        </button>
+                      {:else}
+                        <span class="mono unsupported">inference not yet supported</span>
+                      {/if}
                     {/if}
                     <button
                       class="btn danger"
@@ -360,5 +365,9 @@
   .on-disk {
     color: var(--fg-faint);
     margin-left: 8px;
+  }
+  .unsupported {
+    color: var(--type-note);
+    font-size: 11px;
   }
 </style>
