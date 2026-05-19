@@ -86,9 +86,21 @@ struct AppShell: View {
     private var activeContent: some View {
         switch activeTab {
         case .daily:
-            DailyView(mosaic: mosaic, backend: backend)
+            DailyView(
+                mosaic: mosaic,
+                backend: backend,
+                appearance: appearance,
+                syncState: syncState,
+                transcription: transcription
+            )
         case .inbox:
-            InboxView(mosaic: mosaic, backend: backend)
+            InboxView(
+                mosaic: mosaic,
+                backend: backend,
+                appearance: appearance,
+                syncState: syncState,
+                transcription: transcription
+            )
         case .library:
             LibraryView(
                 mosaic: mosaic,
@@ -116,11 +128,18 @@ private struct BottomChrome: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
             tabCapsule
             Spacer(minLength: 6)
-            actionCircle(systemImage: "magnifyingglass", label: "Search", action: onSearch)
-            actionCircle(systemImage: "plus", label: "Capture", tint: theme.accentPrimary, action: onCapture)
+            HStack(spacing: 8) {
+                actionCircle(systemImage: "magnifyingglass", label: "Search", action: onSearch)
+                actionCircle(
+                    systemImage: "plus",
+                    label: "Capture",
+                    tint: theme.accentPrimary,
+                    action: onCapture
+                )
+            }
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 16)

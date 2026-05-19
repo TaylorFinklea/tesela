@@ -12,6 +12,11 @@ struct DailyTopBar: View {
     let dateLabel: String
     var syncStatus: SyncDotState = .ok
     var onTapCalendar: () -> Void = {}
+    var onTapSettings: () -> Void = {}
+    /// Tap-target for the sync dot. When unreachable, jumping straight
+    /// into Settings → Backend is the only way out — so we make the red
+    /// dot itself a button.
+    var onTapSync: () -> Void = {}
 
     @Environment(\.theme) private var theme
 
@@ -38,15 +43,22 @@ struct DailyTopBar: View {
             HStack(spacing: 4) {
                 IconButton(name: .cal, action: onTapCalendar)
                     .accessibilityLabel("Calendar")
-                ZStack {
-                    Circle()
-                        .fill(dotColor.opacity(0.24))
-                        .frame(width: 14, height: 14)
-                    Circle()
-                        .fill(dotColor)
-                        .frame(width: 8, height: 8)
+                IconButton(name: .settings, action: onTapSettings)
+                    .accessibilityLabel("Settings")
+                Button(action: onTapSync) {
+                    ZStack {
+                        Circle()
+                            .fill(dotColor.opacity(0.24))
+                            .frame(width: 14, height: 14)
+                        Circle()
+                            .fill(dotColor)
+                            .frame(width: 8, height: 8)
+                    }
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
                 }
-                .frame(width: 36, height: 36)
+                .buttonStyle(.plain)
+                .accessibilityLabel(syncStatusAccessibilityLabel)
             }
         }
         .padding(.horizontal, 18)
@@ -56,6 +68,14 @@ struct DailyTopBar: View {
             Rectangle()
                 .fill(theme.lineSoft)
                 .frame(height: 1)
+        }
+    }
+
+    private var syncStatusAccessibilityLabel: String {
+        switch syncStatus {
+        case .ok:   return "Connected. Tap for backend settings."
+        case .warn: return "Connecting. Tap for backend settings."
+        case .err:  return "Disconnected. Tap to open backend settings."
         }
     }
 }

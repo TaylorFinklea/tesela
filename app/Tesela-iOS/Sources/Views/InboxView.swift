@@ -9,8 +9,14 @@ import SwiftUI
 struct InboxView: View {
     @ObservedObject var mosaic: MockMosaicService
     @ObservedObject var backend: BackendSettings
+    /// Optional — wires the top-bar gear button to the shared Settings
+    /// sheet, mirroring DailyView and LibraryView.
+    var appearance: AppearanceController? = nil
+    var syncState: SyncState? = nil
+    var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
+    @State private var showSettings: Bool = false
 
     var body: some View {
         NavigationStack {
@@ -21,6 +27,33 @@ struct InboxView: View {
                     await mosaic.refresh(from: backend.backend)
                 }
                 .background(theme.bg)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            showSettings = true
+                        } label: {
+                            Icon(name: .settings, size: 20)
+                                .foregroundStyle(theme.fgMuted)
+                        }
+                        .accessibilityLabel("Settings")
+                    }
+                }
+                .sheet(isPresented: $showSettings) {
+                    if let appearance, let syncState {
+                        SettingsView(
+                            appearance: appearance,
+                            mosaic: mosaic,
+                            syncState: syncState,
+                            backend: backend,
+                            transcription: transcription
+                        )
+                        .environment(\.theme, theme)
+                        .environment(\.density, appearance.density)
+                    } else {
+                        Text("Settings unavailable.")
+                            .padding()
+                    }
+                }
         }
     }
 

@@ -12,11 +12,17 @@ struct DailyView: View {
     @ObservedObject var mosaic: MockMosaicService
     /// Optional — drives pull-to-refresh and the dynamic sync dot.
     var backend: BackendSettings? = nil
+    /// Settings entry hooks. Provided by AppShell so the top-bar gear
+    /// and the (tappable) sync dot can both lead to the same place.
+    var appearance: AppearanceController? = nil
+    var syncState: SyncState? = nil
+    var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
     @State private var editingBlockId: String? = nil
     @State private var navigationPath = NavigationPath()
     @State private var showDatePicker: Bool = false
+    @State private var showSettings: Bool = false
     @State private var pickedDate: Date = Date()
 
     var body: some View {
@@ -26,7 +32,9 @@ struct DailyView: View {
                     title: mosaic.todayLongLabel,
                     dateLabel: mosaic.todayLabel,
                     syncStatus: syncStatus,
-                    onTapCalendar: { showDatePicker = true }
+                    onTapCalendar: { showDatePicker = true },
+                    onTapSettings: { showSettings = true },
+                    onTapSync: { showSettings = true }
                 )
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
@@ -66,6 +74,22 @@ struct DailyView: View {
             }
             .sheet(isPresented: $showDatePicker) {
                 datePickerSheet
+            }
+            .sheet(isPresented: $showSettings) {
+                if let appearance, let backend, let syncState {
+                    SettingsView(
+                        appearance: appearance,
+                        mosaic: mosaic,
+                        syncState: syncState,
+                        backend: backend,
+                        transcription: transcription
+                    )
+                    .environment(\.theme, theme)
+                    .environment(\.density, appearance.density)
+                } else {
+                    Text("Settings unavailable in this context.")
+                        .padding()
+                }
             }
         }
     }
