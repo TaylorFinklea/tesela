@@ -418,11 +418,23 @@ fn char_to_nibble(b: u8) -> Option<u8> {
     }
 }
 
-/// Construct the URL we embed in pairing codes. If the bind address is
-/// a wildcard (`0.0.0.0` / `[::]`) we substitute the first reachable
-/// non-loopback IPv4 from `if-addrs`. Loopback bind addresses keep
-/// their host (the user is testing on one machine on purpose).
+/// Construct the URL we embed in pairing codes. Resolution order:
+///
+/// 1. `TESELA_ADVERTISE_URL` env override — full URL the operator wants
+///    peers to use (e.g. a Tailscale IP, a hostname, or a tunnel like
+///    `https://my-mosaic.example.com`). Wins unconditionally. Useful
+///    when the autodetected first-LAN IPv4 isn't the address peers
+///    can actually route to.
+/// 2. Wildcard bind (`0.0.0.0` / `[::]`) → substitute the first
+///    reachable non-loopback IPv4 from `if-addrs`.
+/// 3. Otherwise use the bind host verbatim (the user picked it).
 fn build_public_url(bind: &str, port: u16) -> String {
+    if let Ok(advertised) = std::env::var("TESELA_ADVERTISE_URL") {
+        let trimmed = advertised.trim();
+        if !trimmed.is_empty() {
+            return trimmed.trim_end_matches('/').to_string();
+        }
+    }
     let host = bind
         .rsplit_once(':')
         .map(|(h, _)| h.trim_matches(|c| c == '[' || c == ']'))

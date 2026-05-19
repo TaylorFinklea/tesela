@@ -411,7 +411,13 @@ pub async fn lookup_pairing_short_code(
         .filter(|c| c.is_ascii_alphanumeric())
         .map(|c| c.to_ascii_uppercase())
         .collect();
+    tracing::info!(
+        "short-code lookup: raw={:?} normalised={:?}",
+        short,
+        normalised
+    );
     let Some(full) = lookup_short_code(&normalised) else {
+        tracing::info!("short-code lookup: {:?} -> 404", normalised);
         return Err((
             StatusCode::NOT_FOUND,
             "short code unknown or expired".to_string(),
@@ -419,6 +425,12 @@ pub async fn lookup_pairing_short_code(
     };
     let decoded = decode_pairing_code(&full)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("decode: {e}")))?;
+    tracing::info!(
+        "short-code lookup: {:?} -> OK (inviter={}, url={})",
+        normalised,
+        decoded.display_name,
+        decoded.url
+    );
     Ok(Json(PairingCodePayload {
         code: full,
         display_name: decoded.display_name,
