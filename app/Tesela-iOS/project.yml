@@ -73,3 +73,7 @@ targets:
         # submission.
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
+        # Phase 27 — voice capture. The mic button in the capture
+        # sheet records to a WAV file that's uploaded to the
+        # tesela-server's /transcription/transcribe endpoint.
+        NSMicrophoneUsageDescription: "Tesela uses the microphone for voice notes — recordings are transcribed and saved to today's daily, then discarded."

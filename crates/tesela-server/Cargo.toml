@@ -27,6 +27,11 @@ chrono.workspace = true
 regex.workspace = true
 reqwest = { workspace = true }
 futures = { workspace = true }
+# Phase 26 — Whisper inference via whisper.cpp Rust bindings. The
+# crate compiles whisper.cpp from source via build.rs; on macOS it
+# picks up Metal acceleration automatically.
+whisper-rs = { version = "0.13", default-features = false, features = ["metal"] }
+hound = "3.5"
 postcard.workspace = true
 uuid.workspace = true
 blake3.workspace = true

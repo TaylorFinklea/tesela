@@ -124,6 +124,8 @@ pub fn build(state: AppState) -> Router {
             post(transcription::activate_model),
         )
         .route("/transcription/active", get(transcription::get_active))
+        .route("/transcription/transcribe", post(transcription::transcribe))
+        .layer(axum::extract::DefaultBodyLimit::max(200 * 1024 * 1024))
         .route("/ws", get(ws::ws_handler))
         .layer(CorsLayer::permissive())
         .with_state(Arc::new(state))

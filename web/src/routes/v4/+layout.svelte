@@ -41,6 +41,7 @@
   import PeekPopover from "$lib/components/v4/PeekPopover.svelte";
   import Sidebar from "$lib/components/v5/Sidebar.svelte";
   import Station from "$lib/components/v4/Station.svelte";
+  import VoiceCaptureButton from "$lib/components/v4/VoiceCaptureButton.svelte";
   import StatusLine from "$lib/components/v5/StatusLine.svelte";
   import ChordMenu from "$lib/components/ChordMenu.svelte";
   import {
@@ -353,6 +354,7 @@
       <span class="v4-command-bar-hint">Command Station — verbs, dashboard…</span>
     </button>
     <div class="v4-topbar-icons">
+      <VoiceCaptureButton />
       <button
         type="button"
         title="fullscreen graph · ⌘G"

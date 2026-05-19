@@ -226,6 +226,53 @@ final class MockMosaicService: ObservableObject, MosaicService {
         }
     }
 
+    // MARK: - Voice transcription
+
+    /// Upload a WAV file to the server's /transcription/transcribe
+    /// endpoint and return the transcribed text. The server holds
+    /// the active model selection in `<mosaic>/.tesela/models/ACTIVE`.
+    func transcribe(audio fileURL: URL) async throws -> String {
+        guard case .http(let baseURL) = currentBackend else {
+            throw URLError(.badURL)
+        }
+        let endpoint = endpoint("/transcription/transcribe", baseURL: baseURL)
+        var req = URLRequest(url: endpoint)
+        req.httpMethod = "POST"
+        let boundary = "Boundary-\(UUID().uuidString)"
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 120  // larger model + audio can take a while
+
+        let data = try Data(contentsOf: fileURL)
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"audio\"; filename=\"recording.wav\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/wav\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        let (responseData, response) = try await session.upload(for: req, from: body)
+        try ensureOk(response, data: responseData)
+        let decoded = try JSONDecoder().decode(APITranscribeResponse.self, from: responseData)
+        return decoded.text
+    }
+
+    private struct APITranscribeResponse: Decodable {
+        let text: String
+        let model_id: String
+        let duration_ms: Int
+    }
+
+    /// Convenience: take a recording, transcribe it, and append the
+    /// resulting text as a new block on today's daily. Returns the
+    /// transcript so the caller can surface it for confirmation.
+    func captureVoiceNote(audio fileURL: URL) async throws -> String {
+        let text = try await transcribe(audio: fileURL)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            capture(trimmed)
+        }
+        return trimmed
+    }
+
     private struct APISearchHit: Decodable {
         let note_id: String
         let title: String

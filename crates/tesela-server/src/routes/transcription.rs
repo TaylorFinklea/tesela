@@ -13,14 +13,15 @@
 use crate::state::AppState;
 use crate::error::{AppError, AppResult};
 use axum::{
-    extract::{Path, State},
+    extract::{Multipart, Path, State},
     Json,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::path::PathBuf;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelCatalogEntry {
@@ -300,4 +301,178 @@ pub async fn get_active(
     Ok(Json(ActiveModelResponse {
         active: read_active(&s).await,
     }))
+}
+
+// ── Phase 26 — actual transcription inference ─────────────────────────
+
+/// In-process cache of the loaded Whisper model. Loading from disk
+/// takes a few hundred ms even for small models, so we keep the
+/// context around between requests. Re-loaded when the active model
+/// changes.
+static MODEL_CACHE: OnceLock<Mutex<Option<LoadedModel>>> = OnceLock::new();
+
+struct LoadedModel {
+    id: String,
+    ctx: WhisperContext,
+}
+
+fn model_cache() -> &'static Mutex<Option<LoadedModel>> {
+    MODEL_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+#[derive(Serialize)]
+pub struct TranscribeResponse {
+    pub text: String,
+    pub model_id: String,
+    pub duration_ms: u64,
+}
+
+/// POST /transcription/transcribe — multipart upload with one file
+/// field named "audio". Decodes 16-bit WAV mono/stereo at any sample
+/// rate (resamples to 16kHz mono), runs Whisper inference using the
+/// active model, returns the text.
+///
+/// The active model file lives at `<mosaic>/.tesela/models/<id>.bin`.
+/// If no active model is set, returns 400.
+pub async fn transcribe(
+    State(s): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> AppResult<Json<TranscribeResponse>> {
+    let active_id = read_active(&s)
+        .await
+        .ok_or_else(|| AppError::Validation("No active transcription model".into()))?;
+    let model_path = model_path(&s, &active_id);
+    if fs::metadata(&model_path).await.is_err() {
+        return Err(AppError::Validation(format!(
+            "Active model {active_id} not on disk"
+        )));
+    }
+
+    // Pull the audio file out of the multipart body.
+    let mut audio_bytes: Option<Vec<u8>> = None;
+    while let Some(field) = multipart.next_field().await.map_err(|e| {
+        AppError::Internal(anyhow::anyhow!("multipart read: {e}"))
+    })? {
+        if field.name() == Some("audio") {
+            let bytes = field.bytes().await.map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("read audio field: {e}"))
+            })?;
+            audio_bytes = Some(bytes.to_vec());
+            break;
+        }
+    }
+    let audio = audio_bytes
+        .ok_or_else(|| AppError::Validation("missing 'audio' multipart field".into()))?;
+
+    let started = std::time::Instant::now();
+    let samples = decode_audio_to_16k_mono(&audio)?;
+
+    // Run inference on a blocking thread so we don't stall the
+    // tokio runtime — Whisper inference is CPU-heavy and the Metal
+    // accelerator still drives a synchronous Rust API.
+    let model_id_owned = active_id.clone();
+    let model_path_owned = model_path.clone();
+    let text = tokio::task::spawn_blocking(move || -> Result<String, anyhow::Error> {
+        let mut cache = model_cache().lock().unwrap();
+        let needs_load = match cache.as_ref() {
+            Some(loaded) => loaded.id != model_id_owned,
+            None => true,
+        };
+        if needs_load {
+            let path_str = model_path_owned.to_string_lossy().to_string();
+            let ctx = WhisperContext::new_with_params(
+                &path_str,
+                WhisperContextParameters::default(),
+            )
+            .map_err(|e| anyhow::anyhow!("load whisper model: {e}"))?;
+            *cache = Some(LoadedModel {
+                id: model_id_owned.clone(),
+                ctx,
+            });
+        }
+        let ctx = &cache.as_ref().unwrap().ctx;
+        let mut state = ctx
+            .create_state()
+            .map_err(|e| anyhow::anyhow!("whisper state: {e}"))?;
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+        params.set_language(Some("en"));
+        state
+            .full(params, &samples)
+            .map_err(|e| anyhow::anyhow!("whisper inference: {e}"))?;
+        let n = state
+            .full_n_segments()
+            .map_err(|e| anyhow::anyhow!("segment count: {e}"))?;
+        let mut out = String::new();
+        for i in 0..n {
+            if let Ok(seg) = state.full_get_segment_text(i) {
+                out.push_str(&seg);
+            }
+        }
+        Ok(out.trim().to_string())
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("blocking task: {e}")))?
+    .map_err(AppError::Internal)?;
+
+    Ok(Json(TranscribeResponse {
+        text,
+        model_id: active_id,
+        duration_ms: started.elapsed().as_millis() as u64,
+    }))
+}
+
+/// Decode a WAV byte buffer to mono 16kHz f32 samples.
+/// Falls back with a Validation error if the format isn't a
+/// recognized 16-bit PCM WAV.
+fn decode_audio_to_16k_mono(bytes: &[u8]) -> Result<Vec<f32>, AppError> {
+    use std::io::Cursor;
+    let cursor = Cursor::new(bytes);
+    let mut reader = hound::WavReader::new(cursor)
+        .map_err(|e| AppError::Validation(format!("not a WAV file: {e}")))?;
+    let spec = reader.spec();
+    if spec.sample_format != hound::SampleFormat::Int || spec.bits_per_sample != 16 {
+        return Err(AppError::Validation(
+            "expected 16-bit PCM WAV".into(),
+        ));
+    }
+    // Read samples interleaved by channel, then collapse to mono.
+    let mut interleaved: Vec<i16> = Vec::with_capacity(reader.len() as usize);
+    for s in reader.samples::<i16>() {
+        let s = s.map_err(|e| AppError::Validation(format!("read sample: {e}")))?;
+        interleaved.push(s);
+    }
+    let mono: Vec<f32> = if spec.channels == 1 {
+        interleaved.iter().map(|s| *s as f32 / i16::MAX as f32).collect()
+    } else {
+        // Average each channel-group into one sample.
+        let ch = spec.channels as usize;
+        interleaved
+            .chunks_exact(ch)
+            .map(|frame| {
+                let sum: i32 = frame.iter().map(|s| *s as i32).sum();
+                (sum as f32 / ch as f32) / i16::MAX as f32
+            })
+            .collect()
+    };
+    // Resample to 16kHz if needed via simple linear interpolation.
+    let target_rate = 16_000u32;
+    if spec.sample_rate == target_rate {
+        return Ok(mono);
+    }
+    let ratio = spec.sample_rate as f64 / target_rate as f64;
+    let out_len = (mono.len() as f64 / ratio).round() as usize;
+    let mut out = Vec::with_capacity(out_len);
+    for i in 0..out_len {
+        let pos = i as f64 * ratio;
+        let lo = pos.floor() as usize;
+        let hi = (lo + 1).min(mono.len() - 1);
+        let frac = (pos - lo as f64) as f32;
+        let s = mono[lo] * (1.0 - frac) + mono[hi] * frac;
+        out.push(s);
+    }
+    Ok(out)
 }
