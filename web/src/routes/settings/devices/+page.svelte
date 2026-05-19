@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
+  import QRCode from "qrcode-svg";
   import { api, ApiError } from "$lib/api-client";
   import type {
     SyncDeviceInfo,
@@ -213,6 +214,24 @@
     discovered.filter((d) => !pairedHexes.has(d.device_id_hex)),
   );
 
+  // QR-encode the local pairing code so a phone can scan it directly.
+  // Renders as inline SVG via qrcode-svg — no canvas, no async, no image
+  // fetch. Falls back to empty string while the code isn't loaded.
+  const pairingQrSvg = $derived(
+    pairingCode
+      ? new QRCode({
+          content: pairingCode.code,
+          padding: 2,
+          width: 220,
+          height: 220,
+          color: "#0a0a0a",
+          background: "#ffffff",
+          ecl: "M",
+          join: true,
+        }).svg()
+      : "",
+  );
+
   onMount(() => {
     refresh();
     pollHandle = setInterval(refresh, 5000);
@@ -392,14 +411,30 @@
   {:else if pairingCode}
     <div class="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2.5">
       <div class="text-[10.5px] uppercase tracking-widest text-amber-500/80 mb-1">Pairing code</div>
-      <code class="block text-[11px] font-mono break-all leading-relaxed">{pairingCode.code}</code>
-      <div class="mt-2 flex items-center gap-2">
+      <div class="flex flex-col items-center gap-3 my-2">
+        <div
+          class="bg-white p-2 rounded-md shadow-sm"
+          aria-label="Pairing code QR"
+        >
+          {@html pairingQrSvg}
+        </div>
+        <div class="text-[10.5px] text-muted-foreground/70 font-mono">
+          Point your phone's camera at this QR to pair.
+        </div>
+      </div>
+      <details class="text-[11px]">
+        <summary class="cursor-pointer text-muted-foreground/70 select-none hover:text-foreground">
+          Show raw code
+        </summary>
+        <code class="block mt-2 text-[11px] font-mono break-all leading-relaxed">{pairingCode.code}</code>
+      </details>
+      <div class="mt-3 flex items-center gap-2">
         <button
           type="button"
           class="text-[11px] px-2.5 py-1 rounded-md border border-border/40 text-foreground hover:bg-muted/40"
           onclick={copyPairingCode}
         >
-          Copy
+          Copy code
         </button>
         <button
           type="button"
