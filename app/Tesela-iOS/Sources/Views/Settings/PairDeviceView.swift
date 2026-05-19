@@ -1,28 +1,38 @@
 import SwiftUI
 import UIKit
 
-/// Symmetric P2P pair-device flow. Generates a real pairing code via
-/// the Rust FFI (`encodePairingCode`) so the QR + 6-digit code shown to
-/// the user are the actual handshake material — not placeholders.
+/// Pair-device flow. iOS is currently a thin HTTP client of a server
+/// elsewhere, so the QR + 6-character code displayed here are the
+/// SERVER's pairing material — fetched from `GET /sync/peer/pairing-code`
+/// on whichever backend the user is connected to. The iPhone effectively
+/// becomes a mobile vector for sharing the server's pairing code with a
+/// third device that happens to be near the phone but not the desktop.
 ///
-/// Symmetric language per decision #4: "Pair this iPhone with another
-/// device" — never "source of truth", never "host", never "relay".
+/// When iOS is in mock mode (no server attached), the QR card is hidden
+/// — the iPhone has no real group state of its own to share yet. The
+/// "Scan" and "Type code" paths are still available because they're
+/// the joiner direction (no local state needed).
 struct PairDeviceView: View {
     @ObservedObject var backend: BackendSettings
     @ObservedObject var mosaic: MockMosaicService
 
     @Environment(\.theme) private var theme
 
-    @State private var pairingCode: String = ""
-    @State private var shortCode: String = ""
+    @State private var serverCode: MockMosaicService.ServerPairingCode?
+    @State private var fetchingCode: Bool = false
     @State private var error: String?
     @State private var showScanner: Bool = false
     @State private var showTypedCode: Bool = false
 
+    private var isAttachedToServer: Bool {
+        if case .http = backend.backend { return true }
+        return false
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text("Pair this iPhone with another device on your network. Either device can be the one starting the pair — sync is fully symmetric.")
+                Text(introCopy)
                     .font(.system(size: 13))
                     .foregroundStyle(theme.fgMuted)
 
@@ -30,7 +40,11 @@ struct PairDeviceView: View {
 
                 typedCodeCard
 
-                qrCard
+                if isAttachedToServer {
+                    qrCard
+                } else {
+                    notConnectedCard
+                }
 
                 Section {
                     pairingSteps
@@ -43,7 +57,7 @@ struct PairDeviceView: View {
         .background(theme.bg)
         .navigationTitle("Pair a device")
         .navigationBarTitleDisplayMode(.inline)
-        .onAppear { generateCode() }
+        .task { await refreshCode() }
         .fullScreenCover(isPresented: $showScanner) {
             NavigationStack {
                 PairScanView(backend: backend, mosaic: mosaic)
@@ -127,7 +141,7 @@ struct PairDeviceView: View {
         .buttonStyle(.plain)
     }
 
-    // ── QR code + short code card ───────────────────────────────────────
+    // ── QR + short code card (server-issued) ────────────────────────────
 
     private var qrCard: some View {
         VStack(spacing: 14) {
@@ -137,31 +151,36 @@ struct PairDeviceView: View {
                     .foregroundStyle(theme.typeTask)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 12)
-            } else {
-                // Real QR rendered from the FFI pairing code.
-                QRCodeView(payload: pairingCode)
+            } else if let code = serverCode {
+                QRCodeView(payload: code.code)
                     .frame(width: 220, height: 220)
                     .background(theme.fgDefault)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
+            } else if fetchingCode {
+                ProgressView()
+                    .frame(width: 220, height: 220)
+            } else {
+                Color.clear.frame(height: 220)
             }
 
             VStack(spacing: 4) {
-                Text(shortCode.isEmpty ? "—" : shortCode)
+                Text(formattedShortCode)
                     .font(.system(size: 22, weight: .medium, design: .monospaced))
                     .tracking(4)
                     .foregroundStyle(theme.accentPrimary)
-                Text("6-digit code · expires in 9:47")
+                Text(shortCodeCaption)
                     .font(.system(size: 10.5, design: .monospaced))
                     .foregroundStyle(theme.fgFaint)
             }
 
             Button {
-                generateCode()
+                Task { await refreshCode() }
             } label: {
-                Label("Generate new code", systemImage: "arrow.clockwise")
+                Label("Refresh code", systemImage: "arrow.clockwise")
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundStyle(theme.fgMuted)
             }
+            .disabled(fetchingCode)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 18)
@@ -171,6 +190,39 @@ struct PairDeviceView: View {
                 .stroke(theme.line, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var notConnectedCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Not connected to a server")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(theme.fgDefault)
+            Text("Pair this iPhone with a server first (use Scan or Type a code above). Once connected, this card will show that mosaic's pairing code so you can bring in a third device.")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(theme.fgMuted)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.bg2)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(theme.line, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var formattedShortCode: String {
+        guard let code = serverCode, !code.short_code.isEmpty else { return "—" }
+        let s = code.short_code.uppercased()
+        guard s.count >= 6 else { return s }
+        let mid = s.index(s.startIndex, offsetBy: s.count / 2)
+        return "\(s[s.startIndex..<mid]) · \(s[mid..<s.endIndex])"
+    }
+
+    private var shortCodeCaption: String {
+        guard let code = serverCode else { return "6-character code" }
+        let mins = max(1, code.short_code_expires_in_secs / 60)
+        return "6-character code · valid \(mins) min"
     }
 
     // ── How-it-works steps ──────────────────────────────────────────────
@@ -206,30 +258,34 @@ struct PairDeviceView: View {
         }
     }
 
-    // ── Pairing code generation (real FFI call) ─────────────────────────
+    private var introCopy: String {
+        isAttachedToServer
+            ? "Show this QR or read the 6 characters to a third device to add it to the same mosaic. Or use Scan / Type code above to point this iPhone at a different server."
+            : "Use Scan or Type code below to point this iPhone at a server."
+    }
 
-    private func generateCode() {
+    // ── Pairing code fetch (real handshake material from the server) ────
+
+    /// Fetch the server's pairing code (long base64url + short verifier).
+    /// Replaces the earlier iPhone-local code generator, which made fake
+    /// material (random group, `tesela://pair` URL) that couldn't pair
+    /// anything in practice. The real material lives on the server we're
+    /// connected to.
+    @MainActor
+    private func refreshCode() async {
+        guard isAttachedToServer else {
+            serverCode = nil
+            error = nil
+            return
+        }
+        fetchingCode = true
+        defer { fetchingCode = false }
         do {
-            let identity = generateGroupIdentity()
-            let deviceId = generateDeviceIdHex()
-            let url = "tesela://pair"
-            let code = try encodePairingCode(
-                groupIdHex: identity.groupIdHex,
-                groupKeyHex: identity.groupKeyHex,
-                deviceIdHex: deviceId,
-                url: url,
-                displayName: "This iPhone"
-            )
-            pairingCode = code
-            // Short code: take 6 hex digits of the device id for the
-            // human-typable fallback. Real implementation would derive
-            // this from the pairing protocol; the visual treatment lands
-            // the same way.
-            let chunk = deviceId.prefix(6).uppercased()
-            shortCode = "\(chunk.prefix(3)) · \(chunk.suffix(3))"
+            serverCode = try await mosaic.fetchPairingCode()
             error = nil
         } catch {
-            self.error = "Failed to generate pairing code"
+            self.error = "Couldn't reach the server to fetch a pairing code."
+            self.serverCode = nil
         }
     }
 }

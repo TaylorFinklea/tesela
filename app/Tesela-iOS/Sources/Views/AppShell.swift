@@ -152,8 +152,8 @@ private struct BottomChrome: View {
                 tabButton(tab)
             }
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
         .glassEffect(.regular.interactive(), in: .capsule)
     }
 
@@ -162,16 +162,16 @@ private struct BottomChrome: View {
         return Button {
             withAnimation(.snappy(duration: 0.18)) { activeTab = tab }
         } label: {
-            VStack(spacing: 2) {
+            VStack(spacing: 3) {
                 Image(systemName: tab.systemImage)
-                    .font(.system(size: 17, weight: on ? .semibold : .regular))
+                    .font(.system(size: 18, weight: on ? .semibold : .regular))
                 Text(tab.label)
-                    .font(.system(size: 10, weight: on ? .semibold : .regular))
+                    .font(.system(size: 10.5, weight: on ? .semibold : .regular))
             }
             .foregroundStyle(on ? theme.accentPrimary : theme.fgMuted)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
-            .frame(minWidth: 56)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 5)
+            .frame(minWidth: 62)
             .background {
                 if on {
                     Capsule().fill(theme.accentPrimary.opacity(0.16))
@@ -183,7 +183,10 @@ private struct BottomChrome: View {
     }
 
     /// Single Liquid Glass circle for an action button. Optional tint
-    /// for the brand-tinted capture button.
+    /// for the brand-tinted capture button. The icon size and circle
+    /// dimensions are picked so the visual height matches the tab
+    /// capsule's height (so the row reads as one bar of three groups
+    /// rather than a tall capsule with two small circles floating).
     private func actionCircle(
         systemImage: String,
         label: String,
@@ -192,8 +195,8 @@ private struct BottomChrome: View {
     ) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 48, height: 48)
+                .font(.system(size: 19, weight: .semibold))
+                .frame(width: 52, height: 52)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)

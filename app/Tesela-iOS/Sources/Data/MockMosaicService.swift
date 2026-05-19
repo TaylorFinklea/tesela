@@ -50,7 +50,26 @@ final class MockMosaicService: ObservableObject, MosaicService {
         case ready
         case failed(String)
     }
-    @Published var connection: ConnectionState = .idle
+    @Published var connection: ConnectionState = .idle {
+        didSet {
+            // Auto-reconnect on every fresh transition into .failed.
+            // The user shouldn't have to manually pull-to-refresh after
+            // a transient WiFi blip or server restart; we keep retrying
+            // with exponential backoff (2s, 4s, 8s, ... capped at 60s)
+            // until the request succeeds and the daemon flips back to
+            // .ready, at which point the loop self-cancels.
+            switch (oldValue, connection) {
+            case (.failed, .failed): break // already retrying
+            case (_, .failed): startReconnectLoop()
+            case (_, .ready), (_, .idle): cancelReconnectLoop()
+            default: break
+            }
+        }
+    }
+
+    /// In-flight reconnect task. Cancelled when we leave the .failed
+    /// state for any reason (success, mock-mode swap, explicit refresh).
+    private var reconnectTask: Task<Void, Never>?
 
     /// Per-page load state, keyed by note id. PageView reads this to
     /// show a loading skeleton while the body is being fetched.
@@ -224,6 +243,28 @@ final class MockMosaicService: ObservableObject, MosaicService {
             }
             searchInFlight = false
         }
+    }
+
+    // MARK: - Pairing-code fetch
+
+    /// Server-issued pairing code. The iPhone is the thin HTTP client,
+    /// so the "QR you show to a third device" is the *server's* code,
+    /// not anything iPhone-local. This wraps GET /sync/peer/pairing-code
+    /// so PairDeviceView can render real handshake material.
+    struct ServerPairingCode: Decodable, Equatable {
+        let code: String                       // long base64url payload
+        let display_name: String
+        let device_id_hex: String
+        let url: String
+        let short_code: String                 // 6-char verifier
+        let short_code_expires_in_secs: Int
+    }
+
+    func fetchPairingCode() async throws -> ServerPairingCode {
+        guard case .http(let baseURL) = currentBackend else {
+            throw URLError(.badURL)
+        }
+        return try await httpGet("/sync/peer/pairing-code", baseURL: baseURL)
     }
 
     // MARK: - Voice transcription
@@ -424,6 +465,39 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     func attach(backend: Backend) {
         currentBackend = backend
+    }
+
+    // MARK: - Auto-reconnect
+
+    /// Spin up a background loop that retries `refresh(from:)` on
+    /// exponentially growing delays. Subsequent calls cancel the
+    /// previous loop. The loop only runs while `connection == .failed`
+    /// for an `.http` backend — mock mode never retries.
+    private func startReconnectLoop() {
+        guard case .http = currentBackend else { return }
+        reconnectTask?.cancel()
+        reconnectTask = Task { [weak self] in
+            var delaySecs: UInt64 = 2
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: delaySecs * 1_000_000_000)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                // Don't fight a manual refresh that's already in-flight
+                // or recovered.
+                if case .failed = await self.connection {
+                    await self.refresh(from: self.currentBackend)
+                } else {
+                    return
+                }
+                // Cap backoff at 60s. Each tick doubles up to that.
+                delaySecs = min(delaySecs * 2, 60)
+            }
+        }
+    }
+
+    private func cancelReconnectLoop() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
     }
 
     private func scheduleWriteback() {

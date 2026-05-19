@@ -11,6 +11,7 @@ struct BackendSettingsView: View {
     @State private var pickerMode: BackendSettings.Mode
     @State private var urlField: String
     @State private var isReloading: Bool = false
+    @State private var showDisconnectConfirm: Bool = false
 
     init(backend: BackendSettings, mosaic: MockMosaicService) {
         self.backend = backend
@@ -76,11 +77,42 @@ struct BackendSettingsView: View {
                 .buttonStyle(.plain)
                 .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
             }
+
+            // Hide the disconnect affordance when there's nothing to
+            // disconnect from. Keeps mock mode visually clean.
+            if backend.mode == .http {
+                Section {
+                    Button(role: .destructive) {
+                        showDisconnectConfirm = true
+                    } label: {
+                        Text("Disconnect from server")
+                            .font(.system(size: 14, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                } footer: {
+                    Text("Drops the server URL and reverts to mock data. You'll need to re-pair to reconnect.")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.fgFaint)
+                }
+            }
         }
         .scrollContentBackground(.hidden)
         .background(theme.bg)
         .navigationTitle("Backend")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "Disconnect from server?",
+            isPresented: $showDisconnectConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Disconnect", role: .destructive) {
+                Task { await disconnect() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Backend will revert to mock data. Re-pair to reconnect to a server.")
+        }
     }
 
     private var connectionRow: some View {
@@ -140,5 +172,19 @@ struct BackendSettingsView: View {
         isReloading = true
         await mosaic.refresh(from: backend.backend)
         isReloading = false
+    }
+
+    /// Drop the saved server URL and revert to mock mode. The user can
+    /// re-pair to reconnect to a server. Distinct from "Save & refresh"
+    /// because we explicitly clear the URL field so the form mirrors the
+    /// disconnected state rather than keeping the old URL as a draft.
+    @MainActor
+    private func disconnect() async {
+        backend.mode = .mock
+        backend.serverURL = "http://127.0.0.1:7474"
+        pickerMode = .mock
+        urlField = backend.serverURL
+        mosaic.attach(backend: backend.backend)
+        await mosaic.refresh(from: backend.backend)
     }
 }
