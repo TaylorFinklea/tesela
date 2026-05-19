@@ -34,9 +34,15 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: app.tesela.ios
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/CFFI"
         HEADER_SEARCH_PATHS: "$(SRCROOT)/CFFI"
-        OTHER_LDFLAGS: "-ltesela_sync_ffi"
-        LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]: "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release"
-        LIBRARY_SEARCH_PATHS[sdk=iphoneos*]: "$(SRCROOT)/../../target/aarch64-apple-ios/release"
+        # Reference the static archive (.a) by explicit path. The Rust FFI
+        # crate produces both libtesela_sync_ffi.a and .dylib (the dylib is for
+        # host-side bindings tests). Using `-l<name>` plus a search path lets
+        # ld pick the dylib, which embeds an absolute dev-machine install-name
+        # — fine for the simulator, but dyld can't resolve that path on a
+        # physical device, causing __abort_with_payload at launch. An explicit
+        # .a path forces static linking on both SDKs.
+        OTHER_LDFLAGS[sdk=iphonesimulator*]: "$(SRCROOT)/../../target/aarch64-apple-ios-sim/release/libtesela_sync_ffi.a"
+        OTHER_LDFLAGS[sdk=iphoneos*]: "$(SRCROOT)/../../target/aarch64-apple-ios/release/libtesela_sync_ffi.a"
         # Only build arm64. We cross-compile tesela-sync-ffi for
         # aarch64-apple-ios{,-sim} but not x86_64-apple-ios — Apple
         # Silicon simulators don't need it. If we ever support Intel
@@ -49,14 +55,20 @@ targets:
         # - Simulator: ad-hoc (the system stub identity); no team
         #   needed; allows `xcrun simctl install`.
         # - Device: automatic with the personal Apple Development
-        #   team (N8SUK4L228 = taylor.finklea@icloud.com). Xcode
-        #   creates / refreshes the provisioning profile on demand
-        #   when xcodebuild is invoked with -allowProvisioningUpdates.
+        #   team. DEVELOPMENT_TEAM must be the team ID that owns the
+        #   provisioning profile (K7CBQW6MPG). The Apple ID suffix
+        #   that appears in the cert CN (N8SUK4L228 from
+        #   taylor.finklea@icloud.com) is not the team ID — that's
+        #   the per-Apple-ID developer team that the cert was issued
+        #   *for*, but the actual team membership and signing happen
+        #   against K7CBQW6MPG. Mismatching the two causes a "Provisioning
+        #   profile belongs to team X, which does not match the selected
+        #   team Y" error at build time.
         CODE_SIGN_IDENTITY[sdk=iphonesimulator*]: "-"
         CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]: "NO"
         CODE_SIGN_IDENTITY[sdk=iphoneos*]: "Apple Development"
         CODE_SIGN_STYLE: "Automatic"
-        DEVELOPMENT_TEAM: "N8SUK4L228"
+        DEVELOPMENT_TEAM: "K7CBQW6MPG"
         TARGETED_DEVICE_FAMILY: "1,2"
     info:
       path: Info.plist
