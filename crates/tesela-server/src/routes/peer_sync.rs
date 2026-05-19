@@ -16,8 +16,10 @@
 //! - `GET  /sync/peer/status`     per-peer last sync info (JSON out)
 //! - `GET  /sync/peer/discovered` (Phase 2.1) mDNS-discovered LAN peers (JSON out)
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use axum::{
     body::Bytes,
@@ -291,12 +293,86 @@ pub struct DiscoveredPeerView {
 /// Phase 2.2 — emit a pairing code carrying the local group identity,
 /// device id, URL, and display name. The joining side decodes this and
 /// adopts the group identity.
+///
+/// Phase 2.5 (short-code lookup) — every pairing code is also registered
+/// in a short-lived in-memory map keyed by a 6-character human-typable
+/// code. The response includes both the long code and the short code,
+/// so the desktop UI can render the short code under the QR and the
+/// joining device can either scan the QR (zero-typing) or type the
+/// 6 digits and look the long code up via
+/// `GET /sync/peer/short-code/:code`.
 #[derive(Debug, Serialize)]
 pub struct PairingCodePayload {
     pub code: String,
     pub display_name: String,
     pub device_id_hex: String,
     pub url: String,
+    /// 6-character short code (A-Z 0-9, ambiguous chars stripped) that
+    /// resolves to this same payload via the lookup endpoint. Lifetime
+    /// is bounded by [`SHORT_CODE_TTL`]; expired entries return 404 and
+    /// the caller must regenerate.
+    pub short_code: String,
+    /// Wall-clock seconds until the short code stops resolving. The UI
+    /// can use this to render a countdown.
+    pub short_code_expires_in_secs: u64,
+}
+
+/// How long a published short code is valid. After this, the in-memory
+/// entry is reaped and the lookup returns 404.
+const SHORT_CODE_TTL: Duration = Duration::from_secs(10 * 60);
+
+/// Characters used for the 6-char short code. Omits visually ambiguous
+/// glyphs (0/O, 1/I/L, etc.) so users mistype less when copying off a
+/// QR card.
+const SHORT_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const SHORT_CODE_LEN: usize = 6;
+
+/// Process-local map from short-code → (full_pairing_code, inserted_at).
+/// Lookup endpoints filter out entries past [`SHORT_CODE_TTL`] on every
+/// read so we never need a background reaper.
+fn short_code_map() -> &'static Mutex<HashMap<String, (String, Instant)>> {
+    static MAP: OnceLock<Mutex<HashMap<String, (String, Instant)>>> = OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn make_short_code() -> String {
+    use rand::Rng;
+    let mut rng = rand::thread_rng();
+    (0..SHORT_CODE_LEN)
+        .map(|_| {
+            let idx = rng.gen_range(0..SHORT_CODE_ALPHABET.len());
+            SHORT_CODE_ALPHABET[idx] as char
+        })
+        .collect()
+}
+
+/// Insert `code` and return a short verifier. If the random short code
+/// collides with a live entry we retry; bounded loop because collisions
+/// are astronomically unlikely with this alphabet + length.
+fn register_short_code(full: String) -> String {
+    let map = short_code_map();
+    let mut g = map.lock().unwrap();
+    let now = Instant::now();
+    // Reap expired entries opportunistically.
+    g.retain(|_, (_, inserted)| now.duration_since(*inserted) < SHORT_CODE_TTL);
+    for _ in 0..16 {
+        let candidate = make_short_code();
+        if !g.contains_key(&candidate) {
+            g.insert(candidate.clone(), (full, now));
+            return candidate;
+        }
+    }
+    // Vanishingly unlikely with 31^6 ≈ 8.8e8 slots and small live size;
+    // if we hit it, the caller can just regenerate.
+    String::new()
+}
+
+fn lookup_short_code(short: &str) -> Option<String> {
+    let map = short_code_map();
+    let mut g = map.lock().unwrap();
+    let now = Instant::now();
+    g.retain(|_, (_, inserted)| now.duration_since(*inserted) < SHORT_CODE_TTL);
+    g.get(short).map(|(full, _)| full.clone())
 }
 
 pub async fn get_pairing_code(
@@ -312,11 +388,44 @@ pub async fn get_pairing_code(
     );
     let encoded = encode_pairing_code(&code)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("encode: {e}")))?;
+    let short = register_short_code(encoded.clone());
     Ok(Json(PairingCodePayload {
         code: encoded,
         display_name: s.display_name.clone(),
         device_id_hex: device.to_hex(),
         url: s.public_url.clone(),
+        short_code: short,
+        short_code_expires_in_secs: SHORT_CODE_TTL.as_secs(),
+    }))
+}
+
+/// `GET /sync/peer/short-code/:code` — resolve a 6-char short code to the
+/// full base64url pairing code it was registered with. 404s on unknown
+/// or expired codes so the caller can prompt for a regenerate.
+pub async fn lookup_pairing_short_code(
+    AxPath(short): AxPath<String>,
+) -> Result<Json<PairingCodePayload>, (StatusCode, String)> {
+    // Normalise: drop separators a UI might add ("123-456" / "123 456").
+    let normalised: String = short
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    let Some(full) = lookup_short_code(&normalised) else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "short code unknown or expired".to_string(),
+        ));
+    };
+    let decoded = decode_pairing_code(&full)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("decode: {e}")))?;
+    Ok(Json(PairingCodePayload {
+        code: full,
+        display_name: decoded.display_name,
+        device_id_hex: decoded.device_id.to_hex(),
+        url: decoded.url,
+        short_code: normalised,
+        short_code_expires_in_secs: SHORT_CODE_TTL.as_secs(),
     }))
 }
 

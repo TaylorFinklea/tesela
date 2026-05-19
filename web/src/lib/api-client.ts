@@ -422,6 +422,13 @@ export interface SyncPairingCode {
   display_name: string;
   device_id_hex: string;
   url: string;
+  /** Phase 2.5 — 6-character human-typable verifier registered server-side
+   *  alongside `code`. The joining device can type this in instead of
+   *  scanning the QR; the server resolves it back to `code`. */
+  short_code: string;
+  /** Seconds the short code remains valid for. The UI can use this to
+   *  render a countdown so users know when to regenerate. */
+  short_code_expires_in_secs: number;
 }
 export interface SyncPairWithCodeResult {
   device_id_hex: string;

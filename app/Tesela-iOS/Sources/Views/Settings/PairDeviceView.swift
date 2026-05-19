@@ -17,6 +17,7 @@ struct PairDeviceView: View {
     @State private var shortCode: String = ""
     @State private var error: String?
     @State private var showScanner: Bool = false
+    @State private var showTypedCode: Bool = false
 
     var body: some View {
         ScrollView {
@@ -26,6 +27,8 @@ struct PairDeviceView: View {
                     .foregroundStyle(theme.fgMuted)
 
                 scanCard
+
+                typedCodeCard
 
                 qrCard
 
@@ -46,6 +49,47 @@ struct PairDeviceView: View {
                 PairScanView(backend: backend, mosaic: mosaic)
             }
         }
+        .sheet(isPresented: $showTypedCode) {
+            NavigationStack {
+                PairWithShortCodeView(backend: backend, mosaic: mosaic)
+            }
+            .presentationDetents([.medium])
+        }
+    }
+
+    // ── Typed-code card (join by typing the 6 digits) ───────────────────
+
+    private var typedCodeCard: some View {
+        Button {
+            showTypedCode = true
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(theme.accentPrimary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Type a 6-character code")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(theme.fgDefault)
+                    Text("Read the short code from the other device's pairing screen.")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.fgFaint)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(theme.fgFaint)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(theme.bg2)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(theme.line, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+        }
+        .buttonStyle(.plain)
     }
 
     // ── Scan card (join via another device's QR) ────────────────────────

@@ -71,6 +71,14 @@ pub fn build(state: AppState) -> Router {
         // Phase 2.2 pairing-code key exchange
         .route("/sync/peer/pairing-code", get(peer_sync::get_pairing_code))
         .route("/sync/peer/pair-code", post(peer_sync::pair_with_code))
+        // Phase 2.5 — 6-character short-code lookup (in-memory TTL'd map).
+        // The joining device types the short code shown under the QR;
+        // GET resolves it to the long base64url code, then the existing
+        // pair_with_code path takes over.
+        .route(
+            "/sync/peer/short-code/{code}",
+            get(peer_sync::lookup_pairing_short_code),
+        )
         .route("/search", get(search::search_notes))
         .route("/search/query", post(search_query::execute))
         .route("/calendar/marks", get(calendar::marks))

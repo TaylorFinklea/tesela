@@ -418,8 +418,19 @@
         >
           {@html pairingQrSvg}
         </div>
+        {#if pairingCode.short_code}
+          <div class="flex flex-col items-center gap-1">
+            <code
+              class="text-[22px] font-mono font-semibold tracking-[4px] text-amber-500/95"
+              aria-label="6-character short code"
+            >{pairingCode.short_code.slice(0, 3)} · {pairingCode.short_code.slice(3)}</code>
+            <div class="text-[10.5px] text-muted-foreground/70 font-mono">
+              6-char code · valid for {Math.round(pairingCode.short_code_expires_in_secs / 60)} min
+            </div>
+          </div>
+        {/if}
         <div class="text-[10.5px] text-muted-foreground/70 font-mono">
-          Point your phone's camera at this QR to pair.
+          Point your phone's camera at the QR, or type the short code in the iOS app.
         </div>
       </div>
       <details class="text-[11px]">
