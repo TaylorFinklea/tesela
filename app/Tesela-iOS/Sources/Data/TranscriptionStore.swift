@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import SwiftUI
+import FluidAudio
 
 /// Per-model state in the manage-models UI. Persisted under
 /// `Application Support/TranscriptionModels/state.json`.
@@ -28,6 +29,8 @@ final class TranscriptionStore: NSObject, ObservableObject {
 
     private var downloadTasks: [String: URLSessionDownloadTask] = [:]
     private var taskToModel: [Int: String] = [:]
+    /// In-flight FluidAudio (Parakeet) downloads, so they can be cancelled.
+    private var parakeetTasks: [String: Task<Void, Never>] = [:]
 
     private lazy var modelsDirectory: URL = {
         let base = FileManager.default
@@ -67,24 +70,67 @@ final class TranscriptionStore: NSObject, ObservableObject {
         case .downloading, .downloaded: return
         default: break
         }
+        if model.family == .parakeet {
+            startParakeetDownload(model)
+            return
+        }
+        guard let url = model.downloadURL else {
+            states[model.id] = .failed("No download URL for this model.")
+            return
+        }
         states[model.id] = .downloading(progress: 0, bytesWritten: 0, totalBytes: model.sizeBytes)
-        let task = session.downloadTask(with: model.downloadURL)
+        let task = session.downloadTask(with: url)
         task.taskDescription = model.id
         downloadTasks[model.id] = task
         taskToModel[task.taskIdentifier] = model.id
         task.resume()
     }
 
+    /// Parakeet downloads go through FluidAudio's `downloadAndLoad`,
+    /// which fetches + caches the CoreML model set. It reports no
+    /// progress, so the row shows an indeterminate state (totalBytes 0).
+    private func startParakeetDownload(_ model: TranscriptionModel) {
+        guard let version = fluidAudioVersion(model.parakeetVersion) else {
+            states[model.id] = .failed("Unknown Parakeet version.")
+            return
+        }
+        states[model.id] = .downloading(progress: 0, bytesWritten: 0, totalBytes: 0)
+        let id = model.id
+        let size = model.sizeBytes
+        let cacheURL = Self.parakeetCacheURL(versionToken: model.parakeetVersion ?? "")
+        parakeetTasks[id] = Task { [weak self] in
+            do {
+                _ = try await AsrModels.downloadAndLoad(to: cacheURL, version: version)
+                guard let self, !Task.isCancelled else { return }
+                self.states[id] = .downloaded(sizeOnDisk: size)
+                if self.activeModelId.isEmpty { self.activeModelId = id }
+                self.parakeetTasks.removeValue(forKey: id)
+                self.persistStateAsync()
+            } catch {
+                guard let self, !Task.isCancelled else { return }
+                self.states[id] = .failed(error.localizedDescription)
+                self.parakeetTasks.removeValue(forKey: id)
+                self.persistStateAsync()
+            }
+        }
+    }
+
     func cancelDownload(_ modelId: String) {
         downloadTasks[modelId]?.cancel()
         downloadTasks.removeValue(forKey: modelId)
+        parakeetTasks[modelId]?.cancel()
+        parakeetTasks.removeValue(forKey: modelId)
         states[modelId] = .available
         persistStateAsync()
     }
 
     func deleteModel(_ modelId: String) {
-        let url = localURL(for: modelId)
-        try? FileManager.default.removeItem(at: url)
+        if let model = TranscriptionCatalog.find(modelId), model.family == .parakeet {
+            let dir = Self.parakeetCacheURL(versionToken: model.parakeetVersion ?? "")
+            try? FileManager.default.removeItem(at: dir)
+        } else {
+            try? FileManager.default.removeItem(at: localURL(for: modelId))
+        }
         states[modelId] = .available
         if activeModelId == modelId {
             activeModelId = ""
@@ -120,6 +166,20 @@ final class TranscriptionStore: NSObject, ObservableObject {
         return dir.appendingPathComponent("\(modelId).bin")
     }
 
+    /// Cache directory for a Parakeet version's CoreML model set —
+    /// passed to FluidAudio's `downloadAndLoad(to:)` so the app owns
+    /// the files (and `deleteModel` can remove them).
+    nonisolated static func parakeetCacheURL(versionToken: String) -> URL {
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first ?? FileManager.default.temporaryDirectory
+        let dir = base
+            .appendingPathComponent("TranscriptionModels", isDirectory: true)
+            .appendingPathComponent("parakeet-\(versionToken)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
     // MARK: - Persistence
 
     private struct DiskState: Codable {
@@ -145,12 +205,22 @@ final class TranscriptionStore: NSObject, ObservableObject {
         // if the JSON file is stale.
         var rebuilt: [String: ModelState] = [:]
         for model in TranscriptionCatalog.all {
-            let url = localURL(for: model.id)
-            if FileManager.default.fileExists(atPath: url.path) {
-                let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
-                rebuilt[model.id] = .downloaded(sizeOnDisk: size)
+            if model.family == .parakeet {
+                // Parakeet is "downloaded" when FluidAudio's cache dir
+                // for that version has files in it.
+                let dir = Self.parakeetCacheURL(versionToken: model.parakeetVersion ?? "")
+                let contents = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+                rebuilt[model.id] = contents.isEmpty
+                    ? .available
+                    : .downloaded(sizeOnDisk: model.sizeBytes)
             } else {
-                rebuilt[model.id] = .available
+                let url = localURL(for: model.id)
+                if FileManager.default.fileExists(atPath: url.path) {
+                    let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+                    rebuilt[model.id] = .downloaded(sizeOnDisk: size)
+                } else {
+                    rebuilt[model.id] = .available
+                }
             }
         }
         states = rebuilt

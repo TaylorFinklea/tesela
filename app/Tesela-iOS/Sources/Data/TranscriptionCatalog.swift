@@ -10,17 +10,19 @@ struct TranscriptionModel: Identifiable, Codable, Hashable {
     let displayName: String
     let shortDescription: String
     let sizeBytes: Int64
-    let downloadURL: URL
+    /// HuggingFace `.bin` URL for Whisper models (downloaded by
+    /// `TranscriptionStore`). `nil` for Parakeet — FluidAudio downloads
+    /// and caches those itself; see `parakeetVersion`.
+    let downloadURL: URL?
     /// Suggested use-cases shown as small chips in the list.
     let suggestedFor: [String]
     /// True if the model is intended to run on-device (vs. server-only).
     let onDevice: Bool
-    /// True if Tesela can actually run inference for this model yet.
-    /// Whisper variants flip to true once the SwiftWhisper integration
-    /// is shipping (Phase 29). Parakeet variants stay false until a
-    /// NeMo runtime is wired up — they show in the catalog so users
-    /// can see what's planned, but Set Active is disabled.
+    /// True if Tesela can actually run inference for this model.
     let inferenceSupported: Bool
+    /// For Parakeet models, the FluidAudio `AsrModels.Version` token
+    /// (`v2` / `v3` / `tdtCtc110m`). `nil` for Whisper.
+    var parakeetVersion: String? = nil
 }
 
 enum ModelFamily: String, Codable, Hashable {
@@ -107,34 +109,47 @@ enum TranscriptionCatalog {
             inferenceSupported: true
         ),
 
-        // ── Parakeet (NVIDIA, packaged for iOS by FluidAudio) ───────
-        // The catalog used to point at NVIDIA's raw `.nemo` training
-        // bundles, which can't run on iOS. The same model used by
-        // VoiceInk and Handy is parakeet-tdt-0.6b, repackaged as
-        // CoreML by FluidInference — that's the ~450 MB on-device
-        // build. `inferenceSupported` stays false until we pull
-        // FluidAudio in as a Swift package (see roadmap "Later").
+        // ── Parakeet (NVIDIA, on-device via the FluidAudio package) ──
+        // FluidAudio downloads and caches the Parakeet CoreML model set
+        // itself (`AsrModels.downloadAndLoad`), so these entries carry
+        // no `downloadURL` — `parakeetVersion` is the FluidAudio
+        // `AsrModels.Version` token instead. `sizeBytes` is a UI
+        // estimate only.
         TranscriptionModel(
             id: "parakeet-tdt-0.6b-v2",
             family: .parakeet,
             displayName: "Parakeet · TDT 0.6B (v2)",
-            shortDescription: "FluidAudio CoreML build. Same model VoiceInk + Handy ship.",
+            shortDescription: "English-only. Highest English accuracy.",
             sizeBytes: 450_000_000,
-            downloadURL: URL(string: "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v2-coreml/resolve/main/parakeet-tdt-0.6b-v2-coreml.zip")!,
-            suggestedFor: ["streaming", "low latency"],
+            downloadURL: nil,
+            suggestedFor: ["english", "low latency"],
             onDevice: true,
-            inferenceSupported: false
+            inferenceSupported: true,
+            parakeetVersion: "v2"
         ),
         TranscriptionModel(
             id: "parakeet-tdt-0.6b-v3",
             family: .parakeet,
             displayName: "Parakeet · TDT 0.6B (v3)",
-            shortDescription: "Newer FluidAudio CoreML build. Same on-device cost as v2.",
+            shortDescription: "Multilingual — 25 European languages.",
             sizeBytes: 450_000_000,
-            downloadURL: URL(string: "https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml/resolve/main/parakeet-tdt-0.6b-v3-coreml.zip")!,
-            suggestedFor: ["streaming", "low latency", "accuracy"],
+            downloadURL: nil,
+            suggestedFor: ["multilingual", "streaming"],
             onDevice: true,
-            inferenceSupported: false
+            inferenceSupported: true,
+            parakeetVersion: "v3"
+        ),
+        TranscriptionModel(
+            id: "parakeet-tdt-ctc-110m",
+            family: .parakeet,
+            displayName: "Parakeet · TDT-CTC 110M",
+            shortDescription: "Smaller, faster hybrid. Lowest latency on iPhone.",
+            sizeBytes: 250_000_000,
+            downloadURL: nil,
+            suggestedFor: ["fast", "low latency"],
+            onDevice: true,
+            inferenceSupported: true,
+            parakeetVersion: "tdtCtc110m"
         ),
     ]
 

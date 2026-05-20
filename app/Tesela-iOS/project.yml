@@ -18,6 +18,11 @@ packages:
   SwiftWhisper:
     url: https://github.com/exPHAT/SwiftWhisper
     branch: master
+  # FluidAudio — on-device Parakeet (NVIDIA TDT) ASR via CoreML.
+  # Downloads + caches its own model set; see TranscriptionEngine.
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio
+    branch: main
 
 targets:
   Tesela:
@@ -29,6 +34,8 @@ targets:
     dependencies:
       - package: SwiftWhisper
         product: SwiftWhisper
+      - package: FluidAudio
+        product: FluidAudio
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.tesela.ios

@@ -506,7 +506,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
 ### iOS — Now / Next
 
 - The Peek surface is now real-data on every lens — backlinks, outline, props, tasks, and graph (graph = an outgoing-links list, tap-to-navigate). A real in-app **graph render** is a wanted later item; the list is the interim.
-- **Parakeet transcription** — the download-completion crash is fixed (it affected *all* model downloads). Parakeet itself still isn't usable: the catalog URLs 404 and on-device inference isn't wired (`inferenceSupported: false`). Open: what the Parakeet rows should do until then.
+- **Parakeet transcription** — wired on-device via the FluidAudio package (v2/v3/110M, `LocalTranscriptionEngine` family dispatch). Builds clean; the model-download + inference runtime path is not yet device-verified.
 - The Settings → Sync page has some mocked elements; sync itself works (per Taylor, 2026-05-20).
 - **Architecture note:** the app is an HTTP client, not the UniFFI-embedded core described in memory `mobile-strategy-ios-native`. `tesela-sync` UniFFI bindings are generated, but the embedded-core path is deferred.
 

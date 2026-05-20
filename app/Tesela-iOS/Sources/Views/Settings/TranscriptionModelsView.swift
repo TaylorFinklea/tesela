@@ -24,7 +24,7 @@ struct TranscriptionModelsView: View {
                         .foregroundStyle(theme.fgFaint)
                 } footer: {
                     if group.family == .parakeet {
-                        Text("Parakeet bundles ship as .nemo. The Tesela voice subsystem will load these once the on-device runtime ships.")
+                        Text("Parakeet runs on-device via the FluidAudio package. Downloading fetches a CoreML model set (a few hundred MB).")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(theme.fgFaint)
                     }
@@ -151,11 +151,18 @@ struct TranscriptionModelsView: View {
                         .lineLimit(1)
                 }
             case .downloading(let progress, let written, let total):
-                ProgressView(value: progress)
-                    .frame(maxWidth: .infinity)
-                Text(progressLabel(written: written, total: total))
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(theme.fgFaint)
+                if total > 0 {
+                    ProgressView(value: progress)
+                        .frame(maxWidth: .infinity)
+                    Text(progressLabel(written: written, total: total))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.fgFaint)
+                } else {
+                    ProgressView()
+                    Text("Downloading model…")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.fgFaint)
+                }
                 Button(role: .destructive) {
                     store.cancelDownload(model.id)
                 } label: {

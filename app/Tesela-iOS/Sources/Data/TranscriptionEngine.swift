@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import SwiftWhisper
+import FluidAudio
 
 /// Abstraction over the two transcription paths Tesela ships:
 ///   • `LocalTranscriptionEngine` — runs whisper.cpp on-device via
@@ -24,6 +25,16 @@ protocol TranscriptionEngine: AnyObject {
     var displayLabel: String { get }
 }
 
+/// Map a catalog `parakeetVersion` token to FluidAudio's model version.
+func fluidAudioVersion(_ token: String?) -> AsrModelVersion? {
+    switch token {
+    case "v2":         return .v2
+    case "v3":         return .v3
+    case "tdtCtc110m": return .tdtCtc110m
+    default:           return nil
+    }
+}
+
 // MARK: - Local engine (whisper.cpp via SwiftWhisper)
 
 @MainActor
@@ -35,6 +46,9 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
     /// initialized with. Loading a model takes hundreds of ms; we
     /// reuse it across requests until the user picks a different one.
     private var cached: (id: String, whisper: Whisper)? = nil
+    /// Cached FluidAudio manager for the active Parakeet model, reused
+    /// across requests until the user switches models.
+    private var cachedParakeet: (id: String, manager: AsrManager)? = nil
 
     init(store: TranscriptionStore) {
         self.store = store
@@ -56,6 +70,16 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
 
     func transcribe(samples: [Float]) async throws -> String {
         guard !samples.isEmpty else { return "" }
+        // Parakeet models run through FluidAudio; everything else is
+        // whisper.cpp. Both consume the same 16 kHz mono float samples.
+        if TranscriptionCatalog.find(store.activeModelId)?.family == .parakeet {
+            let manager = try await loadParakeet()
+            // Fresh decoder state per batch call — the state carries
+            // streaming continuity, which a one-shot transcribe doesn't need.
+            var decoderState = try TdtDecoderState()
+            let result = try await manager.transcribe(samples, decoderState: &decoderState)
+            return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
         let whisper = try await loadWhisper()
         let segments = try await whisper.transcribe(audioFrames: samples)
         return segments
@@ -94,6 +118,33 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
         }.value
         cached = (id, whisper)
         return whisper
+    }
+
+    /// Resolve (downloading if needed) and cache the FluidAudio
+    /// `AsrManager` for the active Parakeet model. `downloadAndLoad`
+    /// is idempotent — instant once the model set is cached on disk.
+    private func loadParakeet() async throws -> AsrManager {
+        let id = store.activeModelId
+        guard let model = TranscriptionCatalog.find(id),
+              let version = fluidAudioVersion(model.parakeetVersion)
+        else {
+            throw NSError(
+                domain: "Tesela.Transcription",
+                code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "No active Parakeet model. Open Settings → Voice → Manage models."]
+            )
+        }
+        if let cachedParakeet, cachedParakeet.id == id {
+            return cachedParakeet.manager
+        }
+        let models = try await AsrModels.downloadAndLoad(
+            to: TranscriptionStore.parakeetCacheURL(versionToken: model.parakeetVersion ?? ""),
+            version: version
+        )
+        let manager = AsrManager(config: .default)
+        try await manager.loadModels(models)
+        cachedParakeet = (id, manager)
+        return manager
     }
 
     /// Read a 16-bit PCM WAV at `url` and return 16 kHz mono floats.
