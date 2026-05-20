@@ -38,6 +38,11 @@ final class StreamingVoiceRecorder: ObservableObject {
     private var pendingSamples: [Float] = []
     private var chunkTimer: Timer?
     private var transcriber: TranscriptionEngine?
+    /// True while a `transcribeNextChunk` drain loop is running. The 5s
+    /// chunk timer checks this and skips rather than starting a second,
+    /// concurrent transcription — critical for Parakeet, whose first-call
+    /// CoreML model load is far slower than the chunk interval.
+    private var isTranscribing = false
 
     /// 5-second windows are short enough for sub-second latency on
     /// whisper-tiny while giving the model real context to work with.
@@ -94,15 +99,20 @@ final class StreamingVoiceRecorder: ObservableObject {
         }
     }
 
-    func stop() async {
+    /// Stops recording immediately. Audio still buffered is transcribed
+    /// best-effort in the background — stopping must never wait on
+    /// transcription, which for Parakeet includes a CoreML model load
+    /// that can take tens of seconds.
+    func stop() {
         guard case .recording = state else { return }
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         stopTimers()
-        // Flush the last partial chunk if it has anything in it.
-        await transcribeNextChunk()
         state = .idle
+        // Flush the tail. If a drain loop is already running it will pick
+        // up these samples itself; otherwise this kicks one off.
+        Task { @MainActor [weak self] in await self?.transcribeNextChunk() }
     }
 
     func cancel() {
@@ -195,22 +205,36 @@ final class StreamingVoiceRecorder: ObservableObject {
         state = .recording(elapsed: Date().timeIntervalSince(startedAt))
     }
 
-    /// Drain `pendingSamples` and run them through the transcriber.
-    /// Each chunk's text is delivered via `onChunk`.
+    /// Drain `pendingSamples` through the transcriber, delivering each
+    /// result via `onChunk`. Re-entrant callers (the 5s chunk timer, the
+    /// stop flush) are coalesced: `isTranscribing` ensures only one drain
+    /// loop runs at a time, and it keeps going until the buffer is empty.
+    ///
+    /// Without this coalescing a slow transcriber lets the timer spawn
+    /// many concurrent transcriptions — each Parakeet call loads a fresh
+    /// hundreds-of-MB CoreML model set, and a few in parallel get the app
+    /// jetsam-killed before the first result ever lands.
     private func transcribeNextChunk() async {
-        guard !pendingSamples.isEmpty, let transcriber else { return }
-        let chunk = pendingSamples
-        pendingSamples.removeAll(keepingCapacity: true)
+        guard !isTranscribing, !pendingSamples.isEmpty, let transcriber else { return }
+        isTranscribing = true
         transcribingChunk = true
-        defer { transcribingChunk = false }
-        do {
-            let text = try await transcriber.transcribe(samples: chunk)
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                onChunk?(trimmed)
+        defer {
+            isTranscribing = false
+            transcribingChunk = false
+        }
+        while !pendingSamples.isEmpty {
+            let chunk = pendingSamples
+            pendingSamples.removeAll(keepingCapacity: true)
+            do {
+                let text = try await transcriber.transcribe(samples: chunk)
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    onChunk?(trimmed)
+                }
+            } catch {
+                onError?(error.localizedDescription)
+                return
             }
-        } catch {
-            onError?(error.localizedDescription)
         }
     }
 }

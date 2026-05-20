@@ -199,7 +199,7 @@ struct CaptureBar: View {
 
     private func toggleRecording() async {
         if isRecording {
-            await recorder.stop()
+            recorder.stop()
             return
         }
         transcribeError = nil
