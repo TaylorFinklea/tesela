@@ -11,6 +11,7 @@ struct OnboardingView: View {
     @Binding var onboardingComplete: Bool
     @ObservedObject var backend: BackendSettings
     @ObservedObject var mosaic: MockMosaicService
+    @ObservedObject var registry: MosaicRegistry
     @State private var showPair: Bool = false
 
     @Environment(\.theme) private var theme
@@ -31,7 +32,7 @@ struct OnboardingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(theme.bg)
             .navigationDestination(isPresented: $showPair) {
-                PairDeviceView(backend: backend, mosaic: mosaic)
+                PairDeviceView(backend: backend, mosaic: mosaic, registry: registry)
                     .environment(\.theme, theme)
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {

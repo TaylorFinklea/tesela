@@ -60,6 +60,43 @@ final class MosaicRegistry: ObservableObject {
         add(seeded, makeActive: true)
     }
 
+    // MARK: - Discovery
+
+    /// Pull the mosaics a server knows about and add any not already in
+    /// the registry, keyed by `serverURL` + `mosaicPath`. Best-effort —
+    /// silently no-ops if the server is unreachable, so callers (pairing,
+    /// add-mosaic) keep working even when discovery fails.
+    ///
+    /// `activateCurrent` makes the server's currently-served mosaic the
+    /// active profile — used by the pairing handoff so joining a server
+    /// lands you on whatever it is serving.
+    @MainActor
+    func importDiscovered(serverURL: String, activateCurrent: Bool = false) async {
+        let list: [MosaicServerClient.DiscoveredMosaic]
+        do {
+            list = try await MosaicServerClient.discovered(serverURL: serverURL)
+        } catch {
+            return
+        }
+        for m in list where !profiles.contains(where: {
+            $0.serverURL == serverURL && $0.mosaicPath == m.path
+        }) {
+            profiles.append(MosaicProfile(name: m.name, serverURL: serverURL, mosaicPath: m.path))
+        }
+        var currentID: UUID?
+        if let current = list.first(where: { $0.is_current }) {
+            currentID = profiles.first {
+                $0.serverURL == serverURL && $0.mosaicPath == current.path
+            }?.id
+        }
+        if activateCurrent, let currentID {
+            activeID = currentID
+        } else if activeID == nil {
+            activeID = currentID ?? profiles.first?.id
+        }
+        persist()
+    }
+
     // MARK: - Persistence
 
     private func load() {
@@ -85,6 +122,126 @@ final class MosaicRegistry: ObservableObject {
             UserDefaults.standard.set(id.uuidString, forKey: activeKey)
         } else {
             UserDefaults.standard.removeObject(forKey: activeKey)
+        }
+    }
+}
+
+// MARK: - Server client
+
+/// Stateless HTTP client for a `tesela-server`'s mosaic-management
+/// endpoints. Kept separate from `MockMosaicService` (which serves one
+/// mosaic's data) because these calls can target a server that isn't
+/// the active backend yet — e.g. while adding a mosaic or pairing.
+enum MosaicServerClient {
+
+    /// One mosaic a server knows about on disk. Mirrors the server's
+    /// `DiscoveredMosaic` JSON.
+    struct DiscoveredMosaic: Decodable, Identifiable, Hashable {
+        let name: String
+        let path: String
+        let is_current: Bool
+        let note_count: Int
+        let last_modified: String?
+        var id: String { path }
+    }
+
+    enum ClientError: LocalizedError {
+        case badURL
+        case http(Int, String)
+
+        var errorDescription: String? {
+            switch self {
+            case .badURL:
+                return "That doesn't look like a valid server URL."
+            case let .http(code, body):
+                return "Server returned HTTP \(code)" + (body.isEmpty ? "" : ": \(body)")
+            }
+        }
+    }
+
+    /// GET /mosaics/discovered — every mosaic the server can see on disk.
+    static func discovered(serverURL: String) async throws -> [DiscoveredMosaic] {
+        try await get(serverURL, "/mosaics/discovered")
+    }
+
+    /// GET /mosaics/current — path of the mosaic the server is serving.
+    static func currentPath(serverURL: String) async throws -> String {
+        struct Resp: Decodable { let path: String }
+        let resp: Resp = try await get(serverURL, "/mosaics/current")
+        return resp.path
+    }
+
+    /// POST /mosaics/switch — persist a new default mosaic. Takes effect
+    /// only after `restart`.
+    static func switchMosaic(serverURL: String, path: String) async throws {
+        try await post(serverURL, "/mosaics/switch", body: ["path": path])
+    }
+
+    /// POST /server/restart — graceful restart so a switched mosaic
+    /// takes effect. Best-effort: the server schedules its own SIGTERM,
+    /// so a dropped connection here still means it is restarting.
+    static func restart(serverURL: String) async throws {
+        try await post(serverURL, "/server/restart", body: [:])
+    }
+
+    /// POST /mosaics — create a new named mosaic; returns its on-disk path.
+    static func createMosaic(serverURL: String, name: String) async throws -> String {
+        struct Resp: Decodable { let path: String }
+        let resp: Resp = try await postDecoding(serverURL, "/mosaics", body: ["name": name])
+        return resp.path
+    }
+
+    // MARK: Plumbing
+
+    private static func url(_ serverURL: String, _ path: String) throws -> URL {
+        let base = serverURL.trimmingCharacters(in: .whitespaces)
+        let trimmed = base.hasSuffix("/") ? String(base.dropLast()) : base
+        guard let u = URL(string: trimmed + path), u.scheme != nil, u.host != nil else {
+            throw ClientError.badURL
+        }
+        return u
+    }
+
+    private static func get<T: Decodable>(_ serverURL: String, _ path: String) async throws -> T {
+        var req = URLRequest(url: try url(serverURL, path))
+        req.timeoutInterval = 8
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try ensureOK(resp, data)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private static func post(_ serverURL: String, _ path: String, body: [String: String]) async throws {
+        let (data, resp) = try await rawPost(serverURL, path, body: body)
+        try ensureOK(resp, data)
+    }
+
+    private static func postDecoding<T: Decodable>(
+        _ serverURL: String, _ path: String, body: [String: String]
+    ) async throws -> T {
+        let (data, resp) = try await rawPost(serverURL, path, body: body)
+        try ensureOK(resp, data)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    private static func rawPost(
+        _ serverURL: String, _ path: String, body: [String: String]
+    ) async throws -> (Data, URLResponse) {
+        var req = URLRequest(url: try url(serverURL, path))
+        req.httpMethod = "POST"
+        req.timeoutInterval = 20
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        return try await URLSession.shared.data(for: req)
+    }
+
+    private static func ensureOK(_ resp: URLResponse, _ data: Data) throws {
+        guard let http = resp as? HTTPURLResponse else { return }
+        guard (200..<300).contains(http.statusCode) else {
+            throw ClientError.http(
+                http.statusCode,
+                String(data: data.prefix(160), encoding: .utf8) ?? ""
+            )
         }
     }
 }

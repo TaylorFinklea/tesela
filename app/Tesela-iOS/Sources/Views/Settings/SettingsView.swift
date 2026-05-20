@@ -92,7 +92,7 @@ struct SettingsView: View {
                         }
                     }
                     NavigationLink {
-                        PairDeviceView(backend: backend, mosaic: mosaic)
+                        PairDeviceView(backend: backend, mosaic: mosaic, registry: mosaicRegistry)
                     } label: {
                         LabeledContent("Pair a new device", value: "")
                     }

@@ -29,23 +29,9 @@ struct AppShell: View {
         TeselaAppearance(controller: appearance) {
             if onboardingComplete {
                 shell
-                    .task {
-                        // First launch: if no mosaic profiles exist
-                        // yet, seed one from the legacy
-                        // `backend.serverURL` value so existing users
-                        // don't lose their connection.
-                        mosaicRegistry.seedFromLegacyIfNeeded(
-                            legacyURL: backend.serverURL,
-                            defaultName: "My mosaic"
-                        )
-                        applyActiveMosaic()
-                        mosaic.attach(backend: backend.backend)
-                        await mosaic.refresh(from: backend.backend)
-                    }
+                    .task { await activateMosaic(initial: true) }
                     .onChange(of: mosaicRegistry.activeID) { _, _ in
-                        applyActiveMosaic()
-                        mosaic.attach(backend: backend.backend)
-                        Task { await mosaic.refresh(from: backend.backend) }
+                        Task { await activateMosaic(initial: false) }
                     }
                     .onChange(of: scenePhase) { _, newPhase in
                         // Foreground auto-refresh: when the user
@@ -63,19 +49,38 @@ struct AppShell: View {
                 OnboardingView(
                     onboardingComplete: $onboardingComplete,
                     backend: backend,
-                    mosaic: mosaic
+                    mosaic: mosaic,
+                    registry: mosaicRegistry
                 )
             }
         }
     }
 
-    /// Sync `BackendSettings.serverURL` with the active mosaic's URL.
-    /// Called on first launch and whenever the user switches profiles.
-    private func applyActiveMosaic() {
-        guard let active = mosaicRegistry.activeProfile else { return }
-        if backend.serverURL != active.serverURL {
-            backend.serverURL = active.serverURL
+    /// Point the data service at the active mosaic. Runs on first
+    /// launch and whenever the user switches profiles. When the active
+    /// profile names a specific on-disk mosaic, the server is asked to
+    /// switch+restart onto it before the data is loaded.
+    private func activateMosaic(initial: Bool) async {
+        if initial {
+            // First launch: if no profiles exist yet, seed one from the
+            // legacy `backend.serverURL` so existing users keep working.
+            mosaicRegistry.seedFromLegacyIfNeeded(
+                legacyURL: backend.serverURL,
+                defaultName: "My mosaic"
+            )
         }
+        if let active = mosaicRegistry.activeProfile {
+            if backend.serverURL != active.serverURL {
+                backend.serverURL = active.serverURL
+            }
+            mosaic.attach(backend: backend.backend)
+            if let path = active.mosaicPath, case .http = backend.backend {
+                await mosaic.ensureServerMosaic(path: path, serverURL: active.serverURL)
+            }
+        } else {
+            mosaic.attach(backend: backend.backend)
+        }
+        await mosaic.refresh(from: backend.backend)
     }
 
     private var shell: some View {

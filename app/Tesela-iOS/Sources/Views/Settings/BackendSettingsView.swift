@@ -137,10 +137,10 @@ struct BackendSettingsView: View {
     private var statusDot: some View {
         let color: Color = {
             switch mosaic.connection {
-            case .ready:      return theme.typeQuery
-            case .connecting: return theme.typeNote
-            case .failed:     return theme.typeTask
-            case .idle:       return theme.fgFaint
+            case .ready:                  return theme.typeQuery
+            case .connecting, .switching: return theme.typeNote
+            case .failed:                 return theme.typeTask
+            case .idle:                   return theme.fgFaint
             }
         }()
         return Circle().fill(color).frame(width: 10, height: 10)
@@ -150,6 +150,7 @@ struct BackendSettingsView: View {
         switch mosaic.connection {
         case .idle:       return backend.mode == .mock ? "Mock data" : "Not yet connected"
         case .connecting: return "Connecting…"
+        case .switching:  return "Switching mosaic…"
         case .ready:      return "Connected"
         case .failed:     return "Connection failed"
         }

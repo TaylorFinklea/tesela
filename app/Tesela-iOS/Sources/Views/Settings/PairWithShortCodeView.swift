@@ -13,6 +13,7 @@ import SwiftUI
 struct PairWithShortCodeView: View {
     @ObservedObject var backend: BackendSettings
     @ObservedObject var mosaic: MockMosaicService
+    @ObservedObject var registry: MosaicRegistry
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
@@ -177,8 +178,15 @@ struct PairWithShortCodeView: View {
     private func adopt(_ record: PairingCodeRecord) {
         backend.mode = .http
         backend.serverURL = record.url
-        mosaic.attach(backend: backend.backend)
-        Task { await mosaic.refresh(from: backend.backend) }
+        Task {
+            // Pairing handoff: import the inviter server's mosaics and
+            // activate its current one; AppShell loads from there.
+            await registry.importDiscovered(serverURL: record.url, activateCurrent: true)
+            if registry.activeProfile == nil {
+                mosaic.attach(backend: backend.backend)
+                await mosaic.refresh(from: backend.backend)
+            }
+        }
         resolved = nil
         dismiss()
     }

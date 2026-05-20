@@ -278,9 +278,9 @@ struct DailyView: View {
 
     private var syncStatus: DailyTopBar.SyncDotState {
         switch mosaic.connection {
-        case .ready, .idle:    return .ok
-        case .connecting:      return .warn
-        case .failed:          return .err
+        case .ready, .idle:           return .ok
+        case .connecting, .switching: return .warn
+        case .failed:                 return .err
         }
     }
 }

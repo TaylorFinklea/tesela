@@ -15,6 +15,7 @@ import UIKit
 struct PairScanView: View {
     @ObservedObject var backend: BackendSettings
     @ObservedObject var mosaic: MockMosaicService
+    @ObservedObject var registry: MosaicRegistry
 
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
@@ -233,9 +234,17 @@ struct PairScanView: View {
         // adoption happens server-side when iOS gains a local core.
         backend.mode = .http
         backend.serverURL = code.url
-        mosaic.attach(backend: backend.backend)
         Task {
-            await mosaic.refresh(from: backend.backend)
+            // Pairing handoff: pull the inviter server's mosaics into
+            // the registry and activate its current one. AppShell sees
+            // the activeID change and attaches + loads.
+            await registry.importDiscovered(serverURL: code.url, activateCurrent: true)
+            if registry.activeProfile == nil {
+                // Discovery failed — connect to whatever the server
+                // serves so the pair still lands somewhere usable.
+                mosaic.attach(backend: backend.backend)
+                await mosaic.refresh(from: backend.backend)
+            }
         }
         pending = nil
         dismiss()

@@ -47,7 +47,7 @@ struct MosaicSwitcherSheet: View {
                 }
             }
             .sheet(isPresented: $showAdd) {
-                MosaicEditView(registry: registry, existing: nil)
+                AddMosaicView(registry: registry)
                     .environment(\.theme, theme)
             }
             .sheet(item: $editing) { profile in
@@ -90,6 +90,7 @@ struct MosaicSwitcherSheet: View {
                 }
                 .buttonStyle(.plain)
             }
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -141,7 +142,7 @@ struct MosaicEditView: View {
                 } header: {
                     Text("Server")
                 } footer: {
-                    Text("URL of a `tesela-server` instance hosting this mosaic. Each mosaic currently needs its own server on a unique port — automatic discovery is on the roadmap.")
+                    Text("URL of the `tesela-server` instance hosting this mosaic.")
                         .font(.caption2)
                 }
 
@@ -240,5 +241,181 @@ struct MosaicEditView: View {
             registry.add(new, makeActive: true)
         }
         dismiss()
+    }
+}
+
+/// Discovery-driven "Add mosaic" flow. Instead of typing a server URL
+/// per mosaic, the user points at one server and picks from the
+/// mosaics it reports — or creates a new one on it. Added profiles are
+/// not made active (switching would restart the server); the user taps
+/// one in the switcher to actually switch.
+struct AddMosaicView: View {
+    @ObservedObject var registry: MosaicRegistry
+
+    @Environment(\.theme) private var theme
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var serverURL: String
+    @State private var discovered: [MosaicServerClient.DiscoveredMosaic] = []
+    @State private var loading = false
+    @State private var error: String?
+    @State private var didSearch = false
+    @State private var showCreate = false
+    @State private var newName = ""
+
+    init(registry: MosaicRegistry) {
+        self.registry = registry
+        // Pre-fill with an existing server URL — most users add another
+        // mosaic on the same Mac they already paired with.
+        _serverURL = State(initialValue: registry.profiles.first?.serverURL ?? "http://")
+    }
+
+    private var trimmedURL: String {
+        serverURL.trimmingCharacters(in: .whitespaces)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                serverSection
+                if let error {
+                    Section {
+                        Text(error)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(theme.typeTask)
+                    }
+                }
+                if didSearch {
+                    discoveredSection
+                }
+            }
+            .navigationTitle("Add mosaic")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Done") { dismiss() }
+                }
+            }
+            .alert("New mosaic", isPresented: $showCreate) {
+                TextField("Name", text: $newName)
+                Button("Cancel", role: .cancel) { newName = "" }
+                Button("Create") { Task { await createMosaic() } }
+            } message: {
+                Text("Creates an empty mosaic on the server.")
+            }
+        }
+    }
+
+    private var serverSection: some View {
+        Section {
+            TextField("http://192.168.1.42:7474", text: $serverURL)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .font(.system(size: 13, design: .monospaced))
+            Button {
+                Task { await find() }
+            } label: {
+                HStack {
+                    if loading { ProgressView() }
+                    Text(loading ? "Looking…" : "Find mosaics")
+                }
+            }
+            .disabled(loading || trimmedURL.isEmpty)
+        } header: {
+            Text("Server")
+        } footer: {
+            Text("Point at a `tesela-server`; it reports every mosaic it can host.")
+                .font(.caption2)
+        }
+    }
+
+    private var discoveredSection: some View {
+        Section {
+            if discovered.isEmpty && !loading {
+                Text("No mosaics found on this server.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.fgFaint)
+            }
+            ForEach(discovered) { mosaic in
+                discoveredRow(mosaic)
+            }
+            Button {
+                showCreate = true
+            } label: {
+                Label("Create new mosaic", systemImage: "plus.circle.fill")
+            }
+        } header: {
+            Text("Mosaics on this server")
+        }
+    }
+
+    private func discoveredRow(_ mosaic: MosaicServerClient.DiscoveredMosaic) -> some View {
+        let added = registry.profiles.contains {
+            $0.serverURL == trimmedURL && $0.mosaicPath == mosaic.path
+        }
+        return Button {
+            guard !added else { return }
+            registry.add(
+                MosaicProfile(name: mosaic.name, serverURL: trimmedURL, mosaicPath: mosaic.path),
+                makeActive: false
+            )
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "circle.grid.3x3")
+                    .foregroundStyle(theme.fgMuted)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(mosaic.name)
+                        .foregroundStyle(theme.fgDefault)
+                    Text("\(mosaic.note_count) notes")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.fgSubtle)
+                }
+                Spacer()
+                Image(systemName: added ? "checkmark.circle.fill" : "plus.circle")
+                    .foregroundStyle(added ? theme.typeQuery : theme.accentPrimary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(added)
+    }
+
+    @MainActor
+    private func find() async {
+        loading = true
+        error = nil
+        defer {
+            loading = false
+            didSearch = true
+        }
+        do {
+            discovered = try await MosaicServerClient.discovered(serverURL: trimmedURL)
+        } catch {
+            discovered = []
+            self.error = describe(error)
+        }
+    }
+
+    @MainActor
+    private func createMosaic() async {
+        let name = newName.trimmingCharacters(in: .whitespaces)
+        newName = ""
+        guard !name.isEmpty else { return }
+        error = nil
+        do {
+            let path = try await MosaicServerClient.createMosaic(serverURL: trimmedURL, name: name)
+            registry.add(
+                MosaicProfile(name: name, serverURL: trimmedURL, mosaicPath: path),
+                makeActive: false
+            )
+            await find()
+        } catch {
+            self.error = describe(error)
+        }
+    }
+
+    private func describe(_ error: Error) -> String {
+        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
     }
 }

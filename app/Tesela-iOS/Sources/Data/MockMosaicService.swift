@@ -51,6 +51,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
     enum ConnectionState: Equatable {
         case idle
         case connecting
+        /// The server is restarting to swap which mosaic it serves.
+        case switching
         case ready
         case failed(String)
     }
@@ -600,6 +602,47 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     func attach(backend: Backend) {
         currentBackend = backend
+    }
+
+    // MARK: - Mosaic switching
+
+    /// Make the server actually serve the mosaic at `path`. A no-op when
+    /// it already is. Otherwise: persist the switch, restart the server,
+    /// and hold `.switching` while it reboots (~2-3s) so the swap reads
+    /// as intentional rather than a connection failure. The caller's
+    /// `refresh()` then loads the new mosaic.
+    func ensureServerMosaic(path: String, serverURL: String) async {
+        let serving: String
+        do {
+            serving = try await MosaicServerClient.currentPath(serverURL: serverURL)
+        } catch {
+            // Can't read the current mosaic — leave the switch alone and
+            // let the normal refresh surface any real connectivity issue.
+            return
+        }
+        guard serving != path else { return }
+
+        connection = .switching
+        do {
+            try await MosaicServerClient.switchMosaic(serverURL: serverURL, path: path)
+        } catch {
+            connection = .failed(humanizeError(error, host: URL(string: serverURL)?.host))
+            return
+        }
+        // Best-effort: the server schedules its own SIGTERM, so a dropped
+        // connection on this call still means it is restarting.
+        try? await MosaicServerClient.restart(serverURL: serverURL)
+
+        // Poll until the server is back on the new mosaic, holding
+        // `.switching` throughout so the caller's refresh lands cleanly.
+        for delay in [2.0, 2.0, 3.0, 4.0] {
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            if (try? await MosaicServerClient.currentPath(serverURL: serverURL)) != nil {
+                return
+            }
+        }
+        // Gave up waiting — the caller's refresh will fail and the
+        // standard auto-reconnect loop takes over from there.
     }
 
     // MARK: - Auto-reconnect

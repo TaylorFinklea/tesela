@@ -17,19 +17,27 @@ struct MosaicProfile: Identifiable, Codable, Equatable, Hashable {
     /// SF Symbol shown in the TopBar slot (replaces the old sync dot).
     /// Color is driven by reachability, not by the profile.
     var iconSymbol: String
+    /// On-disk path of this mosaic on its server. Multiple profiles can
+    /// share one `serverURL` and differ only by `mosaicPath`; switching
+    /// to such a profile asks the server to switch+restart onto it.
+    /// `nil` = a legacy profile that only knows a URL (the server's
+    /// current mosaic, whatever that is).
+    var mosaicPath: String?
 
     init(
         id: UUID = UUID(),
         name: String,
         serverURL: String,
         authToken: String? = nil,
-        iconSymbol: String = "circle.grid.3x3"
+        iconSymbol: String = "circle.grid.3x3",
+        mosaicPath: String? = nil
     ) {
         self.id = id
         self.name = name
         self.serverURL = serverURL
         self.authToken = authToken
         self.iconSymbol = iconSymbol
+        self.mosaicPath = mosaicPath
     }
 }
 

@@ -15,6 +15,7 @@ import UIKit
 struct PairDeviceView: View {
     @ObservedObject var backend: BackendSettings
     @ObservedObject var mosaic: MockMosaicService
+    @ObservedObject var registry: MosaicRegistry
 
     @Environment(\.theme) private var theme
 
@@ -60,12 +61,12 @@ struct PairDeviceView: View {
         .task { await refreshCode() }
         .fullScreenCover(isPresented: $showScanner) {
             NavigationStack {
-                PairScanView(backend: backend, mosaic: mosaic)
+                PairScanView(backend: backend, mosaic: mosaic, registry: registry)
             }
         }
         .sheet(isPresented: $showTypedCode) {
             NavigationStack {
-                PairWithShortCodeView(backend: backend, mosaic: mosaic)
+                PairWithShortCodeView(backend: backend, mosaic: mosaic, registry: registry)
             }
             .presentationDetents([.medium])
         }
