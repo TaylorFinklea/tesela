@@ -1,6 +1,6 @@
 # Current State
 
-*Last updated: 2026-05-19*
+*Last updated: 2026-05-20*
 
 ## Active Branch
 
@@ -48,17 +48,31 @@
 
 ## Build Status
 
-- Rust: `cargo build --workspace`, `cargo test --workspace`, `cargo clippy --workspace -- -D warnings` — green on 2026-05-11.
-- Web: `pnpm --dir web check`, `pnpm --dir web exec tsc --noEmit`, `pnpm --dir web test:perf` — green on 2026-05-11. `pnpm --dir web run lint` has no configured script.
-- Dev server: `pnpm --dir web dev` (Vite)
+- Rust: `cargo test --workspace` green on 2026-05-20 (one flaky test — `tesela-server::sigterm_triggers_validated_backup` — passes on retry; not a real failure).
+- Web: `pnpm --dir web exec tsc --noEmit` green on 2026-05-20.
+- iOS: `xcodebuild -scheme Tesela` green for both `Tesela-Test` simulator and `Roshar` device (iPhone 15 Pro, id `A885F93A-60DD-59DA-9049-289C35EACE23`). Deploy: `xcodebuild ... -destination 'platform=iOS,name=Roshar' -allowProvisioningUpdates build` then `xcrun devicectl device install app --device <id> <Tesela.app>`. Bundle id `app.tesela.ios`.
+- Dev server: `pnpm --dir web dev` (Vite, port 5173)
+
+## Running Services (this session — may be stale next session)
+
+- `tesela-server` on `:7474` pointed at `~/teselas/personal` (the imported real Logseq mosaic).
+- Vite dev on `:5173`.
 
 ## Recent Session Notes
 
 - Phase 14.2 frontend perf smoke suite is in place under `web/tests/perf/`, with a runner that creates a medium fixture mosaic, starts `tesela-server` and Vite on dynamic localhost ports, runs Playwright, and records JSONL timings.
 - `tesela-fixtures` now seeds built-in Task/Status/Priority/Deadline/Scheduled pages so generated mosaics have task board property metadata before the server's initial index.
 - Phase 14.3 perf workflow is in `.github/workflows/perf.yml`: nightly/main uploads Criterion baselines, PRs diff with `critcmp`, and comments only when a benchmark regression exceeds 10%.
-- **2026-05-19 — iOS bottom chrome rewrite**: `app/Tesela-iOS/Sources/Views/AppShell.swift` now uses iOS 26 native `TabView` with `Tab(role: .search)` for the search slot, replacing the prior hand-rolled `BottomChrome` HStack (which had wrong proportions, materials, and safe-area positioning compared to Apple's Mail/Phone/Music). Search is now a tab destination (not a sheet); the system pins it trailing as a standalone Liquid Glass circle. Search & capture also added to `DailyTopBar` via new `\.openSearch` / `\.openCapture` environment values. Build green on Tesela-Test sim. Capture stays as a sheet (no chrome slot — iOS 26 has no `.capture` tab role and `tabViewBottomAccessory` always renders above the pill at rest on iPhone, so a one-row [pill][search][capture] layout is not possible without abandoning the native chrome — that experiment was tried and reverted).
+- **2026-05-19 — iOS bottom chrome rewrite**: `AppShell.swift` uses iOS 26 native `TabView` with `Tab(role: .search)` for the search slot, replacing the hand-rolled `BottomChrome` HStack.
+
+- **2026-05-20 — iOS persistent capture bar + keyboard toolbar**: `CaptureSheet` deleted; replaced by a persistent `CaptureBar` in `tabViewBottomAccessory` (`Components/CaptureBar.swift`) — Slack-style composer (target chip + `+` attach stub + text field + mic/send), always visible, floats above keyboard. `CaptureTarget` enum (today/inbox/page/childOf) + `CaptureDefault` AppStorage setting. Block editing got a keyboard accessory toolbar (`.toolbar(placement: .keyboard)` in `BlockRow.swift`) — user-configurable item list (`KeyboardToolbarItem`, Settings → Capture → Keyboard toolbar; horizontally scrollable, Hide-keyboard pinned right). Voice recorder (`StreamingVoiceRecorder`) lifted to AppShell `@StateObject` to fix a Fence Hang from repeated AVAudioEngine init. Enter-on-empty-line splits to a new block. Inline `#tag` editing round-trips via `MockMosaicService.splitInlineTags`.
+
+- **2026-05-20 — iOS multi-mosaic**: `MosaicProfile` + `MosaicRegistry` (device-local list persisted to UserDefaults, seeds first profile from legacy `backend.serverURL`). `MosaicChromeButton` replaces the old sync dot in all three TopBars — icon = active mosaic's symbol, color = reachability. `MosaicSwitcherSheet` + `MosaicEditView` for add/switch/edit. **Known limitation**: `tesela-server` is one-server-per-mosaic, so "Add mosaic" requires a separate server URL — see roadmap "Mosaic discovery + server-side multi-mosaic (PRIORITY)".
+
+- **2026-05-20 — Logseq importer fidelity + backup trust**: `import_logseq.rs` `convert_content` now preserves block refs `((uuid))` literally, wraps `#+BEGIN_QUERY` blocks in ` ```query ` fences, rewrites `../assets/` → `../attachments/` URLs, respects code fences. `feature_coverage_audit` test covers every construct. **The real `~/logseq` vault was imported** into `~/teselas/personal` (462 pages, 268 assets, 7 whiteboards hard-skipped — clean). Trust artifacts: `tesela-cli` integration test `logseq_import_backup_restore_byte_exact_round_trip` (CLI path) + `tesela-server` test `http_backup_round_trip` (web-UI path) — both do import→backup→restore→byte-exact-diff. Backup/restore confirmed working from the web UI (`BackupSettings.svelte`).
+
+- **2026-05-20 — web daily journal gap fix**: `JournalView.svelte` `visibleDailies` now builds a gap-free descending calendar from today back to the oldest real daily, filling missed days with synthetic empty placeholders.
 
 ## Blockers
 
-None.
+None. Note: iOS multi-mosaic is shipped but not truly useful until server-side multi-mosaic lands (roadmap PRIORITY item) — currently each mosaic needs its own `tesela-server` instance.
