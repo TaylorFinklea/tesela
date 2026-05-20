@@ -25,8 +25,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     @Published private(set) var palette: [PaletteVerb]
     @Published private(set) var searchResults: [SearchResult]
-    @Published private(set) var backlinks: [Backlink]
-    @Published private(set) var outline: [OutlineEntry]
+
+    /// Backlinks for each page the user has opened, keyed by note id.
+    /// Filled by `loadPage(id:)` from `GET /notes/{id}/backlinks`. The
+    /// page outline is derived on demand from `loadedPageBlocks`, so it
+    /// needs no field of its own.
+    @Published private(set) var loadedBacklinks: [String: [Backlink]] = [:]
 
     let todayDate: Date
 
@@ -101,13 +105,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
         self.pages = MockSeed.pages
         self.tags = MockSeed.tags
         self.recent = MockSeed.recent
-        self.pinned = MockSeed.pinned
+        self.pinned = Self.loadPinned()
         self.todayBlocks = MockSeed.todayBlocks
         self.yesterdayBlocks = MockSeed.yesterdayBlocks
         self.palette = MockSeed.palette
         self.searchResults = MockSeed.searchResults
-        self.backlinks = MockSeed.backlinks
-        self.outline = MockSeed.outline
     }
 
     // MARK: - Mutating API
@@ -455,6 +457,26 @@ final class MockMosaicService: ObservableObject, MosaicService {
         )
     }
 
+    /// Map a server `Link` into the iOS `Backlink` row model. Resolves
+    /// the source note id to its page title when that page is known,
+    /// and strips `<!-- bid:… -->` comments from the context line.
+    private func mapBacklink(_ link: APILink) -> Backlink {
+        let title = pages.first(where: { $0.id == link.target })?.title ?? link.target
+        var snippet = link.text
+            .replacingOccurrences(
+                of: #"<!--\s*bid:[^\s>]+\s*-->"#,
+                with: "",
+                options: .regularExpression
+            )
+            .trimmingCharacters(in: .whitespaces)
+        // The context line is a raw block — drop the leading `- ` bullet
+        // so the snippet reads as prose.
+        if snippet.hasPrefix("- ") {
+            snippet.removeFirst(2)
+        }
+        return Backlink(id: UUID(), from: title, snippet: snippet)
+    }
+
     /// Fetch a page's real body content and populate the cache.
     /// Idempotent — calling again while loading or ready is a no-op.
     /// Pass `force: true` to bust the cache (used on app foreground).
@@ -478,6 +500,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             } else {
                 loadedPageBlocks[id] = []
             }
+            loadedBacklinks[id] = MockSeed.backlinks
             pageLoadStates[id] = .ready
         case .http(let baseURL):
             do {
@@ -487,7 +510,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 pageLoadStates[id] = .ready
             } catch {
                 pageLoadStates[id] = .failed(humanizeError(error, host: baseURL.host))
+                return
             }
+            // Backlinks load independently of the body — a fetch
+            // failure here leaves an empty list rather than failing
+            // the whole page.
+            let links: [APILink] = (try? await httpGet("/notes/\(id)/backlinks", baseURL: baseURL)) ?? []
+            loadedBacklinks[id] = links.map(mapBacklink)
         }
     }
 
@@ -631,6 +660,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let note_type: String?
         let created: String?
         let modified: String?
+    }
+
+    /// `Link` JSON from `GET /notes/{id}/backlinks`. For backlinks the
+    /// server sets `target` to the *source* note's id and `text` to the
+    /// line of context; the other `Link` fields are unused here.
+    private struct APILink: Decodable {
+        let target: String
+        let text: String
     }
 
     /// Build a request URL by concatenating `baseURL` and `path` as
@@ -1003,17 +1040,47 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return "\(frontmatter)\n\n\(body)\n"
     }
 
+    // MARK: - Pinned pages (local favorites)
+
+    /// Pinned pages are device-local favorites — there is no server
+    /// "favorites" concept — persisted to `UserDefaults` as JSON so the
+    /// list survives relaunch and backend swaps.
+    private static let pinnedDefaultsKey = "pinned.pages"
+
+    private static func loadPinned() -> [PinnedEntry] {
+        guard let data = UserDefaults.standard.data(forKey: pinnedDefaultsKey),
+              let decoded = try? JSONDecoder().decode([PinnedEntry].self, from: data)
+        else { return [] }
+        return decoded
+    }
+
+    private func persistPinned() {
+        guard let data = try? JSONEncoder().encode(pinned) else { return }
+        UserDefaults.standard.set(data, forKey: Self.pinnedDefaultsKey)
+    }
+
+    func isPinned(_ id: String) -> Bool {
+        pinned.contains { $0.id == id }
+    }
+
+    /// Pin or unpin a page. Idempotent per page id.
+    func togglePin(page: Page) {
+        if let idx = pinned.firstIndex(where: { $0.id == page.id }) {
+            pinned.remove(at: idx)
+        } else {
+            pinned.append(PinnedEntry(id: page.id, title: page.title))
+        }
+        persistPinned()
+    }
+
     private func resetToSeed() {
         pages = MockSeed.pages
         tags = MockSeed.tags
         recent = MockSeed.recent
-        pinned = MockSeed.pinned
         todayBlocks = MockSeed.todayBlocks
         yesterdayBlocks = MockSeed.yesterdayBlocks
         palette = MockSeed.palette
         searchResults = MockSeed.searchResults
-        backlinks = MockSeed.backlinks
-        outline = MockSeed.outline
         serverDailyId = ""
     }
 }
@@ -1120,12 +1187,6 @@ enum MockSeed {
         RecentEntry(id: "maya-conversations", title: "Maya · conversations", at: "yesterday"),
     ]
 
-    static let pinned: [PinnedEntry] = [
-        PinnedEntry(id: "tesela-ios",       title: "Tesela iOS"),
-        PinnedEntry(id: "open-tasks",       title: "Open tasks"),
-        PinnedEntry(id: "ios-design-brief", title: "iPhone design brief"),
-    ]
-
     static let palette: [PaletteVerb] = [
         PaletteVerb(id: ":daily",          hint: "Open today's daily"),
         PaletteVerb(id: ":scratch",        hint: "Start a scratch page"),
@@ -1158,17 +1219,4 @@ enum MockSeed {
             snippet: "Maya: 'the [[Prism v5 chrome]] doc reads like a contract'..."),
     ]
 
-    static let outline: [OutlineEntry] = [
-        OutlineEntry(id: UUID(), depth: 0, text: "Context"),
-        OutlineEntry(id: UUID(), depth: 0, text: "Regions"),
-        OutlineEntry(id: UUID(), depth: 1, text: "Top bar"),
-        OutlineEntry(id: UUID(), depth: 1, text: "Left sidebar"),
-        OutlineEntry(id: UUID(), depth: 1, text: "Main pane tree"),
-        OutlineEntry(id: UUID(), depth: 0, text: "Three buffer kinds"),
-        OutlineEntry(id: UUID(), depth: 1, text: "Page buffer"),
-        OutlineEntry(id: UUID(), depth: 1, text: "Derived buffer"),
-        OutlineEntry(id: UUID(), depth: 1, text: "Ambient buffer"),
-        OutlineEntry(id: UUID(), depth: 0, text: "Renderer protocol"),
-        OutlineEntry(id: UUID(), depth: 0, text: "Focus rules"),
-    ]
 }

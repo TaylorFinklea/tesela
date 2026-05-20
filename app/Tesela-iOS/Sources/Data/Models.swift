@@ -96,3 +96,15 @@ struct OutlineEntry: Identifiable, Equatable, Hashable, Codable {
     var depth: Int
     var text: String
 }
+
+extension OutlineEntry {
+    /// Derive a page outline from its block list: one entry per
+    /// non-empty block, nesting depth taken from the block's indent.
+    /// The outline is a pure function of the blocks, so it is computed
+    /// on demand rather than stored.
+    static func derive(from blocks: [Block]) -> [OutlineEntry] {
+        blocks
+            .filter { !$0.text.trimmingCharacters(in: .whitespaces).isEmpty }
+            .map { OutlineEntry(id: UUID(), depth: $0.indent, text: $0.text) }
+    }
+}

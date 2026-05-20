@@ -107,6 +107,15 @@ struct PageView: View {
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(theme.fgSubtle)
                 Spacer()
+                Button {
+                    mosaic.togglePin(page: page)
+                } label: {
+                    Image(systemName: mosaic.isPinned(page.id) ? "star.fill" : "star")
+                        .font(.system(size: 13))
+                        .foregroundStyle(mosaic.isPinned(page.id) ? theme.accentPrimary : theme.fgSubtle)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(mosaic.isPinned(page.id) ? "Unpin page" : "Pin page")
             }
             HStack(spacing: 8) {
                 if syncState.showsModifiedMarker {
@@ -316,7 +325,7 @@ struct PageView: View {
                     } label: {
                         HStack(spacing: 4) {
                             Text(seg.label)
-                            if let count = seg.count(mosaic) {
+                            if let count = seg.count(mosaic, pageId: page.id) {
                                 Text(String(count))
                                     .foregroundStyle(theme.fgFaint)
                             }
@@ -341,8 +350,8 @@ struct PageView: View {
     @ViewBuilder
     private var segmentBody: some View {
         switch peekSegment {
-        case .backlinks: BacklinksView(mosaic: mosaic)
-        case .outline:   OutlineLensView(mosaic: mosaic)
+        case .backlinks: BacklinksView(mosaic: mosaic, pageId: page.id)
+        case .outline:   OutlineLensView(mosaic: mosaic, pageId: page.id)
         case .props:     PropsLensView(page: page, tags: tags)
         case .tasks:     TasksLensView()
         case .graph:     GraphLensView()
@@ -359,12 +368,18 @@ enum PeekSegment: String, CaseIterable, Identifiable {
     var label: String { rawValue }
 
     @MainActor
-    func count(_ mosaic: MockMosaicService) -> Int? {
+    func count(_ mosaic: MockMosaicService, pageId: String) -> Int? {
         switch self {
-        case .backlinks: return mosaic.backlinks.count
-        case .outline:   return mosaic.outline.count
-        case .tasks:     return mosaic.todayBlocks.filter { $0.kind == .task }.count
-        case .props, .graph: return nil
+        case .backlinks:
+            return mosaic.loadedBacklinks[pageId]?.count
+        case .outline:
+            return mosaic.loadedPageBlocks[pageId].map {
+                OutlineEntry.derive(from: $0).count
+            }
+        case .tasks:
+            return mosaic.todayBlocks.filter { $0.kind == .task }.count
+        case .props, .graph:
+            return nil
         }
     }
 }
@@ -373,25 +388,31 @@ enum PeekSegment: String, CaseIterable, Identifiable {
 
 struct BacklinksView: View {
     @ObservedObject var mosaic: MockMosaicService
+    let pageId: String
     @Environment(\.theme) private var theme
 
     var body: some View {
+        let backlinks = mosaic.loadedBacklinks[pageId] ?? []
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(mosaic.backlinks) { b in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(b.from)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(theme.accentPrimary)
-                    Text(b.snippet)
-                        .font(.system(size: 13.5))
-                        .foregroundStyle(theme.fgMuted)
-                        .lineSpacing(2)
-                }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .overlay(alignment: .bottom) {
-                    Rectangle().fill(theme.lineSoft).frame(height: 1)
+            if backlinks.isEmpty {
+                lensPlaceholder("No backlinks yet")
+            } else {
+                ForEach(backlinks) { b in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(b.from)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(theme.accentPrimary)
+                        Text(b.snippet)
+                            .font(.system(size: 13.5))
+                            .foregroundStyle(theme.fgMuted)
+                            .lineSpacing(2)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .overlay(alignment: .bottom) {
+                        Rectangle().fill(theme.lineSoft).frame(height: 1)
+                    }
                 }
             }
         }
@@ -400,24 +421,41 @@ struct BacklinksView: View {
 
 struct OutlineLensView: View {
     @ObservedObject var mosaic: MockMosaicService
+    let pageId: String
     @Environment(\.theme) private var theme
 
     var body: some View {
+        let entries = OutlineEntry.derive(from: mosaic.loadedPageBlocks[pageId] ?? [])
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(mosaic.outline) { o in
-                Text(o.text)
-                    .font(.system(size: 14))
-                    .foregroundStyle(o.depth == 0 ? theme.fgDefault : theme.fgMuted)
-                    .padding(.leading, CGFloat(18 + o.depth * 18))
-                    .padding(.trailing, 18)
-                    .padding(.vertical, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(alignment: .bottom) {
-                        Rectangle().fill(theme.lineSoft).frame(height: 1)
-                    }
+            if entries.isEmpty {
+                lensPlaceholder("No outline")
+            } else {
+                ForEach(entries) { o in
+                    Text(o.text)
+                        .font(.system(size: 14))
+                        .foregroundStyle(o.depth == 0 ? theme.fgDefault : theme.fgMuted)
+                        .lineLimit(1)
+                        .padding(.leading, CGFloat(18 + o.depth * 18))
+                        .padding(.trailing, 18)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .overlay(alignment: .bottom) {
+                            Rectangle().fill(theme.lineSoft).frame(height: 1)
+                        }
+                }
             }
         }
     }
+}
+
+/// Shared muted placeholder for a Peek lens that has nothing to show.
+private func lensPlaceholder(_ text: String) -> some View {
+    Text(text)
+        .font(.system(size: 12, design: .monospaced))
+        .foregroundStyle(Color.secondary)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
 }
 
 struct PropsLensView: View {
