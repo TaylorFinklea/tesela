@@ -104,7 +104,20 @@ final class TranscriptionStore: NSObject, ObservableObject {
     }
 
     func localURL(for modelId: String) -> URL {
-        modelsDirectory.appendingPathComponent("\(modelId).bin")
+        Self.modelFileURL(for: modelId)
+    }
+
+    /// Destination file for a model. `nonisolated` + `static` so the
+    /// background URLSession delegate can compute it without hopping to
+    /// the main actor — `MainActor.assumeIsolated` from the delegate
+    /// queue is a hard crash.
+    nonisolated static func modelFileURL(for modelId: String) -> URL {
+        let base = FileManager.default
+            .urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first ?? FileManager.default.temporaryDirectory
+        let dir = base.appendingPathComponent("TranscriptionModels", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("\(modelId).bin")
     }
 
     // MARK: - Persistence
@@ -180,9 +193,23 @@ extension TranscriptionStore: URLSessionDownloadDelegate {
         didFinishDownloadingTo location: URL
     ) {
         let modelId = downloadTask.taskDescription ?? ""
-        // The temp file at `location` is only valid for the duration
-        // of this delegate callback — move it synchronously.
-        let dest = MainActor.assumeIsolated { self.localURL(for: modelId) }
+        // URLSession reports an HTTP error response as a "finished"
+        // download whose file is the error body — reject non-2xx so a
+        // 404 page never gets saved as a model (and surfaces honestly).
+        if let http = downloadTask.response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            Task { @MainActor in
+                self.states[modelId] = .failed("Download failed (HTTP \(http.statusCode))")
+                self.downloadTasks.removeValue(forKey: modelId)
+                self.persistStateAsync()
+            }
+            return
+        }
+        // The temp file at `location` is only valid for the duration of
+        // this callback — move it synchronously. The destination is
+        // computed `nonisolated`; this runs on URLSession's background
+        // delegate queue, not the main actor.
+        let dest = Self.modelFileURL(for: modelId)
         try? FileManager.default.removeItem(at: dest)
         do {
             try FileManager.default.moveItem(at: location, to: dest)
