@@ -4304,6 +4304,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "walkdir",
  "whisper-rs",
 ]
 

@@ -210,23 +210,65 @@
     return `${y}-${m}-${day}`;
   }
 
-  /** Visible list = on-disk window, then synthetic empty days going back
-   *  `paddingDays` from the oldest on-disk daily (or today if there are
-   *  none). The result is descending by date and gap-free. */
+  /** Visible list = a gap-free descending calendar from today back to
+   *  the oldest on-disk daily, then `paddingDays` of additional empty
+   *  days for "scroll into the past" UX. Days that have a real file get
+   *  the real note; days without get a synthetic empty placeholder so
+   *  the feed renders without visual gaps between non-adjacent entries.
+   */
   const visibleDailies = $derived.by((): Note[] => {
     const real = onDiskVisible;
-    const lastRealDate = real.length > 0 ? real[real.length - 1].title : todayStr;
-    const onDiskDates = new Set(dailies.map((n) => n.title));
-    const synthetics: Note[] = [];
-    let cursor = lastRealDate;
-    for (let i = 0; i < paddingDays; i++) {
-      cursor = prevDate(cursor);
-      // Skip dates that DO have a daily on disk but were paged out — they
-      // belong in the on-disk list, not the synthetic tail.
-      if (onDiskDates.has(cursor)) continue;
-      synthetics.push(syntheticDaily(cursor));
+    if (real.length === 0) {
+      // Nothing on disk in the visible window — fall back to a
+      // paddingDays-deep synthetic tail starting at today.
+      const synth: Note[] = [];
+      let cursor = todayStr;
+      for (let i = 0; i < paddingDays; i++) {
+        synth.push(syntheticDaily(cursor));
+        cursor = prevDate(cursor);
+      }
+      return synth;
     }
-    return [...real, ...synthetics];
+
+    const byDate = new Map(real.map((n) => [n.title, n]));
+    const onDiskDates = new Set(dailies.map((n) => n.title));
+    const newest = real[0].title;
+    const oldest = real[real.length - 1].title;
+
+    // Step 1: today → oldest real, gap-free. Fill the in-betweens with
+    // synthetic empties so a write on a "missed" day still has a place
+    // to land. (Earlier behaviour skipped missed days entirely, which
+    // left a confusing visual jump from "Today" to whenever the user
+    // last wrote.)
+    const out: Note[] = [];
+    let cursor = todayStr;
+    while (true) {
+      if (byDate.has(cursor)) {
+        out.push(byDate.get(cursor)!);
+      } else {
+        out.push(syntheticDaily(cursor));
+      }
+      if (cursor === oldest) break;
+      cursor = prevDate(cursor);
+    }
+    // Guard against a bogus newest > today (server clock drift, etc.):
+    // if the oldest real entry is newer than today, the loop above
+    // never reaches it. Fall back to appending the on-disk list.
+    if (!out.some((n) => n.title === oldest)) {
+      out.push(...real.filter((n) => !byDate.has(out.find((o) => o.title === n.title)?.title || "")));
+    }
+
+    // Step 2: pad below the oldest real entry with `paddingDays` of
+    // synthetic empties so infinite scroll keeps revealing more days.
+    let tail = prevDate(oldest);
+    for (let i = 0; i < paddingDays; i++) {
+      if (!onDiskDates.has(tail)) {
+        out.push(syntheticDaily(tail));
+      }
+      tail = prevDate(tail);
+    }
+
+    return out;
   });
   const hasMore = $derived(onDiskVisible.length < dailies.length);
 

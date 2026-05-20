@@ -46,11 +46,17 @@ The user is daily-driving Tesela for tasks; three threads need to ship soon so t
 ### Later
 Rust backlog (parallel work) lives in the Backlog section below — Mechanical and Architectural items are safe for parallel work.
 
+**Bundled desktop app (no CLI required)** — Tesela today requires running `tesela init`, `tesela-server`, and `pnpm --dir web dev` from a terminal. That's a non-starter for actual daily-driver use. Need a single-installer macOS app (Tauri or SwiftUI shell) that bundles the Rust server binary + serves the SvelteKit web client + manages mosaic init/list/switch + import + backup + restore — all reachable from the UI. The CLI keeps existing for power users / scripting. Without this, every "trust" workflow (import a vault, take a backup, restore from a backup) requires terminal literacy. Priority: high once import + backup feel solid via CLI.
+
 **Executable code blocks (org-babel parity)** — fenced ``` ```lang ... ``` ``` blocks become "runnable" units the user can execute in place (a la Emacs org-mode babel / Jupyter cells). Output gets pinned under the block. Languages to support first: shell, Python, JavaScript. Hard parts: sandboxing, output streaming back into the block tree, deciding which interpreter the host vs. user trusts. Design needed before implementation.
 
 **iOS on-device Parakeet inference via FluidAudio** — Tesela's TranscriptionCatalog currently lists Parakeet variants pointed at NVIDIA's raw `.nemo` training-format files (not iOS-runnable). VoiceInk and Handy ship the same model (parakeet-tdt-0.6b-v2) via the FluidAudio Swift package, which bundles a CoreML-converted variant (~450MB on disk). Pull FluidAudio in as a dependency, swap the LocalTranscriptionEngine to dispatch to it for Parakeet IDs, flip `inferenceSupported` to true on those catalog entries.
 
-**iOS multi-mosaic support** — iOS currently assumes a single mosaic. Need: picker in Settings to switch between mosaics, persistence of selected-mosaic ID, plumbing through MockMosaicService so changing the active mosaic re-attaches the backend cleanly. Coordinate with sync (each device sees the same set of mosaics as the user's other clients).
+**Mosaic discovery + server-side multi-mosaic (PRIORITY)** — iOS's "Add mosaic" form currently requires the user to paste a server URL, which is unintuitive: their Mac is already running a `tesela-server` and they expect iOS to see whatever mosaics it has. Two coupled changes needed:
+  - **Server-side multi-mosaic**: `tesela-server` today is `--mosaic <one-path>`. Extend to host a list of mosaics with per-mosaic routing (path prefix or header) and a `GET /mosaics` endpoint that lists them. CLI's `init` adds to the list rather than overwriting.
+  - **Discovery / pair-handoff**: the existing pair-device flow (6-char short code + QR) is the right place to advertise the host's mosaic list. When iOS finishes pairing, it imports the host's available mosaics into its local `MosaicRegistry` automatically. LAN Bonjour discovery is a separate parallel path for "find devices already on my network."
+
+Without this, users have to spin up a second `tesela-server` on a different port to have a second mosaic — a non-starter for mobile-first daily-driving.
 
 ### When Picking Up Work
 1. Read `.docs/ai/current-state.md` and the section above.

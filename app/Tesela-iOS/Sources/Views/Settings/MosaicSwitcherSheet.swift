@@ -128,8 +128,8 @@ struct MosaicEditView: View {
                         .submitLabel(.next)
                 }
 
-                Section("Server") {
-                    TextField("http://127.0.0.1:7474", text: $serverURL)
+                Section {
+                    TextField("http://192.168.1.42:7474", text: $serverURL)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -138,6 +138,11 @@ struct MosaicEditView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(size: 13, design: .monospaced))
+                } header: {
+                    Text("Server")
+                } footer: {
+                    Text("URL of a `tesela-server` instance hosting this mosaic. Each mosaic currently needs its own server on a unique port — automatic discovery is on the roadmap.")
+                        .font(.caption2)
                 }
 
                 Section("Icon") {
