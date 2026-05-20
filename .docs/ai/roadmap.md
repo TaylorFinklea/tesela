@@ -505,9 +505,9 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
 
 ### iOS — Now / Next
 
-- **Sync is still mocked.** `SyncState` is a debug toggle; the iPhone is not a real peer. Gated behind the sync work order (iOS sync is last).
-- Placeholder surfaces: the Peek `tasks` and `graph` lenses are stub views; `PropsLens` has hardcoded `created`/`edited`.
-- On-device Parakeet inference via FluidAudio — see **Later** above.
+- The Peek surface is now real-data on every lens — backlinks, outline, props, tasks, and graph (graph = an outgoing-links list, tap-to-navigate). A real in-app **graph render** is a wanted later item; the list is the interim.
+- **Parakeet transcription** — the catalog lists Parakeet v2/v3, but downloading one crashes the app. Needs a fix.
+- The Settings → Sync page has some mocked elements; sync itself works (per Taylor, 2026-05-20).
 - **Architecture note:** the app is an HTTP client, not the UniFFI-embedded core described in memory `mobile-strategy-ios-native`. `tesela-sync` UniFFI bindings are generated, but the embedded-core path is deferred.
 
 ---

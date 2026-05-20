@@ -353,8 +353,8 @@ struct PageView: View {
         case .backlinks: BacklinksView(mosaic: mosaic, pageId: page.id)
         case .outline:   OutlineLensView(mosaic: mosaic, pageId: page.id)
         case .props:     PropsLensView(page: page, tags: tags)
-        case .tasks:     TasksLensView()
-        case .graph:     GraphLensView()
+        case .tasks:     TasksLensView(mosaic: mosaic, pageId: page.id)
+        case .graph:     GraphLensView(mosaic: mosaic, pageId: page.id)
         }
     }
 }
@@ -377,8 +377,12 @@ enum PeekSegment: String, CaseIterable, Identifiable {
                 OutlineEntry.derive(from: $0).count
             }
         case .tasks:
-            return mosaic.todayBlocks.filter { $0.kind == .task }.count
-        case .props, .graph:
+            return mosaic.loadedPageBlocks[pageId].map { blocks in
+                blocks.filter { $0.kind == .task }.count
+            }
+        case .graph:
+            return mosaic.loadedLinks[pageId]?.count
+        case .props:
             return nil
         }
     }
@@ -390,6 +394,7 @@ struct BacklinksView: View {
     @ObservedObject var mosaic: MockMosaicService
     let pageId: String
     @Environment(\.theme) private var theme
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let backlinks = mosaic.loadedBacklinks[pageId] ?? []
@@ -398,21 +403,27 @@ struct BacklinksView: View {
                 lensPlaceholder("No backlinks yet")
             } else {
                 ForEach(backlinks) { b in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(b.from)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(theme.accentPrimary)
-                        Text(b.snippet)
-                            .font(.system(size: 13.5))
-                            .foregroundStyle(theme.fgMuted)
-                            .lineSpacing(2)
+                    Button {
+                        openPage(b.pageId, openURL)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(b.from)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundStyle(theme.accentPrimary)
+                            Text(b.snippet)
+                                .font(.system(size: 13.5))
+                                .foregroundStyle(theme.fgMuted)
+                                .lineSpacing(2)
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .overlay(alignment: .bottom) {
+                            Rectangle().fill(theme.lineSoft).frame(height: 1)
+                        }
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .overlay(alignment: .bottom) {
-                        Rectangle().fill(theme.lineSoft).frame(height: 1)
-                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -458,6 +469,14 @@ private func lensPlaceholder(_ text: String) -> some View {
         .frame(maxWidth: .infinity, alignment: .leading)
 }
 
+/// Navigate to a page by id via the app's `tesela://page/<slug>` link
+/// scheme — the enclosing NavigationStack's `openURL` handler routes it.
+/// A no-op when the id is empty (unresolved link).
+private func openPage(_ pageId: String, _ openURL: OpenURLAction) {
+    guard !pageId.isEmpty, let url = URL(string: "tesela://page/\(pageId)") else { return }
+    openURL(url)
+}
+
 struct PropsLensView: View {
     let page: Page
     let tags: [String]
@@ -467,8 +486,8 @@ struct PropsLensView: View {
         VStack(alignment: .leading, spacing: 10) {
             propRow(key: "type",    value: page.type)
             propRow(key: "slug",    value: page.slug)
-            propRow(key: "created", value: "2026-05-15 09:24")
-            propRow(key: "edited",  value: "2026-05-17 12:14")
+            propRow(key: "created", value: page.created.isEmpty ? "—" : page.created)
+            propRow(key: "edited",  value: page.edited)
             HStack(alignment: .top, spacing: 14) {
                 Text("tags")
                     .frame(width: 80, alignment: .leading)
@@ -502,38 +521,73 @@ struct PropsLensView: View {
 }
 
 struct TasksLensView: View {
+    @ObservedObject var mosaic: MockMosaicService
+    let pageId: String
     @Environment(\.theme) private var theme
 
     var body: some View {
+        let tasks = (mosaic.loadedPageBlocks[pageId] ?? []).filter { $0.kind == .task }
         VStack(alignment: .leading, spacing: 0) {
-            BlockRow(id: "tlv-1", kind: .task, text: "Decide iOS Peek surface — bottom sheet vs segmented", isDone: false, tags: ["#tesela/ios"])
-            BlockRow(id: "tlv-2", kind: .task, text: "Lock buffer-kind invariant in v5", isDone: true, tags: [])
+            if tasks.isEmpty {
+                lensPlaceholder("No tasks on this page")
+            } else {
+                ForEach(tasks) { task in
+                    BlockRow(
+                        id: task.id,
+                        kind: .task,
+                        text: task.text,
+                        isDone: task.done,
+                        tags: task.tags
+                    )
+                }
+            }
         }
     }
 }
 
+/// The Peek "graph" lens — for now an outgoing-links list (the pages
+/// this page links to). A real in-app graph render is a later roadmap
+/// item; this gives the lens real, navigable data in the meantime.
 struct GraphLensView: View {
+    @ObservedObject var mosaic: MockMosaicService
+    let pageId: String
     @Environment(\.theme) private var theme
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("local-graph-of-page · 1-hop · 14 pages")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(theme.fgSubtle)
-            RoundedRectangle(cornerRadius: 8)
-                .fill(theme.bg3)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(theme.line, lineWidth: 1)
-                )
-                .frame(height: 220)
-                .overlay {
-                    Text("[ graph render ]")
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(theme.fgFaint)
+        let links = mosaic.loadedLinks[pageId] ?? []
+        VStack(alignment: .leading, spacing: 0) {
+            if links.isEmpty {
+                lensPlaceholder("No outgoing links")
+            } else {
+                ForEach(links) { link in
+                    Button {
+                        openPage(link.pageId, openURL)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                Image(systemName: "arrow.up.right")
+                                    .font(.system(size: 10))
+                                Text(link.from)
+                                    .font(.system(size: 11, design: .monospaced))
+                            }
+                            .foregroundStyle(theme.accentPrimary)
+                            Text(link.snippet)
+                                .font(.system(size: 13.5))
+                                .foregroundStyle(theme.fgMuted)
+                                .lineSpacing(2)
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .overlay(alignment: .bottom) {
+                            Rectangle().fill(theme.lineSoft).frame(height: 1)
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
+            }
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 14)
     }
 }

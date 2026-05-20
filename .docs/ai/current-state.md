@@ -81,6 +81,8 @@
 
 - **2026-05-20 — iOS roadmap doc**: `.docs/ai/roadmap.md` gained an "iOS App — Phases" section reconstructing the iOS app's Phases 0–31+ from git history — the iOS app (35 commits) was never tracked in the roadmap. Refreshed stale iOS claims in the `project_v4_redesign` (iOS work long since resumed) and `project_mobile_strategy` (app shipped HTTP-client, not the UniFFI-embedded core) memories.
 
+- **2026-05-20 — iOS Peek lenses finished**: `PageView`'s Peek surface now shows real data on every lens. `PropsLens` shows real `created`/`edited` (`Page` gained a `created` field from frontmatter); `TasksLensView` shows the page's own task blocks; `GraphLensView` shows an outgoing-links list (`GET /notes/{id}/links`). Backlinks + graph rows are tap-to-navigate via the `tesela://page/` scheme (`Backlink` gained a `pageId`). A real in-app graph *render* is a wanted later item — the list is the interim. iOS app builds for the simulator. **Known bug surfaced by Taylor:** downloading a Parakeet v2/v3 transcription model crashes the app — investigating next.
+
 ## Blockers
 
 None.

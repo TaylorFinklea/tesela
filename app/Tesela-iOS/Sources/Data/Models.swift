@@ -43,7 +43,8 @@ struct Page: Identifiable, Equatable, Hashable, Codable {
     var title: String
     var slug: String
     var type: String     // page type from `type:` frontmatter
-    var edited: String   // human-readable timestamp
+    var edited: String   // human-readable "modified" timestamp
+    var created: String = ""  // `created` frontmatter date (YYYY-MM-DD), "" if unknown
     var blocks: Int      // block count (frontmatter-summarized)
     var refs: Int        // refs-in count
     var hidden: Bool = false
@@ -85,10 +86,14 @@ struct PaletteVerb: Identifiable, Equatable, Hashable, Codable {
     var hint: String
 }
 
+/// A link row in the Peek surface. Used for both the backlinks lens
+/// (`from` = the page linking IN) and the graph lens (`from` = the page
+/// linked TO). `pageId` is the related page's id, for tap-to-navigate.
 struct Backlink: Identifiable, Equatable, Hashable, Codable {
     let id: UUID
-    var from: String     // source page title
+    var from: String     // related page's display title
     var snippet: String
+    var pageId: String = ""  // related page id — empty when unresolved
 }
 
 struct OutlineEntry: Identifiable, Equatable, Hashable, Codable {

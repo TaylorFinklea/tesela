@@ -32,6 +32,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// needs no field of its own.
     @Published private(set) var loadedBacklinks: [String: [Backlink]] = [:]
 
+    /// Outgoing wiki-links for each opened page, keyed by note id.
+    /// Filled by `loadPage(id:)` from `GET /notes/{id}/links` — drives
+    /// the Peek graph lens.
+    @Published private(set) var loadedLinks: [String: [Backlink]] = [:]
+
     let todayDate: Date
 
     var todayLabel: String {
@@ -476,7 +481,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         if snippet.hasPrefix("- ") {
             snippet.removeFirst(2)
         }
-        return Backlink(id: UUID(), from: title, snippet: snippet)
+        return Backlink(id: UUID(), from: title, snippet: snippet, pageId: link.target)
     }
 
     /// Fetch a page's real body content and populate the cache.
@@ -503,6 +508,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 loadedPageBlocks[id] = []
             }
             loadedBacklinks[id] = MockSeed.backlinks
+            loadedLinks[id] = []
             pageLoadStates[id] = .ready
         case .http(let baseURL):
             do {
@@ -519,6 +525,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // the whole page.
             let links: [APILink] = (try? await httpGet("/notes/\(id)/backlinks", baseURL: baseURL)) ?? []
             loadedBacklinks[id] = links.map(mapBacklink)
+            let outgoing: [APILink] = (try? await httpGet("/notes/\(id)/links", baseURL: baseURL)) ?? []
+            loadedLinks[id] = outgoing.map(mapBacklink)
         }
     }
 
@@ -782,6 +790,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             slug: note.id,
             type: inferType(from: note),
             edited: relativeEdit(from: note.modified_at),
+            created: note.metadata.created.map { String($0.prefix(10)) } ?? "",
             blocks: countBlockLines(note.body),
             refs: 0,
             hidden: note.metadata.tags.contains("scratch"),
