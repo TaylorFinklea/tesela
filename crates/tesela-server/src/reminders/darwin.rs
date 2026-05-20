@@ -5,7 +5,7 @@
 //! aren't clobbered by an immediate push.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
@@ -25,6 +25,35 @@ use tesela_core::storage::markdown::parse_frontmatter;
 use tesela_core::traits::note_store::NoteStore;
 
 use super::{PullError, PullOutcome, PushError, PushOutcome, SyncOutcome};
+
+/// The process-wide `EKEventStore`.
+///
+/// EventKit caps how many `EKEventStore` instances a process may hold.
+/// Push, pull, and the access request each used to construct their own,
+/// so a single `sync_all` built four; auto-sync (every 5 minutes) then
+/// exhausted the cap within ~an hour and EventKit began rejecting calls
+/// with "too many EKEventStore instances". Every entry point now shares
+/// this one store, so the live-instance count stays at exactly one.
+///
+/// Returned handles are reference-counted clones of the same underlying
+/// object — dropping them never deallocates it because the static holds
+/// a permanent reference.
+fn shared_event_store() -> Retained<EKEventStore> {
+    struct SharedStore(Retained<EKEventStore>);
+    // SAFETY: every EventKit call in this module is serialized by
+    // `AutoSync`'s in-flight mutex, so the shared store is never touched
+    // from two threads at once. The wrapper exists only to park the
+    // `Retained` (which the bindings don't mark `Send`/`Sync`) in a
+    // `static`.
+    unsafe impl Send for SharedStore {}
+    unsafe impl Sync for SharedStore {}
+
+    static SHARED: OnceLock<SharedStore> = OnceLock::new();
+    SHARED
+        .get_or_init(|| SharedStore(unsafe { EKEventStore::new() }))
+        .0
+        .clone()
+}
 
 /// Entry point — called from the `POST /api/sync/reminders/push` route.
 ///
@@ -48,7 +77,7 @@ pub async fn push_all(store: Arc<dyn NoteStore>) -> Result<PushOutcome> {
     }
 
     let outcome = tokio::task::spawn_blocking(move || -> Result<PushPlan> {
-        let event_store = unsafe { EKEventStore::new() };
+        let event_store = shared_event_store();
         let calendar = unsafe { find_or_create_tesela_calendar(&event_store)? };
         let mut plan = PushPlan::default();
         for cand in candidates {
@@ -743,7 +772,7 @@ async fn request_access() -> Result<()> {
     // handler may fire on EventKit's internal queue, not our tokio
     // worker, and we want the async runtime free in the meantime.
     tokio::task::spawn_blocking(move || {
-        let event_store = unsafe { EKEventStore::new() };
+        let event_store = shared_event_store();
         let block =
             block2::RcBlock::new(move |granted: Bool, err: *mut objc2_foundation::NSError| {
                 let mut guard = tx.lock().unwrap();
@@ -1188,7 +1217,7 @@ async fn fetch_reminders() -> Result<Vec<ReminderSnapshot>> {
     let tx = std::sync::Mutex::new(Some(tx));
 
     tokio::task::spawn_blocking(move || {
-        let event_store = unsafe { EKEventStore::new() };
+        let event_store = shared_event_store();
         let calendar = match unsafe { find_or_create_tesela_calendar(&event_store) } {
             Ok(c) => c,
             Err(e) => {
@@ -1450,5 +1479,19 @@ mod tests {
                 .unwrap_or_else(|| panic!("canonical form should re-parse: {s:?}"));
             assert_eq!(parsed, c, "round-trip mismatch for {s:?}");
         }
+    }
+
+    #[test]
+    fn shared_event_store_is_a_process_singleton() {
+        // Regression guard for "too many EKEventStore instances": push,
+        // pull, and the access request used to each build their own
+        // store, so one sync_all created four and EventKit's per-process
+        // cap was exhausted after ~an hour of auto-sync. Every caller
+        // must now share one underlying store.
+        let a = shared_event_store();
+        let b = shared_event_store();
+        let pa: *const EKEventStore = &*a;
+        let pb: *const EKEventStore = &*b;
+        assert_eq!(pa, pb, "shared_event_store must hand back one store");
     }
 }

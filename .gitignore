@@ -54,3 +54,18 @@ logseq-*.png
 
 # Local screen-recordings / repro artifacts
 *.mov
+
+# Node / pnpm cache
+.pnpm-store/
+
+# Local temp dirs (root and per-package)
+.tmp/
+
+# macOS Finder metadata
+.DS_Store
+
+# Local archive snapshots
+*.zip
+
+# Claude Code local hook scripts
+.claude/hooks/

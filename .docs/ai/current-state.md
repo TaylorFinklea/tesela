@@ -73,6 +73,8 @@
 
 - **2026-05-20 — web daily journal gap fix**: `JournalView.svelte` `visibleDailies` now builds a gap-free descending calendar from today back to the oldest real daily, filling missed days with synthetic empty placeholders.
 
+- **2026-05-20 — Apple Reminders sync EventKit fix**: `reminders/darwin.rs` now routes all EventKit access through one process-wide `EKEventStore` (`shared_event_store()`, `OnceLock`-backed) instead of constructing a fresh store in `request_access`, `fetch_reminders`, and `push_all`. A single `sync_all` previously built four stores (the access request runs inside both `pull_all` and `push_all`); auto-sync every 5 min exhausted EventKit's per-process instance cap within ~an hour, after which every sync failed with "too many EKEventStore instances". Regression test `shared_event_store_is_a_process_singleton` (9/9 darwin reminders tests green); `tesela-server` release binary rebuilt and restarted; manual sync verified clean (no errors).
+
 ## Blockers
 
 None. Note: iOS multi-mosaic is shipped but not truly useful until server-side multi-mosaic lands (roadmap PRIORITY item) — currently each mosaic needs its own `tesela-server` instance.
