@@ -79,6 +79,8 @@
 
 - **2026-05-20 — iOS option 2 (server-side multi-mosaic, approach B)**: iOS can now discover, add, and switch between the mosaics a single `tesela-server` hosts — no more one-server-per-mosaic. Approach B: the server stays single-mosaic (it already had `/mosaics/discovered|current|switch` + `/server/restart` + `POST /mosaics` — **no server changes needed**); iOS drives switch-via-restart and the existing auto-reconnect rides out the ~2-3s reboot. iOS changes (12 files): `MosaicProfile.mosaicPath`; `MosaicServerClient` (endpoint wrapper, in `MosaicRegistry.swift`); `MosaicRegistry.importDiscovered`; `MockMosaicService.ensureServerMosaic` + a `.switching` connection state; `AddMosaicView` (discover-and-pick + create-new, in `MosaicSwitcherSheet.swift`); `AppShell.activateMosaic`; pairing handoff (`PairScanView`/`PairWithShortCodeView` `adopt` → `importDiscovered`). Verified end-to-end in the simulator via idb: discovery listed all 3 real mosaics, add → switcher, and switch+restart (app reconnected onto `logseq`, chrome read "logseq, connected"). QA caught and fixed a dead-tap-gap (`.contentShape`) on the switcher/discovery rows. iOS app builds for the simulator.
 
+- **2026-05-20 — iOS roadmap doc**: `.docs/ai/roadmap.md` gained an "iOS App — Phases" section reconstructing the iOS app's Phases 0–31+ from git history — the iOS app (35 commits) was never tracked in the roadmap. Refreshed stale iOS claims in the `project_v4_redesign` (iOS work long since resumed) and `project_mobile_strategy` (app shipped HTTP-client, not the UniFFI-embedded core) memories.
+
 ## Blockers
 
 None.

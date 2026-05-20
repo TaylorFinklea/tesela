@@ -453,7 +453,62 @@ Live-verified 2026-05-09: backlog task auto-flipped to `todo` the moment its blo
 - [ ] Tauri shell serving `web/out/`
 - [ ] Menu bar, global hotkeys, system tray
 
-**Deferred:** Whiteboards, long-form prose, mobile/iOS, multi-device sync (CRDTs), App Store, plugin marketplace, collaborative editing.
+**Deferred:** Whiteboards, long-form prose, App Store, plugin marketplace, collaborative editing.
+
+---
+
+## iOS App — Phases
+
+Native SwiftUI iPhone app at `app/Tesela-iOS/` — touch-first, no vim (see memory `mobile-strategy-ios-native`). Phases 0–31 below were not previously tracked in this roadmap; reconstructed from git history on 2026-05-20.
+
+The app talks to a `tesela-server` over HTTP — the `MockMosaicService` class is the *real* client despite its name. It is **not** yet a sync peer (`SyncState` is a debug toggle). Real iOS sync stays gated behind the sync work order (memory `sync-work-order`): iOS sync is last, after block-level sync → LAN transport → desktop sync UX.
+
+### Phases 0–16 — UI shell ✓
+
+- [x] Cross-compile Rust core + Xcode scaffold (`40f7250`)
+- [x] Design system: 17 themes, density tiers, type scales (Phases 0–1)
+- [x] Component primitives, mock data, Daily front door (Phases 2–4)
+- [x] Library tab, PageView with tag chips + collapsible Peek (Phases 5–6)
+- [x] Search, context menu, properties sheet, settings, pair flow (Phases 7–10)
+- [x] Onboarding, ambient grid, page stack, FFI stub, skeletons (Phases 11–16)
+
+All built against `MockMosaicService`'s in-memory seed — no real data yet.
+
+### Phase 17 — HTTP backend ✓
+
+- [x] `MockMosaicService` gains an `.http` mode against a local `tesela-server`; the app now reads and writes a real mosaic
+- [x] 17.1 ATS config; 17.2 property-based task format aligned with the web client
+
+### Phase 18 — Inbox + bottom chrome ✓
+
+- [x] Inbox/triage tab, Mail-style search bar
+- [x] 18.1–18.8 iterated the Liquid Glass bottom chrome, landing on iOS 26 native `TabView` with `Tab(role: .search)`
+
+### Phase 19 — Real page content ✓
+
+- [x] Page load, render, and writeback against the server
+
+### Phases 20–31 — editing & voice ✓
+
+- [x] 20–23 block editing, navigation, search, triage
+- [x] 24–25 transcription model management
+- [x] 26–31 end-to-end + on-device voice (whisper.cpp, streaming, Parakeet gating)
+
+### Recent — pairing, multi-mosaic ✓
+
+- [x] Camera QR + 6-character short-code device pairing
+- [x] Auto-reconnect with backoff, disconnect, real pair card
+- [x] Native TabView chrome, persistent capture bar, keyboard toolbar
+- [x] Device-local multi-mosaic registry (`MosaicProfile` profiles)
+- [x] Real per-page backlinks, client-derived outline, local pinned store (`d548cc3`)
+- [x] Server-side multi-mosaic — discover / add / switch a server's mosaics (`b8124c3`)
+
+### iOS — Now / Next
+
+- **Sync is still mocked.** `SyncState` is a debug toggle; the iPhone is not a real peer. Gated behind the sync work order (iOS sync is last).
+- Placeholder surfaces: the Peek `tasks` and `graph` lenses are stub views; `PropsLens` has hardcoded `created`/`edited`.
+- On-device Parakeet inference via FluidAudio — see **Later** above.
+- **Architecture note:** the app is an HTTP client, not the UniFFI-embedded core described in memory `mobile-strategy-ios-native`. `tesela-sync` UniFFI bindings are generated, but the embedded-core path is deferred.
 
 ---
 
