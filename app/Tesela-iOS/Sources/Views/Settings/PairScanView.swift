@@ -26,6 +26,9 @@ struct PairScanView: View {
     /// confirmation sheet.
     @State private var pending: PairingCodeRecord?
     @State private var rawError: String?
+    /// Set when the capture pipeline fails to build — see
+    /// `QRScannerViewController.onSessionError`.
+    @State private var cameraUnavailable = false
 
     enum PermissionState: Equatable {
         case checking
@@ -60,7 +63,11 @@ struct PairScanView: View {
             ProgressView()
                 .tint(theme.fgMuted)
         case .granted:
-            scannerSurface
+            if cameraUnavailable {
+                cameraUnavailableCard
+            } else {
+                scannerSurface
+            }
         case .denied:
             permissionDenied
         case .restricted:
@@ -72,8 +79,11 @@ struct PairScanView: View {
 
     private var scannerSurface: some View {
         ZStack {
-            QRScannerRepresentable(onScan: handleScan)
-                .ignoresSafeArea()
+            QRScannerRepresentable(
+                onScan: handleScan,
+                onSessionError: { cameraUnavailable = true }
+            )
+            .ignoresSafeArea()
 
             VStack {
                 Spacer()
@@ -110,6 +120,15 @@ struct PairScanView: View {
             title: "Camera not available",
             body: "This device's camera is restricted (e.g. parental controls). Pairing via QR isn't possible.",
             primary: "Done",
+            primaryAction: { dismiss() }
+        )
+    }
+
+    private var cameraUnavailableCard: some View {
+        deniedCard(
+            title: "Camera unavailable",
+            body: "This iPhone's camera couldn't be started for scanning. Go back and choose \"Type a 6-character code\" to pair instead.",
+            primary: "Back",
             primaryAction: { dismiss() }
         )
     }
@@ -270,10 +289,12 @@ extension PairingCodeRecord: Identifiable {
 /// at it — the confirmation sheet drives the next step.
 struct QRScannerRepresentable: UIViewControllerRepresentable {
     let onScan: (String) -> Void
+    let onSessionError: () -> Void
 
     func makeUIViewController(context: Context) -> QRScannerViewController {
         let vc = QRScannerViewController()
         vc.onScan = onScan
+        vc.onSessionError = onSessionError
         return vc
     }
 
@@ -282,8 +303,18 @@ struct QRScannerRepresentable: UIViewControllerRepresentable {
 
 final class QRScannerViewController: UIViewController, AVCaptureMetadataOutputObjectsDelegate {
     var onScan: ((String) -> Void)?
+    /// Called on the main queue when the capture pipeline can't be built
+    /// (no camera, input/output rejected). Session setup runs off the main
+    /// thread now, so this failure is asynchronous — without it the user
+    /// would just stare at a permanent black screen.
+    var onSessionError: (() -> Void)?
 
     private let session = AVCaptureSession()
+    /// Every `AVCaptureSession` call — configuration and start/stop — runs
+    /// on this one serial queue. Adding a camera input and `startRunning()`
+    /// both block; keeping them off the main thread is what stops the
+    /// pairing screen from freezing. (Apple's AVCam sample pattern.)
+    private let sessionQueue = DispatchQueue(label: "app.tesela.qr-scanner.session")
     private var preview: AVCaptureVideoPreviewLayer?
     private var lastPayload: String?
     private var lastPayloadAt: Date = .distantPast
@@ -291,7 +322,16 @@ final class QRScannerViewController: UIViewController, AVCaptureMetadataOutputOb
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
-        configureSession()
+
+        // The preview layer is a UI object: create and attach it on the
+        // main thread. It shows nothing until the session starts running.
+        let preview = AVCaptureVideoPreviewLayer(session: session)
+        preview.videoGravity = .resizeAspectFill
+        preview.frame = view.bounds
+        view.layer.addSublayer(preview)
+        self.preview = preview
+
+        sessionQueue.async { [weak self] in self?.configureSession() }
     }
 
     override func viewDidLayoutSubviews() {
@@ -301,39 +341,48 @@ final class QRScannerViewController: UIViewController, AVCaptureMetadataOutputOb
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        if !session.isRunning {
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                self?.session.startRunning()
-            }
+        sessionQueue.async { [weak self] in
+            guard let self, !self.session.isRunning else { return }
+            self.session.startRunning()
         }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
-        if session.isRunning {
-            session.stopRunning()
+        sessionQueue.async { [weak self] in
+            guard let self, self.session.isRunning else { return }
+            self.session.stopRunning()
         }
     }
 
+    /// Runs on `sessionQueue`, never the main thread.
     private func configureSession() {
         guard
             let device = AVCaptureDevice.default(for: .video),
             let input = try? AVCaptureDeviceInput(device: device),
             session.canAddInput(input)
-        else { return }
+        else {
+            reportSessionError()
+            return
+        }
+
+        session.beginConfiguration()
         session.addInput(input)
 
         let output = AVCaptureMetadataOutput()
-        guard session.canAddOutput(output) else { return }
+        guard session.canAddOutput(output) else {
+            session.commitConfiguration()
+            reportSessionError()
+            return
+        }
         session.addOutput(output)
         output.metadataObjectTypes = [.qr]
         output.setMetadataObjectsDelegate(self, queue: .main)
+        session.commitConfiguration()
+    }
 
-        let preview = AVCaptureVideoPreviewLayer(session: session)
-        preview.videoGravity = .resizeAspectFill
-        preview.frame = view.bounds
-        view.layer.addSublayer(preview)
-        self.preview = preview
+    private func reportSessionError() {
+        DispatchQueue.main.async { [weak self] in self?.onSessionError?() }
     }
 
     func metadataOutput(
