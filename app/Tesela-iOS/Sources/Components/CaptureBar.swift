@@ -28,6 +28,7 @@ struct CaptureBar: View {
     @ObservedObject var recorder: StreamingVoiceRecorder
 
     @Environment(\.theme) private var theme
+    @ObservedObject private var diag = VoiceDiagnostics.shared
 
     @State private var draft: String = ""
     @State private var manualTarget: CaptureTarget? = nil
@@ -117,8 +118,11 @@ struct CaptureBar: View {
         default:
             break
         }
-        if recorder.transcribingChunk {
-            return ("Transcribing…", false)
+        // The live voice-path diagnostic — current phase while working,
+        // final outcome (e.g. "0 chars transcribed") after. Empty until
+        // the first recording of the session.
+        if !diag.lastLine.isEmpty {
+            return ("Voice: \(diag.lastLine)", false)
         }
         return nil
     }

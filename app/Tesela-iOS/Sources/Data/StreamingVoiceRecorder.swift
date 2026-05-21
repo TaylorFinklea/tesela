@@ -3,19 +3,34 @@ import AVFoundation
 import Combine
 import os
 
-/// Shared logger for the on-device voice + transcription path. Stream
-/// from a connected device with:
-///   `log stream --predicate 'subsystem == "app.tesela.ios"'`
+/// Shared logger for the on-device voice + transcription path.
 let voiceLog = Logger(subsystem: "app.tesela.ios", category: "voice")
 
-/// Live transcription coordinator. Replaces `AVAudioRecorder` (which
-/// writes to a file and only hands it off on stop) with
-/// `AVAudioEngine` so we can tap the input PCM in real time, send
-/// 5-second chunks through the active TranscriptionEngine, and stream
-/// transcripts into the composer as the user speaks.
+/// Mirrors the most recent voice-path diagnostic into the UI so a
+/// failure or stall is visible in the capture bar without a log tool.
+@MainActor
+final class VoiceDiagnostics: ObservableObject {
+    static let shared = VoiceDiagnostics()
+    @Published var lastLine: String = ""
+    private init() {}
+}
+
+/// Emit a voice-path diagnostic: unified log + the on-screen mirror.
+@MainActor
+func voiceDiag(_ message: String) {
+    voiceLog.notice("\(message, privacy: .public)")
+    VoiceDiagnostics.shared.lastLine = message
+}
+
+/// Voice capture coordinator. Uses `AVAudioEngine` to tap the mic
+/// input, accumulate the whole utterance as 16 kHz mono float
+/// samples, and — on `stop()` — transcribe it in a single pass.
 ///
-/// Owners pass an engine + a callback. The recorder calls back on
-/// the MainActor whenever a chunk has finished transcribing.
+/// Transcribe-on-stop rather than live 5-second chunks: FluidAudio's
+/// Parakeet `transcribe` rejects clips shorter than 300 ms and chunks
+/// long audio internally, so hand-rolled windowing only ever produced
+/// short tail chunks it refused. Owners pass an engine + callbacks;
+/// `onChunk` fires once, on the MainActor, with the final transcript.
 @MainActor
 final class StreamingVoiceRecorder: ObservableObject {
     enum State: Equatable {
@@ -37,21 +52,17 @@ final class StreamingVoiceRecorder: ObservableObject {
     private var startedAt: Date?
     private var elapsedTimer: Timer?
 
-    /// Samples buffered since the last transcription tick. Each tick
-    /// drains this buffer and dispatches it through the active
-    /// `TranscriptionEngine`.
+    /// The whole recording, accumulated as 16 kHz mono float samples
+    /// and transcribed in one pass on `stop()`.
     private var pendingSamples: [Float] = []
-    private var chunkTimer: Timer?
     private var transcriber: TranscriptionEngine?
-    /// True while a `transcribeNextChunk` drain loop is running. The 5s
-    /// chunk timer checks this and skips rather than starting a second,
-    /// concurrent transcription — critical for Parakeet, whose first-call
-    /// CoreML model load is far slower than the chunk interval.
+    /// Guards against a second transcription starting while one runs.
     private var isTranscribing = false
 
-    /// 5-second windows are short enough for sub-second latency on
-    /// whisper-tiny while giving the model real context to work with.
-    private let chunkInterval: TimeInterval = 5
+    /// FluidAudio's Parakeet `transcribe` rejects anything shorter than
+    /// 300 ms — 4800 samples at 16 kHz. A clip that short is noise
+    /// anyway, so it's skipped rather than sent (and rejected).
+    private let minimumSamples = 4_800
 
     /// Whisper expects 16 kHz mono float32 samples.
     private let targetFormat: AVAudioFormat = {
@@ -67,9 +78,9 @@ final class StreamingVoiceRecorder: ObservableObject {
 
     @discardableResult
     func start(using transcriber: TranscriptionEngine) async -> Bool {
-        voiceLog.info("recorder.start requested")
+        voiceDiag("start requested")
         guard await ensurePermission() else {
-            voiceLog.error("recorder.start — microphone permission denied")
+            voiceDiag("start: microphone permission DENIED")
             state = .denied
             return false
         }
@@ -99,33 +110,31 @@ final class StreamingVoiceRecorder: ObservableObject {
             startedAt = Date()
             state = .recording(elapsed: 0)
             startTimers()
-            voiceLog.info("recorder.start — engine running, recording")
+            voiceDiag("recording started")
             return true
         } catch {
-            voiceLog.error("recorder.start failed: \(error.localizedDescription, privacy: .public)")
+            voiceDiag("start FAILED: \(error.localizedDescription)")
             state = .failed(error.localizedDescription)
             return false
         }
     }
 
-    /// Stops recording immediately. Audio still buffered is transcribed
-    /// best-effort in the background — stopping must never wait on
+    /// Stops recording immediately and kicks off transcription of the
+    /// whole recording in the background — stopping must never wait on
     /// transcription, which for Parakeet includes a CoreML model load
     /// that can take tens of seconds.
     func stop() {
         guard case .recording = state else {
-            voiceLog.info("recorder.stop ignored — not in .recording state")
+            voiceDiag("stop ignored — not recording")
             return
         }
-        voiceLog.info("recorder.stop — ending recording, flushing tail")
+        voiceDiag("stopped — transcribing recording")
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
         stopTimers()
         state = .idle
-        // Flush the tail. If a drain loop is already running it will pick
-        // up these samples itself; otherwise this kicks one off.
-        Task { @MainActor [weak self] in await self?.transcribeNextChunk() }
+        Task { @MainActor [weak self] in await self?.transcribeAll() }
     }
 
     func cancel() {
@@ -186,22 +195,17 @@ final class StreamingVoiceRecorder: ObservableObject {
         }
     }
 
-    // MARK: - Chunk dispatch
+    // MARK: - Timers
 
     private func startTimers() {
         elapsedTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.tickElapsed() }
-        }
-        chunkTimer = Timer.scheduledTimer(withTimeInterval: chunkInterval, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in await self?.transcribeNextChunk() }
         }
     }
 
     private func stopTimers() {
         elapsedTimer?.invalidate()
         elapsedTimer = nil
-        chunkTimer?.invalidate()
-        chunkTimer = nil
     }
 
     private func tickElapsed() {
@@ -209,39 +213,37 @@ final class StreamingVoiceRecorder: ObservableObject {
         state = .recording(elapsed: Date().timeIntervalSince(startedAt))
     }
 
-    /// Drain `pendingSamples` through the transcriber, delivering each
-    /// result via `onChunk`. Re-entrant callers (the 5s chunk timer, the
-    /// stop flush) are coalesced: `isTranscribing` ensures only one drain
-    /// loop runs at a time, and it keeps going until the buffer is empty.
-    ///
-    /// Without this coalescing a slow transcriber lets the timer spawn
-    /// many concurrent transcriptions — each Parakeet call loads a fresh
-    /// hundreds-of-MB CoreML model set, and a few in parallel get the app
-    /// jetsam-killed before the first result ever lands.
-    private func transcribeNextChunk() async {
-        guard !isTranscribing, !pendingSamples.isEmpty, let transcriber else { return }
+    /// Transcribe the entire recording in a single pass. FluidAudio's
+    /// Parakeet model chunks long audio internally, so there is no need
+    /// to pre-window — and pre-windowing only produced sub-300 ms tail
+    /// chunks it rejected with "Invalid audio data".
+    private func transcribeAll() async {
+        guard !isTranscribing, let transcriber else { return }
+        let samples = pendingSamples
+        pendingSamples.removeAll(keepingCapacity: true)
+        guard samples.count >= minimumSamples else {
+            voiceDiag("recording too short — \(samples.count) samples (<300ms), skipped")
+            return
+        }
         isTranscribing = true
         transcribingChunk = true
         defer {
             isTranscribing = false
             transcribingChunk = false
         }
-        while !pendingSamples.isEmpty {
-            let chunk = pendingSamples
-            pendingSamples.removeAll(keepingCapacity: true)
-            voiceLog.info("transcribing chunk — \(chunk.count) samples")
-            do {
-                let text = try await transcriber.transcribe(samples: chunk)
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                voiceLog.info("transcription returned \(trimmed.count) chars")
-                if !trimmed.isEmpty {
-                    onChunk?(trimmed)
-                }
-            } catch {
-                voiceLog.error("transcription failed: \(error.localizedDescription, privacy: .public)")
-                onError?(error.localizedDescription)
-                return
+        voiceDiag("transcribing \(samples.count) samples")
+        do {
+            let text = try await transcriber.transcribe(samples: samples)
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            voiceDiag("transcription done — \(trimmed.count) chars")
+            if !trimmed.isEmpty {
+                onChunk?(trimmed)
+            } else {
+                voiceDiag("transcription produced no text")
             }
+        } catch {
+            voiceDiag("transcription FAILED: \(error.localizedDescription)")
+            onError?(error.localizedDescription)
         }
     }
 }
