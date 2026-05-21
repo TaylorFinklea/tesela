@@ -70,21 +70,57 @@ struct CaptureBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            plusButton
-            targetChip
-            TextField("Capture…", text: $draft, axis: .vertical)
-                .focused($fieldFocused)
-                .submitLabel(.send)
-                .onSubmit(submit)
-                .lineLimit(1...4)
-                .font(.body)
-                .foregroundStyle(theme.fgDefault)
-                .tint(theme.accentPrimary)
-            trailingButton
+        VStack(spacing: 2) {
+            statusLine
+            HStack(spacing: 8) {
+                plusButton
+                targetChip
+                TextField("Capture…", text: $draft, axis: .vertical)
+                    .focused($fieldFocused)
+                    .submitLabel(.send)
+                    .onSubmit(submit)
+                    .lineLimit(1...4)
+                    .font(.body)
+                    .foregroundStyle(theme.fgDefault)
+                    .tint(theme.accentPrimary)
+                trailingButton
+            }
+            .frame(minHeight: 44)
         }
         .padding(.horizontal, 12)
-        .frame(minHeight: 44)
+    }
+
+    /// One-line voice feedback above the composer: a transcription
+    /// error, a recorder failure, or a "transcribing…" indicator.
+    /// Without this every voice failure is silent — the bar just looks
+    /// like it does nothing.
+    @ViewBuilder
+    private var statusLine: some View {
+        if let status = voiceStatus {
+            Text(status.text)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(status.isError ? theme.typeTask : theme.fgMuted)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var voiceStatus: (text: String, isError: Bool)? {
+        if let transcribeError {
+            return ("Transcription failed — \(transcribeError)", true)
+        }
+        switch recorder.state {
+        case .denied:
+            return ("Microphone access denied — enable it in Settings.", true)
+        case .failed(let message):
+            return ("Voice capture failed — \(message)", true)
+        default:
+            break
+        }
+        if recorder.transcribingChunk {
+            return ("Transcribing…", false)
+        }
+        return nil
     }
 
     /// Leftmost `+` for future attachment support. Stub for now.

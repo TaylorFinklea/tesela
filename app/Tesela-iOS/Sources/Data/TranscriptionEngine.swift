@@ -43,12 +43,16 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
     /// the file URL it maps to.
     private let store: TranscriptionStore
     /// Cached SwiftWhisper context, keyed by the model id it was
-    /// initialized with. Loading a model takes hundreds of ms; we
-    /// reuse it across requests until the user picks a different one.
-    private var cached: (id: String, whisper: Whisper)? = nil
-    /// Cached FluidAudio manager for the active Parakeet model, reused
-    /// across requests until the user switches models.
-    private var cachedParakeet: (id: String, manager: AsrManager)? = nil
+    /// initialized with. `static` so it survives across engine
+    /// instances — `CaptureBar` rebuilds a fresh `LocalTranscriptionEngine`
+    /// for every recording, and re-loading hundreds of MB of model on
+    /// each one is what made voice capture feel broken. Safe as shared
+    /// mutable state: the class is `@MainActor`, so every access is
+    /// serialized on the main actor.
+    private static var cached: (id: String, whisper: Whisper)? = nil
+    /// Cached FluidAudio manager for the active Parakeet model — also
+    /// `static`, same reasoning.
+    private static var cachedParakeet: (id: String, manager: AsrManager)? = nil
 
     init(store: TranscriptionStore) {
         self.store = store
@@ -70,14 +74,19 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
 
     func transcribe(samples: [Float]) async throws -> String {
         guard !samples.isEmpty else { return "" }
+        let id = store.activeModelId
+        let family = TranscriptionCatalog.find(id)?.family
+        voiceLog.info("engine.transcribe — \(samples.count) samples, model=\(id, privacy: .public), family=\(String(describing: family), privacy: .public)")
         // Parakeet models run through FluidAudio; everything else is
         // whisper.cpp. Both consume the same 16 kHz mono float samples.
-        if TranscriptionCatalog.find(store.activeModelId)?.family == .parakeet {
+        if family == .parakeet {
             let manager = try await loadParakeet()
             // Fresh decoder state per batch call — the state carries
             // streaming continuity, which a one-shot transcribe doesn't need.
             var decoderState = try TdtDecoderState()
+            voiceLog.info("engine.transcribe — Parakeet inference begin")
             let result = try await manager.transcribe(samples, decoderState: &decoderState)
+            voiceLog.info("engine.transcribe — Parakeet inference done, \(result.text.count) chars")
             return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         let whisper = try await loadWhisper()
@@ -99,7 +108,7 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
                 userInfo: [NSLocalizedDescriptionKey: "No active model picked. Open Settings → Voice → Manage models."]
             )
         }
-        if let cached, cached.id == id {
+        if let cached = Self.cached, cached.id == id {
             return cached.whisper
         }
         let url = store.localURL(for: id)
@@ -116,7 +125,7 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
         let whisper: Whisper = try await Task.detached(priority: .userInitiated) {
             try Whisper(fromFileURL: url)
         }.value
-        cached = (id, whisper)
+        Self.cached = (id, whisper)
         return whisper
     }
 
@@ -134,16 +143,19 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
                 userInfo: [NSLocalizedDescriptionKey: "No active Parakeet model. Open Settings → Voice → Manage models."]
             )
         }
-        if let cachedParakeet, cachedParakeet.id == id {
+        if let cachedParakeet = Self.cachedParakeet, cachedParakeet.id == id {
             return cachedParakeet.manager
         }
+        voiceLog.info("loadParakeet — downloadAndLoad begin (\(id, privacy: .public))")
         let models = try await AsrModels.downloadAndLoad(
             to: TranscriptionStore.parakeetCacheURL(versionToken: model.parakeetVersion ?? ""),
             version: version
         )
+        voiceLog.info("loadParakeet — downloadAndLoad done, loading into AsrManager")
         let manager = AsrManager(config: .default)
         try await manager.loadModels(models)
-        cachedParakeet = (id, manager)
+        voiceLog.info("loadParakeet — AsrManager ready")
+        Self.cachedParakeet = (id, manager)
         return manager
     }
 

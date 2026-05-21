@@ -1,6 +1,12 @@
 import Foundation
 import AVFoundation
 import Combine
+import os
+
+/// Shared logger for the on-device voice + transcription path. Stream
+/// from a connected device with:
+///   `log stream --predicate 'subsystem == "app.tesela.ios"'`
+let voiceLog = Logger(subsystem: "app.tesela.ios", category: "voice")
 
 /// Live transcription coordinator. Replaces `AVAudioRecorder` (which
 /// writes to a file and only hands it off on stop) with
@@ -21,7 +27,6 @@ final class StreamingVoiceRecorder: ObservableObject {
     }
 
     @Published private(set) var state: State = .idle
-    @Published private(set) var meterLevel: Float = 0
     @Published private(set) var transcribingChunk: Bool = false
 
     var onChunk: ((String) -> Void)? = nil
@@ -62,7 +67,9 @@ final class StreamingVoiceRecorder: ObservableObject {
 
     @discardableResult
     func start(using transcriber: TranscriptionEngine) async -> Bool {
+        voiceLog.info("recorder.start requested")
         guard await ensurePermission() else {
+            voiceLog.error("recorder.start — microphone permission denied")
             state = .denied
             return false
         }
@@ -92,8 +99,10 @@ final class StreamingVoiceRecorder: ObservableObject {
             startedAt = Date()
             state = .recording(elapsed: 0)
             startTimers()
+            voiceLog.info("recorder.start — engine running, recording")
             return true
         } catch {
+            voiceLog.error("recorder.start failed: \(error.localizedDescription, privacy: .public)")
             state = .failed(error.localizedDescription)
             return false
         }
@@ -104,7 +113,11 @@ final class StreamingVoiceRecorder: ObservableObject {
     /// transcription, which for Parakeet includes a CoreML model load
     /// that can take tens of seconds.
     func stop() {
-        guard case .recording = state else { return }
+        guard case .recording = state else {
+            voiceLog.info("recorder.stop ignored — not in .recording state")
+            return
+        }
+        voiceLog.info("recorder.stop — ending recording, flushing tail")
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
@@ -149,17 +162,8 @@ final class StreamingVoiceRecorder: ObservableObject {
               let ptr = outBuffer.floatChannelData?.pointee
         else { return }
         let n = Int(outBuffer.frameLength)
-        // Compute a rough RMS for the meter from the new chunk.
-        var sum: Float = 0
-        for i in 0..<n {
-            let s = ptr[i]
-            sum += s * s
-        }
-        let rms = sqrt(sum / Float(max(1, n)))
-        let lvl = min(1, rms * 6) // boost
         let chunk = Array(UnsafeBufferPointer(start: ptr, count: n))
         Task { @MainActor in
-            self.meterLevel = 0.6 * self.meterLevel + 0.4 * lvl
             self.pendingSamples.append(contentsOf: chunk)
         }
     }
@@ -225,13 +229,16 @@ final class StreamingVoiceRecorder: ObservableObject {
         while !pendingSamples.isEmpty {
             let chunk = pendingSamples
             pendingSamples.removeAll(keepingCapacity: true)
+            voiceLog.info("transcribing chunk — \(chunk.count) samples")
             do {
                 let text = try await transcriber.transcribe(samples: chunk)
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                voiceLog.info("transcription returned \(trimmed.count) chars")
                 if !trimmed.isEmpty {
                     onChunk?(trimmed)
                 }
             } catch {
+                voiceLog.error("transcription failed: \(error.localizedDescription, privacy: .public)")
                 onError?(error.localizedDescription)
                 return
             }
