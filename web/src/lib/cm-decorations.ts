@@ -69,6 +69,19 @@ const propertyValueMark = Decoration.mark({ class: "cm-tesela-prop-value" });
 const tagsLineHide = Decoration.line({ attributes: { class: "cm-tesela-tags-line" } });
 const hiddenPropLineDeco = Decoration.line({ attributes: { class: "cm-tesela-hidden-prop-line" } });
 
+// Code-fence line decorations. Each code line carries `cm-tesela-code-line`
+// plus first/last/fence variant classes; cached by class string so a
+// decoration rebuild reuses instances instead of allocating per line.
+const codeLineDecoCache = new Map<string, Decoration>();
+function codeLineDeco(cls: string): Decoration {
+  let deco = codeLineDecoCache.get(cls);
+  if (!deco) {
+    deco = Decoration.line({ attributes: { class: cls } });
+    codeLineDecoCache.set(cls, deco);
+  }
+  return deco;
+}
+
 const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
 // Persistent block-id comments emitted by the server's note_tree serializer.
 // One leading whitespace char (canonical form: a single space) is included so
@@ -247,6 +260,41 @@ export function findTrailingClusterStart(doc: string): number {
   return clusterStart;
 }
 
+/** A fenced ``` code region within a block's doc. `from`/`to` span from
+ *  the first character of the opening ``` line through the last character
+ *  of the closing ``` line (the trailing newline is excluded). `closed`
+ *  is false for a fence with no closing ``` (it runs to end-of-doc). */
+export type CodeFenceRange = { from: number; to: number; closed: boolean };
+
+/**
+ * Pure: find fenced ``` code regions in `doc`. An opening fence is any
+ * line whose trimmed text starts with ```` ``` ````; the closing fence is
+ * a line whose trimmed text is exactly ```` ``` ````. An unclosed fence
+ * runs to the end of the doc, matching CommonMark.
+ *
+ * Used both to paint the code surface and to suppress tag / wiki-link /
+ * property parsing inside code — fenced content is never block markup.
+ */
+export function findCodeFenceRanges(doc: string): CodeFenceRange[] {
+  const ranges: CodeFenceRange[] = [];
+  const lines = doc.split("\n");
+  let offset = 0;
+  let openAt: number | null = null;
+  for (const line of lines) {
+    if (openAt === null) {
+      if (line.trimStart().startsWith("```")) openAt = offset;
+    } else if (line.trim() === "```") {
+      ranges.push({ from: openAt, to: offset + line.length, closed: true });
+      openAt = null;
+    }
+    offset += line.length + 1; // +1 for the consumed "\n"
+  }
+  if (openAt !== null) {
+    ranges.push({ from: openAt, to: doc.length, closed: false });
+  }
+  return ranges;
+}
+
 function buildDecorations(view: EditorView): Built {
   const builder = new RangeSetBuilder<Decoration>();
   const atomicBuilder = new RangeSetBuilder<Decoration>();
@@ -254,6 +302,29 @@ function buildDecorations(view: EditorView): Built {
   const config = view.state.facet(hiddenPropertyKeysFacet);
 
   const decos: Array<{ from: number; to: number; decoration: Decoration; atomic?: boolean }> = [];
+
+  // Fenced ``` code regions. Each line of a region is painted as a code
+  // surface, and the region's character range excludes its content from
+  // the inline tag/wiki/property parsing below — fenced text is literal.
+  const codeRanges = findCodeFenceRanges(doc);
+  const insideCode = (i: number): boolean =>
+    codeRanges.some((r) => i >= r.from && i < r.to);
+  for (const region of codeRanges) {
+    const firstLine = view.state.doc.lineAt(region.from).number;
+    const lastLine = view.state.doc.lineAt(region.to).number;
+    for (let ln = firstLine; ln <= lastLine; ln++) {
+      const line = view.state.doc.line(ln);
+      const isFirst = ln === firstLine;
+      const isLast = ln === lastLine;
+      let cls = "cm-tesela-code-line";
+      if (isFirst) cls += " cm-tesela-code-line-first";
+      if (isLast) cls += " cm-tesela-code-line-last";
+      // The opening ``` line is always a fence; the closing one only when
+      // the fence is actually closed (an unclosed fence has no end line).
+      if (isFirst || (isLast && region.closed)) cls += " cm-tesela-code-fence-line";
+      decos.push({ from: line.from, to: line.from, decoration: codeLineDeco(cls) });
+    }
+  }
 
   // Tags: position-aware classification per the tag-system spec.
   //   - Tokens inside the trailing cluster (one or more `#tag` tokens at
@@ -267,6 +338,7 @@ function buildDecorations(view: EditorView): Built {
   while ((m = TAG_RE.exec(doc)) !== null) {
     const from = m.index;
     const to = m.index + m[0].length;
+    if (insideCode(from)) continue;
     if (from >= trailingStart) {
       const name = m[1];
       decos.push({
@@ -283,6 +355,7 @@ function buildDecorations(view: EditorView): Built {
   // tags:: property lines: hide the whole line (canonical display is the pill UI)
   TAGS_LINE_RE.lastIndex = 0;
   while ((m = TAGS_LINE_RE.exec(doc)) !== null) {
+    if (insideCode(m.index)) continue;
     decos.push({ from: m.index, to: m.index, decoration: tagsLineHide });
   }
 
@@ -301,6 +374,7 @@ function buildDecorations(view: EditorView): Built {
   // Wiki-links
   WIKI_LINK_RE.lastIndex = 0;
   while ((m = WIKI_LINK_RE.exec(doc)) !== null) {
+    if (insideCode(m.index)) continue;
     decos.push({ from: m.index, to: m.index + 2, decoration: wikiLinkBracketMark });
     decos.push({ from: m.index + 2, to: m.index + m[0].length - 2, decoration: wikiLinkMark });
     decos.push({ from: m.index + m[0].length - 2, to: m.index + m[0].length, decoration: wikiLinkBracketMark });
@@ -310,6 +384,7 @@ function buildDecorations(view: EditorView): Built {
   // configured to hide via the facet (either always-hide or empty-hide+empty).
   PROPERTY_RE.lastIndex = 0;
   while ((m = PROPERTY_RE.exec(doc)) !== null) {
+    if (insideCode(m.index)) continue;
     const key = m[1].toLowerCase();
     if (key === "tags") continue; // tags:: handled above
     const value = m[2] ?? "";
@@ -399,6 +474,13 @@ export const teselaDecorations = ViewPlugin.fromClass(
 export function findAtomicCursorRanges(doc: string, config: HiddenKeysConfig): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
 
+  // Fenced code regions: `#tag` / `tags::` tokens inside one are literal
+  // code, not block markup — they get no chip widget, so they must not
+  // be treated as atomic cursor ranges either.
+  const codeRanges = findCodeFenceRanges(doc);
+  const insideCode = (i: number): boolean =>
+    codeRanges.some((r) => i >= r.from && i < r.to);
+
   // Only `#tag` tokens in the trailing cluster are atomic (they're chip
   // widgets that can't be entered with the cursor). Inline tokens stay
   // edit-friendly.
@@ -406,7 +488,7 @@ export function findAtomicCursorRanges(doc: string, config: HiddenKeysConfig): A
   TAG_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = TAG_RE.exec(doc)) !== null) {
-    if (m.index >= trailingStart) {
+    if (m.index >= trailingStart && !insideCode(m.index)) {
       ranges.push([m.index, m.index + m[0].length]);
     }
   }
@@ -426,7 +508,9 @@ export function findAtomicCursorRanges(doc: string, config: HiddenKeysConfig): A
 
   TAGS_LINE_RE.lastIndex = 0;
   while ((m = TAGS_LINE_RE.exec(doc)) !== null) {
-    ranges.push(lineRangeWithNewline(m.index, m[0].length));
+    if (!insideCode(m.index)) {
+      ranges.push(lineRangeWithNewline(m.index, m[0].length));
+    }
   }
 
   if (config.hide.size > 0 || config.hideEmpty.size > 0) {
@@ -571,5 +655,28 @@ export const teselaDecorationTheme = EditorView.theme({
   ".cm-tesela-prop-value": {
     color: "color-mix(in srgb, var(--primary) 50%, var(--foreground))",
     fontSize: "0.9em",
+  },
+  ".cm-tesela-code-line": {
+    // Fenced ``` code lines — a raised monospace surface. Consecutive
+    // lines' backgrounds abut, so a multi-line fence reads as one panel.
+    background: "var(--surface-2)",
+    fontFamily: "var(--theme-font-mono, var(--v4-mono))",
+    fontSize: "0.86em",
+    padding: "0 10px",
+  },
+  ".cm-tesela-code-line-first": {
+    paddingTop: "6px",
+    borderTopLeftRadius: "6px",
+    borderTopRightRadius: "6px",
+  },
+  ".cm-tesela-code-line-last": {
+    paddingBottom: "6px",
+    borderBottomLeftRadius: "6px",
+    borderBottomRightRadius: "6px",
+  },
+  ".cm-tesela-code-fence-line": {
+    // The ``` delimiter lines stay visible (the block is editable) but
+    // recede so the code body reads as the content.
+    color: "var(--muted-foreground)",
   },
 });

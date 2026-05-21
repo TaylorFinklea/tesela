@@ -11,6 +11,7 @@ import {
   snapHeadOutOfAtomicRanges,
   findTrailingClusterStart,
   promoteOrDemoteTag,
+  findCodeFenceRanges,
 } from "../../src/lib/cm-decorations.ts";
 
 const EMPTY = { hide: new Set(), hideEmpty: new Set() };
@@ -89,6 +90,56 @@ test("findAtomicCursorRanges always returns sorted ranges", () => {
   for (let i = 1; i < r.length; i++) {
     assert.ok(r[i][0] >= r[i - 1][0], "ranges sorted");
   }
+});
+
+// ── findCodeFenceRanges ──────────────────────────────────────────────────
+
+test("findCodeFenceRanges: returns empty for text with no fence", () => {
+  assert.deepEqual(findCodeFenceRanges("hello world"), []);
+});
+
+test("findCodeFenceRanges: a closed fence spanning the whole block", () => {
+  const doc = "```\ncode\n```";
+  assert.deepEqual(findCodeFenceRanges(doc), [{ from: 0, to: 12, closed: true }]);
+});
+
+test("findCodeFenceRanges: captures a fence with a language token", () => {
+  const doc = "```js\nx\n```";
+  assert.deepEqual(findCodeFenceRanges(doc), [{ from: 0, to: 11, closed: true }]);
+});
+
+test("findCodeFenceRanges: a fence with prose before and after", () => {
+  const doc = "before\n```\ncode\n```\nafter";
+  assert.deepEqual(findCodeFenceRanges(doc), [{ from: 7, to: 19, closed: true }]);
+});
+
+test("findCodeFenceRanges: an unclosed fence runs to the end of the block", () => {
+  const doc = "text\n```python\ncode";
+  assert.deepEqual(findCodeFenceRanges(doc), [
+    { from: 5, to: doc.length, closed: false },
+  ]);
+});
+
+test("findCodeFenceRanges: two separate fences in one block", () => {
+  const doc = "```\na\n```\n```\nb\n```";
+  assert.deepEqual(findCodeFenceRanges(doc), [
+    { from: 0, to: 9, closed: true },
+    { from: 10, to: 19, closed: true },
+  ]);
+});
+
+// ── findAtomicCursorRanges — code fences suppress markup ─────────────────
+
+test("findAtomicCursorRanges: a #tag inside a code fence is not atomic", () => {
+  // The #urgent looks like a trailing-cluster tag, but it sits inside an
+  // (unclosed) code fence — code content must not be parsed as a tag.
+  const doc = "```\n#urgent";
+  assert.deepEqual(findAtomicCursorRanges(doc, EMPTY), []);
+});
+
+test("findAtomicCursorRanges: a tags:: line inside a code fence is not atomic", () => {
+  const doc = "```\ntags:: a, b\n```";
+  assert.deepEqual(findAtomicCursorRanges(doc, EMPTY), []);
 });
 
 // ── snapHeadOutOfAtomicRanges ─────────────────────────────────────────────
