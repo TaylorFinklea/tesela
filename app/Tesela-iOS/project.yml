@@ -39,6 +39,10 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.tesela.ios
+        # App icon — Sources/Assets.xcassets/AppIcon.appiconset (the new
+        # Tesela logo). Assets.xcassets is picked up via the `Sources`
+        # source path; this names which icon set the build uses.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_INCLUDE_PATHS: "$(SRCROOT)/CFFI"
         HEADER_SEARCH_PATHS: "$(SRCROOT)/CFFI"
         # Reference the static archive (.a) by explicit path. The Rust FFI

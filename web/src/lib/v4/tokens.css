@@ -30,14 +30,13 @@
   --v4-ink5: #7c85b0;
   --v4-ink6: #5e6792;
 
-  /* v5 default palette: cool indigo from the original Prism v4 proto
-     mockup (`Tesela2.zip → proto-prism4.jsx`). The vermilion (#F13408)
-     brand variant briefly shipped late in v4 is rolled back as the
-     baseline; a real theming engine that re-exposes both will land as
-     a settings surface once the chrome stabilizes. */
-  --v4-accent: #7b8cff;          /* indigo */
-  --v4-accent-dim: rgba(123, 140, 255, 0.55);
-  --v4-accent2: #f0a45c;         /* warm amber for two-tone callouts */
+  /* Brand palette — derived from the Tesela logo (slate / coral / cream).
+     `.v4-root` is a legacy route surface; these accents are kept in sync
+     with the live app's Prism theme (web/src/app.css) so the brand coral
+     never reverts to the old indigo here. */
+  --v4-accent: #fb5950;          /* coral — the logo's hero accent */
+  --v4-accent-dim: rgba(251, 89, 80, 0.55);
+  --v4-accent2: #81b29a;         /* sage — calm secondary accent */
 
   /* Override the global Tailwind/theme accent inside the v5 chrome so
      legacy components (BlockOutliner wiki links, etc.) pick up the

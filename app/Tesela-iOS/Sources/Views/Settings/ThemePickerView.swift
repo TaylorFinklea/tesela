@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Theme picker. Lists all 17 themes (Prism indigo default + 16 dark
-/// variants) with a 3-swatch preview per theme. Tapping a row switches
+/// Theme picker. Lists all 18 themes (Prism default + Prism Light + 16
+/// dark variants) with a 3-swatch preview per theme. Tapping a row switches
 /// the active theme via the AppearanceController, which repaints the
 /// entire app.
 struct ThemePickerView: View {
@@ -23,7 +23,7 @@ struct ThemePickerView: View {
             } header: {
                 Text("All themes")
             } footer: {
-                Text("Always dark on first ship. Light themes land in a later update.")
+                Text("Prism Light is the one light theme — every other theme is dark.")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundStyle(theme.fgFaint)
             }
@@ -56,7 +56,7 @@ struct ThemePickerView: View {
                 HStack(spacing: 6) {
                     Text(t.id.displayName)
                         .foregroundStyle(theme.fgDefault)
-                    if t.id == .prismIndigo {
+                    if t.id == .prism {
                         Text("default")
                             .font(.system(size: 9, weight: .semibold, design: .monospaced))
                             .padding(.horizontal, 6)

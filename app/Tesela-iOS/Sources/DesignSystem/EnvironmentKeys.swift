@@ -4,7 +4,7 @@ import SwiftUI
 /// `@Environment(\.theme)` to get role-token colors that automatically
 /// repaint when the theme changes.
 private struct ThemeKey: EnvironmentKey {
-    static let defaultValue: Theme = .prismIndigo
+    static let defaultValue: Theme = .prism
 }
 
 /// Environment key for the active density tier. Affects every type-scale

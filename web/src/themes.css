@@ -565,6 +565,32 @@
 
 /* ============================ Lights ============================ */
 
+/* === Prism Light (brand default — light variant) === */
+:root[data-theme="prism-light"] {
+  --bg: #f4f1de;
+  --bg-2: #ece8d0;
+  --bg-3: #e3dec2;
+  --bg-4: #d6d0b4;
+  --line: #d9d3b7;
+  --line-soft: #e6e1c8;
+  --fg-default: #3d405b;
+  --fg-muted: #5c5e76;
+  --fg-subtle: #8a8b86;
+  --fg-faint: #b0ad9a;
+  /* Coral is deepened from the logo's #FB5950 so it stays legible as a
+     text / selection color on the cream surface; secondary is a deepened
+     sage. Type-* colors are darkened for contrast on light-on-cream. */
+  --accent-primary: #dd4a3d;
+  --accent-secondary: #5c9078;
+  --type-task: #c2403f;
+  --type-event: #3c7e91;
+  --type-note: #9a7430;
+  --type-project: #3d6fc0;
+  --type-person: #7e5bc0;
+  --type-query: #5e8438;
+  --type-template: #8c6b36;
+}
+
 /* === Tokyo Night Day === */
 :root[data-theme="tokyo-night-day"] {
   --bg: #e1e2e7;

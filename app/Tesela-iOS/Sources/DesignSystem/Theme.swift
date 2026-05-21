@@ -2,11 +2,13 @@ import SwiftUI
 
 /// Identifiers for every theme the app ships. The raw value matches the
 /// `data-theme="…"` attribute used by `web/src/themes.css` so iOS and web
-/// stay one-to-one mappable. `prismIndigo` is the cross-platform default
+/// stay one-to-one mappable. `prism` is the cross-platform default
 /// (matches `web/src/app.css` root variables) per the iOS Tile decisions
-/// (`.docs/designs/2026-05-18-ios-design-followup.md` #1).
+/// (`.docs/designs/2026-05-18-ios-design-followup.md` #1); `prismLight`
+/// is its light-mode variant.
 enum ThemeID: String, CaseIterable, Identifiable, Codable {
-    case prismIndigo       = "prism-indigo"
+    case prism             = "prism"
+    case prismLight        = "prism-light"
     case tokyoNight        = "tokyo-night"
     case tokyoNightStorm   = "tokyo-night-storm"
     case catppuccinMocha   = "catppuccin-mocha"
@@ -29,7 +31,8 @@ enum ThemeID: String, CaseIterable, Identifiable, Codable {
     /// Human-readable name shown in the theme picker.
     var displayName: String {
         switch self {
-        case .prismIndigo:        return "Prism Indigo"
+        case .prism:              return "Prism"
+        case .prismLight:         return "Prism Light"
         case .tokyoNight:         return "Tokyo Night"
         case .tokyoNightStorm:    return "Tokyo Night · Storm"
         case .catppuccinMocha:    return "Catppuccin · Mocha"
@@ -113,6 +116,11 @@ struct Theme: Equatable, Identifiable {
         default:         return fgMuted
         }
     }
+
+    /// Light-mode themes paint on a pale surface. Drives the app's
+    /// `preferredColorScheme` so system chrome (status bar, sheets)
+    /// matches; the theme's own role-tokens always paint the UI itself.
+    var isLight: Bool { id == .prismLight }
 }
 
 // MARK: - Hex-tuple constructor
@@ -171,18 +179,35 @@ private extension Theme {
 // MARK: - Theme palettes
 
 extension Theme {
-    /// **Default theme.** Matches the web v5 client's root indigo defaults
-    /// in `web/src/app.css` — `--accent-primary: #7b8cff`. First-launch
-    /// iPhone looks like first-launch web. Per decision #1.
-    static let prismIndigo = Theme(id: .prismIndigo, hex: ThemeHexes(
-        bg: 0x1A1B26, bg2: 0x1F2335, bg3: 0x24283B, bg4: 0x2A2E42,
-        line: 0x2F334D, lineSoft: 0x292E42,
-        fgDefault: 0xC0CAF5, fgMuted: 0xA9B1D6,
-        fgSubtle: 0x737AA2, fgFaint: 0x545C7E,
-        accentPrimary: 0x7B8CFF, accentSecondary: 0xF0A45C,
+    /// **Default theme.** The Prism brand theme — a warm-dark palette
+    /// derived from the app logo (slate #3D405B, coral #FB5950, cream
+    /// #F4F1DE). Mirrors the web client's `:root` defaults in
+    /// `web/src/app.css`. First-launch iPhone looks like first-launch
+    /// web. Per decision #1.
+    static let prism = Theme(id: .prism, hex: ThemeHexes(
+        bg: 0x23252F, bg2: 0x2C2E3E, bg3: 0x34374C, bg4: 0x3D405B,
+        line: 0x454963, lineSoft: 0x383B52,
+        fgDefault: 0xF4F1DE, fgMuted: 0xC9C6B4,
+        fgSubtle: 0x928F7E, fgFaint: 0x6E6B60,
+        accentPrimary: 0xFB5950, accentSecondary: 0x81B29A,
         typeTask: 0xDB6C83, typeEvent: 0x6DBACC, typeNote: 0xE8B86B,
         typeProject: 0x6A8FDC, typePerson: 0xA98BE0,
         typeQuery: 0x88B85E, typeTemplate: 0xC79B58))
+
+    /// **Prism Light.** The light variant of the brand theme — cream
+    /// surface, slate ink, coral accent. Mirrors
+    /// `[data-theme="prism-light"]` in `web/src/themes.css`. The coral is
+    /// deepened from the logo's #FB5950 so it stays legible as a text /
+    /// selection color on the cream surface.
+    static let prismLight = Theme(id: .prismLight, hex: ThemeHexes(
+        bg: 0xF4F1DE, bg2: 0xECE8D0, bg3: 0xE3DEC2, bg4: 0xD6D0B4,
+        line: 0xD9D3B7, lineSoft: 0xE6E1C8,
+        fgDefault: 0x3D405B, fgMuted: 0x5C5E76,
+        fgSubtle: 0x8A8B86, fgFaint: 0xB0AD9A,
+        accentPrimary: 0xDD4A3D, accentSecondary: 0x5C9078,
+        typeTask: 0xC2403F, typeEvent: 0x3C7E91, typeNote: 0x9A7430,
+        typeProject: 0x3D6FC0, typePerson: 0x7E5BC0,
+        typeQuery: 0x5E8438, typeTemplate: 0x8C6B36))
 
     static let tokyoNight = Theme(id: .tokyoNight, hex: ThemeHexes(
         bg: 0x1A1B26, bg2: 0x1F2335, bg3: 0x24283B, bg4: 0x2A2E42,
@@ -346,7 +371,7 @@ extension Theme {
 
     /// All themes in picker order.
     static let all: [Theme] = [
-        .prismIndigo,
+        .prism, .prismLight,
         .tokyoNight, .tokyoNightStorm,
         .catppuccinMocha, .catppuccinMacchiato,
         .rosePine, .rosePineMoon,
@@ -358,6 +383,6 @@ extension Theme {
     ]
 
     static func byId(_ id: ThemeID) -> Theme {
-        all.first(where: { $0.id == id }) ?? .prismIndigo
+        all.first(where: { $0.id == id }) ?? .prism
     }
 }

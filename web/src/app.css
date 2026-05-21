@@ -5,36 +5,39 @@
 
 /* === Role-token contract ===========================================
  * Every theme provides values for the variables in this block. The
- * defaults below are Tokyo Night so the app renders identically when
- * no `data-theme` attribute is set. Themes override these via
- * `[data-theme="<id>"]` selectors in themes.css.
+ * defaults below are the Prism (warm-dark) brand theme — the app's
+ * default — so it renders correctly when no `data-theme` attribute is
+ * set (no-JS / pre-FOUC paint). Themes override these via
+ * `[data-theme="<id>"]` selectors in themes.css; the FOUC script in
+ * app.html sets `data-theme="prism"` by default. Prism's palette is
+ * derived from the app logo: slate #3D405B, coral #FB5950, cream #F4F1DE.
  * ================================================================== */
 :root {
-  /* Backgrounds (canvas to chrome) */
-  --bg: #1a1b26;
-  --bg-2: #1f2335;
-  --bg-3: #24283b;
-  --bg-4: #2a2e42;
+  /* Backgrounds — slate ramp lifting toward the logo slate (#3D405B). */
+  --bg: #23252f;
+  --bg-2: #2c2e3e;
+  --bg-3: #34374c;
+  --bg-4: #3d405b;
 
   /* Lines / borders */
-  --line: #2f334d;
-  --line-soft: #292e42;
+  --line: #454963;
+  --line-soft: #383b52;
 
-  /* Foreground scale */
-  --fg-default: #c0caf5;
-  --fg-muted: #a9b1d6;
-  --fg-subtle: #737aa2;
-  --fg-faint: #545c7e;
+  /* Foreground scale — warm cream from the logo (#F4F1DE). */
+  --fg-default: #f4f1de;
+  --fg-muted: #c9c6b4;
+  --fg-subtle: #928f7e;
+  --fg-faint: #6e6b60;
 
-  /* Accents — primary is the brand color (active selection, today indicator).
-     Secondary is reserved for navigational moments that should not pull
-     from primary. Type-* colors are for semantic categories (task, event,
-     note, project, person, query, template) and stay quieter than primary.
-     v5 polish: aligned to the original Prism v4 indigo mockup palette;
-     a real theming engine that re-exposes brand variants lands in
-     settings once chrome stabilizes. */
-  --accent-primary: #7b8cff;
-  --accent-secondary: #f0a45c;
+  /* Accents — primary is the brand color (active selection, today
+     indicator): the logo coral. Secondary is reserved for navigational
+     moments that should not pull from primary; a calm sage completes the
+     logo's terracotta palette. Type-* colors are for semantic categories
+     (task, event, note, project, person, query, template) and stay
+     quieter than primary — kept theme-neutral, they read fine on the
+     warm-slate surfaces. */
+  --accent-primary: #fb5950;
+  --accent-secondary: #81b29a;
   --type-task: #db6c83;
   --type-event: #6dbacc;
   --type-note: #e8b86b;

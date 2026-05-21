@@ -8,11 +8,11 @@ import Combine
 /// and makes previews trivial.
 @MainActor
 final class AppearanceController: ObservableObject {
-    @AppStorage("appearance.themeID") private var themeIDRaw: String = ThemeID.prismIndigo.rawValue
+    @AppStorage("appearance.themeID") private var themeIDRaw: String = ThemeID.prism.rawValue
     @AppStorage("appearance.density") private var densityRaw: String = DensityTier.comfortable.rawValue
 
     var themeID: ThemeID {
-        get { ThemeID(rawValue: themeIDRaw) ?? .prismIndigo }
+        get { ThemeID(rawValue: themeIDRaw) ?? .prism }
         set {
             themeIDRaw = newValue.rawValue
             objectWillChange.send()
@@ -47,7 +47,9 @@ struct TeselaAppearance<Content: View>: View {
         content()
             .environment(\.theme, controller.theme)
             .environment(\.density, controller.density)
-            // Force-dark for v0.4 per decision #10 (light themes ship later).
-            .preferredColorScheme(.dark)
+            // System chrome (status bar, sheets, keyboard) follows the
+            // active theme's mode so Prism Light doesn't clash with dark
+            // system UI. Theme role-tokens still paint the app itself.
+            .preferredColorScheme(controller.theme.isLight ? .light : .dark)
     }
 }

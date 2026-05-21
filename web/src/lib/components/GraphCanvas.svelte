@@ -139,9 +139,9 @@
     if (!ctx) return;
 
     const style = getComputedStyle(document.documentElement);
-    const primary = style.getPropertyValue("--primary").trim() || "#7b8cff";
-    const fg = style.getPropertyValue("--foreground").trim() || "#eaeefc";
-    const muted = style.getPropertyValue("--muted-foreground").trim() || "#737aa2";
+    const primary = style.getPropertyValue("--primary").trim() || "#fb5950";
+    const fg = style.getPropertyValue("--foreground").trim() || "#f4f1de";
+    const muted = style.getPropertyValue("--muted-foreground").trim() || "#928f7e";
 
     ctx.clearRect(0, 0, width, height);
 

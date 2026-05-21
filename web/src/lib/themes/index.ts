@@ -23,6 +23,7 @@ export interface ThemeMeta {
 
 export const THEMES: ThemeMeta[] = [
   // === Darks ===
+  { id: "prism",                name: "Prism",                  mode: "dark", swatch: { bg: "#23252f", fg: "#f4f1de", primary: "#fb5950", secondary: "#81b29a" } },
   { id: "tokyo-night",          name: "Tokyo Night",            mode: "dark", swatch: { bg: "#1a1b26", fg: "#c0caf5", primary: "#ff9e64", secondary: "#bb9af7" } },
   { id: "tokyo-night-storm",    name: "Tokyo Night Storm",      mode: "dark", swatch: { bg: "#24283b", fg: "#c0caf5", primary: "#ff9e64", secondary: "#bb9af7" } },
   { id: "catppuccin-mocha",     name: "Catppuccin Mocha",       mode: "dark", swatch: { bg: "#1e1e2e", fg: "#cdd6f4", primary: "#fab387", secondary: "#cba6f7" } },
@@ -49,12 +50,13 @@ export const THEMES: ThemeMeta[] = [
   { id: "ayu-dark",             name: "Ayu Dark",               mode: "dark", swatch: { bg: "#0b0e14", fg: "#bfbdb6", primary: "#ff8f40", secondary: "#d2a6ff" } },
 
   // === Lights ===
+  { id: "prism-light",          name: "Prism Light",            mode: "light", swatch: { bg: "#f4f1de", fg: "#3d405b", primary: "#dd4a3d", secondary: "#5c9078" } },
   { id: "tokyo-night-day",      name: "Tokyo Night Day",        mode: "light", swatch: { bg: "#e1e2e7", fg: "#3760bf", primary: "#b15c00", secondary: "#7847bd" } },
   { id: "catppuccin-latte",     name: "Catppuccin Latte",       mode: "light", swatch: { bg: "#eff1f5", fg: "#4c4f69", primary: "#fe640b", secondary: "#8839ef" } },
   { id: "rose-pine-dawn",       name: "Rose Pine Dawn",         mode: "light", swatch: { bg: "#faf4ed", fg: "#575279", primary: "#d7827e", secondary: "#907aa9" } },
 ];
 
-export const DEFAULT_THEME = "tokyo-night";
+export const DEFAULT_THEME = "prism";
 
 export function isKnownTheme(id: string): boolean {
   return THEMES.some((t) => t.id === id);
