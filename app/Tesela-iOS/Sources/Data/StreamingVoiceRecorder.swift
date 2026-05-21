@@ -160,7 +160,12 @@ final class StreamingVoiceRecorder: ObservableObject {
         var supplied = false
         converter.convert(to: outBuffer, error: &error) { _, status in
             if supplied {
-                status.pointee = .endOfStream
+                // `.noDataNow`, NOT `.endOfStream`: this one converter
+                // is reused for every tap buffer. `.endOfStream` would
+                // permanently finish it — only the first buffer would
+                // ever convert and every later one would yield nothing
+                // (the bug behind "recording too short — 1600 samples").
+                status.pointee = .noDataNow
                 return nil
             }
             supplied = true
