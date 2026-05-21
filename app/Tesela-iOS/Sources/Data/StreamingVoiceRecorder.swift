@@ -181,6 +181,16 @@ final class StreamingVoiceRecorder: ObservableObject {
         state = .idle
     }
 
+    /// Clear a surfaced error so the capture bar returns to the text
+    /// field. Called when the user taps the error chip.
+    func dismissError() {
+        transcriptionError = nil
+        switch state {
+        case .failed, .denied: state = .idle
+        default: break
+        }
+    }
+
     // MARK: - Audio buffer plumbing
 
     private func handleInputBuffer(_ buffer: AVAudioPCMBuffer) {

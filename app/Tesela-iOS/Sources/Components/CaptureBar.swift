@@ -73,65 +73,80 @@ struct CaptureBar: View {
     }
 
     var body: some View {
-        VStack(spacing: 4) {
-            voiceIndicator
-            HStack(spacing: 8) {
-                plusButton
-                targetChip
-                TextField("Capture…", text: $composer.draft, axis: .vertical)
-                    .focused($fieldFocused)
-                    .submitLabel(.send)
-                    .onSubmit(submit)
-                    .lineLimit(1...10)
-                    .font(.body)
-                    .foregroundStyle(theme.fgDefault)
-                    .tint(theme.accentPrimary)
-                trailingButton
-            }
-            .frame(minHeight: 44)
+        HStack(spacing: 8) {
+            plusButton
+            targetChip
+            composerMiddle
+                .frame(maxWidth: .infinity, alignment: .leading)
+            trailingButton
         }
+        .frame(minHeight: 44)
         .padding(.horizontal, 12)
     }
 
-    /// Voice feedback above the composer: a live waveform + timer while
-    /// recording, a "Transcribing…" spinner after, or a clean error.
-    /// Renders nothing (zero height) when idle.
+    /// The composer's middle slot. Normally the text field; while
+    /// recording it becomes a live waveform + timer, during
+    /// transcription a spinner, and on failure a tap-to-dismiss error.
+    /// Everything stays inside the single accessory row — a row stacked
+    /// *above* the composer gets clipped, since `tabViewBottomAccessory`
+    /// is a fixed-height pill.
     @ViewBuilder
-    private var voiceIndicator: some View {
+    private var composerMiddle: some View {
         switch recorder.state {
         case .recording(let elapsed):
             HStack(spacing: 8) {
                 VoiceWaveformView(monitor: recorder.levelMonitor)
                 Text(elapsedLabel(elapsed))
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
                     .foregroundStyle(theme.fgMuted)
                 Spacer(minLength: 0)
             }
         case .denied:
-            voiceMessage("Microphone access denied — enable it in Settings.")
+            errorChip("Microphone access denied — enable it in Settings.")
         case .failed(let message):
-            voiceMessage("Voice capture failed — \(message)")
+            errorChip("Voice capture failed — \(message)")
         default:
             if recorder.transcribingChunk {
                 HStack(spacing: 6) {
                     ProgressView().controlSize(.mini)
                     Text("Transcribing…")
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.body)
                         .foregroundStyle(theme.fgMuted)
                     Spacer(minLength: 0)
                 }
             } else if let error = recorder.transcriptionError {
-                voiceMessage("Couldn't transcribe — \(error)")
+                errorChip("Couldn't transcribe — \(error)")
+            } else {
+                composerField
             }
         }
     }
 
-    private func voiceMessage(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(theme.typeTask)
-            .lineLimit(2)
-            .frame(maxWidth: .infinity, alignment: .leading)
+    private var composerField: some View {
+        TextField("Capture…", text: $composer.draft, axis: .vertical)
+            .focused($fieldFocused)
+            .submitLabel(.send)
+            .onSubmit(submit)
+            .lineLimit(1...10)
+            .font(.body)
+            .foregroundStyle(theme.fgDefault)
+            .tint(theme.accentPrimary)
+    }
+
+    /// A surfaced voice error — tap anywhere on it to dismiss and
+    /// return the composer to the text field.
+    private func errorChip(_ text: String) -> some View {
+        Button {
+            recorder.dismissError()
+        } label: {
+            Text(text)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(theme.typeTask)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func elapsedLabel(_ elapsed: TimeInterval) -> String {
@@ -203,7 +218,8 @@ struct CaptureBar: View {
     /// draft so the user can review before submitting.
     @ViewBuilder
     private var trailingButton: some View {
-        if composer.draft.trimmingCharacters(in: .whitespaces).isEmpty {
+        // Recording always shows Stop, even with draft text present.
+        if isRecording || composer.draft.trimmingCharacters(in: .whitespaces).isEmpty {
             Button {
                 Task { await toggleRecording() }
             } label: {
