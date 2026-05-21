@@ -450,18 +450,36 @@ fn build_public_url(bind: &str, port: u16) -> String {
     }
 }
 
+/// Pick the IPv4 address to advertise to peers in pairing codes.
+///
+/// A Tailscale address (CGNAT range `100.64.0.0/10`) is preferred when
+/// present: for a multi-device personal setup it is the most reliable
+/// address — stable, and reachable across networks, Wi-Fi AP
+/// isolation, and odd subnets that defeat a plain LAN IP. A plain LAN
+/// IP can also be silently unreachable when the peer routes that
+/// subnet into its own Tailscale tunnel. Falls back to the first
+/// ordinary LAN IPv4 when no Tailscale interface exists.
 fn first_lan_ipv4() -> Option<String> {
     let addrs = if_addrs::get_if_addrs().ok()?;
-    addrs
+    let candidates: Vec<std::net::Ipv4Addr> = addrs
         .into_iter()
         .filter(|i| !i.is_loopback())
         .filter_map(|i| match i.ip() {
-            std::net::IpAddr::V4(v4) if !v4.is_link_local() && !v4.is_unspecified() => {
-                Some(v4.to_string())
-            }
+            std::net::IpAddr::V4(v4) if !v4.is_link_local() && !v4.is_unspecified() => Some(v4),
             _ => None,
         })
-        .next()
+        .collect();
+    candidates
+        .iter()
+        .find(|v4| is_tailscale_cgnat(v4))
+        .or_else(|| candidates.first())
+        .map(|v4| v4.to_string())
+}
+
+/// True for an address in Tailscale's CGNAT range `100.64.0.0/10`.
+fn is_tailscale_cgnat(ip: &std::net::Ipv4Addr) -> bool {
+    let octets = ip.octets();
+    octets[0] == 100 && (64..=127).contains(&octets[1])
 }
 
 /// Picks a user-visible name for this device, used in mDNS TXT records
@@ -757,4 +775,23 @@ fn ensure_blank_mosaic(path: &Path) -> Result<()> {
         warn!("Failed to seed system widgets at {}: {}", path.display(), e);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn tailscale_cgnat_range_detection() {
+        // Inside 100.64.0.0/10.
+        assert!(is_tailscale_cgnat(&Ipv4Addr::new(100, 112, 34, 59)));
+        assert!(is_tailscale_cgnat(&Ipv4Addr::new(100, 64, 0, 0)));
+        assert!(is_tailscale_cgnat(&Ipv4Addr::new(100, 127, 255, 255)));
+        // Outside the range — 100.x but wrong second octet, and ordinary LAN IPs.
+        assert!(!is_tailscale_cgnat(&Ipv4Addr::new(100, 63, 255, 255)));
+        assert!(!is_tailscale_cgnat(&Ipv4Addr::new(100, 128, 0, 0)));
+        assert!(!is_tailscale_cgnat(&Ipv4Addr::new(10, 15, 109, 184)));
+        assert!(!is_tailscale_cgnat(&Ipv4Addr::new(192, 168, 1, 5)));
+    }
 }
