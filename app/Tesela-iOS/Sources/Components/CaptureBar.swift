@@ -31,10 +31,12 @@ struct CaptureBar: View {
     /// an externally-delivered voice transcript reliably land in the
     /// field despite the `tabViewBottomAccessory` recreating this view.
     @ObservedObject var composer: CaptureComposer
+    /// `true` for the expanded keyboard-tracking panel, `false` for the
+    /// compact bar in the tab accessory. Drives the layout.
+    var expanded: Bool = false
 
     @Environment(\.theme) private var theme
 
-    @State private var manualTarget: CaptureTarget? = nil
     @FocusState private var fieldFocused: Bool
 
     @AppStorage("captureDefaultTarget") private var captureDefault: CaptureDefault = .contextAware
@@ -55,7 +57,7 @@ struct CaptureBar: View {
     /// Where the next submit will land. Manual chip selection wins;
     /// otherwise resolve from settings + active tab + page context.
     private var resolvedTarget: CaptureTarget {
-        if let manualTarget { return manualTarget }
+        if let manualTarget = composer.manualTarget { return manualTarget }
         switch captureDefault {
         case .alwaysToday:    return .today
         case .alwaysInbox:    return .inbox
@@ -73,8 +75,8 @@ struct CaptureBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            plusButton
+        HStack(alignment: .bottom, spacing: 8) {
+            leadingButton
             targetChip
             composerMiddle
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -82,6 +84,18 @@ struct CaptureBar: View {
         }
         .frame(minHeight: 44)
         .padding(.horizontal, 12)
+        .padding(.vertical, expanded ? 6 : 0)
+        .background {
+            // The expanded panel rides above the keyboard via
+            // `safeAreaInset` and needs its own solid backing; the
+            // compact bar gets its glass from the tab accessory.
+            if expanded { theme.bg }
+        }
+        .overlay(alignment: .top) {
+            if expanded {
+                Rectangle().fill(theme.lineSoft).frame(height: 1)
+            }
+        }
     }
 
     /// The composer's middle slot. Normally the text field; while
@@ -116,21 +130,53 @@ struct CaptureBar: View {
                 }
             } else if let error = recorder.transcriptionError {
                 errorChip("Couldn't transcribe — \(error)")
-            } else {
+            } else if expanded {
                 composerField
+            } else {
+                composerTapTarget
             }
         }
     }
 
+    /// The real editable field — used only in the expanded panel. It
+    /// focuses on appear so the keyboard rises and `safeAreaInset`
+    /// carries the panel up with it.
     private var composerField: some View {
         TextField("Capture…", text: $composer.draft, axis: .vertical)
             .focused($fieldFocused)
             .submitLabel(.send)
             .onSubmit(submit)
-            .lineLimit(1...10)
+            .lineLimit(1...12)
             .font(.body)
             .foregroundStyle(theme.fgDefault)
             .tint(theme.accentPrimary)
+            .onAppear {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(60))
+                    fieldFocused = true
+                }
+            }
+    }
+
+    /// Compact-bar middle: a tap target showing the draft (or the
+    /// placeholder). Tapping expands the composer — the compact bar
+    /// deliberately never focuses a field itself, which would drop the
+    /// keyboard behind the tab accessory.
+    private var composerTapTarget: some View {
+        Button {
+            withAnimation(.snappy(duration: 0.28)) {
+                composer.isExpanded = true
+            }
+        } label: {
+            Text(composer.draft.isEmpty ? "Capture…" : composer.draft)
+                .font(.body)
+                .foregroundStyle(composer.draft.isEmpty ? theme.fgFaint : theme.fgDefault)
+                .lineLimit(composer.draft.isEmpty ? 1 : 4)
+                .multilineTextAlignment(.leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     /// A surfaced voice error — tap anywhere on it to dismiss and
@@ -154,6 +200,30 @@ struct CaptureBar: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
+    /// Leading slot: a collapse chevron in the expanded panel, the `+`
+    /// attach button in the compact bar.
+    @ViewBuilder
+    private var leadingButton: some View {
+        if expanded {
+            Button {
+                withAnimation(.snappy(duration: 0.28)) {
+                    composer.isExpanded = false
+                }
+                fieldFocused = false
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(theme.fgMuted)
+                    .frame(width: 30, height: 30)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Collapse composer")
+        } else {
+            plusButton
+        }
+    }
+
     /// Leftmost `+` for future attachment support. Stub for now.
     private var plusButton: some View {
         Button {
@@ -175,25 +245,25 @@ struct CaptureBar: View {
     private var targetChip: some View {
         Menu {
             Button {
-                manualTarget = .today
+                composer.manualTarget = .today
             } label: {
                 Label("Today", systemImage: "calendar")
             }
             Button {
-                manualTarget = .inbox
+                composer.manualTarget = .inbox
             } label: {
                 Label("Inbox", systemImage: "tray")
             }
             if let page = context.currentPage {
                 Button {
-                    manualTarget = .page(slug: page.slug, title: page.title)
+                    composer.manualTarget = .page(slug: page.slug, title: page.title)
                 } label: {
                     Label("Add to \(page.title)", systemImage: "doc.text")
                 }
             }
             if let block = context.focusedBlock {
                 Button {
-                    manualTarget = .childOf(
+                    composer.manualTarget = .childOf(
                         parentId: block.id,
                         parentPreview: block.preview,
                         pageSlug: block.pageSlug
@@ -255,13 +325,15 @@ struct CaptureBar: View {
         let trimmed = composer.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         mosaic.capture(trimmed, target: resolvedTarget)
+        // Clear a child-block target after submit so the next capture
+        // doesn't insert under the same (possibly stale) parent.
+        if case .childOf = resolvedTarget {
+            composer.manualTarget = nil
+        }
         composer.draft = ""
         fieldFocused = false
-        // Clear manual target after a child-block submit so the next
-        // capture doesn't try to insert under the same (possibly
-        // stale) parent.
-        if case .childOf = resolvedTarget {
-            manualTarget = nil
+        withAnimation(.snappy(duration: 0.28)) {
+            composer.isExpanded = false
         }
     }
 
@@ -287,6 +359,13 @@ struct CaptureBar: View {
 @MainActor
 final class CaptureComposer: ObservableObject {
     @Published var draft: String = ""
+    /// True while the composer is expanded into the tall, keyboard-
+    /// tracking panel rather than the compact bar in the tab accessory.
+    @Published var isExpanded: Bool = false
+    /// Manually-chosen capture target (from the chip menu); `nil` means
+    /// resolve from settings + active tab + page context. Held here so
+    /// the compact bar and the expanded panel always agree.
+    @Published var manualTarget: CaptureTarget? = nil
 
     /// Append dictated / transcribed text, separated by a space.
     func append(_ text: String) {

@@ -153,10 +153,10 @@ struct AppShell: View {
         }
         .tint(appearance.theme.accentPrimary)
         .tabViewBottomAccessory {
-            // Always show the bar. iOS lifts it above the keyboard
-            // automatically when a TextField is focused (Slack
-            // composer pattern). Hiding it during edits left a weird
-            // empty zone above the keyboard, so we keep it visible.
+            // The compact capture bar. Its text slot is a tap target,
+            // not a focusable field — tapping it expands the composer
+            // (below) rather than focusing here, where the keyboard
+            // would drop behind the accessory.
             CaptureBar(
                 mosaic: mosaic,
                 activeTab: activeTab,
@@ -166,6 +166,25 @@ struct AppShell: View {
                 composer: composer
             )
             .environment(\.theme, appearance.theme)
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            // The expanded composer. `safeAreaInset(.bottom)` is the
+            // reliable "rides above the keyboard" placement (the chat
+            // input-bar pattern) — `tabViewBottomAccessory` does not
+            // lift an editable field above the keyboard.
+            if composer.isExpanded {
+                CaptureBar(
+                    mosaic: mosaic,
+                    activeTab: activeTab,
+                    transcription: transcription,
+                    context: captureContext,
+                    recorder: streamRecorder,
+                    composer: composer,
+                    expanded: true
+                )
+                .environment(\.theme, appearance.theme)
+                .transition(.move(edge: .bottom))
+            }
         }
         .environment(\.captureContext, captureContext)
         .environment(\.openSearch, { activeTab = .search })
