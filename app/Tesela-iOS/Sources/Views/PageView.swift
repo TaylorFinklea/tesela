@@ -42,6 +42,8 @@ struct PageView: View {
         }
         .background(theme.bg)
         .onChange(of: editingBlockId) { _, newValue in
+            // Defer live remote refreshes while editing — see DailyView.
+            mosaic.isEditingBlock = (newValue != nil)
             if let id = newValue,
                let block = mosaic.loadedPageBlocks[page.id]?.first(where: { $0.id == id })
             {
@@ -54,7 +56,10 @@ struct PageView: View {
                 captureContext.focusedBlock = nil
             }
         }
-        .onDisappear { captureContext.focusedBlock = nil }
+        .onDisappear {
+            captureContext.focusedBlock = nil
+            mosaic.isEditingBlock = false
+        }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -177,6 +182,9 @@ struct PageView: View {
                 onCommitEdit: { newText in
                     mosaic.editPageBlock(pageId: page.id, blockId: block.id, text: newText)
                     editingBlockId = nil
+                },
+                onTextChanged: { newText in
+                    mosaic.editPageBlock(pageId: page.id, blockId: block.id, text: newText)
                 },
                 onMenuAction: { action in
                     handlePageAction(action, on: block)

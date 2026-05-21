@@ -15,6 +15,7 @@ struct AppShell: View {
     @StateObject private var backend = BackendSettings()
     @StateObject private var transcription = TranscriptionStore()
     @StateObject private var mosaicRegistry = MosaicRegistry()
+    @StateObject private var liveSync = LiveSyncSocket()
     @State private var activeTab: AppTab = .daily
     @State private var captureContext: CaptureContext = .init()
     /// Lifted out of CaptureBar so the AVAudioEngine init isn't paid
@@ -38,11 +39,20 @@ struct AppShell: View {
                         // brings the app back, pull both the daily
                         // and any pages they had open so cross-device
                         // edits land without manual pull-to-refresh.
-                        if newPhase == .active {
+                        // The live-sync socket keeps things fresh while
+                        // the app is open; it is torn down in the
+                        // background and reconnected here.
+                        switch newPhase {
+                        case .active:
+                            liveSync.nudge()
                             Task {
                                 await mosaic.refresh(from: backend.backend)
                                 await mosaic.refreshLoadedPages()
                             }
+                        case .background:
+                            liveSync.suspend()
+                        default:
+                            break
                         }
                     }
             } else {
@@ -68,6 +78,11 @@ struct AppShell: View {
                 legacyURL: backend.serverURL,
                 defaultName: "My mosaic"
             )
+            // Route live-sync events into the mosaic. Set once — the
+            // socket itself is repointed per-mosaic below.
+            liveSync.onNoteChange = { [mosaic] in
+                Task { await mosaic.applyRemoteChange() }
+            }
         }
         if let active = mosaicRegistry.activeProfile {
             if backend.serverURL != active.serverURL {
@@ -81,6 +96,13 @@ struct AppShell: View {
             mosaic.attach(backend: backend.backend)
         }
         await mosaic.refresh(from: backend.backend)
+        // Point the live-sync socket at the active server (or tear it
+        // down in mock mode).
+        if case .http = backend.backend {
+            liveSync.connect(serverURL: backend.serverURL)
+        } else {
+            liveSync.connect(serverURL: nil)
+        }
     }
 
     private var shell: some View {

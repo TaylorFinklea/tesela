@@ -24,6 +24,11 @@ struct BlockRow: View {
     var onToggleTask: (() -> Void)? = nil
     var onTap: (() -> Void)? = nil
     var onCommitEdit: ((String) -> Void)? = nil
+    /// Debounced live text updates while editing — distinct from
+    /// `onCommitEdit`, which fires once when the edit finishes. Owners
+    /// route this to a writeback so other devices see typing in
+    /// progress without waiting for the block to be committed.
+    var onTextChanged: ((String) -> Void)? = nil
     var onCancelEdit: (() -> Void)? = nil
     var onMenuAction: ((BlockAction) -> Void)? = nil
     /// Commit current text and append a new sibling block immediately
@@ -39,6 +44,7 @@ struct BlockRow: View {
 
     @Environment(\.theme) private var theme
     @State private var editBuffer: String = ""
+    @State private var livePushTask: Task<Void, Never>? = nil
     @FocusState private var editFocused: Bool
 
     @AppStorage("keyboardToolbarItems") private var keyboardToolbarRaw: String = defaultKeyboardToolbarItemsRaw
@@ -171,7 +177,19 @@ struct BlockRow: View {
                 // empty block with focus.
                 if newValue.hasSuffix("\n\n") {
                     let stripped = String(newValue.dropLast(2))
+                    livePushTask?.cancel()
                     onSplitToNewBlock?(stripped.trimmingCharacters(in: .whitespacesAndNewlines))
+                    return
+                }
+                // Debounced live writeback (500ms, matching the web
+                // client) so other devices see typing in progress
+                // without waiting for the block to be committed.
+                livePushTask?.cancel()
+                let snapshot = newValue
+                livePushTask = Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    guard !Task.isCancelled else { return }
+                    onTextChanged?(snapshot)
                 }
             }
             .onChange(of: editFocused) { _, focused in
@@ -259,6 +277,9 @@ struct BlockRow: View {
     }
 
     private func commitEdit() {
+        // The commit is the final word — drop any pending debounced
+        // live push so it can't land after (and revert) the commit.
+        livePushTask?.cancel()
         let trimmed = editBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
         onCommitEdit?(trimmed)
     }

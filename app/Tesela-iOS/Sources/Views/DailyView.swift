@@ -62,6 +62,10 @@ struct DailyView: View {
             }
             .background(theme.bg)
             .onChange(of: editingBlockId) { _, newValue in
+                // Hold off live remote refreshes while a block is being
+                // edited so an incoming WS event can't replace the text
+                // out from under the cursor.
+                mosaic.isEditingBlock = (newValue != nil)
                 if let id = newValue, let block = mosaic.todayBlocks.first(where: { $0.id == id })
                     ?? mosaic.yesterdayBlocks.first(where: { $0.id == id })
                 {
@@ -74,7 +78,10 @@ struct DailyView: View {
                     captureContext.focusedBlock = nil
                 }
             }
-            .onDisappear { captureContext.focusedBlock = nil }
+            .onDisappear {
+                captureContext.focusedBlock = nil
+                mosaic.isEditingBlock = false
+            }
             .environment(\.openURL, OpenURLAction { url in
                 if let slug = TeselaLink.pageSlug(from: url) {
                     pushPage(slug: slug)
@@ -136,6 +143,9 @@ struct DailyView: View {
                 onCommitEdit: { newText in
                     mosaic.editTodayBlock(id: block.id, text: newText)
                     editingBlockId = nil
+                },
+                onTextChanged: { newText in
+                    mosaic.editTodayBlock(id: block.id, text: newText)
                 },
                 onMenuAction: { action in
                     handleTodayAction(action, on: block)

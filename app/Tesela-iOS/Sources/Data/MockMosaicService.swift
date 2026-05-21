@@ -548,6 +548,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     func pushPage(id: String, blocks: [Block]) async {
         loadedPageBlocks[id] = blocks
         guard case .http(let baseURL) = currentBackend else { return }
+        beginLocalWriteSuppression()
         let body = renderBody(from: blocks)
         let frontmatter = loadedPageFrontmatter[id] ?? "---\ntitle: \(id)\n---"
         let content = "\(frontmatter)\n\n\(body)\n"
@@ -647,6 +648,72 @@ final class MockMosaicService: ObservableObject, MosaicService {
         serverDailyId = ""
     }
 
+    // MARK: - Live sync (incoming)
+
+    /// True while the user is actively editing a block's text. A live
+    /// remote refresh is deferred while this holds so an incoming
+    /// WebSocket event can't replace `todayBlocks` mid-edit; the
+    /// deferred refresh runs the moment editing ends.
+    var isEditingBlock: Bool = false {
+        didSet {
+            guard oldValue && !isEditingBlock, pendingRemoteRefresh else { return }
+            pendingRemoteRefresh = false
+            Task { await applyRemoteChange() }
+        }
+    }
+    private var pendingRemoteRefresh = false
+
+    /// A local write echoes straight back as a WebSocket event. Remote
+    /// refreshes are skipped for a short window after a local write so
+    /// the echo of our own edit can't revert a change made right after
+    /// it (and not yet pushed). A genuine remote change in that window
+    /// is deferred, not dropped — `pendingRemoteRefresh` flushes it.
+    private var suppressRemoteUntil: Date?
+    private var suppressionFlush: Task<Void, Never>?
+
+    /// React to a server-side note change announced over the live-sync
+    /// WebSocket: re-fetch the daily, the page list, and any open page.
+    func applyRemoteChange() async {
+        guard case .http = currentBackend else { return }
+        if isEditingBlock {
+            pendingRemoteRefresh = true
+            return
+        }
+        if let until = suppressRemoteUntil, until > Date() {
+            pendingRemoteRefresh = true
+            scheduleSuppressionFlush(at: until)
+            return
+        }
+        pendingRemoteRefresh = false
+        await refresh(from: currentBackend)
+        await refreshLoadedPages()
+    }
+
+    /// Open a 2s window during which remote refreshes are deferred —
+    /// long enough to outlast the echo of a local write. Called from
+    /// every local-write path.
+    private func beginLocalWriteSuppression() {
+        suppressRemoteUntil = Date().addingTimeInterval(2)
+    }
+
+    /// Ensure a single trailing refresh runs once the suppression
+    /// window closes, so a remote change that arrived mid-window isn't
+    /// lost.
+    private func scheduleSuppressionFlush(at deadline: Date) {
+        guard suppressionFlush == nil else { return }
+        suppressionFlush = Task { [weak self] in
+            let wait = deadline.timeIntervalSinceNow
+            if wait > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(wait * 1_000_000_000))
+            }
+            guard let self else { return }
+            self.suppressionFlush = nil
+            if self.pendingRemoteRefresh {
+                await self.applyRemoteChange()
+            }
+        }
+    }
+
     // MARK: - Mosaic switching
 
     /// Make the server actually serve the mosaic at `path`. A no-op when
@@ -725,6 +792,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         guard case .http(let baseURL) = currentBackend, !serverDailyId.isEmpty else {
             return
         }
+        beginLocalWriteSuppression()
         let snapshot = todayBlocks
         Task { await pushTodayBlocks(snapshot, baseURL: baseURL) }
     }
