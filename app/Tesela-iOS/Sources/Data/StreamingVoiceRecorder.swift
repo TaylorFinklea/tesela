@@ -44,8 +44,13 @@ final class StreamingVoiceRecorder: ObservableObject {
     @Published private(set) var state: State = .idle
     @Published private(set) var transcribingChunk: Bool = false
 
-    var onChunk: ((String) -> Void)? = nil
-    var onError: ((String) -> Void)? = nil
+    /// The most recent finished transcript. The capture bar observes
+    /// this (`@ObservedObject` + `.onChange`) and appends it to the
+    /// composer. A *published* property rather than a callback closure:
+    /// a closure stored here would capture the SwiftUI view struct and,
+    /// firing seconds later, mutate a stale snapshot whose `@State` no
+    /// longer reaches the live view. The consumer sets it back to `nil`.
+    @Published var lastTranscript: String? = nil
 
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
@@ -242,13 +247,12 @@ final class StreamingVoiceRecorder: ObservableObject {
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             voiceDiag("transcription done — \(trimmed.count) chars")
             if !trimmed.isEmpty {
-                onChunk?(trimmed)
+                lastTranscript = trimmed
             } else {
                 voiceDiag("transcription produced no text")
             }
         } catch {
             voiceDiag("transcription FAILED: \(error.localizedDescription)")
-            onError?(error.localizedDescription)
         }
     }
 }

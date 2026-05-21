@@ -32,7 +32,6 @@ struct CaptureBar: View {
 
     @State private var draft: String = ""
     @State private var manualTarget: CaptureTarget? = nil
-    @State private var transcribeError: String? = nil
     @FocusState private var fieldFocused: Bool
 
     @AppStorage("captureDefaultTarget") private var captureDefault: CaptureDefault = .contextAware
@@ -89,6 +88,13 @@ struct CaptureBar: View {
             .frame(minHeight: 44)
         }
         .padding(.horizontal, 12)
+        .onChange(of: recorder.lastTranscript) { _, transcript in
+            // The recorder publishes a finished transcript here; append
+            // it to the composer and clear it so the next one re-fires.
+            guard let transcript else { return }
+            appendTranscript(transcript)
+            recorder.lastTranscript = nil
+        }
     }
 
     /// One-line voice feedback above the composer: a transcription
@@ -107,9 +113,6 @@ struct CaptureBar: View {
     }
 
     private var voiceStatus: (text: String, isError: Bool)? {
-        if let transcribeError {
-            return ("Transcription failed — \(transcribeError)", true)
-        }
         switch recorder.state {
         case .denied:
             return ("Microphone access denied — enable it in Settings.", true)
@@ -242,13 +245,9 @@ struct CaptureBar: View {
             recorder.stop()
             return
         }
-        transcribeError = nil
-        recorder.onChunk = { transcript in
-            appendTranscript(transcript)
-        }
-        recorder.onError = { msg in
-            transcribeError = msg
-        }
+        // The finished transcript arrives via `recorder.lastTranscript`
+        // (observed by `.onChange` on the body) — not a callback, which
+        // would capture this view struct and miss the live `@State`.
         _ = await recorder.start(using: engine)
     }
 
