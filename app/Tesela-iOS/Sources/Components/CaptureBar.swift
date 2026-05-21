@@ -33,7 +33,6 @@ struct CaptureBar: View {
     @ObservedObject var composer: CaptureComposer
 
     @Environment(\.theme) private var theme
-    @ObservedObject private var diag = VoiceDiagnostics.shared
 
     @State private var manualTarget: CaptureTarget? = nil
     @FocusState private var fieldFocused: Bool
@@ -74,8 +73,8 @@ struct CaptureBar: View {
     }
 
     var body: some View {
-        VStack(spacing: 2) {
-            statusLine
+        VStack(spacing: 4) {
+            voiceIndicator
             HStack(spacing: 8) {
                 plusButton
                 targetChip
@@ -83,7 +82,7 @@ struct CaptureBar: View {
                     .focused($fieldFocused)
                     .submitLabel(.send)
                     .onSubmit(submit)
-                    .lineLimit(1...4)
+                    .lineLimit(1...10)
                     .font(.body)
                     .foregroundStyle(theme.fgDefault)
                     .tint(theme.accentPrimary)
@@ -94,37 +93,50 @@ struct CaptureBar: View {
         .padding(.horizontal, 12)
     }
 
-    /// One-line voice feedback above the composer: a transcription
-    /// error, a recorder failure, or a "transcribing…" indicator.
-    /// Without this every voice failure is silent — the bar just looks
-    /// like it does nothing.
+    /// Voice feedback above the composer: a live waveform + timer while
+    /// recording, a "Transcribing…" spinner after, or a clean error.
+    /// Renders nothing (zero height) when idle.
     @ViewBuilder
-    private var statusLine: some View {
-        if let status = voiceStatus {
-            Text(status.text)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(status.isError ? theme.typeTask : theme.fgMuted)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
+    private var voiceIndicator: some View {
+        switch recorder.state {
+        case .recording(let elapsed):
+            HStack(spacing: 8) {
+                VoiceWaveformView(monitor: recorder.levelMonitor)
+                Text(elapsedLabel(elapsed))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(theme.fgMuted)
+                Spacer(minLength: 0)
+            }
+        case .denied:
+            voiceMessage("Microphone access denied — enable it in Settings.")
+        case .failed(let message):
+            voiceMessage("Voice capture failed — \(message)")
+        default:
+            if recorder.transcribingChunk {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Transcribing…")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(theme.fgMuted)
+                    Spacer(minLength: 0)
+                }
+            } else if let error = recorder.transcriptionError {
+                voiceMessage("Couldn't transcribe — \(error)")
+            }
         }
     }
 
-    private var voiceStatus: (text: String, isError: Bool)? {
-        switch recorder.state {
-        case .denied:
-            return ("Microphone access denied — enable it in Settings.", true)
-        case .failed(let message):
-            return ("Voice capture failed — \(message)", true)
-        default:
-            break
-        }
-        // The live voice-path diagnostic — current phase while working,
-        // final outcome (e.g. "0 chars transcribed") after. Empty until
-        // the first recording of the session.
-        if !diag.lastLine.isEmpty {
-            return ("Voice: \(diag.lastLine)", false)
-        }
-        return nil
+    private func voiceMessage(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(theme.typeTask)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func elapsedLabel(_ elapsed: TimeInterval) -> String {
+        let total = Int(elapsed)
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     /// Leftmost `+` for future attachment support. Stub for now.
@@ -270,5 +282,26 @@ final class CaptureComposer: ObservableObject {
             draft += (draft.hasSuffix(" ") ? "" : " ") + trimmed
         }
         voiceDiag("composer: draft now \(draft.count) chars")
+    }
+}
+
+/// Live microphone waveform shown in the capture bar while recording —
+/// a row of bars, each a recent RMS sample, so the user can see their
+/// voice is being picked up. Observes `AudioLevelMonitor` directly so
+/// only this small view re-renders at the audio-buffer rate.
+struct VoiceWaveformView: View {
+    @ObservedObject var monitor: AudioLevelMonitor
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(spacing: 2.5) {
+            ForEach(Array(monitor.levels.enumerated()), id: \.offset) { _, level in
+                Capsule()
+                    .fill(theme.accentPrimary)
+                    .frame(width: 2.5, height: 3 + CGFloat(level) * 19)
+            }
+        }
+        .frame(height: 22)
+        .animation(.linear(duration: 0.08), value: monitor.levels)
     }
 }

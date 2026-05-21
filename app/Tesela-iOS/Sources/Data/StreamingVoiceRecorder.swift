@@ -6,20 +6,38 @@ import os
 /// Shared logger for the on-device voice + transcription path.
 let voiceLog = Logger(subsystem: "app.tesela.ios", category: "voice")
 
-/// Mirrors the most recent voice-path diagnostic into the UI so a
-/// failure or stall is visible in the capture bar without a log tool.
-@MainActor
-final class VoiceDiagnostics: ObservableObject {
-    static let shared = VoiceDiagnostics()
-    @Published var lastLine: String = ""
-    private init() {}
-}
-
-/// Emit a voice-path diagnostic: unified log + the on-screen mirror.
-@MainActor
+/// Emit a voice-path diagnostic to the unified log. Stream it with:
+///   `log stream --predicate 'subsystem == "app.tesela.ios"'`
 func voiceDiag(_ message: String) {
     voiceLog.notice("\(message, privacy: .public)")
-    VoiceDiagnostics.shared.lastLine = message
+}
+
+/// A rolling window of recent microphone RMS levels (0…1) that drives
+/// the capture bar's live waveform. Kept as its own object so only the
+/// small waveform view re-renders at the audio-buffer rate — observing
+/// the level from the whole capture bar caused a re-render storm that
+/// previously ate the stop button's taps.
+@MainActor
+final class AudioLevelMonitor: ObservableObject {
+    /// Oldest-to-newest, fixed length so the waveform is stable-width.
+    @Published private(set) var levels: [Float]
+
+    private let windowSize = 32
+
+    init() {
+        levels = Array(repeating: 0, count: windowSize)
+    }
+
+    func push(_ level: Float) {
+        var next = levels
+        next.removeFirst()
+        next.append(min(1, max(0, level)))
+        levels = next
+    }
+
+    func reset() {
+        levels = Array(repeating: 0, count: windowSize)
+    }
 }
 
 /// Voice capture coordinator. Uses `AVAudioEngine` to tap the mic
@@ -51,6 +69,16 @@ final class StreamingVoiceRecorder: ObservableObject {
     /// firing seconds later, mutate a stale snapshot whose `@State` no
     /// longer reaches the live view. The consumer sets it back to `nil`.
     @Published var lastTranscript: String? = nil
+
+    /// Live microphone level history — drives the capture bar's waveform
+    /// while recording. Its own object so the waveform re-renders
+    /// without dragging the whole capture bar with it.
+    let levelMonitor = AudioLevelMonitor()
+
+    /// Set when transcription throws, so the capture bar can show a
+    /// clean error rather than silently producing nothing. Cleared at
+    /// the next `start()`.
+    @Published var transcriptionError: String? = nil
 
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
@@ -95,6 +123,8 @@ final class StreamingVoiceRecorder: ObservableObject {
             try session.setActive(true, options: [.notifyOthersOnDeactivation])
 
             self.transcriber = transcriber
+            transcriptionError = nil
+            levelMonitor.reset()
             pendingSamples.removeAll(keepingCapacity: true)
 
             // Set up the input tap. We convert each buffer into 16 kHz
@@ -182,8 +212,15 @@ final class StreamingVoiceRecorder: ObservableObject {
         else { return }
         let n = Int(outBuffer.frameLength)
         let chunk = Array(UnsafeBufferPointer(start: ptr, count: n))
+        // RMS of this buffer drives the live waveform. Boosted so
+        // ordinary speech fills the meter without clipping.
+        var sumSquares: Float = 0
+        for sample in chunk { sumSquares += sample * sample }
+        let rms = n > 0 ? (sumSquares / Float(n)).squareRoot() : 0
+        let level = min(1, rms * 6)
         Task { @MainActor in
             self.pendingSamples.append(contentsOf: chunk)
+            self.levelMonitor.push(level)
         }
     }
 
@@ -253,6 +290,7 @@ final class StreamingVoiceRecorder: ObservableObject {
             }
         } catch {
             voiceDiag("transcription FAILED: \(error.localizedDescription)")
+            transcriptionError = error.localizedDescription
         }
     }
 }
