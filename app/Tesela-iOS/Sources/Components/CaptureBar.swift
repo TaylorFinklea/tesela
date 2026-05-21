@@ -26,11 +26,15 @@ struct CaptureBar: View {
     /// `tabViewBottomAccessory` slot — `AVAudioEngine` init is heavy
     /// enough to cause Fence Hangs when paid repeatedly.
     @ObservedObject var recorder: StreamingVoiceRecorder
+    /// The composer's text, lifted out of view-local `@State` into a
+    /// model AppShell owns — see `CaptureComposer`. This is what makes
+    /// an externally-delivered voice transcript reliably land in the
+    /// field despite the `tabViewBottomAccessory` recreating this view.
+    @ObservedObject var composer: CaptureComposer
 
     @Environment(\.theme) private var theme
     @ObservedObject private var diag = VoiceDiagnostics.shared
 
-    @State private var draft: String = ""
     @State private var manualTarget: CaptureTarget? = nil
     @FocusState private var fieldFocused: Bool
 
@@ -75,7 +79,7 @@ struct CaptureBar: View {
             HStack(spacing: 8) {
                 plusButton
                 targetChip
-                TextField("Capture…", text: $draft, axis: .vertical)
+                TextField("Capture…", text: $composer.draft, axis: .vertical)
                     .focused($fieldFocused)
                     .submitLabel(.send)
                     .onSubmit(submit)
@@ -88,13 +92,6 @@ struct CaptureBar: View {
             .frame(minHeight: 44)
         }
         .padding(.horizontal, 12)
-        .onChange(of: recorder.lastTranscript) { _, transcript in
-            // The recorder publishes a finished transcript here; append
-            // it to the composer and clear it so the next one re-fires.
-            guard let transcript else { return }
-            appendTranscript(transcript)
-            recorder.lastTranscript = nil
-        }
     }
 
     /// One-line voice feedback above the composer: a transcription
@@ -194,7 +191,7 @@ struct CaptureBar: View {
     /// draft so the user can review before submitting.
     @ViewBuilder
     private var trailingButton: some View {
-        if draft.trimmingCharacters(in: .whitespaces).isEmpty {
+        if composer.draft.trimmingCharacters(in: .whitespaces).isEmpty {
             Button {
                 Task { await toggleRecording() }
             } label: {
@@ -227,10 +224,10 @@ struct CaptureBar: View {
     }
 
     private func submit() {
-        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = composer.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         mosaic.capture(trimmed, target: resolvedTarget)
-        draft = ""
+        composer.draft = ""
         fieldFocused = false
         // Clear manual target after a child-block submit so the next
         // capture doesn't try to insert under the same (possibly
@@ -245,19 +242,33 @@ struct CaptureBar: View {
             recorder.stop()
             return
         }
-        // The finished transcript arrives via `recorder.lastTranscript`
-        // (observed by `.onChange` on the body) — not a callback, which
-        // would capture this view struct and miss the live `@State`.
+        // The finished transcript arrives via `recorder.lastTranscript`,
+        // which AppShell observes and feeds into `composer` — not a
+        // callback or a `.onChange` on this view, both of which can miss
+        // the live instance once the accessory recreates the bar.
         _ = await recorder.start(using: engine)
     }
+}
 
-    private func appendTranscript(_ transcript: String) {
-        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+/// The capture composer's text, lifted out of `CaptureBar`'s view-local
+/// `@State` into a reference type. `CaptureBar` lives in
+/// `tabViewBottomAccessory`, which recreates / re-identifies its content
+/// aggressively — so `@State` there is an unreliable home for text that
+/// is written from outside (a finished voice transcript). AppShell owns
+/// one of these, feeds transcripts in, and passes it to the bar.
+@MainActor
+final class CaptureComposer: ObservableObject {
+    @Published var draft: String = ""
+
+    /// Append dictated / transcribed text, separated by a space.
+    func append(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if draft.isEmpty {
             draft = trimmed
         } else {
             draft += (draft.hasSuffix(" ") ? "" : " ") + trimmed
         }
+        voiceDiag("composer: draft now \(draft.count) chars")
     }
 }

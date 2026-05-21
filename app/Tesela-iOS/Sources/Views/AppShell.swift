@@ -22,6 +22,10 @@ struct AppShell: View {
     /// every time the bar is added/removed from `tabViewBottomAccessory`
     /// (e.g., when a block enters/leaves edit mode).
     @StateObject private var streamRecorder = StreamingVoiceRecorder()
+    /// The capture composer's text. Owned here (not as `CaptureBar`
+    /// `@State`) so a voice transcript can be appended reliably even
+    /// though the `tabViewBottomAccessory` recreates the bar.
+    @StateObject private var composer = CaptureComposer()
 
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
     @Environment(\.scenePhase) private var scenePhase
@@ -54,6 +58,14 @@ struct AppShell: View {
                         default:
                             break
                         }
+                    }
+                    .onChange(of: streamRecorder.lastTranscript) { _, transcript in
+                        // A finished voice transcript — append it to the
+                        // composer here, at the stable app root, rather
+                        // than inside the churny capture-bar accessory.
+                        guard let transcript else { return }
+                        composer.append(transcript)
+                        streamRecorder.lastTranscript = nil
                     }
             } else {
                 OnboardingView(
@@ -150,7 +162,8 @@ struct AppShell: View {
                 activeTab: activeTab,
                 transcription: transcription,
                 context: captureContext,
-                recorder: streamRecorder
+                recorder: streamRecorder,
+                composer: composer
             )
             .environment(\.theme, appearance.theme)
         }
