@@ -14,7 +14,7 @@ use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use tesela_core::{
-    config::{BackupConfig, Config},
+    config::{BackupConfig, Config, ServerConfig},
     db::SqliteIndex,
     indexer::{Indexer, NoteEvent},
     storage::filesystem::FsNoteStore,
@@ -249,7 +249,7 @@ async fn main() -> Result<()> {
         Arc::new(engine)
     };
 
-    let addr = std::env::var("TESELA_SERVER_BIND").unwrap_or_else(|_| "127.0.0.1:7474".to_string());
+    let addr = resolve_bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(7474);
 
@@ -642,6 +642,32 @@ async fn auto_backup_on_quit(
 
     drop(snapshot);
     Ok(outcome.path)
+}
+
+/// Resolve the address the HTTP server binds to. Precedence:
+///
+/// 1. `TESELA_SERVER_BIND` env var — explicit override for CI / dev.
+/// 2. `[server] bind` in the global config (`~/.config/tesela/config.toml`).
+/// 3. `127.0.0.1:7474` — loopback-only default.
+///
+/// Step 2 is the load-bearing one: `/server/restart` re-execs the
+/// binary without inheriting the environment, so a bind set only via
+/// the env var would silently revert to loopback after a mosaic-switch
+/// restart — exactly when a remote client (the iOS app) is mid-use.
+fn resolve_bind_addr() -> String {
+    if let Ok(env) = std::env::var("TESELA_SERVER_BIND") {
+        let trimmed = env.trim();
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
+    }
+    let global = Config::default_path();
+    if global.exists() {
+        if let Ok(cfg) = Config::load(&global) {
+            return cfg.server.bind;
+        }
+    }
+    ServerConfig::default().bind
 }
 
 fn load_config(mosaic: &std::path::Path) -> Config {

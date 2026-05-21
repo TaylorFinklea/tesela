@@ -142,8 +142,14 @@ struct MosaicEditView: View {
                 } header: {
                     Text("Server")
                 } footer: {
-                    Text("URL of the `tesela-server` instance hosting this mosaic.")
-                        .font(.caption2)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("URL of the `tesela-server` instance hosting this mosaic.")
+                        if let loopbackWarning {
+                            Text(loopbackWarning)
+                                .foregroundStyle(theme.typeTask)
+                        }
+                    }
+                    .font(.caption2)
                 }
 
                 Section("Icon") {
@@ -220,6 +226,20 @@ struct MosaicEditView: View {
                 }
             }
         }
+    }
+
+    /// Warn when the entered URL is a loopback address — it can't reach
+    /// another machine from a physical device. Suppressed on the
+    /// simulator, where loopback legitimately reaches the host Mac.
+    private var loopbackWarning: String? {
+        #if targetEnvironment(simulator)
+        return nil
+        #else
+        guard isLoopbackURL(serverURL) else { return nil }
+        return "This is a loopback address — it points at this iPhone, "
+            + "not your Mac. Use the Mac's LAN IP (e.g. 192.168.x.x:7474), "
+            + "or re-pair via QR to fill it in automatically."
+        #endif
     }
 
     private func save() {

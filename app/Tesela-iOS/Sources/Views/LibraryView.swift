@@ -23,6 +23,9 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
+                ConnectionBanner(connection: mosaic.connection) {
+                    Task { await mosaic.refresh(from: backend.backend) }
+                }
                 filterStrip
                 content
             }
@@ -33,7 +36,7 @@ struct LibraryView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     MosaicChromeButton(
                         registry: mosaicRegistry,
-                        syncStatus: syncState.isReachable ? .ok : .err,
+                        syncStatus: DailyTopBar.SyncDotState(mosaic.connection),
                         onTap: { showMosaicSwitcher = true }
                     )
                 }

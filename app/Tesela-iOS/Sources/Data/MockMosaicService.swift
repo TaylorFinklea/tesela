@@ -610,6 +610,38 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     func attach(backend: Backend) {
         currentBackend = backend
+        if case .http = backend {
+            // HTTP mode must never render the built-in `MockSeed`.
+            // Clearing here means a slow or failing connect shows an
+            // honest empty state instead of fake "old mosaic" data: a
+            // successful `refresh` repopulates from the server, and a
+            // failed one leaves the empty snapshot in place rather than
+            // resetting to the seed.
+            clearToEmpty()
+        }
+    }
+
+    /// Drop every in-memory mosaic snapshot. Used when switching to an
+    /// HTTP backend so the design-time `MockSeed` can't leak into a
+    /// real-server session. Device-local `pinned` favorites survive —
+    /// they are not server data. A foreground `refresh` that fails
+    /// after a successful load keeps the real data (offline tolerance);
+    /// only this explicit attach-time call wipes the snapshot.
+    private func clearToEmpty() {
+        pages = []
+        tags = []
+        recent = []
+        todayBlocks = []
+        yesterdayBlocks = []
+        searchResults = []
+        searchHits = []
+        searchError = nil
+        loadedBacklinks = [:]
+        loadedLinks = [:]
+        loadedPageBlocks = [:]
+        loadedPageFrontmatter = [:]
+        pageLoadStates = [:]
+        serverDailyId = ""
     }
 
     // MARK: - Mosaic switching

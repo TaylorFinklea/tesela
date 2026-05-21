@@ -72,6 +72,58 @@ struct DailyTopBar: View {
     }
 }
 
+extension DailyTopBar.SyncDotState {
+    /// Derive the sync-dot color from the mosaic's real HTTP connection
+    /// state. Every tab's `MosaicChromeButton` routes through this so
+    /// the indicator reflects actual server reachability instead of a
+    /// per-screen guess (the Inbox/Library dot previously read a debug
+    /// `SyncState` toggle, which could disagree with the live backend).
+    init(_ connection: MockMosaicService.ConnectionState) {
+        switch connection {
+        case .ready, .idle:           self = .ok
+        case .connecting, .switching: self = .warn
+        case .failed:                 self = .err
+        }
+    }
+}
+
+/// A thin status strip shown when the mosaic can't reach its server.
+/// Without it, a failed connect leaves an empty screen that looks
+/// identical to an empty mosaic — the strip names the reason and gives
+/// a one-tap retry. Renders nothing (zero height) unless disconnected.
+struct ConnectionBanner: View {
+    let connection: MockMosaicService.ConnectionState
+    var onRetry: () -> Void = {}
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        if case .failed(let message) = connection {
+            Button(action: onRetry) {
+                HStack(spacing: 8) {
+                    Image(systemName: "wifi.exclamationmark")
+                        .font(.system(size: 13, weight: .semibold))
+                    Text(message)
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 8)
+                    Text("Retry")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .foregroundStyle(theme.typeTask)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity)
+                .background(theme.typeTask.opacity(0.12))
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Disconnected: \(message). Tap to retry.")
+        }
+    }
+}
+
 /// Generic page top bar — back chevron, optional pin / more trailing
 /// buttons. Used for non-Daily screens.
 struct PageTopBar: View {

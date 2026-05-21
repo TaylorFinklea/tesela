@@ -24,6 +24,9 @@ pub struct Config {
     /// Backup configuration (Phase 13)
     #[serde(default)]
     pub backup: BackupConfig,
+    /// tesela-server runtime configuration
+    #[serde(default)]
+    pub server: ServerConfig,
 }
 
 /// General application settings
@@ -134,6 +137,26 @@ impl Default for BackupConfig {
             git_remote: None,
             git_branch: None,
             external_path: None,
+        }
+    }
+}
+
+/// tesela-server runtime configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    /// Address:port the HTTP server binds to. `127.0.0.1:7474` keeps
+    /// the server loopback-only (the safe default); `0.0.0.0:7474`
+    /// exposes it on every interface so other devices on the LAN — the
+    /// iOS app, a second machine — can reach it. `/server/restart`
+    /// re-execs without inheriting env vars, so this config value (not
+    /// `TESELA_SERVER_BIND`) is what survives a mosaic-switch restart.
+    pub bind: String,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            bind: "127.0.0.1:7474".to_string(),
         }
     }
 }
@@ -493,6 +516,38 @@ mod tests {
         );
         assert_eq!(config.editor.external_editor, Some("vim".to_string()));
         assert!(config.general.debug);
+    }
+
+    #[test]
+    fn server_bind_defaults_to_loopback_when_section_absent() {
+        // A config file written before the `[server]` section existed
+        // must still parse, falling back to the loopback default.
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+
+        let mut toml = toml::to_string_pretty(&Config::default()).unwrap();
+        // Drop the `[server]` block — `server` is the last field, so it
+        // is the trailing section — to simulate a pre-`[server]` file.
+        let server_header = toml.find("[server]").expect("default has [server]");
+        toml.truncate(server_header);
+        assert!(!toml.contains("[server]"));
+        fs::write(&config_path, &toml).unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        assert_eq!(config.server.bind, "127.0.0.1:7474");
+    }
+
+    #[test]
+    fn server_bind_is_read_from_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config.toml");
+
+        let mut config = Config::default();
+        config.server.bind = "0.0.0.0:7474".to_string();
+        config.save(&config_path).unwrap();
+
+        let loaded = Config::load(&config_path).unwrap();
+        assert_eq!(loaded.server.bind, "0.0.0.0:7474");
     }
 
     #[test]

@@ -55,10 +55,12 @@
 
 ## Running Services (this session — may be stale next session)
 
-- `tesela-server` on `:7474` pointed at `~/teselas/personal` (the imported real Logseq mosaic).
+- `tesela-server` on `0.0.0.0:7474` (LAN-reachable; Mac LAN IP `10.15.109.184`) serving `~/Library/Application Support/tesela/logseq` (496 notes; `logseq2` also discoverable).
 - Vite dev on `:5173`.
 
 ## Recent Session Notes
+
+- **2026-05-20 — iOS↔desktop sync made reachable (root cause: loopback bind)**: the iPhone showed `MockSeed`, a red sync icon, and no switchable mosaics because `tesela-server` bound `127.0.0.1:7474` (loopback) — reachable from the iOS *simulator* (shared host network) but never from a physical device. Fixes: (1) new `[server] bind` config key (`ServerConfig` in `tesela-core/src/config.rs`, `#[serde(default)]`, default `127.0.0.1:7474`); `tesela-server` resolves bind as `TESELA_SERVER_BIND` env → `[server].bind` → loopback (`resolve_bind_addr()` in `main.rs`). Config (not env) is load-bearing because `/server/restart` re-execs without env. The user's `~/.config/tesela/config.toml` now sets `bind = "0.0.0.0:7474"`; `build_public_url` then auto-embeds the LAN IP in pairing codes. (2) iOS `MockMosaicService.attach(.http)` calls a new `clearToEmpty()` so HTTP mode never renders `MockSeed`; a failed refresh leaves an honest empty state. (3) New `ConnectionBanner` (in `TopBar.swift`) shown on Daily/Inbox/Library when disconnected; the mosaic chrome dot on all tabs now derives from `mosaic.connection` via `DailyTopBar.SyncDotState(_:)` (Inbox/Library previously read the `SyncState` debug toggle). (4) `isLoopbackURL()` + a loopback warning in `MosaicEditView` (suppressed on simulator). Server restarted on `0.0.0.0`, curl-verified via LAN IP; iOS builds green for `Tesela-Test` + `Roshar`, installed on Roshar. **Still requires the user to repoint the phone's profile from `127.0.0.1` to `10.15.109.184:7474` (edit URL or re-pair).**
 
 - Phase 14.2 frontend perf smoke suite is in place under `web/tests/perf/`, with a runner that creates a medium fixture mosaic, starts `tesela-server` and Vite on dynamic localhost ports, runs Playwright, and records JSONL timings.
 - `tesela-fixtures` now seeds built-in Task/Status/Priority/Deadline/Scheduled pages so generated mosaics have task board property metadata before the server's initial index.

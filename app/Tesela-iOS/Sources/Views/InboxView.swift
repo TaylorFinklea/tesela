@@ -23,6 +23,11 @@ struct InboxView: View {
     var body: some View {
         NavigationStack {
             content
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    ConnectionBanner(connection: mosaic.connection) {
+                        Task { await mosaic.refresh(from: backend.backend) }
+                    }
+                }
                 .navigationTitle("Inbox")
                 .navigationBarTitleDisplayMode(.large)
                 .refreshable {
@@ -33,7 +38,7 @@ struct InboxView: View {
                     ToolbarItem(placement: .topBarLeading) {
                         MosaicChromeButton(
                             registry: mosaicRegistry,
-                            syncStatus: syncState?.isReachable == false ? .err : .ok,
+                            syncStatus: DailyTopBar.SyncDotState(mosaic.connection),
                             onTap: { showMosaicSwitcher = true }
                         )
                     }

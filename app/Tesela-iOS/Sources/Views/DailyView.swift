@@ -39,6 +39,11 @@ struct DailyView: View {
                     onTapSettings: { showSettings = true },
                     onTapMosaic: { showMosaicSwitcher = true }
                 )
+                ConnectionBanner(connection: mosaic.connection) {
+                    if let backend {
+                        Task { await mosaic.refresh(from: backend.backend) }
+                    }
+                }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         Spacer().frame(height: 12)
@@ -277,11 +282,7 @@ struct DailyView: View {
     }
 
     private var syncStatus: DailyTopBar.SyncDotState {
-        switch mosaic.connection {
-        case .ready, .idle:           return .ok
-        case .connecting, .switching: return .warn
-        case .failed:                 return .err
-        }
+        DailyTopBar.SyncDotState(mosaic.connection)
     }
 }
 

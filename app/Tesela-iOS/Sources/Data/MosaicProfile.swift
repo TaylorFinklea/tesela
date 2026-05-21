@@ -41,6 +41,19 @@ struct MosaicProfile: Identifiable, Codable, Equatable, Hashable {
     }
 }
 
+/// True when `urlString`'s host is a loopback address — `127.0.0.1`,
+/// `localhost`, or `::1`. A loopback URL only reaches a server on the
+/// *same device*: from a physical iPhone it can never reach a Mac.
+/// (It does work from the iOS simulator, which shares the host Mac's
+/// network namespace — the historical reason this slipped past QA.)
+func isLoopbackURL(_ urlString: String) -> Bool {
+    let trimmed = urlString.trimmingCharacters(in: .whitespaces)
+    guard let host = URLComponents(string: trimmed)?.host?.lowercased() else {
+        return false
+    }
+    return host == "127.0.0.1" || host == "localhost" || host == "::1"
+}
+
 /// Curated palette for the icon picker. Tapping "Other…" in the picker
 /// lets the user paste any SF Symbol name, but most users pick one of
 /// these. Kept small + recognizable on purpose.
