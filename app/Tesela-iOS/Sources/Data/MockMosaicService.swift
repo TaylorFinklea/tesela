@@ -208,19 +208,22 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
 
     /// Indent (or outdent) a block on today. Pass a positive `by`
-    /// for indent, negative for outdent. Clamps to [0, 8].
+    /// for indent, negative for outdent. A block may be at most one
+    /// level deeper than the block above it (every block has an
+    /// immediate parent), so the depth is clamped to `[0, prev + 1]`.
     func indentTodayBlock(id: String, by delta: Int) {
         guard let idx = todayBlocks.firstIndex(where: { $0.id == id }) else { return }
-        let next = max(0, min(8, todayBlocks[idx].indent + delta))
-        todayBlocks[idx].indent = next
+        let maxIndent = idx > 0 ? todayBlocks[idx - 1].indent + 1 : 0
+        todayBlocks[idx].indent = max(0, min(maxIndent, todayBlocks[idx].indent + delta))
         scheduleWriteback()
     }
 
-    /// Same for a non-daily page.
+    /// Same for a non-daily page — clamped to `[0, prev + 1]`.
     func indentPageBlock(pageId: String, blockId: String, by delta: Int) {
         var blocks = loadedPageBlocks[pageId] ?? []
         guard let idx = blocks.firstIndex(where: { $0.id == blockId }) else { return }
-        blocks[idx].indent = max(0, min(8, blocks[idx].indent + delta))
+        let maxIndent = idx > 0 ? blocks[idx - 1].indent + 1 : 0
+        blocks[idx].indent = max(0, min(maxIndent, blocks[idx].indent + delta))
         Task { await pushPage(id: pageId, blocks: blocks) }
     }
 
@@ -878,16 +881,27 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var blocks: [Block] = []
         var i = 0
+        // Normalized indent of the block parsed just before this one,
+        // used to enforce the structural invariant below. -1 so the
+        // first block clamps to 0.
+        var previousIndent = -1
         while i < lines.count {
             let line = lines[i]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("- ") else { i += 1; continue }
 
-            let indent = leadingSpaces(line) / 2
+            let rawIndent = leadingSpaces(line) / 2
+            // Structural invariant: a block is at most one level deeper
+            // than the block before it — every block has an immediate
+            // parent. Clamping here both rejects malformed input and
+            // *repairs* existing files: a blank sub-block that crept
+            // many levels deep collapses back to parent + 1 on load.
+            let indent = min(rawIndent, previousIndent + 1)
+            previousIndent = indent
             let parsed = parseBlockLine(line, indent: indent)
 
             // Collect the property sub-lines that follow this block
-            // (indent deeper than the bullet, no leading `- `).
+            // (physically indented deeper than the bullet, no `- `).
             var properties: [BlockProperty] = []
             i += 1
             while i < lines.count {
@@ -895,7 +909,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 let nextIndent = leadingSpaces(next) / 2
                 let nextTrim = next.trimmingCharacters(in: .whitespaces)
                 if nextTrim.hasPrefix("- ") { break }
-                if nextIndent <= indent && !nextTrim.isEmpty { break }
+                if nextIndent <= rawIndent && !nextTrim.isEmpty { break }
                 if let prop = parseProperty(nextTrim) {
                     properties.append(prop)
                 }
@@ -990,10 +1004,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return BlockProperty(key: key, value: value)
     }
 
+    /// Count of leading space characters. Used to derive a block's
+    /// indent depth (`leadingSpaces / 2`). Must count *only* the
+    /// leading run — an earlier version also folded in every other
+    /// space on the line, so each parse→render round-trip inflated an
+    /// indented block's depth, making blank sub-blocks visibly creep.
     private func leadingSpaces(_ s: String) -> Int {
-        var n = 0
-        for ch in s where ch == " " { n += 1 }
-        return n - (s.drop(while: { $0 == " " }).count == s.count ? n : 0) + s.prefix(while: { $0 == " " }).count
+        s.prefix(while: { $0 == " " }).count
     }
 
     private func trailingTagCluster(in text: String) -> [String] {

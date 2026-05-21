@@ -1,6 +1,6 @@
 # Current State
 
-*Last updated: 2026-05-20*
+*Last updated: 2026-05-21*
 
 ## Active Branch
 
@@ -59,6 +59,8 @@
 - Vite dev on `:5173`.
 
 ## Recent Session Notes
+
+- **2026-05-21 — iOS indentation creep fixed (data corruption)**: a blank sub-block on a daily note crept deeper on every iOS save (screenshotted at ~20 levels). Root cause: `leadingSpaces()` in `MockMosaicService.swift` returned *total spaces on the line + leading run* instead of just the leading run, so every `parseBlocks`→`renderBody` round-trip inflated an indented block's depth. Fixes: `leadingSpaces()` now counts only the leading run; `parseBlocks` clamps each block's indent to `prev + 1` (structural invariant — repairs already-corrupted files on load); `indentTodayBlock`/`indentPageBlock` clamp to `[0, prev + 1]`. The corrupted `notes/2026-05-21.md` was hand-repaired (40-space line → 2). iOS rebuilt + installed on Roshar. **Open backlog from the same report** (not yet done): web↔desktop don't auto-refresh; iOS→desktop text only syncs on block commit; no iOS backlink/tag autocomplete; iOS backlink/tag/deadline/schedule toolbar buttons are stubs; iOS has no task-state/property model (needs Select-type properties w/ per-status icons); keyboard-toolbar mic and capture mic don't transcribe; iOS Daily is blank on cold load (user wants a local-first copy, server only for sync).
 
 - **2026-05-20 — iOS↔desktop sync made reachable (root cause: loopback bind)**: the iPhone showed `MockSeed`, a red sync icon, and no switchable mosaics because `tesela-server` bound `127.0.0.1:7474` (loopback) — reachable from the iOS *simulator* (shared host network) but never from a physical device. Fixes: (1) new `[server] bind` config key (`ServerConfig` in `tesela-core/src/config.rs`, `#[serde(default)]`, default `127.0.0.1:7474`); `tesela-server` resolves bind as `TESELA_SERVER_BIND` env → `[server].bind` → loopback (`resolve_bind_addr()` in `main.rs`). Config (not env) is load-bearing because `/server/restart` re-execs without env. The user's `~/.config/tesela/config.toml` now sets `bind = "0.0.0.0:7474"`. (2) iOS `MockMosaicService.attach(.http)` calls a new `clearToEmpty()` so HTTP mode never renders `MockSeed`; a failed refresh leaves an honest empty state. (3) New `ConnectionBanner` (in `TopBar.swift`) shown on Daily/Inbox/Library when disconnected; the mosaic chrome dot on all tabs now derives from `mosaic.connection` via `DailyTopBar.SyncDotState(_:)` (Inbox/Library previously read the `SyncState` debug toggle). (4) `isLoopbackURL()` + a loopback warning in `MosaicEditView` (suppressed on simulator). Server restarted on `0.0.0.0`; iOS builds green for `Tesela-Test` + `Roshar`, installed on Roshar.
 
