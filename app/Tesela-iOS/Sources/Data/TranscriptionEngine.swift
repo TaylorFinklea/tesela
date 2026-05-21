@@ -81,10 +81,15 @@ final class LocalTranscriptionEngine: TranscriptionEngine {
         // whisper.cpp. Both consume the same 16 kHz mono float samples.
         if family == .parakeet {
             let manager = try await loadParakeet()
-            // Fresh decoder state per batch call — the state carries
-            // streaming continuity, which a one-shot transcribe doesn't need.
-            var decoderState = try TdtDecoderState()
-            voiceDiag("Parakeet inference begin")
+            // Size the decoder state to the *loaded* model — v2/v3 use 2
+            // LSTM layers, tdtCtc110m uses 1. The bare `TdtDecoderState()`
+            // hardcodes 2, which throws a CoreML "MultiArray shape"
+            // mismatch when the model disagrees. This mirrors FluidAudio's
+            // own callers (`SlidingWindowAsrManager`, `ChunkProcessor`),
+            // which always build the state from `manager.decoderLayerCount`.
+            let decoderLayers = await manager.decoderLayerCount
+            var decoderState = TdtDecoderState.make(decoderLayers: decoderLayers)
+            voiceDiag("Parakeet inference begin (decoderLayers=\(decoderLayers))")
             let result = try await manager.transcribe(samples, decoderState: &decoderState)
             voiceDiag("Parakeet inference done — \(result.text.count) chars")
             return result.text.trimmingCharacters(in: .whitespacesAndNewlines)
