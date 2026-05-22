@@ -17,7 +17,7 @@ export function formatRecurrence(value: string): string {
     const date = new Date(s.slice(untilIdx + 7).trim() + "T00:00:00");
     endText = Number.isNaN(date.getTime())
       ? ""
-      : ` until ${date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}`;
+      : ` until ${date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`;
   } else if (countIdx !== -1) {
     base = s.slice(0, countIdx);
     endText = `, ${s.slice(countIdx + 7).trim()}×`;
