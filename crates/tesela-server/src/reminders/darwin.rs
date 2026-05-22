@@ -20,7 +20,7 @@ use objc2_event_kit::{
 use objc2_foundation::{NSArray, NSCalendar, NSCalendarUnit, NSDate, NSDateComponents, NSString};
 
 use tesela_core::block::{parse_blocks, ParsedBlock};
-use tesela_core::recurrence::{self, Recurrence};
+use tesela_core::recurrence::{self, Freq, Recurrence};
 use tesela_core::storage::markdown::parse_frontmatter;
 use tesela_core::traits::note_store::NoteStore;
 
@@ -552,6 +552,7 @@ unsafe fn push_one(
     // exactly zero or one rule.
     let rules: Vec<Retained<EKRecurrenceRule>> = cand
         .recurrence
+        .as_ref()
         .map(|r| vec![build_recurrence_rule(r)])
         .unwrap_or_default();
     let rules_array = NSArray::from_retained_slice(&rules);
@@ -612,29 +613,36 @@ unsafe fn find_or_create_calendar_by_name(
     Ok(new_cal)
 }
 
-/// Build an `EKRecurrenceRule` from Tesela's `Recurrence` enum.
+/// Build an `EKRecurrenceRule` from Tesela's `Recurrence` struct.
 ///
 /// Mapping:
-/// - `Daily` / `EveryNDays(N)` → frequency=Daily, interval=1 / N
-/// - `Weekly{N}` → frequency=Weekly, interval=N
-/// - `Monthly{N}` / `Yearly{N}` → analogous
-/// - `Weekdays` → frequency=Weekly, interval=1, daysOfTheWeek=[Mon..Fri]
-fn build_recurrence_rule(rec: Recurrence) -> Retained<EKRecurrenceRule> {
+/// - `Freq::Daily` → frequency=Daily, interval=rec.interval
+/// - `Freq::Weekly` with no BYDAY → frequency=Weekly, interval=rec.interval
+/// - `Freq::Weekly` with Mon-Fri BYDAY set → weekdays_rule()
+/// - `Freq::Monthly` / `Freq::Yearly` → analogous
+///
+/// Task 7 will generalize BYDAY handling; for now we only detect the
+/// canonical Mon-Fri weekdays pattern and fall back to a plain weekly
+/// rule for any other BYDAY set.
+fn build_recurrence_rule(rec: &Recurrence) -> Retained<EKRecurrenceRule> {
+    use chrono::Weekday;
     unsafe {
-        match rec {
-            Recurrence::Daily => simple_rule(EKRecurrenceFrequency::Daily, 1),
-            Recurrence::EveryNDays(n) => simple_rule(EKRecurrenceFrequency::Daily, n as isize),
-            Recurrence::Weekly { interval } => {
-                simple_rule(EKRecurrenceFrequency::Weekly, interval as isize)
+        // Detect the Mon-Fri weekdays pattern and delegate to weekdays_rule.
+        if rec.freq == Freq::Weekly && rec.interval == 1 && !rec.by_weekday.is_empty() {
+            let mut days = rec.by_weekday.clone();
+            days.sort_by_key(|w| *w as u8);
+            let mon_fri = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri];
+            if days == mon_fri {
+                return weekdays_rule();
             }
-            Recurrence::Monthly { interval } => {
-                simple_rule(EKRecurrenceFrequency::Monthly, interval as isize)
-            }
-            Recurrence::Yearly { interval } => {
-                simple_rule(EKRecurrenceFrequency::Yearly, interval as isize)
-            }
-            Recurrence::Weekdays => weekdays_rule(),
         }
+        let ek_freq = match rec.freq {
+            Freq::Daily => EKRecurrenceFrequency::Daily,
+            Freq::Weekly => EKRecurrenceFrequency::Weekly,
+            Freq::Monthly => EKRecurrenceFrequency::Monthly,
+            Freq::Yearly => EKRecurrenceFrequency::Yearly,
+        };
+        simple_rule(ek_freq, rec.interval as isize)
     }
 }
 
@@ -681,6 +689,7 @@ unsafe fn weekdays_rule() -> Retained<EKRecurrenceRule> {
 /// (BYDAY sets we haven't added yet, end-conditions, etc.) so we don't
 /// over-eagerly write garbage back to the block.
 unsafe fn snapshot_recurrence(rem: &EKReminder) -> Option<Recurrence> {
+    use chrono::Weekday;
     let rules = unsafe { rem.recurrenceRules() }?;
     let rule = rules.iter().next()?;
     let freq = unsafe { rule.frequency() };
@@ -705,42 +714,53 @@ unsafe fn snapshot_recurrence(rem: &EKReminder) -> Option<Recurrence> {
                     EKWeekday::Friday.0,
                 ]
             {
-                return Some(Recurrence::Weekdays);
+                return Some(Recurrence {
+                    freq: Freq::Weekly,
+                    interval: 1,
+                    by_weekday: vec![
+                        Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri,
+                    ],
+                    end: None,
+                });
             }
             // Any other BYDAY pattern is out of scope for v1.
             return None;
         }
     }
 
-    match freq {
-        EKRecurrenceFrequency::Daily => {
-            if interval == 1 {
-                Some(Recurrence::Daily)
-            } else {
-                Some(Recurrence::EveryNDays(interval))
-            }
-        }
-        EKRecurrenceFrequency::Weekly => Some(Recurrence::Weekly { interval }),
-        EKRecurrenceFrequency::Monthly => Some(Recurrence::Monthly { interval }),
-        EKRecurrenceFrequency::Yearly => Some(Recurrence::Yearly { interval }),
-        _ => None,
-    }
+    let tesela_freq = match freq {
+        EKRecurrenceFrequency::Daily => Freq::Daily,
+        EKRecurrenceFrequency::Weekly => Freq::Weekly,
+        EKRecurrenceFrequency::Monthly => Freq::Monthly,
+        EKRecurrenceFrequency::Yearly => Freq::Yearly,
+        _ => return None,
+    };
+    Some(Recurrence::simple(tesela_freq, interval))
 }
 
 /// Canonical `recurring::` value for a `Recurrence`. Used when writing
 /// EK→Tesela on pull. Picks the shortest equivalent phrasing so a fresh
 /// pull gives `weekly` rather than `every 1 weeks`.
-fn recurrence_to_canonical(rec: Recurrence) -> String {
-    match rec {
-        Recurrence::Daily => "daily".into(),
-        Recurrence::EveryNDays(n) => format!("every {n} days"),
-        Recurrence::Weekly { interval: 1 } => "weekly".into(),
-        Recurrence::Weekly { interval } => format!("every {interval} weeks"),
-        Recurrence::Monthly { interval: 1 } => "monthly".into(),
-        Recurrence::Monthly { interval } => format!("every {interval} months"),
-        Recurrence::Yearly { interval: 1 } => "yearly".into(),
-        Recurrence::Yearly { interval } => format!("every {interval} years"),
-        Recurrence::Weekdays => "weekdays".into(),
+fn recurrence_to_canonical(rec: &Recurrence) -> String {
+    use chrono::Weekday;
+    // Detect the Mon-Fri weekdays pattern.
+    if rec.freq == Freq::Weekly && rec.interval == 1 && !rec.by_weekday.is_empty() {
+        let mut days = rec.by_weekday.clone();
+        days.sort_by_key(|w| *w as u8);
+        let mon_fri = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri];
+        if days == mon_fri {
+            return "weekdays".into();
+        }
+    }
+    match (rec.freq, rec.interval) {
+        (Freq::Daily, 1) => "daily".into(),
+        (Freq::Daily, n) => format!("every {n} days"),
+        (Freq::Weekly, 1) => "weekly".into(),
+        (Freq::Weekly, n) => format!("every {n} weeks"),
+        (Freq::Monthly, 1) => "monthly".into(),
+        (Freq::Monthly, n) => format!("every {n} months"),
+        (Freq::Yearly, 1) => "yearly".into(),
+        (Freq::Yearly, n) => format!("every {n} years"),
     }
 }
 
@@ -1096,8 +1116,8 @@ fn compute_diff(snap: &ReminderSnapshot, block: &BlockRef) -> PullDiff {
     // EK has a recurrence — clearing a Tesela-side `recurring::` from
     // the pull side is intentionally out of scope (same logic as
     // deadline; can't cleanly delete a property line).
-    if let Some(ek_rec) = snap.recurrence {
-        if block.recurrence != Some(ek_rec) {
+    if let Some(ek_rec) = snap.recurrence.as_ref() {
+        if block.recurrence.as_ref() != Some(ek_rec) {
             diff.recurring = Some(recurrence_to_canonical(ek_rec));
         }
     }
@@ -1433,48 +1453,75 @@ mod tests {
 
     #[test]
     fn recurrence_canonical_picks_shortest_phrasing() {
+        use tesela_core::recurrence::Freq;
         // Pulled values should round-trip into the user-friendly forms,
         // not the long "every 1 week" variants — those would flap on
         // every sync if the user typed a shorter form locally.
-        assert_eq!(recurrence_to_canonical(Recurrence::Daily), "daily");
+        assert_eq!(recurrence_to_canonical(&Recurrence::simple(Freq::Daily, 1)), "daily");
         assert_eq!(
-            recurrence_to_canonical(Recurrence::Weekly { interval: 1 }),
+            recurrence_to_canonical(&Recurrence::simple(Freq::Weekly, 1)),
             "weekly"
         );
         assert_eq!(
-            recurrence_to_canonical(Recurrence::Weekly { interval: 2 }),
+            recurrence_to_canonical(&Recurrence::simple(Freq::Weekly, 2)),
             "every 2 weeks"
         );
         assert_eq!(
-            recurrence_to_canonical(Recurrence::Monthly { interval: 1 }),
+            recurrence_to_canonical(&Recurrence::simple(Freq::Monthly, 1)),
             "monthly"
         );
         assert_eq!(
-            recurrence_to_canonical(Recurrence::Yearly { interval: 1 }),
+            recurrence_to_canonical(&Recurrence::simple(Freq::Yearly, 1)),
             "yearly"
         );
         assert_eq!(
-            recurrence_to_canonical(Recurrence::EveryNDays(3)),
+            recurrence_to_canonical(&Recurrence::simple(Freq::Daily, 3)),
             "every 3 days"
         );
-        assert_eq!(recurrence_to_canonical(Recurrence::Weekdays), "weekdays");
+        assert_eq!(
+            recurrence_to_canonical(&Recurrence {
+                freq: Freq::Weekly,
+                interval: 1,
+                by_weekday: vec![
+                    chrono::Weekday::Mon,
+                    chrono::Weekday::Tue,
+                    chrono::Weekday::Wed,
+                    chrono::Weekday::Thu,
+                    chrono::Weekday::Fri,
+                ],
+                end: None,
+            }),
+            "weekdays"
+        );
     }
 
     #[test]
     fn recurrence_canonical_round_trips_through_parse() {
+        use tesela_core::recurrence::Freq;
         // Every output of recurrence_to_canonical must parse back to the
         // same Recurrence — otherwise the diff would never converge.
-        let cases = [
-            Recurrence::Daily,
-            Recurrence::Weekly { interval: 1 },
-            Recurrence::Weekly { interval: 3 },
-            Recurrence::Monthly { interval: 1 },
-            Recurrence::Yearly { interval: 1 },
-            Recurrence::EveryNDays(5),
-            Recurrence::Weekdays,
+        let cases = vec![
+            Recurrence::simple(Freq::Daily, 1),
+            Recurrence::simple(Freq::Weekly, 1),
+            Recurrence::simple(Freq::Weekly, 3),
+            Recurrence::simple(Freq::Monthly, 1),
+            Recurrence::simple(Freq::Yearly, 1),
+            Recurrence::simple(Freq::Daily, 5),
+            Recurrence {
+                freq: Freq::Weekly,
+                interval: 1,
+                by_weekday: vec![
+                    chrono::Weekday::Mon,
+                    chrono::Weekday::Tue,
+                    chrono::Weekday::Wed,
+                    chrono::Weekday::Thu,
+                    chrono::Weekday::Fri,
+                ],
+                end: None,
+            },
         ];
         for c in cases {
-            let s = recurrence_to_canonical(c);
+            let s = recurrence_to_canonical(&c);
             let parsed = recurrence::parse(&s)
                 .unwrap_or_else(|| panic!("canonical form should re-parse: {s:?}"));
             assert_eq!(parsed, c, "round-trip mismatch for {s:?}");
