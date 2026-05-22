@@ -47,6 +47,7 @@
     type PropertyDefinition,
   } from "$lib/property-registry";
   import DisplayChip from "./DisplayChip.svelte";
+  import BlockDateRow from "./BlockDateRow.svelte";
   import ContextMenu from "./ContextMenu.svelte";
   import type { HiddenKeysConfig } from "$lib/cm-decorations";
   import { prefs } from "$lib/preferences.svelte";
@@ -1442,6 +1443,13 @@
           </div>
         {/if}
       </div>
+
+      <!-- Properties row: date/recurrence strip beneath the block line (Task 5) -->
+      {#if block.properties.scheduled || block.properties.deadline || block.properties.recurring}
+        <div style="padding-left: {displayIndent * 24}px;">
+          <BlockDateRow {block} />
+        </div>
+      {/if}
 
       <!-- Inline query results (when block has a query:: property) -->
       {#if block.properties.query}
