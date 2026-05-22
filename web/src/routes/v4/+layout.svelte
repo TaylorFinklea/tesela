@@ -26,11 +26,13 @@
     movePane,
     newTab,
     closeTab,
+    switchTab,
     switchTabByIndex,
+    rename,
     openPageInFocused,
     getWorkspace,
   } from "$lib/buffer/state.svelte";
-  import { asPageId } from "$lib/buffer/types";
+  import { asPageId, type TabId } from "$lib/buffer/types";
   import { makePageBuffer } from "$lib/buffer/tree";
   import { openStation } from "$lib/stores/station.svelte";
   import ColonCommandLine from "$lib/components/v4/ColonCommandLine.svelte";
@@ -68,7 +70,18 @@
   let { children } = $props();
 
   const tab = $derived(getActiveTab());
+  const workspace = $derived(getWorkspace());
   const focusedBuffer = $derived(getFocusedBuffer());
+
+  // Inline tab rename — double-click a tab to edit its name. New tabs all
+  // open as "untitled", so renaming is what makes the strip navigable.
+  let renamingTabId = $state<TabId | null>(null);
+  let renameDraft = $state("");
+  function commitTabRename(tabId: TabId) {
+    const name = renameDraft.trim();
+    if (name) rename(tabId, name);
+    renamingTabId = null;
+  }
   const focusedLeafId = $derived(getFocusedLeafId());
 
   // For Phase 3 we only know about `page` buffers in earnest. Derived/
@@ -329,14 +342,43 @@
       <span class="v4-brand-name">tesela</span>
     </div>
     <div class="v4-tabs-row">
-      {#if tab}
-        <button
-          class="v4-tab active"
-          type="button"
-        >
-          <span class="v4-tab-name">{tab.name}</span>
-        </button>
-      {/if}
+      {#each workspace.tabs as t (t.id)}
+        <div class="v4-tab-wrap">
+          {#if renamingTabId === t.id}
+            <!-- svelte-ignore a11y_autofocus -->
+            <input
+              class="v4-tab-rename"
+              autofocus
+              bind:value={renameDraft}
+              onblur={() => commitTabRename(t.id)}
+              onkeydown={(e) => {
+                if (e.key === "Enter") commitTabRename(t.id);
+                if (e.key === "Escape") renamingTabId = null;
+              }}
+            />
+          {:else}
+            <button
+              class="v4-tab"
+              class:active={t.id === workspace.activeTabId}
+              type="button"
+              onclick={() => switchTab(t.id)}
+              ondblclick={() => { renamingTabId = t.id; renameDraft = t.name; }}
+              title="click to switch · double-click to rename"
+            >
+              <span class="v4-tab-name">{t.name}</span>
+            </button>
+          {/if}
+          {#if workspace.tabs.length > 1}
+            <!-- svelte-ignore a11y_consider_explicit_label -->
+            <button
+              type="button"
+              class="v4-tab-close"
+              title="close tab · ⌘⇧W"
+              onclick={() => closeTab(t.id)}
+            >×</button>
+          {/if}
+        </div>
+      {/each}
       <button
         type="button"
         class="v4-tab-add"
@@ -491,6 +533,40 @@
     border-radius: 6px;
     padding: 1px 8px;
     cursor: pointer;
+  }
+  .v4-tab-wrap {
+    display: inline-flex;
+    align-items: center;
+  }
+  /* Close affordance is hover-revealed per tab so the strip stays calm. */
+  .v4-tab-close {
+    background: transparent;
+    border: 0;
+    color: var(--v4-ink6);
+    font-size: 12px;
+    line-height: 1;
+    padding: 0 4px;
+    margin-left: -2px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s;
+  }
+  .v4-tab-wrap:hover .v4-tab-close {
+    opacity: 1;
+  }
+  .v4-tab-close:hover {
+    color: var(--accent-spark);
+  }
+  .v4-tab-rename {
+    background: var(--v4-surface-lo);
+    border: 1px solid var(--accent-spark);
+    color: var(--v4-ink);
+    border-radius: 6px;
+    padding: 2px 8px;
+    font-family: var(--v4-mono);
+    font-size: 11px;
+    outline: none;
+    width: 90px;
   }
   .v4-command-bar-hint {
     font-family: var(--v4-mono);
