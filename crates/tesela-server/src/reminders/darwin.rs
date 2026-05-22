@@ -701,11 +701,16 @@ unsafe fn build_recurrence_end(end: Option<&RecurrenceEnd>) -> Option<Retained<E
             Some(unsafe { EKRecurrenceEnd::recurrenceEndWithOccurrenceCount(*n as usize) })
         }
         Some(RecurrenceEnd::Until(date)) => {
-            // NaiveDate → Unix seconds (midnight UTC) → NSDate via
-            // timeIntervalSince1970.
+            // NaiveDate → NSDate at noon UTC. We add 43 200 s (12 h) so
+            // the instant sits at noon UTC rather than midnight UTC.
+            // Midnight UTC is the *evening* of the previous day for any
+            // timezone west of UTC (all of the Americas), which causes
+            // EventKit to end the series one day too early for those
+            // users. Noon UTC stays within date D for every timezone from
+            // UTC-12 through UTC+11 — the full realistic user population.
             let unix_epoch = chrono::NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
             let days = (*date - unix_epoch).num_days();
-            let secs = (days * 86_400) as f64;
+            let secs = (days * 86_400 + 43_200) as f64;
             let ns_date = NSDate::dateWithTimeIntervalSince1970(secs);
             Some(unsafe { EKRecurrenceEnd::recurrenceEndWithEndDate(&ns_date) })
         }
@@ -852,9 +857,11 @@ fn recurrence_to_canonical(rec: &Recurrence) -> String {
 /// shortcuts today, but we handle it defensively.)
 fn expand_for_end_suffix(rec: &Recurrence, base: &str) -> String {
     if base == "weekdays" || base == "weekends" {
-        // Re-emit as "every mon, tue, …" form.
-        let tokens: Vec<&str> = rec
-            .by_weekday
+        // Re-emit as "every mon, tue, …" form. Sort Mon-first so the
+        // output is deterministic and matches recurrence_to_canonical.
+        let mut days = rec.by_weekday.clone();
+        days.sort_by_key(|w| w.num_days_from_monday());
+        let tokens: Vec<&str> = days
             .iter()
             .map(|w| match w {
                 chrono::Weekday::Mon => "mon",
@@ -1744,6 +1751,35 @@ mod tests {
         let parsed = recurrence::parse(&s)
             .unwrap_or_else(|| panic!("canonical BYDAY+count form should re-parse: {s:?}"));
         assert_eq!(parsed, mwf_count);
+    }
+
+    /// `weekdays` / `weekends` aliases cannot carry an end suffix in the
+    /// parser, so `recurrence_to_canonical` must expand them to the `every
+    /// mon, tue, …` form when an end is present. This test exercises that
+    /// path through `expand_for_end_suffix` and verifies the round-trip.
+    #[test]
+    fn recurrence_canonical_weekdays_alias_with_end() {
+        use tesela_core::recurrence::{Freq, RecurrenceEnd};
+        // Mon-Fri ("weekdays") + count — triggers expand_for_end_suffix.
+        let weekdays_count = Recurrence {
+            freq: Freq::Weekly,
+            interval: 1,
+            by_weekday: vec![
+                chrono::Weekday::Mon,
+                chrono::Weekday::Tue,
+                chrono::Weekday::Wed,
+                chrono::Weekday::Thu,
+                chrono::Weekday::Fri,
+            ],
+            end: Some(RecurrenceEnd::Count(5)),
+        };
+        let s = recurrence_to_canonical(&weekdays_count);
+        // Must NOT emit "weekdays count 5" (parser rejects that);
+        // must emit the expanded form.
+        assert_eq!(s, "every mon, tue, wed, thu, fri count 5");
+        let parsed = recurrence::parse(&s)
+            .unwrap_or_else(|| panic!("weekdays+count canonical form should re-parse: {s:?}"));
+        assert_eq!(parsed, weekdays_count);
     }
 
     #[test]
