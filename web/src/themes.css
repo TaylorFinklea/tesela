@@ -11,6 +11,13 @@
  * as competing brand color.
  */
 
+/* === Prism Spark — the default Prism theme with the neon "spark" ======
+   Everything falls through to the :root (Prism) defaults; only the
+   focus-accent is lifted from earthy terracotta to the hot logo coral. */
+:root[data-theme="prism-spark"] {
+  --accent-spark: #fb5950;
+}
+
 /* === Tokyo Night (default) === */
 :root[data-theme="tokyo-night"] {
   --bg: #1a1b26;
@@ -577,10 +584,11 @@
   --fg-muted: #5c5e76;
   --fg-subtle: #8a8b86;
   --fg-faint: #b0ad9a;
-  /* Coral is deepened from the logo's #FB5950 so it stays legible as a
-     text / selection color on the cream surface; secondary is a deepened
-     sage. Type-* colors are darkened for contrast on light-on-cream. */
-  --accent-primary: #dd4a3d;
+  /* accent-primary is an earthy terracotta, deepened so it stays legible
+     as text on cream; secondary is a deepened sage. --accent-spark falls
+     through to accent-primary (no neon) — see :root. Type-* darkened for
+     cream. */
+  --accent-primary: #bd5e40;
   --accent-secondary: #5c9078;
   --type-task: #c2403f;
   --type-event: #3c7e91;

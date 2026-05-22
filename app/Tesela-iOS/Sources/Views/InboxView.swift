@@ -22,56 +22,42 @@ struct InboxView: View {
 
     var body: some View {
         NavigationStack {
-            content
-                .safeAreaInset(edge: .top, spacing: 0) {
-                    ConnectionBanner(connection: mosaic.connection) {
-                        Task { await mosaic.refresh(from: backend.backend) }
+            VStack(spacing: 0) {
+                TabHeader(
+                    title: "Inbox",
+                    syncStatus: TabHeader.SyncDotState(mosaic.connection),
+                    onTapSettings: { showSettings = true },
+                    onTapMosaic: { showMosaicSwitcher = true }
+                )
+                ConnectionBanner(connection: mosaic.connection) {
+                    Task { await mosaic.refresh(from: backend.backend) }
+                }
+                content
+                    .refreshable {
+                        await mosaic.refresh(from: backend.backend)
                     }
+            }
+            .background(theme.bg)
+            .sheet(isPresented: $showMosaicSwitcher) {
+                MosaicSwitcherSheet(registry: mosaicRegistry)
+                    .environment(\.theme, theme)
+            }
+            .sheet(isPresented: $showSettings) {
+                if let appearance, let syncState {
+                    SettingsView(
+                        appearance: appearance,
+                        mosaic: mosaic,
+                        syncState: syncState,
+                        backend: backend,
+                        transcription: transcription
+                    )
+                    .environment(\.theme, theme)
+                    .environment(\.density, appearance.density)
+                } else {
+                    Text("Settings unavailable.")
+                        .padding()
                 }
-                .navigationTitle("Inbox")
-                .navigationBarTitleDisplayMode(.large)
-                .refreshable {
-                    await mosaic.refresh(from: backend.backend)
-                }
-                .background(theme.bg)
-                .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        MosaicChromeButton(
-                            registry: mosaicRegistry,
-                            syncStatus: DailyTopBar.SyncDotState(mosaic.connection),
-                            onTap: { showMosaicSwitcher = true }
-                        )
-                    }
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button {
-                            showSettings = true
-                        } label: {
-                            Icon(name: .settings, size: 20)
-                                .foregroundStyle(theme.fgMuted)
-                        }
-                        .accessibilityLabel("Settings")
-                    }
-                }
-                .sheet(isPresented: $showMosaicSwitcher) {
-                    MosaicSwitcherSheet(registry: mosaicRegistry)
-                        .environment(\.theme, theme)
-                }
-                .sheet(isPresented: $showSettings) {
-                    if let appearance, let syncState {
-                        SettingsView(
-                            appearance: appearance,
-                            mosaic: mosaic,
-                            syncState: syncState,
-                            backend: backend,
-                            transcription: transcription
-                        )
-                        .environment(\.theme, theme)
-                        .environment(\.density, appearance.density)
-                    } else {
-                        Text("Settings unavailable.")
-                            .padding()
-                    }
-                }
+            }
         }
     }
 

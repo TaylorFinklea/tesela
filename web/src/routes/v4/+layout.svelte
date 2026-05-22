@@ -480,7 +480,8 @@
     cursor: pointer;
   }
   .v4-tab.active {
-    border-color: var(--v4-accent);
+    /* Active tab keeps the hotter coral spark — a crisp focus signal. */
+    border-color: var(--accent-spark);
     color: var(--v4-ink);
   }
   .v4-tab-add {

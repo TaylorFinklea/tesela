@@ -23,6 +23,12 @@ struct LibraryView: View {
     var body: some View {
         NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
+                TabHeader(
+                    title: "Library",
+                    syncStatus: TabHeader.SyncDotState(mosaic.connection),
+                    onTapSettings: { showSettings = true },
+                    onTapMosaic: { showMosaicSwitcher = true }
+                )
                 ConnectionBanner(connection: mosaic.connection) {
                     Task { await mosaic.refresh(from: backend.backend) }
                 }
@@ -30,26 +36,6 @@ struct LibraryView: View {
                 content
             }
             .background(theme.bg)
-            .navigationTitle("Library")
-            .navigationBarTitleDisplayMode(.large)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    MosaicChromeButton(
-                        registry: mosaicRegistry,
-                        syncStatus: DailyTopBar.SyncDotState(mosaic.connection),
-                        onTap: { showMosaicSwitcher = true }
-                    )
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Icon(name: .settings, size: 20)
-                            .foregroundStyle(theme.fgMuted)
-                    }
-                    .accessibilityLabel("Settings")
-                }
-            }
             .sheet(isPresented: $showMosaicSwitcher) {
                 MosaicSwitcherSheet(registry: mosaicRegistry)
                     .environment(\.theme, theme)

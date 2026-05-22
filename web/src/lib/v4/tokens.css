@@ -9,42 +9,37 @@
  */
 
 .v4-root {
-  /* Lifted from #08090f → #131521 so panels read as "dark UI" rather than
-     "pitch black", and the gradient on the focused-pane glow has a base
-     to lift off of. */
-  --v4-bg: #131521;
-  --v4-surface-lo: rgba(255, 255, 255, 0.03);
-  --v4-surface: rgba(255, 255, 255, 0.055);
-  --v4-surface-hi: rgba(255, 255, 255, 0.08);
+  /* The v4/v5 chrome's design tokens are a thin alias layer over the
+     role tokens (web/src/app.css) — exactly like `--v9-*` — so the whole
+     chrome themes with the active `data-theme`. They were previously
+     hardcoded dark literals, which froze the chrome on a dark surface no
+     matter the selected theme (light themes had no effect at all). */
+  --v4-bg: var(--bg);
+  --v4-surface-lo: var(--bg-2);
+  --v4-surface: var(--bg-3);
+  --v4-surface-hi: var(--bg-4);
 
-  --v4-hair: rgba(255, 255, 255, 0.10);
-  --v4-hair2: rgba(255, 255, 255, 0.18);
+  --v4-hair: var(--line-soft);
+  --v4-hair2: var(--line);
 
-  /* Ink ramp — every level shifted up so the dimmest tokens still pass
-     ~4.5:1 contrast against `--v4-bg`. The previous floor (ink6 #363c5e)
-     was ~2.5:1, far below WCAG AA. */
-  --v4-ink: #eef1ff;
-  --v4-ink2: #d5dcff;
-  --v4-ink3: #b9c0e6;
-  --v4-ink4: #9aa3c8;
-  --v4-ink5: #7c85b0;
-  --v4-ink6: #5e6792;
+  /* Ink ramp — the v4 chrome wants six levels; the role contract has
+     four, so the two finest gradations double up. Contrast is now
+     guaranteed by the role tokens, which are tuned per theme. */
+  --v4-ink: var(--fg-default);
+  --v4-ink2: var(--fg-muted);
+  --v4-ink3: var(--fg-subtle);
+  --v4-ink4: var(--fg-subtle);
+  --v4-ink5: var(--fg-faint);
+  --v4-ink6: var(--fg-faint);
 
-  /* Brand palette — derived from the Tesela logo (slate / coral / cream).
-     `.v4-root` is a legacy route surface; these accents are kept in sync
-     with the live app's Prism theme (web/src/app.css) so the brand coral
-     never reverts to the old indigo here. */
-  --v4-accent: #fb5950;          /* coral — the logo's hero accent */
-  --v4-accent-dim: rgba(251, 89, 80, 0.55);
-  --v4-accent2: #81b29a;         /* sage — calm secondary accent */
-
-  /* Override the global Tailwind/theme accent inside the v5 chrome so
-     legacy components (BlockOutliner wiki links, etc.) pick up the
-     indigo too. Without this, themes.css (e.g. `solarized-dark`)
-     re-asserts its own --accent-primary downstream and the orange
-     leaks back in. */
-  --accent-primary: var(--v4-accent);
-  --primary: var(--v4-accent);
+  /* Accents follow the active theme. `--v4-accent` aliases the role
+     accent (so non-Prism themes reach the chrome too); `--accent-spark`
+     — the hotter coral for rare focus spots — is inherited from :root.
+     The old `--accent-primary` override is gone: it pinned the chrome to
+     one fixed accent, which is exactly what broke per-theme accents. */
+  --v4-accent: var(--accent-primary);
+  --v4-accent-dim: color-mix(in srgb, var(--accent-primary) 55%, transparent);
+  --v4-accent2: var(--accent-secondary);
 
   --v4-sans: "Geist", "Inter Tight", system-ui, -apple-system, sans-serif;
   /* Geist Mono isn't on Google Fonts; JetBrains Mono is already loaded

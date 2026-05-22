@@ -31,9 +31,9 @@ struct DailyView: View {
     var body: some View {
         NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
-                DailyTopBar(
+                TabHeader(
                     title: mosaic.todayLongLabel,
-                    dateLabel: mosaic.todayLabel,
+                    subtitle: mosaic.todayLabel,
                     syncStatus: syncStatus,
                     onTapCalendar: { showDatePicker = true },
                     onTapSettings: { showSettings = true },
@@ -291,8 +291,8 @@ struct DailyView: View {
         .background(theme.bg)
     }
 
-    private var syncStatus: DailyTopBar.SyncDotState {
-        DailyTopBar.SyncDotState(mosaic.connection)
+    private var syncStatus: TabHeader.SyncDotState {
+        TabHeader.SyncDotState(mosaic.connection)
     }
 }
 

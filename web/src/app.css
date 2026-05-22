@@ -29,15 +29,16 @@
   --fg-subtle: #928f7e;
   --fg-faint: #6e6b60;
 
-  /* Accents — primary is the brand color (active selection, today
-     indicator): the logo coral. Secondary is reserved for navigational
-     moments that should not pull from primary; a calm sage completes the
-     logo's terracotta palette. Type-* colors are for semantic categories
-     (task, event, note, project, person, query, template) and stay
-     quieter than primary — kept theme-neutral, they read fine on the
-     warm-slate surfaces. */
-  --accent-primary: #fb5950;
+  /* Accents — primary is the everyday workhorse accent (links, bullets,
+     selection): an earthy terracotta. `--accent-spark` colors the few
+     "focus" spots (active tab, today marker); it defaults to
+     accent-primary, so the standard themes show no neon. Only the opt-in
+     "Prism Spark" theme overrides it to the hot logo coral. Secondary is
+     a calm sage for navigational moments. Type-* colors are semantic
+     categories (task, event, …) and stay theme-neutral. */
+  --accent-primary: #e07a5f;
   --accent-secondary: #81b29a;
+  --accent-spark: var(--accent-primary);
   --type-task: #db6c83;
   --type-event: #6dbacc;
   --type-note: #e8b86b;

@@ -660,13 +660,15 @@
   /* Today still gets a marker, but it's a soft brightening, not the
      primary accent — primary is reserved for active selection now. */
   .day.is-today .day-title { color: var(--fg-default); }
+  /* Today's pill uses the brand "spark" (the hotter coral) — one of the
+     few places the neon accent is intentionally kept. */
   .day-pill {
     font-size: 10px;
     padding: 2px 8px;
     border-radius: 9999px;
-    background: color-mix(in srgb, var(--accent-primary) 14%, transparent);
-    color: var(--accent-primary);
-    border: 1px solid color-mix(in srgb, var(--accent-primary) 28%, transparent);
+    background: color-mix(in srgb, var(--accent-spark) 14%, transparent);
+    color: var(--accent-spark);
+    border: 1px solid color-mix(in srgb, var(--accent-spark) 28%, transparent);
     font-weight: 500;
   }
   .day-year { font-family: var(--v9-mono); font-size: 11px; color: var(--v9-ink-faint); margin-left: auto; }

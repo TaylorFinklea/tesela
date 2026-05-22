@@ -8,6 +8,7 @@ import SwiftUI
 /// is its light-mode variant.
 enum ThemeID: String, CaseIterable, Identifiable, Codable {
     case prism             = "prism"
+    case prismSpark        = "prism-spark"
     case prismLight        = "prism-light"
     case tokyoNight        = "tokyo-night"
     case tokyoNightStorm   = "tokyo-night-storm"
@@ -32,6 +33,7 @@ enum ThemeID: String, CaseIterable, Identifiable, Codable {
     var displayName: String {
         switch self {
         case .prism:              return "Prism"
+        case .prismSpark:         return "Prism Spark"
         case .prismLight:         return "Prism Light"
         case .tokyoNight:         return "Tokyo Night"
         case .tokyoNightStorm:    return "Tokyo Night · Storm"
@@ -121,6 +123,14 @@ struct Theme: Equatable, Identifiable {
     /// `preferredColorScheme` so system chrome (status bar, sheets)
     /// matches; the theme's own role-tokens always paint the UI itself.
     var isLight: Bool { id == .prismLight }
+
+    /// The brand "spark" — a hotter coral than `accentPrimary`, for the
+    /// few focus spots (today marker, active tab). Only the opt-in
+    /// "Prism Spark" theme lights it up; every other theme reuses its
+    /// primary accent, so the spark stays invisible.
+    var accentSpark: Color {
+        id == .prismSpark ? Color(hex: 0xFB5950) : accentPrimary
+    }
 }
 
 // MARK: - Hex-tuple constructor
@@ -189,7 +199,20 @@ extension Theme {
         line: 0x454963, lineSoft: 0x383B52,
         fgDefault: 0xF4F1DE, fgMuted: 0xC9C6B4,
         fgSubtle: 0x928F7E, fgFaint: 0x6E6B60,
-        accentPrimary: 0xFB5950, accentSecondary: 0x81B29A,
+        accentPrimary: 0xE07A5F, accentSecondary: 0x81B29A,
+        typeTask: 0xDB6C83, typeEvent: 0x6DBACC, typeNote: 0xE8B86B,
+        typeProject: 0x6A8FDC, typePerson: 0xA98BE0,
+        typeQuery: 0x88B85E, typeTemplate: 0xC79B58))
+
+    /// **Prism Spark.** Identical to Prism, but `accentSpark` lights up
+    /// to the hot logo coral — an opt-in theme for users who want the
+    /// neon focus accent (active tab, today marker).
+    static let prismSpark = Theme(id: .prismSpark, hex: ThemeHexes(
+        bg: 0x23252F, bg2: 0x2C2E3E, bg3: 0x34374C, bg4: 0x3D405B,
+        line: 0x454963, lineSoft: 0x383B52,
+        fgDefault: 0xF4F1DE, fgMuted: 0xC9C6B4,
+        fgSubtle: 0x928F7E, fgFaint: 0x6E6B60,
+        accentPrimary: 0xE07A5F, accentSecondary: 0x81B29A,
         typeTask: 0xDB6C83, typeEvent: 0x6DBACC, typeNote: 0xE8B86B,
         typeProject: 0x6A8FDC, typePerson: 0xA98BE0,
         typeQuery: 0x88B85E, typeTemplate: 0xC79B58))
@@ -204,7 +227,7 @@ extension Theme {
         line: 0xD9D3B7, lineSoft: 0xE6E1C8,
         fgDefault: 0x3D405B, fgMuted: 0x5C5E76,
         fgSubtle: 0x8A8B86, fgFaint: 0xB0AD9A,
-        accentPrimary: 0xDD4A3D, accentSecondary: 0x5C9078,
+        accentPrimary: 0xBD5E40, accentSecondary: 0x5C9078,
         typeTask: 0xC2403F, typeEvent: 0x3C7E91, typeNote: 0x9A7430,
         typeProject: 0x3D6FC0, typePerson: 0x7E5BC0,
         typeQuery: 0x5E8438, typeTemplate: 0x8C6B36))
@@ -371,7 +394,7 @@ extension Theme {
 
     /// All themes in picker order.
     static let all: [Theme] = [
-        .prism, .prismLight,
+        .prism, .prismSpark, .prismLight,
         .tokyoNight, .tokyoNightStorm,
         .catppuccinMocha, .catppuccinMacchiato,
         .rosePine, .rosePineMoon,

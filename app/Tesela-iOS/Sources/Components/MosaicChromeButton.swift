@@ -9,7 +9,7 @@ import SwiftUI
 struct MosaicChromeButton: View {
     @ObservedObject var registry: MosaicRegistry
     /// Current sync state — drives the color halo around the icon.
-    let syncStatus: DailyTopBar.SyncDotState
+    let syncStatus: TabHeader.SyncDotState
     let onTap: () -> Void
 
     @Environment(\.theme) private var theme

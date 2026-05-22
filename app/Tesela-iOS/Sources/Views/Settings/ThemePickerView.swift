@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Theme picker. Lists all 18 themes (Prism default + Prism Light + 16
-/// dark variants) with a 3-swatch preview per theme. Tapping a row switches
+/// Theme picker. Lists all 19 themes (Prism, Prism Spark, Prism Light +
+/// 16 others) with a 3-swatch preview per theme. Tapping a row switches
 /// the active theme via the AppearanceController, which repaints the
 /// entire app.
 struct ThemePickerView: View {

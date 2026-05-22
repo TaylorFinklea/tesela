@@ -1,33 +1,30 @@
 import SwiftUI
 
-/// Top bar used at the head of the Daily tab — big "Today" label, dated
-/// subtitle in mono, calendar button on the right, plus a sync dot.
-/// Mirrors the canvas's `P2_TopBar` chrome.
-struct DailyTopBar: View {
+/// The unified header for the three primary tabs (Daily, Inbox,
+/// Library) — a big title with an optional mono subtitle on the left,
+/// and a row of chrome buttons on the right, closed by a hairline.
+/// Daily passes a date subtitle + a calendar button; Inbox and Library
+/// pass neither. Routing all three through this one component is what
+/// keeps their headers identical.
+struct TabHeader: View {
     /// Sync indicator state. `ok` = connected to backend; `warn` =
     /// connecting / mid-refresh; `err` = backend unreachable.
     enum SyncDotState { case ok, warn, err }
 
     let title: String
-    let dateLabel: String
+    /// Optional mono subtitle under the title. Daily uses the date;
+    /// Inbox and Library pass nil (title only).
+    var subtitle: String? = nil
     var syncStatus: SyncDotState = .ok
-    var onTapCalendar: () -> Void = {}
+    /// When non-nil, a calendar button leads the trailing row. Daily
+    /// wires it to its date picker; the other tabs leave it nil.
+    var onTapCalendar: (() -> Void)? = nil
     var onTapSettings: () -> Void = {}
-    /// Tap-target for the mosaic chrome button (replaces the old sync
-    /// dot). Opens the mosaic switcher sheet.
+    /// Opens the mosaic switcher sheet.
     var onTapMosaic: () -> Void = {}
 
     @EnvironmentObject private var mosaicRegistry: MosaicRegistry
-
     @Environment(\.theme) private var theme
-
-    private var dotColor: Color {
-        switch syncStatus {
-        case .ok:   return theme.typeQuery
-        case .warn: return theme.typeNote
-        case .err:  return theme.typeTask
-        }
-    }
 
     var body: some View {
         HStack(alignment: .center) {
@@ -36,14 +33,18 @@ struct DailyTopBar: View {
                     .font(.system(size: 22, weight: .semibold))
                     .tracking(-0.2)
                     .foregroundStyle(theme.fgDefault)
-                Text(dateLabel)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(theme.fgSubtle)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.fgSubtle)
+                }
             }
             Spacer()
             HStack(spacing: 4) {
-                IconButton(name: .cal, action: onTapCalendar)
-                    .accessibilityLabel("Calendar")
+                if let onTapCalendar {
+                    IconButton(name: .cal, action: onTapCalendar)
+                        .accessibilityLabel("Calendar")
+                }
                 IconButton(name: .settings, action: onTapSettings)
                     .accessibilityLabel("Settings")
                 MosaicChromeButton(
@@ -62,17 +63,9 @@ struct DailyTopBar: View {
                 .frame(height: 1)
         }
     }
-
-    private var syncStatusAccessibilityLabel: String {
-        switch syncStatus {
-        case .ok:   return "Connected. Tap for backend settings."
-        case .warn: return "Connecting. Tap for backend settings."
-        case .err:  return "Disconnected. Tap to open backend settings."
-        }
-    }
 }
 
-extension DailyTopBar.SyncDotState {
+extension TabHeader.SyncDotState {
     /// Derive the sync-dot color from the mosaic's real HTTP connection
     /// state. Every tab's `MosaicChromeButton` routes through this so
     /// the indicator reflects actual server reachability instead of a

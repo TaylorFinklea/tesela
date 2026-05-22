@@ -151,7 +151,10 @@ struct AppShell: View {
                 SearchView(mosaic: mosaic, pageStack: pageStack, syncState: syncState)
             }
         }
-        .tint(appearance.theme.accentPrimary)
+        // Tab bar / nav-chrome tint. `accentSpark` equals the primary
+        // accent for every theme except Prism Spark, which lifts it to
+        // the neon coral — so picking Prism Spark visibly lights up iOS.
+        .tint(appearance.theme.accentSpark)
         .tabViewBottomAccessory {
             // The compact capture bar. Its text slot is a tap target,
             // not a focusable field — tapping it expands the composer
