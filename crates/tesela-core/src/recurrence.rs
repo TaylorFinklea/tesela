@@ -175,10 +175,19 @@ pub fn next_after(rec: &Recurrence, anchor: NaiveDate) -> NaiveDate {
     }
 }
 
-/// BYDAY stepping — filled in Task 4.
+/// BYDAY stepping — scan forward from anchor+1 for the first date
+/// whose weekday is in the (non-empty) set. At most 7 steps needed.
 fn next_by_weekday(rec: &Recurrence, anchor: NaiveDate) -> NaiveDate {
-    let _ = rec;
-    anchor + Duration::days(1)
+    debug_assert!(!rec.by_weekday.is_empty());
+    let mut d = anchor + Duration::days(1);
+    // At most 7 steps reaches the next eligible weekday.
+    for _ in 0..7 {
+        if rec.by_weekday.contains(&d.weekday()) {
+            return d;
+        }
+        d += Duration::days(1);
+    }
+    d // unreachable for a non-empty set
 }
 
 /// Add `n` calendar months, clamping day-of-month to the last valid day
@@ -367,7 +376,24 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BYDAY stepping lands in Task 4"]
+    fn next_after_byday_set() {
+        // Mon/Wed/Fri. d(2026,5,11) is a Monday.
+        let mwf = parse("every mon, wed, fri").unwrap();
+        assert_eq!(next_after(&mwf, d(2026, 5, 11)), d(2026, 5, 13)); // Mon -> Wed
+        assert_eq!(next_after(&mwf, d(2026, 5, 13)), d(2026, 5, 15)); // Wed -> Fri
+        assert_eq!(next_after(&mwf, d(2026, 5, 15)), d(2026, 5, 18)); // Fri -> next Mon
+        // From a day not in the set: Tue -> Wed.
+        assert_eq!(next_after(&mwf, d(2026, 5, 12)), d(2026, 5, 13));
+    }
+
+    #[test]
+    fn next_after_weekends() {
+        let we = parse("weekends").unwrap();
+        assert_eq!(next_after(&we, d(2026, 5, 9)), d(2026, 5, 10)); // Sat -> Sun
+        assert_eq!(next_after(&we, d(2026, 5, 10)), d(2026, 5, 16)); // Sun -> next Sat
+    }
+
+    #[test]
     fn next_after_weekdays_skips_weekend() {
         let weekdays = Recurrence {
             freq: Freq::Weekly,
