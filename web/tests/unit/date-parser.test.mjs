@@ -31,6 +31,8 @@ test("parseRecurrenceInput — until / count end clauses", () => {
   assert.equal(parseRecurrenceInput("every mon, fri count 12"), "every mon, fri count 12");
   assert.equal(parseRecurrenceInput("daily count 0"), null);
   assert.equal(parseRecurrenceInput("daily until not-a-date"), null);
+  // Overflow calendar date — must reject, not roll forward.
+  assert.equal(parseRecurrenceInput("daily until 2026-02-30"), null);
 });
 
 test("parseDateAndRecurrenceInput extracts an extended recurrence tail", () => {

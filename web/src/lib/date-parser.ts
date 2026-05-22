@@ -98,7 +98,13 @@ export function parseRecurrenceInput(input: string): string | null {
   const countIdx = s.lastIndexOf(" count ");
   if (untilIdx !== -1) {
     const dateStr = s.slice(untilIdx + 7).trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr) || Number.isNaN(Date.parse(dateStr))) return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+    // `Date.parse` rolls overflow dates forward (2026-02-30 → Mar 2), so it
+    // would accept dates the Rust `chrono` parser rejects. Round-trip the
+    // components instead to catch a genuinely invalid calendar date.
+    const [y, mo, d] = dateStr.split("-").map(Number);
+    const dt = new Date(y, mo - 1, d);
+    if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
     base = s.slice(0, untilIdx);
     endClause = ` until ${dateStr}`;
   } else if (countIdx !== -1) {
