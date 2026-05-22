@@ -19,6 +19,7 @@ struct BlockRow: View {
     var indent: Int = 0
     var isDone: Bool = false
     var tags: [String] = []
+    var properties: [BlockProperty] = []
     var isEditing: Bool = false
 
     var onToggleTask: (() -> Void)? = nil
@@ -42,6 +43,11 @@ struct BlockRow: View {
     /// Cycle the block's kind/status (note → open task → done → note).
     var onCycleStatus: (() -> Void)? = nil
 
+    /// The `recurring::` property value, or `nil` if absent.
+    private var recurringValue: String? {
+        properties.first(where: { $0.key == "recurring" })?.value
+    }
+
     @Environment(\.theme) private var theme
     @State private var editBuffer: String = ""
     @State private var livePushTask: Task<Void, Never>? = nil
@@ -58,10 +64,13 @@ struct BlockRow: View {
             bullet
             VStack(alignment: .leading, spacing: 4) {
                 content
-                if !tags.isEmpty && !isEditing {
+                if (!tags.isEmpty || recurringValue != nil) && !isEditing {
                     HStack(spacing: 4) {
                         ForEach(tags, id: \.self) { tag in
                             TagChip(value: tag)
+                        }
+                        if let recValue = recurringValue {
+                            RecurrenceChip(value: recValue)
                         }
                     }
                 }

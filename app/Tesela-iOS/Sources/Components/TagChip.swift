@@ -43,6 +43,30 @@ struct TagChip: View {
     }
 }
 
+/// Display-only chip for a block's `recurring::` property. Shows a
+/// repeat SF Symbol followed by the human-readable recurrence label.
+/// Mirrors `TagChip`'s sizing and theming — fgMuted foreground,
+/// low-alpha background, monospaced medium font.
+struct RecurrenceChip: View {
+    let value: String
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 9, weight: .medium))
+            Text(RecurrenceFormat.human(value))
+        }
+        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+        .foregroundStyle(theme.fgMuted)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1)
+        .background(theme.fgMuted.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+}
+
 /// Inline (non-chip) tag rendering — used when the tag is NOT at a
 /// trailing cluster in the block source. Matches the web's `.cm-tesela-tag`
 /// styling: primary-colored text with no background pill.
