@@ -69,33 +69,86 @@ export type ParsedDateTimeRecurrence = ParsedDateTime & { recurrence: string | n
 
 /**
  * Parse a recurrence phrase. Returns the canonical string we store in
- * `recurring::` (e.g. `"monthly"`, `"every 2 weeks"`, `"weekdays"`) or
- * `null` if unrecognized. The Rust side (`tesela-core::recurrence`) is
- * the source of truth — this mirror is only used so the picker can show
- * "valid" feedback before round-tripping through the server.
+ * `recurring::` (e.g. `"monthly"`, `"every 2 weeks"`, `"weekdays"`,
+ * `"every mon, wed, fri"`, `"weekly until 2026-12-31"`) or `null` if
+ * unrecognized. The Rust side (`tesela-core::recurrence`) is the source
+ * of truth — this mirror is only used so the picker can show "valid"
+ * feedback before round-tripping through the server.
  */
+
+const WEEKDAY_TOKENS: Record<string, string> = {
+  mon: "mon", monday: "mon",
+  tue: "tue", tues: "tue", tuesday: "tue",
+  wed: "wed", wednesday: "wed",
+  thu: "thu", thur: "thu", thurs: "thu", thursday: "thu",
+  fri: "fri", friday: "fri",
+  sat: "sat", saturday: "sat",
+  sun: "sun", sunday: "sun",
+};
+const WEEKDAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+
 export function parseRecurrenceInput(input: string): string | null {
   const s = input.trim().toLowerCase().replace(/\s+/g, " ");
   if (!s) return null;
-  if (s === "daily" || s === "every day") return "daily";
-  if (s === "weekly" || s === "every week") return "weekly";
-  if (s === "monthly" || s === "every month") return "monthly";
-  if (s === "yearly" || s === "annually" || s === "every year") return "yearly";
-  if (s === "weekdays") return "weekdays";
 
-  const everyN = s.match(/^every\s+(\d+)\s+(day|days|week|weeks|month|months|year|years)$/);
-  if (everyN) {
-    const n = Number(everyN[1]);
-    if (!Number.isFinite(n) || n < 1) return null;
-    const unit = everyN[2].endsWith("s") ? everyN[2] : `${everyN[2]}s`;
-    if (n === 1) {
-      if (unit === "days") return "daily";
-      if (unit === "weeks") return "weekly";
-      if (unit === "months") return "monthly";
-      if (unit === "years") return "yearly";
-    }
-    return `every ${n} ${unit}`;
+  // Split off a trailing end clause: " until YYYY-MM-DD" or " count N".
+  let base = s;
+  let endClause = "";
+  const untilIdx = s.lastIndexOf(" until ");
+  const countIdx = s.lastIndexOf(" count ");
+  if (untilIdx !== -1) {
+    const dateStr = s.slice(untilIdx + 7).trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr) || Number.isNaN(Date.parse(dateStr))) return null;
+    base = s.slice(0, untilIdx);
+    endClause = ` until ${dateStr}`;
+  } else if (countIdx !== -1) {
+    const n = Number(s.slice(countIdx + 7).trim());
+    if (!Number.isInteger(n) || n < 1) return null;
+    base = s.slice(0, countIdx);
+    endClause = ` count ${n}`;
   }
+
+  const freq = parseRecurrenceFreq(base);
+  return freq === null ? null : freq + endClause;
+}
+
+function parseRecurrenceFreq(base: string): string | null {
+  switch (base) {
+    case "daily":   case "every day":   return "daily";
+    case "weekly":  case "every week":  return "weekly";
+    case "monthly": case "every month": return "monthly";
+    case "yearly":  case "annually":    case "every year": return "yearly";
+    case "weekdays": return "weekdays";
+    case "weekends": return "weekends";
+  }
+
+  if (base.startsWith("every ")) {
+    const rest = base.slice(6);
+
+    // BYDAY: "every mon, wed, fri" — all comma-separated tokens must be weekdays.
+    const tokens = rest.split(",").map((t) => t.trim());
+    if (rest && tokens.every((t) => WEEKDAY_TOKENS[t] !== undefined)) {
+      const days = [...new Set(tokens.map((t) => WEEKDAY_TOKENS[t]))]
+        .sort((a, b) => WEEKDAY_ORDER.indexOf(a) - WEEKDAY_ORDER.indexOf(b));
+      return `every ${days.join(", ")}`;
+    }
+
+    // "every N <unit>" — only when the rest contains a space (not matched as BYDAY above).
+    const m = rest.match(/^(\d+) (day|days|week|weeks|month|months|year|years)$/);
+    if (m) {
+      const n = Number(m[1]);
+      if (!Number.isFinite(n) || n < 1) return null;
+      const unit = m[2].endsWith("s") ? m[2] : `${m[2]}s`;
+      if (n === 1) {
+        if (unit === "days") return "daily";
+        if (unit === "weeks") return "weekly";
+        if (unit === "months") return "monthly";
+        if (unit === "years") return "yearly";
+      }
+      return `every ${n} ${unit}`;
+    }
+  }
+
   return null;
 }
 
@@ -105,7 +158,22 @@ export function parseRecurrenceInput(input: string): string | null {
  * tail off, leaving the rest for `parseDateInput`. Returns the canonical
  * recurrence string and the remainder (or both nulls if no tail matched).
  */
-const TRAILING_RECUR_RE = /\s+(daily|weekly|monthly|yearly|annually|weekdays|every\s+\d+\s+(?:days?|weeks?|months?|years?)|every\s+(?:day|week|month|year))$/i;
+// Matches a trailing recurrence phrase — group 1 captures the entire phrase
+// including any optional end clause (" until YYYY-MM-DD" or " count N"), so
+// extractRecurrence can pass it directly to parseRecurrenceInput.
+//
+// Supported base forms:
+//   - simple keywords: daily, weekly, monthly, yearly, annually, weekdays, weekends
+//   - "every N <unit>": every 2 weeks, every 3 days, etc.
+//   - "every <day|week|month|year>": aliases for interval-1 forms
+//   - BYDAY day-sets: "every mon, wed, fri" (one or more comma-separated weekday tokens)
+const _BYDAY_TOKEN = "(?:mon(?:day)?|tues?(?:day)?|wed(?:nesday)?|thu(?:rs?(?:day)?)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?)";
+const _BYDAY_SET = `every\\s+${_BYDAY_TOKEN}(?:\\s*,\\s*${_BYDAY_TOKEN})*`;
+const _END_CLAUSE = "(?:\\s+until\\s+\\d{4}-\\d{2}-\\d{2}|\\s+count\\s+\\d+)?";
+const TRAILING_RECUR_RE = new RegExp(
+  `\\s+((?:daily|weekly|monthly|yearly|annually|weekdays|weekends|every\\s+\\d+\\s+(?:days?|weeks?|months?|years?)|every\\s+(?:day|week|month|year)|${_BYDAY_SET})${_END_CLAUSE})$`,
+  "i",
+);
 function extractRecurrence(s: string): { recurrence: string | null; rest: string } {
   const m = s.match(TRAILING_RECUR_RE);
   if (!m) return { recurrence: null, rest: s };

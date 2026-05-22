@@ -1,0 +1,39 @@
+// Unit tests for the date-parser recurrence helpers.
+// Covers the full grammar recognised by tesela-core::recurrence::parse —
+// BYDAY day-sets, "weekends", and trailing " until YYYY-MM-DD" / " count N"
+// end clauses — plus a regression guard for the original simple forms.
+
+import { test } from "node:test";
+import { strict as assert } from "node:assert";
+
+import { parseRecurrenceInput, parseDateAndRecurrenceInput } from "../../src/lib/date-parser.ts";
+
+test("parseRecurrenceInput — existing forms still parse", () => {
+  assert.equal(parseRecurrenceInput("daily"), "daily");
+  assert.equal(parseRecurrenceInput("every 2 weeks"), "every 2 weeks");
+  assert.equal(parseRecurrenceInput("weekdays"), "weekdays");
+  assert.equal(parseRecurrenceInput("garbage"), null);
+});
+
+test("parseRecurrenceInput — weekends", () => {
+  assert.equal(parseRecurrenceInput("weekends"), "weekends");
+});
+
+test("parseRecurrenceInput — BYDAY day-sets", () => {
+  assert.equal(parseRecurrenceInput("every mon, wed, fri"), "every mon, wed, fri");
+  assert.equal(parseRecurrenceInput("every monday"), "every mon");
+  assert.equal(parseRecurrenceInput("every fri, mon"), "every mon, fri");
+  assert.equal(parseRecurrenceInput("every mon, blarg"), null);
+});
+
+test("parseRecurrenceInput — until / count end clauses", () => {
+  assert.equal(parseRecurrenceInput("weekly until 2026-12-31"), "weekly until 2026-12-31");
+  assert.equal(parseRecurrenceInput("every mon, fri count 12"), "every mon, fri count 12");
+  assert.equal(parseRecurrenceInput("daily count 0"), null);
+  assert.equal(parseRecurrenceInput("daily until not-a-date"), null);
+});
+
+test("parseDateAndRecurrenceInput extracts an extended recurrence tail", () => {
+  const r = parseDateAndRecurrenceInput("friday every mon, wed, fri count 8");
+  assert.equal(r.recurrence, "every mon, wed, fri count 8");
+});
