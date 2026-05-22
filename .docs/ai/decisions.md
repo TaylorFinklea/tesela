@@ -143,3 +143,13 @@ Concise log of non-obvious decisions. Newest first.
 **Why:** `appendTodayBlock` (and block-split) write back to the server immediately, before the user types anything. Every abandoned "Add block" tap therefore saved a blank `- ` bullet; on the next refresh `parseBlocks` read it straight back as a real empty block, so empties accumulated permanently (one user's daily had 21).
 
 **Trade-off:** `renderBody` is now lossy by design — a future reader diffing in-memory blocks against the written file will see fewer blocks on disk, which can look like a bug. Empty *task* blocks and empty blocks *with children* ARE kept (a checkbox or an outline parent with no text is intentional). If a use case ever needs a deliberately-blank standalone note block, it would need an explicit "keep" signal.
+
+---
+
+### 2026-05-22 — Recurrence is an rrule-shaped struct; `Until` end-dates built at noon-UTC
+
+**Decision:** `tesela_core::recurrence::Recurrence` is a struct `{ freq: Freq, interval: u32, by_weekday: Vec<Weekday>, end: Option<RecurrenceEnd> }`, not the former flat `Copy` enum. `weekdays` / `weekends` are not special variants — they are ordinary `Weekly` recurrences with a `by_weekday` set. The series-end check lives in one function, `advance(&Recurrence, current, done_so_far) -> Option<NaiveDate>`; `count` progress is tracked by an engine-maintained `recurrence_done::` block property (the user never types it), `until` is stateless. When a `RecurrenceEnd::Until(date)` is pushed to EventKit, the `NSDate` is built at **noon UTC** of that date (`days*86400 + 43200`), not midnight UTC.
+
+**Why:** BYDAY (`Vec<Weekday>`) and `until`/`count` are orthogonal to frequency and cannot bolt onto a `Copy` enum cleanly; the struct maps 1:1 onto `EKRecurrenceRule` (frequency/interval/daysOfTheWeek/recurrenceEnd), keeping the Apple Reminders round-trip a straight field copy. Noon UTC: `EKRecurrenceEnd.recurrenceEndWithEndDate:` interprets the `NSDate` against the user's *local* calendar — midnight-UTC of date D is the evening of D-1 for any user west of UTC, so EventKit would end recurring series a day early. Noon UTC lands on date D for every timezone from UTC-12 through UTC+11.
+
+**Trade-off:** The noon-UTC `Until` is still wrong for the extreme UTC+12..+14 zones (a few Pacific territories) — the fully-correct fix is constructing the `NSDate` via `NSCalendar`/`NSDateComponents` at local noon, deferred as not worth the extra FFI. `count` requiring a companion `recurrence_done::` property means a recurring block carries an engine-owned property the user shouldn't edit; it is stamped by the server bump path, mirroring how `apple_reminder_synced_at::` is engine-owned.
