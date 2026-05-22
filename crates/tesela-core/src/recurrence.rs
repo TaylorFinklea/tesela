@@ -74,7 +74,32 @@ pub fn parse(input: &str) -> Option<Recurrence> {
         .join(" ")
         .to_lowercase();
 
-    match s.as_str() {
+    // Split off a trailing end clause: " until YYYY-MM-DD" or " count N".
+    let (base, end): (&str, Option<RecurrenceEnd>) = {
+        if let Some(idx) = s.rfind(" until ") {
+            let date_str = s[idx + 7..].trim();
+            let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
+            (&s[..idx], Some(RecurrenceEnd::Until(date)))
+        } else if let Some(idx) = s.rfind(" count ") {
+            let n: u32 = s[idx + 7..].trim().parse().ok()?;
+            if n == 0 {
+                return None;
+            }
+            (&s[..idx], Some(RecurrenceEnd::Count(n)))
+        } else {
+            (s.as_str(), None)
+        }
+    };
+
+    let mut rec = parse_freq(base)?;
+    rec.end = end;
+    Some(rec)
+}
+
+/// Parse just the frequency/BYDAY portion (no end clause). Always returns `end: None`.
+/// Operates on a string that is already lowercased and whitespace-normalized.
+fn parse_freq(base: &str) -> Option<Recurrence> {
+    match base {
         "daily" | "every day" => return Some(Recurrence::simple(Freq::Daily, 1)),
         "weekly" | "every week" => return Some(Recurrence::simple(Freq::Weekly, 1)),
         "monthly" | "every month" => return Some(Recurrence::simple(Freq::Monthly, 1)),
@@ -101,7 +126,7 @@ pub fn parse(input: &str) -> Option<Recurrence> {
     }
 
     // "every N <unit>" — `N` defaults to 1 if absent ("every day" already matched above).
-    if let Some(rest) = s.strip_prefix("every ") {
+    if let Some(rest) = base.strip_prefix("every ") {
         // BYDAY: "every mon, wed, fri" — all tokens must be weekdays.
         let day_tokens: Vec<&str> = rest.split(',').map(|t| t.trim()).collect();
         if !rest.is_empty() && day_tokens.iter().all(|t| parse_weekday(t).is_some()) {
@@ -320,6 +345,25 @@ mod tests {
         );
         // Unknown day token rejects the whole input.
         assert_eq!(parse("every mon, blarg"), None);
+    }
+
+    #[test]
+    fn parse_end_conditions() {
+        let u = parse("weekly until 2026-12-31").unwrap();
+        assert_eq!(u.freq, Freq::Weekly);
+        assert_eq!(u.end, Some(RecurrenceEnd::Until(d(2026, 12, 31))));
+
+        let c = parse("every mon, fri count 12").unwrap();
+        assert_eq!(c.by_weekday, vec![Weekday::Mon, Weekday::Fri]);
+        assert_eq!(c.end, Some(RecurrenceEnd::Count(12)));
+
+        assert_eq!(
+            parse("every 2 weeks until 2027-01-01").unwrap().end,
+            Some(RecurrenceEnd::Until(d(2027, 1, 1)))
+        );
+        // count 0 and a bad date reject.
+        assert_eq!(parse("daily count 0"), None);
+        assert_eq!(parse("daily until not-a-date"), None);
     }
 
     #[test]
