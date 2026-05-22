@@ -133,3 +133,13 @@ Concise log of non-obvious decisions. Newest first.
 **Why:** The catalog's old Parakeet `.zip` URLs 404'd and nothing ran inference. FluidAudio ships the same `parakeet-tdt-0.6b` CoreML build VoiceInk and Handy use and manages its own model download — far cheaper than hand-rolling a NeMo runtime.
 
 **Trade-off:** FluidAudio's `downloadAndLoad` exposes no progress, so a Parakeet download shows an indeterminate spinner, not a percentage. The package is pinned to `branch = main` (no release tag). Whisper is completely untouched — it remains the URLSession-`.bin` path.
+
+---
+
+### 2026-05-21 — iOS `renderBody` drops bare leaf blocks instead of persisting them
+
+**Decision:** `MockMosaicService.renderBody` (the iOS block-list → markdown serializer, shared by daily writeback and `pushPage`) filters out *bare leaf* blocks before serializing — a block with empty text, no tags, no properties, non-task kind, and no indented children is omitted from the written file. The block is NOT removed from the in-memory `todayBlocks` / `loadedPageBlocks` array, so the user still sees and can type into a freshly-added empty block; it simply isn't persisted to disk until it has content.
+
+**Why:** `appendTodayBlock` (and block-split) write back to the server immediately, before the user types anything. Every abandoned "Add block" tap therefore saved a blank `- ` bullet; on the next refresh `parseBlocks` read it straight back as a real empty block, so empties accumulated permanently (one user's daily had 21).
+
+**Trade-off:** `renderBody` is now lossy by design — a future reader diffing in-memory blocks against the written file will see fewer blocks on disk, which can look like a bug. Empty *task* blocks and empty blocks *with children* ARE kept (a checkbox or an outline parent with no text is intentional). If a use case ever needs a deliberately-blank standalone note block, it would need an explicit "keep" signal.
