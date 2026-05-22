@@ -8,6 +8,8 @@
 
 import { api } from "$lib/api-client";
 import { getAppQueryClient } from "$lib/app-query-client.svelte";
+import { getFocusedBlock } from "$lib/stores/current-block.svelte";
+import { toast } from "$lib/stores/toast.svelte";
 import {
   closeFocusedLeaf,
   closeTab,
@@ -566,6 +568,31 @@ export function buildV4Commands(): V4Command[] {
       argPrompt: "note title",
       run: (arg) => {
         if (arg) return createNoteAndJump(arg);
+      },
+    },
+
+    // ── recurrence ─────────────────────────────────────────────────────────
+    {
+      id: "skip-occurrence",
+      verb: "skip",
+      label: "Skip to Next Occurrence",
+      glyph: "⏭",
+      category: "tile",
+      keywords: ["skip", "recurrence", "recurring", "next", "occurrence"],
+      run: async () => {
+        const block = getFocusedBlock();
+        if (!block || !block.properties["recurring"]) {
+          toast("No recurring task focused", "warn");
+          return;
+        }
+        const res = await api.recurBump(block.id, "skip");
+        if (res.bumped) {
+          const qc = getAppQueryClient();
+          if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
+          toast("Skipped to next occurrence", "success");
+        } else {
+          toast("Nothing to skip", "info");
+        }
       },
     },
   ];
