@@ -23,6 +23,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
     @Published private(set) var todayBlocks: [Block]
     @Published private(set) var yesterdayBlocks: [Block]
 
+    /// Daily notes older than yesterday, newest first — rendered as
+    /// dimmed, display-only sections below Yesterday in the Daily feed.
+    /// Capped to a recent window; days with no blocks are dropped.
+    @Published private(set) var pastDailies: [DailyEntry] = []
+
     @Published private(set) var palette: [PaletteVerb]
     @Published private(set) var searchResults: [SearchResult]
 
@@ -586,6 +591,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 let daily: APINote = try await httpGet("/notes/daily", baseURL: baseURL)
                 let notes: [APINote] = try await httpGet("/notes?limit=200", baseURL: baseURL)
                 let yesterdayNote: APINote? = (try? await fetchYesterdayDaily(baseURL: baseURL))
+                let dailyNotes: [APINote] = (try? await httpGet("/notes?tag=daily&limit=40", baseURL: baseURL)) ?? []
                 let serverTagNames: [String] = (try? await httpGet("/tags", baseURL: baseURL)) ?? []
 
                 serverDailyId = daily.id
@@ -594,6 +600,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     .filter { $0.id != daily.id }
                     .map { mapPage($0) }
                 yesterdayBlocks = yesterdayNote.map { parseBlocks(from: $0.body) } ?? []
+                let yesterdayId = dailyId(daysAgo: 1)
+                pastDailies = Array(
+                    dailyNotes
+                        .filter { $0.id != daily.id && $0.id != yesterdayId }
+                        .sorted { $0.id > $1.id }
+                        .map { DailyEntry(id: $0.id, blocks: parseBlocks(from: $0.body)) }
+                        .filter { !$0.blocks.isEmpty }
+                        .prefix(30)
+                )
                 tags = serverTagNames.map { name in
                     let parts = name.split(separator: "/")
                     let leaf = parts.last.map(String.init) ?? name
@@ -637,6 +652,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         recent = []
         todayBlocks = []
         yesterdayBlocks = []
+        pastDailies = []
         searchResults = []
         searchHits = []
         searchError = nil
@@ -871,6 +887,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
         case .some(.notConnectedToInternet): return "Device is offline"
         default:                          return error.localizedDescription
         }
+    }
+
+    /// `YYYY-MM-DD` id of the daily note `daysAgo` days before today.
+    private func dailyId(daysAgo: Int) -> String {
+        let cal = Calendar.current
+        guard let date = cal.date(byAdding: .day, value: -daysAgo, to: todayDate) else { return "" }
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
     }
 
     private func fetchYesterdayDaily(baseURL: URL) async throws -> APINote {
@@ -1129,9 +1154,37 @@ final class MockMosaicService: ObservableObject, MosaicService {
         }
     }
 
+    /// Drop blocks that carry nothing — empty text, no tags, no task
+    /// state, no properties, and no indented children. `appendTodayBlock`
+    /// writes back the instant a block is added, so without this every
+    /// abandoned "Add block" tap (or block split the user never typed
+    /// into) would leave a permanent blank `- ` bullet on disk, which
+    /// then round-trips back as a real empty block forever. The block
+    /// still lives in the in-memory list so the user can type into it —
+    /// it just isn't persisted until it actually has content.
+    ///
+    /// Walks back-to-front so dropping a child re-exposes its parent as
+    /// a leaf within the same pass.
+    private func droppingBareLeafBlocks(_ blocks: [Block]) -> [Block] {
+        var kept: [Block] = []
+        for block in blocks.reversed() {
+            let isBare = block.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && block.tags.isEmpty
+                && block.properties.isEmpty
+                && block.kind != .task
+            // `kept` holds everything that renders after this block;
+            // its last entry is the immediate successor. A deeper
+            // successor means this block parents it — keep it then.
+            let hasChild = (kept.last?.indent ?? block.indent) > block.indent
+            if isBare && !hasChild { continue }
+            kept.append(block)
+        }
+        return kept.reversed()
+    }
+
     private func renderBody(from blocks: [Block]) -> String {
         var out: [String] = []
-        for block in blocks {
+        for block in droppingBareLeafBlocks(blocks) {
             let indent = String(repeating: "  ", count: block.indent)
             let trailingTags = block.tags.isEmpty ? "" : " " + block.tags.joined(separator: " ")
             // Only emit a bid comment for ids that look like real UUIDs.
@@ -1248,6 +1301,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         recent = MockSeed.recent
         todayBlocks = MockSeed.todayBlocks
         yesterdayBlocks = MockSeed.yesterdayBlocks
+        pastDailies = []
         palette = MockSeed.palette
         searchResults = MockSeed.searchResults
         serverDailyId = ""
