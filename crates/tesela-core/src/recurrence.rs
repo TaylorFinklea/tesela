@@ -156,6 +156,31 @@ fn parse_freq(base: &str) -> Option<Recurrence> {
     None
 }
 
+/// Compute the next occurrence after `current`, or `None` if completing
+/// `current` exhausts the series.
+///
+/// `done_so_far` is the number of occurrences already completed *before*
+/// this one — i.e. the engine-maintained `recurrence_done::` counter.
+pub fn advance(rec: &Recurrence, current: NaiveDate, done_so_far: u32) -> Option<NaiveDate> {
+    match rec.end {
+        Some(RecurrenceEnd::Count(total)) => {
+            // Completing `current` makes (done_so_far + 1) occurrences.
+            // If that reaches the total, there is no next occurrence.
+            if done_so_far + 1 >= total {
+                return None;
+            }
+        }
+        Some(RecurrenceEnd::Until(_)) | None => {}
+    }
+    let next = next_after(rec, current);
+    if let Some(RecurrenceEnd::Until(until)) = rec.end {
+        if next > until {
+            return None;
+        }
+    }
+    Some(next)
+}
+
 /// Compute the next occurrence strictly after `anchor`.
 ///
 /// - `Daily` / `Weekly` advance by a fixed day count scaled by `interval`.
@@ -391,6 +416,31 @@ mod tests {
         let we = parse("weekends").unwrap();
         assert_eq!(next_after(&we, d(2026, 5, 9)), d(2026, 5, 10)); // Sat -> Sun
         assert_eq!(next_after(&we, d(2026, 5, 10)), d(2026, 5, 16)); // Sun -> next Sat
+    }
+
+    #[test]
+    fn advance_respects_until() {
+        let r = parse("weekly until 2026-05-20").unwrap();
+        // 2026-05-14 -> 2026-05-21 would be past `until` -> spent.
+        assert_eq!(advance(&r, d(2026, 5, 14), 1), None);
+        // A step that lands ON `until` is allowed.
+        let r2 = parse("weekly until 2026-05-21").unwrap();
+        assert_eq!(advance(&r2, d(2026, 5, 14), 1), Some(d(2026, 5, 21)));
+    }
+
+    #[test]
+    fn advance_respects_count() {
+        let r = parse("daily count 3").unwrap();
+        // count 3 = occurrences #1,#2,#3. done_so_far is the count already completed.
+        assert_eq!(advance(&r, d(2026, 5, 7), 0), Some(d(2026, 5, 8))); // completing #1 -> #2
+        assert_eq!(advance(&r, d(2026, 5, 8), 1), Some(d(2026, 5, 9))); // completing #2 -> #3
+        assert_eq!(advance(&r, d(2026, 5, 9), 2), None);                // completing #3 -> spent
+    }
+
+    #[test]
+    fn advance_unbounded_never_spent() {
+        let r = parse("daily").unwrap();
+        assert_eq!(advance(&r, d(2026, 5, 7), 999), Some(d(2026, 5, 8)));
     }
 
     #[test]
