@@ -10,6 +10,7 @@ import { api } from "$lib/api-client";
 import { getAppQueryClient } from "$lib/app-query-client.svelte";
 import { getFocusedBlock } from "$lib/stores/current-block.svelte";
 import { toast } from "$lib/stores/toast.svelte";
+import { skipRecurrence } from "$lib/recurrence-actions";
 import {
   closeFocusedLeaf,
   closeTab,
@@ -585,14 +586,7 @@ export function buildV4Commands(): V4Command[] {
           toast("No recurring task focused", "warn");
           return;
         }
-        const res = await api.recurBump(block.id, "skip");
-        if (res.bumped) {
-          const qc = getAppQueryClient();
-          if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
-          toast("Skipped to next occurrence", "success");
-        } else {
-          toast("Nothing to skip", "info");
-        }
+        await skipRecurrence(block.id);
       },
     },
   ];

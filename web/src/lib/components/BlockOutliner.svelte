@@ -1416,7 +1416,7 @@
               </span>
             {/if}
             {#each chips as chip}
-              <DisplayChip propKey={chip.key} value={chip.value} def={chip.def} />
+              <DisplayChip propKey={chip.key} value={chip.value} def={chip.def} blockId={block.id} />
             {/each}
           </div>
         {/if}

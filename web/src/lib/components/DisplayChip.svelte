@@ -5,19 +5,50 @@
    * Property page's frontmatter (`chip_icon`, `chip_label_mode`,
    * `chip_value_format`, …) so the same property looks the same wherever
    * it surfaces. See `recursive-rolling-fountain.md` for the schema.
+   *
+   * Phase 12.2 — when `propKey === "recurring"`, value is formatted via
+   * `formatRecurrence` and clicking the chip opens a minimal skip menu.
    */
   import type { PropertyDefinition } from "$lib/property-registry";
   import { resolveChipIcon } from "$lib/icon-registry";
+  import { formatRecurrence } from "$lib/recurrence-format";
+  import { skipRecurrence } from "$lib/recurrence-actions";
 
   let {
     propKey,
     value,
     def,
+    blockId = null,
   }: {
     propKey: string;
     value: string;
     def: PropertyDefinition;
+    blockId?: string | null;
   } = $props();
+
+  /** Whether this is the recurring chip (drives formatting + skip affordance). */
+  const isRecurring = $derived(propKey === "recurring");
+
+  /** Popover open state for the skip menu. */
+  let skipMenuOpen = $state(false);
+
+  function handleChipClick(e: MouseEvent) {
+    if (!isRecurring) return;
+    e.stopPropagation();
+    skipMenuOpen = !skipMenuOpen;
+  }
+
+  function handleSkip(e: MouseEvent) {
+    e.stopPropagation();
+    skipMenuOpen = false;
+    if (blockId) skipRecurrence(blockId);
+  }
+
+  function handleClickOutside(e: MouseEvent) {
+    if (skipMenuOpen) {
+      skipMenuOpen = false;
+    }
+  }
 
   /** Effective label mode: explicit setting > derived ("icon" if icon set, else "full"). */
   const labelMode = $derived(
@@ -77,6 +108,9 @@
 
   const formattedValue = $derived.by((): string => {
     const v = (value ?? "").trim();
+    // Recurring chips always route through the recurrence formatter regardless
+    // of chip_value_format so users see "Daily, 10×" instead of raw grammar.
+    if (isRecurring) return formatRecurrence(v);
     switch (valueFormat) {
       case "month-day": return formatDateMonthDay(v);
       case "iso": return v.replace(/^\[\[|\]\]$/g, "");
@@ -84,6 +118,7 @@
         if (def.value_type !== "select" && def.value_type !== "multi-select") return formatTruncate(v, 24);
         return formatBars(v, def.choices);
       case "truncate": return formatTruncate(v, 10);
+      case "recurrence": return formatRecurrence(v);
       default: return formatTruncate(v, 24);
     }
   });
@@ -95,19 +130,43 @@
   });
 </script>
 
-<span
-  class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-muted/40 text-muted-foreground/90 font-medium"
-  title="{def.name}: {value}"
->
-  {#if labelMode === "icon" && (icon.component || icon.emoji)}
-    {#if icon.component}
-      {@const Cmp = icon.component as import("svelte").Component<{ size?: number; stroke?: number }>}
-      <Cmp size={11} stroke={1.75} />
-    {:else}
-      <span class="leading-none">{icon.emoji}</span>
+<svelte:window onclick={handleClickOutside} />
+
+<span class="relative">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <span
+    class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-muted/40 text-muted-foreground/90 font-medium {isRecurring && blockId ? 'cursor-pointer hover:bg-muted/70' : ''}"
+    title="{def.name}: {value}"
+    onclick={handleChipClick}
+    onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleChipClick(e as unknown as MouseEvent); }}
+    role={isRecurring && blockId ? "button" : undefined}
+    tabindex={isRecurring && blockId ? 0 : undefined}
+  >
+    {#if labelMode === "icon" && (icon.component || icon.emoji)}
+      {#if icon.component}
+        {@const Cmp = icon.component as import("svelte").Component<{ size?: number; stroke?: number }>}
+        <Cmp size={11} stroke={1.75} />
+      {:else}
+        <span class="leading-none">{icon.emoji}</span>
+      {/if}
+    {:else if labelText}
+      <span class="text-muted-foreground/50">{labelText}</span>
     {/if}
-  {:else if labelText}
-    <span class="text-muted-foreground/50">{labelText}</span>
+    <span>{formattedValue}</span>
+  </span>
+
+  {#if skipMenuOpen && isRecurring && blockId}
+    <div
+      class="absolute top-full left-0 mt-1 z-50 min-w-max rounded-md border border-border bg-popover shadow-md py-1"
+      role="menu"
+    >
+      <button
+        class="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-muted/60 text-popover-foreground transition-colors"
+        onclick={handleSkip}
+        role="menuitem"
+      >
+        ⏭ Skip to next occurrence
+      </button>
+    </div>
   {/if}
-  <span>{formattedValue}</span>
 </span>
