@@ -149,10 +149,10 @@ export const api = {
     get<ParsedBlock[]>(`/types/${encodeURIComponent(typeName)}/blocks`),
   /** Phase 12.2 — fired when status flips to done. Server is responsible
    *  for deciding whether the block actually has a recurring rule. */
-  recurBump: (blockId: string) =>
+  recurBump: (blockId: string, mode: "complete" | "skip" = "complete") =>
     post<{ bumped: boolean; next_deadline: string | null }>(
       "/blocks/recur-bump",
-      { block_id: blockId },
+      { block_id: blockId, mode },
     ),
   /** Phase 12.1 — Apple Reminders sync (macOS only). The combined
    *  `remindersSync` is what the "Sync now" UI button hits. */
