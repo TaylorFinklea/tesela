@@ -75,7 +75,10 @@ struct CaptureBar: View {
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        // Bottom-align only the expanded panel, where the multi-line
+        // field grows upward and the collapse/send buttons stay anchored.
+        // The compact bar is single-line — center it.
+        HStack(alignment: expanded ? .bottom : .center, spacing: 8) {
             leadingButton
             targetChip
             composerMiddle

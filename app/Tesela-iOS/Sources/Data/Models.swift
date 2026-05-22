@@ -36,6 +36,14 @@ struct BlockProperty: Equatable, Hashable, Codable {
     var value: String
 }
 
+/// One past daily note shown below today in the Daily feed: its date
+/// id (`YYYY-MM-DD`) and parsed blocks. Display-only — tapping its
+/// header opens the full editable daily page.
+struct DailyEntry: Identifiable, Equatable, Hashable {
+    let id: String
+    let blocks: [Block]
+}
+
 /// A markdown page. `type` is the frontmatter discriminator (note,
 /// daily, query, scratch, project, person, tag, template, …).
 struct Page: Identifiable, Equatable, Hashable, Codable {

@@ -49,8 +49,10 @@ struct DailyView: View {
                         Spacer().frame(height: 12)
                         todayBlocks
                         addBlockRow
+                        daySpacer
                         SectionEyebrow(title: "Yesterday")
                         yesterdayBlocks
+                        pastDays
                         Spacer().frame(height: 80) // bottom chrome breathing room
                     }
                 }
@@ -200,6 +202,49 @@ struct DailyView: View {
             )
             .opacity(0.7)
         }
+    }
+
+    /// Daily notes older than yesterday — dimmed, display-only. The
+    /// date header is tappable and pushes the full editable daily page.
+    @ViewBuilder
+    private var pastDays: some View {
+        ForEach(mosaic.pastDailies) { day in
+            daySpacer
+            Button {
+                pushPage(slug: day.id)
+            } label: {
+                SectionEyebrow(title: dayLabel(day.id), hint: "open")
+            }
+            .buttonStyle(.plain)
+            ForEach(day.blocks) { block in
+                BlockRow(
+                    id: block.id,
+                    kind: block.kind,
+                    text: block.text,
+                    indent: block.indent,
+                    isDone: block.done,
+                    tags: block.tags
+                )
+                .opacity(0.7)
+            }
+        }
+    }
+
+    /// A deliberate ~1/3-viewport gap between day sections so each day
+    /// reads as its own space when scrolling the Daily feed.
+    private var daySpacer: some View {
+        Color.clear
+            .containerRelativeFrame(.vertical) { length, _ in length / 3 }
+    }
+
+    /// "2026-05-20" → "Tuesday, May 20". `SectionEyebrow` uppercases it.
+    private func dayLabel(_ id: String) -> String {
+        let parser = DateFormatter()
+        parser.dateFormat = "yyyy-MM-dd"
+        guard let date = parser.date(from: id) else { return id }
+        let display = DateFormatter()
+        display.dateFormat = "EEEE, MMMM d"
+        return display.string(from: date)
     }
 
     private var addBlockRow: some View {
