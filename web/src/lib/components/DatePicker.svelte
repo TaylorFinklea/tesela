@@ -19,8 +19,10 @@
     initialRecurrence?: string | null;
     position: { x: number; y: number };
     /** Phase 12.2 — recurrence is the third tuple element. `null` means
-     *  "non-recurring" (and clears any existing `recurring::`). */
-    onPick: (iso: string, time: string | null, recurrence: string | null) => void;
+     *  "non-recurring" (and clears any existing `recurring::`).
+     *  Task 4 — field is the fourth element: the NL keyword (`deadline` /
+     *  `scheduled`) or `null` when the user clicked the grid directly. */
+    onPick: (iso: string, time: string | null, recurrence: string | null, field: "deadline" | "scheduled" | null) => void;
     onClose: () => void;
   } = $props();
 
@@ -50,6 +52,9 @@
   // Buttons set this to one of the presets; the custom input round-trips
   // through `parseRecurrenceInput` so only valid values land here.
   let selectedRecurrence = $state<string | null>(null);
+  // Task 4 — field keyword extracted from NL input ("deadline"/"scheduled").
+  // Null when no keyword was typed (grid click or date-only NL phrase).
+  let selectedField = $state<"deadline" | "scheduled" | null>(null);
   // Custom recurrence input — only visible when the "custom" chord is on
   // or the current selectedRecurrence isn't one of the preset chips.
   const PRESETS = ["daily", "weekly", "monthly", "yearly", "weekdays", "weekends"] as const;
@@ -180,6 +185,13 @@
         // NL input carries its own end clause — don't compose with UI end controls.
         endMode = "never";
       }
+      // Task 4 — track the field keyword from NL input ("deadline"/"scheduled").
+      selectedField = parsedFromInput.field;
+    } else if (nlInput.trim()) {
+      // Unparseable input — reset field so a stale keyword doesn't persist.
+      selectedField = null;
+    } else {
+      selectedField = null;
     }
   });
 
@@ -234,7 +246,7 @@
   function handleKey(e: KeyboardEvent) {
     if (e.key === "Enter") {
       e.preventDefault();
-      onPick(fmt(selected), selectedTime, committedRecurrence);
+      onPick(fmt(selected), selectedTime, committedRecurrence, selectedField);
       return;
     }
     if (e.key === "Escape") {
@@ -362,7 +374,7 @@
             {!isSelected && cell.inMonth ? 'text-foreground/85 hover:bg-muted/40' : ''}
             {!cell.inMonth ? 'text-muted-foreground/30 hover:bg-muted/30' : ''}
           "
-          onclick={() => { selected = cell.date; viewMonth = new Date(cell.date.getFullYear(), cell.date.getMonth(), 1); onPick(iso, selectedTime, committedRecurrence); }}
+          onclick={() => { selected = cell.date; viewMonth = new Date(cell.date.getFullYear(), cell.date.getMonth(), 1); onPick(iso, selectedTime, committedRecurrence, null); }}
           onblur={handleBlur}
           title={iso}
         >{cell.date.getDate()}</button>

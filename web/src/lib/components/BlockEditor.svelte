@@ -324,6 +324,7 @@
   import ChordMenu, { type ChordNode } from "./ChordMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
   import DatePicker from "./DatePicker.svelte";
+  import { prefs } from "$lib/preferences.svelte";
 
   let {
     initialText,
@@ -1614,36 +1615,21 @@
   {#if showDatePicker}
     <DatePicker
       position={datePickerPosition}
-      onPick={(iso, _time, recurrence) => {
+      onPick={(iso, _time, recurrence, field) => {
         if (view && datePickerCursor >= 0) {
-          if (datePickerPropertyKey) {
-            // Phase 10.5 — date-typed property: upsert via the same helper
-            // the chord-leaf path uses, so picking a date for an existing
-            // `deadline::` line replaces it instead of duplicating.
-            // Phase 12.2 — when the picker emits a recurrence, also upsert
-            // `recurring::` so a single keystroke commits both properties.
-            const doc = view.state.doc.toString();
-            let next = upsertBlockProperty(doc, datePickerPropertyKey, `[[${iso}]]`);
-            if (recurrence !== null) {
-              next = upsertBlockProperty(next, "recurring", recurrence);
-            }
-            view.dispatch({
-              changes: { from: 0, to: doc.length, insert: next },
-              selection: { anchor: datePickerCursor },
-            });
-            onChange(next);
-          } else {
-            const doc = view.state.doc.toString();
-            const before = doc.slice(0, datePickerCursor);
-            const after = doc.slice(datePickerCursor);
-            const inserted = `[[${iso}]]`;
-            const next = before + inserted + after;
-            view.dispatch({
-              changes: { from: 0, to: doc.length, insert: next },
-              selection: { anchor: before.length + inserted.length },
-            });
-            onChange(next);
+          const doc = view.state.doc.toString();
+          // `/p` path passes an explicit property key; the `/date` path resolves
+          // the field from the NL keyword, falling back to the user's setting.
+          const key = datePickerPropertyKey ?? field ?? prefs.bareDateField;
+          let next = upsertBlockProperty(doc, key, iso);
+          if (recurrence !== null) {
+            next = upsertBlockProperty(next, "recurring", recurrence);
           }
+          view.dispatch({
+            changes: { from: 0, to: doc.length, insert: next },
+            selection: { anchor: Math.min(datePickerCursor, next.length) },
+          });
+          onChange(next);
           view.focus();
         }
         showDatePicker = false;
