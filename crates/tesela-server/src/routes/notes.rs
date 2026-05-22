@@ -969,10 +969,22 @@ pub async fn get_all_edges(State(s): State<Arc<AppState>>) -> AppResult<Json<Vec
     Ok(Json(edges))
 }
 
+#[derive(Deserialize, Default, PartialEq, Eq, Debug, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum RecurBumpMode {
+    #[default]
+    Complete,
+    Skip,
+}
+
 #[derive(Deserialize)]
 pub struct RecurBumpReq {
     /// Block id in `<note_id>:<line>` format (matches `ParsedBlock.id`).
     pub block_id: String,
+    /// `"complete"` (default): mark done + advance dates + stamp `last_completed::`.
+    /// `"skip"`: advance dates only — do not touch `status::` or `last_completed::`.
+    #[serde(default)]
+    pub mode: RecurBumpMode,
 }
 
 #[derive(serde::Serialize)]
@@ -1011,7 +1023,11 @@ pub async fn recur_bump(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Note not found: {}", note_id_str)))?;
 
-    let Some((new_content, next_iso)) = try_bump_block(&note.content, &req.block_id) else {
+    let bump_result = match req.mode {
+        RecurBumpMode::Complete => try_bump_block(&note.content, &req.block_id),
+        RecurBumpMode::Skip => try_skip_block(&note.content, &req.block_id),
+    };
+    let Some((new_content, next_iso)) = bump_result else {
         return Ok(Json(RecurBumpResp {
             bumped: false,
             next_deadline: None,
@@ -1046,12 +1062,21 @@ pub async fn recur_bump(
 
 /// Pure helper. Returns `Some((new_content, next_deadline_iso))` if `block_id`
 /// resolves to a block in `content` with `status:: done` + valid `recurring::`
-/// + valid `deadline::`. Returns `None` for any reason a bump cannot apply
-///   (idempotent caller-side: just don't replace `content`).
+/// + valid anchor date (`deadline::` or `scheduled::`).
 ///
-/// The same routine drives both the explicit `recur_bump` endpoint and the
-/// post-save detection inside `update_note`, so semantics stay identical
-/// across both paths.
+/// Behaviour (Task 6 semantics):
+/// - Reads `recurrence_done::` (default 0) and calls `recurrence::advance` to
+///   check whether the series still has occurrences.
+/// - **Series active** (`advance` returns `Some`): advance every date field
+///   (`deadline::`, `scheduled::`) by one step each from their own current
+///   values; stamp `recurrence_done:: <done+1>`; reset `status:: todo`;
+///   stamp `last_completed::`.
+/// - **Series spent** (`advance` returns `None`): leave `status:: done`;
+///   leave date fields unchanged; set `recurrence_done:: <done+1>`.
+///   The `recurring::` property is NOT removed.
+///
+/// Returns `None` for any reason a bump cannot apply (idempotent, caller
+/// just leaves content unchanged).
 pub fn try_bump_block(content: &str, block_id: &str) -> Option<(String, String)> {
     let (note_id_str, line_str) = block_id.rsplit_once(':')?;
     let line_num: usize = line_str.parse().ok()?;
@@ -1064,16 +1089,150 @@ pub fn try_bump_block(content: &str, block_id: &str) -> Option<(String, String)>
     }
     let recurring_str = block.properties.get("recurring")?;
     let rec: Recurrence = recurrence::parse(recurring_str)?;
-    let deadline_raw = block.properties.get("deadline")?;
-    let (anchor_date, time_suffix) = parse_deadline_value(deadline_raw)?;
 
-    let next_date = recurrence::next_after(&rec, anchor_date);
-    let new_deadline = format_deadline(next_date, time_suffix.as_deref());
-    let last_completed = format!("[[{}]]", anchor_date.format("%Y-%m-%d"));
+    // Anchor: prefer deadline::, fall back to scheduled::.
+    let anchor_date = {
+        let from_deadline = block
+            .properties
+            .get("deadline")
+            .and_then(|v| parse_deadline_value(v))
+            .map(|(d, _)| d);
+        let from_scheduled = block
+            .properties
+            .get("scheduled")
+            .and_then(|v| parse_deadline_value(v))
+            .map(|(d, _)| d);
+        from_deadline.or(from_scheduled)?
+    };
 
-    let new_body = rewrite_block_for_bump(&body, line_num, &new_deadline, &last_completed)?;
-    let new_content = reassemble_content(content, &body, &new_body);
-    Some((new_content, next_date.format("%Y-%m-%d").to_string()))
+    // `done_so_far` = occurrences already completed before this one.
+    let done_so_far: u32 = block
+        .properties
+        .get("recurrence_done")
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+
+    let new_done = done_so_far + 1;
+    let last_completed_str = format!("[[{}]]", anchor_date.format("%Y-%m-%d"));
+
+    match recurrence::advance(&rec, anchor_date, done_so_far) {
+        Some(_next) => {
+            // Series still active — advance every date field from its own value.
+            let new_deadline = block.properties.get("deadline").and_then(|v| {
+                let (d, t) = parse_deadline_value(v)?;
+                let nd = recurrence::next_after(&rec, d);
+                Some(format_deadline(nd, t.as_deref()))
+            });
+            let new_scheduled = block.properties.get("scheduled").and_then(|v| {
+                let (d, t) = parse_deadline_value(v)?;
+                let nd = recurrence::next_after(&rec, d);
+                Some(format_deadline(nd, t.as_deref()))
+            });
+
+            // Determine the ISO string to return (deadline preferred, else scheduled).
+            let next_iso = new_deadline
+                .as_deref()
+                .or(new_scheduled.as_deref())
+                .and_then(|s| parse_deadline_value(s))
+                .map(|(d, _)| d.format("%Y-%m-%d").to_string())?;
+
+            let new_body = rewrite_block_for_complete(
+                &body,
+                line_num,
+                new_deadline.as_deref(),
+                new_scheduled.as_deref(),
+                &last_completed_str,
+                new_done,
+            )?;
+            let new_content = reassemble_content(content, &body, &new_body);
+            Some((new_content, next_iso))
+        }
+        None => {
+            // Series spent — leave dates, leave status done, only bump counter.
+            let new_body =
+                rewrite_block_for_spent(&body, line_num, new_done)?;
+            let new_content = reassemble_content(content, &body, &new_body);
+            // Return a sentinel ISO so the endpoint can report *something*;
+            // the `bumped: true` flag is still meaningful (counter updated).
+            let iso = anchor_date.format("%Y-%m-%d").to_string();
+            Some((new_content, iso))
+        }
+    }
+}
+
+/// Like `try_bump_block` but for `mode: skip`. Advances date fields and
+/// increments `recurrence_done::` without touching `status::` or stamping
+/// `last_completed::`. Requires `recurring::` to be present and parseable
+/// but does NOT require `status:: done` — the block may be in any state.
+pub fn try_skip_block(content: &str, block_id: &str) -> Option<(String, String)> {
+    let (note_id_str, line_str) = block_id.rsplit_once(':')?;
+    let line_num: usize = line_str.parse().ok()?;
+    let (_meta, body) = parse_frontmatter(content).ok()?;
+    let blocks = parse_blocks(note_id_str, &body);
+    let block = blocks.iter().find(|b| b.id == block_id)?;
+
+    let recurring_str = block.properties.get("recurring")?;
+    let rec: Recurrence = recurrence::parse(recurring_str)?;
+
+    let anchor_date = {
+        let from_deadline = block
+            .properties
+            .get("deadline")
+            .and_then(|v| parse_deadline_value(v))
+            .map(|(d, _)| d);
+        let from_scheduled = block
+            .properties
+            .get("scheduled")
+            .and_then(|v| parse_deadline_value(v))
+            .map(|(d, _)| d);
+        from_deadline.or(from_scheduled)?
+    };
+
+    let done_so_far: u32 = block
+        .properties
+        .get("recurrence_done")
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+
+    let new_done = done_so_far + 1;
+
+    match recurrence::advance(&rec, anchor_date, done_so_far) {
+        Some(_next) => {
+            let new_deadline = block.properties.get("deadline").and_then(|v| {
+                let (d, t) = parse_deadline_value(v)?;
+                let nd = recurrence::next_after(&rec, d);
+                Some(format_deadline(nd, t.as_deref()))
+            });
+            let new_scheduled = block.properties.get("scheduled").and_then(|v| {
+                let (d, t) = parse_deadline_value(v)?;
+                let nd = recurrence::next_after(&rec, d);
+                Some(format_deadline(nd, t.as_deref()))
+            });
+
+            let next_iso = new_deadline
+                .as_deref()
+                .or(new_scheduled.as_deref())
+                .and_then(|s| parse_deadline_value(s))
+                .map(|(d, _)| d.format("%Y-%m-%d").to_string())?;
+
+            let new_body = rewrite_block_for_skip(
+                &body,
+                line_num,
+                new_deadline.as_deref(),
+                new_scheduled.as_deref(),
+                new_done,
+            )?;
+            let new_content = reassemble_content(content, &body, &new_body);
+            Some((new_content, next_iso))
+        }
+        None => {
+            // Series spent — only bump the counter, leave everything else.
+            let new_body = rewrite_block_for_spent(&body, line_num, new_done)?;
+            let new_content = reassemble_content(content, &body, &new_body);
+            let iso = anchor_date.format("%Y-%m-%d").to_string();
+            Some((new_content, iso))
+        }
+    }
 }
 
 /// Detect any blocks whose `status::` flipped from non-done in `prev` to
@@ -1353,21 +1512,18 @@ fn format_deadline(date: chrono::NaiveDate, time_suffix: Option<&str>) -> String
     }
 }
 
-/// Walk `body` lines and rewrite the block beginning at `block_line_num`:
-/// `status::` → `todo`, `deadline::` → `new_deadline`, `last_completed::`
-/// updated or appended. Continuation lines belong to the block until we
-/// hit the next line whose indent is `<= block_indent` and starts a new
-/// `- ` bullet (matches the parser's notion of block boundaries).
-///
-/// Returns `None` if the block can't be located (its line is missing, or
-/// not a bullet) — caller treats that as a no-op.
-fn rewrite_block_for_bump(
+// ---------------------------------------------------------------------------
+// Block-rewrite helpers (shared by complete / skip / spent paths)
+// ---------------------------------------------------------------------------
+
+/// Shared block-boundary scanner. Returns `(lines, end_index, cont_indent)`
+/// where `end_index` is the first line after the block's continuation range
+/// (exclusive upper bound for in-place mutation).
+fn block_range(
     body: &str,
     block_line_num: usize,
-    new_deadline: &str,
-    last_completed: &str,
-) -> Option<String> {
-    let mut lines: Vec<String> = body.lines().map(String::from).collect();
+) -> Option<(Vec<String>, usize, String)> {
+    let lines: Vec<String> = body.lines().map(String::from).collect();
     if block_line_num >= lines.len() {
         return None;
     }
@@ -1378,7 +1534,6 @@ fn rewrite_block_for_bump(
     }
     let block_indent_spaces = block_line.len() - trim_start.len();
 
-    // Walk forward from line+1 to find the block's continuation range.
     let mut end = lines.len();
     for (i, l) in lines.iter().enumerate().skip(block_line_num + 1) {
         let t = l.trim_start();
@@ -1387,19 +1542,44 @@ fn rewrite_block_for_bump(
         }
         let l_indent = l.len() - t.len();
         let is_bullet = t.starts_with("- ") || t.trim_end() == "-";
-        // Same-or-shallower indented bullet ends the block.
         if is_bullet && l_indent <= block_indent_spaces {
             end = i;
             break;
         }
     }
 
-    // Continuation lines indent: block indent + 2 spaces (matches parser convention).
     let cont_indent = " ".repeat(block_indent_spaces + 2);
+    Some((lines, end, cont_indent))
+}
+
+/// Finish a `block_range` mutation: join lines, restore trailing newline.
+fn join_lines(lines: Vec<String>, trailing_newline: bool) -> String {
+    let mut out = lines.join("\n");
+    if trailing_newline {
+        out.push('\n');
+    }
+    out
+}
+
+/// `complete` mode: reset `status:: todo`, advance `deadline::` and/or
+/// `scheduled::`, stamp `last_completed::`, update/insert `recurrence_done::`.
+fn rewrite_block_for_complete(
+    body: &str,
+    block_line_num: usize,
+    new_deadline: Option<&str>,
+    new_scheduled: Option<&str>,
+    last_completed: &str,
+    new_done: u32,
+) -> Option<String> {
+    let trailing_newline = body.ends_with('\n');
+    let (mut lines, end, cont_indent) = block_range(body, block_line_num)?;
 
     let mut updated_status = false;
     let mut updated_deadline = false;
+    let mut updated_scheduled = false;
     let mut updated_last_completed = false;
+    let mut updated_recurrence_done = false;
+
     for line in lines.iter_mut().take(end).skip(block_line_num + 1) {
         if let Some((key, _)) = property_kv(line) {
             match key.as_str() {
@@ -1408,43 +1588,142 @@ fn rewrite_block_for_bump(
                     updated_status = true;
                 }
                 "deadline" => {
-                    *line = format!("{}deadline:: {}", cont_indent, new_deadline);
-                    updated_deadline = true;
+                    if let Some(nd) = new_deadline {
+                        *line = format!("{}deadline:: {}", cont_indent, nd);
+                        updated_deadline = true;
+                    }
+                }
+                "scheduled" => {
+                    if let Some(ns) = new_scheduled {
+                        *line = format!("{}scheduled:: {}", cont_indent, ns);
+                        updated_scheduled = true;
+                    }
                 }
                 "last_completed" => {
                     *line = format!("{}last_completed:: {}", cont_indent, last_completed);
                     updated_last_completed = true;
                 }
+                "recurrence_done" => {
+                    *line = format!("{}recurrence_done:: {}", cont_indent, new_done);
+                    updated_recurrence_done = true;
+                }
                 _ => {}
             }
         }
     }
-    // If anything was missing, append it at the block's tail (just before `end`).
+
     let mut additions: Vec<String> = Vec::new();
     if !updated_status {
         additions.push(format!("{}status:: todo", cont_indent));
     }
     if !updated_deadline {
-        additions.push(format!("{}deadline:: {}", cont_indent, new_deadline));
+        if let Some(nd) = new_deadline {
+            additions.push(format!("{}deadline:: {}", cont_indent, nd));
+        }
+    }
+    if !updated_scheduled {
+        if let Some(ns) = new_scheduled {
+            additions.push(format!("{}scheduled:: {}", cont_indent, ns));
+        }
     }
     if !updated_last_completed {
-        additions.push(format!(
-            "{}last_completed:: {}",
-            cont_indent, last_completed
-        ));
+        additions.push(format!("{}last_completed:: {}", cont_indent, last_completed));
     }
-    if !additions.is_empty() {
-        for (offset, add) in additions.into_iter().enumerate() {
-            lines.insert(end + offset, add);
+    if !updated_recurrence_done {
+        additions.push(format!("{}recurrence_done:: {}", cont_indent, new_done));
+    }
+    for (offset, add) in additions.into_iter().enumerate() {
+        lines.insert(end + offset, add);
+    }
+
+    Some(join_lines(lines, trailing_newline))
+}
+
+/// `skip` mode: advance `deadline::` and/or `scheduled::`, increment
+/// `recurrence_done::`. Does NOT touch `status::` or `last_completed::`.
+fn rewrite_block_for_skip(
+    body: &str,
+    block_line_num: usize,
+    new_deadline: Option<&str>,
+    new_scheduled: Option<&str>,
+    new_done: u32,
+) -> Option<String> {
+    let trailing_newline = body.ends_with('\n');
+    let (mut lines, end, cont_indent) = block_range(body, block_line_num)?;
+
+    let mut updated_deadline = false;
+    let mut updated_scheduled = false;
+    let mut updated_recurrence_done = false;
+
+    for line in lines.iter_mut().take(end).skip(block_line_num + 1) {
+        if let Some((key, _)) = property_kv(line) {
+            match key.as_str() {
+                "deadline" => {
+                    if let Some(nd) = new_deadline {
+                        *line = format!("{}deadline:: {}", cont_indent, nd);
+                        updated_deadline = true;
+                    }
+                }
+                "scheduled" => {
+                    if let Some(ns) = new_scheduled {
+                        *line = format!("{}scheduled:: {}", cont_indent, ns);
+                        updated_scheduled = true;
+                    }
+                }
+                "recurrence_done" => {
+                    *line = format!("{}recurrence_done:: {}", cont_indent, new_done);
+                    updated_recurrence_done = true;
+                }
+                _ => {}
+            }
         }
     }
 
-    let trailing_newline = body.ends_with('\n');
-    let mut out = lines.join("\n");
-    if trailing_newline {
-        out.push('\n');
+    let mut additions: Vec<String> = Vec::new();
+    if !updated_deadline {
+        if let Some(nd) = new_deadline {
+            additions.push(format!("{}deadline:: {}", cont_indent, nd));
+        }
     }
-    Some(out)
+    if !updated_scheduled {
+        if let Some(ns) = new_scheduled {
+            additions.push(format!("{}scheduled:: {}", cont_indent, ns));
+        }
+    }
+    if !updated_recurrence_done {
+        additions.push(format!("{}recurrence_done:: {}", cont_indent, new_done));
+    }
+    for (offset, add) in additions.into_iter().enumerate() {
+        lines.insert(end + offset, add);
+    }
+
+    Some(join_lines(lines, trailing_newline))
+}
+
+/// `spent` mode: series exhausted — only update `recurrence_done::`. Does not
+/// touch dates, `status::`, or `last_completed::`.
+fn rewrite_block_for_spent(
+    body: &str,
+    block_line_num: usize,
+    new_done: u32,
+) -> Option<String> {
+    let trailing_newline = body.ends_with('\n');
+    let (mut lines, end, cont_indent) = block_range(body, block_line_num)?;
+
+    let mut updated_recurrence_done = false;
+    for line in lines.iter_mut().take(end).skip(block_line_num + 1) {
+        if let Some((key, _)) = property_kv(line) {
+            if key == "recurrence_done" {
+                *line = format!("{}recurrence_done:: {}", cont_indent, new_done);
+                updated_recurrence_done = true;
+            }
+        }
+    }
+    if !updated_recurrence_done {
+        lines.insert(end, format!("{}recurrence_done:: {}", cont_indent, new_done));
+    }
+
+    Some(join_lines(lines, trailing_newline))
 }
 
 /// Match an indented `key:: value` line. Returns `(key, value)` lowercased
@@ -1594,5 +1873,218 @@ async fn resolve_free_tag_slug(s: &Arc<AppState>, slug_base: &str) -> Result<Opt
         }
         Ok(None) => Ok(Some(bare)),
         Err(e) => Err(format!("store.get: {}", e)),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests for the recurrence bump logic (pure functions, no I/O)
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod recurrence_tests {
+    use super::*;
+
+    /// Helper: extract a named property from a block identified by block_id
+    /// in the given content string.
+    fn get_prop(content: &str, block_id: &str, key: &str) -> Option<String> {
+        let (note_id_str, _) = block_id.rsplit_once(':')?;
+        let (_meta, body) = parse_frontmatter(content).ok()?;
+        let blocks = parse_blocks(note_id_str, &body);
+        let block = blocks.iter().find(|b| b.id == block_id)?;
+        block.properties.get(key).cloned()
+    }
+
+    /// Build a synthetic note content string where the task block is on
+    /// body line 0 (so block_id is `"note:0"`).
+    fn make_note(body_extra_props: &[(&str, &str)]) -> String {
+        let mut lines = vec![
+            "---".to_string(),
+            "title: \"Test\"".to_string(),
+            "tags: []".to_string(),
+            "---".to_string(),
+            "- task".to_string(),
+            "  recurring:: daily count 2".to_string(),
+            "  deadline:: [[2026-05-07]]".to_string(),
+            "  scheduled:: [[2026-05-06]]".to_string(),
+            "  status:: todo".to_string(),
+        ];
+        for (k, v) in body_extra_props {
+            lines.push(format!("  {}:: {}", k, v));
+        }
+        lines.join("\n") + "\n"
+    }
+
+    /// Block id: note body starts after the frontmatter (4 header lines),
+    /// but `parse_blocks` operates on the *body* slice and assigns
+    /// line numbers relative to the body. The bullet `- task` is on body
+    /// line 0, so block_id is `"note:0"`.
+    const BLOCK_ID: &str = "note:0";
+
+    // -----------------------------------------------------------------------
+    // Task 6 core test: multi-field anchor + recurrence_done + spent series
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn recurrence_first_done_advances_both_dates_and_stamps_counter() {
+        // Start: todo, daily count 2, deadline 2026-05-07, scheduled 2026-05-06
+        let content = make_note(&[]);
+
+        // Flip to done (simulate what the client would PUT).
+        let content_with_done = content.replace("status:: todo", "status:: done");
+
+        // First complete.
+        let (bumped1, next_iso1) =
+            try_bump_block(&content_with_done, BLOCK_ID).expect("bump should succeed");
+
+        assert_eq!(next_iso1, "2026-05-08", "deadline next date");
+        // deadline advanced from 2026-05-07 → 2026-05-08
+        assert_eq!(
+            get_prop(&bumped1, BLOCK_ID, "deadline").as_deref(),
+            Some("[[2026-05-08]]"),
+            "deadline advanced"
+        );
+        // scheduled advanced from 2026-05-06 → 2026-05-07
+        assert_eq!(
+            get_prop(&bumped1, BLOCK_ID, "scheduled").as_deref(),
+            Some("[[2026-05-07]]"),
+            "scheduled advanced"
+        );
+        // recurrence_done stamped to 1
+        assert_eq!(
+            get_prop(&bumped1, BLOCK_ID, "recurrence_done").as_deref(),
+            Some("1"),
+            "recurrence_done = 1"
+        );
+        // status reset to todo
+        assert_eq!(
+            get_prop(&bumped1, BLOCK_ID, "status").as_deref(),
+            Some("todo"),
+            "status reset to todo"
+        );
+        // last_completed stamped with the prior anchor
+        assert_eq!(
+            get_prop(&bumped1, BLOCK_ID, "last_completed").as_deref(),
+            Some("[[2026-05-07]]"),
+            "last_completed = prior anchor"
+        );
+    }
+
+    #[test]
+    fn recurrence_second_done_exhausts_series() {
+        // Build content as if the first bump already happened:
+        // deadline 2026-05-08, scheduled 2026-05-07, recurrence_done 1, status todo.
+        let content_after_first = {
+            let base = make_note(&[("recurrence_done", "1")]);
+            base.replace("deadline:: [[2026-05-07]]", "deadline:: [[2026-05-08]]")
+                .replace("scheduled:: [[2026-05-06]]", "scheduled:: [[2026-05-07]]")
+        };
+        // Flip to done again.
+        let content_with_done2 =
+            content_after_first.replace("status:: todo", "status:: done");
+
+        // Second complete — series is now spent (count 2, done_so_far=1 → advance returns None).
+        let (bumped2, _iso) =
+            try_bump_block(&content_with_done2, BLOCK_ID).expect("bump returns Some even when spent");
+
+        // status stays done
+        assert_eq!(
+            get_prop(&bumped2, BLOCK_ID, "status").as_deref(),
+            Some("done"),
+            "status stays done when series is spent"
+        );
+        // deadline unchanged
+        assert_eq!(
+            get_prop(&bumped2, BLOCK_ID, "deadline").as_deref(),
+            Some("[[2026-05-08]]"),
+            "deadline unchanged after spent"
+        );
+        // scheduled unchanged
+        assert_eq!(
+            get_prop(&bumped2, BLOCK_ID, "scheduled").as_deref(),
+            Some("[[2026-05-07]]"),
+            "scheduled unchanged after spent"
+        );
+        // recurrence_done bumped to 2
+        assert_eq!(
+            get_prop(&bumped2, BLOCK_ID, "recurrence_done").as_deref(),
+            Some("2"),
+            "recurrence_done = 2 after series is spent"
+        );
+        // recurring:: property preserved (not stripped)
+        assert_eq!(
+            get_prop(&bumped2, BLOCK_ID, "recurring").as_deref(),
+            Some("daily count 2"),
+            "recurring:: property preserved"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // skip mode test
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn skip_mode_advances_dates_without_touching_status_or_last_completed() {
+        // Start in todo state (skip does not require done).
+        let content = make_note(&[]);
+
+        let (skipped, next_iso) =
+            try_skip_block(&content, BLOCK_ID).expect("skip should succeed");
+
+        assert_eq!(next_iso, "2026-05-08");
+        // dates advanced
+        assert_eq!(
+            get_prop(&skipped, BLOCK_ID, "deadline").as_deref(),
+            Some("[[2026-05-08]]"),
+        );
+        assert_eq!(
+            get_prop(&skipped, BLOCK_ID, "scheduled").as_deref(),
+            Some("[[2026-05-07]]"),
+        );
+        // recurrence_done incremented
+        assert_eq!(
+            get_prop(&skipped, BLOCK_ID, "recurrence_done").as_deref(),
+            Some("1"),
+        );
+        // status NOT changed — remains todo
+        assert_eq!(
+            get_prop(&skipped, BLOCK_ID, "status").as_deref(),
+            Some("todo"),
+            "status must not be modified by skip"
+        );
+        // last_completed NOT stamped
+        assert_eq!(
+            get_prop(&skipped, BLOCK_ID, "last_completed"),
+            None,
+            "last_completed must not be stamped by skip"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Regression: unbounded series never exhausts
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn unbounded_series_always_advances() {
+        let content = {
+            let lines = vec![
+                "---\ntitle: \"T\"\ntags: []\n---",
+                "- task",
+                "  recurring:: daily",
+                "  deadline:: [[2026-05-07]]",
+                "  status:: done",
+            ];
+            lines.join("\n") + "\n"
+        };
+
+        let (bumped, iso) = try_bump_block(&content, BLOCK_ID).expect("should bump");
+        assert_eq!(iso, "2026-05-08");
+        assert_eq!(
+            get_prop(&bumped, BLOCK_ID, "status").as_deref(),
+            Some("todo")
+        );
+        assert_eq!(
+            get_prop(&bumped, BLOCK_ID, "recurrence_done").as_deref(),
+            Some("1")
+        );
     }
 }
