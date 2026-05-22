@@ -65,7 +65,10 @@ function soonestWeekday(base: Date, target: number): Date {
 }
 
 export type ParsedDateTime = { date: string; time: string | null };
-export type ParsedDateTimeRecurrence = ParsedDateTime & { recurrence: string | null };
+export type ParsedDateTimeRecurrence = ParsedDateTime & {
+  recurrence: string | null;
+  field: "deadline" | "scheduled" | null;
+};
 
 /**
  * Parse a recurrence phrase. Returns the canonical string we store in
@@ -189,6 +192,14 @@ function extractRecurrence(s: string): { recurrence: string | null; rest: string
   return { recurrence: rec, rest: s.slice(0, m.index!).trim() };
 }
 
+/** Strip a leading `deadline`/`scheduled`/`due` keyword. `due` → deadline. */
+function extractField(raw: string): { field: "deadline" | "scheduled" | null; rest: string } {
+  const m = raw.match(/^(deadline|scheduled|due)\s+(.+)$/);
+  if (!m) return { field: null, rest: raw };
+  const field = m[1] === "due" ? "deadline" : (m[1] as "deadline" | "scheduled");
+  return { field, rest: m[2] };
+}
+
 /**
  * Parse a natural-language phrase that may contain date + time + recurrence.
  * Recurrence and time are independent — either, both, or neither may be
@@ -200,10 +211,24 @@ export function parseDateAndRecurrenceInput(
 ): ParsedDateTimeRecurrence | null {
   const raw = input.trim().toLowerCase();
   if (!raw) return null;
-  const recExtracted = extractRecurrence(raw);
+  const { field, rest: afterField } = extractField(raw);
+  // First attempt: trailing recurrence regex (requires a date prefix + recurrence tail).
+  const recExtracted = extractRecurrence(afterField);
   const parsed = parseDateInput(recExtracted.rest, today);
-  if (!parsed) return null;
-  return { ...parsed, recurrence: recExtracted.recurrence };
+  if (!parsed) {
+    // Second attempt: the entire afterField may itself be a bare recurrence phrase
+    // (e.g. `deadline every day` → afterField = `every day`). TRAILING_RECUR_RE
+    // requires leading whitespace so it won't match a bare phrase.
+    const bareRec = recExtracted.recurrence ?? parseRecurrenceInput(afterField);
+    if (bareRec && field !== null) {
+      const y = today.getFullYear();
+      const m = String(today.getMonth() + 1).padStart(2, "0");
+      const d = String(today.getDate()).padStart(2, "0");
+      return { date: `${y}-${m}-${d}`, time: null, recurrence: bareRec, field };
+    }
+    return null;
+  }
+  return { ...parsed, recurrence: recExtracted.recurrence, field };
 }
 
 // Trailing time matcher: optional "at " prefix, hours, optional :minutes,

@@ -39,3 +39,14 @@ test("parseDateAndRecurrenceInput extracts an extended recurrence tail", () => {
   const r = parseDateAndRecurrenceInput("friday every mon, wed, fri count 8");
   assert.equal(r.recurrence, "every mon, wed, fri count 8");
 });
+
+test("parseDateAndRecurrenceInput — field keyword", () => {
+  const fixed = new Date(2026, 4, 22); // Fri May 22 2026
+  assert.equal(parseDateAndRecurrenceInput("deadline friday", fixed)?.field, "deadline");
+  assert.equal(parseDateAndRecurrenceInput("scheduled tomorrow", fixed)?.field, "scheduled");
+  assert.equal(parseDateAndRecurrenceInput("due may 1", fixed)?.field, "deadline");
+  assert.equal(parseDateAndRecurrenceInput("tomorrow", fixed)?.field, null);
+  const r = parseDateAndRecurrenceInput("deadline every day", fixed);
+  assert.equal(r?.field, "deadline");
+  assert.equal(r?.recurrence, "daily");
+});
