@@ -464,12 +464,13 @@
   // Date picker state
   let showDatePicker = $state(false);
   let datePickerPosition = $state({ x: 0, y: 0 });
-  let datePickerCursor = $state<number>(-1); // where to insert the [[YYYY-MM-DD]]
+  let datePickerCursor = $state<number>(-1); // caret to restore after the picker commits
   /**
-   * Phase 10.4 — when set, the date picker writes a `\n<key>:: [[YYYY-MM-DD]]`
-   * continuation onto the block (driven by `/p` → date-typed property)
-   * instead of inserting `[[YYYY-MM-DD]]` at the cursor (the standard `/d`
-   * flow). Cleared on close.
+   * When set, the date picker writes to this specific property key (driven
+   * by `/p` → date-typed property). When null, the standard `/d` flow
+   * resolves the key from the NL `deadline`/`scheduled` keyword, falling
+   * back to `prefs.bareDateField`. Either way the picker upserts a bare
+   * `<key>:: YYYY-MM-DD` block property — never an inline link. Cleared on close.
    */
   let datePickerPropertyKey = $state<string | null>(null);
 
@@ -892,8 +893,9 @@
           break;
         }
         case "date": {
-          // Strip the slash text and open the date picker. The picker
-          // dispatches the chosen date as `[[YYYY-MM-DD]]` at the cursor.
+          // Strip the slash text and open the date picker. On commit the
+          // picker upserts a `scheduled::`/`deadline::` block property
+          // (and `recurring::` if a recurrence was typed) — no inline link.
           insert = before + after;
           const cursorAfter = before.length;
           setTimeout(() => {
