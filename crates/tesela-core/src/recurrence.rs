@@ -42,6 +42,28 @@ impl Recurrence {
     }
 }
 
+/// Parse a weekday token — three-letter or full name. Case-insensitive
+/// (caller already lowercased).
+fn parse_weekday(tok: &str) -> Option<Weekday> {
+    Some(match tok {
+        "mon" | "monday" => Weekday::Mon,
+        "tue" | "tues" | "tuesday" => Weekday::Tue,
+        "wed" | "wednesday" => Weekday::Wed,
+        "thu" | "thur" | "thurs" | "thursday" => Weekday::Thu,
+        "fri" | "friday" => Weekday::Fri,
+        "sat" | "saturday" => Weekday::Sat,
+        "sun" | "sunday" => Weekday::Sun,
+        _ => return None,
+    })
+}
+
+/// Sort a weekday set into Mon..Sun order and dedupe.
+fn normalize_weekdays(mut days: Vec<Weekday>) -> Vec<Weekday> {
+    days.sort_by_key(|w| w.num_days_from_monday());
+    days.dedup();
+    days
+}
+
 /// Parse a `recurring::` value. Lower-cases and collapses internal whitespace
 /// before matching, so `"Every  2 Weeks"` is equivalent to `"every 2 weeks"`.
 /// Returns `None` for unrecognized input — callers treat that as "no-op."
@@ -67,11 +89,31 @@ pub fn parse(input: &str) -> Option<Recurrence> {
                 end: None,
             })
         }
+        "weekends" => {
+            return Some(Recurrence {
+                freq: Freq::Weekly,
+                interval: 1,
+                by_weekday: vec![Weekday::Sat, Weekday::Sun],
+                end: None,
+            })
+        }
         _ => {}
     }
 
     // "every N <unit>" — `N` defaults to 1 if absent ("every day" already matched above).
     if let Some(rest) = s.strip_prefix("every ") {
+        // BYDAY: "every mon, wed, fri" — all tokens must be weekdays.
+        let day_tokens: Vec<&str> = rest.split(',').map(|t| t.trim()).collect();
+        if !rest.is_empty() && day_tokens.iter().all(|t| parse_weekday(t).is_some()) {
+            let days: Vec<Weekday> = day_tokens.iter().filter_map(|t| parse_weekday(t)).collect();
+            return Some(Recurrence {
+                freq: Freq::Weekly,
+                interval: 1,
+                by_weekday: normalize_weekdays(days),
+                end: None,
+            });
+        }
+        // "every N <unit>" handling.
         let (n_str, unit) = rest.split_once(' ')?;
         let n: u32 = n_str.parse().ok()?;
         if n == 0 {
@@ -249,6 +291,35 @@ mod tests {
             next_after(&Recurrence::simple(Freq::Yearly, 4), d(2024, 2, 29)),
             d(2028, 2, 29)
         );
+    }
+
+    #[test]
+    fn parse_weekends() {
+        assert_eq!(
+            parse("weekends"),
+            Some(Recurrence {
+                freq: Freq::Weekly,
+                interval: 1,
+                by_weekday: vec![Weekday::Sat, Weekday::Sun],
+                end: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_byday_sets() {
+        let mwf = parse("every mon, wed, fri").unwrap();
+        assert_eq!(mwf.freq, Freq::Weekly);
+        assert_eq!(mwf.by_weekday, vec![Weekday::Mon, Weekday::Wed, Weekday::Fri]);
+        // Full names and a single day also parse.
+        assert_eq!(parse("every monday").unwrap().by_weekday, vec![Weekday::Mon]);
+        // Order is normalized Mon..Sun regardless of input order.
+        assert_eq!(
+            parse("every fri, mon").unwrap().by_weekday,
+            vec![Weekday::Mon, Weekday::Fri]
+        );
+        // Unknown day token rejects the whole input.
+        assert_eq!(parse("every mon, blarg"), None);
     }
 
     #[test]
