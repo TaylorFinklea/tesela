@@ -1,6 +1,6 @@
 <script lang="ts">
   import { browser } from "$app/environment";
-  import { prefs, type BulletStyle } from "$lib/preferences.svelte";
+  import { prefs, type BulletStyle, type BareDateField } from "$lib/preferences.svelte";
   import { theme } from "$lib/theme.svelte";
   import { THEMES } from "$lib/themes";
 
@@ -108,6 +108,16 @@
     {/each}
   </div>
   <p class="text-[11px] text-muted-foreground/40 mt-1.5">Dot = Logseq style. Arrow = explicit drill-in chevron.</p>
+  <div class="flex items-center gap-2 mt-3">
+    <span class="text-[13px] mr-3">Bare date field:</span>
+    {#each [{ id: "scheduled" as BareDateField, label: "Scheduled" }, { id: "deadline" as BareDateField, label: "Deadline" }] as opt}
+      <button
+        class="px-3 py-1.5 rounded-md text-[12px] transition-all border {prefs.bareDateField === opt.id ? 'bg-primary/10 text-primary border-primary/20 ring-1 ring-primary/15' : 'text-muted-foreground border-border/50 hover:bg-muted/40 hover:text-foreground'}"
+        onclick={() => prefs.setBareDateField(opt.id)}
+      >{opt.label}</button>
+    {/each}
+  </div>
+  <p class="text-[11px] text-muted-foreground/40 mt-1.5">A date typed without a <code>deadline</code>/<code>scheduled</code> keyword sets this field.</p>
 </section>
 
 <section>

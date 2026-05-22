@@ -23,6 +23,7 @@ function save<T>(key: string, value: T): void {
 }
 
 export type BulletStyle = "dot" | "arrow";
+export type BareDateField = "deadline" | "scheduled";
 
 class Preferences {
   bulletStyle = $state<BulletStyle>(load<BulletStyle>("bulletStyle", "dot"));
@@ -30,6 +31,15 @@ class Preferences {
   setBulletStyle(v: BulletStyle): void {
     this.bulletStyle = v;
     save("bulletStyle", v);
+  }
+
+  bareDateField = $state<BareDateField>(
+    load<BareDateField>("bareDateField", "scheduled"),
+  );
+
+  setBareDateField(v: BareDateField): void {
+    this.bareDateField = v;
+    save("bareDateField", v);
   }
 }
 
