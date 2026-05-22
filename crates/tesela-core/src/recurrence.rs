@@ -187,7 +187,7 @@ fn next_by_weekday(rec: &Recurrence, anchor: NaiveDate) -> NaiveDate {
         }
         d += Duration::days(1);
     }
-    d // unreachable for a non-empty set
+    unreachable!("by_weekday is non-empty — the 7-day scan must have matched")
 }
 
 /// Add `n` calendar months, clamping day-of-month to the last valid day
