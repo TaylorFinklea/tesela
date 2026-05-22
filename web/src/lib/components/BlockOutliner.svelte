@@ -1444,10 +1444,10 @@
         {/if}
       </div>
 
-      <!-- Properties row: date/recurrence strip beneath the block line (Task 5) -->
+      <!-- Properties row: date/recurrence strip beneath the block line (Task 5/6) -->
       {#if block.properties.scheduled || block.properties.deadline || block.properties.recurring}
         <div style="padding-left: {displayIndent * 24}px;">
-          <BlockDateRow {block} />
+          <BlockDateRow {block} onUpdate={(t) => handleBlockChange(block.id, t)} />
         </div>
       {/if}
 
