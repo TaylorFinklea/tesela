@@ -1087,74 +1087,31 @@ pub fn try_bump_block(content: &str, block_id: &str) -> Option<(String, String)>
     if block.properties.get("status").map(|s| s.as_str()) != Some("done") {
         return None;
     }
-    let recurring_str = block.properties.get("recurring")?;
-    let rec: Recurrence = recurrence::parse(recurring_str)?;
 
-    // Anchor: prefer deadline::, fall back to scheduled::.
-    let anchor_date = {
-        let from_deadline = block
-            .properties
-            .get("deadline")
-            .and_then(|v| parse_deadline_value(v))
-            .map(|(d, _)| d);
-        let from_scheduled = block
-            .properties
-            .get("scheduled")
-            .and_then(|v| parse_deadline_value(v))
-            .map(|(d, _)| d);
-        from_deadline.or(from_scheduled)?
-    };
+    let step = compute_recurrence_step(block)?;
+    let last_completed_str = format!("[[{}]]", step.anchor_date.format("%Y-%m-%d"));
 
-    // `done_so_far` = occurrences already completed before this one.
-    let done_so_far: u32 = block
-        .properties
-        .get("recurrence_done")
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(0);
-
-    let new_done = done_so_far + 1;
-    let last_completed_str = format!("[[{}]]", anchor_date.format("%Y-%m-%d"));
-
-    match recurrence::advance(&rec, anchor_date, done_so_far) {
-        Some(_next) => {
+    match step.active {
+        Some(ActiveStep { new_deadline, new_scheduled, next_iso }) => {
             // Series still active — advance every date field from its own value.
-            let new_deadline = block.properties.get("deadline").and_then(|v| {
-                let (d, t) = parse_deadline_value(v)?;
-                let nd = recurrence::next_after(&rec, d);
-                Some(format_deadline(nd, t.as_deref()))
-            });
-            let new_scheduled = block.properties.get("scheduled").and_then(|v| {
-                let (d, t) = parse_deadline_value(v)?;
-                let nd = recurrence::next_after(&rec, d);
-                Some(format_deadline(nd, t.as_deref()))
-            });
-
-            // Determine the ISO string to return (deadline preferred, else scheduled).
-            let next_iso = new_deadline
-                .as_deref()
-                .or(new_scheduled.as_deref())
-                .and_then(|s| parse_deadline_value(s))
-                .map(|(d, _)| d.format("%Y-%m-%d").to_string())?;
-
             let new_body = rewrite_block_for_complete(
                 &body,
                 line_num,
                 new_deadline.as_deref(),
                 new_scheduled.as_deref(),
                 &last_completed_str,
-                new_done,
+                step.new_done,
             )?;
             let new_content = reassemble_content(content, &body, &new_body);
             Some((new_content, next_iso))
         }
         None => {
             // Series spent — leave dates, leave status done, only bump counter.
-            let new_body =
-                rewrite_block_for_spent(&body, line_num, new_done)?;
+            let new_body = rewrite_block_for_spent(&body, line_num, step.new_done)?;
             let new_content = reassemble_content(content, &body, &new_body);
             // Return a sentinel ISO so the endpoint can report *something*;
             // the `bumped: true` flag is still meaningful (counter updated).
-            let iso = anchor_date.format("%Y-%m-%d").to_string();
+            let iso = step.anchor_date.format("%Y-%m-%d").to_string();
             Some((new_content, iso))
         }
     }
@@ -1171,65 +1128,25 @@ pub fn try_skip_block(content: &str, block_id: &str) -> Option<(String, String)>
     let blocks = parse_blocks(note_id_str, &body);
     let block = blocks.iter().find(|b| b.id == block_id)?;
 
-    let recurring_str = block.properties.get("recurring")?;
-    let rec: Recurrence = recurrence::parse(recurring_str)?;
+    let step = compute_recurrence_step(block)?;
 
-    let anchor_date = {
-        let from_deadline = block
-            .properties
-            .get("deadline")
-            .and_then(|v| parse_deadline_value(v))
-            .map(|(d, _)| d);
-        let from_scheduled = block
-            .properties
-            .get("scheduled")
-            .and_then(|v| parse_deadline_value(v))
-            .map(|(d, _)| d);
-        from_deadline.or(from_scheduled)?
-    };
-
-    let done_so_far: u32 = block
-        .properties
-        .get("recurrence_done")
-        .and_then(|v| v.trim().parse().ok())
-        .unwrap_or(0);
-
-    let new_done = done_so_far + 1;
-
-    match recurrence::advance(&rec, anchor_date, done_so_far) {
-        Some(_next) => {
-            let new_deadline = block.properties.get("deadline").and_then(|v| {
-                let (d, t) = parse_deadline_value(v)?;
-                let nd = recurrence::next_after(&rec, d);
-                Some(format_deadline(nd, t.as_deref()))
-            });
-            let new_scheduled = block.properties.get("scheduled").and_then(|v| {
-                let (d, t) = parse_deadline_value(v)?;
-                let nd = recurrence::next_after(&rec, d);
-                Some(format_deadline(nd, t.as_deref()))
-            });
-
-            let next_iso = new_deadline
-                .as_deref()
-                .or(new_scheduled.as_deref())
-                .and_then(|s| parse_deadline_value(s))
-                .map(|(d, _)| d.format("%Y-%m-%d").to_string())?;
-
+    match step.active {
+        Some(ActiveStep { new_deadline, new_scheduled, next_iso }) => {
             let new_body = rewrite_block_for_skip(
                 &body,
                 line_num,
                 new_deadline.as_deref(),
                 new_scheduled.as_deref(),
-                new_done,
+                step.new_done,
             )?;
             let new_content = reassemble_content(content, &body, &new_body);
             Some((new_content, next_iso))
         }
         None => {
             // Series spent — only bump the counter, leave everything else.
-            let new_body = rewrite_block_for_spent(&body, line_num, new_done)?;
+            let new_body = rewrite_block_for_spent(&body, line_num, step.new_done)?;
             let new_content = reassemble_content(content, &body, &new_body);
-            let iso = anchor_date.format("%Y-%m-%d").to_string();
+            let iso = step.anchor_date.format("%Y-%m-%d").to_string();
             Some((new_content, iso))
         }
     }
@@ -1475,6 +1392,125 @@ fn set_status_to_todo(body: &str, bullet_line: usize) -> Option<String> {
         }
     }
     None
+}
+
+// ---------------------------------------------------------------------------
+// Shared recurrence date-step helper
+// ---------------------------------------------------------------------------
+
+/// Outcome of stepping a recurring block forward by one occurrence.
+///
+/// `new_deadline` / `new_scheduled` are `None` when the block had no
+/// corresponding date field.  The `next_iso` is the stepped date from
+/// whichever field was preferred (deadline > scheduled).
+///
+/// When the series is exhausted `advance` returns `None`; callers that only
+/// need the `spent` path can check `is_active` or match on
+/// `RecurrenceStep::active_fields()`.
+struct RecurrenceStep {
+    /// Parsed recurrence rule (needed by neither caller after this point, but
+    /// returned for completeness / future use).
+    #[allow(dead_code)]
+    rec: Recurrence,
+    /// Anchor date used for `recurrence::advance` (deadline, else scheduled).
+    anchor_date: chrono::NaiveDate,
+    /// `recurrence_done` counter value *before* this occurrence.
+    #[allow(dead_code)]
+    done_so_far: u32,
+    /// `done_so_far + 1` — the value to write back.
+    new_done: u32,
+    /// `Some(...)` when the series is still active after this step.
+    /// Contains the new formatted deadline / scheduled strings and the
+    /// ISO date string for the response.
+    active: Option<ActiveStep>,
+}
+
+struct ActiveStep {
+    /// New `deadline::` string (formatted), or `None` if the block had none.
+    new_deadline: Option<String>,
+    /// New `scheduled::` string (formatted), or `None` if the block had none.
+    new_scheduled: Option<String>,
+    /// ISO `YYYY-MM-DD` of the stepped date (deadline preferred, else scheduled).
+    next_iso: String,
+}
+
+/// Compute the shared recurrence step from a parsed block.
+///
+/// Returns `None` if the block has no parseable `recurring::` property or
+/// no parseable anchor date (deadline / scheduled).
+fn compute_recurrence_step(block: &tesela_core::block::ParsedBlock) -> Option<RecurrenceStep> {
+    let recurring_str = block.properties.get("recurring")?;
+    let rec: Recurrence = recurrence::parse(recurring_str)?;
+
+    // Anchor: prefer deadline::, fall back to scheduled::.
+    let anchor_date = {
+        let from_deadline = block
+            .properties
+            .get("deadline")
+            .and_then(|v| parse_deadline_value(v))
+            .map(|(d, _)| d);
+        let from_scheduled = block
+            .properties
+            .get("scheduled")
+            .and_then(|v| parse_deadline_value(v))
+            .map(|(d, _)| d);
+        from_deadline.or(from_scheduled)?
+    };
+
+    let done_so_far: u32 = block
+        .properties
+        .get("recurrence_done")
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+
+    let new_done = done_so_far + 1;
+
+    let active = match recurrence::advance(&rec, anchor_date, done_so_far) {
+        None => None,
+        Some(_) => {
+            // Step each date field from its own current value.
+            let new_deadline = block.properties.get("deadline").and_then(|v| {
+                let (d, t) = parse_deadline_value(v)?;
+                let nd = recurrence::next_after(&rec, d);
+                Some(format_deadline(nd, t.as_deref()))
+            });
+            let new_scheduled = block.properties.get("scheduled").and_then(|v| {
+                let (d, t) = parse_deadline_value(v)?;
+                let nd = recurrence::next_after(&rec, d);
+                Some(format_deadline(nd, t.as_deref()))
+            });
+
+            // Derive next_iso directly from the stepped NaiveDate that
+            // parse_deadline_value already returned — no string round-trip.
+            let next_iso = block
+                .properties
+                .get("deadline")
+                .and_then(|v| {
+                    let (d, _) = parse_deadline_value(v)?;
+                    Some(recurrence::next_after(&rec, d).format("%Y-%m-%d").to_string())
+                })
+                .or_else(|| {
+                    block.properties.get("scheduled").and_then(|v| {
+                        let (d, _) = parse_deadline_value(v)?;
+                        Some(recurrence::next_after(&rec, d).format("%Y-%m-%d").to_string())
+                    })
+                })?;
+
+            Some(ActiveStep {
+                new_deadline,
+                new_scheduled,
+                next_iso,
+            })
+        }
+    };
+
+    Some(RecurrenceStep {
+        rec,
+        anchor_date,
+        done_so_far,
+        new_done,
+        active,
+    })
 }
 
 /// Parse a `deadline::` value into `(date, optional_time_suffix)`. Accepts
