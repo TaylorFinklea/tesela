@@ -49,18 +49,100 @@
   // Phase 12.2 — canonical recurrence string (or null for non-recurring).
   // Buttons set this to one of the presets; the custom input round-trips
   // through `parseRecurrenceInput` so only valid values land here.
-  let selectedRecurrence = $state<string | null>(initialRecurrence ?? null);
+  let selectedRecurrence = $state<string | null>(null);
   // Custom recurrence input — only visible when the "custom" chord is on
   // or the current selectedRecurrence isn't one of the preset chips.
-  const PRESETS = ["daily", "weekly", "monthly", "yearly", "weekdays"] as const;
-  let customRecurrenceOpen = $state<boolean>(
-    !!initialRecurrence && !(PRESETS as readonly string[]).includes(initialRecurrence),
+  const PRESETS = ["daily", "weekly", "monthly", "yearly", "weekdays", "weekends"] as const;
+  let customRecurrenceOpen = $state<boolean>(false);
+  let customRecurrenceInput = $state<string>("");
+
+  // Day-of-week toggle row — for BYDAY recurrences like "every mon, wed, fri".
+  const WEEKDAYS_TOGGLE = [
+    { key: "mon", label: "M" },
+    { key: "tue", label: "T" },
+    { key: "wed", label: "W" },
+    { key: "thu", label: "T" },
+    { key: "fri", label: "F" },
+    { key: "sat", label: "S" },
+    { key: "sun", label: "S" },
+  ];
+  let pickedDays = $state<Set<string>>(new Set());
+
+  // End-condition control.
+  let endMode = $state<"never" | "until" | "count">("never");
+  let endUntil = $state<string>("");  // YYYY-MM-DD
+  let endCount = $state<number>(1);
+
+  const endClause = $derived<string>(
+    endMode === "until" && endUntil
+      ? ` until ${endUntil}`
+      : endMode === "count" && endCount >= 1
+        ? ` count ${endCount}`
+        : "",
   );
-  let customRecurrenceInput = $state<string>(
-    initialRecurrence && !(PRESETS as readonly string[]).includes(initialRecurrence)
-      ? initialRecurrence
-      : "",
+
+  // The value committed via onPick: selectedRecurrence + endClause, or null.
+  const committedRecurrence = $derived<string | null>(
+    selectedRecurrence ? selectedRecurrence + endClause : null,
   );
+
+  // Parse `initialRecurrence` to seed all controls on open.
+  function initFromRecurrence(raw: string | null | undefined) {
+    if (!raw) {
+      selectedRecurrence = null;
+      customRecurrenceOpen = false;
+      customRecurrenceInput = "";
+      pickedDays = new Set();
+      endMode = "never";
+      endUntil = "";
+      endCount = 1;
+      return;
+    }
+
+    // Split off end clause first.
+    let base = raw;
+    const untilIdx = raw.lastIndexOf(" until ");
+    const countIdx = raw.lastIndexOf(" count ");
+    if (untilIdx !== -1) {
+      endUntil = raw.slice(untilIdx + 7).trim();
+      endMode = "until";
+      base = raw.slice(0, untilIdx);
+    } else if (countIdx !== -1) {
+      const n = Number(raw.slice(countIdx + 7).trim());
+      endCount = Number.isFinite(n) && n >= 1 ? n : 1;
+      endMode = "count";
+      base = raw.slice(0, countIdx);
+    } else {
+      endMode = "never";
+      endUntil = "";
+      endCount = 1;
+    }
+
+    // Check if the base is a BYDAY string.
+    if (/^every (mon|tue|wed|thu|fri|sat|sun)(,|$)/.test(base)) {
+      const tokens = base.slice(6).split(",").map((t) => t.trim());
+      pickedDays = new Set(tokens);
+      selectedRecurrence = base;
+      customRecurrenceOpen = false;
+      customRecurrenceInput = "";
+      return;
+    }
+
+    // Check if the base is a simple preset.
+    if ((PRESETS as readonly string[]).includes(base)) {
+      selectedRecurrence = base;
+      pickedDays = new Set();
+      customRecurrenceOpen = false;
+      customRecurrenceInput = "";
+      return;
+    }
+
+    // Anything else goes into the custom input.
+    selectedRecurrence = base;
+    pickedDays = new Set();
+    customRecurrenceOpen = true;
+    customRecurrenceInput = raw; // full string (with end clause) in custom box
+  }
 
   /** Live parser result. `null` when input is empty or unparseable. */
   const parsedFromInput = $derived.by(() => {
@@ -85,13 +167,18 @@
       // Same shape for recurrence — only adopt when the user typed a tail
       // ("fri weekly" → recurrence=weekly).
       if (parsedFromInput.recurrence !== null) {
-        selectedRecurrence = parsedFromInput.recurrence;
-        if (!(PRESETS as readonly string[]).includes(parsedFromInput.recurrence)) {
+        if ((PRESETS as readonly string[]).includes(parsedFromInput.recurrence)) {
+          selectedRecurrence = parsedFromInput.recurrence;
+          pickedDays = new Set();
+          customRecurrenceOpen = false;
+        } else {
           customRecurrenceOpen = true;
           customRecurrenceInput = parsedFromInput.recurrence;
-        } else {
-          customRecurrenceOpen = false;
+          selectedRecurrence = parsedFromInput.recurrence;
+          pickedDays = new Set();
         }
+        // NL input carries its own end clause — don't compose with UI end controls.
+        endMode = "never";
       }
     }
   });
@@ -147,7 +234,7 @@
   function handleKey(e: KeyboardEvent) {
     if (e.key === "Enter") {
       e.preventDefault();
-      onPick(fmt(selected), selectedTime, selectedRecurrence);
+      onPick(fmt(selected), selectedTime, committedRecurrence);
       return;
     }
     if (e.key === "Escape") {
@@ -195,6 +282,7 @@
   let containerEl = $state<HTMLDivElement | null>(null);
 
   onMount(() => {
+    initFromRecurrence(initialRecurrence);
     inputEl?.focus();
   });
 
@@ -274,7 +362,7 @@
             {!isSelected && cell.inMonth ? 'text-foreground/85 hover:bg-muted/40' : ''}
             {!cell.inMonth ? 'text-muted-foreground/30 hover:bg-muted/30' : ''}
           "
-          onclick={() => { selected = cell.date; viewMonth = new Date(cell.date.getFullYear(), cell.date.getMonth(), 1); onPick(iso, selectedTime, selectedRecurrence); }}
+          onclick={() => { selected = cell.date; viewMonth = new Date(cell.date.getFullYear(), cell.date.getMonth(), 1); onPick(iso, selectedTime, committedRecurrence); }}
           onblur={handleBlur}
           title={iso}
         >{cell.date.getDate()}</button>
@@ -319,13 +407,14 @@
       { label: "monthly", value: "monthly" },
       { label: "yearly", value: "yearly" },
       { label: "weekdays", value: "weekdays" },
+      { label: "weekends", value: "weekends" },
     ] as opt}
-      {@const active = selectedRecurrence === opt.value && !customRecurrenceOpen}
+      {@const active = selectedRecurrence === opt.value && pickedDays.size === 0 && !customRecurrenceOpen}
       <!-- svelte-ignore a11y_consider_explicit_label -->
       <button
         class="text-[10px] px-1.5 py-0.5 rounded border transition-colors
                {active ? 'bg-primary text-primary-foreground border-primary' : 'border-border/40 text-foreground/70 hover:bg-muted/40'}"
-        onclick={() => { selectedRecurrence = opt.value; customRecurrenceOpen = false; }}
+        onclick={() => { selectedRecurrence = opt.value; pickedDays = new Set(); customRecurrenceOpen = false; }}
         onblur={handleBlur}
       >{opt.label}</button>
     {/each}
@@ -335,13 +424,83 @@
              {customRecurrenceOpen ? 'bg-primary text-primary-foreground border-primary' : 'border-border/40 text-foreground/70 hover:bg-muted/40'}"
       onclick={() => {
         customRecurrenceOpen = !customRecurrenceOpen;
-        if (customRecurrenceOpen && customRecurrenceInput) {
-          const rec = parseRecurrenceInput(customRecurrenceInput);
-          if (rec) selectedRecurrence = rec;
+        if (customRecurrenceOpen) {
+          pickedDays = new Set();
+          endMode = "never";
+          if (customRecurrenceInput) {
+            const rec = parseRecurrenceInput(customRecurrenceInput);
+            if (rec) selectedRecurrence = rec;
+          }
         }
       }}
       onblur={handleBlur}
     >custom</button>
+  </div>
+
+  <!-- Day-of-week toggle row — builds BYDAY recurrences like "every mon, wed, fri". -->
+  <div class="flex items-center gap-1 mt-1.5 px-1">
+    <span class="text-[10px] text-muted-foreground/50 uppercase tracking-wider mr-1">days</span>
+    {#each WEEKDAYS_TOGGLE as d}
+      <!-- svelte-ignore a11y_consider_explicit_label -->
+      <button
+        class="text-[10px] w-5 h-5 rounded border transition-colors
+               {pickedDays.has(d.key) ? 'bg-primary text-primary-foreground border-primary' : 'border-border/40 text-foreground/70 hover:bg-muted/40'}"
+        onclick={() => {
+          const next = new Set(pickedDays);
+          if (next.has(d.key)) {
+            next.delete(d.key);
+          } else {
+            next.add(d.key);
+          }
+          pickedDays = next;
+          if (pickedDays.size === 0) {
+            selectedRecurrence = null;
+          } else {
+            // Sort picked days in Mon-first order.
+            const ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+            const sorted = [...pickedDays].sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
+            selectedRecurrence = `every ${sorted.join(", ")}`;
+            customRecurrenceOpen = false;
+          }
+        }}
+        onblur={handleBlur}
+        title={d.key}
+      >{d.label}</button>
+    {/each}
+  </div>
+
+  <!-- End-condition control: Never / Until / After. -->
+  <div class="flex items-center gap-1 mt-1.5 px-1 flex-wrap">
+    <span class="text-[10px] text-muted-foreground/50 uppercase tracking-wider mr-1">end</span>
+    {#each (["never", "until", "count"] as const) as mode}
+      {@const label = mode === "never" ? "never" : mode === "until" ? "until" : "after"}
+      <!-- svelte-ignore a11y_consider_explicit_label -->
+      <button
+        class="text-[10px] px-1.5 py-0.5 rounded border transition-colors
+               {endMode === mode ? 'bg-primary text-primary-foreground border-primary' : 'border-border/40 text-foreground/70 hover:bg-muted/40'}"
+        onclick={() => { endMode = mode; }}
+        onblur={handleBlur}
+      >{label}</button>
+    {/each}
+    {#if endMode === "until"}
+      <input
+        type="date"
+        bind:value={endUntil}
+        onblur={handleBlur}
+        class="text-[11px] px-1.5 py-0.5 rounded bg-muted/30 border border-border/40
+               text-foreground focus:outline-none focus:border-primary/40 ml-1"
+      />
+    {:else if endMode === "count"}
+      <input
+        type="number"
+        min="1"
+        bind:value={endCount}
+        onblur={handleBlur}
+        class="text-[11px] w-12 px-1.5 py-0.5 rounded bg-muted/30 border border-border/40
+               text-foreground focus:outline-none focus:border-primary/40 ml-1"
+      />
+      <span class="text-[10px] text-muted-foreground/60">times</span>
+    {/if}
   </div>
 
   {#if customRecurrenceOpen}
@@ -357,6 +516,9 @@
       oninput={() => {
         const rec = parseRecurrenceInput(customRecurrenceInput);
         selectedRecurrence = rec;
+        // Custom text carries its own end clause — reset UI end controls.
+        pickedDays = new Set();
+        endMode = "never";
       }}
     />
   {/if}
