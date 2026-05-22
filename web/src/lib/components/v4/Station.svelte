@@ -116,6 +116,14 @@
     });
   });
 
+  // Each keystroke re-ranks the list so the best match leads. Pin the
+  // selection to that top row instead of stranding it on whatever
+  // command drifted into the previously-selected index.
+  $effect(() => {
+    query;
+    selectedIdx = 0;
+  });
+
   function restoreFocus() {
     const prior = getStationPriorPaneId();
     if (!prior) return;
@@ -141,7 +149,29 @@
       close();
       return;
     }
-    if (mod && e.key === "k") {
+    // Raycast-style Ctrl+H/J/K/L navigation — J/K move the palette
+    // selection, H/L switch tabs. Handled before the ⌘K close toggle so
+    // Ctrl+K moves up rather than closing the Station.
+    if (e.ctrlKey && !e.metaKey && !e.altKey) {
+      const nav = e.key.toLowerCase();
+      if (nav === "j" || nav === "k") {
+        e.preventDefault();
+        if (activeTab === "palette") {
+          const delta = nav === "j" ? 1 : -1;
+          selectedIdx = Math.max(0, Math.min(selectedIdx + delta, filteredRows.length - 1));
+        }
+        return;
+      }
+      if (nav === "h" || nav === "l") {
+        e.preventDefault();
+        const order: StationTab[] = ["palette", "dashboard", "ai", "history"];
+        const at = order.indexOf(activeTab);
+        const ni = nav === "l" ? Math.min(at + 1, 3) : Math.max(at - 1, 0);
+        setStationTab(order[ni]!);
+        return;
+      }
+    }
+    if (e.metaKey && e.key === "k") {
       e.preventDefault();
       close();
       return;

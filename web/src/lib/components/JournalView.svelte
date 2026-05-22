@@ -630,9 +630,9 @@
   /* Line above the date, à la Logseq's daily journal — divider sits in
      the gap, date title immediately follows. First section has no rule
      so the page doesn't open with a stray top border.
-     Padding-bottom gives ~3 blocks of breathing room after the last
-     entry; users who want to focus on a single day can drill into it. */
-  .day { padding-top: 14px; padding-bottom: 80px; border-top: 1px solid var(--v9-line); }
+     Padding-bottom is a deliberate ~1/3-viewport gap so each day reads
+     as its own space when scrolling the journal. */
+  .day { padding-top: 14px; padding-bottom: 33vh; border-top: 1px solid var(--v9-line); }
   .day:first-child { border-top: 0; padding-top: 0; }
   .day:last-child { padding-bottom: 0; }
   .day.synthetic { padding-bottom: 28px; opacity: 0.62; }

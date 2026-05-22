@@ -1,8 +1,10 @@
 //! Type system for Tesela — defines page types and their property schemas.
 //!
 //! Types are loaded from `.tesela/types.toml` in the mosaic directory.
-//! A page declares its type via `type: "Task"` in frontmatter.
-//! Blocks can declare type via `#Task` tag or `type:: Task` property.
+//! A page declares its type via `type: "task"` in frontmatter.
+//! Blocks can declare type via `#task` tag or `type:: task` property.
+//! Type names are lowercase by default so tagging stays lowercase
+//! (`#ritual`, `[[domain]]`); the UI may title-case them for display.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -129,7 +131,7 @@ impl TypeRegistry {
 fn default_types() -> Vec<TypeDefinition> {
     vec![
         TypeDefinition {
-            name: "Task".to_string(),
+            name: "task".to_string(),
             description: "A task to be completed".to_string(),
             icon: "☐".to_string(),
             color: "#FF6B6B".to_string(),
@@ -194,7 +196,7 @@ fn default_types() -> Vec<TypeDefinition> {
             ],
         },
         TypeDefinition {
-            name: "Project".to_string(),
+            name: "project".to_string(),
             description: "A project with multiple tasks".to_string(),
             icon: "📋".to_string(),
             color: "#4ECDC4".to_string(),
@@ -226,7 +228,7 @@ fn default_types() -> Vec<TypeDefinition> {
             ],
         },
         TypeDefinition {
-            name: "Person".to_string(),
+            name: "person".to_string(),
             description: "A contact or team member".to_string(),
             icon: "👤".to_string(),
             color: "#45B7D1".to_string(),
