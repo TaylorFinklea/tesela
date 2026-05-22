@@ -50,3 +50,15 @@ test("parseDateAndRecurrenceInput — field keyword", () => {
   assert.equal(r?.field, "deadline");
   assert.equal(r?.recurrence, "daily");
 });
+
+test("parseDateAndRecurrenceInput — keyword-less bare recurrence anchors to today", () => {
+  const fixed = new Date(2026, 4, 22); // Fri May 22 2026
+  // `every monday` typed alone: recurrence + today anchor, field null
+  // (downstream routes a null field to the bareDateField default).
+  const a = parseDateAndRecurrenceInput("every monday", fixed);
+  assert.equal(a?.recurrence, "every mon");
+  assert.equal(a?.field, null);
+  assert.equal(a?.date, "2026-05-22");
+  assert.equal(parseDateAndRecurrenceInput("weekdays", fixed)?.recurrence, "weekdays");
+  assert.equal(parseDateAndRecurrenceInput("every 3 days", fixed)?.recurrence, "every 3 days");
+});

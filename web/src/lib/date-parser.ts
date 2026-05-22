@@ -216,11 +216,13 @@ export function parseDateAndRecurrenceInput(
   const recExtracted = extractRecurrence(afterField);
   const parsed = parseDateInput(recExtracted.rest, today);
   if (!parsed) {
-    // Second attempt: the entire afterField may itself be a bare recurrence phrase
-    // (e.g. `deadline every day` → afterField = `every day`). TRAILING_RECUR_RE
-    // requires leading whitespace so it won't match a bare phrase.
+    // Second attempt: the whole input may itself be a bare recurrence phrase
+    // with no date — `every monday`, `weekdays`, or `deadline every day`.
+    // TRAILING_RECUR_RE needs leading whitespace so it won't match a bare
+    // phrase; fall back to parsing afterField directly. Recurrence-only
+    // input anchors to today so the engine has a date to bump from.
     const bareRec = recExtracted.recurrence ?? parseRecurrenceInput(afterField);
-    if (bareRec && field !== null) {
+    if (bareRec) {
       return { date: fmt(today), time: null, recurrence: bareRec, field };
     }
     return null;
