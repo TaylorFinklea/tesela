@@ -221,10 +221,7 @@ export function parseDateAndRecurrenceInput(
     // requires leading whitespace so it won't match a bare phrase.
     const bareRec = recExtracted.recurrence ?? parseRecurrenceInput(afterField);
     if (bareRec && field !== null) {
-      const y = today.getFullYear();
-      const m = String(today.getMonth() + 1).padStart(2, "0");
-      const d = String(today.getDate()).padStart(2, "0");
-      return { date: `${y}-${m}-${d}`, time: null, recurrence: bareRec, field };
+      return { date: fmt(today), time: null, recurrence: bareRec, field };
     }
     return null;
   }
