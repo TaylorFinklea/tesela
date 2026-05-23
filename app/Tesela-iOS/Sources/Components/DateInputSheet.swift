@@ -55,6 +55,14 @@ struct DateInputSheet: View {
                         Text("Weekly").tag("weekly")
                         Text("Monthly").tag("monthly")
                         Text("Yearly").tag("yearly")
+                        // When the stored recurrence is a non-preset string
+                        // (e.g. "every mon, wed" from natural language input),
+                        // add a dynamic row so the Picker highlights it rather
+                        // than showing nothing selected.
+                        if let r = pickedRecurrence,
+                           !["daily", "weekdays", "weekly", "monthly", "yearly"].contains(r) {
+                            Text(r).tag(r)
+                        }
                     }
                 }
                 Section {
@@ -91,7 +99,18 @@ struct DateInputSheet: View {
     private func seedFromInitial() {
         // Prefer scheduled over deadline for the pre-fill date.
         let initialDate = initialScheduled ?? initialDeadline
-        if let iso = initialDate, let d = parseIso(stripBrackets(iso)) { pickedDate = d }
+        if let raw = initialDate {
+            let stripped = stripBrackets(raw)
+            if let d = parseIso(stripped) { pickedDate = d }
+            // Seed the time picker when the stored value contains an
+            // `HH:mm` tail (e.g. "2026-05-25 14:30"). `parseIso` only
+            // looks at the first 10 chars, so we handle the tail here.
+            // "YYYY-MM-DD HH:MM" is exactly 16 chars; guard defensively.
+            if stripped.count >= 16 {
+                let timeSuffix = String(stripped.suffix(5))
+                if let tm = parseTime(timeSuffix) { pickedTime = tm }
+            }
+        }
         if let initialRecurrence { pickedRecurrence = initialRecurrence }
         resolvedField = (initialDeadline != nil && initialScheduled == nil)
             ? .deadline
@@ -102,8 +121,15 @@ struct DateInputSheet: View {
         guard !s.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         guard let parsed = DateParser.parse(s) else { return }
         if let d = parseIso(parsed.date) { pickedDate = d }
-        if let t = parsed.time, let tm = parseTime(t) { pickedTime = tm }
-        if let rec = parsed.recurrence { pickedRecurrence = rec }
+        // Time: write when parsed; clear when the fresh parse yields no time
+        // (e.g. user deleted "at 3pm" from "tomorrow at 3pm").
+        if let t = parsed.time, let tm = parseTime(t) {
+            pickedTime = tm
+        } else {
+            pickedTime = nil
+        }
+        // Recurrence: same — clear when not present in the current parse.
+        pickedRecurrence = parsed.recurrence
         resolvedField = parsed.field ?? (bareDateFieldDefault == "deadline" ? .deadline : .scheduled)
     }
 

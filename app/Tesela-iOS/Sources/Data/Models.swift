@@ -27,6 +27,15 @@ struct Block: Identifiable, Equatable, Hashable, Codable {
     /// Always kept in render order so we round-trip non-task keys
     /// (e.g. `priority::`, `due::`) on save.
     var properties: [BlockProperty] = []
+    /// 0-based line index where this block's bullet appears in the
+    /// parent note's body. Used to build the `<noteId>:<line>` format
+    /// required by the server's `POST /blocks/recur-bump` route.
+    /// Defaults to 0 for mock blocks and backwards-compat.
+    var lineNumber: Int = 0
+    /// The owning note's id. Populated by `parseBlocks(from:noteId:)` so
+    /// `recurBump` can construct the server-expected `<noteId>:<line>`
+    /// composite block id without a separate lookup.
+    var noteId: String = ""
 }
 
 /// One `key:: value` property attached to a block. The web client

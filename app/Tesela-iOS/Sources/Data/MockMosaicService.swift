@@ -521,7 +521,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         case .http(let baseURL):
             do {
                 let note: APINote = try await httpGet("/notes/\(id)", baseURL: baseURL)
-                loadedPageBlocks[id] = parseBlocks(from: note.body)
+                loadedPageBlocks[id] = parseBlocks(from: note.body, noteId: id)
                 loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
                 pageLoadStates[id] = .ready
             } catch {
@@ -595,17 +595,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 let serverTagNames: [String] = (try? await httpGet("/tags", baseURL: baseURL)) ?? []
 
                 serverDailyId = daily.id
-                todayBlocks = parseBlocks(from: daily.body)
+                todayBlocks = parseBlocks(from: daily.body, noteId: daily.id)
                 pages = notes
                     .filter { $0.id != daily.id }
                     .map { mapPage($0) }
-                yesterdayBlocks = yesterdayNote.map { parseBlocks(from: $0.body) } ?? []
+                yesterdayBlocks = yesterdayNote.map { parseBlocks(from: $0.body, noteId: $0.id) } ?? []
                 let yesterdayId = dailyId(daysAgo: 1)
                 pastDailies = Array(
                     dailyNotes
                         .filter { $0.id != daily.id && $0.id != yesterdayId }
                         .sorted { $0.id > $1.id }
-                        .map { DailyEntry(id: $0.id, blocks: parseBlocks(from: $0.body)) }
+                        .map { DailyEntry(id: $0.id, blocks: parseBlocks(from: $0.body, noteId: $0.id)) }
                         .filter { !$0.blocks.isEmpty }
                         .prefix(30)
                 )
@@ -970,7 +970,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
     ///
     /// Properties attached to a block are preserved so non-task keys
     /// (priority, due, etc.) round-trip cleanly.
-    private func parseBlocks(from body: String) -> [Block] {
+    ///
+    /// `noteId` is stored on each `Block` so `recurBump` can build the
+    /// server's `<noteId>:<line>` composite id without a separate lookup.
+    private func parseBlocks(from body: String, noteId: String = "") -> [Block] {
         let lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var blocks: [Block] = []
         var i = 0
@@ -982,6 +985,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
             let line = lines[i]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             guard trimmed.hasPrefix("- ") else { i += 1; continue }
+
+            // Record the 0-based line index of this bullet for recur-bump.
+            let blockLineNumber = i
 
             let rawIndent = leadingSpaces(line) / 2
             // Structural invariant: a block is at most one level deeper
@@ -1034,7 +1040,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 done: done,
                 indent: indent,
                 tags: parsed.tags,
-                properties: properties
+                properties: properties,
+                lineNumber: blockLineNumber,
+                noteId: noteId
             ))
         }
         return blocks
@@ -1340,12 +1348,36 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// to its next occurrence. In mock mode this is a no-op. After a
     /// successful request the daily is refreshed so the updated dates
     /// appear immediately.
+    ///
+    /// The server's route parses `block_id` as `<noteId>:<line>` (see
+    /// `crates/tesela-server/src/routes/notes.rs`). iOS blocks carry
+    /// `noteId` and `lineNumber` from `parseBlocks` so we can build the
+    /// composite id here. If the block can't be located we bail early
+    /// rather than sending a malformed request.
     func recurBump(blockId: String, mode: RecurBumpMode) async throws {
         guard case .http(let baseURL) = currentBackend else {
             // Mock mode — no server to call; silently succeed.
             return
         }
-        let body: [String: Any] = ["block_id": blockId, "mode": mode.rawValue]
+
+        // Locate the block to derive its noteId + lineNumber.
+        let block: Block?
+        if let b = todayBlocks.first(where: { $0.id == blockId }) {
+            block = b
+        } else {
+            block = loadedPageBlocks.values.lazy
+                .compactMap { $0.first(where: { $0.id == blockId }) }
+                .first
+        }
+        guard let found = block, !found.noteId.isEmpty else {
+            // Block not found or missing noteId — log and bail.
+            print("[recurBump] block \(blockId) not found or has no noteId; skipping server call")
+            return
+        }
+        // Build the server-expected composite id: "<noteId>:<lineNumber>".
+        let compositeId = "\(found.noteId):\(found.lineNumber)"
+
+        let body: [String: Any] = ["block_id": compositeId, "mode": mode.rawValue]
         let url = endpoint("/blocks/recur-bump", baseURL: baseURL)
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -1356,6 +1388,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
         try ensureOk(response, data: data)
         // Refresh so the bumped block's new scheduled/deadline dates appear.
         await refresh(from: currentBackend)
+    }
+
+    // MARK: - Internal test hooks
+
+    /// Exposes `parseBlocks(from:noteId:)` to the `@testable` unit-test
+    /// target. Not part of the public service contract.
+    func testableParseBlocks(from body: String, noteId: String) -> [Block] {
+        parseBlocks(from: body, noteId: noteId)
     }
 }
 
