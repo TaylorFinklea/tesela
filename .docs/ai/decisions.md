@@ -179,3 +179,18 @@ Concise log of non-obvious decisions. Newest first.
 **Trade-off:** Adding a non-recurrence-projection feature to the agenda (e.g. "what about projects whose deadline is in N days") still has to round-trip through a server endpoint — cheaper for projection, slightly higher latency for any cross-cutting client filter. Mitigated by a generous fetch window (`[today-90d, today+60d]` initial) and TanStack Query caching.
 
 **Notable architectural sibling:** A new `POST /blocks/set-property { block_id, key, value }` endpoint was added so the agenda can mark-done / reschedule without touching `BlockOutliner` (which it has no handle on, being in an ambient). The handler reuses the canonical post-save pipeline (`apply_post_save_bumps_with_info` + `apply_dependency_cycles`), so recurring tasks bump correctly when status flips to done. Any future surface that needs to mutate a single block property goes through this endpoint.
+
+---
+
+### 2026-05-22 — iOS NL date parser is a Swift port, not a remote call
+
+**Decision:** The iOS app parses natural-language date input via a Swift port of the web's `date-parser.ts` (shipped as `app/Tesela-iOS/Sources/Data/DateParser.swift`), with mirrored XCTest cases (`Tests/DateParserTests.swift`) line-for-line matching `web/tests/unit/date-parser.test.mjs`. The web app's TypeScript parser remains the source of truth — the Swift port translates it, doesn't reinterpret it.
+
+**Why:** Three options were considered:
+1. **Server endpoint** (`POST /parse-input` returning parsed result): keeps a single parser source, but iOS needs date entry to work offline (mock mode and field/airplane scenarios).
+2. **Date picker only, no NL**: simpler iOS, but loses parity with the web "tomorrow / next fri / deadline may 23" mental model; user explicitly wanted the same flow on both platforms.
+3. **Swift port** (chosen): offline-capable, full parity, and the lockstep test suite (web tests + Swift tests cover the same grammar cases) catches drift.
+
+**Trade-off:** Two parsers must stay in sync. The mitigation is the mirrored test suite — any grammar change on the web side that ships a new test must be paired with a Swift test for the same grammar. Documented in the design spec (`.docs/ai/phases/2026-05-22-ios-dates-design.md` §2). Long-term, if Tesela ships an Android client, this same translation cost recurs; at that point it may be worth a shared WASM-backed parser instead.
+
+**Related tech-debt:** Adding an XCTest target on Xcode 26 surfaced an explicit-module-scanner bug with the Rust-generated `CFFI/module.modulemap` — worked around with `SWIFT_ENABLE_EXPLICIT_MODULES=NO` in `project.yml`. Long-term fix is restructuring `CFFI/` so the new scanner finds the modulemap; out of scope for the dates work but worth a follow-up issue.
