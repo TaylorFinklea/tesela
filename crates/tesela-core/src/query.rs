@@ -177,6 +177,41 @@ pub struct CalendarMarks {
     pub days: std::collections::HashMap<String, DayMarkers>,
 }
 
+/// Whether an agenda row represents a task or a calendar event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+#[serde(rename_all = "lowercase")]
+pub enum AgendaRowKind {
+    Task,
+    Event,
+}
+
+/// One row in an agenda view — either a task or an event within a date window.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+pub struct AgendaRow {
+    pub block_id: String,
+    pub source_note_id: String,
+    /// YYYY-MM-DD of the occurrence (anchor for non-recurring; a projected
+    /// future date for recurring projections).
+    pub occurrence_date: String,
+    /// Optional HH:MM if the source date carries a time.
+    pub occurrence_time: Option<String>,
+    pub kind: AgendaRowKind,
+    /// `true` if `occurrence_date` is before today at query time.
+    pub overdue: bool,
+    /// The block's `recurring::` value (canonical string) when projecting; `None` otherwise.
+    pub recurrence: Option<String>,
+    /// `true` for the block's current anchor; `false` for projected future occurrences.
+    pub is_anchor: bool,
+    /// The block's text (sans `status::`/`deadline::`/etc. property lines).
+    pub text: String,
+    /// `status::` value (`"todo"`, `"done"`, ...) for task rows; `None` for events.
+    pub status: Option<String>,
+}
+
 /// Extract the first ISO date (`YYYY-MM-DD`) anywhere in a property value.
 /// Handles bare dates AND wiki-link wrapped (`[[2026-04-15]]`) forms.
 pub fn extract_iso_date(value: &str) -> Option<String> {
@@ -196,6 +231,31 @@ pub fn extract_iso_date(value: &str) -> Option<String> {
         i += 1;
     }
     None
+}
+
+#[cfg(test)]
+mod agenda_row_tests {
+    use super::*;
+
+    #[test]
+    fn agenda_row_round_trips_via_serde() {
+        let r = AgendaRow {
+            block_id: "b1".to_string(),
+            source_note_id: "2026-05-22".to_string(),
+            occurrence_date: "2026-05-22".to_string(),
+            occurrence_time: Some("14:00".to_string()),
+            kind: AgendaRowKind::Task,
+            overdue: false,
+            recurrence: Some("weekly".to_string()),
+            is_anchor: true,
+            text: "do this thing".to_string(),
+            status: Some("todo".to_string()),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: AgendaRow = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.block_id, "b1");
+        assert_eq!(back.kind, AgendaRowKind::Task);
+    }
 }
 
 #[cfg(test)]

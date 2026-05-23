@@ -940,6 +940,16 @@ impl SearchIndex for SqliteIndex {
 
         Ok(CalendarMarks { days })
     }
+
+    async fn agenda_blocks(
+        &self,
+        _from: &str,
+        _to: &str,
+        _include_done: bool,
+    ) -> Result<Vec<crate::query::AgendaRow>> {
+        // TODO(Task 2): implement SQLite-backed agenda projection.
+        unimplemented!("agenda_blocks: SQLite impl landing in Task 2")
+    }
 }
 
 // ---------------------------------------------------------------------------

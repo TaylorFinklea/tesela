@@ -4,7 +4,7 @@ use async_trait::async_trait;
 
 use crate::error::Result;
 use crate::note::{Note, NoteId, NoteVersion, SearchHit};
-use crate::query::{CalendarMarks, ParsedQuery, QueryResult};
+use crate::query::{AgendaRow, CalendarMarks, ParsedQuery, QueryResult};
 
 #[async_trait]
 pub trait SearchIndex: Send + Sync {
@@ -30,6 +30,18 @@ pub trait SearchIndex: Send + Sync {
     /// first and last day of the visible month). Implementations should be
     /// cheap — drives the calendar widget's per-day dot rendering.
     async fn calendar_marks(&self, from: &str, to: &str) -> Result<CalendarMarks>;
+
+    /// Return the agenda rows in [from, to] (inclusive both ends, `YYYY-MM-DD`).
+    /// Expands recurring blocks via `recurrence::advance` so each projected
+    /// future occurrence within the window is its own row. Done tasks are
+    /// excluded unless `include_done` is true. Sorted by
+    /// (occurrence_date, occurrence_time, block_id).
+    async fn agenda_blocks(
+        &self,
+        from: &str,
+        to: &str,
+        include_done: bool,
+    ) -> Result<Vec<AgendaRow>>;
 
     /// Append a new version row for the given note (Phase 9.3). `prev_content`
     /// is the pre-PUT content (or `None` for the very first version). The
