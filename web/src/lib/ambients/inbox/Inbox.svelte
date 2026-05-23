@@ -21,12 +21,17 @@
   }));
 
   /** Daily / system pages are filtered out — they're not "untriaged
-   * captures." Mirrors `isInboxableRow` in `QueryWidgetView.svelte`. */
+   * captures." Mirrors `isInboxableRow` in `QueryWidgetView.svelte`.
+   * Also drops blocks whose text starts with `#` (markdown headings
+   * like `### Raw Strings`) — the user's notes use those as section
+   * dividers inside reference pages, not triage items. The proper
+   * fix is the saved-query inbox redesign; this is the band-aid. */
   const TRIAGED_PAGE_TYPES = new Set(["Tag", "Property", "Query", "Template"]);
   function isInboxable(item: QueryItem): boolean {
     if (item.kind !== "block") return false;
     if (/^\d{4}-\d{2}-\d{2}$/.test(item.page_id)) return false;
     if (item.page_note_type && TRIAGED_PAGE_TYPES.has(item.page_note_type)) return false;
+    if (/^#{1,6}\s/.test(item.text.trim())) return false;
     return true;
   }
 
@@ -68,14 +73,34 @@
     rows.length > 0 ? rows[Math.min(selectedIndex, rows.length - 1)] : null,
   );
 
+  // Focus dance — BufferShell's own focus logic runs after our mount
+  // tick and would otherwise steal focus from us, so we poll for ~500ms
+  // (mirrors BufferShell's pattern). Pointer-down on the root re-claims
+  // focus after the user clicks a row, so j/k work again.
   let rootEl = $state<HTMLDivElement | undefined>();
   $effect(() => {
-    // Grab focus on first paint so j/k work without the user clicking
-    // into the pane. preventScroll keeps the container from snapping.
-    if (rootEl && rows.length > 0 && selectedIndex === 0) {
-      rootEl.focus({ preventScroll: true });
-    }
+    if (!rootEl) return;
+    let cancelled = false;
+    let elapsed = 0;
+    const tick = () => {
+      if (cancelled || !rootEl) return;
+      if (!rootEl.contains(document.activeElement)) {
+        rootEl.focus({ preventScroll: true });
+      }
+      elapsed += 50;
+      if (elapsed > 500) return;
+      setTimeout(tick, 50);
+    };
+    const start = setTimeout(tick, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(start);
+    };
   });
+
+  function handlePointerDown() {
+    rootEl?.focus({ preventScroll: true });
+  }
   $effect(() => {
     // Keep the focused row visible as the selection moves.
     if (!selectedKey || !rootEl) return;
@@ -198,6 +223,7 @@
   class="flex flex-col h-full min-h-0 overflow-auto px-4 py-3 outline-none"
   tabindex="0"
   onkeydown={handleKey}
+  onpointerdown={handlePointerDown}
 >
   <header class="flex items-center justify-between mb-3 text-[12px]">
     <div class="font-semibold">

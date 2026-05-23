@@ -113,12 +113,42 @@
 
   // Root element holds focus; tabindex makes it programmatically focusable
   // so we can grab focus on mount and dispatch keys from anywhere inside.
+  //
+  // Two paths to grab focus:
+  //   1. Mount + delayed retry — BufferShell's own focus logic runs after
+  //      our mount tick, so a single immediate focus() can be stolen.
+  //      Polling for ~500ms (mirrors BufferShell) wins the race.
+  //   2. Pointer-down on the agenda root — any interaction re-focuses
+  //      so j/k work after the user clicks a row or the header.
   let rootEl = $state<HTMLDivElement | undefined>();
   $effect(() => {
-    if (rootEl && flatRows.length > 0 && selectedIndex === 0) {
-      rootEl.focus({ preventScroll: true });
-    }
+    if (!rootEl) return;
+    let cancelled = false;
+    let elapsed = 0;
+    const tick = () => {
+      if (cancelled || !rootEl) return;
+      // Only grab focus if it's not already inside the agenda root.
+      // Otherwise we'd steal focus from a sub-input (DatePicker, etc).
+      if (!rootEl.contains(document.activeElement)) {
+        rootEl.focus({ preventScroll: true });
+      }
+      elapsed += 50;
+      if (elapsed > 500) return;
+      setTimeout(tick, 50);
+    };
+    const start = setTimeout(tick, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(start);
+    };
   });
+
+  function handlePointerDown() {
+    // Pull focus back to the root on any click so j/k start working
+    // again after the user clicks a row's button (which momentarily
+    // takes focus). preventScroll keeps the click target stable.
+    rootEl?.focus({ preventScroll: true });
+  }
 
   // When the selected row changes, scroll it into view so j/k keep up
   // even if the picked row was just off-screen.
@@ -196,6 +226,7 @@
   class="flex flex-col h-full min-h-0 overflow-auto px-4 py-3 outline-none"
   tabindex="0"
   onkeydown={handleKey}
+  onpointerdown={handlePointerDown}
 >
   <header class="flex items-center justify-between mb-3 text-[12px]">
     <div class="font-semibold">📋 Agenda <span class="text-muted-foreground/40 font-normal text-[11px]">j/k · ↵ open · x done · d date · s skip</span></div>

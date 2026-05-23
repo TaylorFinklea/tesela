@@ -164,6 +164,11 @@ struct InboxView: View {
     /// project blocks rather than every loose bullet in the mosaic.
     private static let TRIAGED_PAGE_TYPES: Set<String> = ["Tag", "Property", "Query", "Template"]
     private static let DATE_ID_RE = try! NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}$"#)
+    /// `### Raw Strings`, `## Lists`, `# Header` — markdown headings
+    /// the user uses as section dividers inside reference pages, not
+    /// triage items. Band-aid until the saved-query inbox redesign
+    /// lets the user shape the filter themselves.
+    private static let HEADING_RE = try! NSRegularExpression(pattern: #"^#{1,6}\s"#)
 
     private func isInboxable(_ item: QueryItem) -> Bool {
         guard item.kind == .block else { return false }
@@ -171,6 +176,9 @@ struct InboxView: View {
         let pidRange = NSRange(pid.startIndex..<pid.endIndex, in: pid)
         if Self.DATE_ID_RE.firstMatch(in: pid, range: pidRange) != nil { return false }
         if let t = item.page_note_type, Self.TRIAGED_PAGE_TYPES.contains(t) { return false }
+        let trimmed = item.text.trimmingCharacters(in: .whitespaces)
+        let textRange = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+        if Self.HEADING_RE.firstMatch(in: trimmed, range: textRange) != nil { return false }
         return true
     }
 

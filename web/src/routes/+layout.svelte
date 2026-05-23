@@ -51,15 +51,30 @@
     connect();
 
     setHandlers({
-      onNoteCreated: () => { queryClient.invalidateQueries({ queryKey: ["notes"] }); },
+      onNoteCreated: () => {
+        queryClient.invalidateQueries({ queryKey: ["notes"] });
+        // A new note may carry dated/untriaged blocks that belong on
+        // the agenda or in the inbox — refresh both ambients so they
+        // pick up the new rows without a manual reload.
+        queryClient.invalidateQueries({ queryKey: ["agenda"] });
+        queryClient.invalidateQueries({ queryKey: ["widget", "inbox"] });
+      },
       onNoteUpdated: (note) => {
         queryClient.invalidateQueries({ queryKey: ["notes"] });
         queryClient.invalidateQueries({ queryKey: ["note", note.id] });
         queryClient.invalidateQueries({ queryKey: ["typed-blocks"] });
+        // Any block-level change (status flip, scheduled / deadline /
+        // recurring property edit, text edit) can shift which rows
+        // belong on the agenda or in the inbox. Cheaper to invalidate
+        // unconditionally than to scan the diff.
+        queryClient.invalidateQueries({ queryKey: ["agenda"] });
+        queryClient.invalidateQueries({ queryKey: ["widget", "inbox"] });
       },
       onNoteDeleted: (id) => {
         queryClient.invalidateQueries({ queryKey: ["notes"] });
         queryClient.invalidateQueries({ queryKey: ["note", id] });
+        queryClient.invalidateQueries({ queryKey: ["agenda"] });
+        queryClient.invalidateQueries({ queryKey: ["widget", "inbox"] });
       },
       onDeadlineApproaching: handleDeadlineApproaching,
       onScheduledFires: handleScheduledFires,

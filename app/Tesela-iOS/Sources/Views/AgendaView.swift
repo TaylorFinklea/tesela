@@ -28,6 +28,19 @@ struct AgendaView: View {
     @State private var showSettings = false
     @State private var showMosaicSwitcher = false
     @State private var navigationPath = NavigationPath()
+    /// Cached bucketing — recomputing `forwardBuckets` on every SwiftUI
+    /// render (which fires when the context menu mounts) is O(N × 60+)
+    /// and was freezing the UI ~25s on long-press. We materialize the
+    /// buckets once when `rows` / `includeDone` change.
+    @State private var cachedOverdue: [AgendaRow] = []
+    @State private var cachedForwardBuckets: [DayBucket] = []
+
+    struct DayBucket: Identifiable, Equatable {
+        let iso: String
+        let label: String
+        let rows: [AgendaRow]
+        var id: String { iso }
+    }
 
     /// Lookback so overdue rows surface — mirrors the web client. The
     /// server gates `date >= from`, so without lookback the Overdue
@@ -96,6 +109,7 @@ struct AgendaView: View {
         .onChange(of: includeDone) { _, _ in
             Task { await load() }
         }
+        .onChange(of: rows) { _, _ in rebucket() }
     }
 
     // MARK: - Content
@@ -120,10 +134,10 @@ struct AgendaView: View {
                         .font(.system(size: 13))
                         .listRowBackground(theme.bg2)
                 }
-                if !overdueRows.isEmpty {
-                    daySection(label: "OVERDUE", rows: overdueRows, accent: theme.accentPrimary)
+                if !cachedOverdue.isEmpty {
+                    daySection(label: "OVERDUE", rows: cachedOverdue, accent: theme.accentPrimary)
                 }
-                ForEach(forwardBuckets, id: \.iso) { bucket in
+                ForEach(cachedForwardBuckets) { bucket in
                     daySection(label: bucket.label, rows: bucket.rows, accent: theme.fgFaint)
                 }
             }
@@ -171,32 +185,31 @@ struct AgendaView: View {
 
     // MARK: - Buckets
 
-    private var overdueRows: [AgendaRow] {
-        rows.filter { $0.overdue }
-    }
-
-    /// Today through `today + lookforwardDays`. Each day gets a bucket
-    /// even when empty so the user has a sense of "what does Tuesday
-    /// look like?" while scrolling.
-    private var forwardBuckets: [(iso: String, label: String, rows: [AgendaRow])] {
+    /// Recompute `cachedOverdue` + `cachedForwardBuckets` from the
+    /// current `rows`. Runs once when rows change (via `.onChange`)
+    /// instead of on every render. Long-press freeze repro: the
+    /// previous computed-property form re-evaluated the 60-day bucket
+    /// walk + dictionary-grouping on every SwiftUI render cycle,
+    /// including the spurious re-renders SwiftUI fires when a
+    /// `.contextMenu` mounts. With a few hundred rows that locked the
+    /// UI for ~25s on every long-press.
+    private func rebucket() {
+        cachedOverdue = rows.filter { $0.overdue }
         let byDay = Dictionary(grouping: rows.filter { !$0.overdue }) { $0.occurrence_date }
-        var out: [(String, String, [AgendaRow])] = []
+        var out: [DayBucket] = []
         let cal = Calendar.current
         let today = cal.startOfDay(for: Date())
-        let fmt = DateFormatter()
-        fmt.dateFormat = "yyyy-MM-DD"
         for offset in 0...lookforwardDays {
             guard let d = cal.date(byAdding: .day, value: offset, to: today) else { continue }
             let iso = isoFormat(d)
             let dayRows = byDay[iso] ?? []
-            // Skip empty days beyond the next 2 weeks to keep the list
-            // breathable — Today/Tomorrow/this-week stay visible empty
-            // because that's planning-useful; "EMPTY" rows past day 14
-            // are visual noise.
+            // Empty days past the next two weeks are dropped — planning
+            // wants Today/Tomorrow/this-week visible even when empty,
+            // but a 60-row run of `EMPTY` past then is visual noise.
             if dayRows.isEmpty && offset > 14 { continue }
-            out.append((iso, dayLabel(d, offset: offset), dayRows))
+            out.append(DayBucket(iso: iso, label: dayLabel(d, offset: offset), rows: dayRows))
         }
-        return out
+        cachedForwardBuckets = out
     }
 
     private func dayLabel(_ d: Date, offset: Int) -> String {
