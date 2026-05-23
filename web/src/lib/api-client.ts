@@ -11,6 +11,7 @@ import type { ParsedBlock } from "$lib/types/ParsedBlock";
 import type { QueryResult } from "$lib/types/QueryResult";
 import type { CalendarMarks } from "$lib/types/CalendarMarks";
 import type { NoteVersion } from "$lib/types/NoteVersion";
+import type { AgendaRow } from "$lib/types/AgendaRow";
 
 // Same-origin path; vite dev server proxies `/api/*` → tesela-server at
 // 127.0.0.1:7474. Relative URL means the LAN client (phone) hits whatever
@@ -147,6 +148,11 @@ export const api = {
     get<TypeDefinition>(`/types/${encodeURIComponent(name)}`),
   getTypedBlocks: (typeName: string) =>
     get<ParsedBlock[]>(`/types/${encodeURIComponent(typeName)}/blocks`),
+  /** Agenda view — projects recurring tasks forward within [from, to].
+   *  Dates are YYYY-MM-DD strings. */
+  getAgenda: (from: string, to: string, includeDone = false) =>
+    post<AgendaRow[]>("/agenda", { from, to, include_done: includeDone }),
+
   /** Phase 12.2 — fired when status flips to done. Server is responsible
    *  for deciding whether the block actually has a recurring rule. */
   recurBump: (blockId: string, mode: "complete" | "skip" = "complete") =>

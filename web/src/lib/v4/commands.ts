@@ -59,6 +59,7 @@ const AMBIENTS: { name: string; label: string; verb: string; glyph: string }[] =
   { name: "today-in-progress", label: "Today in progress", verb: "in-progress", glyph: "⏱" },
   { name: "workspace-dashboard", label: "Workspace dashboard", verb: "dashboard", glyph: "▦" },
   { name: "ai-workspace", label: "AI workspace", verb: "ai", glyph: "✺" },
+  { name: "agenda", label: "Agenda", verb: "agenda", glyph: "📋" },
 ];
 
 export type V4Command = {
