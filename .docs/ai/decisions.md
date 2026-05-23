@@ -163,3 +163,19 @@ Concise log of non-obvious decisions. Newest first.
 **Why:** Inline `[[date]]` links were the root of four user-reported problems — the date was un-editable text, deadline vs scheduled were indistinguishable, recurrence was detached, and skip failed because no `recurring::` property existed. The user confirmed they never author date links by hand and use the daily journal only to read what they wrote that day — so the journal-backlink behavior was unwanted clutter, not a feature. A typed property is the Logseq-DB model, is what the Rust engine already reads (`deadline::`/`scheduled::`/`recurring::`), and removes the link-parsing / backlink-index complexity.
 
 **Trade-off:** Opening a day's journal no longer auto-lists tasks due that day — that surface is deliberately moved to the (not-yet-built) agenda/today view. Existing inline `[[date]]` links and bracketed `deadline:: [[..]]` values in old notes are left as-is (no bulk migration); renderers and the engine accept both bracketed and bare forms, so old data still works but isn't normalized until re-edited. iOS still uses the old inline-date flow — the web redesign was done first, iOS is a later effort.
+
+---
+
+### 2026-05-22 — Agenda is an ambient buffer; recurrence projection lives on the server
+
+**Decision:** The agenda surface lives as a new `agenda` ambient buffer (joining `calendar`/`dashboard`/`ai-workspace`/`today-in-progress`), opened via `:agenda`. Recurrence projection — expanding a `recurring::` block's future occurrences within a `[from, to]` window — happens **on the server**, in the SQLite `SearchIndex::agenda_blocks` impl, calling the canonical `tesela_core::recurrence::advance` for each step. The agenda fetches the already-expanded `Vec<AgendaRow>` and renders.
+
+**Why:** Two forks decided.
+
+*Why ambient, not route or derived buffer:* Ambient is the established pattern for workspace-singleton views with no backing reference (Calendar, Dashboard). Derived buffers require a `Reference`; the agenda has none. A `/agenda` route would be a top-level page; ambients live in the pane tree, so the agenda can be split-paned alongside the focused note or a daily — better composition. Adding one is three small touchpoints (component, registry, verb) — no new routing or top-level layout work.
+
+*Why server-side projection, not JS:* The canonical recurrence engine is `tesela_core::recurrence` (Rust). Projecting in JS would duplicate `parse`/`advance`/`until`-`count` gating semantics, drift over time, and ship `recurring::`/anchors for every recurring block over the wire. The server already has the index + the engine in the same process; `calendar_marks(from, to)` is the precedent (counts), `agenda_blocks(from, to)` returns the expanded rows. Recurrence math stays in one place.
+
+**Trade-off:** Adding a non-recurrence-projection feature to the agenda (e.g. "what about projects whose deadline is in N days") still has to round-trip through a server endpoint — cheaper for projection, slightly higher latency for any cross-cutting client filter. Mitigated by a generous fetch window (`[today-90d, today+60d]` initial) and TanStack Query caching.
+
+**Notable architectural sibling:** A new `POST /blocks/set-property { block_id, key, value }` endpoint was added so the agenda can mark-done / reschedule without touching `BlockOutliner` (which it has no handle on, being in an ambient). The handler reuses the canonical post-save pipeline (`apply_post_save_bumps_with_info` + `apply_dependency_cycles`), so recurring tasks bump correctly when status flips to done. Any future surface that needs to mutate a single block property goes through this endpoint.
