@@ -93,11 +93,112 @@
     obs.observe(node);
     return () => obs.disconnect();
   });
+
+  // ── Keyboard nav ──────────────────────────────────────────────────────
+  // Flatten the bucketed view into a single ordered list so j/k can move
+  // through every visible row without caring which day bucket it lives in.
+  const flatRows = $derived.by(() => {
+    const out: AgendaRowT[] = [];
+    out.push(...buckets.overdue);
+    for (const day of buckets.days) {
+      out.push(...day.rows);
+    }
+    return out;
+  });
+  const rowKey = (r: AgendaRowT) => `${r.block_id}:${r.occurrence_date}`;
+  let selectedIndex = $state(0);
+  const selectedKey = $derived(
+    flatRows.length > 0 ? rowKey(flatRows[Math.min(selectedIndex, flatRows.length - 1)]) : null,
+  );
+
+  // Root element holds focus; tabindex makes it programmatically focusable
+  // so we can grab focus on mount and dispatch keys from anywhere inside.
+  let rootEl = $state<HTMLDivElement | undefined>();
+  $effect(() => {
+    if (rootEl && flatRows.length > 0 && selectedIndex === 0) {
+      rootEl.focus({ preventScroll: true });
+    }
+  });
+
+  // When the selected row changes, scroll it into view so j/k keep up
+  // even if the picked row was just off-screen.
+  $effect(() => {
+    if (!selectedKey || !rootEl) return;
+    const el = rootEl.querySelector(
+      `[data-agenda-row="${CSS.escape(selectedKey)}"]`,
+    ) as HTMLElement | null;
+    el?.scrollIntoView({ block: "nearest" });
+  });
+
+  /** Synthesize a mouse click on the focused row's button matching the
+   * given `data-action` attribute. The keyboard path piggybacks on the
+   * row's existing handlers so there is exactly one code path per
+   * action (no behavior drift between mouse and keyboard). */
+  function fireRowAction(action: "mark-done" | "open-date" | "open-source" | "skip") {
+    if (!selectedKey || !rootEl) return;
+    const btn = rootEl.querySelector(
+      `[data-agenda-row="${CSS.escape(selectedKey)}"] [data-action="${action}"]`,
+    ) as HTMLElement | null;
+    btn?.click();
+  }
+
+  function handleKey(e: KeyboardEvent) {
+    // Let the DatePicker (and any other inputs/popovers) own their keys.
+    const target = e.target as HTMLElement;
+    if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA")) {
+      return;
+    }
+    if (flatRows.length === 0) return;
+    switch (e.key) {
+      case "j":
+      case "ArrowDown":
+        e.preventDefault();
+        selectedIndex = Math.min(selectedIndex + 1, flatRows.length - 1);
+        break;
+      case "k":
+      case "ArrowUp":
+        e.preventDefault();
+        selectedIndex = Math.max(selectedIndex - 1, 0);
+        break;
+      case "g":
+        // `gg` would need chord state; for v1 just G/g as alias for top.
+        e.preventDefault();
+        selectedIndex = 0;
+        break;
+      case "G":
+        e.preventDefault();
+        selectedIndex = flatRows.length - 1;
+        break;
+      case "Enter":
+        e.preventDefault();
+        fireRowAction("open-source");
+        break;
+      case "x":
+        e.preventDefault();
+        fireRowAction("mark-done");
+        break;
+      case "d":
+        e.preventDefault();
+        fireRowAction("open-date");
+        break;
+      case "s":
+        // `s` = skip (only fires on recurring anchor rows; no-op otherwise).
+        e.preventDefault();
+        fireRowAction("skip");
+        break;
+    }
+  }
 </script>
 
-<div class="flex flex-col h-full min-h-0 overflow-auto px-4 py-3">
+<!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+<div
+  bind:this={rootEl}
+  class="flex flex-col h-full min-h-0 overflow-auto px-4 py-3 outline-none"
+  tabindex="0"
+  onkeydown={handleKey}
+>
   <header class="flex items-center justify-between mb-3 text-[12px]">
-    <div class="font-semibold">📋 Agenda</div>
+    <div class="font-semibold">📋 Agenda <span class="text-muted-foreground/40 font-normal text-[11px]">j/k · ↵ open · x done · d date · s skip</span></div>
     <label class="flex items-center gap-2 cursor-pointer text-muted-foreground">
       <input type="checkbox" bind:checked={includeDone} class="cursor-pointer" />
       <span>show done</span>
@@ -108,11 +209,11 @@
     <div class="text-muted-foreground/60 text-[12px]">loading…</div>
   {:else}
     {#if buckets.overdue.length > 0}
-      <AgendaDay label="Overdue" rows={buckets.overdue} emphasis="overdue" />
+      <AgendaDay label="Overdue" rows={buckets.overdue} emphasis="overdue" {selectedKey} />
     {/if}
     {#each buckets.days as day (day.iso)}
       {#if day.rows.length > 0}
-        <AgendaDay label={day.label} rows={day.rows} />
+        <AgendaDay label={day.label} rows={day.rows} {selectedKey} />
       {:else}
         <AgendaDay label={`${day.label} — empty`} rows={[]} emphasis="empty" />
       {/if}

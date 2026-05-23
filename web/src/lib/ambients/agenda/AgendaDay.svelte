@@ -6,12 +6,18 @@
     label,
     rows,
     emphasis = "normal",
+    selectedKey = null,
   }: {
     /** Day header text — `Today · Friday, May 22` / `Mon May 25` / `Overdue`. */
     label: string;
     rows: AgendaRowT[];
     /** `overdue` tints the header; `empty` shows the empty-day placeholder. */
     emphasis?: "normal" | "overdue" | "empty";
+    /** Key of the currently keyboard-focused row, in the form
+     * `block_id:occurrence_date` (matches what AgendaRow renders into
+     * its `data-agenda-row` attribute). Used to draw the focus ring on
+     * the right row when the user navigates with j/k. */
+    selectedKey?: string | null;
   } = $props();
 
   const headerColor = $derived(
@@ -28,7 +34,10 @@
   >{label}</div>
   {#if emphasis !== "empty"}
     {#each rows as row (row.block_id + ":" + row.occurrence_date)}
-      <AgendaRow {row} />
+      <AgendaRow
+        {row}
+        selected={selectedKey === row.block_id + ":" + row.occurrence_date}
+      />
     {/each}
   {/if}
 </div>

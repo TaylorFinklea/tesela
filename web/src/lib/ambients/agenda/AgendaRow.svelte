@@ -9,7 +9,19 @@
   import DatePicker from "$lib/components/DatePicker.svelte";
   import { toast } from "$lib/stores/toast.svelte";
 
-  let { row }: { row: AgendaRow } = $props();
+  let {
+    row,
+    selected = false,
+  }: {
+    row: AgendaRow;
+    /** Whether this row currently holds keyboard focus (j/k). The
+     * parent (Agenda) computes selection across the flat row list and
+     * passes it down so we can render a focus ring. Keyboard actions
+     * are dispatched by the parent via `data-action` selectors below,
+     * which synthesize clicks on the same buttons mouse users press —
+     * no behavior fork. */
+    selected?: boolean;
+  } = $props();
 
   const isTask = $derived(row.kind === "task");
   const isOverdue = $derived(row.overdue);
@@ -92,7 +104,11 @@
   }
 </script>
 
-<div class="flex items-center gap-2 py-0.5 text-[13px]">
+<div
+  class="flex items-center gap-2 py-0.5 text-[13px] rounded px-1 -mx-1"
+  class:bg-accent={selected}
+  data-agenda-row={row.block_id + ":" + row.occurrence_date}
+>
   {#if showCheckbox}
     <button
       type="button"
@@ -101,6 +117,7 @@
       class="inline-block w-3.5 h-3.5 border border-muted-foreground/60 rounded-sm cursor-pointer shrink-0 transition-colors hover:border-primary"
       class:opacity-50={markingDone}
       onclick={handleMarkDone}
+      data-action="mark-done"
       title="Mark done"
     ></button>
   {:else if isTask}
@@ -116,6 +133,7 @@
       class:text-primary={isOverdue}
       class:text-muted-foreground={!isOverdue}
       onclick={openDatePicker}
+      data-action="open-date"
       title="Reschedule"
     >{icon} {timeOrDate}</button>
   {:else}
@@ -131,6 +149,7 @@
     type="button"
     class="text-[11px] text-muted-foreground/60 hover:text-foreground shrink-0 transition-colors"
     onclick={() => gotoNote(row.source_note_id)}
+    data-action="open-source"
   >in [[{row.source_note_id}]]</button>
   {#if row.recurrence}
     <span class="text-[11px] text-muted-foreground/50 shrink-0">↻ {formatRecurrence(row.recurrence)}</span>
@@ -139,6 +158,7 @@
         type="button"
         class="text-[11px] text-muted-foreground/60 hover:text-foreground shrink-0 transition-colors"
         onclick={handleSkip}
+        data-action="skip"
         title="Skip to next occurrence"
       >⏭</button>
     {/if}
