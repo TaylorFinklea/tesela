@@ -11,9 +11,8 @@ enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable 
     case indent
     case cycleStatus = "status"
     case mic
-    case deadline
+    case date
     case tags
-    case schedule
 
     var id: String { rawValue }
 
@@ -28,9 +27,8 @@ enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable 
         case .indent:       return "Indent"
         case .cycleStatus:  return "Cycle status"
         case .mic:          return "Voice"
-        case .deadline:     return "Deadline"
+        case .date:         return "Date"
         case .tags:         return "Tags"
-        case .schedule:     return "Schedule"
         }
     }
 
@@ -44,9 +42,8 @@ enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable 
         case .indent:       return "increase.indent"
         case .cycleStatus:  return "circle.dotted"
         case .mic:          return "mic"
-        case .deadline:     return "exclamationmark.circle"
+        case .date:         return "calendar.badge.plus"
         case .tags:         return "tag"
-        case .schedule:     return "calendar"
         }
     }
 }

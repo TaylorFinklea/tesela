@@ -42,6 +42,12 @@ struct BlockRow: View {
     var onIndent: ((Int) -> Void)? = nil
     /// Cycle the block's kind/status (note → open task → done → note).
     var onCycleStatus: (() -> Void)? = nil
+    /// Persist an updated property list for this block. Called after the
+    /// date sheet commits — the caller (DailyView/PageView) routes this
+    /// to the appropriate service method.
+    var onSetProperties: (([BlockProperty]) -> Void)? = nil
+    /// Skip the current recurring-block occurrence to its next date.
+    var onSkipRecurrence: (() -> Void)? = nil
 
     /// The `recurring::` property value, or `nil` if absent.
     private var recurringValue: String? {
@@ -64,6 +70,8 @@ struct BlockRow: View {
     @FocusState private var editFocused: Bool
 
     @AppStorage("keyboardToolbarItems") private var keyboardToolbarRaw: String = defaultKeyboardToolbarItemsRaw
+    @AppStorage("bareDateField") private var bareDateFieldRaw: String = "scheduled"
+    @State private var showingDateSheet = false
 
     private var configuredToolbarItems: [KeyboardToolbarItem] {
         decodeKeyboardToolbarItems(keyboardToolbarRaw)
@@ -79,10 +87,23 @@ struct BlockRow: View {
                         ForEach(tags, id: \.self) { tag in
                             TagChip(value: tag)
                         }
-                        if let scheduledValue { ScheduledChip(value: scheduledValue) }
-                        if let deadlineValue { DeadlineChip(value: deadlineValue) }
+                        if let scheduledValue {
+                            Button { showingDateSheet = true } label: {
+                                ScheduledChip(value: scheduledValue)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        if let deadlineValue {
+                            Button { showingDateSheet = true } label: {
+                                DeadlineChip(value: deadlineValue)
+                            }
+                            .buttonStyle(.plain)
+                        }
                         if let recValue = recurringValue {
-                            RecurrenceChip(value: recValue)
+                            Button { showingDateSheet = true } label: {
+                                RecurrenceChip(value: recValue)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -100,6 +121,24 @@ struct BlockRow: View {
             BlockContextMenu(blockId: id) { action in
                 onMenuAction?(action)
             }
+        }
+        .sheet(isPresented: $showingDateSheet) {
+            DateInputSheet(
+                initialScheduled: scheduledValue,
+                initialDeadline: deadlineValue,
+                initialRecurrence: recurringValue,
+                canSkip: recurringValue != nil,
+                bareDateFieldDefault: bareDateFieldRaw,
+                onCommit: { field, iso, time, recurrence in
+                    commitDate(field: field, iso: iso, time: time, recurrence: recurrence)
+                    showingDateSheet = false
+                },
+                onSkip: {
+                    onSkipRecurrence?()
+                    showingDateSheet = false
+                },
+                onCancel: { showingDateSheet = false }
+            )
         }
     }
 
@@ -289,10 +328,10 @@ struct BlockRow: View {
             onIndent?(1)
         case .cycleStatus:
             onCycleStatus?()
-        case .mic, .deadline, .schedule:
-            // Stubs — these UI affordances surface in the toolbar so
-            // users can opt in, but the actions land in later phases
-            // (voice-into-block, due date picker, scheduled picker).
+        case .date:
+            showingDateSheet = true
+        case .mic:
+            // Stub — voice-into-block lands in a later phase.
             break
         }
     }
@@ -313,5 +352,23 @@ struct BlockRow: View {
         if normalized.isEmpty { return text }
         if text.isEmpty { return normalized }
         return text + " " + normalized
+    }
+
+    /// Build the updated property list from the sheet's output and pass
+    /// it to `onSetProperties` for the parent to persist.
+    private func commitDate(field: DateField, iso: String, time: String?, recurrence: String?) {
+        let value = time.map { "\(iso) \($0)" } ?? iso
+        let key = field.rawValue  // "deadline" or "scheduled"
+
+        // Upsert: drop any prior value at this key, then append the new one.
+        var updated = properties.filter { $0.key != key }
+        updated.append(BlockProperty(key: key, value: value))
+
+        if let recurrence {
+            updated.removeAll { $0.key == "recurring" }
+            updated.append(BlockProperty(key: "recurring", value: recurrence))
+        }
+
+        onSetProperties?(updated)
     }
 }

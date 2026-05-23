@@ -139,6 +139,7 @@ struct DailyView: View {
                 indent: block.indent,
                 isDone: block.done,
                 tags: block.tags,
+                properties: block.properties,
                 isEditing: editingBlockId == block.id,
                 onToggleTask: { mosaic.toggleTask(id: block.id) },
                 onTap: { editingBlockId = block.id },
@@ -162,6 +163,12 @@ struct DailyView: View {
                 },
                 onCycleStatus: {
                     mosaic.cycleBlockStatus(id: block.id)
+                },
+                onSetProperties: { updated in
+                    mosaic.setBlockProperties(id: block.id, properties: updated)
+                },
+                onSkipRecurrence: {
+                    Task { try? await mosaic.recurBump(blockId: block.id, mode: .skip) }
                 }
             )
         }

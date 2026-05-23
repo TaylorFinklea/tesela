@@ -176,6 +176,7 @@ struct PageView: View {
                 indent: block.indent,
                 isDone: block.done,
                 tags: block.tags,
+                properties: block.properties,
                 isEditing: editingBlockId == block.id,
                 onToggleTask: { togglePageTask(block.id) },
                 onTap: { editingBlockId = block.id },
@@ -188,6 +189,12 @@ struct PageView: View {
                 },
                 onMenuAction: { action in
                     handlePageAction(action, on: block)
+                },
+                onSetProperties: { updated in
+                    mosaic.setBlockProperties(id: block.id, properties: updated)
+                },
+                onSkipRecurrence: {
+                    Task { try? await mosaic.recurBump(blockId: block.id, mode: .skip) }
                 }
             )
         }

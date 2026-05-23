@@ -1306,6 +1306,57 @@ final class MockMosaicService: ObservableObject, MosaicService {
         searchResults = MockSeed.searchResults
         serverDailyId = ""
     }
+
+    // MARK: - Property writes
+
+    /// Upsert the full `properties` list on the block identified by `id`.
+    /// Mirrors `editTodayBlock` / `editPageBlock` for block location and
+    /// the same write-back path.
+    func setBlockProperties(id: String, properties: [BlockProperty]) {
+        if let idx = todayBlocks.firstIndex(where: { $0.id == id }) {
+            todayBlocks[idx].properties = properties
+            scheduleWriteback()
+            return
+        }
+        for pageId in loadedPageBlocks.keys {
+            var blocks = loadedPageBlocks[pageId] ?? []
+            if let bidx = blocks.firstIndex(where: { $0.id == id }) {
+                blocks[bidx].properties = properties
+                Task { await pushPage(id: pageId, blocks: blocks) }
+                return
+            }
+        }
+        // Block not found in any loaded context — silently no-op.
+    }
+
+    // MARK: - Recurrence bump
+
+    enum RecurBumpMode: String {
+        case complete
+        case skip
+    }
+
+    /// POST /blocks/recur-bump on the server to advance a recurring block
+    /// to its next occurrence. In mock mode this is a no-op. After a
+    /// successful request the daily is refreshed so the updated dates
+    /// appear immediately.
+    func recurBump(blockId: String, mode: RecurBumpMode) async throws {
+        guard case .http(let baseURL) = currentBackend else {
+            // Mock mode — no server to call; silently succeed.
+            return
+        }
+        let body: [String: Any] = ["block_id": blockId, "mode": mode.rawValue]
+        let url = endpoint("/blocks/recur-bump", baseURL: baseURL)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 8
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: req)
+        try ensureOk(response, data: data)
+        // Refresh so the bumped block's new scheduled/deadline dates appear.
+        await refresh(from: currentBackend)
+    }
 }
 
 // MARK: - Seed snapshot
