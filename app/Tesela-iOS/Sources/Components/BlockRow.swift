@@ -48,6 +48,16 @@ struct BlockRow: View {
         properties.first(where: { $0.key == "recurring" })?.value
     }
 
+    /// The `deadline::` property value, or `nil` if absent.
+    private var deadlineValue: String? {
+        properties.first(where: { $0.key == "deadline" })?.value
+    }
+
+    /// The `scheduled::` property value, or `nil` if absent.
+    private var scheduledValue: String? {
+        properties.first(where: { $0.key == "scheduled" })?.value
+    }
+
     @Environment(\.theme) private var theme
     @State private var editBuffer: String = ""
     @State private var livePushTask: Task<Void, Never>? = nil
@@ -64,11 +74,13 @@ struct BlockRow: View {
             bullet
             VStack(alignment: .leading, spacing: 4) {
                 content
-                if (!tags.isEmpty || recurringValue != nil) && !isEditing {
+                if (!tags.isEmpty || recurringValue != nil || deadlineValue != nil || scheduledValue != nil) && !isEditing {
                     HStack(spacing: 4) {
                         ForEach(tags, id: \.self) { tag in
                             TagChip(value: tag)
                         }
+                        if let scheduledValue { ScheduledChip(value: scheduledValue) }
+                        if let deadlineValue { DeadlineChip(value: deadlineValue) }
                         if let recValue = recurringValue {
                             RecurrenceChip(value: recValue)
                         }

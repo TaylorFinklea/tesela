@@ -67,6 +67,52 @@ struct RecurrenceChip: View {
     }
 }
 
+/// Display-only chip for a block's `deadline::` property. Shows a flag
+/// SF Symbol followed by the human-readable date label.
+/// Mirrors `RecurrenceChip`'s sizing and theming exactly.
+struct DeadlineChip: View {
+    let value: String
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "flag.fill")
+                .font(.system(size: 9, weight: .medium))
+            Text(DateFormat.humanMonthDay(value))
+        }
+        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+        .foregroundStyle(theme.fgMuted)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1)
+        .background(theme.fgMuted.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+}
+
+/// Display-only chip for a block's `scheduled::` property. Shows a calendar
+/// SF Symbol followed by the human-readable date label.
+/// Mirrors `RecurrenceChip`'s sizing and theming exactly.
+struct ScheduledChip: View {
+    let value: String
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: "calendar")
+                .font(.system(size: 9, weight: .medium))
+            Text(DateFormat.humanMonthDay(value))
+        }
+        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+        .foregroundStyle(theme.fgMuted)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1)
+        .background(theme.fgMuted.opacity(0.10))
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+}
+
 /// Inline (non-chip) tag rendering — used when the tag is NOT at a
 /// trailing cluster in the block source. Matches the web's `.cm-tesela-tag`
 /// styling: primary-colored text with no background pill.
