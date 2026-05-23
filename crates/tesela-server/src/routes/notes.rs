@@ -1060,6 +1060,185 @@ pub async fn recur_bump(
     }))
 }
 
+// ---------------------------------------------------------------------------
+// POST /blocks/set-property — generic single-block property upsert
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct SetBlockPropertyReq {
+    /// Block id in `<note_id>:<line>` format (matches `ParsedBlock.id`).
+    pub block_id: String,
+    /// Property key (e.g. `"status"`, `"scheduled"`, `"recurring"`).
+    pub key: String,
+    /// New property value (e.g. `"done"`, `"[[2026-06-01]]"`).
+    pub value: String,
+}
+
+/// Upsert a single `key:: value` property on a block and persist, triggering
+/// the same `apply_post_save_bumps` path that a full note PUT does.  This
+/// means:
+///   - marking a task `status:: done` on a recurring block → the server
+///     auto-bumps its deadline to the next occurrence (same as full PUT).
+///   - marking a task `status:: done` on a non-recurring block → the block
+///     stays done (no bump, nothing to advance).
+///   - writing `scheduled:: [[YYYY-MM-DD]]` / `recurring:: <rrule>` works
+///     identically to the client side's `upsertBlockProperty`.
+///
+/// The block_id encodes the note id (`note_id_str:line_num`), so no separate
+/// note-id path parameter is needed.
+pub async fn set_block_property(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<SetBlockPropertyReq>,
+) -> AppResult<Json<serde_json::Value>> {
+    let (note_id_str, line_str) = match req.block_id.rsplit_once(':') {
+        Some(pair) => pair,
+        None => {
+            return Err(AppError::Validation(format!(
+                "invalid block_id '{}': expected '<note_id>:<line>'",
+                req.block_id
+            )))
+        }
+    };
+    let line_num: usize = line_str.parse().map_err(|_| {
+        AppError::Validation(format!(
+            "invalid block_id '{}': line suffix is not a number",
+            req.block_id
+        ))
+    })?;
+
+    let key = req.key.trim().to_lowercase();
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(AppError::Validation(format!(
+            "invalid property key '{}'",
+            req.key
+        )));
+    }
+
+    let note_id = NoteId::new(note_id_str);
+    let note = s
+        .store
+        .get(&note_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Note not found: {}", note_id_str)))?;
+
+    let prev_content = note.content.clone();
+
+    // Locate the block in the body and upsert the property.
+    let new_content =
+        upsert_block_property_in_note(&prev_content, note_id_str, line_num, &key, &req.value)
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "block '{}' not found in note '{}'",
+                    req.block_id, note_id_str
+                ))
+            })?;
+
+    // Run post-save bumps (handles recurring blocks marked done).
+    let (new_content, bumps) = apply_post_save_bumps_with_info(&prev_content, &new_content, note_id_str);
+    let (new_content, _unblocked) = apply_dependency_cycles(&prev_content, &new_content, note_id_str);
+
+    let stamped = stamp_block_ids(&new_content);
+    let mut updated_note = note.clone();
+    updated_note.content = stamped;
+    s.store.update(&updated_note).await?;
+
+    let updated = s
+        .store
+        .get(&note_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Note not found after set-property: {}", note_id_str)))?;
+
+    s.index.reindex(&updated).await?;
+    {
+        use tesela_core::link::extract_wiki_links;
+        use tesela_core::traits::link_graph::LinkGraph;
+        let links = extract_wiki_links(&updated.content);
+        if let Err(e) = s.index.update_links(&note_id, &links).await {
+            tracing::warn!("Failed to update links on set-property for {:?}: {}", note_id, e);
+        }
+    }
+    if updated.content != prev_content {
+        if let Err(e) = s
+            .index
+            .record_version(&note_id, Some(&prev_content), &updated.content, 200)
+            .await
+        {
+            tracing::warn!("Failed to record version on set-property: {}", e);
+        }
+    }
+
+    record_sync_update(&s, &prev_content, &updated).await;
+    let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated });
+
+    for info in bumps {
+        let _ = s.ws_tx.send(WsEvent::RecurringRolled {
+            block_id: info.block_id,
+            title: info.title,
+            note_id: note_id_str.to_string(),
+            next_deadline: info.next_deadline,
+        });
+    }
+
+    tracing::info!("set-property: {}::{} = {}", req.block_id, key, req.value);
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// Locate block `line_num` in the note's body and upsert `key:: value` on it.
+/// Returns `None` if the block is not found at that line.
+///
+/// Mirrors the client-side `upsertBlockProperty` logic:
+/// - walks continuation lines below the bullet header;
+/// - if a matching `key::` line is found, replaces it in place;
+/// - otherwise appends a new continuation line at the end of the block.
+pub fn upsert_block_property_in_note(
+    content: &str,
+    note_id_str: &str,
+    line_num: usize,
+    key: &str,
+    value: &str,
+) -> Option<String> {
+    let (_meta, body) = parse_frontmatter(content).ok()?;
+    let blocks = parse_blocks(note_id_str, &body);
+    // Confirm the block exists at this line.
+    let block_id = format!("{}:{}", note_id_str, line_num);
+    let _block = blocks.iter().find(|b| b.id == block_id)?;
+
+    // Perform the upsert directly on the body lines.
+    let new_body = upsert_property_in_body(&body, line_num, key, value)?;
+    Some(reassemble_content(content, &body, &new_body))
+}
+
+/// Upsert `key:: value` on the block whose bullet header is on `bullet_line`
+/// in `body`. Returns the rewritten body, or `None` if `bullet_line` is out
+/// of bounds or not a bullet.
+fn upsert_property_in_body(body: &str, bullet_line: usize, key: &str, value: &str) -> Option<String> {
+    let trailing_newline = body.ends_with('\n');
+    let (mut lines, end, cont_indent) = block_range(body, bullet_line)?;
+
+    // Walk continuation lines looking for an existing `key::` entry.
+    let mut found_idx: Option<usize> = None;
+    for i in (bullet_line + 1)..end {
+        if let Some((k, _)) = property_kv(&lines[i]) {
+            if k == key {
+                found_idx = Some(i);
+                break;
+            }
+        }
+    }
+
+    if let Some(idx) = found_idx {
+        lines[idx] = format!("{}{}:: {}", cont_indent, key, value);
+    } else {
+        lines.insert(end, format!("{}{}:: {}", cont_indent, key, value));
+    }
+
+    Some(join_lines(lines, trailing_newline))
+}
+
 /// Pure helper. Returns `Some((new_content, next_deadline_iso))` if `block_id`
 /// resolves to a block in `content` with `status:: done` + valid `recurring::`
 /// + valid anchor date (`deadline::` or `scheduled::`).
@@ -2122,5 +2301,61 @@ mod recurrence_tests {
             get_prop(&bumped, BLOCK_ID, "recurrence_done").as_deref(),
             Some("1")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for upsert_block_property_in_note (set-property endpoint)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn set_property_updates_existing_key_in_place() {
+        let content = make_note(&[]);
+        // Update the existing `status:: todo` to `status:: done`.
+        let new_content =
+            upsert_block_property_in_note(&content, "note", 0, "status", "done")
+                .expect("should return Some");
+        let status = get_prop(&new_content, BLOCK_ID, "status");
+        assert_eq!(status.as_deref(), Some("done"));
+        // Other properties must survive unchanged.
+        assert_eq!(
+            get_prop(&new_content, BLOCK_ID, "deadline").as_deref(),
+            Some("[[2026-05-07]]")
+        );
+    }
+
+    #[test]
+    fn set_property_appends_new_key_when_absent() {
+        let content = make_note(&[]);
+        // Append a `priority:: high` property that doesn't exist yet.
+        let new_content =
+            upsert_block_property_in_note(&content, "note", 0, "priority", "high")
+                .expect("should return Some");
+        let priority = get_prop(&new_content, BLOCK_ID, "priority");
+        assert_eq!(priority.as_deref(), Some("high"));
+        // Existing properties must still be intact.
+        assert_eq!(
+            get_prop(&new_content, BLOCK_ID, "status").as_deref(),
+            Some("todo")
+        );
+    }
+
+    #[test]
+    fn set_property_scheduled_updates_correctly() {
+        let content = make_note(&[]);
+        let new_content =
+            upsert_block_property_in_note(&content, "note", 0, "scheduled", "[[2026-06-01]]")
+                .expect("should return Some");
+        assert_eq!(
+            get_prop(&new_content, BLOCK_ID, "scheduled").as_deref(),
+            Some("[[2026-06-01]]")
+        );
+    }
+
+    #[test]
+    fn set_property_returns_none_for_invalid_line() {
+        let content = make_note(&[]);
+        // Line 999 does not exist → should return None.
+        let result = upsert_block_property_in_note(&content, "note", 999, "status", "done");
+        assert!(result.is_none());
     }
 }

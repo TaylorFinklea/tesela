@@ -160,6 +160,15 @@ export const api = {
       "/blocks/recur-bump",
       { block_id: blockId, mode },
     ),
+  /** Agenda interactions — upsert a single `key:: value` property on a block.
+   *  The server loads the note, rewrites the property, and saves (triggering
+   *  `apply_post_save_bumps` so recurring tasks auto-advance on done). */
+  setBlockProperty: (blockId: string, key: string, value: string) =>
+    post<{ ok: boolean }>("/blocks/set-property", {
+      block_id: blockId,
+      key,
+      value,
+    }),
   /** Phase 12.1 — Apple Reminders sync (macOS only). The combined
    *  `remindersSync` is what the "Sync now" UI button hits. */
   remindersPush: () => post<RemindersPushOutcome>("/sync/reminders/push", {}),

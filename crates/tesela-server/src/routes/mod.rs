@@ -52,6 +52,7 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/links", get(notes::get_all_edges))
         .route("/blocks/recur-bump", post(notes::recur_bump))
+        .route("/blocks/set-property", post(notes::set_block_property))
         .route("/sync/reminders/push", post(sync::push))
         .route("/sync/reminders/pull", post(sync::pull))
         .route("/sync/reminders", post(sync::sync))
