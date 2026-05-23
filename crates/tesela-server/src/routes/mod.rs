@@ -1,3 +1,4 @@
+mod agenda;
 mod calendar;
 mod data_ops;
 mod history;
@@ -80,6 +81,7 @@ pub fn build(state: AppState) -> Router {
             get(peer_sync::lookup_pairing_short_code),
         )
         .route("/search", get(search::search_notes))
+        .route("/agenda", post(agenda::post_agenda))
         .route("/search/query", post(search_query::execute))
         .route("/calendar/marks", get(calendar::marks))
         .route("/tags", get(tags::list_tags))
