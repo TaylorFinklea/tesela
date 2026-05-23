@@ -25,6 +25,25 @@ packages:
     branch: main
 
 targets:
+  TeselaTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: Tesela
+    settings:
+      base:
+        BUNDLE_LOADER: $(TEST_HOST)
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/Tesela.app/Tesela
+        PRODUCT_BUNDLE_IDENTIFIER: app.tesela.ios.tests
+        GENERATE_INFOPLIST_FILE: "YES"
+        CODE_SIGN_IDENTITY[sdk=iphonesimulator*]: "-"
+        CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]: "NO"
+        CODE_SIGN_IDENTITY[sdk=iphoneos*]: "Apple Development"
+        CODE_SIGN_STYLE: "Automatic"
+        DEVELOPMENT_TEAM: "K7CBQW6MPG"
+
   Tesela:
     type: application
     platform: iOS
