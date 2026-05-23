@@ -172,7 +172,7 @@ struct PageView: View {
             BlockRow(
                 id: block.id,
                 kind: block.kind,
-                text: block.text,
+                text: block.displayText,
                 indent: block.indent,
                 isDone: block.done,
                 tags: block.tags,
@@ -550,7 +550,7 @@ struct TasksLensView: View {
                     BlockRow(
                         id: task.id,
                         kind: .task,
-                        text: task.text,
+                        text: task.displayText,
                         isDone: task.done,
                         tags: task.tags
                     )

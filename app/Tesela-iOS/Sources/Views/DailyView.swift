@@ -135,7 +135,7 @@ struct DailyView: View {
             BlockRow(
                 id: block.id,
                 kind: block.kind,
-                text: block.text,
+                text: block.displayText,
                 indent: block.indent,
                 isDone: block.done,
                 tags: block.tags,
@@ -201,7 +201,7 @@ struct DailyView: View {
             BlockRow(
                 id: block.id,
                 kind: block.kind,
-                text: block.text,
+                text: block.displayText,
                 indent: block.indent,
                 isDone: block.done,
                 tags: block.tags,
@@ -227,7 +227,7 @@ struct DailyView: View {
                 BlockRow(
                     id: block.id,
                     kind: block.kind,
-                    text: block.text,
+                    text: block.displayText,
                     indent: block.indent,
                     isDone: block.done,
                     tags: block.tags

@@ -18,7 +18,17 @@ enum BlockKind: String, Codable, Hashable {
 struct Block: Identifiable, Equatable, Hashable, Codable {
     let id: String
     var kind: BlockKind
+    /// First line of the block's body (trailing tags stripped). Used as
+    /// a compact label in previews, recents, and search snippets.
     var text: String
+    /// Full multi-line body as written under the bullet — first line +
+    /// every non-property continuation line, joined with `\n`. This is
+    /// what the outliner renders so blocks authored across several
+    /// lines display every line, matching the web client's `raw_text`.
+    /// Defaults to empty so legacy call sites that only set `text`
+    /// keep compiling; render sites should prefer `displayText` which
+    /// falls back to `text` when `rawText` is empty.
+    var rawText: String = ""
     var done: Bool = false
     var indent: Int = 0
     var tags: [String] = []
@@ -36,6 +46,17 @@ struct Block: Identifiable, Equatable, Hashable, Codable {
     /// `recurBump` can construct the server-expected `<noteId>:<line>`
     /// composite block id without a separate lookup.
     var noteId: String = ""
+}
+
+extension Block {
+    /// Body to render in the outliner. Prefers the parser-populated
+    /// `rawText` (which preserves continuation lines) and falls back to
+    /// `text` for blocks constructed without a parse pass (new blocks
+    /// from `appendTodayBlock`, capture, etc., which never have
+    /// continuation lines anyway).
+    var displayText: String {
+        rawText.isEmpty ? text : rawText
+    }
 }
 
 /// One `key:: value` property attached to a block. The web client

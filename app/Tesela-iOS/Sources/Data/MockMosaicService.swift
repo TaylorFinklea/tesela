@@ -167,7 +167,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
     func editTodayBlock(id: String, text: String) {
         guard let idx = todayBlocks.firstIndex(where: { $0.id == id }) else { return }
         let (body, tags) = Self.splitInlineTags(text)
-        todayBlocks[idx].text = body
+        // `text` is the first line (used by previews/grep); `rawText`
+        // carries the full multi-line body so continuation lines
+        // survive the next writeback. They're equal for the common
+        // single-line case.
+        todayBlocks[idx].text = body.components(separatedBy: "\n").first ?? body
+        todayBlocks[idx].rawText = body
         todayBlocks[idx].tags = tags
         scheduleWriteback()
     }
@@ -236,7 +241,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
     func editPageBlock(pageId: String, blockId: String, text: String) {
         var blocks = loadedPageBlocks[pageId] ?? []
         guard let idx = blocks.firstIndex(where: { $0.id == blockId }) else { return }
-        blocks[idx].text = text
+        blocks[idx].text = text.components(separatedBy: "\n").first ?? text
+        blocks[idx].rawText = text
         Task { await pushPage(id: pageId, blocks: blocks) }
     }
 
@@ -999,9 +1005,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
             previousIndent = indent
             let parsed = parseBlockLine(line, indent: indent)
 
-            // Collect the property sub-lines that follow this block
-            // (physically indented deeper than the bullet, no `- `).
+            // Collect the property sub-lines AND continuation text that
+            // follow this block (physically indented deeper than the
+            // bullet, no `- `). Properties feed `properties`; everything
+            // else is a continuation line and is appended to the body so
+            // multi-line blocks render and round-trip intact.
             var properties: [BlockProperty] = []
+            var continuationLines: [String] = []
             i += 1
             while i < lines.count {
                 let next = lines[i]
@@ -1009,8 +1019,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 let nextTrim = next.trimmingCharacters(in: .whitespaces)
                 if nextTrim.hasPrefix("- ") { break }
                 if nextIndent <= rawIndent && !nextTrim.isEmpty { break }
+                if nextTrim.isEmpty {
+                    // Blank sub-line — skip silently, matching the web
+                    // parser which drops empty lines outright.
+                    i += 1
+                    continue
+                }
                 if let prop = parseProperty(nextTrim) {
                     properties.append(prop)
+                } else {
+                    continuationLines.append(nextTrim)
                 }
                 i += 1
             }
@@ -1033,10 +1051,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 }
             }
 
+            let rawText: String
+            if continuationLines.isEmpty {
+                rawText = parsed.text
+            } else {
+                rawText = ([parsed.text] + continuationLines).joined(separator: "\n")
+            }
+
             blocks.append(Block(
                 id: parsed.bid,
                 kind: kind,
                 text: parsed.text,
+                rawText: rawText,
                 done: done,
                 indent: indent,
                 tags: parsed.tags,
@@ -1211,7 +1237,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
             //     tags:: Task
             // The legacy `- [ ]` / `- [x]` markdown is read for input
             // tolerance but never written back.
-            out.append("\(indent)- \(block.text)\(trailingTags)\(bidSuffix)")
+            //
+            // Multi-line blocks emit the first line after the bullet,
+            // then each continuation line indented two spaces deeper
+            // than the bullet — matching what `parseBlocks` expects so
+            // the body round-trips losslessly.
+            let bodyLines = block.displayText.components(separatedBy: "\n")
+            let firstLine = bodyLines.first ?? ""
+            out.append("\(indent)- \(firstLine)\(trailingTags)\(bidSuffix)")
+            let continuationIndent = "\(indent)  "
+            for line in bodyLines.dropFirst() {
+                out.append("\(continuationIndent)\(line)")
+            }
 
             let propLines = renderProperties(for: block, indent: indent)
             out.append(contentsOf: propLines)
@@ -1396,6 +1433,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// target. Not part of the public service contract.
     func testableParseBlocks(from body: String, noteId: String) -> [Block] {
         parseBlocks(from: body, noteId: noteId)
+    }
+
+    /// Exposes `renderBody(from:)` to the `@testable` unit-test target so
+    /// we can verify round-tripping (including multi-line continuation
+    /// lines) through parse → render without going over HTTP.
+    func testableRenderBody(from blocks: [Block]) -> String {
+        renderBody(from: blocks)
     }
 }
 

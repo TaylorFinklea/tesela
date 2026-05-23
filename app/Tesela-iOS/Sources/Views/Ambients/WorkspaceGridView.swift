@@ -234,7 +234,7 @@ struct InProgressAmbientView: View {
                     BlockRow(
                         id: block.id,
                         kind: block.kind,
-                        text: block.text,
+                        text: block.displayText,
                         isDone: block.done,
                         tags: block.tags,
                         onToggleTask: { mosaic.toggleTask(id: block.id) }
@@ -244,7 +244,7 @@ struct InProgressAmbientView: View {
                     BlockRow(
                         id: block.id,
                         kind: block.kind,
-                        text: block.text,
+                        text: block.displayText,
                         isDone: block.done,
                         tags: block.tags,
                         onToggleTask: { mosaic.toggleTask(id: block.id) }
