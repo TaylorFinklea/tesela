@@ -943,12 +943,246 @@ impl SearchIndex for SqliteIndex {
 
     async fn agenda_blocks(
         &self,
-        _from: &str,
-        _to: &str,
-        _include_done: bool,
+        from: &str,
+        to: &str,
+        include_done: bool,
     ) -> Result<Vec<crate::query::AgendaRow>> {
-        // TODO(Task 2): implement SQLite-backed agenda projection.
-        unimplemented!("agenda_blocks: SQLite impl landing in Task 2")
+        use crate::query::{extract_iso_date, AgendaRow, AgendaRowKind};
+        use crate::recurrence;
+        use chrono::NaiveDate;
+
+        let today = chrono::Local::now().date_naive();
+        let from_date = NaiveDate::parse_from_str(from, "%Y-%m-%d").map_err(|e| {
+            crate::error::TeselaError::Database {
+                message: format!("agenda_blocks: invalid from date '{}': {}", from, e),
+                source: None,
+            }
+        })?;
+        let to_date = NaiveDate::parse_from_str(to, "%Y-%m-%d").map_err(|e| {
+            crate::error::TeselaError::Database {
+                message: format!("agenda_blocks: invalid to date '{}': {}", to, e),
+                source: None,
+            }
+        })?;
+
+        // Fetch all block_id + note_id pairs that have a scheduled or deadline
+        // property. We'll collect all properties for each matching block in a
+        // second pass. The broad fetch (no date-range filter) lets us handle
+        // recurring blocks whose anchor pre-dates the window but whose
+        // projected occurrences land inside it.
+        let candidate_ids: Vec<(String, String)> = {
+            let rows = sqlx::query(
+                r#"SELECT DISTINCT block_id, note_id
+                   FROM block_properties
+                   WHERE property_name IN ('deadline', 'scheduled')"#,
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to fetch agenda candidate block ids", e))?;
+            rows.iter()
+                .map(|r| {
+                    let block_id: String = r.get("block_id");
+                    let note_id: String = r.get("note_id");
+                    (block_id, note_id)
+                })
+                .collect()
+        };
+
+        // For each candidate block, load all its properties and the note body
+        // (to recover display text). We use parse_blocks to get the text field
+        // but rely on the indexed block_properties for properties (more reliable).
+        //
+        // Batch the notes we need so we don't spam individual SELECTs.
+        let note_ids: Vec<String> = {
+            let mut ids: Vec<String> = candidate_ids.iter().map(|(_, n)| n.clone()).collect();
+            ids.sort();
+            ids.dedup();
+            ids
+        };
+
+        // note_id -> body mapping
+        let mut note_bodies: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for note_id in &note_ids {
+            let row = sqlx::query("SELECT body FROM notes WHERE id = ?")
+                .bind(note_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| db_err("Failed to fetch note body for agenda", e))?;
+            if let Some(row) = row {
+                let body: String = row.get("body");
+                note_bodies.insert(note_id.clone(), body);
+            }
+        }
+
+        // block_id -> {property_name -> value}
+        let mut block_props: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, String>,
+        > = std::collections::HashMap::new();
+        for (block_id, _) in &candidate_ids {
+            let prop_rows = sqlx::query(
+                "SELECT property_name, value FROM block_properties WHERE block_id = ?",
+            )
+            .bind(block_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to fetch block properties for agenda", e))?;
+            let mut props = std::collections::HashMap::new();
+            for pr in &prop_rows {
+                let key: String = pr.get("property_name");
+                let value: Option<String> = pr.get("value");
+                if let Some(v) = value {
+                    props.insert(key, v);
+                }
+            }
+            block_props.insert(block_id.clone(), props);
+        }
+
+        // Helper: parse a dated property value into (NaiveDate, Option<time_str>).
+        // Handles bare "YYYY-MM-DD" and "YYYY-MM-DD HH:MM" forms as well as
+        // wiki-wrapped "[[YYYY-MM-DD]]" legacy form.
+        let parse_dated_value = |value: &str| -> Option<(NaiveDate, Option<String>)> {
+            // Extract the ISO date portion (strips [[ ]] if present).
+            let date_str = extract_iso_date(value)?;
+            let date = NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").ok()?;
+            // Look for an HH:MM time token after the date.
+            let rest = value[value.find(&date_str[..]).unwrap_or(0) + 10..].trim();
+            let time = if rest.len() >= 5
+                && rest.as_bytes()[2] == b':'
+                && rest[..2].chars().all(|c| c.is_ascii_digit())
+                && rest[3..5].chars().all(|c| c.is_ascii_digit())
+            {
+                Some(rest[..5].to_string())
+            } else {
+                None
+            };
+            Some((date, time))
+        };
+
+        let mut rows: Vec<AgendaRow> = Vec::new();
+
+        for (block_id, note_id) in &candidate_ids {
+            let props = match block_props.get(block_id) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            // Determine anchor date + time: prefer scheduled, fall back to deadline.
+            let (anchor_date, anchor_time) = {
+                let dated = props
+                    .get("scheduled")
+                    .and_then(|v| parse_dated_value(v))
+                    .or_else(|| props.get("deadline").and_then(|v| parse_dated_value(v)));
+                match dated {
+                    Some(p) => p,
+                    None => continue,
+                }
+            };
+
+            // Status and done-filtering.
+            let status = props.get("status").cloned();
+            if !include_done && status.as_deref() == Some("done") {
+                continue;
+            }
+
+            // Determine kind. A block is a Task if:
+            //   - it has a `tags` property containing "Task" (case-insensitive), OR
+            //   - it has a `status` property (todo/in-progress/done/etc.).
+            // Everything else is an Event.
+            let is_task = {
+                let has_task_tag = props
+                    .get("tags")
+                    .map(|v| {
+                        v.split(',')
+                            .any(|t| t.trim().eq_ignore_ascii_case("task"))
+                    })
+                    .unwrap_or(false);
+                let has_status = props.contains_key("status");
+                has_task_tag || has_status
+            };
+            let kind = if is_task { AgendaRowKind::Task } else { AgendaRowKind::Event };
+
+            // Block text: parse from body if we have it, otherwise use empty.
+            let block_text: String = note_bodies
+                .get(note_id)
+                .map(|body| {
+                    crate::block::parse_blocks(note_id, body)
+                        .into_iter()
+                        .find(|b| &b.id == block_id)
+                        .map(|b| b.text.clone())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
+
+            // Recurrence setup.
+            let recurrence_str = props.get("recurring").cloned();
+            let rec = recurrence_str
+                .as_deref()
+                .and_then(|s| recurrence::parse(s));
+            let done_so_far_start: u32 = props
+                .get("recurrence_done")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
+
+            // Closure to push a row.
+            let push_row = |rows: &mut Vec<AgendaRow>,
+                            date: NaiveDate,
+                            time: Option<String>,
+                            is_anchor: bool| {
+                rows.push(AgendaRow {
+                    block_id: block_id.clone(),
+                    source_note_id: note_id.clone(),
+                    occurrence_date: date.format("%Y-%m-%d").to_string(),
+                    occurrence_time: time,
+                    kind,
+                    overdue: date < today,
+                    recurrence: recurrence_str.clone(),
+                    is_anchor,
+                    text: block_text.clone(),
+                    status: status.clone(),
+                });
+            };
+
+            match rec {
+                None => {
+                    // Non-recurring: emit only if anchor falls in window.
+                    if anchor_date >= from_date && anchor_date <= to_date {
+                        push_row(&mut rows, anchor_date, anchor_time.clone(), true);
+                    }
+                }
+                Some(ref rec) => {
+                    // Recurring: emit anchor if in window, then walk forward.
+                    if anchor_date >= from_date && anchor_date <= to_date {
+                        push_row(&mut rows, anchor_date, anchor_time.clone(), true);
+                    }
+                    let mut current = anchor_date;
+                    let mut done_so_far = done_so_far_start;
+                    loop {
+                        let next = recurrence::advance(rec, current, done_so_far);
+                        let next = match next {
+                            None => break,
+                            Some(d) if d > to_date => break,
+                            Some(d) => d,
+                        };
+                        done_so_far += 1;
+                        if next >= from_date {
+                            push_row(&mut rows, next, anchor_time.clone(), false);
+                        }
+                        current = next;
+                    }
+                }
+            }
+        }
+
+        rows.sort_by(|a, b| {
+            a.occurrence_date
+                .cmp(&b.occurrence_date)
+                .then_with(|| a.occurrence_time.cmp(&b.occurrence_time))
+                .then_with(|| a.block_id.cmp(&b.block_id))
+        });
+
+        Ok(rows)
     }
 }
 
@@ -1691,5 +1925,112 @@ mod tests {
         let suggestions = index.suggest("Suggest").await.unwrap();
         assert!(!suggestions.is_empty());
         assert_eq!(suggestions[0], "Suggestion Test");
+    }
+
+    // -----------------------------------------------------------------------
+    // agenda_blocks tests (Task 2)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn agenda_blocks_returns_dated_blocks_in_window() {
+        use crate::traits::search_index::SearchIndex as _;
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+
+        // A task: scheduled 2026-05-22, status todo.
+        let task_note = make_test_note(
+            "agenda-t1",
+            "Task Note",
+            "- buy milk\n  scheduled:: 2026-05-22\n  tags:: Task\n  status:: todo",
+            &[],
+        );
+        // An event: scheduled 2026-05-23 14:00 (no status = event).
+        let event_note = make_test_note(
+            "agenda-t2",
+            "Event Note",
+            "- party\n  scheduled:: 2026-05-23 14:00",
+            &[],
+        );
+        // A done task scheduled on 2026-05-22 — should be excluded when include_done=false.
+        let done_note = make_test_note(
+            "agenda-t3",
+            "Done Note",
+            "- done chore\n  scheduled:: 2026-05-22\n  tags:: Task\n  status:: done",
+            &[],
+        );
+
+        index.reindex(&task_note).await.unwrap();
+        index.reindex(&event_note).await.unwrap();
+        index.reindex(&done_note).await.unwrap();
+
+        let rows = index
+            .agenda_blocks("2026-05-22", "2026-05-25", false)
+            .await
+            .unwrap();
+
+        // done task excluded
+        assert_eq!(rows.len(), 2, "expected 2 rows (done excluded): got {rows:?}");
+        assert!(
+            rows.iter().any(|r| r.kind == crate::query::AgendaRowKind::Task
+                && r.occurrence_date == "2026-05-22"),
+            "task row missing"
+        );
+        assert!(
+            rows.iter().any(|r| r.kind == crate::query::AgendaRowKind::Event
+                && r.occurrence_time == Some("14:00".to_string())),
+            "event row missing"
+        );
+    }
+
+    #[tokio::test]
+    async fn agenda_blocks_projects_recurring_forward() {
+        use crate::traits::search_index::SearchIndex as _;
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+
+        // Weekly recurring task, anchor 2026-05-22 (a Friday).
+        let note = make_test_note(
+            "agenda-r1",
+            "Recurring Note",
+            "- weekly review\n  scheduled:: 2026-05-22\n  recurring:: weekly\n  tags:: Task\n  status:: todo",
+            &[],
+        );
+        index.reindex(&note).await.unwrap();
+
+        let rows = index
+            .agenda_blocks("2026-05-22", "2026-06-12", false)
+            .await
+            .unwrap();
+
+        let dates: Vec<&str> = rows.iter().map(|r| r.occurrence_date.as_str()).collect();
+        assert_eq!(
+            dates,
+            vec!["2026-05-22", "2026-05-29", "2026-06-05", "2026-06-12"],
+            "projected dates wrong"
+        );
+        assert!(rows[0].is_anchor, "first row should be anchor");
+        assert!(!rows[1].is_anchor, "second row should not be anchor");
+        assert!(!rows[2].is_anchor, "third row should not be anchor");
+        assert!(!rows[3].is_anchor, "fourth row should not be anchor");
+    }
+
+    #[tokio::test]
+    async fn agenda_blocks_respects_recurrence_count() {
+        use crate::traits::search_index::SearchIndex as _;
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+
+        // `recurring:: weekly count 3` — series has exactly 3 occurrences.
+        let note = make_test_note(
+            "agenda-c1",
+            "Count Note",
+            "- counted task\n  scheduled:: 2026-05-22\n  recurring:: weekly count 3\n  recurrence_done:: 0\n  tags:: Task\n  status:: todo",
+            &[],
+        );
+        index.reindex(&note).await.unwrap();
+
+        let rows = index
+            .agenda_blocks("2026-05-22", "2026-12-31", false)
+            .await
+            .unwrap();
+
+        assert_eq!(rows.len(), 3, "count 3 should yield exactly 3 rows: got {rows:?}");
     }
 }
