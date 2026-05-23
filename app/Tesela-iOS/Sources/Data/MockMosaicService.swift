@@ -838,6 +838,29 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let modified: String?
     }
 
+    /// Body for `POST /agenda`. Matches the server's `AgendaQuery` deser.
+    private struct APIAgendaRequest: Encodable {
+        let from: String
+        let to: String
+        let include_done: Bool
+    }
+
+    /// Body for `POST /search/query`. The web client passes `group`
+    /// and `sort` for some surfaces; iOS leaves them nil for now and
+    /// post-filters / sorts client-side.
+    private struct APIExecuteQueryBody: Encodable {
+        let dsl: String
+        let group: String?
+        let sort: String?
+    }
+
+    /// Body for `POST /blocks/set-property`.
+    private struct APISetBlockPropertyBody: Encodable {
+        let block_id: String
+        let key: String
+        let value: String
+    }
+
     /// `Link` JSON from `GET /notes/{id}/backlinks`. For backlinks the
     /// server sets `target` to the *source* note's id and `text` to the
     /// line of context; the other `Link` fields are unused here.
@@ -873,6 +896,42 @@ final class MockMosaicService: ObservableObject, MosaicService {
         req.timeoutInterval = 8
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: req)
+        try ensureOk(response, data: data)
+    }
+
+    /// POST + decode JSON response. Used by the Agenda + Inbox surfaces
+    /// to call `/agenda` and `/search/query` without having to
+    /// hand-roll a URLRequest each time.
+    private func httpPostJSON<Body: Encodable, T: Decodable>(
+        _ path: String,
+        baseURL: URL,
+        body: Body,
+    ) async throws -> T {
+        let url = endpoint(path, baseURL: baseURL)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 8
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(body)
+        let (data, response) = try await session.data(for: req)
+        try ensureOk(response, data: data)
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// POST that ignores the response body. Used by `setBlockProperty`
+    /// where the server returns 200 OK with no payload of interest.
+    private func httpPostNoResponse<Body: Encodable>(
+        _ path: String,
+        baseURL: URL,
+        body: Body,
+    ) async throws {
+        let url = endpoint(path, baseURL: baseURL)
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.timeoutInterval = 8
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONEncoder().encode(body)
         let (data, response) = try await session.data(for: req)
         try ensureOk(response, data: data)
     }
@@ -1425,6 +1484,48 @@ final class MockMosaicService: ObservableObject, MosaicService {
         try ensureOk(response, data: data)
         // Refresh so the bumped block's new scheduled/deadline dates appear.
         await refresh(from: currentBackend)
+    }
+
+    // MARK: - Agenda + Inbox queries
+
+    /// Fetch the agenda window from `POST /agenda`. Bare ISO date strings
+    /// (`YYYY-MM-DD`) for `from` / `to`, inclusive both ends. Returns an
+    /// empty list on mock mode or HTTP failure rather than throwing, so
+    /// the calling view can render an empty state without ceremony.
+    func fetchAgenda(from: String, to: String, includeDone: Bool) async -> [AgendaRow] {
+        guard case .http(let baseURL) = currentBackend else { return [] }
+        let body = APIAgendaRequest(from: from, to: to, include_done: includeDone)
+        do {
+            return try await httpPostJSON("/agenda", baseURL: baseURL, body: body)
+        } catch {
+            return []
+        }
+    }
+
+    /// Run an arbitrary query DSL via `POST /search/query`. The Inbox
+    /// surface uses `kind:block -has:status` to list untriaged blocks
+    /// across the whole mosaic. Returns an empty result on failure so
+    /// the view renders the empty state instead of crashing.
+    func executeQuery(_ dsl: String) async -> QueryResult {
+        guard case .http(let baseURL) = currentBackend else {
+            return QueryResult(groups: [])
+        }
+        let body = APIExecuteQueryBody(dsl: dsl, group: nil, sort: nil)
+        do {
+            return try await httpPostJSON("/search/query", baseURL: baseURL, body: body)
+        } catch {
+            return QueryResult(groups: [])
+        }
+    }
+
+    /// Direct write to `/blocks/set-property`. Used by Agenda + Inbox
+    /// triage paths that already have the canonical server-side block
+    /// id (`noteId:lineNumber`) from a query response — no need to look
+    /// up via in-memory caches the way `setBlockProperties(id:)` does.
+    func setBlockProperty(blockId: String, key: String, value: String) async throws {
+        guard case .http(let baseURL) = currentBackend else { return }
+        let body = APISetBlockPropertyBody(block_id: blockId, key: key, value: value)
+        try await httpPostNoResponse("/blocks/set-property", baseURL: baseURL, body: body)
     }
 
     // MARK: - Internal test hooks

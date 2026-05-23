@@ -7,17 +7,20 @@ import SwiftUI
 /// (Phone/Mail/Photos pattern) — separate from the labeled pill of
 /// place-tabs. Capture is still a sheet, triggered from the TopBar.
 enum AppTab: Int, CaseIterable, Identifiable, Hashable {
-    case daily, inbox, library, search
+    case daily, agenda, inbox, library, search
 
     var id: Int { rawValue }
 
     /// Labeled tabs — exposed to TabView. Excludes `.search`, which the
     /// system labels and icons automatically through `role: .search`.
-    static var places: [AppTab] { [.daily, .inbox, .library] }
+    /// Order matches the mental flow: today's journal → planning →
+    /// triage backlog → reference.
+    static var places: [AppTab] { [.daily, .agenda, .inbox, .library] }
 
     var label: String {
         switch self {
         case .daily:   return "Daily"
+        case .agenda:  return "Agenda"
         case .inbox:   return "Inbox"
         case .library: return "Library"
         case .search:  return "Search"
@@ -27,6 +30,7 @@ enum AppTab: Int, CaseIterable, Identifiable, Hashable {
     var icon: IconName {
         switch self {
         case .daily:   return .daily
+        case .agenda:  return .cal
         case .inbox:   return .inbox
         case .library: return .page
         case .search:  return .search

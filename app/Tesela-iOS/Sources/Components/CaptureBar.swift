@@ -69,7 +69,7 @@ struct CaptureBar: View {
                     return .page(slug: page.slug, title: page.title)
                 }
                 return .today
-            case .daily, .search:       return .today
+            case .daily, .agenda, .search: return .today
             }
         }
     }

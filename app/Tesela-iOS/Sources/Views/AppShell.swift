@@ -128,6 +128,15 @@ struct AppShell: View {
                     transcription: transcription
                 )
             }
+            Tab(AppTab.agenda.label, systemImage: AppTab.agenda.systemImage, value: AppTab.agenda) {
+                AgendaView(
+                    mosaic: mosaic,
+                    backend: backend,
+                    appearance: appearance,
+                    syncState: syncState,
+                    transcription: transcription
+                )
+            }
             Tab(AppTab.inbox.label, systemImage: AppTab.inbox.systemImage, value: AppTab.inbox) {
                 InboxView(
                     mosaic: mosaic,
@@ -260,6 +269,7 @@ extension AppTab {
     var systemImage: String {
         switch self {
         case .daily:   return "calendar"
+        case .agenda:  return "list.bullet.below.rectangle"
         case .inbox:   return "tray"
         case .library: return "doc.text"
         case .search:  return "magnifyingglass"
