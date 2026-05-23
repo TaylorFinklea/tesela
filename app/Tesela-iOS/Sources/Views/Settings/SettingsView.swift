@@ -17,6 +17,7 @@ struct SettingsView: View {
     @EnvironmentObject private var mosaicRegistry: MosaicRegistry
 
     @AppStorage("captureDefaultTarget") private var captureDefault: CaptureDefault = .contextAware
+    @AppStorage("bareDateField") private var bareDateField: String = "scheduled"
     @State private var showMosaicSwitcher: Bool = false
 
     var body: some View {
@@ -114,6 +115,10 @@ struct SettingsView: View {
                         ForEach(CaptureDefault.allCases, id: \.self) { option in
                             Text(option.label).tag(option)
                         }
+                    }
+                    Picker("Default date field", selection: $bareDateField) {
+                        Text("Scheduled").tag("scheduled")
+                        Text("Deadline").tag("deadline")
                     }
                     NavigationLink("Keyboard toolbar") {
                         KeyboardToolbarSettingsView()

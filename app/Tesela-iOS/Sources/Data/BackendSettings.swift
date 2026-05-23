@@ -6,6 +6,7 @@ import SwiftUI
 final class BackendSettings: ObservableObject {
     @AppStorage("backend.mode") private var modeRaw: String = "mock"
     @AppStorage("backend.serverURL") var serverURL: String = "http://127.0.0.1:7474"
+    @AppStorage("bareDateField") var bareDateField: String = "scheduled"
 
     enum Mode: String {
         case mock = "mock"
