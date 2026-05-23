@@ -9,6 +9,15 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+    # Xcode 26 introduced explicit module builds (-explicit-module-build) which
+    # pre-scans all Clang module dependencies at plan time. The tesela_sync_ffiFFI
+    # module (from the Rust/UniFFI CFFI layer) uses a non-standard module-map name
+    # (module.modulemap inside $(SRCROOT)/CFFI) that the explicit-module scanner
+    # fails to resolve, even though SWIFT_INCLUDE_PATHS includes that directory and
+    # implicit builds (Xcode 15 style) find it fine. Disabling explicit modules
+    # restores the Xcode 15 implicit-module behaviour until the CFFI layout can be
+    # restructured to satisfy the Xcode 26 scanner.
+    SWIFT_ENABLE_EXPLICIT_MODULES: "NO"
 
 # Phase 29 — Whisper.cpp via Swift Package Manager so iOS can run
 # transcription on-device without a server round-trip. SwiftWhisper
