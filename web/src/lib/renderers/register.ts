@@ -28,6 +28,7 @@ import todayInProgress from "../ambients/today-in-progress";
 import workspaceDashboard from "../ambients/workspace-dashboard";
 import aiWorkspace from "../ambients/ai-workspace";
 import agenda from "../ambients/agenda";
+import inbox from "../ambients/inbox";
 
 registerDerived("backlinks-of-page", backlinksOfPage);
 registerDerived("outline-of-page", outlineOfPage);
@@ -42,3 +43,4 @@ registerAmbient("today-in-progress", todayInProgress);
 registerAmbient("workspace-dashboard", workspaceDashboard);
 registerAmbient("ai-workspace", aiWorkspace);
 registerAmbient("agenda", agenda);
+registerAmbient("inbox", inbox);

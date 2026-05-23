@@ -60,6 +60,7 @@ const AMBIENTS: { name: string; label: string; verb: string; glyph: string }[] =
   { name: "workspace-dashboard", label: "Workspace dashboard", verb: "dashboard", glyph: "▦" },
   { name: "ai-workspace", label: "AI workspace", verb: "ai", glyph: "✺" },
   { name: "agenda", label: "Agenda", verb: "agenda", glyph: "📋" },
+  { name: "inbox", label: "Inbox", verb: "inbox", glyph: "📥" },
 ];
 
 export type V4Command = {
