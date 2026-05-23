@@ -92,6 +92,51 @@ pub fn parse_note(content: &str) -> NoteTree {
     }
 }
 
+/// Drop "bare leaf" bullets from a note's body. A block is bare if its
+/// `text` (which includes any continuation/property sub-lines, since
+/// those fold into `FlatBlock.text` during parse) is whitespace-only.
+/// A block is a leaf if no later block sits at a deeper indent —
+/// i.e. it owns no children.
+///
+/// Walks blocks back-to-front so dropping a bare child re-exposes its
+/// parent as a leaf within the same pass: an empty parent whose only
+/// child was also empty will collapse alongside it. Empty parents that
+/// retain at least one non-bare descendant are preserved so the kept
+/// child doesn't get orphaned at the wrong indent on the next parse.
+///
+/// Frontmatter survives unchanged. This is the canonical cleanup step
+/// for any path that writes a note body — it mirrors the iOS client's
+/// `droppingBareLeafBlocks` so writes from every client converge on the
+/// same on-disk form.
+pub fn prune_bare_leaf_blocks(content: &str) -> String {
+    let mut tree = parse_note(content);
+    // Walk back-to-front, tracking the indent of every block we've
+    // decided to keep. A block has a deeper successor iff the most
+    // recent kept block (which, in reverse order, is the block
+    // immediately *after* it in the file) sits deeper than it.
+    let mut keep = vec![true; tree.blocks.len()];
+    let mut kept_indents: Vec<u16> = Vec::with_capacity(tree.blocks.len());
+    for (idx, block) in tree.blocks.iter().enumerate().rev() {
+        let has_deeper_successor = kept_indents
+            .last()
+            .map(|next_indent| *next_indent > block.indent)
+            .unwrap_or(false);
+        let bare = block.text.trim().is_empty();
+        if bare && !has_deeper_successor {
+            keep[idx] = false;
+        } else {
+            kept_indents.push(block.indent);
+        }
+    }
+    tree.blocks = tree
+        .blocks
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(b, k)| if k { Some(b) } else { None })
+        .collect();
+    serialize_note(&tree)
+}
+
 /// Serialize a [`NoteTree`] back to canonical markdown.
 ///
 /// `parse_note(serialize_note(tree)) == tree` for any tree built either
@@ -242,6 +287,15 @@ fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
         });
     }
     (blocks, stamped_any)
+}
+
+/// Public wrapper around [`extract_bid`] for callers that only need the
+/// cleaned text (the presentational form, with `<!-- bid:UUID -->`
+/// stripped). `parse_blocks` uses it to build `ParsedBlock.text` so
+/// rendered surfaces — agenda rows, inbox previews, search hits —
+/// never leak the on-disk identifier.
+pub fn strip_bid_comment(line: &str) -> String {
+    extract_bid(line).0
 }
 
 /// Strip `<!-- bid:UUID -->` comments from a line of text. Returns the
@@ -542,5 +596,80 @@ mod tests {
             .unwrap();
         let count = stamp_existing_notes(&notes_dir).await.unwrap();
         assert_eq!(count, 0);
+    }
+
+    // ── prune_bare_leaf_blocks ───────────────────────────────────────────
+
+    #[test]
+    fn prune_drops_trailing_empty_bullets() {
+        let id = fixture_uuid(0x01);
+        let content = format!(
+            "- Real content <!-- bid:{} -->\n- <!-- bid:{} -->\n- <!-- bid:{} -->\n",
+            id,
+            fixture_uuid(0x02),
+            fixture_uuid(0x03),
+        );
+        let pruned = prune_bare_leaf_blocks(&content);
+        assert_eq!(pruned, format!("- Real content <!-- bid:{} -->\n", id));
+    }
+
+    #[test]
+    fn prune_is_no_op_when_all_blocks_have_content() {
+        let content = format!(
+            "- First <!-- bid:{} -->\n- Second <!-- bid:{} -->\n",
+            fixture_uuid(0x10),
+            fixture_uuid(0x11),
+        );
+        let pruned = prune_bare_leaf_blocks(&content);
+        assert_eq!(pruned, content);
+    }
+
+    #[test]
+    fn prune_keeps_empty_parent_with_kept_child() {
+        // The parent has no text, but it owns a child with content — we
+        // must keep both so the child doesn't get orphaned at the wrong
+        // indent on the next parse.
+        let parent_id = fixture_uuid(0x20);
+        let child_id = fixture_uuid(0x21);
+        let content = format!(
+            "- <!-- bid:{} -->\n  - Child text <!-- bid:{} -->\n",
+            parent_id, child_id,
+        );
+        let pruned = prune_bare_leaf_blocks(&content);
+        assert_eq!(pruned, content);
+    }
+
+    #[test]
+    fn prune_recursively_drops_empty_parent_and_empty_child() {
+        // Both parent and child are bare. Walking back-to-front, the
+        // child is dropped first (it's a leaf), which re-exposes the
+        // parent as a leaf, so it's dropped too.
+        let parent_id = fixture_uuid(0x30);
+        let child_id = fixture_uuid(0x31);
+        let kept_id = fixture_uuid(0x32);
+        let content = format!(
+            "- <!-- bid:{} -->\n  - <!-- bid:{} -->\n- Kept <!-- bid:{} -->\n",
+            parent_id, child_id, kept_id,
+        );
+        let pruned = prune_bare_leaf_blocks(&content);
+        assert_eq!(pruned, format!("- Kept <!-- bid:{} -->\n", kept_id));
+    }
+
+    #[test]
+    fn prune_preserves_frontmatter() {
+        let kept_id = fixture_uuid(0x40);
+        let drop_id = fixture_uuid(0x41);
+        let content = format!(
+            "---\ntitle: \"Daily\"\ntags: [daily]\n---\n\n- Kept <!-- bid:{} -->\n- <!-- bid:{} -->\n",
+            kept_id, drop_id,
+        );
+        let pruned = prune_bare_leaf_blocks(&content);
+        assert_eq!(
+            pruned,
+            format!(
+                "---\ntitle: \"Daily\"\ntags: [daily]\n---\n\n- Kept <!-- bid:{} -->\n",
+                kept_id,
+            ),
+        );
     }
 }

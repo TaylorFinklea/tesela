@@ -160,9 +160,12 @@ fn make_block(
         }
     }
 
-    // Display text = first line with inline #tags stripped
+    // Display text = first line with the `<!-- bid:UUID -->` marker
+    // and inline `#tags` stripped. `raw_text` retains the marker so
+    // sync round-trips back to the canonical on-disk form.
     let first_line = raw_text.lines().next().unwrap_or(raw_text);
-    let display_text = TAG_RE.replace_all(first_line, "").trim().to_string();
+    let bid_stripped = crate::note_tree::strip_bid_comment(first_line);
+    let display_text = TAG_RE.replace_all(&bid_stripped, "").trim().to_string();
 
     ParsedBlock {
         id: format!("{}:{}", note_id, line_num),
@@ -423,6 +426,24 @@ mod tests {
         let blocks2 = parse_blocks("note1", body);
         assert_eq!(blocks1[0].id, blocks2[0].id);
         assert_eq!(blocks1[1].id, blocks2[1].id);
+    }
+
+    #[test]
+    fn parse_blocks_strips_bid_comment_from_display_text() {
+        // The on-disk form embeds a `<!-- bid:UUID -->` marker so block
+        // identity survives across sync. That marker must NOT leak into
+        // the presentational `text` field — clients render `text` in
+        // agenda rows, inbox previews, search hits, etc., where the bid
+        // would be visual noise. `raw_text` keeps the comment so the
+        // round-trip back to disk stays lossless.
+        let body = "- Do wood chips <!-- bid:019e549e-3fb3-7a72-acf2-3e5b4aba03f4 -->";
+        let blocks = parse_blocks("note", body);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].text, "Do wood chips");
+        assert!(
+            blocks[0].raw_text.contains("<!-- bid:"),
+            "raw_text must keep the bid comment for sync round-trip"
+        );
     }
 
     // ── split_inline_and_trailing_tags ────────────────────────────────────

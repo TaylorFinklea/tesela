@@ -12,7 +12,7 @@ use tesela_core::{
     daily::DailyNoteConfig,
     link::{GraphEdge, Link, LinkType},
     note::NoteId,
-    note_tree::{parse_note, serialize_note},
+    note_tree::{parse_note, prune_bare_leaf_blocks, serialize_note},
     recurrence::{self, Recurrence},
     storage::markdown::parse_frontmatter,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
@@ -143,10 +143,11 @@ pub async fn create_note(
         .iter()
         .map(String::as_str)
         .collect();
-    // Stamp persistent block ids on any unstamped bullets before write
-    // so the on-disk form is canonical for sync. Idempotent for input
-    // that already has bids.
-    let stamped = stamp_block_ids(&req.content);
+    // Drop empty trailing/orphan bullets then stamp persistent block ids
+    // on any unstamped bullets before write so the on-disk form is
+    // canonical for sync. Both passes are idempotent.
+    let cleaned = prune_bare_leaf_blocks(&req.content);
+    let stamped = stamp_block_ids(&cleaned);
     let note = s.store.create(&req.title, &stamped, &tags).await?;
     s.index.reindex(&note).await?;
     {
@@ -185,6 +186,12 @@ pub async fn update_note(
     // `todo`. Cross-note dependencies are out of v1 scope; users can
     // manually unblock or wait for the dependent's own save to re-evaluate.
     let (new_content, unblocked) = apply_dependency_cycles(&prev_content, &new_content, &id);
+    // Drop empty trailing/orphan bullets (e.g. abandoned "Add block" taps
+    // that the client persisted without ever typing into) before we stamp
+    // and write — keeps the on-disk form clean across every client. The
+    // iOS writeback already does this; the server-side pass ensures
+    // web/other clients converge on the same canonical form.
+    let new_content = prune_bare_leaf_blocks(&new_content);
     // Stamp persistent block ids on any newly-added bullets so the
     // on-disk form is canonical for sync. Lines that already had bids
     // (from prior saves) round-trip untouched.
