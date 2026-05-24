@@ -52,27 +52,6 @@ pub enum QueryOp {
     Lte,
 }
 
-impl QueryOp {
-    fn parse(s: &str, idx: usize) -> (QueryOp, usize) {
-        let bytes = s.as_bytes();
-        if idx + 1 < bytes.len() {
-            match (bytes[idx], bytes[idx + 1]) {
-                (b'>', b'=') => return (QueryOp::Gte, idx + 2),
-                (b'<', b'=') => return (QueryOp::Lte, idx + 2),
-                (b'!', b'=') => return (QueryOp::Ne, idx + 2),
-                _ => {}
-            }
-        }
-        if idx < bytes.len() {
-            match bytes[idx] {
-                b'>' => return (QueryOp::Gt, idx + 1),
-                b'<' => return (QueryOp::Lt, idx + 1),
-                _ => {}
-            }
-        }
-        (QueryOp::Eq, idx)
-    }
-}
 
 /// Which entity the query targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -87,7 +66,10 @@ pub enum Kind {
     Page,
 }
 
-/// One filter token in the parsed query.
+/// One filter token in the parsed query. Legacy flat-AND view; populated
+/// only when the parsed expression is a flat conjunction of simple
+/// `key OP value` predicates. Queries with `OR` / parens / `IN (…)` /
+/// `NOT IN (…)` produce an empty `filters` and live entirely in `expr`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
@@ -100,12 +82,73 @@ pub struct QueryFilter {
     pub value: String,
 }
 
-/// A parsed query: a `Kind` plus a flat list of filters that all must match.
+/// A single leaf predicate in the boolean expression tree. Carries either
+/// a comparison (`key OP value`) or set membership (`key IN (…)` /
+/// `key NOT IN (…)`). All other DSL constructs (negation, conjunction,
+/// disjunction, grouping) live at the [`BoolExpr`] level.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Predicate {
+    /// `key op value` — Eq / Ne / Lt / Lte / Gt / Gte against a single value.
+    Cmp { key: String, op: QueryOp, value: String },
+    /// `key IN (a, b, c)` or `key NOT IN (a, b, c)`. Drives the chip-bar
+    /// Types group and any future multi-value chip clusters.
+    In {
+        key: String,
+        values: Vec<String>,
+        /// `true` for `NOT IN`; flips the membership check.
+        negated: bool,
+    },
+}
+
+/// Boolean expression tree built by `parse_query`. The DSL is now a real
+/// algebra over predicates — `AND` / `OR` / `NOT` / parens — so a single
+/// flat predicate list (the legacy `filters` field) can't represent
+/// every parseable query. The matcher walks this tree; the legacy
+/// `filters` field is populated only when the tree is a flat AND of
+/// simple `Cmp` atoms, for SQL-prefilter compatibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+#[serde(rename_all = "snake_case", tag = "op")]
+pub enum BoolExpr {
+    /// Matches when every child matches. Empty `And` is the identity
+    /// (matches everything) — that's what `parse_query("")` returns.
+    And { args: Vec<BoolExpr> },
+    /// Matches when any child matches. Empty `Or` matches nothing,
+    /// but the parser never produces an empty `Or`.
+    Or { args: Vec<BoolExpr> },
+    /// Matches when the child does NOT match.
+    Not { arg: Box<BoolExpr> },
+    /// Leaf predicate.
+    Atom { pred: Predicate },
+}
+
+impl Default for BoolExpr {
+    fn default() -> Self {
+        BoolExpr::And { args: Vec::new() }
+    }
+}
+
+/// A parsed query: a `Kind`, the canonical expression tree (`expr`), and
+/// a legacy flat-AND view (`filters`) populated only for queries that
+/// happen to be expressible as one. Code that needs to filter blocks
+/// reads `expr`; code that wants to do SQL-level pre-filtering can
+/// inspect `filters` and degrade to "no prefilter" when it's empty.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
 #[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
 pub struct ParsedQuery {
     pub kind: Kind,
+    /// Canonical boolean expression. Always set; defaults to an empty
+    /// `And` (matches everything) for the empty query string.
+    pub expr: BoolExpr,
+    /// Legacy flat-AND view. Populated only when `expr` is a flat
+    /// conjunction of `Cmp` atoms (no `OR` / `NOT IN` / parens). Empty
+    /// otherwise — readers must handle that gracefully (the SQL
+    /// prefilter in `db/sqlite.rs::execute_block_query` does).
     pub filters: Vec<QueryFilter>,
 }
 
@@ -305,101 +348,507 @@ mod date_tests {
 /// Parse a DSL string into a [`ParsedQuery`]. Unrecognized syntax is dropped
 /// silently — matches the TS parser at `web/src/lib/query-language.ts:32`.
 pub fn parse_query(input: &str) -> ParsedQuery {
-    let bytes = input.as_bytes();
-    let mut filters = Vec::new();
-    let mut kind = Kind::Block;
-    let mut explicit_kind = false;
-
-    let mut i = 0usize;
-    while i < bytes.len() {
-        // Skip whitespace
-        while i < bytes.len() && (bytes[i] as char).is_whitespace() {
-            i += 1;
-        }
-        if i >= bytes.len() {
-            break;
-        }
-
-        // Optional negation prefix
-        let mut negated = false;
-        if bytes[i] == b'-' {
-            negated = true;
-            i += 1;
-        }
-
-        // Read key — alphanumeric + underscore + hyphen (so `has-link` parses as one key)
-        let key_start = i;
-        while i < bytes.len() && is_key_char(bytes[i]) {
-            i += 1;
-        }
-        if i == key_start {
-            // No key after '-' or unrecognized character — skip one byte to avoid loop
-            i += 1;
-            continue;
-        }
-        let key = input[key_start..i].to_ascii_lowercase();
-
-        // Expect ':'. If missing, skip the token entirely.
-        if i >= bytes.len() || bytes[i] != b':' {
-            continue;
-        }
-        i += 1;
-
-        // Optional comparison op
-        let (op_raw, next) = QueryOp::parse(input, i);
-        i = next;
-
-        // Value: quoted or bareword
-        let mut value = String::new();
-        if i < bytes.len() && bytes[i] == b'"' {
-            i += 1;
-            let val_start = i;
-            while i < bytes.len() && bytes[i] != b'"' {
-                i += 1;
-            }
-            value.push_str(&input[val_start..i]);
-            if i < bytes.len() && bytes[i] == b'"' {
-                i += 1;
-            }
-        } else {
-            let val_start = i;
-            while i < bytes.len() && !(bytes[i] as char).is_whitespace() {
-                i += 1;
-            }
-            value.push_str(&input[val_start..i]);
-        }
-
-        // `has:foo` may legitimately have no value when written as `-has:foo` —
-        // but `has:foo` always carries a key-name as value. Empty values for
-        // non-`has` filters are dropped.
-        if key != "has" && value.is_empty() {
-            continue;
-        }
-
-        // Apply negation by flipping the op.
-        let op = if negated { invert(op_raw) } else { op_raw };
-
-        // `kind:` is consumed into ParsedQuery.kind, not a filter.
-        if key == "kind" {
-            // `-kind:foo` is meaningless; ignore the negation.
-            if matches!(value.to_ascii_lowercase().as_str(), "page" | "pages") {
-                kind = Kind::Page;
-            } else {
-                kind = Kind::Block;
-            }
-            explicit_kind = true;
-            continue;
-        }
-
-        filters.push(QueryFilter { key, op, value });
-    }
-
-    let _ = explicit_kind; // reserved for future "implicit kind warnings"
-    ParsedQuery { kind, filters }
+    let tokens = tokenize(input);
+    let mut parser = Parser { input, tokens, pos: 0, kind: Kind::Block };
+    let expr = parser.parse_or().unwrap_or_default();
+    let filters = flatten_to_legacy_filters(&expr);
+    ParsedQuery { kind: parser.kind, expr, filters }
 }
 
-fn is_key_char(b: u8) -> bool {
+// ────────────────────────────────────────────────────────────────────
+// Tokenizer
+// ────────────────────────────────────────────────────────────────────
+
+/// Stream of tokens fed to the recursive-descent parser. The tokenizer
+/// is liberal — unrecognized punctuation becomes a `Word` so legacy
+/// quirky DSL strings (e.g. `tag:`) still survive parsing.
+///
+/// Each token in the tokenizer's output is paired with its byte offsets
+/// in the source string (see [`Spanned`]) so the parser can detect
+/// adjacency. That matters for values that legitimately contain `:`
+/// (e.g. block ids in `block:python:5` — the colon is part of the
+/// value, not a structural separator).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Token {
+    /// A bare identifier or value. Hyphens inside the word are kept
+    /// (so `has-link` / `tag-in` parse as a single token), matching
+    /// the legacy parser's `is_key_char` rule.
+    Word(String),
+    /// `"..."` literal — value carries the unwrapped contents.
+    Quoted(String),
+    LParen,
+    RParen,
+    Comma,
+    /// `:` — legacy "field follows" delimiter.
+    Colon,
+    /// `=`
+    Eq,
+    /// `!=`
+    Ne,
+    /// `<`
+    Lt,
+    /// `<=`
+    Lte,
+    /// `>`
+    Gt,
+    /// `>=`
+    Gte,
+    /// Standalone `-` (before whitespace boundary). Used by the parser
+    /// as a unary `NOT` shorthand on the next atom.
+    Minus,
+}
+
+/// Token paired with its source span. `end` is exclusive (one past the
+/// last byte). Adjacency is `prev.end == next.start` — the parser uses
+/// this to slurp colons / digits / dashes that belong to a single
+/// value (e.g. `block:python:5` where `python:5` is the value).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Spanned {
+    tok: Token,
+    start: usize,
+    end: usize,
+}
+
+fn tokenize(input: &str) -> Vec<Spanned> {
+    let bytes = input.as_bytes();
+    let mut tokens = Vec::new();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if (b as char).is_whitespace() {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let (tok, new_i) = match b {
+            b'(' => (Token::LParen, i + 1),
+            b')' => (Token::RParen, i + 1),
+            b',' => (Token::Comma, i + 1),
+            b':' => (Token::Colon, i + 1),
+            b'=' => (Token::Eq, i + 1),
+            b'!' if i + 1 < bytes.len() && bytes[i + 1] == b'=' => (Token::Ne, i + 2),
+            b'<' if i + 1 < bytes.len() && bytes[i + 1] == b'=' => (Token::Lte, i + 2),
+            b'>' if i + 1 < bytes.len() && bytes[i + 1] == b'=' => (Token::Gte, i + 2),
+            b'<' => (Token::Lt, i + 1),
+            b'>' => (Token::Gt, i + 1),
+            b'"' => {
+                let val_start = i + 1;
+                let mut j = val_start;
+                while j < bytes.len() && bytes[j] != b'"' { j += 1; }
+                let val = input[val_start..j].to_string();
+                let end = if j < bytes.len() && bytes[j] == b'"' { j + 1 } else { j };
+                (Token::Quoted(val), end)
+            }
+            b'-' => (Token::Minus, i + 1),
+            b if is_word_char(b) => {
+                let mut j = i;
+                while j < bytes.len() && is_word_char(bytes[j]) { j += 1; }
+                (Token::Word(input[i..j].to_string()), j)
+            }
+            _ => {
+                // Unknown byte — skip silently so malformed input doesn't
+                // panic the parser.
+                i += 1;
+                continue;
+            }
+        };
+        tokens.push(Spanned { tok, start, end: new_i });
+        i = new_i;
+    }
+    tokens
+}
+
+fn is_word_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Recursive-descent parser
+// ────────────────────────────────────────────────────────────────────
+
+struct Parser<'a> {
+    /// Source string; needed by `parse_value_slurp` to re-extract the
+    /// raw byte range when a value spans multiple adjacent tokens
+    /// (e.g. `block:python:5` where the value `python:5` contains a
+    /// colon that the tokenizer split off).
+    input: &'a str,
+    tokens: Vec<Spanned>,
+    pos: usize,
+    /// `kind:block` / `kind:page` is plucked out of the predicate stream
+    /// and stored here, not in the expression tree — it controls which
+    /// candidate set the matcher walks, not how individual rows are
+    /// filtered. Defaults to Block.
+    kind: Kind,
+}
+
+impl<'a> Parser<'a> {
+    fn peek(&self) -> Option<&Token> {
+        self.tokens.get(self.pos).map(|s| &s.tok)
+    }
+
+    fn bump(&mut self) -> Option<Token> {
+        if self.pos < self.tokens.len() {
+            let t = self.tokens[self.pos].tok.clone();
+            self.pos += 1;
+            Some(t)
+        } else {
+            None
+        }
+    }
+
+
+    /// Is the upcoming token a boolean keyword (case-insensitive)?
+    fn peek_keyword(&self, kw: &str) -> bool {
+        match self.peek() {
+            Some(Token::Word(w)) => w.eq_ignore_ascii_case(kw),
+            _ => false,
+        }
+    }
+
+    /// Is the upcoming token something that starts a new unary expression?
+    /// (Used to detect implicit AND between space-separated atoms.)
+    fn peek_starts_unary(&self) -> bool {
+        match self.peek() {
+            Some(Token::LParen) | Some(Token::Word(_)) | Some(Token::Minus) => {
+                // `OR` / `AND` / `NOT` keywords don't start a unary — they're
+                // part of a higher-level rule.
+                !self.peek_keyword("or") && !self.peek_keyword("and")
+            }
+            _ => false,
+        }
+    }
+
+    fn parse_or(&mut self) -> Option<BoolExpr> {
+        let mut left = self.parse_and()?;
+        let mut alts = Vec::new();
+        while self.peek_keyword("or") {
+            self.bump();
+            if let Some(rhs) = self.parse_and() {
+                if alts.is_empty() {
+                    alts.push(left.clone());
+                }
+                alts.push(rhs);
+            }
+        }
+        if !alts.is_empty() {
+            left = BoolExpr::Or { args: alts };
+        }
+        Some(left)
+    }
+
+    fn parse_and(&mut self) -> Option<BoolExpr> {
+        let mut left = self.parse_unary()?;
+        let mut args = Vec::new();
+        loop {
+            if self.peek_keyword("and") {
+                self.bump();
+            } else if !self.peek_starts_unary() {
+                break;
+            }
+            if let Some(rhs) = self.parse_unary() {
+                if args.is_empty() {
+                    args.push(left.clone());
+                }
+                args.push(rhs);
+            } else {
+                break;
+            }
+        }
+        if !args.is_empty() {
+            left = BoolExpr::And { args };
+        }
+        Some(left)
+    }
+
+    fn parse_unary(&mut self) -> Option<BoolExpr> {
+        // Loop so we can keep trying after `kind:value` predicates that
+        // get consumed for their side-effect (mutating `self.kind`) but
+        // produce no expression. Without the loop, `kind:block tag:Task`
+        // would lose the `tag:Task` clause because the first parse_unary
+        // returns None.
+        loop {
+            if self.peek_keyword("not") {
+                self.bump();
+                let inner = self.parse_unary()?;
+                return Some(BoolExpr::Not { arg: Box::new(inner) });
+            }
+            if matches!(self.peek(), Some(Token::Minus)) {
+                self.bump();
+                let inner = self.parse_unary()?;
+                return Some(BoolExpr::Not { arg: Box::new(inner) });
+            }
+            if matches!(self.peek(), Some(Token::LParen)) {
+                self.bump();
+                let inner = self.parse_or().unwrap_or_default();
+                if matches!(self.peek(), Some(Token::RParen)) {
+                    self.bump();
+                }
+                return Some(inner);
+            }
+            let start_pos = self.pos;
+            match self.parse_predicate() {
+                Some(p) => return Some(BoolExpr::Atom { pred: p }),
+                None => {
+                    if self.pos == start_pos {
+                        // No progress — give up to avoid infinite loop.
+                        return None;
+                    }
+                    // Predicate consumed (likely `kind:foo`); try the
+                    // next unary at the new cursor. An explicit `AND`
+                    // keyword between the consumed-for-side-effect
+                    // predicate and the next real one needs to be
+                    // eaten so we don't stall — e.g. `kind:block AND
+                    // status:todo` would otherwise stop at AND.
+                    if self.peek_keyword("and") {
+                        self.bump();
+                    }
+                    if !self.peek_starts_unary() {
+                        return None;
+                    }
+                    continue;
+                }
+            }
+        }
+    }
+
+    /// Parse one predicate. Backward-compat: every legacy form
+    /// (`key:value`, `key:>=N`, `tag-in:a,b,c`, `has:foo`) must still
+    /// produce the same predicate the old flat parser produced.
+    fn parse_predicate(&mut self) -> Option<Predicate> {
+        let key_token = self.bump()?;
+        let raw_key = match key_token {
+            Token::Word(w) => w,
+            // A standalone quoted string or punctuation at predicate
+            // position is malformed — drop and let the next pass
+            // re-synchronize at the next whitespace.
+            _ => return None,
+        };
+        let key = raw_key.to_ascii_lowercase();
+
+        // `kind:` is meta — consume the value, set self.kind, return None
+        // so this token doesn't end up in the expression tree.
+        if key == "kind" {
+            if matches!(self.peek(), Some(Token::Colon)) {
+                self.bump();
+            }
+            if let Some(v) = self.parse_value() {
+                self.kind = if matches!(v.to_ascii_lowercase().as_str(), "page" | "pages") {
+                    Kind::Page
+                } else {
+                    Kind::Block
+                };
+            }
+            return None;
+        }
+
+        // Legacy `tag-in:a,b,c` shape: key ends with `-in`, next token
+        // is `:`, value is comma-separated bareword list. Equivalent to
+        // `tag IN (a, b, c)` in the new grammar.
+        if key.ends_with("-in") && matches!(self.peek(), Some(Token::Colon)) {
+            self.bump(); // consume ':'
+            let real_key = key[..key.len() - "-in".len()].to_string();
+            let values = self.parse_comma_list_until_whitespace();
+            return Some(Predicate::In { key: real_key, values, negated: false });
+        }
+
+        // New-style infix `key IN (…)` / `key NOT IN (…)`
+        if self.peek_keyword("in") {
+            self.bump();
+            let values = self.parse_paren_value_list();
+            return Some(Predicate::In { key, values, negated: false });
+        }
+        if self.peek_keyword("not") {
+            // Tentatively consume NOT; commit only if followed by IN.
+            let save = self.pos;
+            self.bump();
+            if self.peek_keyword("in") {
+                self.bump();
+                let values = self.parse_paren_value_list();
+                return Some(Predicate::In { key, values, negated: true });
+            }
+            self.pos = save;
+        }
+
+        // Infix comparison operator: `key = value`, `key != value`, etc.
+        if let Some(op) = self.consume_infix_op() {
+            let value = self.parse_value().unwrap_or_default();
+            return Some(Predicate::Cmp { key, op, value });
+        }
+
+        // Legacy colon syntax: `key:value`, `key:>=N`, etc. `has:foo` is
+        // the one legitimate "no value" form — `value` is the property
+        // name. For everything else, an empty value drops the predicate.
+        if matches!(self.peek(), Some(Token::Colon)) {
+            self.bump();
+            let op = self.consume_legacy_colon_op().unwrap_or(QueryOp::Eq);
+            let value = self.parse_value().unwrap_or_default();
+            if key != "has" && value.is_empty() {
+                return None;
+            }
+            return Some(Predicate::Cmp { key, op, value });
+        }
+
+        // A bareword with no operator at all isn't a valid predicate;
+        // the legacy parser dropped these silently.
+        None
+    }
+
+    fn consume_infix_op(&mut self) -> Option<QueryOp> {
+        let op = match self.peek()? {
+            Token::Eq => QueryOp::Eq,
+            Token::Ne => QueryOp::Ne,
+            Token::Lt => QueryOp::Lt,
+            Token::Lte => QueryOp::Lte,
+            Token::Gt => QueryOp::Gt,
+            Token::Gte => QueryOp::Gte,
+            _ => return None,
+        };
+        self.bump();
+        Some(op)
+    }
+
+    fn consume_legacy_colon_op(&mut self) -> Option<QueryOp> {
+        let op = match self.peek()? {
+            Token::Ne => QueryOp::Ne,
+            Token::Lte => QueryOp::Lte,
+            Token::Gte => QueryOp::Gte,
+            Token::Lt => QueryOp::Lt,
+            Token::Gt => QueryOp::Gt,
+            _ => return None,
+        };
+        self.bump();
+        Some(op)
+    }
+
+    fn parse_value(&mut self) -> Option<String> {
+        // Quoted strings are always self-contained — never slurp past
+        // them; the user opted into explicit quoting.
+        if matches!(self.peek(), Some(Token::Quoted(_))) {
+            return self.bump().and_then(|t| match t {
+                Token::Quoted(s) => Some(s),
+                _ => None,
+            });
+        }
+        // Slurp every token contiguous with the first Word — preserves
+        // legacy values that contain `:` (block ids: `python:5`),
+        // periods, etc. Stop at the first whitespace gap or at a
+        // non-value-like token (`(` / `)` / `,`).
+        let first_idx = self.pos;
+        let first = self.bump()?;
+        let mut buf = match first {
+            Token::Word(w) => w,
+            _ => return None,
+        };
+        let mut end_offset = self.tokens[first_idx].end;
+        while self.pos < self.tokens.len() {
+            let span = &self.tokens[self.pos];
+            if span.start != end_offset {
+                break; // whitespace gap → value ends
+            }
+            match &span.tok {
+                Token::Word(_) | Token::Colon | Token::Eq | Token::Ne
+                | Token::Lt | Token::Lte | Token::Gt | Token::Gte
+                | Token::Minus => {
+                    // Append the raw source bytes — preserves the exact
+                    // characters the tokenizer split off.
+                    buf.push_str(&self.input[span.start..span.end]);
+                    end_offset = span.end;
+                    self.pos += 1;
+                }
+                // Quoted / paren / comma terminate the value.
+                _ => break,
+            }
+        }
+        Some(buf)
+    }
+
+    /// Parse `(a, b, c)` — used for `IN (…)` / `NOT IN (…)`. Tolerates
+    /// missing parens (returns an empty list) so malformed input never
+    /// panics.
+    fn parse_paren_value_list(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        if !matches!(self.peek(), Some(Token::LParen)) {
+            return out;
+        }
+        self.bump();
+        loop {
+            match self.peek() {
+                Some(Token::RParen) => { self.bump(); break; }
+                Some(Token::Comma) => { self.bump(); }
+                Some(Token::Word(_)) | Some(Token::Quoted(_)) => {
+                    if let Some(v) = self.parse_value() {
+                        out.push(v);
+                    }
+                }
+                _ => break,
+            }
+        }
+        out
+    }
+
+    /// Parse `a,b,c` (legacy `tag-in:a,b,c` shape — no parens). Stops
+    /// at the next token that can't be part of a comma list. The
+    /// legacy parser treated whitespace as the boundary; here, any
+    /// non-Word / non-Comma token ends the list.
+    fn parse_comma_list_until_whitespace(&mut self) -> Vec<String> {
+        let mut out = Vec::new();
+        loop {
+            match self.peek() {
+                Some(Token::Word(_)) | Some(Token::Quoted(_)) => {
+                    if let Some(v) = self.parse_value() {
+                        out.push(v);
+                    }
+                }
+                Some(Token::Comma) => { self.bump(); }
+                _ => break,
+            }
+        }
+        // Strip empty entries (e.g. trailing comma) and lowercase nothing
+        // — the matcher already case-folds.
+        out.into_iter().filter(|s| !s.is_empty()).collect()
+    }
+}
+
+/// Flatten a `BoolExpr` into a legacy `Vec<QueryFilter>` view, ONLY
+/// when the expression is a flat conjunction of simple `Cmp` atoms
+/// (or `Not(Cmp)` which becomes a flipped op). Returns an empty
+/// vector for any expression that can't be expressed in the legacy
+/// shape — readers that depend on `filters` (e.g. the SQL prefilter)
+/// must handle the empty case as "no usable prefilter."
+fn flatten_to_legacy_filters(expr: &BoolExpr) -> Vec<QueryFilter> {
+    let atoms: Vec<&BoolExpr> = match expr {
+        BoolExpr::And { args } => args.iter().collect(),
+        // A single non-AND expression — wrap in a one-element view.
+        BoolExpr::Atom { .. } | BoolExpr::Not { .. } => vec![expr],
+        BoolExpr::Or { .. } => return Vec::new(),
+    };
+    let mut out = Vec::with_capacity(atoms.len());
+    for a in atoms {
+        match a {
+            BoolExpr::Atom { pred: Predicate::Cmp { key, op, value } } => {
+                out.push(QueryFilter {
+                    key: key.clone(),
+                    op: *op,
+                    value: value.clone(),
+                });
+            }
+            BoolExpr::Not { arg } => match arg.as_ref() {
+                BoolExpr::Atom { pred: Predicate::Cmp { key, op, value } } => {
+                    out.push(QueryFilter {
+                        key: key.clone(),
+                        op: invert(*op),
+                        value: value.clone(),
+                    });
+                }
+                _ => return Vec::new(),
+            },
+            // `IN` / nested `And` / `Or` predicates don't fit the
+            // legacy flat view; bail with an empty vector and let the
+            // caller fall back to "no prefilter."
+            _ => return Vec::new(),
+        }
+    }
+    out
 }
 
 fn invert(op: QueryOp) -> QueryOp {
@@ -499,7 +948,53 @@ fn apply_op(actual: &str, op: QueryOp, expected: &str) -> bool {
 /// callers that already have blocks in memory (e.g. the indexer's broad-filter
 /// → in-memory-refine pattern in `SqliteIndex::get_typed_blocks`).
 pub fn block_matches(block: &ParsedBlock, q: &ParsedQuery) -> bool {
-    q.filters.iter().all(|f| filter_matches(block, f))
+    eval_expr(block, &q.expr)
+}
+
+/// Walk the `BoolExpr` tree, short-circuiting AND/OR. Empty `And` matches
+/// everything (the identity); empty `Or` matches nothing.
+fn eval_expr(block: &ParsedBlock, expr: &BoolExpr) -> bool {
+    match expr {
+        BoolExpr::And { args } => args.iter().all(|a| eval_expr(block, a)),
+        BoolExpr::Or { args } => args.iter().any(|a| eval_expr(block, a)),
+        BoolExpr::Not { arg } => !eval_expr(block, arg),
+        BoolExpr::Atom { pred } => pred_matches(block, pred),
+    }
+}
+
+/// Evaluate a leaf predicate. Routes `Cmp` to the existing per-key
+/// filter logic (preserved verbatim from the legacy parser so behavior
+/// stays identical); `In` walks the value list and short-circuits.
+fn pred_matches(block: &ParsedBlock, pred: &Predicate) -> bool {
+    match pred {
+        Predicate::Cmp { key, op, value } => {
+            // Build a transient QueryFilter so we can reuse the existing
+            // per-key matchers without duplicating their logic. This is
+            // the cheap-and-correct path; if the matchers ever get
+            // expensive enough that the allocation hurts, inline them.
+            let f = QueryFilter {
+                key: key.clone(),
+                op: *op,
+                value: value.clone(),
+            };
+            filter_matches(block, &f)
+        }
+        Predicate::In { key, values, negated } => {
+            // `key in (a, b, c)` is OR over `key = v` for each v.
+            // `key not in (a, b, c)` is the negation. Uses the same
+            // per-key matcher path so semantics line up with `tag:foo`
+            // / property lookups exactly.
+            let any_match = values.iter().any(|v| {
+                let f = QueryFilter {
+                    key: key.clone(),
+                    op: QueryOp::Eq,
+                    value: v.clone(),
+                };
+                filter_matches(block, &f)
+            });
+            if *negated { !any_match } else { any_match }
+        }
+    }
 }
 
 fn filter_matches(block: &ParsedBlock, f: &QueryFilter) -> bool {
@@ -918,15 +1413,21 @@ mod tests {
     }
 
     #[test]
-    fn block_matches_tag_in_empty_values_dropped_by_parser() {
-        // `tag-in:` with no value gets dropped during parsing — same as
-        // every other non-`has` clause with an empty value. The
-        // resulting query has zero filters and matches every block
-        // (vacuous AND). Documenting the behavior so future "make this
-        // smarter" tweaks are deliberate.
+    fn block_matches_tag_in_empty_values_matches_nothing() {
+        // `tag-in:` (with no values) is an empty membership set, which
+        // semantically matches nothing — same as `tag in ()`. Old
+        // parser dropped this clause entirely (vacuous AND → matched
+        // every block); the new BoolExpr-based parser preserves it as
+        // an empty `In` predicate so the semantics are honest. No
+        // realistic user authors a `tag-in:` with no values — the chip
+        // system always emits a populated list or no clause at all.
         let q = parse_query("tag-in:");
+        // Legacy flat-filters view stays empty (In doesn't fit the
+        // simple Cmp shape that flat-filters captures).
         assert_eq!(q.filters.len(), 0);
-        assert!(block_matches(&block_with(vec!["Task"], &[]), &q));
+        // But block_matches now correctly excludes everything — the
+        // In predicate is in the expression tree.
+        assert!(!block_matches(&block_with(vec!["Task"], &[]), &q));
     }
 
     #[test]
@@ -951,6 +1452,153 @@ mod tests {
         let q = parse_query("tag:Task");
         assert!(block_matches(&block_with(vec!["Task"], &[]), &q));
         assert!(!block_matches(&block_with(vec!["Note"], &[]), &q));
+    }
+
+    // ── JQL-style grammar: OR / AND / NOT / IN / parens ─────────────
+
+    #[test]
+    fn parses_or_keyword_case_insensitive() {
+        // `a OR b` and `a or b` both build an Or with two args.
+        for input in ["tag:Task OR tag:Note", "tag:Task or tag:Note"] {
+            let q = parse_query(input);
+            assert!(matches!(q.expr, BoolExpr::Or { ref args } if args.len() == 2),
+                "input {input:?} parsed as {:?}", q.expr);
+        }
+    }
+
+    #[test]
+    fn block_matches_or_disjunction() {
+        // (status:todo OR status:doing) — either matches the row.
+        let q = parse_query("status:todo OR status:doing");
+        assert!(block_matches(&block_with(vec![], &[("status", "todo")]), &q));
+        assert!(block_matches(&block_with(vec![], &[("status", "doing")]), &q));
+        assert!(!block_matches(&block_with(vec![], &[("status", "done")]), &q));
+    }
+
+    #[test]
+    fn block_matches_paren_grouping() {
+        // (status:todo OR status:doing) AND has:deadline — needs the
+        // OR inside parens to bind tighter than the surrounding AND.
+        let q = parse_query("(status:todo OR status:doing) AND has:deadline");
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "todo"), ("deadline", "2026-01-01")]),
+            &q,
+        ));
+        // todo but no deadline → falls out
+        assert!(!block_matches(&block_with(vec![], &[("status", "todo")]), &q));
+        // has deadline but wrong status → falls out
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "done"), ("deadline", "2026-01-01")]),
+            &q,
+        ));
+    }
+
+    #[test]
+    fn parses_not_keyword_as_unary() {
+        // `NOT tag:Task` is a Not wrapping the atom.
+        let q = parse_query("NOT tag:Task");
+        assert!(matches!(q.expr, BoolExpr::Not { .. }));
+        assert!(!block_matches(&block_with(vec!["Task"], &[]), &q));
+        assert!(block_matches(&block_with(vec!["Note"], &[]), &q));
+    }
+
+    #[test]
+    fn parses_infix_in_with_parens() {
+        // `tag in (Task, Domain, Issue)` is the JQL-style form;
+        // `tag-in:Task,Domain,Issue` is the legacy shorthand. Both
+        // produce the same Predicate::In.
+        let qa = parse_query("tag in (Task, Domain, Issue)");
+        let qb = parse_query("tag-in:Task,Domain,Issue");
+        // Both should match the same blocks.
+        for q in [&qa, &qb] {
+            assert!(block_matches(&block_with(vec!["Task"], &[]), q));
+            assert!(block_matches(&block_with(vec!["Domain"], &[]), q));
+            assert!(block_matches(&block_with(vec!["Issue"], &[]), q));
+            assert!(!block_matches(&block_with(vec!["Person"], &[]), q));
+        }
+    }
+
+    #[test]
+    fn parses_not_in() {
+        // `tag NOT IN (Done, Cancelled)` — set-membership exclusion.
+        let q = parse_query("tag NOT IN (Done, Cancelled)");
+        assert!(!block_matches(&block_with(vec!["Done"], &[]), &q));
+        assert!(!block_matches(&block_with(vec!["Cancelled"], &[]), &q));
+        assert!(block_matches(&block_with(vec!["Task"], &[]), &q));
+    }
+
+    #[test]
+    fn parses_infix_comparison_ops() {
+        // `priority >= 3` parses identically to the legacy `priority:>=3`.
+        let qa = parse_query("priority >= 3");
+        let qb = parse_query("priority:>=3");
+        let target = block_with(vec![], &[("priority", "5")]);
+        assert!(block_matches(&target, &qa));
+        assert!(block_matches(&target, &qb));
+        let low = block_with(vec![], &[("priority", "1")]);
+        assert!(!block_matches(&low, &qa));
+        assert!(!block_matches(&low, &qb));
+    }
+
+    #[test]
+    fn complex_mixed_query() {
+        // The shape the user gave as the motivating example, plus a
+        // tighter AND clause around it:
+        //   (status:todo OR status:doing) AND tag in (Task, Issue)
+        let q = parse_query("(status:todo OR status:doing) AND tag in (Task, Issue)");
+        // todo + Task → matches
+        assert!(block_matches(&block_with(vec!["Task"], &[("status", "todo")]), &q));
+        // doing + Issue → matches
+        assert!(block_matches(&block_with(vec!["Issue"], &[("status", "doing")]), &q));
+        // done + Task → fails (status check)
+        assert!(!block_matches(&block_with(vec!["Task"], &[("status", "done")]), &q));
+        // todo + Person → fails (tag-in check)
+        assert!(!block_matches(&block_with(vec!["Person"], &[("status", "todo")]), &q));
+    }
+
+    #[test]
+    fn flat_and_query_populates_legacy_filters_field() {
+        // Backward-compat: flat-AND queries still expose `filters` for
+        // the SQL prefilter in db/sqlite.rs. Mixed-boolean queries
+        // leave `filters` empty so callers degrade to "no prefilter."
+        let flat = parse_query("kind:block tag:Task -status:done");
+        assert_eq!(flat.filters.len(), 2);
+        // Mixed-boolean: filters should be empty.
+        let mixed = parse_query("tag:Task OR tag:Note");
+        assert_eq!(mixed.filters.len(), 0);
+        let with_in = parse_query("tag in (Task, Note)");
+        assert_eq!(with_in.filters.len(), 0);
+    }
+
+    #[test]
+    fn kind_clause_with_explicit_and_doesnt_swallow_rest() {
+        // Regression: `kind:block AND tag:Task` — `kind:` is consumed
+        // for side-effect (sets `self.kind`); the parser must skip the
+        // following `AND` keyword and parse the next predicate, or it
+        // stalls and the query degrades to "match everything."
+        let q = parse_query("kind:block AND tag:Task");
+        // The expression should be just the tag clause (kind:block
+        // doesn't appear in the AST; it lives on ParsedQuery.kind).
+        assert_eq!(q.kind, Kind::Block);
+        match &q.expr {
+            BoolExpr::Atom { pred: Predicate::Cmp { key, value, .. } } => {
+                assert_eq!(key, "tag");
+                assert_eq!(value, "Task");
+            }
+            other => panic!("expected single tag:Task atom, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_block_id_with_embedded_colon_still_parses() {
+        // Regression: `block:python:5` is a single predicate where the
+        // value contains a `:`. The new tokenizer splits on `:` so the
+        // parser has to slurp adjacent tokens to reconstruct the value.
+        let q = parse_query("block:python:5");
+        // Legacy flat-filters view captures it as a single Cmp.
+        assert_eq!(q.filters.len(), 1);
+        assert_eq!(q.filters[0].key, "block");
+        assert_eq!(q.filters[0].value, "python:5");
     }
 
     #[test]

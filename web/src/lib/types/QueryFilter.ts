@@ -2,7 +2,10 @@
 import type { QueryOp } from "./QueryOp";
 
 /**
- * One filter token in the parsed query.
+ * One filter token in the parsed query. Legacy flat-AND view; populated
+ * only when the parsed expression is a flat conjunction of simple
+ * `key OP value` predicates. Queries with `OR` / parens / `IN (…)` /
+ * `NOT IN (…)` produce an empty `filters` and live entirely in `expr`.
  */
 export type QueryFilter = { 
 /**
