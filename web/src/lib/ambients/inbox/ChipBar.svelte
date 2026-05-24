@@ -4,17 +4,26 @@
   let {
     state,
     availableTypes,
+    availableFilters,
+    activeSlug,
     onToggleStatic,
     onToggleType,
     onUnhidePage,
     onUnhideBlock,
     onEditRaw,
+    onSwitchFilter,
+    onSaveAs,
   }: {
     state: ChipState;
     /** Names of all known types, used to render the Types chip-group.
      * Sourced from `/types` by the parent so chips reflect what the
      * user's TypeRegistry actually contains. */
     availableTypes: string[];
+    /** All saved filters — every `note_type: Query` note. Drives the
+     * "Filter ▾" dropdown so the user can switch between them. */
+    availableFilters: Array<{ slug: string; title: string }>;
+    /** Currently active filter slug; selected entry in the dropdown. */
+    activeSlug: string;
     /** Toggle the static chip with id `chipId`. */
     onToggleStatic: (chipId: string) => void;
     /** Toggle inclusion of the given type name in the activeTypes set. */
@@ -25,6 +34,10 @@
     onUnhideBlock: (blockId: string) => void;
     /** Open the raw-DSL editor sheet. */
     onEditRaw: () => void;
+    /** Switch the active filter to a different saved query. */
+    onSwitchFilter: (slug: string) => void;
+    /** Prompt for a name and save the current DSL as a new filter. */
+    onSaveAs: () => void;
   } = $props();
 
   // Registry order is canonical for static rendering — `defaultOn`
@@ -68,12 +81,35 @@
       >{clause}</span>
     {/each}
 
-    <button
-      type="button"
-      class="ml-auto px-2 py-0.5 rounded border border-muted-foreground/20 text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 transition-colors font-mono text-[10px]"
-      onclick={onEditRaw}
-      title="Edit raw DSL"
-    >{"<"}/{">"} Edit query</button>
+    <div class="ml-auto flex items-center gap-1.5">
+      <!-- Saved-filter switcher. Shows the current filter's title; the
+           dropdown lists every `note_type: Query` note in the mosaic.
+           Hidden when no filters exist yet (first-run mosaic). -->
+      {#if availableFilters.length > 1}
+        <select
+          class="px-2 py-0.5 rounded border border-muted-foreground/20 bg-background text-foreground text-[11px] cursor-pointer hover:border-muted-foreground/40 transition-colors"
+          value={activeSlug}
+          onchange={(e) => onSwitchFilter((e.currentTarget as HTMLSelectElement).value)}
+          title="Switch saved filter"
+        >
+          {#each availableFilters as f (f.slug)}
+            <option value={f.slug}>{f.title}</option>
+          {/each}
+        </select>
+      {/if}
+      <button
+        type="button"
+        class="px-2 py-0.5 rounded border border-muted-foreground/20 text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 transition-colors text-[10px]"
+        onclick={onSaveAs}
+        title="Save current filter as a new saved query"
+      >+ Save as…</button>
+      <button
+        type="button"
+        class="px-2 py-0.5 rounded border border-muted-foreground/20 text-muted-foreground hover:text-foreground hover:border-muted-foreground/40 transition-colors font-mono text-[10px]"
+        onclick={onEditRaw}
+        title="Edit raw DSL"
+      >{"<"}/{">"} Edit query</button>
+    </div>
   </div>
 
   <!-- Row 2: Types chip-group — only renders when there are types to

@@ -22,29 +22,63 @@
   let { onNavigate }: AmbientRendererProps = $props();
   void onNavigate;
 
-  // ── The Inbox query note ──────────────────────────────────────────────
-  // The Inbox is backed by a real note with `note_type: Query` at slug
-  // `inbox` — same shape every saved query takes (see
-  // `widget-registry.svelte.ts`). Toggling a chip rewrites the note's
-  // `query::` line and PUTs (debounced); WS echo invalidates the rows
-  // query so the row list refreshes automatically.
+  // ── The active filter note (saved query) ──────────────────────────────
+  // The Inbox is backed by a real note with `note_type: Query` whose
+  // slug is the "active filter." Default is `inbox`; the user can
+  // create more saved filters via "Save as…" and switch between them
+  // via the header dropdown — each rebuilds the chip state from a
+  // different note's `query::` line.
   //
-  // On first open with no such note, we seed one with the default chip
-  // set. The hardcoded entry in `system-widgets.ts` is the fallback
-  // until the note exists.
-  const INBOX_NOTE_ID = "inbox";
+  // `activeSlug` persists in localStorage so the user's last-used
+  // filter survives reloads.
+  const DEFAULT_FILTER_SLUG = "inbox";
+  const ACTIVE_SLUG_STORAGE_KEY = "tesela.inbox.activeFilterSlug";
+
+  let activeSlug = $state<string>(
+    (typeof localStorage !== "undefined" &&
+      localStorage.getItem(ACTIVE_SLUG_STORAGE_KEY)) ||
+      DEFAULT_FILTER_SLUG,
+  );
+
+  function setActiveSlug(slug: string) {
+    activeSlug = slug;
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(ACTIVE_SLUG_STORAGE_KEY, slug);
+    }
+  }
 
   const inboxNoteQuery = createQuery(() => ({
-    queryKey: ["note", INBOX_NOTE_ID] as const,
+    queryKey: ["note", activeSlug] as const,
     // Tolerate 404 and surface as `null` so the seed flow can run.
     queryFn: async () => {
       try {
-        return await api.getNote(INBOX_NOTE_ID);
+        return await api.getNote(activeSlug);
       } catch {
         return null as Note | null;
       }
     },
   }));
+
+  // All saved filters (every `note_type: Query` note in the mosaic).
+  // Drives the "Filter ▾" dropdown. Piggybacks on the same notes cache
+  // that Station / RailWidgets use, so opening Inbox doesn't fire an
+  // extra round-trip when one of those is already mounted.
+  const allNotesQuery = createQuery(() => ({
+    queryKey: ["notes", { limit: 500 }] as const,
+    queryFn: () => api.listNotes({ limit: 500 }),
+  }));
+  /** Only inbox-shaped saved filters appear in the switcher. Default
+   *  `inbox` slug + anything namespaced `inbox-*` (matches the slug
+   *  convention `saveAsFilter` writes). Filters out the system
+   *  widgets (calendar / tasks / dailies / etc) — those are also
+   *  `note_type: Query` notes but aren't inbox alternatives. */
+  const availableFilters = $derived<Array<{ slug: string; title: string }>>(
+    ((allNotesQuery.data ?? []) as Note[])
+      .filter((n) => n.metadata.note_type === "Query")
+      .filter((n) => n.id === DEFAULT_FILTER_SLUG || n.id.startsWith("inbox-"))
+      .map((n) => ({ slug: n.id, title: n.title || n.id }))
+      .sort((a, b) => a.title.localeCompare(b.title)),
+  );
 
   // /types drives the dynamic Types chip-group. Cached aggressively
   // (types rarely change at runtime); refetched on focus so a user who
@@ -202,7 +236,7 @@
         ...existing,
         content: buildInboxNoteContent(existing, nextDsl),
       };
-      qc.setQueryData(["note", INBOX_NOTE_ID], optimisticNote);
+      qc.setQueryData(["note", activeSlug], optimisticNote);
     } else {
       // No note cached yet (first-ever toggle on a fresh mosaic) —
       // keep the new DSL in a fallback state so the chip lights up
@@ -228,17 +262,17 @@
       const existing = inboxNoteQuery.data;
       const newContent = buildInboxNoteContent(existing, dsl);
       if (existing) {
-        await api.updateNote(INBOX_NOTE_ID, newContent);
+        await api.updateNote(activeSlug, newContent);
       } else {
-        // Seed the note on first save. createNote uses the title to
-        // derive the slug, but we want the canonical `inbox` slug
-        // (matches v4 widget id). The system-widgets seeder also
-        // creates it lazily; if it races, the catch below swallows
-        // the dup-id error and we re-PUT into the existing note.
+        // Seed the note on first save. createNote derives the slug
+        // from the title; for the default Inbox slug we pass the
+        // canonical name. The system-widgets seeder may also create
+        // it lazily — if it races, the catch below swallows the
+        // dup-id error and we re-PUT into the existing note.
         try {
-          await api.createNote("Inbox", newContent, []);
+          await api.createNote(titleForNewFilter(activeSlug), newContent, []);
         } catch {
-          await api.updateNote(INBOX_NOTE_ID, newContent);
+          await api.updateNote(activeSlug, newContent);
         }
       }
       // Only invalidate the rows query — the note cache was already
@@ -259,7 +293,8 @@
   /** Build a Query-note content string. Reuses the existing note's
    *  frontmatter when present (preserving icon/color/section), splicing
    *  in a fresh `query::` line. Greenfield case writes a minimal
-   *  frontmatter + body. */
+   *  frontmatter + body — title derived from the active slug so a
+   *  saved filter at `inbox-work` reads as "Inbox Work" in the sidebar. */
   function buildInboxNoteContent(existing: Note | null | undefined, dsl: string): string {
     if (existing) {
       const content = existing.content;
@@ -280,18 +315,108 @@
     }
     // First-write — minimal frontmatter so the rest of the app
     // recognizes this as a Query widget.
+    const title = titleForNewFilter(activeSlug);
     return [
       "---",
-      'title: "Inbox"',
+      `title: "${title}"`,
       'type: "Query"',
       'icon: "inbox"',
       'color: "teal"',
-      'section: "browse"',
+      'section: "saved"',
       "---",
       "",
       `query:: ${dsl}`,
       "",
     ].join("\n");
+  }
+
+  /** Render a friendly title from a slug. `inbox` → "Inbox"; any
+   *  other slug becomes Title Case with hyphens replaced by spaces. */
+  function titleForNewFilter(slug: string): string {
+    if (slug === DEFAULT_FILTER_SLUG) return "Inbox";
+    return slug
+      .split("-")
+      .filter((w) => w.length > 0)
+      .map((w) => w[0].toUpperCase() + w.slice(1))
+      .join(" ");
+  }
+
+  /** Slugify a user-entered filter name. Lowercases, replaces
+   *  whitespace with `-`, drops non-alphanumeric. */
+  function slugify(name: string): string {
+    return name
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9-]/g, "");
+  }
+
+  // ── Save-as-filter + switcher ─────────────────────────────────────
+
+  let savingFilter = $state(false);
+
+  async function saveAsFilter() {
+    if (savingFilter) return;
+    const name = window.prompt(
+      "Name this filter:\n(e.g. \"Work\" → :inbox-work)",
+      "",
+    );
+    if (!name) return;
+    const baseSlug = slugify(name);
+    if (!baseSlug) {
+      toast("That name doesn't slugify cleanly. Try letters + spaces.", "error");
+      return;
+    }
+    // Namespace under `inbox-` so the user can tell saved filters apart
+    // from arbitrary Query notes. The default Inbox keeps its raw slug.
+    const slug = baseSlug.startsWith("inbox-") || baseSlug === DEFAULT_FILTER_SLUG
+      ? baseSlug
+      : `inbox-${baseSlug}`;
+    if (availableFilters.some((f) => f.slug === slug)) {
+      toast(`A filter named ${slug} already exists. Pick a different name.`, "error");
+      return;
+    }
+    savingFilter = true;
+    try {
+      // Build the new note's content from the current chip state DSL.
+      const content = buildContentForNewFilter(slug, activeDsl);
+      await api.createNote(titleForNewFilter(slug), content, []);
+      const qc = getAppQueryClient();
+      if (qc) {
+        await qc.invalidateQueries({ queryKey: ["notes"] });
+      }
+      setActiveSlug(slug);
+      toast(`Saved as filter ${slug}`, "success");
+    } catch (e) {
+      toast(`Failed to save filter: ${e}`, "error");
+    } finally {
+      savingFilter = false;
+    }
+  }
+
+  /** Greenfield content for a brand-new saved filter — never reuses
+   *  the current activeSlug's note since we want a distinct file. */
+  function buildContentForNewFilter(slug: string, dsl: string): string {
+    const title = titleForNewFilter(slug);
+    return [
+      "---",
+      `title: "${title}"`,
+      'type: "Query"',
+      'icon: "inbox"',
+      'color: "teal"',
+      'section: "saved"',
+      "---",
+      "",
+      `query:: ${dsl}`,
+      "",
+    ].join("\n");
+  }
+
+  function switchFilter(slug: string) {
+    if (slug === activeSlug) return;
+    setActiveSlug(slug);
+    // The TanStack queryKey `["note", activeSlug]` re-runs on the new
+    // slug; no manual invalidation needed.
   }
 
   function toggleChip(chipId: string) {
@@ -477,11 +602,15 @@
   <ChipBar
     state={chipState}
     {availableTypes}
+    {availableFilters}
+    {activeSlug}
     onToggleStatic={toggleChip}
     onToggleType={toggleType}
     onUnhidePage={unhidePage}
     onUnhideBlock={unhideBlock}
     onEditRaw={() => (rawDslOpen = true)}
+    onSwitchFilter={switchFilter}
+    onSaveAs={saveAsFilter}
   />
 
   {#if rowsQuery.isLoading}
