@@ -50,6 +50,12 @@ pub enum QueryOp {
     Gte,
     /// `<=`
     Lte,
+    /// `LIKE` — SQL-style pattern match. `%` matches any run of chars,
+    /// `_` matches exactly one char. Case-insensitive; regex
+    /// metacharacters in the pattern are treated as literals.
+    Like,
+    /// `NOT LIKE` — negation of `Like`.
+    NotLike,
 }
 
 
@@ -150,6 +156,14 @@ pub struct ParsedQuery {
     /// otherwise — readers must handle that gracefully (the SQL
     /// prefilter in `db/sqlite.rs::execute_block_query` does).
     pub filters: Vec<QueryFilter>,
+    /// `ORDER BY` clause from the DSL — pre-composed into the comma-
+    /// separated `"key1 desc, key2 asc, key3"` shape that
+    /// `db::sqlite::apply_sort` already accepts. `None` when the query
+    /// has no `ORDER BY`, in which case the caller's external `sort`
+    /// param (e.g. the HTTP body's `sort` field) is the fallback.
+    #[serde(default)]
+    #[cfg_attr(test, ts(optional))]
+    pub sort: Option<String>,
 }
 
 /// One row in a [`QueryResult`] — either a block or a whole page.
@@ -347,12 +361,21 @@ mod date_tests {
 
 /// Parse a DSL string into a [`ParsedQuery`]. Unrecognized syntax is dropped
 /// silently — matches the TS parser at `web/src/lib/query-language.ts:32`.
+/// Wrap a leaf predicate as a `BoolExpr::Atom`. Tiny shorthand used
+/// throughout the parser now that `parse_predicate` returns BoolExpr
+/// (so range-style sugars like `BETWEEN` can desugar into composite
+/// trees without inventing new `Predicate` variants).
+fn atom(pred: Predicate) -> BoolExpr {
+    BoolExpr::Atom { pred }
+}
+
 pub fn parse_query(input: &str) -> ParsedQuery {
     let tokens = tokenize(input);
     let mut parser = Parser { input, tokens, pos: 0, kind: Kind::Block };
     let expr = parser.parse_or().unwrap_or_default();
+    let sort = parser.parse_order_by();
     let filters = flatten_to_legacy_filters(&expr);
-    ParsedQuery { kind: parser.kind, expr, filters }
+    ParsedQuery { kind: parser.kind, expr, filters, sort }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -505,6 +528,54 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// Is the upcoming two-token sequence `ORDER BY`? Used by
+    /// `parse_unary` to stop expression parsing so the trailing sort
+    /// clause can be picked up by `parse_order_by` at the top level.
+    fn peek_order_by(&self) -> bool {
+        let peek_at = |off: usize| self.tokens.get(self.pos + off).map(|s| &s.tok);
+        matches!(peek_at(0), Some(Token::Word(w)) if w.eq_ignore_ascii_case("order"))
+            && matches!(peek_at(1), Some(Token::Word(w)) if w.eq_ignore_ascii_case("by"))
+    }
+
+    /// Parse a trailing `ORDER BY field1 [ASC|DESC] [, field2 [ASC|DESC]] …`
+    /// clause and pre-compose it into the comma-separated string shape
+    /// `db::sqlite::apply_sort` already accepts. Direction defaults to
+    /// ascending (omitted) when not specified, matching SQL convention.
+    /// Returns `None` if no `ORDER BY` is present at the cursor.
+    fn parse_order_by(&mut self) -> Option<String> {
+        if !self.peek_order_by() {
+            return None;
+        }
+        self.bump(); // consume "ORDER"
+        self.bump(); // consume "BY"
+        let mut parts: Vec<String> = Vec::new();
+        loop {
+            let key = match self.bump() {
+                Some(Token::Word(k)) => k.to_ascii_lowercase(),
+                _ => break,
+            };
+            let suffix = if self.peek_keyword("desc") {
+                self.bump();
+                " desc"
+            } else if self.peek_keyword("asc") {
+                self.bump();
+                " asc"
+            } else {
+                ""
+            };
+            parts.push(format!("{key}{suffix}"));
+            if !matches!(self.peek(), Some(Token::Comma)) {
+                break;
+            }
+            self.bump(); // consume comma
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(", "))
+        }
+    }
+
     /// Is the upcoming token something that starts a new unary expression?
     /// (Used to detect implicit AND between space-separated atoms.)
     fn peek_starts_unary(&self) -> bool {
@@ -567,6 +638,15 @@ impl<'a> Parser<'a> {
         // would lose the `tag:Task` clause because the first parse_unary
         // returns None.
         loop {
+            // Stop here when we see a trailing `ORDER BY` clause —
+            // the sort spec is parsed separately at the parse_query
+            // level. Without this, `ORDER` / `BY` / the field names
+            // would be consumed by the predicate loop as malformed
+            // bareword predicates and silently dropped, and `sort`
+            // would never be populated.
+            if self.peek_order_by() {
+                return None;
+            }
             if self.peek_keyword("not") {
                 self.bump();
                 let inner = self.parse_unary()?;
@@ -587,7 +667,7 @@ impl<'a> Parser<'a> {
             }
             let start_pos = self.pos;
             match self.parse_predicate() {
-                Some(p) => return Some(BoolExpr::Atom { pred: p }),
+                Some(e) => return Some(e),
                 None => {
                     if self.pos == start_pos {
                         // No progress — give up to avoid infinite loop.
@@ -614,7 +694,7 @@ impl<'a> Parser<'a> {
     /// Parse one predicate. Backward-compat: every legacy form
     /// (`key:value`, `key:>=N`, `tag-in:a,b,c`, `has:foo`) must still
     /// produce the same predicate the old flat parser produced.
-    fn parse_predicate(&mut self) -> Option<Predicate> {
+    fn parse_predicate(&mut self) -> Option<BoolExpr> {
         let key_token = self.bump()?;
         let raw_key = match key_token {
             Token::Word(w) => w,
@@ -648,25 +728,40 @@ impl<'a> Parser<'a> {
             self.bump(); // consume ':'
             let real_key = key[..key.len() - "-in".len()].to_string();
             let values = self.parse_comma_list_until_whitespace();
-            return Some(Predicate::In { key: real_key, values, negated: false });
+            return Some(atom(Predicate::In { key: real_key, values, negated: false }));
         }
 
         // New-style infix `key IN (…)` / `key NOT IN (…)`
         if self.peek_keyword("in") {
             self.bump();
             let values = self.parse_paren_value_list();
-            return Some(Predicate::In { key, values, negated: false });
+            return Some(atom(Predicate::In { key, values, negated: false }));
         }
         if self.peek_keyword("not") {
-            // Tentatively consume NOT; commit only if followed by IN.
+            // Tentatively consume NOT; commit only if followed by IN or LIKE.
             let save = self.pos;
             self.bump();
             if self.peek_keyword("in") {
                 self.bump();
                 let values = self.parse_paren_value_list();
-                return Some(Predicate::In { key, values, negated: true });
+                return Some(atom(Predicate::In { key, values, negated: true }));
+            }
+            if self.peek_keyword("like") {
+                self.bump();
+                let value = self.parse_value().unwrap_or_default();
+                return Some(atom(Predicate::Cmp { key, op: QueryOp::NotLike, value }));
             }
             self.pos = save;
+        }
+
+        // `key LIKE "pattern"` — SQL-style wildcard match. Distinct
+        // path from the generic infix-op handling because LIKE is a
+        // keyword (Word token), not punctuation; without this branch
+        // it would slip past `consume_infix_op` and fall through.
+        if self.peek_keyword("like") {
+            self.bump();
+            let value = self.parse_value().unwrap_or_default();
+            return Some(atom(Predicate::Cmp { key, op: QueryOp::Like, value }));
         }
 
         // `key IS NULL` / `key IS NOT NULL` — sugar for `-has:key` /
@@ -685,15 +780,17 @@ impl<'a> Parser<'a> {
             } else {
                 false
             };
-            if self.peek_keyword("null") {
+            // Accept `NULL` or `EMPTY` — JQL spells the absence test
+            // both ways; the desugar is identical.
+            if self.peek_keyword("null") || self.peek_keyword("empty") {
                 self.bump();
-                return Some(Predicate::Cmp {
+                return Some(atom(Predicate::Cmp {
                     key: "has".to_string(),
-                    // `IS NOT NULL` → property present  → has:key      → Eq
-                    // `IS NULL`     → property absent   → -has:key     → Ne
+                    // `IS NOT NULL`/`IS NOT EMPTY` → present → has:key → Eq
+                    // `IS NULL`    /`IS EMPTY`     → absent  → -has:key → Ne
                     op: if negated { QueryOp::Eq } else { QueryOp::Ne },
                     value: key,
-                });
+                }));
             }
             // Wasn't a NULL test (`key IS something`) — rewind so the
             // next clause has a chance, even though no current grammar
@@ -701,10 +798,43 @@ impl<'a> Parser<'a> {
             self.pos = save;
         }
 
+        // `key BETWEEN a AND b` — sugar for `key >= a AND key <= b`.
+        // Inclusive on both ends (JQL + SQL convention). Desugars into a
+        // BoolExpr::And of two ordinary Cmp atoms so the matcher + SQL
+        // prefilter stay variant-free. If parsing fails midway (no `AND`
+        // separator, no high bound), we rewind so the rest of the
+        // expression still has a chance.
+        if self.peek_keyword("between") {
+            let save = self.pos;
+            self.bump(); // consume "between"
+            if let Some(low) = self.parse_value() {
+                if self.peek_keyword("and") {
+                    self.bump();
+                    if let Some(high) = self.parse_value() {
+                        return Some(BoolExpr::And {
+                            args: vec![
+                                atom(Predicate::Cmp {
+                                    key: key.clone(),
+                                    op: QueryOp::Gte,
+                                    value: low,
+                                }),
+                                atom(Predicate::Cmp {
+                                    key,
+                                    op: QueryOp::Lte,
+                                    value: high,
+                                }),
+                            ],
+                        });
+                    }
+                }
+            }
+            self.pos = save;
+        }
+
         // Infix comparison operator: `key = value`, `key != value`, etc.
         if let Some(op) = self.consume_infix_op() {
             let value = self.parse_value().unwrap_or_default();
-            return Some(Predicate::Cmp { key, op, value });
+            return Some(atom(Predicate::Cmp { key, op, value }));
         }
 
         // Legacy colon syntax: `key:value`, `key:>=N`, etc. `has:foo` is
@@ -717,7 +847,7 @@ impl<'a> Parser<'a> {
             if key != "has" && value.is_empty() {
                 return None;
             }
-            return Some(Predicate::Cmp { key, op, value });
+            return Some(atom(Predicate::Cmp { key, op, value }));
         }
 
         // A bareword with no operator at all isn't a valid predicate;
@@ -891,7 +1021,49 @@ fn invert(op: QueryOp) -> QueryOp {
         QueryOp::Lt => QueryOp::Gte,
         QueryOp::Gte => QueryOp::Lt,
         QueryOp::Lte => QueryOp::Gt,
+        QueryOp::Like => QueryOp::NotLike,
+        QueryOp::NotLike => QueryOp::Like,
     }
+}
+
+/// Translate a SQL `LIKE` pattern into an anchored, case-insensitive
+/// regex. `%` becomes `.*`, `_` becomes `.`; every other char that's
+/// special to the regex engine is escaped so the pattern reads as
+/// literal text. Anchored so the WHOLE value must match (substring
+/// semantics require the user to write `%foo%` explicitly — matches
+/// SQL's behavior).
+fn like_to_regex(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len() * 2 + 8);
+    out.push_str("(?i)^");
+    for ch in pattern.chars() {
+        match ch {
+            '%' => out.push_str(".*"),
+            '_' => out.push('.'),
+            // Regex meta-characters that must be escaped to be treated
+            // as literals. Kept in sync with `regex::escape`'s set;
+            // hand-rolled here to avoid a per-call allocation when the
+            // pattern is short.
+            '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
+            | '\\' | '#' | '&' | '-' | '~' => {
+                out.push('\\');
+                out.push(ch);
+            }
+            _ => out.push(ch),
+        }
+    }
+    out.push('$');
+    out
+}
+
+/// Compile a LIKE pattern and test it against `actual`. Compilation
+/// failures fall back to "no match" — a malformed pattern shouldn't
+/// blow up the matcher.
+fn like_matches(actual: &str, pattern: &str) -> bool {
+    let re = match regex::Regex::new(&like_to_regex(pattern)) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    re.is_match(actual)
 }
 
 /// Comparison helper that tries number → ISO-date → case-insensitive string.
@@ -963,6 +1135,8 @@ fn apply_op(actual: &str, op: QueryOp, expected: &str) -> bool {
     match op {
         QueryOp::Eq => actual.eq_ignore_ascii_case(expected),
         QueryOp::Ne => !actual.eq_ignore_ascii_case(expected),
+        QueryOp::Like => like_matches(actual, expected),
+        QueryOp::NotLike => !like_matches(actual, expected),
         op => {
             let cmp = compare(actual, expected);
             match op {
@@ -1171,6 +1345,16 @@ fn filter_matches(block: &ParsedBlock, f: &QueryFilter) -> bool {
                 QueryOp::Ne => !matched,
                 _ => false,
             }
+        }
+        "text" => {
+            // `text:foo` and `text LIKE "%foo%"` search the block's
+            // display text (first line, tags stripped). Eq/Ne do
+            // case-insensitive equality, Like/NotLike do SQL-style
+            // pattern match, comparison ops fall back to string
+            // ordering. The cleaned `text` field (not `raw_text`) is
+            // what every other surface displays, so users searching
+            // for "wood" find what they see.
+            apply_op(&block.text, f.op, &f.value)
         }
         "is" => {
             // `is:heading` matches blocks whose first non-whitespace run
@@ -1835,6 +2019,243 @@ mod tests {
         assert!(block_matches(&block_with(vec!["Domain"], &[]), &q));
         assert!(block_matches(&block_with(vec!["Issue"], &[]), &q));
         assert!(!block_matches(&block_with(vec!["Person"], &[]), &q));
+    }
+
+    /// `ORDER BY deadline` populates `sort` with the field name and
+    /// nothing else (ASC is implicit).
+    #[test]
+    fn order_by_single_field_default_ascending() {
+        let q = parse_query("status = todo ORDER BY deadline");
+        assert_eq!(q.sort.as_deref(), Some("deadline"));
+    }
+
+    /// `ORDER BY deadline DESC` appends the direction so `apply_sort`
+    /// flips the comparison.
+    #[test]
+    fn order_by_with_desc() {
+        let q = parse_query("status = todo ORDER BY deadline DESC");
+        assert_eq!(q.sort.as_deref(), Some("deadline desc"));
+    }
+
+    /// Multi-key sort uses comma separation (the same shape `apply_sort`
+    /// already accepts via the HTTP `sort` param).
+    #[test]
+    fn order_by_multi_key() {
+        let q = parse_query("type = task ORDER BY status, deadline DESC");
+        assert_eq!(q.sort.as_deref(), Some("status, deadline desc"));
+    }
+
+    /// `ORDER BY` is case-insensitive (matches the rest of the keyword
+    /// grammar).
+    #[test]
+    fn order_by_case_insensitive() {
+        let q = parse_query("status = todo order by deadline asc");
+        assert_eq!(q.sort.as_deref(), Some("deadline asc"));
+    }
+
+    /// Without an `ORDER BY` clause, `sort` is `None` — the HTTP `sort`
+    /// param remains the fallback for callers that set it externally.
+    #[test]
+    fn no_order_by_leaves_sort_none() {
+        let q = parse_query("status = todo");
+        assert_eq!(q.sort, None);
+    }
+
+    /// `text LIKE "wood%"` does a case-insensitive prefix match on the
+    /// block's display text. `%` is the SQL "any run" wildcard.
+    #[test]
+    fn like_prefix_match_on_block_text() {
+        let q = parse_query(r#"text LIKE "wood%""#);
+        // block_with seeds text="x"; we synthesize a real block here.
+        let mut b = block_with(vec![], &[]);
+        b.text = "wood chips".into();
+        assert!(block_matches(&b, &q));
+        b.text = "Wood Chips".into(); // case-insensitive
+        assert!(block_matches(&b, &q));
+        b.text = "do wood chips".into(); // not a prefix
+        assert!(!block_matches(&b, &q));
+    }
+
+    /// Substring match — `%foo%` on both sides means "contains foo".
+    #[test]
+    fn like_substring_match() {
+        let q = parse_query(r#"text LIKE "%chair%""#);
+        let mut b = block_with(vec![], &[]);
+        b.text = "Research massage chairs".into();
+        assert!(block_matches(&b, &q));
+        b.text = "Schedule a meeting".into();
+        assert!(!block_matches(&b, &q));
+    }
+
+    /// `_` matches exactly one character.
+    #[test]
+    fn like_single_char_wildcard() {
+        let q = parse_query(r#"text LIKE "h_t""#);
+        let mut b = block_with(vec![], &[]);
+        b.text = "hat".into();
+        assert!(block_matches(&b, &q));
+        b.text = "hot".into();
+        assert!(block_matches(&b, &q));
+        b.text = "heat".into(); // _ matches one, not two
+        assert!(!block_matches(&b, &q));
+    }
+
+    /// `NOT LIKE` negates the match.
+    #[test]
+    fn not_like_negates() {
+        let q = parse_query(r#"text NOT LIKE "wood%""#);
+        let mut b = block_with(vec![], &[]);
+        b.text = "wood chips".into();
+        assert!(!block_matches(&b, &q));
+        b.text = "research chairs".into();
+        assert!(block_matches(&b, &q));
+    }
+
+    /// LIKE works on arbitrary property values too — not just the
+    /// pseudo-key `text`.
+    #[test]
+    fn like_on_property() {
+        let q = parse_query(r#"status LIKE "in-%""#);
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "in-review")]),
+            &q
+        ));
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "in-progress")]),
+            &q
+        ));
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "todo")]),
+            &q
+        ));
+        // Missing property does NOT match a positive LIKE.
+        assert!(!block_matches(&block_with(vec![], &[]), &q));
+    }
+
+    /// Regex metacharacters in the pattern are treated as literals so
+    /// users don't get surprised by accidental special meaning.
+    #[test]
+    fn like_escapes_regex_metacharacters() {
+        let q = parse_query(r#"text LIKE "a.b""#);
+        let mut b = block_with(vec![], &[]);
+        b.text = "a.b".into();
+        assert!(block_matches(&b, &q));
+        b.text = "axb".into(); // `.` is literal, not "any char"
+        assert!(!block_matches(&b, &q));
+    }
+
+    /// `key BETWEEN a AND b` is sugar for `key >= a AND key <= b`.
+    /// Inclusive on both ends, matching JQL + SQL convention.
+    #[test]
+    fn between_matches_inclusive_range_on_iso_dates() {
+        let q = parse_query("deadline BETWEEN 2026-05-01 AND 2026-05-31");
+        // Inside range
+        assert!(block_matches(
+            &block_with(vec![], &[("deadline", "2026-05-15")]),
+            &q
+        ));
+        // Exact low bound (inclusive)
+        assert!(block_matches(
+            &block_with(vec![], &[("deadline", "2026-05-01")]),
+            &q
+        ));
+        // Exact high bound (inclusive)
+        assert!(block_matches(
+            &block_with(vec![], &[("deadline", "2026-05-31")]),
+            &q
+        ));
+        // Just below low
+        assert!(!block_matches(
+            &block_with(vec![], &[("deadline", "2026-04-30")]),
+            &q
+        ));
+        // Just above high
+        assert!(!block_matches(
+            &block_with(vec![], &[("deadline", "2026-06-01")]),
+            &q
+        ));
+        // Missing property
+        assert!(!block_matches(&block_with(vec![], &[]), &q));
+    }
+
+    /// BETWEEN also works for numeric ranges.
+    #[test]
+    fn between_matches_numeric_range() {
+        let q = parse_query("priority BETWEEN 2 AND 5");
+        assert!(block_matches(&block_with(vec![], &[("priority", "3")]), &q));
+        assert!(block_matches(&block_with(vec![], &[("priority", "2")]), &q));
+        assert!(block_matches(&block_with(vec![], &[("priority", "5")]), &q));
+        assert!(!block_matches(
+            &block_with(vec![], &[("priority", "1")]),
+            &q
+        ));
+        assert!(!block_matches(
+            &block_with(vec![], &[("priority", "6")]),
+            &q
+        ));
+    }
+
+    /// BETWEEN composes with the rest of the grammar — must work inside
+    /// `OR`, parens, and alongside other clauses.
+    #[test]
+    fn between_composes_with_and_or_parens() {
+        let q = parse_query(
+            "status != done AND (deadline BETWEEN 2026-05-01 AND 2026-05-31 OR scheduled BETWEEN 2026-05-01 AND 2026-05-31)",
+        );
+        // Has scheduled in range
+        assert!(block_matches(
+            &block_with(
+                vec![],
+                &[("status", "todo"), ("scheduled", "2026-05-10")],
+            ),
+            &q
+        ));
+        // Has deadline in range
+        assert!(block_matches(
+            &block_with(
+                vec![],
+                &[("status", "doing"), ("deadline", "2026-05-20")],
+            ),
+            &q
+        ));
+        // Status=done → first clause fails
+        assert!(!block_matches(
+            &block_with(
+                vec![],
+                &[("status", "done"), ("scheduled", "2026-05-10")],
+            ),
+            &q
+        ));
+        // Both dates outside range → second clause fails
+        assert!(!block_matches(
+            &block_with(
+                vec![],
+                &[("status", "todo"), ("scheduled", "2026-06-15")],
+            ),
+            &q
+        ));
+    }
+
+    /// `IS EMPTY` / `IS NOT EMPTY` are aliases for `IS NULL` / `IS NOT
+    /// NULL` (JQL spells it both ways).
+    #[test]
+    fn is_empty_aliases_is_null() {
+        let q = parse_query("deadline IS EMPTY");
+        assert!(block_matches(&block_with(vec![], &[]), &q));
+        assert!(!block_matches(
+            &block_with(vec![], &[("deadline", "2026-05-25")]),
+            &q
+        ));
+    }
+
+    #[test]
+    fn is_not_empty_aliases_is_not_null() {
+        let q = parse_query("deadline IS NOT EMPTY");
+        assert!(block_matches(
+            &block_with(vec![], &[("deadline", "2026-05-25")]),
+            &q
+        ));
+        assert!(!block_matches(&block_with(vec![], &[]), &q));
     }
 
     /// End-to-end: the user's example query parses + matches the

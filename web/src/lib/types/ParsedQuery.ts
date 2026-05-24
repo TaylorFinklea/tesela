@@ -22,4 +22,12 @@ expr: BoolExpr,
  * otherwise — readers must handle that gracefully (the SQL
  * prefilter in `db/sqlite.rs::execute_block_query` does).
  */
-filters: Array<QueryFilter>, };
+filters: Array<QueryFilter>, 
+/**
+ * `ORDER BY` clause from the DSL — pre-composed into the comma-
+ * separated `"key1 desc, key2 asc, key3"` shape that
+ * `db::sqlite::apply_sort` already accepts. `None` when the query
+ * has no `ORDER BY`, in which case the caller's external `sort`
+ * param (e.g. the HTTP body's `sort` field) is the fallback.
+ */
+sort?: string, };

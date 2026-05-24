@@ -3,4 +3,4 @@
 /**
  * Comparison operator on a filter value.
  */
-export type QueryOp = "Eq" | "Ne" | "Gt" | "Lt" | "Gte" | "Lte";
+export type QueryOp = "Eq" | "Ne" | "Gt" | "Lt" | "Gte" | "Lte" | "Like" | "NotLike";

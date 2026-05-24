@@ -771,7 +771,12 @@ impl SearchIndex for SqliteIndex {
             Kind::Block => self.execute_block_query(query).await?,
             Kind::Page => self.execute_page_query(query).await?,
         };
-        apply_sort(&mut items, sort);
+        // DSL-embedded `ORDER BY` wins over the external param so a
+        // saved-query note can carry its own sort spec; the external
+        // `sort` arg remains the fallback for ad-hoc callers that
+        // want to override without modifying the DSL.
+        let effective_sort = query.sort.as_deref().or(sort);
+        apply_sort(&mut items, effective_sort);
         let groups = apply_group(items, group);
         Ok(QueryResult { groups })
     }
