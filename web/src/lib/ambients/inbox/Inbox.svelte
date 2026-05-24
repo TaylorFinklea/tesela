@@ -78,9 +78,20 @@
     return m ? m[1].trim() : "";
   }
 
-  /** Active DSL — read from the note on every render, falls back to the
-   *  default while the note is loading or absent. */
+  /**
+   * Optimistic override that wins over the cached note while a save is
+   * in flight. Without this, every chip toggle waits ~500ms (the
+   * debounce) + a network round-trip before the chip visually flips,
+   * because `chipState` is derived from the note's persisted DSL.
+   * That made the Types chips appear broken — they were saving, just
+   * not reflecting until the PUT echoed back. Cleared in `flushSave`.
+   */
+  let localDsl = $state<string | null>(null);
+
+  /** Active DSL — local override wins; otherwise read from the note on
+   *  every render, falling back to the default while loading/absent. */
   const activeDsl = $derived.by<string>(() => {
+    if (localDsl !== null) return localDsl;
     const note = inboxNoteQuery.data;
     if (!note) return defaultInboxDsl();
     const fromNote = readQueryFromNote(note);
@@ -175,6 +186,9 @@
   let pendingDsl: string | null = null;
 
   function scheduleSave(nextDsl: string) {
+    // Optimistic — the UI sees the new DSL immediately so chips and
+    // row counts respond on click. Persistence still debounces.
+    localDsl = nextDsl;
     pendingDsl = nextDsl;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => void flushSave(), 500);
@@ -211,6 +225,13 @@
       if (qc) {
         await qc.invalidateQueries({ queryKey: ["note", INBOX_NOTE_ID] });
         await qc.invalidateQueries({ queryKey: ["widget", "inbox"] });
+      }
+      // Hand control back to the cache-derived path; the refetched
+      // note will carry the same DSL we just optimistically applied.
+      // Only clear if no fresh edit landed during the save round-trip
+      // (`pendingDsl !== null` means the user queued another change).
+      if (pendingDsl === null) {
+        localDsl = null;
       }
     } catch {
       toast("Failed to save Inbox query", "error");
