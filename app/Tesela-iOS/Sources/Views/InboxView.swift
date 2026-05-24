@@ -1,14 +1,16 @@
 import SwiftUI
 
-/// Inbox — the triage surface. Lists every block across the mosaic
-/// that doesn't yet carry a `status::` property, drives the GTD-style
-/// flow of ripping through untriaged captures with single-key actions.
+/// Inbox — the triage surface. Lists every block matching the active
+/// saved filter (a `note_type: Query` note whose body carries a
+/// `query:: <dsl>` line), drives the GTD-style flow of ripping through
+/// captures with single-key actions.
 ///
-/// Mirrors the web v5 Inbox ambient and the v4 sidebar widget — same
-/// `kind:block -has:status` query, same `isInboxable` post-filter
-/// (drops daily-page blocks and system page types: Tag, Property,
-/// Query, Template). Triaging a row to any status (todo / doing /
-/// done) makes it drop out of the inbox.
+/// Mirrors the web v5 Inbox ambient: the DSL is the source of truth,
+/// not a hardcoded client query. Server-side clauses (`-on:daily-page`,
+/// `-on:system-pages`, `-is:heading`) handle the "drop daily / system /
+/// heading blocks" filter that used to live client-side; the chip bar
+/// (stages 2–3, future commits) will let the user toggle them. For now
+/// we just honor whatever DSL the saved filter carries.
 ///
 /// iOS triage idioms:
 ///   - tap row → open source page focused on the block
@@ -28,6 +30,15 @@ struct InboxView: View {
     @State private var rows: [QueryItem] = []
     @State private var loading = false
     @State private var navigationPath = NavigationPath()
+
+    /// Slug of the active saved Inbox filter. Default is `inbox` (the
+    /// canonical first-run note); users can create extras under
+    /// `inbox-work`, `inbox-personal`, etc. via the Save-as flow
+    /// (stage 4) and switch between them via the picker (also stage 4).
+    /// Persisted via `@AppStorage` so the user's last-used filter
+    /// survives relaunch, matching the web client's `localStorage` key
+    /// (`tesela.inbox.activeFilterSlug`).
+    @AppStorage("tesela.inbox.activeFilterSlug") private var activeSlug: String = "inbox"
 
     /// Soft cap so a legacy mosaic with thousands of untriaged blocks
     /// doesn't choke the renderer on first open. Mirrors the web's
@@ -158,37 +169,19 @@ struct InboxView: View {
 
     // MARK: - Data load + actions
 
-    /// Drop daily-page blocks and system-page-type blocks. Mirrors
-    /// `isInboxableRow` in the web `QueryWidgetView.svelte` and the
-    /// v5 Inbox ambient. Keeps the surface focused on captures + real
-    /// project blocks rather than every loose bullet in the mosaic.
-    private static let TRIAGED_PAGE_TYPES: Set<String> = ["Tag", "Property", "Query", "Template"]
-    private static let DATE_ID_RE = try! NSRegularExpression(pattern: #"^\d{4}-\d{2}-\d{2}$"#)
-    /// `### Raw Strings`, `## Lists`, `# Header` — markdown headings
-    /// the user uses as section dividers inside reference pages, not
-    /// triage items. Band-aid until the saved-query inbox redesign
-    /// lets the user shape the filter themselves.
-    private static let HEADING_RE = try! NSRegularExpression(pattern: #"^#{1,6}\s"#)
-
-    private func isInboxable(_ item: QueryItem) -> Bool {
-        guard item.kind == .block else { return false }
-        let pid = item.page_id
-        let pidRange = NSRange(pid.startIndex..<pid.endIndex, in: pid)
-        if Self.DATE_ID_RE.firstMatch(in: pid, range: pidRange) != nil { return false }
-        if let t = item.page_note_type, Self.TRIAGED_PAGE_TYPES.contains(t) { return false }
-        let trimmed = item.text.trimmingCharacters(in: .whitespaces)
-        let textRange = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
-        if Self.HEADING_RE.firstMatch(in: trimmed, range: textRange) != nil { return false }
-        return true
-    }
-
     private func load() async {
         loading = true
         defer { loading = false }
-        let result = await mosaic.executeQuery("kind:block -has:status")
+        // Resolve the DSL: prefer the active saved filter's `query::`
+        // line; fall back to the canonical default when the note
+        // doesn't exist yet (first-run mosaic, or user just switched to
+        // a slug that hasn't been created via Save-as yet).
+        let dsl = await mosaic.fetchInboxDsl(slug: activeSlug)
+            ?? MockMosaicService.defaultInboxDsl()
+        let result = await mosaic.executeQuery(dsl)
         var collected: [QueryItem] = []
         outer: for g in result.groups {
-            for item in g.items where isInboxable(item) {
+            for item in g.items where item.kind == .block {
                 collected.append(item)
                 if collected.count >= rowCap { break outer }
             }

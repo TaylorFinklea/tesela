@@ -1502,10 +1502,53 @@ final class MockMosaicService: ObservableObject, MosaicService {
         }
     }
 
+    /// Fetch the active Inbox-style saved filter's DSL. The Inbox surface
+    /// is backed by a `note_type: Query` note whose body carries a
+    /// `query:: <dsl>` line — same shape the web client uses. `slug`
+    /// is normally `"inbox"` (the canonical default) but the user can
+    /// save additional filters at `inbox-work`, `inbox-personal`, etc.;
+    /// the active slug is persisted client-side and passed in.
+    ///
+    /// Returns `nil` when:
+    ///   - we're not on an HTTP backend
+    ///   - the note doesn't exist yet (first-run mosaic)
+    ///   - the note exists but has no `query::` line
+    ///
+    /// Callers fall back to `defaultInboxDsl()` in those cases.
+    func fetchInboxDsl(slug: String) async -> String? {
+        guard case .http(let baseURL) = currentBackend else { return nil }
+        let note: APINote
+        do {
+            note = try await httpGet("/notes/\(slug)", baseURL: baseURL)
+        } catch {
+            return nil
+        }
+        // Match `^query::\s*(.+)$` line-by-line; mirrors the web's
+        // `readQueryFromNote` (`Inbox.svelte`).
+        for line in note.body.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("query::") {
+                let dsl = trimmed.dropFirst("query::".count).trimmingCharacters(in: .whitespaces)
+                return dsl.isEmpty ? nil : dsl
+            }
+        }
+        return nil
+    }
+
+    /// Canonical default DSL for the Inbox when no saved Query note
+    /// exists yet. Mirrors the web's `defaultInboxDsl()` output
+    /// (`web/src/lib/ambients/inbox/chips.ts`): include only blocks
+    /// without a status property, drop markdown headings, daily-page
+    /// blocks, and system-page-type blocks. Keeps iOS + web converging
+    /// on the same first-run experience.
+    static func defaultInboxDsl() -> String {
+        "kind:block -has:status -is:heading -on:daily-page -on:system-pages"
+    }
+
     /// Run an arbitrary query DSL via `POST /search/query`. The Inbox
-    /// surface uses `kind:block -has:status` to list untriaged blocks
-    /// across the whole mosaic. Returns an empty result on failure so
-    /// the view renders the empty state instead of crashing.
+    /// surface uses a saved filter's DSL (fetched via `fetchInboxDsl`)
+    /// or `defaultInboxDsl()` for first-run. Returns an empty result on
+    /// failure so the view renders the empty state instead of crashing.
     func executeQuery(_ dsl: String) async -> QueryResult {
         guard case .http(let baseURL) = currentBackend else {
             return QueryResult(groups: [])
