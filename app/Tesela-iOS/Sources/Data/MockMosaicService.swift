@@ -1536,13 +1536,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
 
     /// Canonical default DSL for the Inbox when no saved Query note
-    /// exists yet. Mirrors the web's `defaultInboxDsl()` output
-    /// (`web/src/lib/ambients/inbox/chips.ts`): include only blocks
-    /// without a status property, drop markdown headings, daily-page
-    /// blocks, and system-page-type blocks. Keeps iOS + web converging
-    /// on the same first-run experience.
+    /// exists yet. Delegates to the free `defaultInboxDsl()` in
+    /// `InboxChips.swift` so the chip registry is the single source of
+    /// truth (a change to the registry's `defaultOn` flags
+    /// automatically updates this output). Mirrors the web's
+    /// `defaultInboxDsl()` so iOS + web converge on the same first-run
+    /// experience.
     static func defaultInboxDsl() -> String {
-        "kind:block -has:status -is:heading -on:daily-page -on:system-pages"
+        Tesela.defaultInboxDsl()
     }
 
     /// Run an arbitrary query DSL via `POST /search/query`. The Inbox
