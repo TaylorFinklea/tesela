@@ -8,3 +8,4 @@
 pub mod aead;
 pub mod keys;
 pub mod pairing;
+pub mod relay_auth;

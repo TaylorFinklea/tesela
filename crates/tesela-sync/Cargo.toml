@@ -43,6 +43,15 @@ rand.workspace = true
 # AEAD on sync envelopes (Phase 2.3)
 chacha20poly1305.workspace = true
 
+# Per-request MAC + per-group auth-key derivation for the WAN relay
+# (`crypto::relay_auth`). RustCrypto family — small + audited, no
+# openssl dep. WebCrypto on the Worker side speaks these same
+# primitives natively for the future TS impl.
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio-test.workspace = true

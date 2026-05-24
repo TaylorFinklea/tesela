@@ -1,5 +1,6 @@
 //! Shared application state — clone-cheap, immutable after startup.
 
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -34,13 +35,20 @@ pub(crate) struct Inner {
 }
 
 impl AppState {
-    pub async fn open(args: &crate::Args) -> Result<Self> {
-        let store = Store::open(&args.db).await?;
+    /// Open a relay state against the given SQLite path. Used by both
+    /// the binary (`main.rs`, real config from CLI args) and integration
+    /// tests (random tmp paths).
+    pub async fn open(
+        db_path: &Path,
+        max_body: usize,
+        admin_token: Option<String>,
+    ) -> Result<Self> {
+        let store = Store::open(db_path).await?;
         Ok(Self {
             inner: Arc::new(Inner {
                 store,
-                max_body: args.max_body,
-                admin_token: args.admin_token.clone(),
+                max_body,
+                admin_token,
             }),
         })
     }

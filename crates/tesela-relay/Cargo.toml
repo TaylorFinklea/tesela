@@ -44,3 +44,13 @@ hex = "0.4"
 [dev-dependencies]
 # Integration tests via reqwest against a spawned in-process relay.
 reqwest.workspace = true
+# Conformance harness uses the canonical relay-auth primitives from
+# tesela-sync (HKDF + HMAC + intent build/sign) so client + relay
+# can't drift on the wire format.
+tesela-sync = { path = "../tesela-sync" }
+rand.workspace = true
+tempfile.workspace = true
+hex = "0.4"
+base64 = "0.22"
+serde_json.workspace = true
+tokio.workspace = true

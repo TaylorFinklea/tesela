@@ -30,57 +30,45 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use axum::{routing::get, Router};
 use clap::Parser;
 use tracing::info;
 
-mod handlers;
-mod state;
-mod store;
-
-use crate::state::AppState;
+use tesela_relay::{router, AppState};
 
 #[derive(Parser, Debug)]
 #[command(name = "tesela-relay", about, long_about = None)]
-struct Args {
+pub struct Args {
     /// Bind address (e.g. `0.0.0.0:8484`).
     #[arg(long, env = "TESELA_RELAY_BIND", default_value = "0.0.0.0:8484")]
-    bind: SocketAddr,
+    pub bind: SocketAddr,
 
     /// Path to the SQLite store. Created on first run.
     #[arg(long, env = "TESELA_RELAY_DB", default_value = "./relay.sqlite")]
-    db: PathBuf,
+    pub db: PathBuf,
 
     /// Admin token for `DELETE /admin/groups/{id}/register`. If unset,
     /// admin endpoints are disabled — operators who want to be able
     /// to recover from hijack squatting must set this. Pick a long
     /// random string.
     #[arg(long, env = "TESELA_RELAY_ADMIN_TOKEN")]
-    admin_token: Option<String>,
+    pub admin_token: Option<String>,
 
     /// Maximum body size (bytes) accepted on PUT /ops. Spec recommends
     /// 1 MiB; anything larger should be split into multiple envelopes
     /// by the producing client.
     #[arg(long, env = "TESELA_RELAY_MAX_BODY", default_value_t = 1_048_576)]
-    max_body: usize,
+    pub max_body: usize,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
-    let state = AppState::open(&args).await?;
+    let state = AppState::open(&args.db, args.max_body, args.admin_token.clone()).await?;
     let app = router(state);
 
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
     info!("tesela-relay listening on http://{}", args.bind);
     axum::serve(listener, app).await?;
     Ok(())
-}
-
-fn router(state: AppState) -> Router {
-    Router::new()
-        .route("/", get(handlers::health))
-        // Handlers are stubbed for stage 2a; subsequent stages fill them in.
-        .with_state(state)
 }
