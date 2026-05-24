@@ -1454,8 +1454,24 @@ fn field(item: &crate::query::QueryItem, key: &str) -> String {
             .properties
             .iter()
             .find(|(k, _)| k.eq_ignore_ascii_case(other))
-            .map(|(_, v)| v.to_ascii_lowercase())
+            .map(|(_, v)| normalize_sort_value(v))
             .unwrap_or_default(),
+    }
+}
+
+/// Strip a fully-wrapping `[[…]]` from a property value before using it
+/// as a sort key, then lowercase. Without this, legacy inline-link
+/// dates (`[[2026-05-24]]`) and the new bare-ISO form (`2026-05-24`)
+/// compare as different strings — `[` sorts before `2` in ASCII — so a
+/// mixed-format mosaic gets nonsensical ordering. Only fully-wrapped
+/// values are unwrapped; mid-string brackets (`see [[Project]] notes`)
+/// stay intact since they're real content, not a link wrapper.
+fn normalize_sort_value(value: &str) -> String {
+    let trimmed = value.trim();
+    if let Some(inner) = trimmed.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
+        inner.to_ascii_lowercase()
+    } else {
+        trimmed.to_ascii_lowercase()
     }
 }
 
@@ -2107,5 +2123,106 @@ mod tests {
             .unwrap();
 
         assert_eq!(rows.len(), 3, "count 3 should yield exactly 3 rows: got {rows:?}");
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // apply_sort: wiki-link normalization
+    // ────────────────────────────────────────────────────────────────
+
+    fn make_query_item(text: &str, props: &[(&str, &str)]) -> crate::query::QueryItem {
+        use crate::query::{Kind, QueryItem};
+        let mut p: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+        for (k, v) in props {
+            p.insert((*k).to_string(), (*v).to_string());
+        }
+        QueryItem {
+            block_id: Some(format!("note:{text}")),
+            page_id: "note".to_string(),
+            title: "note".to_string(),
+            text: text.to_string(),
+            parent_breadcrumb: vec![],
+            kind: Kind::Block,
+            primary_tag: None,
+            properties: p,
+            page_note_type: None,
+        }
+    }
+
+    /// Regression: wrapped + bare versions of the **same** date used
+    /// to be treated as different keys because the sort compared raw
+    /// strings (`"[[2026-05-24]]"` ≠ `"2026-05-24"`). With wrapper
+    /// stripping they tie on date and fall to stable input order.
+    #[test]
+    fn apply_sort_treats_wrapped_and_bare_same_date_as_equal() {
+        let mut items = vec![
+            make_query_item("bare-a", &[("scheduled", "2026-05-24")]),
+            make_query_item("wrapped", &[("scheduled", "[[2026-05-24]]")]),
+            make_query_item("bare-b", &[("scheduled", "2026-05-24")]),
+            make_query_item("older", &[("scheduled", "2026-05-23")]),
+        ];
+        apply_sort(&mut items, Some("scheduled desc"));
+        let order: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        // The three 05-24 entries tie; stable sort preserves their
+        // input order. `older` (05-23) must come last under DESC.
+        assert_eq!(order, vec!["bare-a", "wrapped", "bare-b", "older"]);
+    }
+
+    /// Three distinct dates still sort by value (this passed before the
+    /// fix because the dates differ; kept as a regression guard for
+    /// normal ordering).
+    #[test]
+    fn apply_sort_strips_wiki_link_wrappers_on_date_values() {
+        let mut items = vec![
+            make_query_item("a", &[("scheduled", "[[2026-05-24]]")]),
+            make_query_item("b", &[("scheduled", "2026-05-23")]),
+            make_query_item("c", &[("scheduled", "2026-05-22")]),
+        ];
+        apply_sort(&mut items, Some("scheduled"));
+        let order: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(order, vec!["c", "b", "a"]);
+    }
+
+    /// Same regression on the DESC path.
+    #[test]
+    fn apply_sort_strips_wiki_link_wrappers_descending() {
+        let mut items = vec![
+            make_query_item("a", &[("scheduled", "2026-05-22")]),
+            make_query_item("b", &[("scheduled", "[[2026-05-24]]")]),
+            make_query_item("c", &[("scheduled", "2026-05-23")]),
+        ];
+        apply_sort(&mut items, Some("scheduled desc"));
+        let order: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(order, vec!["b", "c", "a"]);
+    }
+
+    /// Non-wrapped values still sort as plain case-insensitive strings —
+    /// the wrapper-strip path must not change behavior for ordinary
+    /// property values like `status: todo` / `status: doing`.
+    #[test]
+    fn apply_sort_keeps_plain_values_unchanged() {
+        let mut items = vec![
+            make_query_item("a", &[("status", "todo")]),
+            make_query_item("b", &[("status", "doing")]),
+            make_query_item("c", &[("status", "blocked")]),
+        ];
+        apply_sort(&mut items, Some("status"));
+        let order: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(order, vec!["c", "b", "a"]); // blocked, doing, todo
+    }
+
+    /// A property value that *contains* `[[…]]` mid-string (not the
+    /// whole value) must keep its brackets — only fully-wrapped values
+    /// are unwrapped, since mid-string brackets are real content.
+    #[test]
+    fn apply_sort_only_strips_fully_wrapped_values() {
+        let mut items = vec![
+            make_query_item("a", &[("status", "see [[Project]] notes")]),
+            make_query_item("b", &[("status", "blocked")]),
+        ];
+        apply_sort(&mut items, Some("status"));
+        // "blocked" < "see [[Project]] notes" lexically — verify the
+        // mid-string brackets weren't blindly stripped.
+        let order: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
+        assert_eq!(order, vec!["b", "a"]);
     }
 }
