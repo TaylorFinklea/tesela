@@ -53,10 +53,35 @@
       autofocus
       spellcheck="false"
     ></textarea>
-    <p class="mt-2 text-[11px] text-muted-foreground/70">
-      DSL clauses, whitespace-separated. <code>kind:block</code> is implicit.
-      Try <code>-has:status -is:heading -on:daily-page -tag:reference</code>.
-    </p>
+    <div class="mt-2 text-[11px] text-muted-foreground/70 leading-relaxed">
+      <p>
+        JQL-style. <code>kind:block</code> implicit. Example:
+        <code>status != done AND type IN (task, issue) AND scheduled IS NOT NULL ORDER BY scheduled DESC</code>.
+      </p>
+      <details class="mt-1.5">
+        <summary class="cursor-pointer hover:text-foreground select-none">grammar reference</summary>
+        <div class="mt-1.5 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-0.5 font-mono text-[10.5px]">
+          <span class="text-foreground/80">combinators</span>
+          <code>AND  OR  NOT  ( )</code>
+          <span class="text-foreground/80">compare</span>
+          <code>=  !=  &lt;  &lt;=  &gt;  &gt;=</code>
+          <span class="text-foreground/80">membership</span>
+          <code>key IN (a, b, c)   key NOT IN (…)</code>
+          <span class="text-foreground/80">presence</span>
+          <code>key IS NULL   key IS NOT NULL   (EMPTY alias)</code>
+          <span class="text-foreground/80">range</span>
+          <code>key BETWEEN a AND b   (inclusive)</code>
+          <span class="text-foreground/80">pattern</span>
+          <code>text LIKE "wood%"   key NOT LIKE "…"   (% any, _ one)</code>
+          <span class="text-foreground/80">sort</span>
+          <code>ORDER BY key [ASC|DESC] [, key2 …]</code>
+          <span class="text-foreground/80">keys</span>
+          <code>tag/type · status · has · is · on · page · block · text · &lt;property&gt;</code>
+          <span class="text-foreground/80">legacy</span>
+          <code>key:value · -key:value · has:foo · tag-in:a,b,c</code>
+        </div>
+      </details>
+    </div>
     <footer class="mt-3 flex justify-end gap-2">
       <button
         type="button"
