@@ -50,4 +50,14 @@ indent_level: number,
 /**
  * The note this block belongs to
  */
-note_id: string, };
+note_id: string, 
+/**
+ * `note_type` of the containing page when known. Populated by the
+ * query candidate path (`SqliteIndex::execute_block_query`) so the
+ * `on:system-pages` DSL clause can filter blocks by their parent
+ * note's type without re-fetching note metadata at filter time.
+ * `None` for the standalone `parse_blocks(note_id, body)` form —
+ * `on:*` predicates that rely on parent metadata gracefully
+ * degrade (they match no block) rather than error.
+ */
+parent_note_type: string | null, };

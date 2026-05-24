@@ -42,6 +42,15 @@ pub struct ParsedBlock {
     pub indent_level: usize,
     /// The note this block belongs to
     pub note_id: String,
+    /// `note_type` of the containing page when known. Populated by the
+    /// query candidate path (`SqliteIndex::execute_block_query`) so the
+    /// `on:system-pages` DSL clause can filter blocks by their parent
+    /// note's type without re-fetching note metadata at filter time.
+    /// `None` for the standalone `parse_blocks(note_id, body)` form —
+    /// `on:*` predicates that rely on parent metadata gracefully
+    /// degrade (they match no block) rather than error.
+    #[serde(default)]
+    pub parent_note_type: Option<String>,
 }
 
 /// Parse a note body into blocks.
@@ -178,6 +187,7 @@ fn make_block(
         properties,
         indent_level,
         note_id: note_id.to_string(),
+        parent_note_type: None,
     }
 }
 

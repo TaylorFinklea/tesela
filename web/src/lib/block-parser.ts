@@ -93,6 +93,12 @@ function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText
     properties,
     indent_level: indentLevel,
     note_id: noteId,
+    // The client-side parser has no way to know the parent note's
+    // `note_type` from inside a note body; that metadata lives on the
+    // Note record itself. Server-side queries populate this field
+    // when running `on:*` predicates. Leaving null on the web mirror
+    // is safe — local parsers don't run those predicates.
+    parent_note_type: null,
   };
 }
 

@@ -1258,7 +1258,15 @@ impl SqliteIndex {
 
         let mut out = Vec::new();
         for (note_id, note_title, body, page_note_type) in &candidate_notes {
-            let blocks = parse_blocks(note_id, body);
+            let mut blocks = parse_blocks(note_id, body);
+            // Enrich every block with its containing page's note_type so
+            // DSL predicates that depend on parent metadata (`on:system-
+            // pages`, `on:daily-page`'s fallback branch) can run inside
+            // `block_matches` without re-fetching the note row at filter
+            // time. Cheap (a clone per block) and keeps the matcher pure.
+            for b in blocks.iter_mut() {
+                b.parent_note_type = page_note_type.clone();
+            }
             // Refine each block in-memory.
             for (idx, block) in blocks.iter().enumerate() {
                 if !block_matches(block, query) {
@@ -1368,6 +1376,10 @@ impl SqliteIndex {
                 properties: props.clone(),
                 indent_level: 0,
                 note_id: id.clone(),
+                // Page-kind rows don't have a "parent" — the row IS the
+                // page — so leave None. `on:*` predicates that depend
+                // on this field don't make sense for page queries.
+                parent_note_type: None,
             };
             if !block_matches(&pseudo, query) {
                 continue;

@@ -426,6 +426,48 @@ fn compare(a: &str, b: &str) -> std::cmp::Ordering {
     a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase())
 }
 
+/// `true` when `note_id` is the canonical `YYYY-MM-DD` daily-note id.
+/// Cheap byte-by-byte check — no regex compile. Matches the same shape
+/// the iOS InboxView uses in `DATE_ID_RE` and the web `isInboxableRow`.
+fn is_daily_note_id(note_id: &str) -> bool {
+    let b = note_id.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[0..4].iter().all(|c| c.is_ascii_digit())
+        && b[5..7].iter().all(|c| c.is_ascii_digit())
+        && b[8..10].iter().all(|c| c.is_ascii_digit())
+}
+
+/// `true` when `note_type` is one of Tesela's system page types — the
+/// pages that hold tag definitions, property metadata, saved queries,
+/// or templates rather than authored content. Drives `on:system-pages`.
+fn is_system_note_type(note_type: &str) -> bool {
+    matches!(note_type, "Tag" | "Property" | "Query" | "Template")
+}
+
+/// `true` when `text`'s first non-whitespace run is a markdown heading
+/// marker (1–6 `#`s followed by whitespace). Drives `is:heading`.
+/// Seven-or-more `#`s in a row aren't a heading in CommonMark, so we
+/// cap at six. A bare `#urgent` (no whitespace after the `#`s) is a
+/// hashtag, not a heading — also rejected.
+fn is_heading_text(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let mut hashes = 0usize;
+    for ch in trimmed.chars() {
+        if ch == '#' {
+            hashes += 1;
+            if hashes > 6 {
+                return false;
+            }
+        } else {
+            return hashes >= 1 && ch.is_whitespace();
+        }
+    }
+    // String was all `#`s — not a heading (no body).
+    false
+}
+
 fn is_iso_date(s: &str) -> bool {
     s.len() >= 10
         && s.as_bytes()[4] == b'-'
@@ -518,6 +560,53 @@ fn filter_matches(block: &ParsedBlock, f: &QueryFilter) -> bool {
                 _ => false,
             }
         }
+        "on" => {
+            // `on:daily-page` / `on:system-pages` filter blocks by their
+            // *containing page's* identity — daily journal entries vs
+            // system pages (Tag/Property/Query/Template). Drives the
+            // Inbox chips that keep these classes of blocks out of
+            // triage. `parent_note_type` is populated by the SQL
+            // candidate path (`execute_block_query`); the standalone
+            // `parse_blocks` form leaves it None, in which case
+            // `system-pages` falls through to `false`.
+            //
+            // Unknown `on:*` value → false-on-Eq, true-on-Ne so a
+            // misspelled chip degrades to "lets everything through"
+            // rather than silently excluding every row.
+            let matched = match f.value.to_ascii_lowercase().as_str() {
+                "daily-page" => is_daily_note_id(&block.note_id),
+                "system-pages" => block
+                    .parent_note_type
+                    .as_deref()
+                    .map(is_system_note_type)
+                    .unwrap_or(false),
+                _ => false,
+            };
+            match f.op {
+                QueryOp::Eq => matched,
+                QueryOp::Ne => !matched,
+                _ => false,
+            }
+        }
+        "is" => {
+            // `is:heading` matches blocks whose first non-whitespace run
+            // is a markdown heading marker (`#` through `######` followed
+            // by whitespace). Drives the Inbox chip that filters out
+            // section-divider bullets from reference notes. Other `is:`
+            // predicates can be added later; an unknown one returns
+            // `false` for `Eq` and `true` for `Ne` so a `-is:unknown`
+            // chip degrades gracefully (lets everything through) rather
+            // than silently excluding every row.
+            let matched = match f.value.to_ascii_lowercase().as_str() {
+                "heading" => is_heading_text(&block.text),
+                _ => false,
+            };
+            match f.op {
+                QueryOp::Eq => matched,
+                QueryOp::Ne => !matched,
+                _ => false,
+            }
+        }
         key => {
             // Property lookup — case-insensitive key match.
             let actual = block
@@ -560,6 +649,7 @@ mod tests {
             properties: p,
             indent_level: 0,
             note_id: "n".into(),
+            parent_note_type: None,
         }
     }
 
@@ -613,6 +703,105 @@ mod tests {
         let q = parse_query("-has:status");
         assert_eq!(q.filters[0].key, "has");
         assert_eq!(q.filters[0].op, QueryOp::Ne);
+    }
+
+    /// Helper to build a block with arbitrary text — needed for the
+    /// `is:heading` tests since the basic `block_with` helper hardcodes
+    /// `text = "x"`.
+    fn block_with_text(text: &str) -> ParsedBlock {
+        ParsedBlock {
+            id: "n:1".into(),
+            text: text.into(),
+            raw_text: format!("- {}", text),
+            tags: vec![],
+            inline_tags: vec![],
+            trailing_tags: vec![],
+            inherited_tags: vec![],
+            properties: std::collections::HashMap::new(),
+            indent_level: 0,
+            note_id: "n".into(),
+            parent_note_type: None,
+        }
+    }
+
+    #[test]
+    fn block_matches_is_heading_positive() {
+        // `is:heading` matches blocks whose text starts with a markdown
+        // heading marker (`#` … `######` followed by whitespace) — these
+        // are section dividers inside reference pages, not actionable
+        // outliner blocks. Drives the Inbox filter chip that lets users
+        // keep heading-style bullets out of triage queues.
+        let q = parse_query("is:heading");
+        assert!(block_matches(&block_with_text("### Raw Strings"), &q));
+        assert!(block_matches(&block_with_text("# Top"), &q));
+        assert!(block_matches(&block_with_text("###### Six"), &q));
+        // Indented heading-like text still counts.
+        assert!(block_matches(&block_with_text("   ## Indented"), &q));
+    }
+
+    #[test]
+    fn block_matches_is_heading_negative() {
+        let q = parse_query("is:heading");
+        assert!(!block_matches(&block_with_text("Buy milk"), &q));
+        // Hashtag at the start isn't a heading (no space after #s).
+        assert!(!block_matches(&block_with_text("#urgent thing"), &q));
+        // Seven `#`s aren't a markdown heading either.
+        assert!(!block_matches(&block_with_text("####### Too many"), &q));
+    }
+
+    /// Build a block whose containing note id and parent note_type can
+    /// be set. Drives `on:daily-page` / `on:system-pages` tests.
+    fn block_on(note_id: &str, parent_note_type: Option<&str>) -> ParsedBlock {
+        let mut b = block_with(vec![], &[]);
+        b.note_id = note_id.into();
+        b.parent_note_type = parent_note_type.map(String::from);
+        b
+    }
+
+    #[test]
+    fn block_matches_on_daily_page() {
+        // `on:daily-page` matches when the block's note_id is the
+        // canonical YYYY-MM-DD daily-note id. Drives the Inbox chip
+        // that hides "untriaged" daily-page bullets — they're journal
+        // captures, not triage items.
+        let q = parse_query("on:daily-page");
+        assert!(block_matches(&block_on("2026-05-23", None), &q));
+        assert!(!block_matches(&block_on("python", None), &q));
+        // Negated form excludes daily-page rows.
+        let q_neg = parse_query("-on:daily-page");
+        assert!(!block_matches(&block_on("2026-05-23", None), &q_neg));
+        assert!(block_matches(&block_on("python", None), &q_neg));
+    }
+
+    #[test]
+    fn block_matches_on_system_pages() {
+        // `on:system-pages` is sugar for "parent note_type ∈
+        // {Tag, Property, Query, Template}" — the Tesela page-type
+        // taxonomy for non-content pages. Drives the Inbox chip that
+        // keeps system-page bullets out of triage.
+        let q = parse_query("on:system-pages");
+        assert!(block_matches(&block_on("tag-page", Some("Tag")), &q));
+        assert!(block_matches(&block_on("query-page", Some("Query")), &q));
+        assert!(block_matches(&block_on("template-page", Some("Template")), &q));
+        assert!(block_matches(&block_on("prop-page", Some("Property")), &q));
+        assert!(!block_matches(&block_on("project", Some("Project")), &q));
+        // Missing parent_note_type degrades to "doesn't match" rather
+        // than panicking — the standalone parse_blocks path leaves it
+        // None and should still be queryable safely.
+        assert!(!block_matches(&block_on("note", None), &q));
+        // Negated form is the common Inbox default.
+        let q_neg = parse_query("-on:system-pages");
+        assert!(!block_matches(&block_on("tag-page", Some("Tag")), &q_neg));
+        assert!(block_matches(&block_on("project", Some("Project")), &q_neg));
+    }
+
+    #[test]
+    fn block_matches_negated_is_heading() {
+        // `-is:heading` excludes heading-style blocks; common Inbox
+        // default-on chip.
+        let q = parse_query("-is:heading");
+        assert!(block_matches(&block_with_text("Buy milk"), &q));
+        assert!(!block_matches(&block_with_text("### Raw Strings"), &q));
     }
 
     #[test]

@@ -374,6 +374,7 @@
       inherited_tags: [],
       properties: row.status ? { status: row.status } : {},
       indent_level: 0,
+      parent_note_type: null,
     };
   }
   function syncSelectedRowToDrawer() {

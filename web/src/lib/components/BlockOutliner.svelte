@@ -800,6 +800,7 @@
       properties: {},
       indent_level: current.indent_level,
       note_id: noteId,
+      parent_note_type: null,
     };
     if (textAfterCursor) {
       const updatedCurrent: ParsedBlock = { ...current, id: `${noteId}:split-${Date.now() + 1}` };
@@ -956,6 +957,7 @@
       properties: {},
       indent_level: current.indent_level,
       note_id: noteId,
+      parent_note_type: null,
     };
     blocks = [...blocks.slice(0, fullIdx), newBlock, ...blocks.slice(fullIdx)];
     saveBlocks(blocks);
@@ -1232,6 +1234,7 @@
         properties: {},
         indent_level: 0,
         note_id: noteId,
+        parent_note_type: null,
       };
       blocks = [newBlock];
       focusedIndex = 0;

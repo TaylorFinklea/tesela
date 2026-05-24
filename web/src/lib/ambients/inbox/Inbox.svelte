@@ -7,57 +7,99 @@
   import DatePicker from "$lib/components/DatePicker.svelte";
   import type { AmbientRendererProps } from "$lib/buffer/protocol";
   import type { QueryItem } from "$lib/types/QueryItem";
+  import type { Note } from "$lib/types/Note";
+  import {
+    chipsFromDsl,
+    dslFromChips,
+    defaultInboxDsl,
+    type ChipState,
+  } from "./chips";
+  import ChipBar from "./ChipBar.svelte";
   import InboxRow from "./InboxRow.svelte";
+  import RawDslSheet from "./RawDslSheet.svelte";
 
   let { onNavigate }: AmbientRendererProps = $props();
   void onNavigate;
 
-  // ── Data ──────────────────────────────────────────────────────────────
-  // Same query the v4 Inbox widget uses so both surfaces stay in lockstep.
-  const INBOX_QUERY = "kind:block -has:status";
-  const q = createQuery(() => ({
-    queryKey: ["widget", "inbox"] as const,
-    queryFn: () => api.executeQuery(INBOX_QUERY),
+  // ── The Inbox query note ──────────────────────────────────────────────
+  // The Inbox is backed by a real note with `note_type: Query` at slug
+  // `inbox` — same shape every saved query takes (see
+  // `widget-registry.svelte.ts`). Toggling a chip rewrites the note's
+  // `query::` line and PUTs (debounced); WS echo invalidates the rows
+  // query so the row list refreshes automatically.
+  //
+  // On first open with no such note, we seed one with the default chip
+  // set. The hardcoded entry in `system-widgets.ts` is the fallback
+  // until the note exists.
+  const INBOX_NOTE_ID = "inbox";
+
+  const inboxNoteQuery = createQuery(() => ({
+    queryKey: ["note", INBOX_NOTE_ID] as const,
+    // Tolerate 404 and surface as `null` so the seed flow can run.
+    queryFn: async () => {
+      try {
+        return await api.getNote(INBOX_NOTE_ID);
+      } catch {
+        return null as Note | null;
+      }
+    },
   }));
 
-  /** Daily / system pages are filtered out — they're not "untriaged
-   * captures." Mirrors `isInboxableRow` in `QueryWidgetView.svelte`.
-   * Also drops blocks whose text starts with `#` (markdown headings
-   * like `### Raw Strings`) — the user's notes use those as section
-   * dividers inside reference pages, not triage items. The proper
-   * fix is the saved-query inbox redesign; this is the band-aid. */
-  const TRIAGED_PAGE_TYPES = new Set(["Tag", "Property", "Query", "Template"]);
-  function isInboxable(item: QueryItem): boolean {
-    if (item.kind !== "block") return false;
-    if (/^\d{4}-\d{2}-\d{2}$/.test(item.page_id)) return false;
-    if (item.page_note_type && TRIAGED_PAGE_TYPES.has(item.page_note_type)) return false;
-    if (/^#{1,6}\s/.test(item.text.trim())) return false;
-    return true;
+  /** Extract the `query::` body line from a Query-type note. Mirrors
+   * `readBodyProperty` in widget-registry. */
+  function readQueryFromNote(note: Note): string {
+    const custom = note.metadata.custom ?? {};
+    const fromFrontmatter = typeof custom.query === "string" ? custom.query : "";
+    if (fromFrontmatter.length > 0) return fromFrontmatter;
+    const body = note.content.includes("\n---")
+      ? note.content.slice(note.content.indexOf("\n---", 3) + 4)
+      : note.content;
+    const m = body.match(/^\s*query::\s*(.*)$/im);
+    return m ? m[1].trim() : "";
   }
 
-  // Soft cap so an old mosaic with thousands of legacy untriaged blocks
-  // doesn't choke the renderer on first open. A future virtualization
-  // pass can lift this; for now, 200 is enough headroom for any real
-  // triage session.
+  /** Active DSL — read from the note on every render, falls back to the
+   *  default while the note is loading or absent. */
+  const activeDsl = $derived.by<string>(() => {
+    const note = inboxNoteQuery.data;
+    if (!note) return defaultInboxDsl();
+    const fromNote = readQueryFromNote(note);
+    return fromNote.length > 0 ? fromNote : defaultInboxDsl();
+  });
+
+  const chipState = $derived<ChipState>(chipsFromDsl(activeDsl));
+
+  // ── Rows ──────────────────────────────────────────────────────────────
+  // Now that `is:heading`, `on:daily-page`, `on:system-pages` are real
+  // DSL clauses, the post-fetch filter is gone — every active chip
+  // contributes its clause(s) to the DSL we send, and the server hands
+  // back exactly what should display.
+  const rowsQuery = createQuery(() => ({
+    queryKey: ["widget", "inbox", activeDsl] as const,
+    queryFn: () => api.executeQuery(activeDsl),
+    enabled: activeDsl.length > 0,
+  }));
+
   const ROW_CAP = 200;
   const rows = $derived.by<QueryItem[]>(() => {
-    const result = q.data;
+    const result = rowsQuery.data;
     if (!result) return [];
     const out: QueryItem[] = [];
     for (const g of result.groups) {
       for (const it of g.items) {
-        if (isInboxable(it)) out.push(it);
+        if (it.kind !== "block") continue;
+        out.push(it);
         if (out.length >= ROW_CAP) return out;
       }
     }
     return out;
   });
   const totalAvailable = $derived.by<number>(() => {
-    const result = q.data;
+    const result = rowsQuery.data;
     if (!result) return 0;
     let n = 0;
     for (const g of result.groups) {
-      for (const it of g.items) if (isInboxable(it)) n++;
+      for (const it of g.items) if (it.kind === "block") n++;
     }
     return n;
   });
@@ -73,10 +115,6 @@
     rows.length > 0 ? rows[Math.min(selectedIndex, rows.length - 1)] : null,
   );
 
-  // Focus dance — BufferShell's own focus logic runs after our mount
-  // tick and would otherwise steal focus from us, so we poll for ~500ms
-  // (mirrors BufferShell's pattern). Pointer-down on the root re-claims
-  // focus after the user clicks a row, so j/k work again.
   let rootEl = $state<HTMLDivElement | undefined>();
   $effect(() => {
     if (!rootEl) return;
@@ -97,32 +135,130 @@
       clearTimeout(start);
     };
   });
-
-  function handlePointerDown() {
-    rootEl?.focus({ preventScroll: true });
-  }
   $effect(() => {
-    // Keep the focused row visible as the selection moves.
     if (!selectedKey || !rootEl) return;
     const el = rootEl.querySelector(
       `[data-inbox-row="${CSS.escape(selectedKey)}"]`,
     ) as HTMLElement | null;
     el?.scrollIntoView({ block: "nearest" });
   });
+  function handlePointerDown() {
+    rootEl?.focus({ preventScroll: true });
+  }
+
+  // ── DSL persistence ───────────────────────────────────────────────────
+  // Toggling a chip immediately re-derives the DSL and starts a 500ms
+  // debounce; on flush we PUT the inbox note (creating it on the first
+  // toggle if the note doesn't yet exist). Mirrors the BlockOutliner
+  // save model so the user gets the same "save-as-you-edit" feel.
+  let saveTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingDsl: string | null = null;
+
+  function scheduleSave(nextDsl: string) {
+    pendingDsl = nextDsl;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => void flushSave(), 500);
+  }
+
+  async function flushSave() {
+    if (saveTimer) {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+    }
+    if (pendingDsl === null) return;
+    const dsl = pendingDsl;
+    pendingDsl = null;
+    const qc = getAppQueryClient();
+    try {
+      const existing = inboxNoteQuery.data;
+      const newContent = buildInboxNoteContent(existing, dsl);
+      if (existing) {
+        await api.updateNote(INBOX_NOTE_ID, newContent);
+      } else {
+        // Seed the note on first save. createNote uses the title to
+        // derive the slug, but we want the canonical `inbox` slug
+        // (matches v4 widget id). The system-widgets seeder also
+        // creates it lazily; if it races, the catch below swallows
+        // the dup-id error and we re-PUT into the existing note.
+        try {
+          await api.createNote("Inbox", newContent, []);
+        } catch {
+          await api.updateNote(INBOX_NOTE_ID, newContent);
+        }
+      }
+      // WS echo also invalidates these, but invalidating here makes
+      // the chip toggle feel instant.
+      if (qc) {
+        await qc.invalidateQueries({ queryKey: ["note", INBOX_NOTE_ID] });
+        await qc.invalidateQueries({ queryKey: ["widget", "inbox"] });
+      }
+    } catch {
+      toast("Failed to save Inbox query", "error");
+    }
+  }
+
+  /** Build a Query-note content string. Reuses the existing note's
+   *  frontmatter when present (preserving icon/color/section), splicing
+   *  in a fresh `query::` line. Greenfield case writes a minimal
+   *  frontmatter + body. */
+  function buildInboxNoteContent(existing: Note | null | undefined, dsl: string): string {
+    if (existing) {
+      const content = existing.content;
+      const fmEnd = content.indexOf("\n---", 3);
+      const frontmatter = fmEnd >= 0 ? content.slice(0, fmEnd + 4) : null;
+      const bodyRaw = fmEnd >= 0 ? content.slice(fmEnd + 4) : content;
+      // Strip any leading newlines so the rewritten body starts clean.
+      const body = bodyRaw.replace(/^\n+/, "");
+      const lines = body.split("\n");
+      const queryLineIdx = lines.findIndex((l) => /^\s*query::/i.test(l));
+      if (queryLineIdx >= 0) {
+        lines[queryLineIdx] = `query:: ${dsl}`;
+      } else {
+        lines.unshift(`query:: ${dsl}`);
+      }
+      const newBody = lines.join("\n");
+      return frontmatter ? `${frontmatter}\n\n${newBody}` : newBody;
+    }
+    // First-write — minimal frontmatter so the rest of the app
+    // recognizes this as a Query widget.
+    return [
+      "---",
+      'title: "Inbox"',
+      'type: "Query"',
+      'icon: "inbox"',
+      'color: "teal"',
+      'section: "browse"',
+      "---",
+      "",
+      `query:: ${dsl}`,
+      "",
+    ].join("\n");
+  }
+
+  function toggleChip(chipId: string) {
+    const next: ChipState = {
+      active: { ...chipState.active, [chipId]: !chipState.active[chipId] },
+      unknownClauses: chipState.unknownClauses,
+    };
+    scheduleSave(dslFromChips(next));
+  }
+
+  function saveRawDsl(dsl: string) {
+    rawDslOpen = false;
+    scheduleSave(dsl);
+  }
 
   // ── Actions ───────────────────────────────────────────────────────────
-
-  async function refresh() {
-    const qc = getAppQueryClient();
-    if (qc) await qc.invalidateQueries({ queryKey: ["widget", "inbox"] });
-  }
 
   async function triage(row: QueryItem, key: string) {
     const action = triageActionForKey(key);
     if (!action || !row.block_id) return;
     try {
       const ok = await applyTriage(row.page_id, row.block_id, action);
-      if (ok) await refresh();
+      if (ok) {
+        const qc = getAppQueryClient();
+        if (qc) await qc.invalidateQueries({ queryKey: ["widget", "inbox"] });
+      }
     } catch {
       toast("Triage failed", "error");
     }
@@ -137,8 +273,6 @@
   }
 
   // ── Date picker (s key) ───────────────────────────────────────────────
-  // Hoisted to the pane so the keyboard path doesn't need each row to
-  // own its own popover. Anchored to the selected row's bounding rect.
   let pickerForKey = $state<string | null>(null);
   let pickerPos = $state<{ x: number; y: number }>({ x: 0, y: 0 });
 
@@ -167,11 +301,15 @@
       if (recurrence !== null) {
         await api.setBlockProperty(row.block_id, "recurring", recurrence);
       }
-      await refresh();
+      const qc = getAppQueryClient();
+      if (qc) await qc.invalidateQueries({ queryKey: ["widget", "inbox"] });
     } catch {
       toast("Failed to schedule", "error");
     }
   }
+
+  // ── Raw-DSL editor sheet ──────────────────────────────────────────────
+  let rawDslOpen = $state(false);
 
   // ── Keyboard handler ──────────────────────────────────────────────────
   function handleKey(e: KeyboardEvent) {
@@ -180,7 +318,6 @@
       return;
     }
     if (rows.length === 0) return;
-    // Triage keys first so we can short-circuit before normal nav.
     if (selectedRow && triageActionForKey(e.key) !== null) {
       e.preventDefault();
       triage(selectedRow, e.key);
@@ -225,7 +362,7 @@
   onkeydown={handleKey}
   onpointerdown={handlePointerDown}
 >
-  <header class="flex items-center justify-between mb-3 text-[12px]">
+  <header class="flex items-center justify-between mb-2 text-[12px]">
     <div class="font-semibold">
       📥 Inbox
       <span class="text-muted-foreground/40 font-normal text-[11px]">
@@ -234,14 +371,20 @@
     </div>
     <div class="text-muted-foreground/60 text-[11px]">
       {#if totalAvailable > rows.length}
-        showing {rows.length} of {totalAvailable} untriaged
+        showing {rows.length} of {totalAvailable}
       {:else}
-        {rows.length} untriaged
+        {rows.length}
       {/if}
     </div>
   </header>
 
-  {#if q.isLoading}
+  <ChipBar
+    state={chipState}
+    onToggle={toggleChip}
+    onEditRaw={() => (rawDslOpen = true)}
+  />
+
+  {#if rowsQuery.isLoading}
     <div class="text-muted-foreground/60 text-[12px]">loading…</div>
   {:else if rows.length === 0}
     <div class="text-muted-foreground/50 text-[12px] italic">Inbox clear ✓</div>
@@ -258,5 +401,13 @@
     position={pickerPos}
     onPick={handlePick}
     onClose={() => (pickerForKey = null)}
+  />
+{/if}
+
+{#if rawDslOpen}
+  <RawDslSheet
+    initialDsl={activeDsl}
+    onSave={saveRawDsl}
+    onCancel={() => (rawDslOpen = false)}
   />
 {/if}
