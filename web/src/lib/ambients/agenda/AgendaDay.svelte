@@ -30,8 +30,10 @@
 </script>
 
 <div class="mb-3">
-  <div class="text-[11px] font-semibold tracking-wide uppercase mb-1 {headerColor}"
-  >{label}</div>
+  {#if label}
+    <div class="text-[11px] font-semibold tracking-wide uppercase mb-1 {headerColor}"
+    >{label}</div>
+  {/if}
   {#if emphasis !== "empty"}
     {#each rows as row (row.block_id + ":" + row.occurrence_date)}
       <AgendaRow

@@ -26,12 +26,13 @@
   const isTask = $derived(row.kind === "task");
   const isOverdue = $derived(row.overdue);
   const showCheckbox = $derived(isTask && row.is_anchor);
-  // Visual cue:
-  //  - overdue tasks: ⚑ in orange (matches --accent-primary / coral brand)
-  //  - everything else: 🕒 in muted blue
-  // (When the AgendaRow shape grows a `field: "deadline" | "scheduled"`
-  //  later, we can render ⚑ for deadline-anchored rows specifically.)
-  const icon = $derived(isOverdue && isTask ? "⚑" : "🕒");
+  // Visual cue keyed off the row's `field` (now that the server emits
+  // it): ⚑ = deadline (hard cutoff / commitment to others), 🕒 =
+  // scheduled (self-commitment for "when am I doing it"). Overdue
+  // tints inherit from the parent bucket; the glyph itself stays
+  // the same regardless of overdue-ness so the user can scan for
+  // deadlines vs scheduled work at a glance.
+  const icon = $derived(row.field === "deadline" ? "⚑" : "🕒");
 
   const timeOrDate = $derived(
     row.occurrence_time

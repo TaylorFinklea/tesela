@@ -25,6 +25,7 @@ struct AgendaView: View {
     @State private var loading = false
     @State private var includeDone = false
     @State private var rescheduleTarget: AgendaRow? = nil
+    @State private var bulkTarget: BulkRescheduleTarget? = nil
     @State private var showSettings = false
     @State private var showMosaicSwitcher = false
     @State private var navigationPath = NavigationPath()
@@ -32,7 +33,8 @@ struct AgendaView: View {
     /// render (which fires when the context menu mounts) is O(N × 60+)
     /// and was freezing the UI ~25s on long-press. We materialize the
     /// buckets once when `rows` / `includeDone` change.
-    @State private var cachedOverdue: [AgendaRow] = []
+    @State private var cachedOverdueDeadlines: [AgendaRow] = []
+    @State private var cachedOverdueScheduled: [AgendaRow] = []
     @State private var cachedForwardBuckets: [DayBucket] = []
 
     struct DayBucket: Identifiable, Equatable {
@@ -40,6 +42,15 @@ struct AgendaView: View {
         let label: String
         let rows: [AgendaRow]
         var id: String { iso }
+    }
+
+    /// Payload for a bulk-reschedule sheet — which property to write
+    /// and the rows it'll apply to. `Identifiable` so `.sheet(item:)`
+    /// can drive its presentation.
+    struct BulkRescheduleTarget: Identifiable, Equatable {
+        let id: String        // stable per invocation: "deadline-N" / "scheduled-N"
+        let field: AgendaField
+        let rows: [AgendaRow]
     }
 
     /// Lookback so overdue rows surface — mirrors the web client. The
@@ -82,6 +93,14 @@ struct AgendaView: View {
                     rescheduleTarget = nil
                 } onCancel: {
                     rescheduleTarget = nil
+                }
+            }
+            .sheet(item: $bulkTarget) { target in
+                BulkRescheduleSheet(target: target) { iso, time in
+                    Task { await applyBulkReschedule(target: target, iso: iso, time: time) }
+                    bulkTarget = nil
+                } onCancel: {
+                    bulkTarget = nil
                 }
             }
             .sheet(isPresented: $showMosaicSwitcher) {
@@ -134,8 +153,19 @@ struct AgendaView: View {
                         .font(.system(size: 13))
                         .listRowBackground(theme.bg2)
                 }
-                if !cachedOverdue.isEmpty {
-                    daySection(label: "OVERDUE", rows: cachedOverdue, accent: theme.accentPrimary)
+                if !cachedOverdueDeadlines.isEmpty {
+                    overdueSection(
+                        label: "⚑ OVERDUE DEADLINES",
+                        rows: cachedOverdueDeadlines,
+                        field: .deadline
+                    )
+                }
+                if !cachedOverdueScheduled.isEmpty {
+                    overdueSection(
+                        label: "🕒 OVERDUE SCHEDULED",
+                        rows: cachedOverdueScheduled,
+                        field: .scheduled
+                    )
                 }
                 ForEach(cachedForwardBuckets) { bucket in
                     daySection(label: bucket.label, rows: bucket.rows, accent: theme.fgFaint)
@@ -144,6 +174,48 @@ struct AgendaView: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(theme.bg)
+        }
+    }
+
+    /// Overdue sub-section: a normal day-section plus a header-trailing
+    /// "Reschedule all" button that opens the bulk sheet for every row
+    /// in the bucket, writing to the bucket's field on commit.
+    @ViewBuilder
+    private func overdueSection(label: String, rows: [AgendaRow], field: AgendaField) -> some View {
+        Section {
+            ForEach(rows) { row in
+                AgendaRowView(
+                    row: row,
+                    onToggleDone: { Task { await applyMarkDone(row) } },
+                    onReschedule: { rescheduleTarget = row },
+                    onSkip: { Task { await applySkip(row) } },
+                    onOpenSource: { navigationPath.append(DailyPageRoute(slug: row.source_note_id)) }
+                )
+                .listRowBackground(theme.bg2)
+            }
+        } header: {
+            HStack {
+                Text(label)
+                    .font(.system(size: 10, design: .monospaced))
+                    .tracking(1.2)
+                    .foregroundStyle(theme.accentPrimary)
+                Text("\(rows.count)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(theme.fgFaint)
+                Spacer()
+                Button {
+                    bulkTarget = BulkRescheduleTarget(
+                        id: "\(field.rawValue)-\(Date().timeIntervalSince1970)",
+                        field: field,
+                        rows: rows
+                    )
+                } label: {
+                    Text("Reschedule all →")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.fgDefault)
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 
@@ -194,7 +266,9 @@ struct AgendaView: View {
     /// `.contextMenu` mounts. With a few hundred rows that locked the
     /// UI for ~25s on every long-press.
     private func rebucket() {
-        cachedOverdue = rows.filter { $0.overdue }
+        let overdueAll = rows.filter { $0.overdue }
+        cachedOverdueDeadlines = overdueAll.filter { $0.field == .deadline }
+        cachedOverdueScheduled = overdueAll.filter { $0.field == .scheduled }
         let byDay = Dictionary(grouping: rows.filter { !$0.overdue }) { $0.occurrence_date }
         var out: [DayBucket] = []
         let cal = Calendar.current
@@ -267,6 +341,23 @@ struct AgendaView: View {
         } catch {
             // Silent.
         }
+    }
+
+    private func applyBulkReschedule(target: BulkRescheduleTarget, iso: String, time: String?) async {
+        let value = time.map { "\(iso) \($0)" } ?? iso
+        let key = target.field.rawValue  // "deadline" | "scheduled"
+        // Fire setBlockProperty for each row in parallel — no batch
+        // endpoint, but the row counts here are tens at most so a
+        // TaskGroup over them is fine.
+        await withTaskGroup(of: Void.self) { group in
+            for row in target.rows {
+                let bid = row.block_id
+                group.addTask {
+                    try? await mosaic.setBlockProperty(blockId: bid, key: key, value: value)
+                }
+            }
+        }
+        await load()
     }
 
     private func applySkip(_ row: AgendaRow) async {
@@ -428,3 +519,33 @@ private struct RescheduleSheet: View {
 // Make AgendaRow Identifiable-as-sheet-item — the `id` property
 // (block_id:date) is already Hashable so SwiftUI's `.sheet(item:)`
 // is happy.
+
+// ── Bulk reschedule sheet ──────────────────────────────────────────────
+
+private struct BulkRescheduleSheet: View {
+    let target: AgendaView.BulkRescheduleTarget
+    let onCommit: (_ iso: String, _ time: String?) -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        // Reuse the DateInputSheet but ignore the field-picker (we
+        // already know which field — the bucket that spawned the
+        // sheet) and recurrence (bulk-set of recurrence doesn't make
+        // sense; you'd be saying "every Tuesday" to a heterogeneous
+        // set of tasks). The sheet's bareDateFieldDefault is set to
+        // the target's field so the chip pre-selects correctly even
+        // though the user can't change it.
+        DateInputSheet(
+            initialScheduled: nil,
+            initialDeadline: nil,
+            initialRecurrence: nil,
+            canSkip: false,
+            bareDateFieldDefault: target.field.rawValue,
+            onCommit: { _field, iso, time, _recurrence in
+                onCommit(iso, time)
+            },
+            onSkip: { onCancel() },
+            onCancel: onCancel
+        )
+    }
+}

@@ -187,6 +187,26 @@ pub enum AgendaRowKind {
     Event,
 }
 
+/// Which dated property the row's anchor came from. Surfaced so clients
+/// can distinguish ⚑ deadline (a date the work *must* be done by — a
+/// commitment to others / a hard cutoff) from 🕒 scheduled (a date the
+/// user picked for *doing* the work — a self-commitment). Drives the
+/// Todoist-style split of the Overdue bucket into two sub-buckets
+/// because rescheduling a missed deadline is semantically different
+/// from rescheduling a missed planned-do date.
+///
+/// When a block carries both `deadline::` and `scheduled::`, the agenda
+/// query anchors on `scheduled` (the "when am I doing it" answer), so
+/// `field` is `Scheduled` in that case.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+#[serde(rename_all = "lowercase")]
+pub enum AgendaField {
+    Deadline,
+    Scheduled,
+}
+
 /// One row in an agenda view — either a task or an event within a date window.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(test, derive(TS))]
@@ -210,6 +230,8 @@ pub struct AgendaRow {
     pub text: String,
     /// `status::` value (`"todo"`, `"done"`, ...) for task rows; `None` for events.
     pub status: Option<String>,
+    /// Which dated property the row's anchor came from. See [`AgendaField`].
+    pub field: AgendaField,
 }
 
 /// Extract the first ISO date (`YYYY-MM-DD`) anywhere in a property value.
@@ -250,11 +272,13 @@ mod agenda_row_tests {
             is_anchor: true,
             text: "do this thing".to_string(),
             status: Some("todo".to_string()),
+            field: AgendaField::Scheduled,
         };
         let json = serde_json::to_string(&r).unwrap();
         let back: AgendaRow = serde_json::from_str(&json).unwrap();
         assert_eq!(back.block_id, "b1");
         assert_eq!(back.kind, AgendaRowKind::Task);
+        assert_eq!(back.field, AgendaField::Scheduled);
     }
 }
 

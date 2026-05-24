@@ -20,6 +20,7 @@ struct AgendaRow: Identifiable, Codable, Equatable, Hashable {
     let is_anchor: Bool
     let text: String                   // Already bid-stripped server-side
     let status: String?                // "todo" | "doing" | "done" | nil
+    let field: AgendaField             // Which dated property anchored this row
 
     /// Stable per-row identity for SwiftUI ForEach. A recurring block's
     /// future occurrences share the same `block_id`, so the date has
@@ -30,4 +31,12 @@ struct AgendaRow: Identifiable, Codable, Equatable, Hashable {
 enum AgendaRowKind: String, Codable, Equatable, Hashable {
     case task
     case event
+}
+
+/// Which dated property the row's anchor came from. Mirrors the server
+/// `AgendaField` enum; drives the Overdue-bucket split (⚑ deadlines
+/// vs 🕒 scheduled) and the per-bucket bulk-reschedule actions.
+enum AgendaField: String, Codable, Equatable, Hashable {
+    case deadline
+    case scheduled
 }

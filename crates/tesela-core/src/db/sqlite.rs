@@ -947,7 +947,7 @@ impl SearchIndex for SqliteIndex {
         to: &str,
         include_done: bool,
     ) -> Result<Vec<crate::query::AgendaRow>> {
-        use crate::query::{extract_iso_date, AgendaRow, AgendaRowKind};
+        use crate::query::{extract_iso_date, AgendaField, AgendaRow, AgendaRowKind};
         use crate::recurrence;
         use chrono::NaiveDate;
 
@@ -1068,15 +1068,19 @@ impl SearchIndex for SqliteIndex {
                 None => continue,
             };
 
-            // Determine anchor date + time: prefer scheduled, fall back to deadline.
-            let (anchor_date, anchor_time) = {
-                let dated = props
-                    .get("scheduled")
-                    .and_then(|v| parse_dated_value(v))
-                    .or_else(|| props.get("deadline").and_then(|v| parse_dated_value(v)));
-                match dated {
-                    Some(p) => p,
-                    None => continue,
+            // Determine anchor date + time + which field it came from:
+            // prefer `scheduled` (the "when am I doing it" answer), fall
+            // back to `deadline` only when `scheduled` is absent. The
+            // `field` rides along on the AgendaRow so clients can split
+            // the Overdue bucket (a missed deadline is semantically
+            // different from a missed planned-do date).
+            let (anchor_date, anchor_time, field) = {
+                if let Some(p) = props.get("scheduled").and_then(|v| parse_dated_value(v)) {
+                    (p.0, p.1, AgendaField::Scheduled)
+                } else if let Some(p) = props.get("deadline").and_then(|v| parse_dated_value(v)) {
+                    (p.0, p.1, AgendaField::Deadline)
+                } else {
+                    continue;
                 }
             };
 
@@ -1141,6 +1145,7 @@ impl SearchIndex for SqliteIndex {
                     is_anchor,
                     text: block_text.clone(),
                     status: status.clone(),
+                    field,
                 });
             };
 
@@ -2010,6 +2015,59 @@ mod tests {
         assert!(!rows[1].is_anchor, "second row should not be anchor");
         assert!(!rows[2].is_anchor, "third row should not be anchor");
         assert!(!rows[3].is_anchor, "fourth row should not be anchor");
+    }
+
+    #[tokio::test]
+    async fn agenda_blocks_field_is_scheduled_when_scheduled_set() {
+        use crate::traits::search_index::SearchIndex as _;
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let note = make_test_note(
+            "agenda-fs",
+            "Field-Scheduled Note",
+            "- shop\n  scheduled:: 2026-05-22\n  tags:: Task\n  status:: todo",
+            &[],
+        );
+        index.reindex(&note).await.unwrap();
+        let rows = index.agenda_blocks("2026-05-22", "2026-05-22", false).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].field, crate::query::AgendaField::Scheduled);
+    }
+
+    #[tokio::test]
+    async fn agenda_blocks_field_is_deadline_when_only_deadline_set() {
+        use crate::traits::search_index::SearchIndex as _;
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let note = make_test_note(
+            "agenda-fd",
+            "Field-Deadline Note",
+            "- file taxes\n  deadline:: 2026-04-15\n  tags:: Task\n  status:: todo",
+            &[],
+        );
+        index.reindex(&note).await.unwrap();
+        let rows = index.agenda_blocks("2026-04-15", "2026-04-15", false).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].field, crate::query::AgendaField::Deadline);
+    }
+
+    #[tokio::test]
+    async fn agenda_blocks_field_prefers_scheduled_when_both_set() {
+        // When a block carries both deadline and scheduled, the agenda
+        // anchors on scheduled (the "when am I doing it" answer), so
+        // `field` reports Scheduled. Mirrors the anchor-selection rule
+        // in `agenda_blocks` so clients can trust `field` for UI splits.
+        use crate::traits::search_index::SearchIndex as _;
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let note = make_test_note(
+            "agenda-fb",
+            "Both Note",
+            "- big project\n  scheduled:: 2026-05-20\n  deadline:: 2026-05-25\n  tags:: Task\n  status:: todo",
+            &[],
+        );
+        index.reindex(&note).await.unwrap();
+        let rows = index.agenda_blocks("2026-05-19", "2026-05-26", false).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].occurrence_date, "2026-05-20", "anchor should be scheduled date");
+        assert_eq!(rows[0].field, crate::query::AgendaField::Scheduled);
     }
 
     #[tokio::test]

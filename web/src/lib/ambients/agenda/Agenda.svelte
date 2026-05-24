@@ -1,6 +1,9 @@
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
+  import { getAppQueryClient } from "$lib/app-query-client.svelte";
+  import { toast } from "$lib/stores/toast.svelte";
+  import DatePicker from "$lib/components/DatePicker.svelte";
   import type { AmbientRendererProps } from "$lib/buffer/protocol";
   import type { AgendaRow as AgendaRowT } from "$lib/types/AgendaRow";
   import AgendaDay from "./AgendaDay.svelte";
@@ -47,13 +50,17 @@
     return d.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
   }
 
-  // Split into Overdue + per-day buckets across [today, upperIso].
+  // Split into Overdue (further split by field — deadlines vs scheduled
+  // are semantically different things to bulk-reschedule) + per-day
+  // buckets across [today, upperIso].
   const buckets = $derived.by(() => {
-    const overdue: AgendaRowT[] = [];
+    const overdueDeadlines: AgendaRowT[] = [];
+    const overdueScheduled: AgendaRowT[] = [];
     const byDay = new Map<string, AgendaRowT[]>();
     for (const r of rows) {
       if (r.overdue) {
-        overdue.push(r);
+        if (r.field === "deadline") overdueDeadlines.push(r);
+        else overdueScheduled.push(r);
         continue;
       }
       let arr = byDay.get(r.occurrence_date);
@@ -77,7 +84,7 @@
         : formatDayHeader(d);
       days.push({ iso, label, rows: dayRows });
     }
-    return { overdue, days };
+    return { overdueDeadlines, overdueScheduled, days };
   });
 
   // Infinite scroll — when the sentinel is near, extend the window.
@@ -99,7 +106,8 @@
   // through every visible row without caring which day bucket it lives in.
   const flatRows = $derived.by(() => {
     const out: AgendaRowT[] = [];
-    out.push(...buckets.overdue);
+    out.push(...buckets.overdueDeadlines);
+    out.push(...buckets.overdueScheduled);
     for (const day of buckets.days) {
       out.push(...day.rows);
     }
@@ -148,6 +156,57 @@
     // again after the user clicks a row's button (which momentarily
     // takes focus). preventScroll keeps the click target stable.
     rootEl?.focus({ preventScroll: true });
+  }
+
+  // ── Bulk reschedule (Overdue → "Reschedule all" per sub-bucket) ─────
+  // Opens one DatePicker for an arbitrary set of rows. On commit we
+  // fire `setBlockProperty` for each row's anchor in parallel — there's
+  // no batch endpoint, but the Promise.all is fine for the row counts
+  // a single overdue bucket realistically holds (tens, not thousands).
+  let bulkTargetRows = $state<AgendaRowT[]>([]);
+  let bulkPickerPos = $state<{ x: number; y: number }>({ x: 0, y: 0 });
+  let bulkPickerKey = $state<string | null>(null);
+  // The property key to write on commit ("scheduled" or "deadline"),
+  // matched to whichever sub-bucket spawned the picker so a "Reschedule
+  // all overdue deadlines" action writes to deadline:: across the rows
+  // rather than collapsing them onto scheduled::.
+  let bulkPropertyKey = $state<"scheduled" | "deadline">("scheduled");
+
+  function openBulkReschedule(
+    event: MouseEvent,
+    targetRows: AgendaRowT[],
+    propertyKey: "scheduled" | "deadline",
+  ) {
+    event.stopPropagation();
+    if (targetRows.length === 0) return;
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    bulkPickerPos = { x: rect.left, y: rect.bottom + 4 };
+    bulkTargetRows = targetRows;
+    bulkPropertyKey = propertyKey;
+    bulkPickerKey = `bulk-${propertyKey}-${Date.now()}`;
+  }
+
+  async function handleBulkPick(
+    iso: string,
+    _time: string | null,
+    _recurrence: string | null,
+    _field: "deadline" | "scheduled" | null,
+  ) {
+    const targets = bulkTargetRows;
+    const key = bulkPropertyKey;
+    bulkPickerKey = null;
+    bulkTargetRows = [];
+    if (targets.length === 0) return;
+    try {
+      await Promise.all(
+        targets.map((r) => api.setBlockProperty(r.block_id, key, iso)),
+      );
+      const qc = getAppQueryClient();
+      if (qc) await qc.invalidateQueries({ queryKey: ["agenda"] });
+      toast(`Rescheduled ${targets.length} ${key === "deadline" ? "deadlines" : "scheduled"} → ${iso}`, "success");
+    } catch {
+      toast("Bulk reschedule failed", "error");
+    }
   }
 
   // When the selected row changes, scroll it into view so j/k keep up
@@ -239,8 +298,27 @@
   {#if q.isLoading}
     <div class="text-muted-foreground/60 text-[12px]">loading…</div>
   {:else}
-    {#if buckets.overdue.length > 0}
-      <AgendaDay label="Overdue" rows={buckets.overdue} emphasis="overdue" {selectedKey} />
+    {#if buckets.overdueDeadlines.length > 0}
+      <div class="mb-1 flex items-center justify-between">
+        <span class="text-[11px] font-semibold tracking-wide uppercase text-primary">⚑ Overdue deadlines · {buckets.overdueDeadlines.length}</span>
+        <button
+          type="button"
+          class="text-[11px] text-muted-foreground/70 hover:text-foreground transition-colors px-1.5 py-0.5 rounded border border-muted-foreground/20 hover:border-muted-foreground/40"
+          onclick={(e) => openBulkReschedule(e, buckets.overdueDeadlines, "deadline")}
+        >Reschedule all →</button>
+      </div>
+      <AgendaDay label="" rows={buckets.overdueDeadlines} emphasis="overdue" {selectedKey} />
+    {/if}
+    {#if buckets.overdueScheduled.length > 0}
+      <div class="mb-1 flex items-center justify-between">
+        <span class="text-[11px] font-semibold tracking-wide uppercase text-primary">🕒 Overdue scheduled · {buckets.overdueScheduled.length}</span>
+        <button
+          type="button"
+          class="text-[11px] text-muted-foreground/70 hover:text-foreground transition-colors px-1.5 py-0.5 rounded border border-muted-foreground/20 hover:border-muted-foreground/40"
+          onclick={(e) => openBulkReschedule(e, buckets.overdueScheduled, "scheduled")}
+        >Reschedule all →</button>
+      </div>
+      <AgendaDay label="" rows={buckets.overdueScheduled} emphasis="overdue" {selectedKey} />
     {/if}
     {#each buckets.days as day (day.iso)}
       {#if day.rows.length > 0}
@@ -252,3 +330,12 @@
     <div bind:this={sentinel} class="h-px"></div>
   {/if}
 </div>
+
+{#if bulkPickerKey}
+  <DatePicker
+    initialRecurrence={null}
+    position={bulkPickerPos}
+    onPick={handleBulkPick}
+    onClose={() => (bulkPickerKey = null)}
+  />
+{/if}
