@@ -560,6 +560,63 @@ fn filter_matches(block: &ParsedBlock, f: &QueryFilter) -> bool {
                 _ => false,
             }
         }
+        "page" => {
+            // `page:<note_id>` matches blocks whose containing note id
+            // equals the value (case-insensitive, mirroring the rest of
+            // the DSL). Drives the Inbox "Hide all from this page"
+            // action — the negated form (`-page:foo`) is the common
+            // case, written into the saved query whenever the user
+            // hides a noisy page.
+            let matched = block.note_id.eq_ignore_ascii_case(&f.value);
+            match f.op {
+                QueryOp::Eq => matched,
+                QueryOp::Ne => !matched,
+                _ => false,
+            }
+        }
+        "block" => {
+            // `block:<bid>` matches by the block's deterministic id
+            // (`<note_id>:<line_number>`). Drives "Hide this block" —
+            // a per-row escape hatch for individual noisy rows that
+            // page / type filtering can't catch.
+            let matched = block.id.eq_ignore_ascii_case(&f.value);
+            match f.op {
+                QueryOp::Eq => matched,
+                QueryOp::Ne => !matched,
+                _ => false,
+            }
+        }
+        "tag-in" => {
+            // `tag-in:A,B,C` matches blocks tagged with ANY of the
+            // comma-separated values. The only OR primitive in the
+            // DSL. Drives the Inbox Types chip-group: multi-selecting
+            // types composes a single `tag-in:` clause.
+            //
+            // Empty value list (`tag-in:`) degrades to "matches
+            // nothing" for `Eq` / "matches everything" for `Ne` so a
+            // chip-group with no active chips doesn't accidentally
+            // exclude every row.
+            let needles: Vec<String> = f
+                .value
+                .split(',')
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let matched = if needles.is_empty() {
+                false
+            } else {
+                block
+                    .tags
+                    .iter()
+                    .chain(block.inherited_tags.iter())
+                    .any(|t| needles.iter().any(|n| t.eq_ignore_ascii_case(n)))
+            };
+            match f.op {
+                QueryOp::Eq => matched,
+                QueryOp::Ne => !matched,
+                _ => false,
+            }
+        }
         "on" => {
             // `on:daily-page` / `on:system-pages` filter blocks by their
             // *containing page's* identity — daily journal entries vs
@@ -793,6 +850,83 @@ mod tests {
         let q_neg = parse_query("-on:system-pages");
         assert!(!block_matches(&block_on("tag-page", Some("Tag")), &q_neg));
         assert!(block_matches(&block_on("project", Some("Project")), &q_neg));
+    }
+
+    #[test]
+    fn block_matches_page_exact() {
+        // `page:foo` matches blocks whose containing note_id is exactly
+        // `foo`. Drives the Inbox "Hide all from this page" action and
+        // the per-page-exclusion chips. Case-insensitive comparison
+        // matches the rest of the DSL's behavior.
+        let q = parse_query("page:python");
+        assert!(block_matches(&block_on("python", None), &q));
+        assert!(!block_matches(&block_on("javascript", None), &q));
+        // Negated form is the common one (the hide action writes it).
+        let qn = parse_query("-page:python");
+        assert!(!block_matches(&block_on("python", None), &qn));
+        assert!(block_matches(&block_on("project", None), &qn));
+    }
+
+    #[test]
+    fn block_matches_block_exact() {
+        // `block:<bid>` matches blocks whose id is exactly that bid.
+        // Drives "Hide this block" — surgical exclusion of one specific
+        // row when filtering by page or type is too coarse.
+        let q = parse_query("block:python:5");
+        let target = {
+            let mut b = block_with(vec![], &[]);
+            b.id = "python:5".into();
+            b
+        };
+        let other = {
+            let mut b = block_with(vec![], &[]);
+            b.id = "python:6".into();
+            b
+        };
+        assert!(block_matches(&target, &q));
+        assert!(!block_matches(&other, &q));
+    }
+
+    #[test]
+    fn block_matches_tag_in_or_over_values() {
+        // `tag-in:Foo,Bar,Baz` matches blocks tagged with ANY of the
+        // listed values (OR over values — the only OR primitive in the
+        // DSL). Drives the Inbox Types chip-group: multi-select types
+        // compose a single `tag-in:` clause.
+        let q = parse_query("tag-in:Task,Domain,Issue");
+        assert!(block_matches(&block_with(vec!["Task"], &[]), &q));
+        assert!(block_matches(&block_with(vec!["Domain"], &[]), &q));
+        assert!(block_matches(&block_with(vec!["Issue"], &[]), &q));
+        // A block with a tag not in the set is excluded.
+        assert!(!block_matches(&block_with(vec!["Person"], &[]), &q));
+        // A block with no tags at all is excluded.
+        assert!(!block_matches(&block_with(vec![], &[]), &q));
+        // Case-insensitive match against the values.
+        assert!(block_matches(&block_with(vec!["task"], &[]), &q));
+    }
+
+    #[test]
+    fn block_matches_negated_tag_in() {
+        // `-tag-in:Foo,Bar` excludes blocks tagged with ANY of the
+        // listed values — set-membership exclusion. Useful for "show
+        // me everything except these noisy categories."
+        let q = parse_query("-tag-in:Task,Done");
+        assert!(!block_matches(&block_with(vec!["Task"], &[]), &q));
+        assert!(!block_matches(&block_with(vec!["Done"], &[]), &q));
+        assert!(block_matches(&block_with(vec!["Note"], &[]), &q));
+        assert!(block_matches(&block_with(vec![], &[]), &q));
+    }
+
+    #[test]
+    fn block_matches_tag_in_empty_values_dropped_by_parser() {
+        // `tag-in:` with no value gets dropped during parsing — same as
+        // every other non-`has` clause with an empty value. The
+        // resulting query has zero filters and matches every block
+        // (vacuous AND). Documenting the behavior so future "make this
+        // smarter" tweaks are deliberate.
+        let q = parse_query("tag-in:");
+        assert_eq!(q.filters.len(), 0);
+        assert!(block_matches(&block_with(vec!["Task"], &[]), &q));
     }
 
     #[test]

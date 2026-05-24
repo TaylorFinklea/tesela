@@ -5,6 +5,7 @@
   let {
     row,
     selected = false,
+    onHidePage,
   }: {
     row: QueryItem;
     /** Whether this row holds keyboard focus. The parent (`Inbox`)
@@ -13,6 +14,9 @@
      * dispatched by the parent via `data-action` selectors on the
      * row's buttons, so mouse and keyboard paths share one handler. */
     selected?: boolean;
+    /** Add a `-page:<id>` exclusion to the inbox query, dropping every
+     * row from this page. Click the × beside the source pill. */
+    onHidePage: (pageId: string) => void;
   } = $props();
 
   const primaryTag = $derived(row.primary_tag);
@@ -24,7 +28,7 @@
 </script>
 
 <div
-  class="flex items-center gap-2 py-1 px-1 -mx-1 text-[13px] rounded"
+  class="group flex items-center gap-2 py-1 px-1 -mx-1 text-[13px] rounded"
   class:bg-accent={selected}
   data-inbox-row={row.block_id ?? row.page_id}
 >
@@ -41,11 +45,26 @@
     <span class="text-[11px] text-muted-foreground/70 shrink-0">#{primaryTag}</span>
   {/if}
 
-  <button
-    type="button"
-    class="text-[11px] text-muted-foreground/60 hover:text-foreground shrink-0 transition-colors max-w-[40%] truncate"
-    onclick={() => gotoNote(row.page_id, row.block_id ?? null)}
-    data-action="open-source-pill"
-    title="Open source"
-  >in [[{breadcrumb}]]</button>
+  <span class="flex items-center gap-1 shrink-0 max-w-[40%]">
+    <button
+      type="button"
+      class="text-[11px] text-muted-foreground/60 hover:text-foreground transition-colors truncate"
+      onclick={() => gotoNote(row.page_id, row.block_id ?? null)}
+      data-action="open-source-pill"
+      title="Open source"
+    >in [[{breadcrumb}]]</button>
+    <!-- Hide-this-page button — only visible on hover so the row stays
+         calm at rest. Clicking adds a `-page:<id>` exclusion to the
+         saved query; the row + every other row from this page drop
+         out within the next debounced PUT. -->
+    <button
+      type="button"
+      class="text-[11px] text-muted-foreground/40 hover:text-primary opacity-0 group-hover:opacity-100 transition-opacity"
+      onclick={(e) => {
+        e.stopPropagation();
+        onHidePage(row.page_id);
+      }}
+      title={`Hide all blocks from ${row.page_id}`}
+    >×</button>
+  </span>
 </div>

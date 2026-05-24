@@ -144,6 +144,7 @@ export const api = {
       children: number;
     }>(`/tags/${encodeURIComponent(slug)}/usage`),
   getAllEdges: () => get<GraphEdge[]>("/links"),
+  listTypes: () => get<TypeDefinition[]>(`/types`),
   getType: (name: string) =>
     get<TypeDefinition>(`/types/${encodeURIComponent(name)}`),
   getTypedBlocks: (typeName: string) =>

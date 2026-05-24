@@ -114,13 +114,31 @@ export const CHIP_REGISTRY: readonly ChipDef[] = [
   },
 ];
 
-/** Map of `ChipDef.id` → whether the chip is currently active. */
+/**
+ * Live state of the chip toolbar — drives both rendering and DSL
+ * composition. The fields beyond `active` capture the two dynamic
+ * pieces of the saved query: a multi-select Types group (OR via a
+ * single `tag-in:` clause) and per-row exclusion lists (Hide-this-
+ * page / Hide-this-block, expressed as `-page:` / `-block:` clauses).
+ */
 export type ChipState = {
+  /** Static chip on/off, keyed by `ChipDef.id`. */
   active: Record<string, boolean>;
   /**
-   * DSL clauses present in the source query that no registered chip
-   * claims. Rendered read-only in the chip bar so the user always
-   * sees every clause filtering the inbox.
+   * Type names the user has multi-selected to include. Composed into
+   * a single `tag-in:Name1,Name2,…` clause on save; an empty array
+   * means the chip-group is off (no clause emitted).
+   */
+  activeTypes: string[];
+  /** Page ids the user has explicitly hidden via "Hide all from this
+   * page." Each one is emitted as `-page:<id>` in the DSL. */
+  hiddenPages: string[];
+  /** Block ids the user has hidden one-off via "Hide this block." */
+  hiddenBlocks: string[];
+  /**
+   * DSL clauses present in the source query that no chip-shape claims.
+   * Rendered read-only in the chip bar so the user always sees every
+   * clause filtering the inbox; only editable via the raw-DSL sheet.
    */
   unknownClauses: string[];
 };
@@ -153,8 +171,32 @@ export function chipsFromDsl(dsl: string): ChipState {
   }
   // Strip the implicit `kind:block` baseline from unknowns.
   remaining.delete("kind:block");
+
+  // Pull out dynamic groups: tag-in:A,B,C → activeTypes; -page:X /
+  // -block:X → exclusion lists. Order doesn't matter so it's fine to
+  // iterate `remaining` and remove as we claim each token.
+  const activeTypes: string[] = [];
+  const hiddenPages: string[] = [];
+  const hiddenBlocks: string[] = [];
+  for (const tok of Array.from(remaining)) {
+    if (tok.startsWith("tag-in:")) {
+      const values = tok.slice("tag-in:".length).split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+      activeTypes.push(...values);
+      remaining.delete(tok);
+    } else if (tok.startsWith("-page:")) {
+      hiddenPages.push(tok.slice("-page:".length));
+      remaining.delete(tok);
+    } else if (tok.startsWith("-block:")) {
+      hiddenBlocks.push(tok.slice("-block:".length));
+      remaining.delete(tok);
+    }
+  }
+
   return {
     active,
+    activeTypes,
+    hiddenPages,
+    hiddenBlocks,
     unknownClauses: Array.from(remaining),
   };
 }
@@ -172,6 +214,15 @@ export function dslFromChips(state: ChipState): string {
       parts.push(...chip.clauses);
     }
   }
+  if (state.activeTypes.length > 0) {
+    parts.push(`tag-in:${state.activeTypes.join(",")}`);
+  }
+  for (const p of state.hiddenPages) {
+    parts.push(`-page:${p}`);
+  }
+  for (const b of state.hiddenBlocks) {
+    parts.push(`-block:${b}`);
+  }
   for (const u of state.unknownClauses) {
     parts.push(u);
   }
@@ -188,7 +239,13 @@ export function defaultInboxDsl(): string {
   for (const chip of CHIP_REGISTRY) {
     active[chip.id] = chip.defaultOn;
   }
-  return dslFromChips({ active, unknownClauses: [] });
+  return dslFromChips({
+    active,
+    activeTypes: [],
+    hiddenPages: [],
+    hiddenBlocks: [],
+    unknownClauses: [],
+  });
 }
 
 /**

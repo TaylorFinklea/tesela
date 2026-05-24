@@ -8,6 +8,7 @@
   import type { AmbientRendererProps } from "$lib/buffer/protocol";
   import type { QueryItem } from "$lib/types/QueryItem";
   import type { Note } from "$lib/types/Note";
+  import type { TypeDefinition } from "$lib/types/TypeDefinition";
   import {
     chipsFromDsl,
     dslFromChips,
@@ -44,6 +45,25 @@
       }
     },
   }));
+
+  // /types drives the dynamic Types chip-group. Cached aggressively
+  // (types rarely change at runtime); refetched on focus so a user who
+  // edits types.toml sees their new types appear without a full reload.
+  const typesQuery = createQuery(() => ({
+    queryKey: ["types"] as const,
+    queryFn: () => api.listTypes(),
+    staleTime: 60_000,
+  }));
+  const availableTypes = $derived<string[]>(
+    ((typesQuery.data ?? []) as TypeDefinition[])
+      .map((t) => t.name)
+      // Filter out lowercase types — the user's TypeRegistry mixes
+      // metaclasses (Domain, Issue, Task) with thing-names (book,
+      // flashlight). For the chip group we want the inclusive
+      // metaclasses; lowercase entries are typically per-thing tags.
+      .filter((n) => /^[A-Z]/.test(n))
+      .sort((a, b) => a.localeCompare(b)),
+  );
 
   /** Extract the `query::` body line from a Query-type note. Mirrors
    * `readBodyProperty` in widget-registry. */
@@ -237,8 +257,45 @@
 
   function toggleChip(chipId: string) {
     const next: ChipState = {
+      ...chipState,
       active: { ...chipState.active, [chipId]: !chipState.active[chipId] },
-      unknownClauses: chipState.unknownClauses,
+    };
+    scheduleSave(dslFromChips(next));
+  }
+
+  function toggleType(typeName: string) {
+    const current = new Set(chipState.activeTypes);
+    if (current.has(typeName)) current.delete(typeName);
+    else current.add(typeName);
+    const next: ChipState = {
+      ...chipState,
+      activeTypes: Array.from(current),
+    };
+    scheduleSave(dslFromChips(next));
+  }
+
+  function hidePage(pageId: string) {
+    if (chipState.hiddenPages.includes(pageId)) return;
+    const next: ChipState = {
+      ...chipState,
+      hiddenPages: [...chipState.hiddenPages, pageId],
+    };
+    scheduleSave(dslFromChips(next));
+    toast(`Hidden ${pageId} from Inbox`, "info");
+  }
+
+  function unhidePage(pageId: string) {
+    const next: ChipState = {
+      ...chipState,
+      hiddenPages: chipState.hiddenPages.filter((p) => p !== pageId),
+    };
+    scheduleSave(dslFromChips(next));
+  }
+
+  function unhideBlock(blockId: string) {
+    const next: ChipState = {
+      ...chipState,
+      hiddenBlocks: chipState.hiddenBlocks.filter((b) => b !== blockId),
     };
     scheduleSave(dslFromChips(next));
   }
@@ -380,7 +437,11 @@
 
   <ChipBar
     state={chipState}
-    onToggle={toggleChip}
+    {availableTypes}
+    onToggleStatic={toggleChip}
+    onToggleType={toggleType}
+    onUnhidePage={unhidePage}
+    onUnhideBlock={unhideBlock}
     onEditRaw={() => (rawDslOpen = true)}
   />
 
@@ -390,7 +451,11 @@
     <div class="text-muted-foreground/50 text-[12px] italic">Inbox clear ✓</div>
   {:else}
     {#each rows as row (rowKey(row))}
-      <InboxRow {row} selected={selectedKey === rowKey(row)} />
+      <InboxRow
+        {row}
+        selected={selectedKey === rowKey(row)}
+        onHidePage={hidePage}
+      />
     {/each}
   {/if}
 </div>

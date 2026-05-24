@@ -29,6 +29,51 @@ test("chipsFromDsl — preserves unknown clauses verbatim", () => {
   assert.deepEqual(state.unknownClauses.sort(), ["priority:>=3", "text:urgent"]);
 });
 
+test("chipsFromDsl — pulls tag-in: into activeTypes (the only OR primitive)", () => {
+  const state = chipsFromDsl("kind:block tag-in:Task,Domain,Issue");
+  assert.deepEqual(state.activeTypes, ["Task", "Domain", "Issue"]);
+  // tag-in: shouldn't end up in unknownClauses now that it's claimed.
+  assert.deepEqual(state.unknownClauses, []);
+});
+
+test("chipsFromDsl — pulls -page:/-block: exclusions into hiddenPages/hiddenBlocks", () => {
+  const state = chipsFromDsl(
+    "kind:block -has:status -page:python -page:javascript -block:foo:42",
+  );
+  assert.deepEqual(state.hiddenPages.sort(), ["javascript", "python"]);
+  assert.deepEqual(state.hiddenBlocks, ["foo:42"]);
+  assert.deepEqual(state.unknownClauses, []);
+});
+
+test("dslFromChips — composes tag-in: clause when activeTypes non-empty", () => {
+  const state = chipsFromDsl(defaultInboxDsl());
+  state.activeTypes = ["Task", "Domain"];
+  const dsl = dslFromChips(state);
+  assert.ok(dsl.includes("tag-in:Task,Domain"), `expected tag-in clause: ${dsl}`);
+});
+
+test("dslFromChips — emits -page:/-block: for each exclusion", () => {
+  const state = chipsFromDsl(defaultInboxDsl());
+  state.hiddenPages = ["python", "javascript"];
+  state.hiddenBlocks = ["foo:42"];
+  const dsl = dslFromChips(state);
+  assert.ok(dsl.includes("-page:python"));
+  assert.ok(dsl.includes("-page:javascript"));
+  assert.ok(dsl.includes("-block:foo:42"));
+});
+
+test("dslFromChips — round-trips dynamic fields through tokenize", () => {
+  const original = chipsFromDsl(defaultInboxDsl());
+  original.activeTypes = ["Task", "Issue"];
+  original.hiddenPages = ["python"];
+  original.hiddenBlocks = ["bid:99"];
+  const dsl = dslFromChips(original);
+  const back = chipsFromDsl(dsl);
+  assert.deepEqual(back.activeTypes, ["Task", "Issue"]);
+  assert.deepEqual(back.hiddenPages, ["python"]);
+  assert.deepEqual(back.hiddenBlocks, ["bid:99"]);
+});
+
 test("dslFromChips — round-trips default state through tokenize", () => {
   const dsl = defaultInboxDsl();
   const back = dslFromChips(chipsFromDsl(dsl));
