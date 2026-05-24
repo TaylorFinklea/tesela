@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins", "crates/tesela-server", "crates/tesela-backup", "crates/tesela-fixtures", "crates/tesela-fixtures-cli", "crates/tesela-sync", "crates/tesela-sync-ffi"]
+members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins", "crates/tesela-server", "crates/tesela-backup", "crates/tesela-fixtures", "crates/tesela-fixtures-cli", "crates/tesela-sync", "crates/tesela-sync-ffi", "crates/tesela-relay"]
 resolver = "2"
 
 [workspace.dependencies]
