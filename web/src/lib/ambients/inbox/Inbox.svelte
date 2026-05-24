@@ -79,23 +79,27 @@
   }
 
   /**
-   * Optimistic override that wins over the cached note while a save is
-   * in flight. Without this, every chip toggle waits ~500ms (the
-   * debounce) + a network round-trip before the chip visually flips,
-   * because `chipState` is derived from the note's persisted DSL.
-   * That made the Types chips appear broken — they were saving, just
-   * not reflecting until the PUT echoed back. Cleared in `flushSave`.
+   * Optimistic override used ONLY when the inbox note doesn't exist
+   * yet (no cache entry to mutate). For the common case we update the
+   * cached Note in place via `qc.setQueryData` in `scheduleSave` so
+   * the derived chain re-runs naturally — that way the chip state
+   * and rows query both stay coherent and there's nothing to "clear"
+   * after a save (the server's PUT response writes back the same DSL
+   * we already put in the cache).
    */
-  let localDsl = $state<string | null>(null);
+  let pendingSeedDsl = $state<string | null>(null);
 
-  /** Active DSL — local override wins; otherwise read from the note on
-   *  every render, falling back to the default while loading/absent. */
+  /** Active DSL — read from the cached note (mutated optimistically in
+   *  `scheduleSave`), or from the pending seed if no note exists yet,
+   *  or the registry default while still loading. */
   const activeDsl = $derived.by<string>(() => {
-    if (localDsl !== null) return localDsl;
     const note = inboxNoteQuery.data;
-    if (!note) return defaultInboxDsl();
-    const fromNote = readQueryFromNote(note);
-    return fromNote.length > 0 ? fromNote : defaultInboxDsl();
+    if (note) {
+      const fromNote = readQueryFromNote(note);
+      return fromNote.length > 0 ? fromNote : defaultInboxDsl();
+    }
+    if (pendingSeedDsl !== null) return pendingSeedDsl;
+    return defaultInboxDsl();
   });
 
   const chipState = $derived<ChipState>(chipsFromDsl(activeDsl));
@@ -186,9 +190,26 @@
   let pendingDsl: string | null = null;
 
   function scheduleSave(nextDsl: string) {
-    // Optimistic — the UI sees the new DSL immediately so chips and
-    // row counts respond on click. Persistence still debounces.
-    localDsl = nextDsl;
+    // Optimistic cache update — mutate the cached Note's content so
+    // the derived `activeDsl` / `chipState` / `rowsQuery` chain
+    // immediately reflects the change. The eventual PUT writes back
+    // the same DSL, so the WS-driven refetch is a no-op. No racey
+    // "clear override after save" dance needed.
+    const qc = getAppQueryClient();
+    const existing = inboxNoteQuery.data;
+    if (qc && existing) {
+      const optimisticNote: Note = {
+        ...existing,
+        content: buildInboxNoteContent(existing, nextDsl),
+      };
+      qc.setQueryData(["note", INBOX_NOTE_ID], optimisticNote);
+    } else {
+      // No note cached yet (first-ever toggle on a fresh mosaic) —
+      // keep the new DSL in a fallback state so the chip lights up
+      // while the seed write is in flight. Cleared once the create
+      // round-trips and populates the cache.
+      pendingSeedDsl = nextDsl;
+    }
     pendingDsl = nextDsl;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => void flushSave(), 500);
@@ -220,19 +241,16 @@
           await api.updateNote(INBOX_NOTE_ID, newContent);
         }
       }
-      // WS echo also invalidates these, but invalidating here makes
-      // the chip toggle feel instant.
+      // Only invalidate the rows query — the note cache was already
+      // updated optimistically in `scheduleSave`, so re-fetching it
+      // here would just race the user's next toggle. Rows have to
+      // re-run because the underlying mosaic data may have shifted.
       if (qc) {
-        await qc.invalidateQueries({ queryKey: ["note", INBOX_NOTE_ID] });
         await qc.invalidateQueries({ queryKey: ["widget", "inbox"] });
       }
-      // Hand control back to the cache-derived path; the refetched
-      // note will carry the same DSL we just optimistically applied.
-      // Only clear if no fresh edit landed during the save round-trip
-      // (`pendingDsl !== null` means the user queued another change).
-      if (pendingDsl === null) {
-        localDsl = null;
-      }
+      // Now that the cache holds the real note (created or updated),
+      // the seed fallback is no longer needed. Safe to clear.
+      pendingSeedDsl = null;
     } catch {
       toast("Failed to save Inbox query", "error");
     }

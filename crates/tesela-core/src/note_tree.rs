@@ -128,6 +128,17 @@ pub fn prune_bare_leaf_blocks(content: &str) -> String {
             kept_indents.push(block.indent);
         }
     }
+    // Bail when nothing needs pruning. Critical for non-outliner
+    // notes (Query / Tag / Property / Template) whose bodies carry
+    // `key:: value` lines rather than bullets — `parse_note`'s
+    // round-trip only retains bullet blocks, so a no-op re-serialize
+    // would silently strip the user's `query::` definition. Returning
+    // the original content keeps every byte intact when we have
+    // nothing to do anyway.
+    let any_dropped = keep.iter().any(|k| !k);
+    if !any_dropped {
+        return content.to_string();
+    }
     tree.blocks = tree
         .blocks
         .into_iter()
@@ -653,6 +664,17 @@ mod tests {
         );
         let pruned = prune_bare_leaf_blocks(&content);
         assert_eq!(pruned, format!("- Kept <!-- bid:{} -->\n", kept_id));
+    }
+
+    #[test]
+    fn prune_is_byte_identical_noop_on_non_outliner_body() {
+        // Regression: `parse_note → serialize_note` only retains bullet
+        // blocks, so a no-op re-serialize would strip `key:: value`
+        // body content from non-outliner notes (the `inbox` Query note,
+        // Tag pages, Property pages, Templates). The pruner must bail
+        // when nothing changes so those bodies survive every PUT.
+        let content = "---\ntitle: \"Inbox\"\ntype: \"Query\"\ntags: []\n---\n\nquery:: kind:block -has:status tag-in:Task\n";
+        assert_eq!(prune_bare_leaf_blocks(content), content);
     }
 
     #[test]
