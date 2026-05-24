@@ -669,6 +669,38 @@ impl<'a> Parser<'a> {
             self.pos = save;
         }
 
+        // `key IS NULL` / `key IS NOT NULL` — sugar for `-has:key` /
+        // `has:key`. Lives between NOT IN and the infix-op check because
+        // `IS` is a Word token (not punctuation); without this branch it
+        // would slip past `consume_infix_op` and the predicate would be
+        // dropped silently. Desugars to a plain `Cmp` over the `has`
+        // pseudo-key so the matcher, SQL prefilter, and BoolExpr walker
+        // all keep working with no new variants.
+        if self.peek_keyword("is") {
+            let save = self.pos;
+            self.bump(); // consume "is"
+            let negated = if self.peek_keyword("not") {
+                self.bump();
+                true
+            } else {
+                false
+            };
+            if self.peek_keyword("null") {
+                self.bump();
+                return Some(Predicate::Cmp {
+                    key: "has".to_string(),
+                    // `IS NOT NULL` → property present  → has:key      → Eq
+                    // `IS NULL`     → property absent   → -has:key     → Ne
+                    op: if negated { QueryOp::Eq } else { QueryOp::Ne },
+                    value: key,
+                });
+            }
+            // Wasn't a NULL test (`key IS something`) — rewind so the
+            // next clause has a chance, even though no current grammar
+            // shape uses bareword `IS` for anything else.
+            self.pos = save;
+        }
+
         // Infix comparison operator: `key = value`, `key != value`, etc.
         if let Some(op) = self.consume_infix_op() {
             let value = self.parse_value().unwrap_or_default();
@@ -1009,7 +1041,7 @@ fn filter_matches(block: &ParsedBlock, f: &QueryFilter) -> bool {
         // kind queries fill it from the block parser. The current behavior is
         // already kind-dependent; `pagetag:` and `blocktag:` are aliases that
         // make the intent explicit at the query level.
-        "tag" | "pagetag" | "blocktag" => {
+        "tag" | "type" | "pagetag" | "blocktag" => {
             let needle = f.value.to_ascii_lowercase();
             // For `blocktag:` we deliberately skip inherited_tags — block-level
             // means "this block carries the tag," not "inherited from an
@@ -1739,5 +1771,117 @@ mod tests {
         ] {
             assert_eq!(invert(invert(op)), op);
         }
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // IS NULL / IS NOT NULL desugaring + `type` as a `tag` alias
+    // ──────────────────────────────────────────────────────────────────
+
+    /// `deadline IS NOT NULL` is sugar for `has:deadline` — matches any
+    /// block whose `deadline::` property is present, regardless of
+    /// value.
+    #[test]
+    fn is_not_null_matches_present_property() {
+        let q = parse_query("deadline IS NOT NULL");
+        assert!(block_matches(
+            &block_with(vec![], &[("deadline", "2026-05-25")]),
+            &q
+        ));
+        assert!(!block_matches(&block_with(vec![], &[]), &q));
+    }
+
+    /// `deadline IS NULL` is sugar for `-has:deadline` — matches any
+    /// block whose `deadline::` property is absent.
+    #[test]
+    fn is_null_matches_missing_property() {
+        let q = parse_query("deadline IS NULL");
+        assert!(block_matches(&block_with(vec![], &[]), &q));
+        assert!(!block_matches(
+            &block_with(vec![], &[("deadline", "2026-05-25")]),
+            &q
+        ));
+    }
+
+    /// `IS NOT NULL` is case-insensitive, matching the rest of the
+    /// keyword grammar (`AND`/`OR`/`NOT`/`IN`).
+    #[test]
+    fn is_null_is_case_insensitive() {
+        let q = parse_query("deadline is not null");
+        assert!(block_matches(
+            &block_with(vec![], &[("deadline", "2026-05-25")]),
+            &q
+        ));
+    }
+
+    /// `type:Task` should match the same blocks as `tag:Task` — the
+    /// TypeRegistry surfaces user-defined types (Task / Domain / Issue /
+    /// Person / …) as tag pages, so `type` is a semantic alias the
+    /// query layer can resolve without forcing the user to know the
+    /// underlying storage shape.
+    #[test]
+    fn type_is_alias_for_tag() {
+        let q = parse_query("type:Task");
+        assert!(block_matches(&block_with(vec!["Task"], &[]), &q));
+        assert!(!block_matches(&block_with(vec!["Person"], &[]), &q));
+    }
+
+    /// `type IN (task, domain, issue)` should compose the same way
+    /// `tag IN (…)` does (matches if any tag in the block's chain
+    /// matches any value, case-insensitive).
+    #[test]
+    fn type_in_list_matches_any_tag() {
+        let q = parse_query("type IN (task, domain, issue)");
+        assert!(block_matches(&block_with(vec!["Task"], &[]), &q));
+        assert!(block_matches(&block_with(vec!["Domain"], &[]), &q));
+        assert!(block_matches(&block_with(vec!["Issue"], &[]), &q));
+        assert!(!block_matches(&block_with(vec!["Person"], &[]), &q));
+    }
+
+    /// End-to-end: the user's example query parses + matches the
+    /// expected blocks. Exercises every new piece (`!=` on status,
+    /// `type IN`, `IS NOT NULL`, `OR` inside parens, nested `AND`).
+    #[test]
+    fn parses_and_matches_full_jql_example() {
+        let q = parse_query(
+            "status != done AND type IN (task, domain, issue) \
+             AND (deadline IS NOT NULL OR scheduled IS NOT NULL)",
+        );
+        // A task with status=todo + scheduled set, no deadline → match.
+        assert!(block_matches(
+            &block_with(
+                vec!["Task"],
+                &[("status", "todo"), ("scheduled", "2026-05-25")],
+            ),
+            &q
+        ));
+        // A task with deadline set + status=doing, no scheduled → match.
+        assert!(block_matches(
+            &block_with(
+                vec!["Task"],
+                &[("status", "doing"), ("deadline", "2026-05-30")],
+            ),
+            &q
+        ));
+        // A task with status=done → fails the first clause.
+        assert!(!block_matches(
+            &block_with(
+                vec!["Task"],
+                &[("status", "done"), ("scheduled", "2026-05-25")],
+            ),
+            &q
+        ));
+        // A Person tag → fails the type clause.
+        assert!(!block_matches(
+            &block_with(
+                vec!["Person"],
+                &[("status", "todo"), ("scheduled", "2026-05-25")],
+            ),
+            &q
+        ));
+        // A task with neither deadline nor scheduled → fails the date clause.
+        assert!(!block_matches(
+            &block_with(vec!["Task"], &[("status", "todo")]),
+            &q
+        ));
     }
 }
