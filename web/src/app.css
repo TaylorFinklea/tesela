@@ -13,9 +13,11 @@
  * derived from the app logo: slate #3D405B, coral #FB5950, cream #F4F1DE.
  * ================================================================== */
 :root {
-  /* Backgrounds — slate ramp lifting toward the logo slate (#3D405B). */
-  --bg: #23252f;
-  --bg-2: #2c2e3e;
+  /* Backgrounds — slate ramp. `--bg` is the deepest canvas; `--bg-2` is
+     the elevated surface a focused buffer lifts to (it reads as the
+     active content surface against the darker `--bg` behind it). */
+  --bg: #1b1d28;
+  --bg-2: #1f212b;
   --bg-3: #34374c;
   --bg-4: #3d405b;
 
@@ -68,7 +70,7 @@
   --v9-ink-2: var(--fg-muted);
   --v9-ink-3: var(--fg-subtle);
   --v9-ink-faint: var(--fg-faint);
-  --v9-amber: var(--accent-primary);
+  --v9-amber: var(--accent-spark);
   --v9-amber-2: var(--type-note);
   --v9-rose: var(--type-task);
   --v9-teal: var(--type-event);

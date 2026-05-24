@@ -32,13 +32,13 @@
   --v4-ink5: var(--fg-faint);
   --v4-ink6: var(--fg-faint);
 
-  /* Accents follow the active theme. `--v4-accent` aliases the role
-     accent (so non-Prism themes reach the chrome too); `--accent-spark`
-     — the hotter coral for rare focus spots — is inherited from :root.
-     The old `--accent-primary` override is gone: it pinned the chrome to
-     one fixed accent, which is exactly what broke per-theme accents. */
-  --v4-accent: var(--accent-primary);
-  --v4-accent-dim: color-mix(in srgb, var(--accent-primary) 55%, transparent);
+  /* Accents. `--v4-accent` is the chrome accent — it follows
+     `--accent-spark`, so the v4/v5 dashboard goes neon under Prism Spark
+     and stays earthy under every other theme. In-block content uses
+     `--primary` (always the earthy `--accent-primary`) instead, so block
+     text never picks up the spark. */
+  --v4-accent: var(--accent-spark);
+  --v4-accent-dim: color-mix(in srgb, var(--accent-spark) 55%, transparent);
   --v4-accent2: var(--accent-secondary);
 
   --v4-sans: "Geist", "Inter Tight", system-ui, -apple-system, sans-serif;

@@ -222,7 +222,7 @@
   }
   .filter-input:focus {
     outline: none;
-    border-color: var(--primary);
+    border-color: var(--v4-accent);
   }
   section {
     margin-bottom: 12px;

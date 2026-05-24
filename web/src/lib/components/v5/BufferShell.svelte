@@ -393,9 +393,11 @@
     outline: none;
   }
   .v5-buffer.focused {
-    /* The top border alone marks the active pane — no background tint.
-     * Earlier we had a vertical gradient overlay; Taylor preferred the
-     * single-line glow as a more readable focus signal. */
+    /* The focused buffer lifts to the elevated surface so it reads as
+     * active against the deeper `--v4-bg` canvas; the accent top border
+     * is the focus signal. (A flat surface, not the old gradient
+     * overlay — the `background` transition on `.v5-buffer` animates it.) */
+    background: var(--v4-surface-lo);
     border-top-color: var(--v4-accent);
   }
   .v5-buffer-header {
