@@ -31,6 +31,13 @@ struct InboxView: View {
     @State private var loading = false
     @State private var navigationPath = NavigationPath()
 
+    /// Live chip state derived from the active filter's DSL. Toggling
+    /// a chip updates this in place, rebuilds the DSL via
+    /// `dslFromChips`, fires `saveInboxDsl`, then reloads rows.
+    /// Initialized from the default DSL until `load()` resolves the
+    /// active filter's actual DSL on appear.
+    @State private var chipState: ChipState = chipsFromDsl(defaultInboxDsl())
+
     /// Slug of the active saved Inbox filter. Default is `inbox` (the
     /// canonical first-run note); users can create extras under
     /// `inbox-work`, `inbox-personal`, etc. via the Save-as flow
@@ -57,6 +64,26 @@ struct InboxView: View {
                 ConnectionBanner(connection: mosaic.connection) {
                     Task { await mosaic.refresh(from: backend.backend) }
                 }
+                InboxChipBar(
+                    state: chipState,
+                    onToggleStatic: { id in
+                        chipState.active[id] = !(chipState.active[id] ?? false)
+                        Task { await commitChipState() }
+                    },
+                    onRemoveType: { name in
+                        chipState.activeTypes.removeAll { $0 == name }
+                        Task { await commitChipState() }
+                    },
+                    onUnhidePage: { id in
+                        chipState.hiddenPages.removeAll { $0 == id }
+                        Task { await commitChipState() }
+                    },
+                    onUnhideBlock: { id in
+                        chipState.hiddenBlocks.removeAll { $0 == id }
+                        Task { await commitChipState() }
+                    }
+                )
+                .environment(\.theme, theme)
                 content
                     .refreshable { await load() }
             }
@@ -178,6 +205,10 @@ struct InboxView: View {
         // a slug that hasn't been created via Save-as yet).
         let dsl = await mosaic.fetchInboxDsl(slug: activeSlug)
             ?? MockMosaicService.defaultInboxDsl()
+        // Sync the chip state to whatever the saved DSL actually
+        // carries so toggle UI reflects the truth on disk. Future
+        // chip-state edits flow back through `commitChipState`.
+        chipState = chipsFromDsl(dsl)
         let result = await mosaic.executeQuery(dsl)
         var collected: [QueryItem] = []
         outer: for g in result.groups {
@@ -187,6 +218,23 @@ struct InboxView: View {
             }
         }
         rows = collected
+    }
+
+    /// Rebuild the DSL from the current chip state, persist it via
+    /// `saveInboxDsl`, then reload the row list. Called whenever a
+    /// chip toggles or an exclusion pill is dismissed. No debounce
+    /// yet — toggles are discrete user intent, not typing-rate input;
+    /// the web's 500ms debounce mattered because of typed raw-DSL
+    /// edits. The raw-DSL editor (stage 5) will reintroduce a debounce
+    /// if it lands as a TextEditor with live save.
+    private func commitChipState() async {
+        let newDsl = dslFromChips(chipState)
+        do {
+            try await mosaic.saveInboxDsl(slug: activeSlug, dsl: newDsl)
+        } catch {
+            // Silent — connection banner surfaces server failures.
+        }
+        await load()
     }
 
     private func triage(_ row: QueryItem, status: String) async {

@@ -1546,6 +1546,112 @@ final class MockMosaicService: ObservableObject, MosaicService {
         Tesela.defaultInboxDsl()
     }
 
+    /// Persist a new DSL for the given saved-filter slug. Mirrors the
+    /// web's `Inbox.svelte` flow: if the note already exists, splice
+    /// the new `query::` line into its existing body (preserving
+    /// frontmatter, icon, color); if it doesn't exist yet, create a
+    /// fresh `note_type: Query` note with canonical frontmatter and
+    /// the new DSL baked in.
+    func saveInboxDsl(slug: String, dsl: String) async throws {
+        guard case .http(let baseURL) = currentBackend else { return }
+        // First try to read the existing note so we can preserve its
+        // frontmatter (icon, color, section, etc.). 404 → first-write
+        // path, fall through to create.
+        let existing: APINote? = try? await httpGet("/notes/\(slug)", baseURL: baseURL)
+        let title = Self.titleForInboxFilterSlug(slug)
+        let newContent: String
+        if let existing {
+            newContent = Self.spliceInboxDsl(into: existing.content, dsl: dsl, title: title)
+            try await httpPut("/notes/\(slug)", baseURL: baseURL, body: ["content": newContent])
+            return
+        }
+        // First-write: build canonical fresh content + POST /notes.
+        newContent = Self.freshInboxNoteContent(title: title, dsl: dsl)
+        struct CreateNoteReq: Encodable {
+            let title: String
+            let content: String
+            let tags: [String]
+        }
+        let req = CreateNoteReq(title: title, content: newContent, tags: [])
+        // Best-effort: if create races with the server's lazy-seeder
+        // the dup-id throw is recoverable — fall back to PUT.
+        do {
+            let _: APINote = try await httpPostJSON("/notes", baseURL: baseURL, body: req)
+        } catch {
+            try await httpPut("/notes/\(slug)", baseURL: baseURL, body: ["content": newContent])
+        }
+    }
+
+    /// Human-readable title derived from a saved-filter slug. `inbox`
+    /// is the canonical default and reads as "Inbox"; everything else
+    /// title-cases the slug with hyphens turned into spaces
+    /// (`inbox-work` → "Inbox Work"). Mirrors the web's
+    /// `titleForNewFilter` in `Inbox.svelte`.
+    static func titleForInboxFilterSlug(_ slug: String) -> String {
+        if slug == "inbox" { return "Inbox" }
+        return slug.split(separator: "-")
+            .filter { !$0.isEmpty }
+            .map { word -> String in
+                let first = word.prefix(1).uppercased()
+                let rest = word.dropFirst()
+                return first + rest
+            }
+            .joined(separator: " ")
+    }
+
+    /// Replace (or insert) the `query::` line in an existing Query
+    /// note's content, preserving everything else. Used by
+    /// `saveInboxDsl` when the note already exists.
+    static func spliceInboxDsl(into content: String, dsl: String, title: String) -> String {
+        // Split off frontmatter so we only touch the body.
+        let parts = content.components(separatedBy: "---")
+        // Expected shape: ["", "frontmatter content", "body content"...]
+        guard content.hasPrefix("---") && parts.count >= 3 else {
+            // No frontmatter — fall through to a fresh-body write,
+            // discarding whatever was there. Shouldn't happen for
+            // Query notes the server writes, but keeps the function
+            // total.
+            return freshInboxNoteContent(title: title, dsl: dsl)
+        }
+        let frontmatter = "---" + parts[1] + "---"
+        // Re-join everything after the closing `---` so a `---` inside
+        // the body doesn't get destructively split.
+        let body = parts[2...].joined(separator: "---")
+        var bodyLines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        var found = false
+        for i in 0..<bodyLines.count {
+            let trimmed = bodyLines[i].trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("query::") {
+                bodyLines[i] = "query:: \(dsl)"
+                found = true
+                break
+            }
+        }
+        if !found {
+            // No existing query:: line — append after the leading
+            // blank line (or at the top if the body is empty).
+            bodyLines.insert("query:: \(dsl)", at: bodyLines.firstIndex(where: { !$0.isEmpty }) ?? 0)
+        }
+        return frontmatter + bodyLines.joined(separator: "\n")
+    }
+
+    /// Build the full canonical content for a brand-new Inbox-style
+    /// Query note. Used on first-write when no note exists yet.
+    static func freshInboxNoteContent(title: String, dsl: String) -> String {
+        """
+        ---
+        title: "\(title)"
+        type: "Query"
+        icon: "inbox"
+        color: "teal"
+        section: "saved"
+        ---
+
+        query:: \(dsl)
+
+        """
+    }
+
     /// Run an arbitrary query DSL via `POST /search/query`. The Inbox
     /// surface uses a saved filter's DSL (fetched via `fetchInboxDsl`)
     /// or `defaultInboxDsl()` for first-run. Returns an empty result on
