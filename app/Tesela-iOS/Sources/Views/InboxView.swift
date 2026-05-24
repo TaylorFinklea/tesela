@@ -30,6 +30,11 @@ struct InboxView: View {
     @State private var rows: [QueryItem] = []
     @State private var loading = false
     @State private var navigationPath = NavigationPath()
+    @State private var availableFilters: [MockMosaicService.InboxFilterRef] = []
+    @State private var showSaveAsPrompt: Bool = false
+    @State private var saveAsName: String = ""
+    @State private var saveAsError: String? = nil
+    @State private var showRawDslSheet: Bool = false
 
     /// Live chip state derived from the active filter's DSL. Toggling
     /// a chip updates this in place, rebuilds the DSL via
@@ -64,6 +69,7 @@ struct InboxView: View {
                 ConnectionBanner(connection: mosaic.connection) {
                     Task { await mosaic.refresh(from: backend.backend) }
                 }
+                filterSwitcherBar
                 InboxChipBar(
                     state: chipState,
                     onToggleStatic: { id in
@@ -121,7 +127,38 @@ struct InboxView: View {
                 }
             }
         }
-        .task { await load() }
+        .task {
+            await loadFilters()
+            await load()
+        }
+        .sheet(isPresented: $showRawDslSheet) {
+            InboxRawDslSheet(
+                initialDsl: dslFromChips(chipState),
+                onSave: { dsl in
+                    showRawDslSheet = false
+                    Task { await commitRawDsl(dsl) }
+                },
+                onCancel: { showRawDslSheet = false }
+            )
+            .environment(\.theme, theme)
+        }
+        .alert("Save filter as…", isPresented: $showSaveAsPrompt) {
+            TextField("Name (e.g. Work → :inbox-work)", text: $saveAsName)
+                .textInputAutocapitalization(.words)
+                .autocorrectionDisabled()
+            Button("Save") {
+                Task { await performSaveAs() }
+            }
+            Button("Cancel", role: .cancel) {
+                saveAsName = ""
+            }
+        } message: {
+            if let saveAsError {
+                Text(saveAsError)
+            } else {
+                Text("Saves the current chip state + DSL as a new filter you can switch to.")
+            }
+        }
     }
 
     // MARK: - Content
@@ -194,6 +231,101 @@ struct InboxView: View {
         return "\(rows.count)"
     }
 
+    // MARK: - Filter switcher + Save-as
+
+    /// Header strip just above the chip bar: shows the active
+    /// filter's title with a Menu disclosure to switch between saved
+    /// filters (when 2+ exist) plus a trailing `+ Save as…` action.
+    /// Mirrors the web's switcher cluster in `ChipBar.svelte`.
+    private var filterSwitcherBar: some View {
+        HStack(spacing: 12) {
+            Menu {
+                if availableFilters.count > 1 {
+                    Section("Switch filter") {
+                        ForEach(availableFilters) { f in
+                            Button {
+                                if f.slug != activeSlug {
+                                    activeSlug = f.slug
+                                    Task { await load() }
+                                }
+                            } label: {
+                                if f.slug == activeSlug {
+                                    Label(f.title, systemImage: "checkmark")
+                                } else {
+                                    Text(f.title)
+                                }
+                            }
+                        }
+                    }
+                }
+                Button {
+                    saveAsName = ""
+                    saveAsError = nil
+                    showSaveAsPrompt = true
+                } label: {
+                    Label("Save as…", systemImage: "plus")
+                }
+                Button {
+                    showRawDslSheet = true
+                } label: {
+                    Label("Edit raw query", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(activeFilterTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(theme.fgDefault)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(theme.fgFaint)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 2)
+    }
+
+    /// Title to show in the switcher button — prefers whatever's in
+    /// `availableFilters` for the active slug, falls back to a derived
+    /// label for the first-run case before the list has loaded.
+    private var activeFilterTitle: String {
+        availableFilters.first(where: { $0.slug == activeSlug })?.title
+            ?? MockMosaicService.titleForInboxFilterSlug(activeSlug)
+    }
+
+    private func loadFilters() async {
+        availableFilters = await mosaic.listInboxFilters()
+    }
+
+    private func performSaveAs() async {
+        let baseSlug = MockMosaicService.slugifyInboxFilterName(saveAsName)
+        guard !baseSlug.isEmpty else {
+            saveAsError = "That name doesn't slugify cleanly. Try letters + spaces."
+            showSaveAsPrompt = true
+            return
+        }
+        let slug = MockMosaicService.namespacedInboxFilterSlug(baseSlug)
+        if availableFilters.contains(where: { $0.slug == slug }) {
+            saveAsError = "A filter named \(slug) already exists."
+            showSaveAsPrompt = true
+            return
+        }
+        let newDsl = dslFromChips(chipState)
+        do {
+            try await mosaic.saveInboxDsl(slug: slug, dsl: newDsl)
+            activeSlug = slug
+            saveAsName = ""
+            saveAsError = nil
+            await loadFilters()
+            await load()
+        } catch {
+            saveAsError = "Failed to save filter."
+            showSaveAsPrompt = true
+        }
+    }
+
     // MARK: - Data load + actions
 
     private func load() async {
@@ -218,6 +350,20 @@ struct InboxView: View {
             }
         }
         rows = collected
+    }
+
+    /// Persist a user-edited raw DSL string verbatim, then reload the
+    /// row list + the chip state. Called from the raw-DSL sheet's
+    /// Save action. Skips the chip-driven rebuild step so the raw
+    /// edit isn't lossy (chip state is re-derived from the saved DSL
+    /// in `load()`).
+    private func commitRawDsl(_ dsl: String) async {
+        do {
+            try await mosaic.saveInboxDsl(slug: activeSlug, dsl: dsl)
+        } catch {
+            // Silent — connection banner surfaces server failures.
+        }
+        await load()
     }
 
     /// Rebuild the DSL from the current chip state, persist it via

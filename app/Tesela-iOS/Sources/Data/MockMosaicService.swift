@@ -1546,6 +1546,63 @@ final class MockMosaicService: ObservableObject, MosaicService {
         Tesela.defaultInboxDsl()
     }
 
+    /// Lightweight reference to a saved Inbox-style filter. Returned
+    /// by `listInboxFilters` to drive the switcher menu without
+    /// dragging the full note body through every refresh.
+    struct InboxFilterRef: Hashable, Identifiable {
+        let slug: String
+        let title: String
+        var id: String { slug }
+    }
+
+    /// List every Inbox-style saved filter — every `note_type: Query`
+    /// note whose slug is `inbox` or starts with `inbox-`. Drives the
+    /// switcher menu so the user can flip between saved filters
+    /// without leaving the inbox surface. Filters non-Inbox Query
+    /// notes (e.g. `calendar`, `tasks`, system widgets that are also
+    /// Query-typed but aren't inbox alternatives) so the menu stays
+    /// focused. Mirrors `availableFilters` in the web's
+    /// `Inbox.svelte`.
+    func listInboxFilters() async -> [InboxFilterRef] {
+        guard case .http(let baseURL) = currentBackend else { return [] }
+        let notes: [APINote]
+        do {
+            notes = try await httpGet("/notes?limit=500", baseURL: baseURL)
+        } catch {
+            return []
+        }
+        return notes
+            .filter { $0.metadata.note_type == "Query" }
+            .filter { $0.id == "inbox" || $0.id.hasPrefix("inbox-") }
+            .map { InboxFilterRef(slug: $0.id, title: $0.title.isEmpty ? $0.id : $0.title) }
+            .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
+
+    /// Slugify a user-entered filter name into a canonical id. Lowercases,
+    /// replaces whitespace with `-`, drops everything that isn't
+    /// `[a-z0-9-]`. Mirrors `slugify` in the web's `Inbox.svelte`.
+    static func slugifyInboxFilterName(_ name: String) -> String {
+        let lowered = name.trimmingCharacters(in: .whitespaces).lowercased()
+        let withDashes = lowered.replacingOccurrences(
+            of: #"\s+"#,
+            with: "-",
+            options: .regularExpression
+        )
+        return withDashes.replacingOccurrences(
+            of: #"[^a-z0-9-]"#,
+            with: "",
+            options: .regularExpression
+        )
+    }
+
+    /// Namespace a user-entered filter slug under `inbox-` unless the
+    /// caller already did. Mirrors the web's Save-as composition step.
+    static func namespacedInboxFilterSlug(_ baseSlug: String) -> String {
+        if baseSlug == "inbox" { return baseSlug }
+        if baseSlug.hasPrefix("inbox-") { return baseSlug }
+        return "inbox-\(baseSlug)"
+    }
+
     /// Persist a new DSL for the given saved-filter slug. Mirrors the
     /// web's `Inbox.svelte` flow: if the note already exists, splice
     /// the new `query::` line into its existing body (preserving
