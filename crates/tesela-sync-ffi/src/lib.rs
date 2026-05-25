@@ -11,7 +11,10 @@ use std::sync::Arc;
 
 use tesela_sync::{
     decode_pairing_code as decode_pairing_code_inner,
-    encode_pairing_code as encode_pairing_code_inner, DeviceId, GroupId, GroupKey,
+    encode_pairing_code as encode_pairing_code_inner,
+    engine::SqliteEngine,
+    transport::relay::RelayClient,
+    DeviceId, GroupId, GroupKey,
     PairingCode as InnerPairingCode,
 };
 
@@ -206,11 +209,169 @@ fn nibble(c: u8) -> Option<u8> {
     }
 }
 
-// `Arc` re-export so UniFFI's macro machinery resolves the type as used.
-// (We don't use it directly yet, but adding it now means the next
-// engine-exposing pass doesn't have to touch this file's imports.)
-#[allow(dead_code)]
-type _AnchorArc<T> = Arc<T>;
+// ============================================================================
+// B.1.1 — SyncEngineHandle (minimal — open + device_hex)
+// ============================================================================
+
+/// Handle to a SQLite-backed sync engine. Created with
+/// [`SyncEngineHandle::open`]; lives behind an `Arc` so multiple Swift
+/// callers (UI + background sync task) can hold references concurrently
+/// without copying engine state.
+///
+/// What the iOS app gets out of this in B.1: just enough to prove the
+/// FFI pipeline carries an opened engine round-trip. The producer +
+/// consumer methods (`apply_changes`, `produce_changes_since`) are wired
+/// in B.2 / B.3 — exposing them ahead of time would force a serialized
+/// `SyncEnvelope` shape across the FFI boundary before we've nailed
+/// down how iOS consumes ops.
+#[derive(uniffi::Object)]
+pub struct SyncEngineHandle {
+    inner: Arc<SqliteEngine>,
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl SyncEngineHandle {
+    /// Open (or create) a SQLite-backed sync engine at the given URL.
+    ///
+    /// `sqlite_url` follows the sqlx convention: `sqlite:/path/to/file`
+    /// (the leading slash makes it absolute). iOS callers typically
+    /// pass `format!("sqlite:{}", url.path())` where `url` is a
+    /// `FileManager`-derived path inside the app's sandbox.
+    ///
+    /// `device_id_hex` must be 32 lowercase hex chars — typically the
+    /// output of [`generate_device_id_hex`] persisted across launches.
+    /// Reusing a stable device id is what keeps HLC timestamps
+    /// monotonic across app restarts.
+    #[uniffi::constructor]
+    pub async fn open(
+        sqlite_url: String,
+        device_id_hex: String,
+    ) -> Result<Arc<Self>, FfiSyncError> {
+        let bytes = parse_hex_16(&device_id_hex).ok_or_else(|| FfiSyncError::Other {
+            message: "device_id_hex must be 32 hex chars".to_string(),
+        })?;
+        let device = DeviceId::from_bytes(bytes);
+        let engine = SqliteEngine::open(&sqlite_url, device)
+            .await
+            .map_err(FfiSyncError::from)?;
+        Ok(Arc::new(Self {
+            inner: Arc::new(engine),
+        }))
+    }
+
+    /// 32-char hex of this engine's device id. The Swift coordinator
+    /// reads this once at boot for display in Settings → Sync.
+    pub fn device_hex(&self) -> String {
+        self.inner.device().to_hex()
+    }
+}
+
+// ============================================================================
+// B.1.2 — RelayClientHandle (register + verify + poll-count probe)
+// ============================================================================
+
+/// Handle to a [`RelayClient`] over UniFFI. Owns its own `reqwest`
+/// HTTP client + the HKDF-derived auth key. Swift constructs one per
+/// `(relay_url, group)` pair — typically just one per running app.
+///
+/// In B.1 we expose register / verify / a poll-count probe. The
+/// envelope-bearing methods (`put_envelope`, full `poll` with payload)
+/// arrive in B.2/B.3 alongside engine apply.
+#[derive(uniffi::Object)]
+pub struct RelayClientHandle {
+    inner: RelayClient,
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl RelayClientHandle {
+    /// Construct a relay client. All four hex strings are validated
+    /// before any network traffic is attempted; a malformed input
+    /// surfaces as `FfiSyncError::Other` rather than a later opaque
+    /// network error.
+    #[uniffi::constructor]
+    pub fn new(
+        relay_url: String,
+        group_id_hex: String,
+        device_id_hex: String,
+        group_key_hex: String,
+    ) -> Result<Arc<Self>, FfiSyncError> {
+        let url = reqwest::Url::parse(&relay_url).map_err(|e| FfiSyncError::Other {
+            message: format!("invalid relay URL: {e}"),
+        })?;
+        let group_id = GroupId::from_bytes(parse_hex_16(&group_id_hex).ok_or_else(|| {
+            FfiSyncError::Other {
+                message: "group_id_hex must be 32 hex chars".into(),
+            }
+        })?);
+        let device_id = DeviceId::from_bytes(parse_hex_16(&device_id_hex).ok_or_else(|| {
+            FfiSyncError::Other {
+                message: "device_id_hex must be 32 hex chars".into(),
+            }
+        })?);
+        let group_key = GroupKey::from_bytes(parse_hex_32(&group_key_hex).ok_or_else(|| {
+            FfiSyncError::Other {
+                message: "group_key_hex must be 64 hex chars".into(),
+            }
+        })?);
+        Ok(Arc::new(Self {
+            inner: RelayClient::new(url, group_id, device_id, group_key),
+        }))
+    }
+
+    /// Register on the relay, recovering an existing matching record
+    /// if one exists. Returns the Unix-seconds timestamp pinned to the
+    /// registration — the Swift coordinator persists this so subsequent
+    /// `register_or_recover()` calls find the same record on the relay
+    /// without us having to chase the clock.
+    pub async fn register_or_recover(&self) -> Result<i64, FfiSyncError> {
+        self.inner
+            .register_or_recover()
+            .await
+            .map_err(FfiSyncError::from)
+    }
+
+    /// Hijack-detection check: read back the relay's stored
+    /// registration for this group and verify the signed intent against
+    /// our group key. Returns Ok(()) when the registration was authored
+    /// by a holder of our group key; Err otherwise (someone squatted
+    /// the group id but couldn't produce a valid intent signature).
+    pub async fn verify_registration(&self) -> Result<(), FfiSyncError> {
+        self.inner
+            .verify_registration()
+            .await
+            .map_err(FfiSyncError::from)
+    }
+
+    /// Probe: poll for envelopes since `since_seq` and return how many
+    /// are pending plus the highest seq seen. Used by the B.1.4 smoke
+    /// probe to confirm two-way traffic without yet doing the apply
+    /// work. The full envelope-bearing poll lands in B.2.
+    pub async fn poll_count(&self, since_seq: i64) -> Result<PollProbeRecord, FfiSyncError> {
+        let envelopes = self
+            .inner
+            .poll(since_seq)
+            .await
+            .map_err(FfiSyncError::from)?;
+        let highest = envelopes
+            .iter()
+            .map(|(seq, _)| *seq)
+            .max()
+            .unwrap_or(since_seq);
+        Ok(PollProbeRecord {
+            count: envelopes.len() as u32,
+            highest_seq: highest,
+        })
+    }
+}
+
+/// Probe-only return shape — see [`RelayClientHandle::poll_count`].
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PollProbeRecord {
+    /// Number of envelopes the relay returned (≤ relay page size).
+    pub count: u32,
+    /// Highest seq in the returned batch, or `since_seq` when empty.
+    pub highest_seq: i64,
+}
 
 #[cfg(test)]
 mod tests {

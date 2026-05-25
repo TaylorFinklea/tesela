@@ -435,6 +435,22 @@ fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
+    typealias FfiType = Int64
+    typealias SwiftType = Int64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Int64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Int64, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterString: FfiConverter {
     typealias SwiftType = String
     typealias FfiType = RustBuffer
@@ -472,6 +488,422 @@ fileprivate struct FfiConverterString: FfiConverter {
         writeBytes(&buf, value.utf8)
     }
 }
+
+
+
+
+/**
+ * Handle to a [`RelayClient`] over UniFFI. Owns its own `reqwest`
+ * HTTP client + the HKDF-derived auth key. Swift constructs one per
+ * `(relay_url, group)` pair — typically just one per running app.
+ *
+ * In B.1 we expose register / verify / a poll-count probe. The
+ * envelope-bearing methods (`put_envelope`, full `poll` with payload)
+ * arrive in B.2/B.3 alongside engine apply.
+ */
+public protocol RelayClientHandleProtocol: AnyObject, Sendable {
+    
+    /**
+     * Probe: poll for envelopes since `since_seq` and return how many
+     * are pending plus the highest seq seen. Used by the B.1.4 smoke
+     * probe to confirm two-way traffic without yet doing the apply
+     * work. The full envelope-bearing poll lands in B.2.
+     */
+    func pollCount(sinceSeq: Int64) async throws  -> PollProbeRecord
+    
+    /**
+     * Register on the relay, recovering an existing matching record
+     * if one exists. Returns the Unix-seconds timestamp pinned to the
+     * registration — the Swift coordinator persists this so subsequent
+     * `register_or_recover()` calls find the same record on the relay
+     * without us having to chase the clock.
+     */
+    func registerOrRecover() async throws  -> Int64
+    
+    /**
+     * Hijack-detection check: read back the relay's stored
+     * registration for this group and verify the signed intent against
+     * our group key. Returns Ok(()) when the registration was authored
+     * by a holder of our group key; Err otherwise (someone squatted
+     * the group id but couldn't produce a valid intent signature).
+     */
+    func verifyRegistration() async throws 
+    
+}
+/**
+ * Handle to a [`RelayClient`] over UniFFI. Owns its own `reqwest`
+ * HTTP client + the HKDF-derived auth key. Swift constructs one per
+ * `(relay_url, group)` pair — typically just one per running app.
+ *
+ * In B.1 we expose register / verify / a poll-count probe. The
+ * envelope-bearing methods (`put_envelope`, full `poll` with payload)
+ * arrive in B.2/B.3 alongside engine apply.
+ */
+open class RelayClientHandle: RelayClientHandleProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_tesela_sync_ffi_fn_clone_relayclienthandle(self.handle, $0) }
+    }
+    /**
+     * Construct a relay client. All four hex strings are validated
+     * before any network traffic is attempted; a malformed input
+     * surfaces as `FfiSyncError::Other` rather than a later opaque
+     * network error.
+     */
+public convenience init(relayUrl: String, groupIdHex: String, deviceIdHex: String, groupKeyHex: String)throws  {
+    let handle =
+        try rustCallWithError(FfiConverterTypeFfiSyncError_lift) {
+    uniffi_tesela_sync_ffi_fn_constructor_relayclienthandle_new(
+        FfiConverterString.lower(relayUrl),
+        FfiConverterString.lower(groupIdHex),
+        FfiConverterString.lower(deviceIdHex),
+        FfiConverterString.lower(groupKeyHex),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_tesela_sync_ffi_fn_free_relayclienthandle(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Probe: poll for envelopes since `since_seq` and return how many
+     * are pending plus the highest seq seen. Used by the B.1.4 smoke
+     * probe to confirm two-way traffic without yet doing the apply
+     * work. The full envelope-bearing poll lands in B.2.
+     */
+open func pollCount(sinceSeq: Int64)async throws  -> PollProbeRecord  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_relayclienthandle_poll_count(
+                    self.uniffiCloneHandle(),
+                    FfiConverterInt64.lower(sinceSeq)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypePollProbeRecord_lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Register on the relay, recovering an existing matching record
+     * if one exists. Returns the Unix-seconds timestamp pinned to the
+     * registration — the Swift coordinator persists this so subsequent
+     * `register_or_recover()` calls find the same record on the relay
+     * without us having to chase the clock.
+     */
+open func registerOrRecover()async throws  -> Int64  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_relayclienthandle_register_or_recover(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_i64,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_i64,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_i64,
+            liftFunc: FfiConverterInt64.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Hijack-detection check: read back the relay's stored
+     * registration for this group and verify the signed intent against
+     * our group key. Returns Ok(()) when the registration was authored
+     * by a holder of our group key; Err otherwise (someone squatted
+     * the group id but couldn't produce a valid intent signature).
+     */
+open func verifyRegistration()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_relayclienthandle_verify_registration(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_void,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRelayClientHandle: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = RelayClientHandle
+
+    public static func lift(_ handle: UInt64) throws -> RelayClientHandle {
+        return RelayClientHandle(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: RelayClientHandle) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RelayClientHandle {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: RelayClientHandle, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRelayClientHandle_lift(_ handle: UInt64) throws -> RelayClientHandle {
+    return try FfiConverterTypeRelayClientHandle.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRelayClientHandle_lower(_ value: RelayClientHandle) -> UInt64 {
+    return FfiConverterTypeRelayClientHandle.lower(value)
+}
+
+
+
+
+
+
+/**
+ * Handle to a SQLite-backed sync engine. Created with
+ * [`SyncEngineHandle::open`]; lives behind an `Arc` so multiple Swift
+ * callers (UI + background sync task) can hold references concurrently
+ * without copying engine state.
+ *
+ * What the iOS app gets out of this in B.1: just enough to prove the
+ * FFI pipeline carries an opened engine round-trip. The producer +
+ * consumer methods (`apply_changes`, `produce_changes_since`) are wired
+ * in B.2 / B.3 — exposing them ahead of time would force a serialized
+ * `SyncEnvelope` shape across the FFI boundary before we've nailed
+ * down how iOS consumes ops.
+ */
+public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
+    
+    /**
+     * 32-char hex of this engine's device id. The Swift coordinator
+     * reads this once at boot for display in Settings → Sync.
+     */
+    func deviceHex()  -> String
+    
+}
+/**
+ * Handle to a SQLite-backed sync engine. Created with
+ * [`SyncEngineHandle::open`]; lives behind an `Arc` so multiple Swift
+ * callers (UI + background sync task) can hold references concurrently
+ * without copying engine state.
+ *
+ * What the iOS app gets out of this in B.1: just enough to prove the
+ * FFI pipeline carries an opened engine round-trip. The producer +
+ * consumer methods (`apply_changes`, `produce_changes_since`) are wired
+ * in B.2 / B.3 — exposing them ahead of time would force a serialized
+ * `SyncEnvelope` shape across the FFI boundary before we've nailed
+ * down how iOS consumes ops.
+ */
+open class SyncEngineHandle: SyncEngineHandleProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_tesela_sync_ffi_fn_clone_syncenginehandle(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_tesela_sync_ffi_fn_free_syncenginehandle(handle, $0) }
+    }
+
+    
+    /**
+     * Open (or create) a SQLite-backed sync engine at the given URL.
+     *
+     * `sqlite_url` follows the sqlx convention: `sqlite:/path/to/file`
+     * (the leading slash makes it absolute). iOS callers typically
+     * pass `format!("sqlite:{}", url.path())` where `url` is a
+     * `FileManager`-derived path inside the app's sandbox.
+     *
+     * `device_id_hex` must be 32 lowercase hex chars — typically the
+     * output of [`generate_device_id_hex`] persisted across launches.
+     * Reusing a stable device id is what keeps HLC timestamps
+     * monotonic across app restarts.
+     */
+public static func `open`(sqliteUrl: String, deviceIdHex: String)async throws  -> SyncEngineHandle  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_constructor_syncenginehandle_open(FfiConverterString.lower(sqliteUrl),FfiConverterString.lower(deviceIdHex)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u64,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u64,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeSyncEngineHandle_lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+
+    
+    /**
+     * 32-char hex of this engine's device id. The Swift coordinator
+     * reads this once at boot for display in Settings → Sync.
+     */
+open func deviceHex() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+    uniffi_tesela_sync_ffi_fn_method_syncenginehandle_device_hex(
+            self.uniffiCloneHandle(),$0
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSyncEngineHandle: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = SyncEngineHandle
+
+    public static func lift(_ handle: UInt64) throws -> SyncEngineHandle {
+        return SyncEngineHandle(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: SyncEngineHandle) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SyncEngineHandle {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: SyncEngineHandle, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncEngineHandle_lift(_ handle: UInt64) throws -> SyncEngineHandle {
+    return try FfiConverterTypeSyncEngineHandle.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncEngineHandle_lower(_ value: SyncEngineHandle) -> UInt64 {
+    return FfiConverterTypeSyncEngineHandle.lower(value)
+}
+
+
 
 
 /**
@@ -653,6 +1085,75 @@ public func FfiConverterTypePairingCodeRecord_lower(_ value: PairingCodeRecord) 
 
 
 /**
+ * Probe-only return shape — see [`RelayClientHandle::poll_count`].
+ */
+public struct PollProbeRecord: Equatable, Hashable {
+    /**
+     * Number of envelopes the relay returned (≤ relay page size).
+     */
+    public var count: UInt32
+    /**
+     * Highest seq in the returned batch, or `since_seq` when empty.
+     */
+    public var highestSeq: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Number of envelopes the relay returned (≤ relay page size).
+         */count: UInt32, 
+        /**
+         * Highest seq in the returned batch, or `since_seq` when empty.
+         */highestSeq: Int64) {
+        self.count = count
+        self.highestSeq = highestSeq
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PollProbeRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePollProbeRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PollProbeRecord {
+        return
+            try PollProbeRecord(
+                count: FfiConverterUInt32.read(from: &buf), 
+                highestSeq: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PollProbeRecord, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.count, into: &buf)
+        FfiConverterInt64.write(value.highestSeq, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePollProbeRecord_lift(_ buf: RustBuffer) throws -> PollProbeRecord {
+    return try FfiConverterTypePollProbeRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePollProbeRecord_lower(_ value: PollProbeRecord) -> RustBuffer {
+    return FfiConverterTypePollProbeRecord.lower(value)
+}
+
+
+/**
  * FFI-facing error variants. Stays narrow so consumers can match
  * exhaustively from Swift without surprises. All variants are
  * constructed from inner `SyncError`s via the `From` impl below.
@@ -751,6 +1252,54 @@ public func FfiConverterTypeFfiSyncError_lift(_ buf: RustBuffer) throws -> FfiSy
 #endif
 public func FfiConverterTypeFfiSyncError_lower(_ value: FfiSyncError) -> RustBuffer {
     return FfiConverterTypeFfiSyncError.lower(value)
+}
+private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
+private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
+
+fileprivate let uniffiContinuationHandleMap = UniffiHandleMap<UnsafeContinuation<Int8, Never>>()
+
+fileprivate func uniffiRustCallAsync<F, T>(
+    rustFutureFunc: () -> UInt64,
+    pollFunc: (UInt64, @escaping UniffiRustFutureContinuationCallback, UInt64) -> (),
+    completeFunc: (UInt64, UnsafeMutablePointer<RustCallStatus>) -> F,
+    freeFunc: (UInt64) -> (),
+    liftFunc: (F) throws -> T,
+    errorHandler: ((RustBuffer) throws -> Swift.Error)?
+) async throws -> T {
+    // Make sure to call the ensure init function since future creation doesn't have a
+    // RustCallStatus param, so doesn't use makeRustCall()
+    uniffiEnsureTeselaSyncFfiInitialized()
+    let rustFuture = rustFutureFunc()
+    defer {
+        freeFunc(rustFuture)
+    }
+    var pollResult: Int8;
+    repeat {
+        pollResult = await withUnsafeContinuation {
+            pollFunc(
+                rustFuture,
+                { handle, pollResult in
+                    uniffiFutureContinuationCallback(handle: handle, pollResult: pollResult)
+                },
+                uniffiContinuationHandleMap.insert(obj: $0)
+            )
+        }
+    } while pollResult != UNIFFI_RUST_FUTURE_POLL_READY
+
+    return try liftFunc(makeRustCall(
+        { completeFunc(rustFuture, $0) },
+        errorHandler: errorHandler
+    ))
+}
+
+// Callback handlers for an async calls.  These are invoked by Rust when the future is ready.  They
+// lift the return value or error and resume the suspended function.
+fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: Int8) {
+    if let continuation = try? uniffiContinuationHandleMap.remove(handle: handle) {
+        continuation.resume(returning: pollResult)
+    } else {
+        print("uniffiFutureContinuationCallback invalid handle")
+    }
 }
 /**
  * Decode a base64url pairing code string into its fields. Returns
@@ -855,6 +1404,24 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_func_tesela_sync_version() != 100) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_poll_count() != 27172) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_register_or_recover() != 3102) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_verify_registration() != 25015) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_device_hex() != 4479) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_constructor_relayclienthandle_new() != 60933) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_constructor_syncenginehandle_open() != 51190) {
         return InitializationResult.apiChecksumMismatch
     }
 

@@ -13,8 +13,16 @@ bench = false
 
 [dependencies]
 tesela-sync = { path = "../tesela-sync" }
-uniffi.workspace = true
+uniffi = { workspace = true, features = ["tokio"] }
 thiserror.workspace = true
+# Tokio needed for the async UniFFI runtime that drives the
+# RelayClient + engine I/O. `rt-multi-thread` lets iOS Swift await
+# without blocking the host main thread (UniFFI schedules each call
+# onto this runtime).
+tokio = { workspace = true }
+# RelayClient.new takes a `reqwest::Url`. The wrapper here re-parses
+# from a Swift `String`, so we need direct access to the type.
+reqwest = { workspace = true }
 
 [features]
 # Pulls in the binary scaffolding so `cargo run --bin uniffi-bindgen

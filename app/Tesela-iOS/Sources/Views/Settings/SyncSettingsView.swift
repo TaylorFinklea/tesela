@@ -13,6 +13,10 @@ struct SyncSettingsView: View {
     @State private var simulatedPending: Bool = false
     @State private var relayStatus: RelayStatusInfo? = nil
     @State private var relayLoaded: Bool = false
+    // B.1.4 — FFI smoke probe state. Removed once B.2/B.3 land and the
+    // real iOS-as-peer Settings UI replaces this debug button.
+    @State private var smokeResult: String? = nil
+    @State private var smokeRunning: Bool = false
 
     /// User-facing name for this device. Advertised to peers once the
     /// sync backend is wired (see roadmap "iOS sync"); for now it's
@@ -26,6 +30,7 @@ struct SyncSettingsView: View {
     var body: some View {
         Form {
             relaySection
+            ffiSmokeSection
             deviceNameSection
 
             if simulatedOffline {
@@ -135,6 +140,105 @@ struct SyncSettingsView: View {
         } footer: {
             Text("iOS itself isn't a sync peer yet — this iPhone talks to your Mac over HTTP. When the Mac is configured with a relay, edits from other devices land on the Mac through that relay, then flow to you. Future iOS sync (native peer) is on the roadmap.")
                 .font(.caption2)
+        }
+    }
+
+    // ─── B.1.4 — FFI smoke probe ────────────────────────────────────
+    //
+    // Temporary section that proves the Rust→UniFFI→Swift pipeline is
+    // wired correctly for iOS-as-relay-peer (Path B). On tap: opens an
+    // ephemeral local sync engine, instantiates a RelayClientHandle
+    // pointed at the *same* relay URL the Mac is using, runs the full
+    // register / verify / poll handshake from Swift, and shows the
+    // result. No persistence — fresh group each tap so it can't clash
+    // with the Mac's real group state on the relay.
+    //
+    // Removed when B.2 (real producer) + B.3 (real consumer) land —
+    // those replace this with the actual sync UI.
+    @ViewBuilder
+    private var ffiSmokeSection: some View {
+        Section {
+            Button {
+                Task { await runFfiSmoke() }
+            } label: {
+                HStack {
+                    if smokeRunning {
+                        ProgressView().scaleEffect(0.7)
+                        Text("Running smoke test…")
+                    } else {
+                        Image(systemName: "testtube.2")
+                        Text("Run FFI relay smoke test")
+                    }
+                }
+            }
+            .disabled(smokeRunning || relayStatus?.url == nil)
+            if let result = smokeResult {
+                Text(result)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(result.hasPrefix("✅") ? theme.typeQuery : theme.typeTask)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
+            }
+        } header: {
+            Text("B.1 — FFI smoke (dev)")
+        } footer: {
+            Text("Uses the Mac's relay URL with an ephemeral group. Won't touch your real sync. Removed once iOS becomes a real sync peer.")
+                .font(.caption2)
+        }
+    }
+
+    /// Runs the B.1.4 FFI smoke: open engine → build relay client →
+    /// register → verify → poll. Captures every error so the result is
+    /// always renderable on screen, never propagated as an unhandled
+    /// exception.
+    private func runFfiSmoke() async {
+        smokeRunning = true
+        defer { smokeRunning = false }
+        smokeResult = nil
+
+        guard let relayURL = relayStatus?.url else {
+            smokeResult = "❌ no relay URL — Mac isn't paired with a relay yet"
+            return
+        }
+
+        // Fresh ephemeral group per run — keeps the probe from clobbering
+        // the Mac's real registration on the relay.
+        let group = generateGroupIdentity()
+        let deviceHex = generateDeviceIdHex()
+
+        // Engine lives in a temp file. Cleaned up by iOS when the
+        // sandbox is purged; we don't bother removing it here since the
+        // file is tiny and the next run picks a fresh name.
+        let dbPath = FileManager.default.temporaryDirectory
+            .appendingPathComponent("smoke-\(UUID().uuidString.prefix(8)).db")
+            .path
+        let sqliteURL = "sqlite:\(dbPath)"
+
+        do {
+            let engine = try await SyncEngineHandle.open(
+                sqliteUrl: sqliteURL,
+                deviceIdHex: deviceHex
+            )
+            let relay = try RelayClientHandle(
+                relayUrl: relayURL,
+                groupIdHex: group.groupIdHex,
+                deviceIdHex: deviceHex,
+                groupKeyHex: group.groupKeyHex
+            )
+            let registeredAt = try await relay.registerOrRecover()
+            try await relay.verifyRegistration()
+            let probe = try await relay.pollCount(sinceSeq: 0)
+            smokeResult = """
+                ✅ smoke passed
+                  device: \(engine.deviceHex().prefix(8))…
+                  group:  \(group.groupIdHex.prefix(8))…
+                  relay:  registered@\(registeredAt)
+                  poll:   count=\(probe.count) maxSeq=\(probe.highestSeq)
+                """
+        } catch let err as FfiSyncError {
+            smokeResult = "❌ \(err.localizedDescription)"
+        } catch {
+            smokeResult = "❌ \(error.localizedDescription)"
         }
     }
 
