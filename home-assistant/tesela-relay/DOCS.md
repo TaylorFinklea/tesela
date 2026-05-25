@@ -11,9 +11,23 @@ your relay rides on infrastructure you already own.
 ## Installation
 
 1. Home Assistant → **Settings → Add-ons → Add-on Store**.
-2. Top-right ⋮ → **Repositories**.
-3. Paste: `https://github.com/TaylorFinklea/tesela`
-4. Find **Tesela Sync Relay** in the store → **Install**.
+2. Top-right ⋮ → **Repositories** → paste
+   `https://github.com/TaylorFinklea/tesela` → Add.
+3. Top-right ⋮ → **Reload** (forces HA to re-scan the repository
+   after Add, and also after any addon-image bump on the maintainer
+   side).
+4. **Tesela Sync Relay** appears under "Tesela Add-ons" → **Install**.
+   HA pulls the prebuilt multi-arch image from
+   `ghcr.io/taylorfinklea/tesela-relay:latest` — installs in seconds,
+   no on-device compile.
+
+> **Forking?** If you've pushed your own build of the image to *your*
+> ghcr.io account, you'll get a `403 denied` on Install until you
+> mark the package public:
+> `https://github.com/users/<you>/packages/container/tesela-relay/settings`
+> → bottom → **Change visibility → Public**. One-time, persists across
+> image pushes. Installs from the upstream `TaylorFinklea/tesela` repo
+> skip this — that image is already public.
 
 ## Configuration
 
