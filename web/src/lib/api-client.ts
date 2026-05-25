@@ -187,6 +187,11 @@ export const api = {
     }),
   syncStatus: () => get<SyncPeerStatus[]>("/sync/peer/status"),
   syncDiscovered: () => get<SyncDiscoveredPeer[]>("/sync/peer/discovered"),
+
+  // WAN relay status. Returns `configured: false` when no
+  // `[sync.relay]` is set in the mosaic config; otherwise the
+  // URL, cursors, last poll/put timestamps, and last error string.
+  syncRelayStatus: () => get<RelayStatus>("/sync/relay/status"),
   syncNow: () => post<SyncNowResponse>("/sync/peer/now", {}),
   syncGetPairingCode: () => get<SyncPairingCode>("/sync/peer/pairing-code"),
   syncPairWithCode: (code: string) =>
@@ -419,6 +424,28 @@ export interface SyncDiscoveredPeer {
   url: string;
   /** Seconds since the most recent mDNS update from this peer. */
   last_seen_secs_ago: number;
+}
+
+/** WAN relay status, mirroring the Rust `RelayStatus` struct in
+ *  `tesela-server::sync_relay`. `configured: false` means the
+ *  mosaic has no `[sync.relay]` block — every other field is then
+ *  zero/null. */
+export interface RelayStatus {
+  configured: boolean;
+  url: string | null;
+  /** Highest relay-assigned `seq` we've applied + acked. */
+  inbound_cursor: number;
+  /** HLC ntp64 of the most-recent local op PUT to the relay. */
+  outbound_cursor_ntp: number | null;
+  /** Unix seconds — last successful poll. */
+  last_poll_at: number | null;
+  /** Unix seconds — last successful PUT. */
+  last_put_at: number | null;
+  /** Unix seconds — when we first registered on this relay. */
+  registered_at: number | null;
+  /** Most recent error string from poll/put/register, cleared on
+   *  next successful tick. `null` when healthy. */
+  last_error: string | null;
 }
 /** Per-peer outcome from `POST /sync/peer/now`. Server returns a map keyed
  *  by device_id_hex; each entry has `applied` on success or `error` on
