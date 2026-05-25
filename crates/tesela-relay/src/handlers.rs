@@ -166,8 +166,8 @@ pub async fn put_op(
     let Ok(from_device_vec) = hex::decode(&req.from_device) else {
         return (StatusCode::BAD_REQUEST, "from_device not hex").into_response();
     };
-    let Ok(from_device_arr): Result<[u8; 32], _> = from_device_vec.try_into() else {
-        return (StatusCode::BAD_REQUEST, "from_device must be 32 bytes").into_response();
+    let Ok(from_device_arr): Result<[u8; 16], _> = from_device_vec.try_into() else {
+        return (StatusCode::BAD_REQUEST, "from_device must be 16 bytes (DeviceId)").into_response();
     };
     let b64 = base64::engine::general_purpose::STANDARD;
     let Ok(payload) = b64.decode(&req.payload_b64) else {
@@ -229,7 +229,7 @@ pub async fn get_ops(
             // PUT), and they need to count as known members for GC.
             if let Some(device_hex) = header_str(&headers, "x-tesela-device") {
                 if let Ok(bytes) = hex::decode(device_hex) {
-                    if let Ok(arr) = <[u8; 32]>::try_from(bytes) {
+                    if let Ok(arr) = <[u8; 16]>::try_from(bytes) {
                         let _ = state
                             .inner
                             .store
@@ -288,8 +288,8 @@ pub async fn post_ack(
     let Ok(device_vec) = hex::decode(&req.device) else {
         return (StatusCode::BAD_REQUEST, "device not hex").into_response();
     };
-    let Ok(device_arr): Result<[u8; 32], _> = device_vec.try_into() else {
-        return (StatusCode::BAD_REQUEST, "device must be 32 bytes").into_response();
+    let Ok(device_arr): Result<[u8; 16], _> = device_vec.try_into() else {
+        return (StatusCode::BAD_REQUEST, "device must be 16 bytes (DeviceId)").into_response();
     };
 
     if let Err(e) = state

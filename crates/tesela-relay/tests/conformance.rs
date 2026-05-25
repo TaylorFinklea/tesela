@@ -155,7 +155,8 @@ fn auth_headers(
 }
 
 fn random_device_id_hex() -> String {
-    let mut bytes = [0u8; 32];
+    // 16 bytes = canonical `tesela_sync::device::DeviceId` size.
+    let mut bytes = [0u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }

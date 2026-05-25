@@ -52,6 +52,11 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 
+# HTTP client for `transport::relay::RelayClient`. JSON-only feature
+# set keeps the binary smaller; rustls so we don't pull openssl.
+reqwest.workspace = true
+serde_json.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio-test.workspace = true

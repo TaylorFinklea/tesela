@@ -157,7 +157,7 @@ impl Store {
     pub async fn insert_op(
         &self,
         group_id: &[u8; 16],
-        from_device: &[u8; 32],
+        from_device: &[u8; 16],
         ts: f64,
         payload: &[u8],
     ) -> Result<(i64, f64)> {
@@ -228,7 +228,7 @@ impl Store {
     pub async fn ack_ops(
         &self,
         group_id: &[u8; 16],
-        device_id: &[u8; 32],
+        device_id: &[u8; 16],
         applied_seq: i64,
     ) -> Result<u64> {
         let device_hex = hex::encode(device_id);
@@ -318,7 +318,7 @@ impl Store {
     pub async fn touch_device(
         &self,
         group_id: &[u8; 16],
-        device_id: &[u8; 32],
+        device_id: &[u8; 16],
         seen_ts: i64,
     ) -> Result<()> {
         sqlx::query(
