@@ -143,35 +143,48 @@ struct SyncSettingsView: View {
         }
     }
 
-    // ─── B.1.4 — FFI smoke probe ────────────────────────────────────
+    // ─── B.2 — FFI producer smoke ───────────────────────────────────
     //
-    // Temporary section that proves the Rust→UniFFI→Swift pipeline is
-    // wired correctly for iOS-as-relay-peer (Path B). On tap: opens an
-    // ephemeral local sync engine, instantiates a RelayClientHandle
-    // pointed at the *same* relay URL the Mac is using, runs the full
-    // register / verify / poll handshake from Swift, and shows the
-    // result. No persistence — fresh group each tap so it can't clash
-    // with the Mac's real group state on the relay.
+    // Proves iOS can record a local op + push it to the relay, where
+    // the Mac picks it up via its existing inbound tick.
     //
-    // Removed when B.2 (real producer) + B.3 (real consumer) land —
-    // those replace this with the actual sync UI.
+    // Flow on tap:
+    //   1. Fetch the Mac's pairing code over HTTP → decode → grab the
+    //      real group_id + group_key the Mac is using.
+    //   2. Open a stable local SyncEngine at
+    //      Documents/sync-ios-b2.db (so successive taps accumulate ops).
+    //   3. Build a RelayClientHandle pointed at the relay URL the
+    //      pairing code carries (falls back to the Mac's read-only
+    //      relay status if the code is v1).
+    //   4. Construct a SyncCoordinator over those.
+    //   5. Record a `NoteUpsert` whose title contains the current local
+    //      time so each tap creates a distinct, visible note.
+    //   6. tick_outbound(max_bytes: 1 MB) — engine produces, postcards,
+    //      coordinator wraps + AEAD-seals + PUTs.
+    //   7. Render the outcome.
+    //
+    // After the tap, check the Mac side: the note "iOS B.2 smoke @ HH:MM:SS"
+    // should appear in the mosaic within `poll_interval` seconds (the
+    // Mac's relay tick pulls it down + applies).
+    //
+    // Replaced when B.3 lands with the real iOS-as-peer UX.
     @ViewBuilder
     private var ffiSmokeSection: some View {
         Section {
             Button {
-                Task { await runFfiSmoke() }
+                Task { await runB2Smoke() }
             } label: {
                 HStack {
                     if smokeRunning {
                         ProgressView().scaleEffect(0.7)
-                        Text("Running smoke test…")
+                        Text("Recording + pushing…")
                     } else {
-                        Image(systemName: "testtube.2")
-                        Text("Run FFI relay smoke test")
+                        Image(systemName: "paperplane")
+                        Text("Record + push fake edit")
                     }
                 }
             }
-            .disabled(smokeRunning || relayStatus?.url == nil)
+            .disabled(smokeRunning)
             if let result = smokeResult {
                 Text(result)
                     .font(.system(size: 11, design: .monospaced))
@@ -180,66 +193,112 @@ struct SyncSettingsView: View {
                     .padding(.vertical, 4)
             }
         } header: {
-            Text("B.1 — FFI smoke (dev)")
+            Text("B.2 — Producer smoke (dev)")
         } footer: {
-            Text("Uses the Mac's relay URL with an ephemeral group. Won't touch your real sync. Removed once iOS becomes a real sync peer.")
+            Text("Tap to create a note titled 'iOS B.2 smoke @ HH:MM:SS' on this iPhone, push it through the relay, and watch it appear on the Mac. Auto-pulls the Mac's pairing code over HTTP — no copy/paste required.")
                 .font(.caption2)
         }
     }
 
-    /// Runs the B.1.4 FFI smoke: open engine → build relay client →
-    /// register → verify → poll. Captures every error so the result is
-    /// always renderable on screen, never propagated as an unhandled
-    /// exception.
-    private func runFfiSmoke() async {
+    /// Runs the B.2 producer smoke: fetch pairing → open engine →
+    /// record note upsert → tick coordinator outbound. Catches every
+    /// error path so the UI always renders a result instead of
+    /// propagating an unhandled exception into SwiftUI.
+    private func runB2Smoke() async {
         smokeRunning = true
         defer { smokeRunning = false }
         smokeResult = nil
 
-        guard let relayURL = relayStatus?.url else {
-            smokeResult = "❌ no relay URL — Mac isn't paired with a relay yet"
-            return
-        }
-
-        // Fresh ephemeral group per run — keeps the probe from clobbering
-        // the Mac's real registration on the relay.
-        let group = generateGroupIdentity()
-        let deviceHex = generateDeviceIdHex()
-
-        // Engine lives in a temp file. Cleaned up by iOS when the
-        // sandbox is purged; we don't bother removing it here since the
-        // file is tiny and the next run picks a fresh name.
-        let dbPath = FileManager.default.temporaryDirectory
-            .appendingPathComponent("smoke-\(UUID().uuidString.prefix(8)).db")
-            .path
-        let sqliteURL = "sqlite:\(dbPath)"
-
         do {
+            // 1. Adopt the Mac's group via its live pairing code.
+            let server = try await mosaic.fetchPairingCode()
+            let pairing = try decodePairingCode(code: server.code)
+            // Prefer the relay URL carried in the pairing code (v2+).
+            // Falls back to the read-only relay status if for some
+            // reason the code is older. Both surface the same URL today.
+            let relayURL = pairing.relayUrl ?? relayStatus?.url
+            guard let relayURL else {
+                smokeResult = "❌ no relay URL — neither pairing code nor /sync/relay/status carried one"
+                return
+            }
+
+            // 2. Stable engine path so successive taps accumulate.
+            //    Engine uses its own persistent device id; we generate
+            //    one on first run and reuse it via UserDefaults.
+            let docs = FileManager.default.urls(
+                for: .documentDirectory,
+                in: .userDomainMask
+            )[0]
+            let dbPath = docs.appendingPathComponent("sync-ios-b2.db").path
+            let sqliteURL = "sqlite:\(dbPath)"
+            let deviceHex = persistedDeviceIdHex()
             let engine = try await SyncEngineHandle.open(
                 sqliteUrl: sqliteURL,
                 deviceIdHex: deviceHex
             )
+
+            // 3. Build the relay client + coordinator with the Mac's
+            //    group identity so we register/put against the same
+            //    group the Mac is in.
             let relay = try RelayClientHandle(
                 relayUrl: relayURL,
-                groupIdHex: group.groupIdHex,
+                groupIdHex: pairing.groupIdHex,
                 deviceIdHex: deviceHex,
-                groupKeyHex: group.groupKeyHex
+                groupKeyHex: pairing.groupKeyHex
             )
-            let registeredAt = try await relay.registerOrRecover()
+            _ = try await relay.registerOrRecover()
             try await relay.verifyRegistration()
-            let probe = try await relay.pollCount(sinceSeq: 0)
+            let coordinator = try SyncCoordinator(
+                engine: engine,
+                relay: relay,
+                groupIdHex: pairing.groupIdHex
+            )
+
+            // 4. Record a distinguishable note. UUID per call so the
+            //    Mac sees a fresh row, not a re-upsert of a prior one.
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm:ss"
+            let title = "iOS B.2 smoke @ \(formatter.string(from: Date()))"
+            let body = "Sent from iPhone via UniFFI → relay → Mac.\n\nTimestamp: \(Date())"
+            let noteIdHex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+            let createdAt = Int64(Date().timeIntervalSince1970 * 1000)
+            _ = try await engine.recordNoteUpsert(
+                noteIdHex: noteIdHex,
+                displayAlias: nil,
+                title: title,
+                content: body,
+                createdAtMillis: createdAt
+            )
+
+            // 5. Push.
+            let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
+            let seqStr = outcome.relaySeq.map { "seq=\($0)" } ?? "seq=—"
             smokeResult = """
-                ✅ smoke passed
-                  device: \(engine.deviceHex().prefix(8))…
-                  group:  \(group.groupIdHex.prefix(8))…
-                  relay:  registered@\(registeredAt)
-                  poll:   count=\(probe.count) maxSeq=\(probe.highestSeq)
+                ✅ pushed \(outcome.opsSent) op\(outcome.opsSent == 1 ? "" : "s")
+                  title: \(title)
+                  relay: \(seqStr)
+                  cursor: \(outcome.newCursorNtp.map(String.init) ?? "—")
+                  → check the Mac for the note
                 """
         } catch let err as FfiSyncError {
             smokeResult = "❌ \(err.localizedDescription)"
         } catch {
             smokeResult = "❌ \(error.localizedDescription)"
         }
+    }
+
+    /// One-shot device id per install, persisted in UserDefaults. Using
+    /// a stable id keeps the engine's HLC monotonic across taps + app
+    /// restarts (otherwise every B.2 smoke run would look like a
+    /// "fresh device" to the relay).
+    private func persistedDeviceIdHex() -> String {
+        let key = "b2.engine.deviceIdHex"
+        if let existing = UserDefaults.standard.string(forKey: key) {
+            return existing
+        }
+        let fresh = generateDeviceIdHex()
+        UserDefaults.standard.set(fresh, forKey: key)
+        return fresh
     }
 
     private var relayUnreachable: some View {

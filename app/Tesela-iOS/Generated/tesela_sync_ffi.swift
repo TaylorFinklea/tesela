@@ -731,6 +731,243 @@ public func FfiConverterTypeRelayClientHandle_lower(_ value: RelayClientHandle) 
 
 
 /**
+ * Coordinator that owns a (SyncEngine, RelayClient, group identity) tuple
+ * and ticks the outbound half of the sync loop. Mirrors the
+ * `tesela_server::sync_relay::tick` outbound branch — but exposed over
+ * UniFFI so iOS Swift can drive it directly without re-implementing the
+ * produce → postcard → wrap → put choreography.
+ *
+ * In B.2 we only expose the outbound tick (iPhone-side writes flow to
+ * the Mac). Inbound (Mac writes flow to iPhone) lands in B.3 alongside
+ * the apply path + materialization.
+ *
+ * The outbound cursor is held in-memory only for B.2 — restart starts
+ * from `Earliest`, which re-sends already-acked ops harmlessly thanks
+ * to the relay's nonce dedupe + receiver-side idempotent apply. B.3
+ * will persist it through `RelayState`-equivalent storage.
+ */
+public protocol SyncCoordinatorProtocol: AnyObject, Sendable {
+    
+    /**
+     * Current outbound cursor (ntp64) — `None` means nothing has been
+     * sent yet this run. Surfaced for the dev smoke UI.
+     */
+    func outboundCursorNtp() async  -> Int64?
+    
+    /**
+     * Drain locally-recorded ops that the relay hasn't seen yet,
+     * postcard-encode them into a `SyncEnvelope`, AEAD-seal via the
+     * relay client, and PUT. Returns a small outcome record the iOS
+     * caller can show in the UI ("sent N ops, seq=…").
+     *
+     * Idempotent on no-op: if there's nothing to send, returns
+     * `ops_sent: 0` without touching the relay.
+     *
+     * Errors fall into two buckets and the caller should treat them
+     * differently:
+     * - Network/relay errors (timeouts, 4xx, MAC fail) → don't advance
+     * the cursor; the next tick will retry the same batch.
+     * - Engine errors (db corruption, encoding) → the cursor stays put
+     * but Swift may need to surface them to the user as a sync halt.
+     */
+    func tickOutbound(maxBytes: UInt32) async throws  -> TickOutboundRecord
+    
+}
+/**
+ * Coordinator that owns a (SyncEngine, RelayClient, group identity) tuple
+ * and ticks the outbound half of the sync loop. Mirrors the
+ * `tesela_server::sync_relay::tick` outbound branch — but exposed over
+ * UniFFI so iOS Swift can drive it directly without re-implementing the
+ * produce → postcard → wrap → put choreography.
+ *
+ * In B.2 we only expose the outbound tick (iPhone-side writes flow to
+ * the Mac). Inbound (Mac writes flow to iPhone) lands in B.3 alongside
+ * the apply path + materialization.
+ *
+ * The outbound cursor is held in-memory only for B.2 — restart starts
+ * from `Earliest`, which re-sends already-acked ops harmlessly thanks
+ * to the relay's nonce dedupe + receiver-side idempotent apply. B.3
+ * will persist it through `RelayState`-equivalent storage.
+ */
+open class SyncCoordinator: SyncCoordinatorProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_tesela_sync_ffi_fn_clone_synccoordinator(self.handle, $0) }
+    }
+    /**
+     * Wire an engine + relay client + group identity together. The
+     * engine + relay handles are reference-counted so Swift can keep
+     * holding them for direct calls (e.g. `engine.device_hex()`,
+     * `relay.poll_count(...)`) without surrendering ownership.
+     *
+     * `group_id_hex` must match the group the relay was registered
+     * against. Mismatch surfaces at first `tick_outbound` as a relay
+     * MAC-verify failure.
+     */
+public convenience init(engine: SyncEngineHandle, relay: RelayClientHandle, groupIdHex: String)throws  {
+    let handle =
+        try rustCallWithError(FfiConverterTypeFfiSyncError_lift) {
+    uniffi_tesela_sync_ffi_fn_constructor_synccoordinator_new(
+        FfiConverterTypeSyncEngineHandle_lower(engine),
+        FfiConverterTypeRelayClientHandle_lower(relay),
+        FfiConverterString.lower(groupIdHex),$0
+    )
+}
+    self.init(unsafeFromHandle: handle)
+}
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_tesela_sync_ffi_fn_free_synccoordinator(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Current outbound cursor (ntp64) — `None` means nothing has been
+     * sent yet this run. Surfaced for the dev smoke UI.
+     */
+open func outboundCursorNtp()async  -> Int64?  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_synccoordinator_outbound_cursor_ntp(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionInt64.lift,
+            errorHandler: nil
+            
+        )
+}
+    
+    /**
+     * Drain locally-recorded ops that the relay hasn't seen yet,
+     * postcard-encode them into a `SyncEnvelope`, AEAD-seal via the
+     * relay client, and PUT. Returns a small outcome record the iOS
+     * caller can show in the UI ("sent N ops, seq=…").
+     *
+     * Idempotent on no-op: if there's nothing to send, returns
+     * `ops_sent: 0` without touching the relay.
+     *
+     * Errors fall into two buckets and the caller should treat them
+     * differently:
+     * - Network/relay errors (timeouts, 4xx, MAC fail) → don't advance
+     * the cursor; the next tick will retry the same batch.
+     * - Engine errors (db corruption, encoding) → the cursor stays put
+     * but Swift may need to surface them to the user as a sync halt.
+     */
+open func tickOutbound(maxBytes: UInt32)async throws  -> TickOutboundRecord  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_synccoordinator_tick_outbound(
+                    self.uniffiCloneHandle(),
+                    FfiConverterUInt32.lower(maxBytes)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeTickOutboundRecord_lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSyncCoordinator: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = SyncCoordinator
+
+    public static func lift(_ handle: UInt64) throws -> SyncCoordinator {
+        return SyncCoordinator(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: SyncCoordinator) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SyncCoordinator {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: SyncCoordinator, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncCoordinator_lift(_ handle: UInt64) throws -> SyncCoordinator {
+    return try FfiConverterTypeSyncCoordinator.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSyncCoordinator_lower(_ value: SyncCoordinator) -> UInt64 {
+    return FfiConverterTypeSyncCoordinator.lower(value)
+}
+
+
+
+
+
+
+/**
  * Handle to a SQLite-backed sync engine. Created with
  * [`SyncEngineHandle::open`]; lives behind an `Arc` so multiple Swift
  * callers (UI + background sync task) can hold references concurrently
@@ -750,6 +987,20 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * reads this once at boot for display in Settings → Sync.
      */
     func deviceHex()  -> String
+    
+    /**
+     * Record a "create or update a note" op locally. Returns the
+     * resulting 64-char hex content hash that the engine assigned —
+     * callers can use it to dedupe their UI's optimistic write against
+     * the eventual relay-replayed op.
+     *
+     * `note_id_hex` must be 32 hex chars (16 bytes — UUID). The Swift
+     * caller mints one (e.g. `UUID().uuidString` stripped of dashes)
+     * on first save and reuses it for subsequent edits to the same note.
+     * `created_at_millis` is Unix millis at first creation; reused on
+     * updates so the engine's HLC stays monotonic across both edits.
+     */
+    func recordNoteUpsert(noteIdHex: String, displayAlias: String?, title: String, content: String, createdAtMillis: Int64) async throws  -> String
     
 }
 /**
@@ -856,6 +1107,35 @@ open func deviceHex() -> String  {
             self.uniffiCloneHandle(),$0
     )
 })
+}
+    
+    /**
+     * Record a "create or update a note" op locally. Returns the
+     * resulting 64-char hex content hash that the engine assigned —
+     * callers can use it to dedupe their UI's optimistic write against
+     * the eventual relay-replayed op.
+     *
+     * `note_id_hex` must be 32 hex chars (16 bytes — UUID). The Swift
+     * caller mints one (e.g. `UUID().uuidString` stripped of dashes)
+     * on first save and reuses it for subsequent edits to the same note.
+     * `created_at_millis` is Unix millis at first creation; reused on
+     * updates so the engine's HLC stays monotonic across both edits.
+     */
+open func recordNoteUpsert(noteIdHex: String, displayAlias: String?, title: String, content: String, createdAtMillis: Int64)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_record_note_upsert(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(noteIdHex),FfiConverterOptionString.lower(displayAlias),FfiConverterString.lower(title),FfiConverterString.lower(content),FfiConverterInt64.lower(createdAtMillis)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
 }
     
 
@@ -992,7 +1272,8 @@ public struct PairingCodeRecord: Equatable, Hashable {
      */
     public var deviceIdHex: String
     /**
-     * Reachable HTTP URL (e.g. `http://10.0.0.5:7474`).
+     * Reachable HTTP URL of the issuing tesela-server (e.g.
+     * `http://10.0.0.5:7474`).
      */
     public var url: String
     /**
@@ -1003,6 +1284,14 @@ public struct PairingCodeRecord: Equatable, Hashable {
      * Wire-format version; checked by `decode_pairing_code` already.
      */
     public var version: UInt32
+    /**
+     * WAN relay URL the issuer is configured against, if any.
+     * `None` ≡ the issuer is LAN-only. When set, the joining device
+     * should auto-configure the same relay so cross-network sync
+     * works without an extra copy-paste. Populated since pairing
+     * code v2 (2026-05-24).
+     */
+    public var relayUrl: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1017,20 +1306,29 @@ public struct PairingCodeRecord: Equatable, Hashable {
          * 32-char hex device id of the issuing device.
          */deviceIdHex: String, 
         /**
-         * Reachable HTTP URL (e.g. `http://10.0.0.5:7474`).
+         * Reachable HTTP URL of the issuing tesela-server (e.g.
+         * `http://10.0.0.5:7474`).
          */url: String, 
         /**
          * User-visible display name from the issuer.
          */displayName: String, 
         /**
          * Wire-format version; checked by `decode_pairing_code` already.
-         */version: UInt32) {
+         */version: UInt32, 
+        /**
+         * WAN relay URL the issuer is configured against, if any.
+         * `None` ≡ the issuer is LAN-only. When set, the joining device
+         * should auto-configure the same relay so cross-network sync
+         * works without an extra copy-paste. Populated since pairing
+         * code v2 (2026-05-24).
+         */relayUrl: String?) {
         self.groupIdHex = groupIdHex
         self.groupKeyHex = groupKeyHex
         self.deviceIdHex = deviceIdHex
         self.url = url
         self.displayName = displayName
         self.version = version
+        self.relayUrl = relayUrl
     }
 
     
@@ -1054,7 +1352,8 @@ public struct FfiConverterTypePairingCodeRecord: FfiConverterRustBuffer {
                 deviceIdHex: FfiConverterString.read(from: &buf), 
                 url: FfiConverterString.read(from: &buf), 
                 displayName: FfiConverterString.read(from: &buf), 
-                version: FfiConverterUInt32.read(from: &buf)
+                version: FfiConverterUInt32.read(from: &buf), 
+                relayUrl: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -1065,6 +1364,7 @@ public struct FfiConverterTypePairingCodeRecord: FfiConverterRustBuffer {
         FfiConverterString.write(value.url, into: &buf)
         FfiConverterString.write(value.displayName, into: &buf)
         FfiConverterUInt32.write(value.version, into: &buf)
+        FfiConverterOptionString.write(value.relayUrl, into: &buf)
     }
 }
 
@@ -1150,6 +1450,90 @@ public func FfiConverterTypePollProbeRecord_lift(_ buf: RustBuffer) throws -> Po
 #endif
 public func FfiConverterTypePollProbeRecord_lower(_ value: PollProbeRecord) -> RustBuffer {
     return FfiConverterTypePollProbeRecord.lower(value)
+}
+
+
+/**
+ * Outcome of [`SyncCoordinator::tick_outbound`]. Designed to be small
+ * enough to render in a one-line status string.
+ */
+public struct TickOutboundRecord: Equatable, Hashable {
+    /**
+     * Number of ops included in the envelope. `0` ≡ nothing to send.
+     */
+    public var opsSent: UInt32
+    /**
+     * Relay-assigned seq of the envelope, or `None` when nothing was
+     * sent.
+     */
+    public var relaySeq: Int64?
+    /**
+     * HLC ntp64 of the new outbound cursor, or `None` when nothing
+     * was sent (or the produced batch wasn't `At`-cursor-shaped).
+     */
+    public var newCursorNtp: Int64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Number of ops included in the envelope. `0` ≡ nothing to send.
+         */opsSent: UInt32, 
+        /**
+         * Relay-assigned seq of the envelope, or `None` when nothing was
+         * sent.
+         */relaySeq: Int64?, 
+        /**
+         * HLC ntp64 of the new outbound cursor, or `None` when nothing
+         * was sent (or the produced batch wasn't `At`-cursor-shaped).
+         */newCursorNtp: Int64?) {
+        self.opsSent = opsSent
+        self.relaySeq = relaySeq
+        self.newCursorNtp = newCursorNtp
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TickOutboundRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTickOutboundRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TickOutboundRecord {
+        return
+            try TickOutboundRecord(
+                opsSent: FfiConverterUInt32.read(from: &buf), 
+                relaySeq: FfiConverterOptionInt64.read(from: &buf), 
+                newCursorNtp: FfiConverterOptionInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TickOutboundRecord, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.opsSent, into: &buf)
+        FfiConverterOptionInt64.write(value.relaySeq, into: &buf)
+        FfiConverterOptionInt64.write(value.newCursorNtp, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTickOutboundRecord_lift(_ buf: RustBuffer) throws -> TickOutboundRecord {
+    return try FfiConverterTypeTickOutboundRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTickOutboundRecord_lower(_ value: TickOutboundRecord) -> RustBuffer {
+    return FfiConverterTypeTickOutboundRecord.lower(value)
 }
 
 
@@ -1252,6 +1636,54 @@ public func FfiConverterTypeFfiSyncError_lift(_ buf: RustBuffer) throws -> FfiSy
 #endif
 public func FfiConverterTypeFfiSyncError_lower(_ value: FfiSyncError) -> RustBuffer {
     return FfiConverterTypeFfiSyncError.lower(value)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
+    typealias SwiftType = Int64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterInt64.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
+    typealias SwiftType = String?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
 }
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
 private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
@@ -1415,10 +1847,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_verify_registration() != 25015) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_outbound_cursor_ntp() != 45049) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_tick_outbound() != 26776) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_device_hex() != 4479) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_upsert() != 31930) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tesela_sync_ffi_checksum_constructor_relayclienthandle_new() != 60933) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_constructor_synccoordinator_new() != 10024) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_constructor_syncenginehandle_open() != 51190) {

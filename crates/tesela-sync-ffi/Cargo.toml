@@ -23,6 +23,9 @@ tokio = { workspace = true }
 # RelayClient.new takes a `reqwest::Url`. The wrapper here re-parses
 # from a Swift `String`, so we need direct access to the type.
 reqwest = { workspace = true }
+# Outbound tick postcard-encodes the `Vec<EncodedOp>` batch into the
+# SyncEnvelope ciphertext, matching the Mac's tick.
+postcard = { workspace = true }
 
 [features]
 # Pulls in the binary scaffolding so `cargo run --bin uniffi-bindgen

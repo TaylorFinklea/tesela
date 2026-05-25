@@ -12,11 +12,13 @@ use std::sync::Arc;
 use tesela_sync::{
     decode_pairing_code as decode_pairing_code_inner,
     encode_pairing_code as encode_pairing_code_inner,
-    engine::SqliteEngine,
+    engine::{PeerCursor, SqliteEngine, SyncEngine},
+    oplog::op::OpPayload,
     transport::relay::RelayClient,
-    DeviceId, GroupId, GroupKey,
+    DeviceId, GroupId, GroupKey, SyncEnvelope,
     PairingCode as InnerPairingCode,
 };
+use tokio::sync::Mutex;
 
 uniffi::setup_scaffolding!();
 
@@ -101,12 +103,19 @@ pub struct PairingCodeRecord {
     pub group_key_hex: String,
     /// 32-char hex device id of the issuing device.
     pub device_id_hex: String,
-    /// Reachable HTTP URL (e.g. `http://10.0.0.5:7474`).
+    /// Reachable HTTP URL of the issuing tesela-server (e.g.
+    /// `http://10.0.0.5:7474`).
     pub url: String,
     /// User-visible display name from the issuer.
     pub display_name: String,
     /// Wire-format version; checked by `decode_pairing_code` already.
     pub version: u32,
+    /// WAN relay URL the issuer is configured against, if any.
+    /// `None` ≡ the issuer is LAN-only. When set, the joining device
+    /// should auto-configure the same relay so cross-network sync
+    /// works without an extra copy-paste. Populated since pairing
+    /// code v2 (2026-05-24).
+    pub relay_url: Option<String>,
 }
 
 /// Decode a base64url pairing code string into its fields. Returns
@@ -124,6 +133,7 @@ pub fn decode_pairing_code(code: String) -> Result<PairingCodeRecord, FfiSyncErr
         url: parsed.url,
         display_name: parsed.display_name,
         version: parsed.version as u32,
+        relay_url: parsed.relay_url,
     })
 }
 
@@ -264,6 +274,198 @@ impl SyncEngineHandle {
     pub fn device_hex(&self) -> String {
         self.inner.device().to_hex()
     }
+
+    /// Record a "create or update a note" op locally. Returns the
+    /// resulting 64-char hex content hash that the engine assigned —
+    /// callers can use it to dedupe their UI's optimistic write against
+    /// the eventual relay-replayed op.
+    ///
+    /// `note_id_hex` must be 32 hex chars (16 bytes — UUID). The Swift
+    /// caller mints one (e.g. `UUID().uuidString` stripped of dashes)
+    /// on first save and reuses it for subsequent edits to the same note.
+    /// `created_at_millis` is Unix millis at first creation; reused on
+    /// updates so the engine's HLC stays monotonic across both edits.
+    pub async fn record_note_upsert(
+        &self,
+        note_id_hex: String,
+        display_alias: Option<String>,
+        title: String,
+        content: String,
+        created_at_millis: i64,
+    ) -> Result<String, FfiSyncError> {
+        let note_id = parse_hex_16(&note_id_hex).ok_or_else(|| FfiSyncError::Other {
+            message: "note_id_hex must be 32 hex chars".into(),
+        })?;
+        let payload = OpPayload::NoteUpsert {
+            note_id,
+            display_alias,
+            title,
+            content,
+            created_at_millis,
+        };
+        let hash = self
+            .inner
+            .record_local(payload)
+            .await
+            .map_err(FfiSyncError::from)?;
+        Ok(hex_encode(&hash.0))
+    }
+}
+
+// ============================================================================
+// B.2.1 — SyncCoordinator (engine + relay + cursor; outbound tick)
+// ============================================================================
+
+/// Coordinator that owns a (SyncEngine, RelayClient, group identity) tuple
+/// and ticks the outbound half of the sync loop. Mirrors the
+/// `tesela_server::sync_relay::tick` outbound branch — but exposed over
+/// UniFFI so iOS Swift can drive it directly without re-implementing the
+/// produce → postcard → wrap → put choreography.
+///
+/// In B.2 we only expose the outbound tick (iPhone-side writes flow to
+/// the Mac). Inbound (Mac writes flow to iPhone) lands in B.3 alongside
+/// the apply path + materialization.
+///
+/// The outbound cursor is held in-memory only for B.2 — restart starts
+/// from `Earliest`, which re-sends already-acked ops harmlessly thanks
+/// to the relay's nonce dedupe + receiver-side idempotent apply. B.3
+/// will persist it through `RelayState`-equivalent storage.
+#[derive(uniffi::Object)]
+pub struct SyncCoordinator {
+    engine: Arc<SyncEngineHandle>,
+    relay: Arc<RelayClientHandle>,
+    group_id: GroupId,
+    /// Outbound cursor (HLC ntp64 of last sent op), `None` ≡ Earliest.
+    outbound_cursor: Mutex<Option<i64>>,
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl SyncCoordinator {
+    /// Wire an engine + relay client + group identity together. The
+    /// engine + relay handles are reference-counted so Swift can keep
+    /// holding them for direct calls (e.g. `engine.device_hex()`,
+    /// `relay.poll_count(...)`) without surrendering ownership.
+    ///
+    /// `group_id_hex` must match the group the relay was registered
+    /// against. Mismatch surfaces at first `tick_outbound` as a relay
+    /// MAC-verify failure.
+    #[uniffi::constructor]
+    pub fn new(
+        engine: Arc<SyncEngineHandle>,
+        relay: Arc<RelayClientHandle>,
+        group_id_hex: String,
+    ) -> Result<Arc<Self>, FfiSyncError> {
+        let group_id = GroupId::from_bytes(parse_hex_16(&group_id_hex).ok_or_else(|| {
+            FfiSyncError::Other {
+                message: "group_id_hex must be 32 hex chars".into(),
+            }
+        })?);
+        Ok(Arc::new(Self {
+            engine,
+            relay,
+            group_id,
+            outbound_cursor: Mutex::new(None),
+        }))
+    }
+
+    /// Drain locally-recorded ops that the relay hasn't seen yet,
+    /// postcard-encode them into a `SyncEnvelope`, AEAD-seal via the
+    /// relay client, and PUT. Returns a small outcome record the iOS
+    /// caller can show in the UI ("sent N ops, seq=…").
+    ///
+    /// Idempotent on no-op: if there's nothing to send, returns
+    /// `ops_sent: 0` without touching the relay.
+    ///
+    /// Errors fall into two buckets and the caller should treat them
+    /// differently:
+    /// - Network/relay errors (timeouts, 4xx, MAC fail) → don't advance
+    ///   the cursor; the next tick will retry the same batch.
+    /// - Engine errors (db corruption, encoding) → the cursor stays put
+    ///   but Swift may need to surface them to the user as a sync halt.
+    pub async fn tick_outbound(
+        &self,
+        max_bytes: u32,
+    ) -> Result<TickOutboundRecord, FfiSyncError> {
+        let our_device = self.engine.inner.device();
+        let cursor_guard = self.outbound_cursor.lock().await;
+        let cursor = match *cursor_guard {
+            Some(ntp) => PeerCursor::At(
+                tesela_sync::hlc::HlcTimestamp::from_ntp64_i64(ntp, our_device),
+            ),
+            None => PeerCursor::Earliest,
+        };
+        drop(cursor_guard);
+
+        let batch = self
+            .engine
+            .inner
+            .produce_changes_since(our_device, cursor, max_bytes as usize)
+            .await
+            .map_err(FfiSyncError::from)?;
+        if batch.ops.is_empty() {
+            return Ok(TickOutboundRecord {
+                ops_sent: 0,
+                relay_seq: None,
+                new_cursor_ntp: None,
+            });
+        }
+
+        let ciphertext = postcard::to_allocvec(&batch.ops).map_err(|e| FfiSyncError::Other {
+            message: format!("postcard encode: {e}"),
+        })?;
+        let envelope = SyncEnvelope {
+            from_device: our_device,
+            to_group: self.group_id,
+            // Unused on this layer — RelayClient.put_envelope mints its
+            // own outer nonce for the AEAD seal. Kept zero to match the
+            // Mac's tick.
+            nonce: [0u8; 24],
+            ciphertext,
+        };
+
+        let ops_count = batch.ops.len() as u32;
+        let (seq, _ts) = self
+            .relay
+            .inner
+            .put_envelope(envelope)
+            .await
+            .map_err(FfiSyncError::from)?;
+
+        // Advance cursor only on full success.
+        let new_cursor_ntp = if let PeerCursor::At(ts) = batch.new_cursor {
+            let ntp = ts.ntp64_as_i64();
+            *self.outbound_cursor.lock().await = Some(ntp);
+            Some(ntp)
+        } else {
+            None
+        };
+
+        Ok(TickOutboundRecord {
+            ops_sent: ops_count,
+            relay_seq: Some(seq),
+            new_cursor_ntp,
+        })
+    }
+
+    /// Current outbound cursor (ntp64) — `None` means nothing has been
+    /// sent yet this run. Surfaced for the dev smoke UI.
+    pub async fn outbound_cursor_ntp(&self) -> Option<i64> {
+        *self.outbound_cursor.lock().await
+    }
+}
+
+/// Outcome of [`SyncCoordinator::tick_outbound`]. Designed to be small
+/// enough to render in a one-line status string.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TickOutboundRecord {
+    /// Number of ops included in the envelope. `0` ≡ nothing to send.
+    pub ops_sent: u32,
+    /// Relay-assigned seq of the envelope, or `None` when nothing was
+    /// sent.
+    pub relay_seq: Option<i64>,
+    /// HLC ntp64 of the new outbound cursor, or `None` when nothing
+    /// was sent (or the produced batch wasn't `At`-cursor-shaped).
+    pub new_cursor_ntp: Option<i64>,
 }
 
 // ============================================================================

@@ -4384,6 +4384,7 @@ dependencies = [
 name = "tesela-sync-ffi"
 version = "0.1.0"
 dependencies = [
+ "postcard",
  "reqwest",
  "tesela-sync",
  "thiserror 2.0.18",
