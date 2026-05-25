@@ -259,12 +259,28 @@ struct SyncSettingsView: View {
             let formatter = DateFormatter()
             formatter.dateFormat = "HH:mm:ss"
             let title = "iOS B.2 smoke @ \(formatter.string(from: Date()))"
-            let body = "Sent from iPhone via UniFFI → relay → Mac.\n\nTimestamp: \(Date())"
             let noteIdHex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
             let createdAt = Int64(Date().timeIntervalSince1970 * 1000)
+            // Slug is REQUIRED for materialization on the Mac — without
+            // one, the engine persists the op in its oplog but bails
+            // before writing the .md file because there's no stable
+            // filename. Use the first 8 hex chars of the note id as a
+            // guaranteed-unique, filesystem-safe slug.
+            let slug = "ios-smoke-\(noteIdHex.prefix(8))"
+            // Content gets written AS-IS to notes/<slug>.md, so include
+            // YAML frontmatter so the indexer picks up the title rather
+            // than deriving one from the filename.
+            let body = """
+                ---
+                title: "\(title)"
+                tags: []
+                ---
+                - Sent from iPhone via UniFFI → relay → Mac.
+                - Timestamp: \(Date())
+                """
             _ = try await engine.recordNoteUpsert(
                 noteIdHex: noteIdHex,
-                displayAlias: nil,
+                displayAlias: slug,
                 title: title,
                 content: body,
                 createdAtMillis: createdAt
