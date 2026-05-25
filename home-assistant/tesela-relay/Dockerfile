@@ -23,7 +23,7 @@
 # horribly slow at running rustc. `--platform=$BUILDPLATFORM` keeps
 # the builder native; the binary it produces targets $TARGETPLATFORM
 # via standard cross-compile triples below.
-FROM --platform=$BUILDPLATFORM rust:1.83-bookworm AS builder
+FROM --platform=$BUILDPLATFORM rust:1.86-bookworm AS builder
 
 ARG TARGETARCH
 ARG TARGETPLATFORM
