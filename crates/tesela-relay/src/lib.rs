@@ -5,7 +5,9 @@
 //! when the Cloudflare Worker port arrives (stage 7) and we want one
 //! test suite checking both deployments.
 
-use axum::{routing::get, Router};
+use axum::middleware::from_fn_with_state;
+use axum::routing::{delete, get, post, put};
+use axum::Router;
 
 pub mod handlers;
 pub mod state;
@@ -13,12 +15,47 @@ pub mod store;
 
 pub use state::AppState;
 
+/// Tesela-sync's `tesela_sync` is a transitive dep through the
+/// integration tests; this re-export keeps a single place to point
+/// other callers (eventually `tesela-server` + `tesela-sync` clients)
+/// at the canonical relay-auth primitives. No-op for the binary.
+pub use tesela_sync::crypto::relay_auth;
+
 /// Build the relay's HTTP router from a fully-initialised
 /// `AppState`. Used by both `main.rs` (production bind) and the
 /// integration tests (random-port spawn).
+///
+/// Endpoint layout:
+///
+/// - `GET /`                                — health
+/// - `POST /groups/{id}/register`           — open (registration bootstrap)
+/// - `GET  /groups/{id}/registration`       — open (joiner verifies)
+/// - `PUT  /groups/{id}/ops`                — MAC-gated
+/// - `GET  /groups/{id}/ops`                — MAC-gated
+/// - `POST /groups/{id}/ack`                — MAC-gated
+/// - `DELETE /admin/groups/{id}/register`   — admin-token-gated (handler checks)
 pub fn router(state: AppState) -> Router {
+    // Routes that the MAC middleware gates. Separate sub-router so we
+    // can layer the middleware only over endpoints that require it —
+    // /register can't MAC-verify (no auth_key stored yet).
+    let mac_gated = Router::new()
+        .route("/groups/{group_id}/ops", put(handlers::put_op).get(handlers::get_ops))
+        .route("/groups/{group_id}/ack", post(handlers::post_ack))
+        .layer(from_fn_with_state(state.clone(), handlers::mac_gate));
+
     Router::new()
         .route("/", get(handlers::health))
-        // Handlers are stubbed for stage 2a; stages 3a-3d fill them in.
+        .route("/groups/{group_id}/register", post(handlers::register))
+        .route("/groups/{group_id}/registration", get(handlers::get_registration))
+        .route(
+            "/admin/groups/{group_id}/register",
+            delete(handlers::admin_delete_registration),
+        )
+        .merge(mac_gated)
+        // Per-IP rate limit runs first so even pre-auth scan traffic
+        // gets throttled. Stacked over everything so /register,
+        // /registration, /ops, /ack, and /admin all count toward the
+        // window cap.
+        .layer(from_fn_with_state(state.clone(), handlers::rate_gate))
         .with_state(state)
 }

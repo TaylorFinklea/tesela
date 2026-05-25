@@ -69,6 +69,12 @@ async fn main() -> Result<()> {
 
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
     info!("tesela-relay listening on http://{}", args.bind);
-    axum::serve(listener, app).await?;
+    // `into_make_service_with_connect_info` so the per-IP rate gate
+    // can extract the client `SocketAddr` via `ConnectInfo`.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
