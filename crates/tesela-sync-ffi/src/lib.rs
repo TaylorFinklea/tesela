@@ -396,10 +396,14 @@ impl SyncCoordinator {
         };
         drop(cursor_guard);
 
+        // Relay fanout: publish only ops we authored. See the docstring
+        // on `produce_local_authored_since` for why transitive
+        // republishing is wrong here.
+        let _ = our_device; // kept for cursor construction above
         let batch = self
             .engine
             .inner
-            .produce_changes_since(our_device, cursor, max_bytes as usize)
+            .produce_local_authored_since(cursor, max_bytes as usize)
             .await
             .map_err(FfiSyncError::from)?;
         if batch.ops.is_empty() {

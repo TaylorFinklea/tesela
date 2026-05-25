@@ -411,6 +411,96 @@ impl SyncEngine for SqliteEngine {
 }
 
 impl SqliteEngine {
+    /// Like [`SyncEngine::produce_changes_since`] but returns ONLY ops
+    /// authored by *this* device. This is the right shape for the relay
+    /// fanout model: each device publishes its own ops to the relay,
+    /// and other devices fetch + apply. If we instead published
+    /// transitively-known ops here we'd create publish-loop traffic
+    /// (A publishes B's op via the relay → C fetches → C re-publishes
+    /// the same op via the relay → …) without buying any actual
+    /// delivery guarantee.
+    ///
+    /// LAN/HTTP transitive sync (`peer_sync.rs`) keeps using
+    /// `produce_changes_since(peer, …)` because that path benefits
+    /// from transitivity — two peers may share an op a third never saw.
+    pub async fn produce_local_authored_since(
+        &self,
+        since: PeerCursor,
+        max_bytes: usize,
+    ) -> SyncResult<ProducedBatch> {
+        let since_ntp = match since {
+            PeerCursor::Earliest => i64::MIN,
+            PeerCursor::At(ts) => ts.ntp64_as_i64(),
+        };
+        let rows = sqlx::query(
+            "SELECT hlc_ntp, device_id, schema_version, payload, content_hash, txn_id
+             FROM oplog
+             WHERE device_id = ?
+               AND hlc_ntp > ?
+             ORDER BY hlc_ntp ASC",
+        )
+        .bind(&self.inner.device.0[..])
+        .bind(since_ntp)
+        .fetch_all(&self.inner.pool)
+        .await?;
+
+        let mut ops = Vec::new();
+        let mut new_cursor = since;
+        let mut bytes_used = 0usize;
+        for row in rows {
+            let hlc_ntp: i64 = row.get(0);
+            let dev_bytes: Vec<u8> = row.get(1);
+            let schema_version: i64 = row.get(2);
+            let payload_bytes: Vec<u8> = row.get(3);
+            let hash_bytes: Vec<u8> = row.get(4);
+            let txn_bytes: Option<Vec<u8>> = row.get(5);
+
+            if dev_bytes.len() != 16 {
+                return Err(SyncError::Storage(format!(
+                    "device_id wrong length: {}",
+                    dev_bytes.len()
+                )));
+            }
+            let mut dev = [0u8; 16];
+            dev.copy_from_slice(&dev_bytes);
+            if hash_bytes.len() != 32 {
+                return Err(SyncError::Storage(format!(
+                    "content_hash wrong length: {}",
+                    hash_bytes.len()
+                )));
+            }
+            let mut hash = [0u8; 32];
+            hash.copy_from_slice(&hash_bytes);
+            let txn_id = match txn_bytes {
+                Some(b) if b.len() == 16 => {
+                    let mut t = [0u8; 16];
+                    t.copy_from_slice(&b);
+                    Some(t)
+                }
+                _ => None,
+            };
+            let payload: OpPayload = postcard::from_bytes(&payload_bytes)?;
+            let hlc = HlcTimestamp::from_ntp64_i64(hlc_ntp, DeviceId(dev));
+            let op = EncodedOp {
+                hlc,
+                schema_version: schema_version as u32,
+                content_hash: ContentHash(hash),
+                txn_id,
+                payload,
+            };
+
+            let projected = bytes_used + payload_bytes.len() + 64;
+            if !ops.is_empty() && projected > max_bytes {
+                break;
+            }
+            bytes_used = projected;
+            new_cursor = PeerCursor::At(hlc);
+            ops.push(op);
+        }
+
+        Ok(ProducedBatch { ops, new_cursor })
+    }
+
     /// Materialize an applied op into the on-disk markdown file (Phase 1.5
     /// blob model). No-op if `mosaic_dir` is None. The file watcher in
     /// `tesela-core::indexer::Indexer` will pick up the change and update

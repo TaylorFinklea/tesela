@@ -208,8 +208,12 @@ pub async fn tick(
         Some(ntp) => PeerCursor::At(HlcTimestamp::from_ntp64_i64(ntp, our_device)),
         None => PeerCursor::Earliest,
     };
+    // Relay fanout: publish only ops we authored. Transitive ops get
+    // to other devices via *their* own relay publish, not via us
+    // re-broadcasting them (which would create publish loops). See the
+    // docstring on `produce_local_authored_since` for the full reasoning.
     match engine
-        .produce_changes_since(our_device, outbound_cursor, 1_000_000)
+        .produce_local_authored_since(outbound_cursor, 1_000_000)
         .await
     {
         Ok(batch) => {
