@@ -143,6 +143,54 @@ struct SyncSettingsView: View {
         }
     }
 
+    /// Mosaic-style sandbox root: `Documents/sync-ios-mosaic/`. The
+    /// engine materializes received NoteUpserts to
+    /// `<root>/notes/<slug>.md`, exactly like the Mac. Path is shared
+    /// by every coordinator we build so successive taps see the same
+    /// engine state.
+    private func iosMosaicRoot() -> String {
+        let docs = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        )[0]
+        let root = docs.appendingPathComponent("sync-ios-mosaic")
+        try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return root.path
+    }
+
+    /// Build (engine, relay, coordinator) tuple from the live pairing
+    /// code. Centralizes the dance both smoke buttons need so they
+    /// stay in sync about engine path, mosaic dir, and group identity.
+    private func buildB3Coordinator() async throws -> (SyncEngineHandle, RelayClientHandle, SyncCoordinator, String) {
+        let server = try await mosaic.fetchPairingCode()
+        let pairing = try decodePairingCode(code: server.code)
+        guard let relayURL = pairing.relayUrl ?? relayStatus?.url else {
+            throw FfiSyncError.Other(message: "no relay URL on Mac")
+        }
+        let mosaicRoot = iosMosaicRoot()
+        let sqliteURL = "sqlite:\(mosaicRoot)/sync.db"
+        let deviceHex = persistedDeviceIdHex()
+        let engine = try await SyncEngineHandle.openWithMosaic(
+            sqliteUrl: sqliteURL,
+            mosaicPath: mosaicRoot,
+            deviceIdHex: deviceHex
+        )
+        let relay = try RelayClientHandle(
+            relayUrl: relayURL,
+            groupIdHex: pairing.groupIdHex,
+            deviceIdHex: deviceHex,
+            groupKeyHex: pairing.groupKeyHex
+        )
+        _ = try await relay.registerOrRecover()
+        try await relay.verifyRegistration()
+        let coordinator = try SyncCoordinator(
+            engine: engine,
+            relay: relay,
+            groupIdHex: pairing.groupIdHex
+        )
+        return (engine, relay, coordinator, mosaicRoot)
+    }
+
     // ─── B.2 — FFI producer smoke ───────────────────────────────────
     //
     // Proves iOS can record a local op + push it to the relay, where
@@ -177,11 +225,20 @@ struct SyncSettingsView: View {
                 HStack {
                     if smokeRunning {
                         ProgressView().scaleEffect(0.7)
-                        Text("Recording + pushing…")
+                        Text("Working…")
                     } else {
                         Image(systemName: "paperplane")
-                        Text("Record + push fake edit")
+                        Text("Push fake edit (B.2)")
                     }
+                }
+            }
+            .disabled(smokeRunning)
+            Button {
+                Task { await runB3Pull() }
+            } label: {
+                HStack {
+                    Image(systemName: "arrow.down.circle")
+                    Text("Pull + apply from relay (B.3)")
                 }
             }
             .disabled(smokeRunning)
@@ -193,83 +250,30 @@ struct SyncSettingsView: View {
                     .padding(.vertical, 4)
             }
         } header: {
-            Text("B.2 — Producer smoke (dev)")
+            Text("B.2 / B.3 — FFI smoke (dev)")
         } footer: {
-            Text("Tap to create a note titled 'iOS B.2 smoke @ HH:MM:SS' on this iPhone, push it through the relay, and watch it appear on the Mac. Auto-pulls the Mac's pairing code over HTTP — no copy/paste required.")
+            Text("Push: create + send a note from iPhone. Pull: drain relay envelopes into the local engine; received NoteUpserts materialize at Documents/sync-ios-mosaic/notes/<slug>.md. Both use the same Mac pairing code (auto-fetched), so they target the same group.")
                 .font(.caption2)
         }
     }
 
-    /// Runs the B.2 producer smoke: fetch pairing → open engine →
-    /// record note upsert → tick coordinator outbound. Catches every
-    /// error path so the UI always renders a result instead of
-    /// propagating an unhandled exception into SwiftUI.
+    /// B.2 producer flow: build coordinator → record a NoteUpsert →
+    /// tick_outbound. Mac picks the note up via its existing inbound
+    /// tick within ~5 s.
     private func runB2Smoke() async {
         smokeRunning = true
         defer { smokeRunning = false }
         smokeResult = nil
 
         do {
-            // 1. Adopt the Mac's group via its live pairing code.
-            let server = try await mosaic.fetchPairingCode()
-            let pairing = try decodePairingCode(code: server.code)
-            // Prefer the relay URL carried in the pairing code (v2+).
-            // Falls back to the read-only relay status if for some
-            // reason the code is older. Both surface the same URL today.
-            let relayURL = pairing.relayUrl ?? relayStatus?.url
-            guard let relayURL else {
-                smokeResult = "❌ no relay URL — neither pairing code nor /sync/relay/status carried one"
-                return
-            }
+            let (engine, _, coordinator, _) = try await buildB3Coordinator()
 
-            // 2. Stable engine path so successive taps accumulate.
-            //    Engine uses its own persistent device id; we generate
-            //    one on first run and reuse it via UserDefaults.
-            let docs = FileManager.default.urls(
-                for: .documentDirectory,
-                in: .userDomainMask
-            )[0]
-            let dbPath = docs.appendingPathComponent("sync-ios-b2.db").path
-            let sqliteURL = "sqlite:\(dbPath)"
-            let deviceHex = persistedDeviceIdHex()
-            let engine = try await SyncEngineHandle.open(
-                sqliteUrl: sqliteURL,
-                deviceIdHex: deviceHex
-            )
-
-            // 3. Build the relay client + coordinator with the Mac's
-            //    group identity so we register/put against the same
-            //    group the Mac is in.
-            let relay = try RelayClientHandle(
-                relayUrl: relayURL,
-                groupIdHex: pairing.groupIdHex,
-                deviceIdHex: deviceHex,
-                groupKeyHex: pairing.groupKeyHex
-            )
-            _ = try await relay.registerOrRecover()
-            try await relay.verifyRegistration()
-            let coordinator = try SyncCoordinator(
-                engine: engine,
-                relay: relay,
-                groupIdHex: pairing.groupIdHex
-            )
-
-            // 4. Record a distinguishable note. UUID per call so the
-            //    Mac sees a fresh row, not a re-upsert of a prior one.
             let formatter = DateFormatter()
             formatter.dateFormat = "HH:mm:ss"
             let title = "iOS B.2 smoke @ \(formatter.string(from: Date()))"
             let noteIdHex = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
             let createdAt = Int64(Date().timeIntervalSince1970 * 1000)
-            // Slug is REQUIRED for materialization on the Mac — without
-            // one, the engine persists the op in its oplog but bails
-            // before writing the .md file because there's no stable
-            // filename. Use the first 8 hex chars of the note id as a
-            // guaranteed-unique, filesystem-safe slug.
             let slug = "ios-smoke-\(noteIdHex.prefix(8))"
-            // Content gets written AS-IS to notes/<slug>.md, so include
-            // YAML frontmatter so the indexer picks up the title rather
-            // than deriving one from the filename.
             let body = """
                 ---
                 title: "\(title)"
@@ -286,7 +290,6 @@ struct SyncSettingsView: View {
                 createdAtMillis: createdAt
             )
 
-            // 5. Push.
             let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
             let seqStr = outcome.relaySeq.map { "seq=\($0)" } ?? "seq=—"
             smokeResult = """
@@ -295,6 +298,37 @@ struct SyncSettingsView: View {
                   relay: \(seqStr)
                   cursor: \(outcome.newCursorNtp.map(String.init) ?? "—")
                   → check the Mac for the note
+                """
+        } catch let err as FfiSyncError {
+            smokeResult = "❌ \(err.localizedDescription)"
+        } catch {
+            smokeResult = "❌ \(error.localizedDescription)"
+        }
+    }
+
+    /// B.3 consumer flow: build coordinator → tick_inbound → list the
+    /// resulting materialized files in the iOS sandbox so the operator
+    /// can confirm the apply actually wrote .md files locally.
+    private func runB3Pull() async {
+        smokeRunning = true
+        defer { smokeRunning = false }
+        smokeResult = nil
+
+        do {
+            let (_, _, coordinator, mosaicRoot) = try await buildB3Coordinator()
+            let outcome = try await coordinator.tickInbound()
+
+            // Inspect the materialized notes directory for confirmation.
+            let notesDir = URL(fileURLWithPath: mosaicRoot).appendingPathComponent("notes")
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: notesDir.path)) ?? []
+            let mdFiles = files.filter { $0.hasSuffix(".md") }.sorted()
+            let preview = mdFiles.prefix(3).joined(separator: ", ")
+            let extra = mdFiles.count > 3 ? ", …(\(mdFiles.count - 3) more)" : ""
+            smokeResult = """
+                ✅ applied \(outcome.applied) (skipped own: \(outcome.skippedOwn), errors: \(outcome.errors))
+                  inbound seq: \(outcome.newCursorSeq)
+                  local notes/: \(mdFiles.count) file\(mdFiles.count == 1 ? "" : "s")
+                  preview: \(preview.isEmpty ? "—" : preview)\(extra)
                 """
         } catch let err as FfiSyncError {
             smokeResult = "❌ \(err.localizedDescription)"

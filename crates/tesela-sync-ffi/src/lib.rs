@@ -241,7 +241,12 @@ pub struct SyncEngineHandle {
 
 #[uniffi::export(async_runtime = "tokio")]
 impl SyncEngineHandle {
-    /// Open (or create) a SQLite-backed sync engine at the given URL.
+    /// Open (or create) a SQLite-backed sync engine at the given URL,
+    /// without filesystem materialization. Applied ops land in the
+    /// oplog but no `.md` files are written. Useful for headless
+    /// engines or tests; **iOS should normally use
+    /// [`Self::open_with_mosaic`] instead** so apply ticks
+    /// materialize into the iOS app sandbox.
     ///
     /// `sqlite_url` follows the sqlx convention: `sqlite:/path/to/file`
     /// (the leading slash makes it absolute). iOS callers typically
@@ -264,6 +269,37 @@ impl SyncEngineHandle {
         let engine = SqliteEngine::open(&sqlite_url, device)
             .await
             .map_err(FfiSyncError::from)?;
+        Ok(Arc::new(Self {
+            inner: Arc::new(engine),
+        }))
+    }
+
+    /// Like [`Self::open`] but ALSO knows about a mosaic root directory,
+    /// so applied ops materialize into `<mosaic_path>/notes/<slug>.md`.
+    /// This is the iOS production shape: pass the app sandbox's
+    /// Documents/<mosaic-name>/ as `mosaic_path` and the engine takes
+    /// care of writing the on-disk notes for the indexer (and the iOS
+    /// data layer) to read.
+    ///
+    /// `mosaic_path` must be an absolute filesystem path; the engine
+    /// creates `mosaic_path/notes/` if missing.
+    #[uniffi::constructor]
+    pub async fn open_with_mosaic(
+        sqlite_url: String,
+        mosaic_path: String,
+        device_id_hex: String,
+    ) -> Result<Arc<Self>, FfiSyncError> {
+        let bytes = parse_hex_16(&device_id_hex).ok_or_else(|| FfiSyncError::Other {
+            message: "device_id_hex must be 32 hex chars".to_string(),
+        })?;
+        let device = DeviceId::from_bytes(bytes);
+        let engine = SqliteEngine::open_with_mosaic(
+            &sqlite_url,
+            Some(std::path::PathBuf::from(&mosaic_path)),
+            device,
+        )
+        .await
+        .map_err(FfiSyncError::from)?;
         Ok(Arc::new(Self {
             inner: Arc::new(engine),
         }))
@@ -337,6 +373,9 @@ pub struct SyncCoordinator {
     group_id: GroupId,
     /// Outbound cursor (HLC ntp64 of last sent op), `None` ≡ Earliest.
     outbound_cursor: Mutex<Option<i64>>,
+    /// Inbound cursor (highest relay-assigned `seq` we've applied + acked).
+    /// `0` ≡ nothing applied yet (the relay's first seq is `1`).
+    inbound_cursor: Mutex<i64>,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
@@ -365,6 +404,7 @@ impl SyncCoordinator {
             relay,
             group_id,
             outbound_cursor: Mutex::new(None),
+            inbound_cursor: Mutex::new(0),
         }))
     }
 
@@ -456,6 +496,106 @@ impl SyncCoordinator {
     pub async fn outbound_cursor_ntp(&self) -> Option<i64> {
         *self.outbound_cursor.lock().await
     }
+
+    /// Drain incoming envelopes from the relay since the last applied
+    /// `seq`, decrypt + decode each, apply via the engine (which
+    /// materializes the resulting NoteUpsert/etc into the iOS sandbox
+    /// when the engine was opened via [`SyncEngineHandle::open_with_mosaic`]),
+    /// then ack the highest applied seq back to the relay.
+    ///
+    /// Self-echo handling: envelopes whose `from_device == our_device`
+    /// are skipped at the apply step but still advance the cursor — the
+    /// relay broadcasts to all members including the author, and
+    /// re-applying our own writes would burn cycles for no effect.
+    ///
+    /// Failure modes — same shape as `tick_outbound`:
+    /// - Network errors → cursor untouched; next tick retries the same
+    ///   batch (relay's idempotent storage + engine's content-hash
+    ///   dedupe make this safe).
+    /// - Per-envelope apply errors are logged + counted but do NOT
+    ///   abort the whole tick; bad envelopes from one device shouldn't
+    ///   stop us from applying good envelopes from another.
+    pub async fn tick_inbound(&self) -> Result<TickInboundRecord, FfiSyncError> {
+        let our_device = self.engine.inner.device();
+        let since = *self.inbound_cursor.lock().await;
+
+        let envelopes = self
+            .relay
+            .inner
+            .poll(since)
+            .await
+            .map_err(FfiSyncError::from)?;
+
+        let mut applied = 0u32;
+        let mut skipped_own = 0u32;
+        let mut errors = 0u32;
+        let mut max_seq = since;
+        for (seq, env) in envelopes {
+            if env.from_device == our_device {
+                // Our own write echoed back by the relay; advance the
+                // cursor but skip the apply.
+                if seq > max_seq {
+                    max_seq = seq;
+                }
+                skipped_own += 1;
+                continue;
+            }
+            let peer = env.from_device;
+            match SyncEngine::apply_changes(self.engine.inner.as_ref(), peer, env).await {
+                Ok(_applied_set) => {
+                    applied += 1;
+                    if seq > max_seq {
+                        max_seq = seq;
+                    }
+                }
+                Err(e) => {
+                    errors += 1;
+                    eprintln!("tesela-sync-ffi: relay apply seq={seq} err={e}");
+                }
+            }
+        }
+
+        if max_seq > since {
+            // Ack first, then advance our cursor. If ack fails the next
+            // tick re-polls the same range — harmless thanks to engine
+            // content-hash dedupe.
+            if let Err(e) = self.relay.inner.ack(max_seq).await {
+                eprintln!("tesela-sync-ffi: relay ack({max_seq}) failed: {e}");
+            }
+            *self.inbound_cursor.lock().await = max_seq;
+        }
+
+        Ok(TickInboundRecord {
+            applied,
+            skipped_own,
+            errors,
+            new_cursor_seq: max_seq,
+        })
+    }
+
+    /// Current inbound cursor (relay seq) — `0` means nothing has been
+    /// applied yet this run.
+    pub async fn inbound_cursor_seq(&self) -> i64 {
+        *self.inbound_cursor.lock().await
+    }
+}
+
+/// Outcome of [`SyncCoordinator::tick_inbound`]. Designed to be small
+/// enough to render in a one-line status string.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct TickInboundRecord {
+    /// Envelopes that were decrypted, decoded, and successfully
+    /// applied via the engine.
+    pub applied: u32,
+    /// Envelopes the relay echoed back to us (we authored them
+    /// originally). Cursor still advances over these but the apply is
+    /// skipped.
+    pub skipped_own: u32,
+    /// Envelopes whose apply failed. Logged but don't abort the tick.
+    pub errors: u32,
+    /// Highest relay-assigned seq seen in this batch. Same as the
+    /// updated inbound cursor on a successful tick.
+    pub new_cursor_seq: i64,
 }
 
 /// Outcome of [`SyncCoordinator::tick_outbound`]. Designed to be small

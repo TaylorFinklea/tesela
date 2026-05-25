@@ -749,10 +749,38 @@ public func FfiConverterTypeRelayClientHandle_lower(_ value: RelayClientHandle) 
 public protocol SyncCoordinatorProtocol: AnyObject, Sendable {
     
     /**
+     * Current inbound cursor (relay seq) — `0` means nothing has been
+     * applied yet this run.
+     */
+    func inboundCursorSeq() async  -> Int64
+    
+    /**
      * Current outbound cursor (ntp64) — `None` means nothing has been
      * sent yet this run. Surfaced for the dev smoke UI.
      */
     func outboundCursorNtp() async  -> Int64?
+    
+    /**
+     * Drain incoming envelopes from the relay since the last applied
+     * `seq`, decrypt + decode each, apply via the engine (which
+     * materializes the resulting NoteUpsert/etc into the iOS sandbox
+     * when the engine was opened via [`SyncEngineHandle::open_with_mosaic`]),
+     * then ack the highest applied seq back to the relay.
+     *
+     * Self-echo handling: envelopes whose `from_device == our_device`
+     * are skipped at the apply step but still advance the cursor — the
+     * relay broadcasts to all members including the author, and
+     * re-applying our own writes would burn cycles for no effect.
+     *
+     * Failure modes — same shape as `tick_outbound`:
+     * - Network errors → cursor untouched; next tick retries the same
+     * batch (relay's idempotent storage + engine's content-hash
+     * dedupe make this safe).
+     * - Per-envelope apply errors are logged + counted but do NOT
+     * abort the whole tick; bad envelopes from one device shouldn't
+     * stop us from applying good envelopes from another.
+     */
+    func tickInbound() async throws  -> TickInboundRecord
     
     /**
      * Drain locally-recorded ops that the relay hasn't seen yet,
@@ -863,6 +891,28 @@ public convenience init(engine: SyncEngineHandle, relay: RelayClientHandle, grou
 
     
     /**
+     * Current inbound cursor (relay seq) — `0` means nothing has been
+     * applied yet this run.
+     */
+open func inboundCursorSeq()async  -> Int64  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_synccoordinator_inbound_cursor_seq(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_i64,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_i64,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_i64,
+            liftFunc: FfiConverterInt64.lift,
+            errorHandler: nil
+            
+        )
+}
+    
+    /**
      * Current outbound cursor (ntp64) — `None` means nothing has been
      * sent yet this run. Surfaced for the dev smoke UI.
      */
@@ -881,6 +931,43 @@ open func outboundCursorNtp()async  -> Int64?  {
             liftFunc: FfiConverterOptionInt64.lift,
             errorHandler: nil
             
+        )
+}
+    
+    /**
+     * Drain incoming envelopes from the relay since the last applied
+     * `seq`, decrypt + decode each, apply via the engine (which
+     * materializes the resulting NoteUpsert/etc into the iOS sandbox
+     * when the engine was opened via [`SyncEngineHandle::open_with_mosaic`]),
+     * then ack the highest applied seq back to the relay.
+     *
+     * Self-echo handling: envelopes whose `from_device == our_device`
+     * are skipped at the apply step but still advance the cursor — the
+     * relay broadcasts to all members including the author, and
+     * re-applying our own writes would burn cycles for no effect.
+     *
+     * Failure modes — same shape as `tick_outbound`:
+     * - Network errors → cursor untouched; next tick retries the same
+     * batch (relay's idempotent storage + engine's content-hash
+     * dedupe make this safe).
+     * - Per-envelope apply errors are logged + counted but do NOT
+     * abort the whole tick; bad envelopes from one device shouldn't
+     * stop us from applying good envelopes from another.
+     */
+open func tickInbound()async throws  -> TickInboundRecord  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_synccoordinator_tick_inbound(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeTickInboundRecord_lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
     
@@ -1068,7 +1155,12 @@ open class SyncEngineHandle: SyncEngineHandleProtocol, @unchecked Sendable {
 
     
     /**
-     * Open (or create) a SQLite-backed sync engine at the given URL.
+     * Open (or create) a SQLite-backed sync engine at the given URL,
+     * without filesystem materialization. Applied ops land in the
+     * oplog but no `.md` files are written. Useful for headless
+     * engines or tests; **iOS should normally use
+     * [`Self::open_with_mosaic`] instead** so apply ticks
+     * materialize into the iOS app sandbox.
      *
      * `sqlite_url` follows the sqlx convention: `sqlite:/path/to/file`
      * (the leading slash makes it absolute). iOS callers typically
@@ -1085,6 +1177,32 @@ public static func `open`(sqliteUrl: String, deviceIdHex: String)async throws  -
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_constructor_syncenginehandle_open(FfiConverterString.lower(sqliteUrl),FfiConverterString.lower(deviceIdHex)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u64,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u64,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeSyncEngineHandle_lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Like [`Self::open`] but ALSO knows about a mosaic root directory,
+     * so applied ops materialize into `<mosaic_path>/notes/<slug>.md`.
+     * This is the iOS production shape: pass the app sandbox's
+     * Documents/<mosaic-name>/ as `mosaic_path` and the engine takes
+     * care of writing the on-disk notes for the indexer (and the iOS
+     * data layer) to read.
+     *
+     * `mosaic_path` must be an absolute filesystem path; the engine
+     * creates `mosaic_path/notes/` if missing.
+     */
+public static func openWithMosaic(sqliteUrl: String, mosaicPath: String, deviceIdHex: String)async throws  -> SyncEngineHandle  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_constructor_syncenginehandle_open_with_mosaic(FfiConverterString.lower(sqliteUrl),FfiConverterString.lower(mosaicPath),FfiConverterString.lower(deviceIdHex)
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u64,
@@ -1450,6 +1568,104 @@ public func FfiConverterTypePollProbeRecord_lift(_ buf: RustBuffer) throws -> Po
 #endif
 public func FfiConverterTypePollProbeRecord_lower(_ value: PollProbeRecord) -> RustBuffer {
     return FfiConverterTypePollProbeRecord.lower(value)
+}
+
+
+/**
+ * Outcome of [`SyncCoordinator::tick_inbound`]. Designed to be small
+ * enough to render in a one-line status string.
+ */
+public struct TickInboundRecord: Equatable, Hashable {
+    /**
+     * Envelopes that were decrypted, decoded, and successfully
+     * applied via the engine.
+     */
+    public var applied: UInt32
+    /**
+     * Envelopes the relay echoed back to us (we authored them
+     * originally). Cursor still advances over these but the apply is
+     * skipped.
+     */
+    public var skippedOwn: UInt32
+    /**
+     * Envelopes whose apply failed. Logged but don't abort the tick.
+     */
+    public var errors: UInt32
+    /**
+     * Highest relay-assigned seq seen in this batch. Same as the
+     * updated inbound cursor on a successful tick.
+     */
+    public var newCursorSeq: Int64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Envelopes that were decrypted, decoded, and successfully
+         * applied via the engine.
+         */applied: UInt32, 
+        /**
+         * Envelopes the relay echoed back to us (we authored them
+         * originally). Cursor still advances over these but the apply is
+         * skipped.
+         */skippedOwn: UInt32, 
+        /**
+         * Envelopes whose apply failed. Logged but don't abort the tick.
+         */errors: UInt32, 
+        /**
+         * Highest relay-assigned seq seen in this batch. Same as the
+         * updated inbound cursor on a successful tick.
+         */newCursorSeq: Int64) {
+        self.applied = applied
+        self.skippedOwn = skippedOwn
+        self.errors = errors
+        self.newCursorSeq = newCursorSeq
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TickInboundRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTickInboundRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TickInboundRecord {
+        return
+            try TickInboundRecord(
+                applied: FfiConverterUInt32.read(from: &buf), 
+                skippedOwn: FfiConverterUInt32.read(from: &buf), 
+                errors: FfiConverterUInt32.read(from: &buf), 
+                newCursorSeq: FfiConverterInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TickInboundRecord, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.applied, into: &buf)
+        FfiConverterUInt32.write(value.skippedOwn, into: &buf)
+        FfiConverterUInt32.write(value.errors, into: &buf)
+        FfiConverterInt64.write(value.newCursorSeq, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTickInboundRecord_lift(_ buf: RustBuffer) throws -> TickInboundRecord {
+    return try FfiConverterTypeTickInboundRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTickInboundRecord_lower(_ value: TickInboundRecord) -> RustBuffer {
+    return FfiConverterTypeTickInboundRecord.lower(value)
 }
 
 
@@ -1847,7 +2063,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_verify_registration() != 25015) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_inbound_cursor_seq() != 37931) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_outbound_cursor_ntp() != 45049) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_tick_inbound() != 22311) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_tick_outbound() != 26776) {
@@ -1865,7 +2087,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_constructor_synccoordinator_new() != 10024) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_constructor_syncenginehandle_open() != 51190) {
+    if (uniffi_tesela_sync_ffi_checksum_constructor_syncenginehandle_open() != 2821) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_constructor_syncenginehandle_open_with_mosaic() != 11981) {
         return InitializationResult.apiChecksumMismatch
     }
 
