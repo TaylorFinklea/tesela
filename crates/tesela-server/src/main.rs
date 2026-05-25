@@ -3,6 +3,7 @@ mod notifications;
 mod reminders;
 mod routes;
 mod state;
+mod sync_relay;
 
 use anyhow::Result;
 use clap::Parser;
@@ -328,7 +329,11 @@ async fn main() -> Result<()> {
         group_identity,
         display_name,
         public_url,
+        relay_url: load_relay_url_from_config(&mosaic),
+        // Brought up below if config has `[sync.relay] url`.
+        relay: None,
     };
+    let app_state = bring_up_relay_if_configured(app_state, &mosaic).await;
     let router = routes::build(app_state);
 
     info!("tesela-server listening on http://{}", addr);
@@ -686,6 +691,89 @@ fn resolve_bind_addr() -> String {
         }
     }
     ServerConfig::default().bind
+}
+
+/// Read the configured relay URL from the mosaic's `config.toml`.
+fn load_relay_url_from_config(mosaic: &std::path::Path) -> Option<String> {
+    let cfg = load_config(mosaic);
+    cfg.sync.relay.map(|r| r.url)
+}
+
+/// If `[sync.relay] url = "…"` is configured, build a `RelayClient`,
+/// run register-or-recover + verify-registration, attach a
+/// `RelayHandle` to `AppState`, and spawn the periodic
+/// `sync_relay::tick` daemon. Hijack errors during `verify` are
+/// surfaced via `RelayState.last_error` (no panic) so the web
+/// settings page can show the user what went wrong.
+async fn bring_up_relay_if_configured(
+    mut state: state::AppState,
+    mosaic: &std::path::Path,
+) -> state::AppState {
+    let Some(url) = state.relay_url.clone() else {
+        return state;
+    };
+    let url = match reqwest::Url::parse(&url) {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!("relay URL `{}` is not a valid URL: {}", url, e);
+            return state;
+        }
+    };
+    let ident = state.group_identity.read().await.clone();
+    let device = state.sync_engine.device();
+    let client = std::sync::Arc::new(
+        tesela_sync::transport::relay::RelayClient::new(
+            url.clone(),
+            ident.group_id,
+            device,
+            ident.group_key.clone(),
+        ),
+    );
+    let persisted = sync_relay::RelayState::load(mosaic).await;
+    let handle = sync_relay::RelayHandle {
+        url: url.to_string(),
+        client: client.clone(),
+        state: std::sync::Arc::new(tokio::sync::RwLock::new(persisted)),
+        mosaic_root: mosaic.to_path_buf(),
+    };
+
+    // Attempt one-shot bring-up; failure is recoverable on the next tick.
+    if let Err(e) = sync_relay::bring_up(&handle).await {
+        tracing::warn!("relay bring-up: {} (will retry on tick)", e);
+        let mut s = handle.state.write().await;
+        s.last_error = Some(e);
+        let _ = s.save(mosaic).await;
+        drop(s);
+    } else {
+        tracing::info!("relay: registered + verified at {}", url);
+    }
+
+    // Spawn the periodic tick. Single task; runs alongside the LAN
+    // peer-sync daemon. We get the poll interval from config or fall
+    // back to the module default.
+    let poll_interval = load_config(mosaic)
+        .sync
+        .relay
+        .map(|r| std::time::Duration::from_millis(r.poll_interval_ms))
+        .unwrap_or(sync_relay::DEFAULT_POLL_INTERVAL);
+    let tick_handle = handle.clone();
+    let tick_engine = state.sync_engine.clone();
+    let tick_ident = ident.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(poll_interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            ticker.tick().await;
+            if let Err(e) =
+                sync_relay::tick(&tick_engine, &tick_ident, &tick_handle).await
+            {
+                tracing::debug!("relay tick: {e}");
+            }
+        }
+    });
+
+    state.relay = Some(handle);
+    state
 }
 
 fn load_config(mosaic: &std::path::Path) -> Config {

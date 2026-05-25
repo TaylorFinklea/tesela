@@ -4,6 +4,7 @@ mod data_ops;
 mod history;
 mod notes;
 pub mod peer_sync;
+mod relay;
 mod search;
 mod search_query;
 mod sync;
@@ -68,6 +69,8 @@ pub fn build(state: AppState) -> Router {
         .route("/sync/peer/envelope", post(peer_sync::receive_envelope))
         .route("/sync/peer/now", post(peer_sync::sync_now))
         .route("/sync/peer/status", get(peer_sync::status))
+        // WAN relay status — drives the web settings page.
+        .route("/sync/relay/status", get(relay::status))
         // Phase 2.1 mDNS LAN discovery
         .route("/sync/peer/discovered", get(peer_sync::discovered))
         // Phase 2.2 pairing-code key exchange

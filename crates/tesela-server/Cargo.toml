@@ -12,6 +12,8 @@ bench = false
 
 [dependencies]
 tesela-core = { path = "../tesela-core" }
+# Hex encode/decode for relay status output (device ids in warnings).
+hex = "0.4"
 tesela-backup = { path = "../tesela-backup" }
 tesela-sync = { path = "../tesela-sync" }
 tempfile = { workspace = true }

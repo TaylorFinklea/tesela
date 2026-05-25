@@ -151,6 +151,12 @@ pub fn encode_pairing_code(
         device_id: DeviceId::from_bytes(device_id),
         url,
         display_name,
+        // The iOS FFI entry point doesn't yet take a relay URL; the
+        // host-side path (`tesela-server` peer_sync handler) populates
+        // this from `[sync.relay]` config. iOS UniFFI gains this
+        // parameter when iOS becomes a sync peer (deferred multi-week
+        // track); for now iOS generates LAN-only pairing codes.
+        relay_url: None,
         version: tesela_sync::crypto::pairing::PAIRING_CODE_VERSION,
     };
     encode_pairing_code_inner(&code).map_err(FfiSyncError::from)

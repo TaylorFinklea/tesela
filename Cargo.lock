@@ -4308,6 +4308,7 @@ dependencies = [
  "clap",
  "criterion",
  "futures",
+ "hex",
  "hound",
  "if-addrs",
  "libc",

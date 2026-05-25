@@ -27,6 +27,43 @@ pub struct Config {
     /// tesela-server runtime configuration
     #[serde(default)]
     pub server: ServerConfig,
+    /// Sync — relay + future LAN/internet settings.
+    #[serde(default)]
+    pub sync: SyncConfig,
+}
+
+/// Sync-related configuration. Currently only the optional WAN relay;
+/// the LAN/mDNS path is enabled by default and doesn't need
+/// configuration. Future internet-P2P direct addressing lives here too
+/// when that lands.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SyncConfig {
+    /// Optional relay configuration. `None` (i.e. `[sync.relay]`
+    /// section absent) means LAN-only sync.
+    #[serde(default)]
+    pub relay: Option<RelayConfig>,
+}
+
+/// `[sync.relay]` block. Minimum field is the URL; everything else
+/// has working defaults. Operators usually only set `url` here +
+/// rotate `admin_token` out-of-band when they want hijack recovery
+/// capability.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayConfig {
+    /// Reachable base URL of the relay (scheme + host + port). Joining
+    /// devices embed this in their pairing codes so peers auto-
+    /// configure the same relay. Example: `https://relay.your-domain.com`
+    /// or `http://docker-host.tailnet:8484`.
+    pub url: String,
+    /// How often the desktop polls the relay for new envelopes, in
+    /// milliseconds. Defaults to 5000 (5 s). Lower = more responsive
+    /// + more traffic; higher = quieter + more latency.
+    #[serde(default = "default_poll_interval_ms")]
+    pub poll_interval_ms: u64,
+}
+
+fn default_poll_interval_ms() -> u64 {
+    5_000
 }
 
 /// General application settings

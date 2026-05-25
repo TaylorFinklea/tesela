@@ -36,6 +36,16 @@ pub struct AppState {
     /// The reachable HTTP URL we hand to joining devices in pairing
     /// codes. `http://<lan-ip-or-bind-host>:<port>`.
     pub public_url: String,
+    /// URL of the user-configured sync relay, if any. `None` means
+    /// LAN-only sync. When set, pairing codes carry this URL so a
+    /// joining device auto-configures the same relay without an
+    /// extra copy-paste step. Populated from `[sync.relay] url = "…"`
+    /// in the mosaic config (stage 5b).
+    pub relay_url: Option<String>,
+    /// Live runtime handle for the relay daemon — `None` when no
+    /// relay is configured OR bring-up failed (the daemon retries
+    /// on its tick). The status endpoint reads through this.
+    pub relay: Option<crate::sync_relay::RelayHandle>,
 }
 
 /// Events broadcast to WebSocket clients when notes change.

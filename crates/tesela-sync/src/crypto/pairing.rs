@@ -38,20 +38,36 @@ pub struct PairingCode {
     pub url: String,
     /// User-visible display name of the inviter.
     pub display_name: String,
+    /// Optional URL of a sync relay the joiner should also configure.
+    /// `None` means LAN-only sync; `Some` propagates the inviter's
+    /// relay config to the joiner so cross-network sync works without
+    /// a second copy-paste step. Joiner verifies the relay's
+    /// registration intent locally (see `RelayClient::verify_registration`)
+    /// before trusting traffic, so a malicious URL embedded in a leaked
+    /// pairing code surfaces as a loud hijack error, not silent
+    /// compromise. Added in v2.
+    #[serde(default)]
+    pub relay_url: Option<String>,
     /// Protocol version. Bumps when the payload schema changes.
     pub version: u8,
 }
 
-/// Current pairing-code format version.
-pub const PAIRING_CODE_VERSION: u8 = 1;
+/// Current pairing-code format version. v2 adds the optional
+/// `relay_url` field. Older code-readers see v2 codes and fail
+/// with a clear "newer than local" message; v1 codes (pre-launch
+/// only, no production deployment) no longer round-trip.
+pub const PAIRING_CODE_VERSION: u8 = 2;
 
 impl PairingCode {
     /// Build a pairing code for the local device to share with a joiner.
+    /// `relay_url`: `None` for LAN-only sync; `Some(url)` so the joiner
+    /// auto-configures the same relay.
     pub fn from_local(
         ident: &GroupIdentity,
         device_id: DeviceId,
         url: String,
         display_name: String,
+        relay_url: Option<String>,
     ) -> Self {
         Self {
             group_id: ident.group_id,
@@ -59,6 +75,7 @@ impl PairingCode {
             device_id,
             url,
             display_name,
+            relay_url,
             version: PAIRING_CODE_VERSION,
         }
     }
@@ -109,6 +126,7 @@ mod tests {
             device_id: DeviceId::from_bytes([0xc3; 16]),
             url: "http://192.168.1.10:7474".to_string(),
             display_name: "Tay's Laptop".to_string(),
+            relay_url: None,
             version: PAIRING_CODE_VERSION,
         }
     }
@@ -155,9 +173,32 @@ mod tests {
             DeviceId::from_bytes([0xee; 16]),
             "http://h:1".into(),
             "h".into(),
+            None,
         );
         assert_eq!(code.group_id, ident.group_id);
         assert_eq!(&code.group_key_bytes, ident.group_key.as_bytes());
+        assert_eq!(code.relay_url, None);
+    }
+
+    #[test]
+    fn from_local_carries_relay_url_when_provided() {
+        let ident = GroupIdentity {
+            group_id: GroupId::from_bytes([0x77; 16]),
+            group_key: GroupKey::from_bytes([0x88; 32]),
+        };
+        let relay = "https://relay.example.com".to_string();
+        let code = PairingCode::from_local(
+            &ident,
+            DeviceId::from_bytes([0xee; 16]),
+            "http://h:1".into(),
+            "h".into(),
+            Some(relay.clone()),
+        );
+        assert_eq!(code.relay_url.as_deref(), Some(relay.as_str()));
+        // Round-trip through encode/decode preserves the relay URL —
+        // the joiner gets it without needing a separate paste step.
+        let back = decode(&encode(&code).unwrap()).unwrap();
+        assert_eq!(back.relay_url, code.relay_url);
     }
 
     #[test]

@@ -385,6 +385,7 @@ pub async fn get_pairing_code(
         device,
         s.public_url.clone(),
         s.display_name.clone(),
+        s.relay_url.clone(),
     );
     let encoded = encode_pairing_code(&code)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("encode: {e}")))?;
