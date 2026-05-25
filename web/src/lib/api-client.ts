@@ -192,6 +192,20 @@ export const api = {
   // `[sync.relay]` is set in the mosaic config; otherwise the
   // URL, cursors, last poll/put timestamps, and last error string.
   syncRelayStatus: () => get<RelayStatus>("/sync/relay/status"),
+  /** Read the persisted `[sync.relay]` block. Both fields are `null`
+   *  when the mosaic is LAN-only. */
+  syncRelayGetConfig: () => get<RelayConfigDto>("/sync/relay/config"),
+  /** Persist a new `[sync.relay]` block to the mosaic's config.toml.
+   *  Takes effect on next server boot — the response carries
+   *  `restart_required: true` so the UI can offer a one-click restart. */
+  syncRelayPutConfig: (cfg: { url: string; poll_interval_ms: number }) =>
+    put<RelayConfigPutResponse>("/sync/relay/config", cfg),
+  /** Remove the `[sync.relay]` block (reverts to LAN-only on next boot). */
+  syncRelayDeleteConfig: () =>
+    fetch(`${BASE_URL}/sync/relay/config`, { method: "DELETE" }).then(async (r) => {
+      if (!r.ok) throw new ApiError(r.status, await r.text(), `${BASE_URL}/sync/relay/config`);
+      return (await r.json()) as RelayConfigPutResponse;
+    }),
   syncNow: () => post<SyncNowResponse>("/sync/peer/now", {}),
   syncGetPairingCode: () => get<SyncPairingCode>("/sync/peer/pairing-code"),
   syncPairWithCode: (code: string) =>
@@ -446,6 +460,22 @@ export interface RelayStatus {
   /** Most recent error string from poll/put/register, cleared on
    *  next successful tick. `null` when healthy. */
   last_error: string | null;
+}
+
+/** Persisted `[sync.relay]` block as returned by GET / accepted by PUT.
+ *  Both fields are `null` on GET when the mosaic has no relay block. */
+export interface RelayConfigDto {
+  url: string | null;
+  poll_interval_ms: number | null;
+}
+
+/** PUT/DELETE response — echoes what was saved plus a hint that the
+ *  caller should restart the server for the change to take effect. */
+export interface RelayConfigPutResponse {
+  url: string | null;
+  poll_interval_ms: number | null;
+  /** Always `true` — relay handle is established at boot. */
+  restart_required: boolean;
 }
 /** Per-peer outcome from `POST /sync/peer/now`. Server returns a map keyed
  *  by device_id_hex; each entry has `applied` on success or `error` on

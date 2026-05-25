@@ -71,6 +71,12 @@ pub fn build(state: AppState) -> Router {
         .route("/sync/peer/status", get(peer_sync::status))
         // WAN relay status — drives the web settings page.
         .route("/sync/relay/status", get(relay::status))
+        .route(
+            "/sync/relay/config",
+            get(relay::get_config)
+                .put(relay::put_config)
+                .delete(relay::delete_config),
+        )
         // Phase 2.1 mDNS LAN discovery
         .route("/sync/peer/discovered", get(peer_sync::discovered))
         // Phase 2.2 pairing-code key exchange
