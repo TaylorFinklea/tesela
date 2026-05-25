@@ -1709,6 +1709,22 @@ final class MockMosaicService: ObservableObject, MosaicService {
         """
     }
 
+    /// Read-only relay status from the configured Mac server. iOS
+    /// itself isn't a sync peer yet (UniFFI track is the deferred
+    /// multi-week work), so this surfaces the picture from the Mac's
+    /// perspective: "your Mac is paired with relay X, last poll N
+    /// seconds ago." Returns `nil` when the server isn't reachable
+    /// or when there's no `/sync/relay/status` endpoint on the other
+    /// end (i.e. older server version).
+    func fetchRelayStatus() async -> RelayStatusInfo? {
+        guard case .http(let baseURL) = currentBackend else { return nil }
+        do {
+            return try await httpGet("/sync/relay/status", baseURL: baseURL)
+        } catch {
+            return nil
+        }
+    }
+
     /// Run an arbitrary query DSL via `POST /search/query`. The Inbox
     /// surface uses a saved filter's DSL (fetched via `fetchInboxDsl`)
     /// or `defaultInboxDsl()` for first-run. Returns an empty result on

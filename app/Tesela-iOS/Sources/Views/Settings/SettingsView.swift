@@ -83,7 +83,7 @@ struct SettingsView: View {
                 // Sync
                 Section("Sync") {
                     NavigationLink {
-                        SyncSettingsView(syncState: syncState)
+                        SyncSettingsView(syncState: syncState, mosaic: mosaic)
                     } label: {
                         LabeledContent("Sync") {
                             HStack(spacing: 6) {

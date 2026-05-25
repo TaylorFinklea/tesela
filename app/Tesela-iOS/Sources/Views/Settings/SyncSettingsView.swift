@@ -8,8 +8,11 @@ import UIKit
 /// relay / source-of-truth roles. Per decision #4.
 struct SyncSettingsView: View {
     @ObservedObject var syncState: SyncState
+    @ObservedObject var mosaic: MockMosaicService
     @State private var simulatedOffline: Bool = false
     @State private var simulatedPending: Bool = false
+    @State private var relayStatus: RelayStatusInfo? = nil
+    @State private var relayLoaded: Bool = false
 
     /// User-facing name for this device. Advertised to peers once the
     /// sync backend is wired (see roadmap "iOS sync"); for now it's
@@ -22,6 +25,7 @@ struct SyncSettingsView: View {
 
     var body: some View {
         Form {
+            relaySection
             deviceNameSection
 
             if simulatedOffline {
@@ -92,6 +96,143 @@ struct SyncSettingsView: View {
         .background(theme.bg)
         .navigationTitle("Sync")
         .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await refreshRelayStatus()
+        }
+        .refreshable {
+            await refreshRelayStatus()
+        }
+    }
+
+    // ── WAN relay (read-only — surfaces the Mac's relay state) ──────────
+
+    /// iOS isn't a sync peer yet (UniFFI track is multi-week work);
+    /// this surface is intentionally read-only. It calls
+    /// `GET /sync/relay/status` on the configured Mac backend so the
+    /// user can see "your Mac is paired with relay X, last poll N
+    /// seconds ago" — the architecture is honest about the fact that
+    /// iOS still talks to the Mac over HTTP, and the Mac is what
+    /// talks to the relay.
+    @ViewBuilder
+    private var relaySection: some View {
+        Section {
+            if !relayLoaded {
+                HStack(spacing: 10) {
+                    ProgressView().scaleEffect(0.7)
+                    Text("Checking the Mac for relay status…")
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.fgFaint)
+                }
+            } else if relayStatus == nil {
+                relayUnreachable
+            } else if let status = relayStatus, !status.configured {
+                relayUnconfigured
+            } else if let status = relayStatus {
+                relayConfigured(status)
+            }
+        } header: {
+            Text("WAN Relay")
+        } footer: {
+            Text("iOS itself isn't a sync peer yet — this iPhone talks to your Mac over HTTP. When the Mac is configured with a relay, edits from other devices land on the Mac through that relay, then flow to you. Future iOS sync (native peer) is on the roadmap.")
+                .font(.caption2)
+        }
+    }
+
+    private var relayUnreachable: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "cloud.slash")
+                    .foregroundStyle(theme.fgFaint)
+                Text("Can't reach the Mac server")
+                    .font(.system(size: 13, weight: .medium))
+            }
+            Text("Check the backend URL in Settings → Backend, or that the Mac's tesela-server is running.")
+                .font(.system(size: 11))
+                .foregroundStyle(theme.fgFaint)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var relayUnconfigured: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "minus.circle")
+                    .foregroundStyle(theme.fgFaint)
+                Text("Mac is LAN-only — no relay configured")
+                    .font(.system(size: 13, weight: .medium))
+            }
+            Text("To enable cross-network sync, add a `[sync.relay]` block to the Mac's `.tesela/config.toml`. See `crates/tesela-relay/DEPLOY.md` in the repo for the Docker recipe.")
+                .font(.system(size: 11))
+                .foregroundStyle(theme.fgFaint)
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func relayConfigured(_ s: RelayStatusInfo) -> some View {
+        let healthy = s.last_error == nil && s.last_poll_at != nil
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(s.last_error != nil
+                        ? theme.typeTask
+                        : (s.last_poll_at != nil ? theme.typeQuery : theme.accentPrimary))
+                    .frame(width: 8, height: 8)
+                Text(healthy ? "Connected" : (s.last_error != nil ? "Error" : "Configured"))
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(healthy ? theme.typeQuery : (s.last_error != nil ? theme.typeTask : theme.fgDefault))
+            }
+            if let url = s.url {
+                Text(url)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(theme.fgFaint)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+            if let err = s.last_error {
+                Text(err)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(theme.typeTask)
+                    .padding(8)
+                    .background(theme.typeTask.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                relayMetricRow("Registered", relativeTime(s.registered_at))
+                relayMetricRow("Last poll", relativeTime(s.last_poll_at))
+                relayMetricRow("Last put", relativeTime(s.last_put_at))
+                relayMetricRow("Inbound seq", "\(s.inbound_cursor)")
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func relayMetricRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 11))
+                .foregroundStyle(theme.fgFaint)
+            Spacer()
+            Text(value)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(theme.fgSubtle)
+        }
+    }
+
+    private func relativeTime(_ unixSecs: Int64?) -> String {
+        guard let unixSecs else { return "never" }
+        let ageSec = max(0, Int64(Date().timeIntervalSince1970) - unixSecs)
+        if ageSec < 60 { return "\(ageSec)s ago" }
+        let min = ageSec / 60
+        if min < 60 { return "\(min)m ago" }
+        let hr = min / 60
+        if hr < 24 { return "\(hr)h ago" }
+        return Date(timeIntervalSince1970: TimeInterval(unixSecs)).formatted()
+    }
+
+    private func refreshRelayStatus() async {
+        relayStatus = await mosaic.fetchRelayStatus()
+        relayLoaded = true
     }
 
     // ── This device ─────────────────────────────────────────────────────
