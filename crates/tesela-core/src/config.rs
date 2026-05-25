@@ -12,14 +12,19 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     /// General application settings
+    #[serde(default)]
     pub general: GeneralConfig,
     /// Storage configuration
+    #[serde(default)]
     pub storage: StorageConfig,
     /// Database configuration
+    #[serde(default)]
     pub database: DatabaseConfig,
     /// Editor configuration
+    #[serde(default)]
     pub editor: EditorConfig,
     /// Search configuration
+    #[serde(default)]
     pub search: SearchConfig,
     /// Backup configuration (Phase 13)
     #[serde(default)]
