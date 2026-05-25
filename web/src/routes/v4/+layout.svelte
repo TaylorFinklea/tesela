@@ -165,16 +165,27 @@
         clearCtrlW();
       }
 
-      // `:` always opens v5 ex-mode, even when cm-editor has focus and
-      // cm-vim would normally claim it for its own ex commands. v5's verb
-      // set is the only one that knows about ambient buffers / derived
-      // splits / etc., so vim's `:w` style commands aren't useful here.
-      // Document this in the help overlay if a user complains.
+      // `:` opens v5 ex-mode, even when cm-editor has focus (cm-vim
+      // would otherwise claim it for its own ex commands; v5's verb set
+      // is the only one that knows about ambient buffers / derived
+      // splits / etc., so vim's `:w` style commands aren't useful here).
+      // BUT — let it through for plain HTML inputs / textareas /
+      // contenteditables that aren't a cm-editor, so users can actually
+      // type colons into settings fields (relay URL, etc.).
       if (!mod && !e.altKey && !e.ctrlKey && e.key === ":") {
-        e.preventDefault();
-        e.stopPropagation();
-        openColonMode();
-        return;
+        const t = e.target as HTMLElement | null;
+        const inCmEditor = !!t?.closest?.(".cm-editor");
+        const inPlainEntry =
+          !inCmEditor &&
+          (t?.tagName === "INPUT" ||
+            t?.tagName === "TEXTAREA" ||
+            !!t?.isContentEditable);
+        if (!inPlainEntry) {
+          e.preventDefault();
+          e.stopPropagation();
+          openColonMode();
+          return;
+        }
       }
 
       // Space opens the leader chord menu when NOT in a text entry. Inside
