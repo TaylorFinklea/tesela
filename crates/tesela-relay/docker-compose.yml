@@ -1,0 +1,63 @@
+# Example docker-compose for self-hosting `tesela-relay`.
+#
+# Quick start:
+#   1. cp .env.example .env  # then edit and set TESELA_RELAY_ADMIN_TOKEN
+#   2. docker compose up -d --build
+#   3. visit http://<host>:8484/ — should return {"status":"ok",...}
+#
+# Production: front with TLS termination (Caddy, Cloudflare Tunnel,
+# whatever you already have) since the relay speaks plain HTTP. See
+# DEPLOY.md for a recommended Cloudflare Tunnel recipe.
+
+services:
+  tesela-relay:
+    build:
+      # Build from the repo root so the Dockerfile can `COPY crates/`.
+      # Point compose at this file from the repo root with:
+      #   docker compose -f crates/tesela-relay/docker-compose.yml up -d
+      context: ../..
+      dockerfile: crates/tesela-relay/Dockerfile
+    image: tesela-relay:latest
+    container_name: tesela-relay
+    restart: unless-stopped
+    ports:
+      # Bind to localhost only if you're fronting with a reverse proxy
+      # on the same host: change to `127.0.0.1:8484:8484`. Bind to all
+      # interfaces (the default below) when iOS / a second laptop on
+      # the LAN needs to reach it directly.
+      - "8484:8484"
+    environment:
+      # Admin token enables `DELETE /admin/groups/{id}/register` for
+      # hijack-recovery. Pick a long random string and DO NOT commit
+      # it. Empty = admin endpoints disabled (still safe; only the
+      # recovery hatch is unavailable).
+      TESELA_RELAY_ADMIN_TOKEN: "${TESELA_RELAY_ADMIN_TOKEN:?set TESELA_RELAY_ADMIN_TOKEN in .env}"
+      # Max body bytes per PUT — default 1 MiB matches spec; the
+      # client splits larger envelopes into multiple ops.
+      TESELA_RELAY_MAX_BODY: "1048576"
+      # Bind inside the container. Don't change unless you also
+      # change `ports:` above.
+      TESELA_RELAY_BIND: "0.0.0.0:8484"
+      # Where the SQLite store lives inside the container — must be
+      # under the named volume below.
+      TESELA_RELAY_DB: "/data/relay.sqlite"
+      # tracing-subscriber filter. `info` is a good operational
+      # default; `tesela_relay=debug` when troubleshooting.
+      RUST_LOG: "info,tesela_relay=info"
+    volumes:
+      # SQLite + WAL files live here. Back this up like you'd back up
+      # any small SQLite app; losing it just means clients re-register
+      # on next bring-up (idempotent; cursors reset).
+      - relay-data:/data
+    healthcheck:
+      # Mirrors the HEALTHCHECK in the Dockerfile so external tools
+      # see the same liveness signal.
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8484/"]
+      interval: 30s
+      timeout: 3s
+      start_period: 5s
+      retries: 3
+
+volumes:
+  relay-data:
+    name: tesela-relay-data

@@ -1,0 +1,33 @@
+# Keep the build context lean — Docker's `COPY .` pulls everything
+# under the build context and we only need Cargo manifests + source.
+
+# Build artifacts (giant; would invalidate the dep-cache layer).
+target/
+**/target/
+
+# Editor / IDE / VCS metadata.
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Repo docs + plans (not needed in image).
+.docs/
+docs/
+plan/
+notes/
+
+# Frontend / non-relay code (not needed for the relay binary).
+web/
+app/
+
+# Local secrets and runtime state.
+.env
+*.env
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# OS junk.
+.DS_Store
+Thumbs.db
