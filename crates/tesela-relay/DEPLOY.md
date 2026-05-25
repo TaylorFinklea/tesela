@@ -127,16 +127,17 @@ on your home router.
 ### (c) Home Assistant add-on (one-click on HA OS)
 
 If you already run Home Assistant, the relay is packaged as an
-add-on under [`ha-addon/`](ha-addon/). Two-click install:
+add-on under [`home-assistant/tesela-relay/`](../../home-assistant/tesela-relay/).
+Two-click install:
 
 1. HA → **Settings → Add-ons → Add-on Store → ⋮ → Repositories**.
-2. Paste this repo URL; the **Tesela Sync Relay** add-on appears in
-   the store.
+2. Paste `https://github.com/TaylorFinklea/tesela`. The **Tesela Sync
+   Relay** add-on appears in the store under "Tesela Add-ons".
 3. Install → set `admin_token` in the Configuration tab → Start.
 
 Front it with HA's existing **Cloudflared**, **Nginx Proxy Manager**,
-or **Tailscale** add-on for WAN reachability. See
-[`ha-addon/README.md`](ha-addon/README.md) for the full walk-through.
+or **Tailscale** add-on for WAN reachability. Full walk-through:
+[`home-assistant/tesela-relay/DOCS.md`](../../home-assistant/tesela-relay/DOCS.md).
 
 ### (d) Reverse proxy with your own TLS (Caddy / Traefik)
 

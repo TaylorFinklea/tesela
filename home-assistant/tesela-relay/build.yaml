@@ -1,0 +1,12 @@
+# Per-arch base images for the Home Assistant addon build pipeline.
+# Buildx (via .github/workflows/relay-container.yml) passes one of
+# these into the Dockerfile as BUILD_FROM depending on the target arch.
+build_from:
+  amd64: ghcr.io/home-assistant/amd64-base-debian:bookworm
+  aarch64: ghcr.io/home-assistant/aarch64-base-debian:bookworm
+
+labels:
+  org.opencontainers.image.title: "Tesela Sync Relay"
+  org.opencontainers.image.description: "Zero-knowledge relay for Tesela notes sync."
+  org.opencontainers.image.source: "https://github.com/TaylorFinklea/tesela"
+  org.opencontainers.image.licenses: "MIT"
