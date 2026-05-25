@@ -124,7 +124,21 @@ Then your relay URL is `https://relay.yourdomain.com`. Cloudflare
 handles TLS, certificates, and DDoS for you; no inbound port is open
 on your home router.
 
-### (c) Reverse proxy with your own TLS (Caddy / Traefik)
+### (c) Home Assistant add-on (one-click on HA OS)
+
+If you already run Home Assistant, the relay is packaged as an
+add-on under [`ha-addon/`](ha-addon/). Two-click install:
+
+1. HA → **Settings → Add-ons → Add-on Store → ⋮ → Repositories**.
+2. Paste this repo URL; the **Tesela Sync Relay** add-on appears in
+   the store.
+3. Install → set `admin_token` in the Configuration tab → Start.
+
+Front it with HA's existing **Cloudflared**, **Nginx Proxy Manager**,
+or **Tailscale** add-on for WAN reachability. See
+[`ha-addon/README.md`](ha-addon/README.md) for the full walk-through.
+
+### (d) Reverse proxy with your own TLS (Caddy / Traefik)
 
 If you already run a reverse proxy, point a vhost at the relay:
 
@@ -140,7 +154,14 @@ labels work too. Same end result: HTTPS URL pointing at the relay.
 
 ## Step 3 — Configure your desktop
 
-Edit your mosaic's `.tesela/config.toml`:
+The easiest path is the **web UI**: open `tesela-server`'s settings
+page → **Sync → WAN Relay → Configuration**, paste the URL, click
+**Save**, then **Restart server** when prompted. The settings page
+writes `[sync.relay]` into your mosaic's `config.toml` for you and
+the live status line lights up green once the relay handshakes.
+
+If you'd rather hand-edit, drop this into the mosaic's
+`.tesela/config.toml`:
 
 ```toml
 [sync.relay]

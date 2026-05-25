@@ -1,0 +1,18 @@
+# Per-arch base images for the Home Assistant addon build pipeline.
+# HA's builder (`ghcr.io/home-assistant/amd64-builder` etc.) passes
+# the right one into the Dockerfile via the BUILD_FROM ARG.
+# We pick the Debian-flavoured bases so the runtime carries libssl /
+# ca-certificates without extra apk/apt gymnastics, and they line up
+# with the bookworm builder image we use to compile the binary.
+build_from:
+  aarch64: ghcr.io/home-assistant/aarch64-base-debian:bookworm
+  amd64: ghcr.io/home-assistant/amd64-base-debian:bookworm
+  armhf: ghcr.io/home-assistant/armhf-base-debian:bookworm
+  armv7: ghcr.io/home-assistant/armv7-base-debian:bookworm
+  i386: ghcr.io/home-assistant/i386-base-debian:bookworm
+
+labels:
+  org.opencontainers.image.title: "Tesela Sync Relay"
+  org.opencontainers.image.description: "Zero-knowledge relay for Tesela notes sync."
+  org.opencontainers.image.source: "https://github.com/tfinklea/tesela"
+  org.opencontainers.image.licenses: "MIT"
