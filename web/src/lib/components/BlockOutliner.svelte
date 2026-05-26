@@ -510,6 +510,17 @@
     return new Set(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i));
   });
 
+  /** Locally-created block ids have a `:new-<timestamp>` or `:paste-`
+   *  suffix; they exist in `blocks` but not in any server-canonical
+   *  body until the next PUT round-trips back as a WS broadcast. We
+   *  use this to distinguish "in-flight local block" from "remote
+   *  delete" in `applyExternalReparse` — the former must NEVER be
+   *  dropped, the latter is the user's intent. Server-side ids carry
+   *  `<noteId>:<lineNumber>` shape (no `new-` or `paste-` infix). */
+  function isLocalOnlyId(id: string): boolean {
+    return id.includes(":new-") || id.includes(":paste-");
+  }
+
   /** Apply an external body reparse. Extracted from the $effect below
    *  so the deferred-flush timer can call it without re-triggering
    *  the effect with stale dependencies. */
@@ -522,9 +533,28 @@
       history.clear();
       return;
     }
-    const focusedId = blocks[focusedIndex]?.id;
+    // **In-flight new-block protection.** If the focused block has a
+    // local-only id (just created via Enter or paste), it cannot be
+    // in the server-canonical body yet — the PUT carrying it is in
+    // flight or queued behind the debounce. Adopting `reparsed` here
+    // would drop the new block (Daisy reported: "still deletes my new
+    // line block almost instantly"). Skip this reparse entirely; the
+    // next body change after the PUT round-trips will be a no-op
+    // because by then `body === lastSentBody`.
+    const focusedId = blocks[focusedIndex]?.id ?? "";
+    if (isLocalOnlyId(focusedId) && targetBody !== lastSentBody) {
+      // Mark the body we couldn't apply so the deferred timer doesn't
+      // fire on it either. (It'll keep being re-checked as new WS
+      // events arrive and update `body`.)
+      return;
+    }
     const newIdx = focusedId ? reparsed.findIndex((b) => b.id === focusedId) : -1;
     if (newIdx === -1) {
+      // Focused block disappeared. If it was a local-only id we
+      // already returned above; reaching here means the server-canonical
+      // block is genuinely gone (remote delete, or local delete whose
+      // server round-trip just landed). Keep the cursor visible by
+      // clamping the old index into the new list.
       blocks = reparsed;
       if (reparsed.length === 0) focusedIndex = null;
       else focusedIndex = Math.min(Math.max(focusedIndex, 0), reparsed.length - 1);
