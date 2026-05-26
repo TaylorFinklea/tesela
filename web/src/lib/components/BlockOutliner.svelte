@@ -528,7 +528,17 @@
     // reparsed list, swap blocks in place.
     const focusedId = blocks[focusedIndex]?.id;
     const newIdx = focusedId ? reparsed.findIndex((b) => b.id === focusedId) : -1;
-    if (newIdx === -1) return; // focused block vanished — keep current state
+    if (newIdx === -1) {
+      // Focused block was deleted remotely (e.g. iOS dropped it). The
+      // earlier behaviour was to skip the reparse entirely — which left
+      // the web view stuck on stale content until the user refreshed.
+      // Accept the new state and drop the focus instead; the user
+      // re-focuses by clicking back into a block.
+      blocks = reparsed;
+      focusedIndex = null;
+      history.clear();
+      return;
+    }
     blocks = reparsed;
     if (newIdx !== focusedIndex) focusedIndex = newIdx;
     // External body change wipes our snapshots — they reference block IDs

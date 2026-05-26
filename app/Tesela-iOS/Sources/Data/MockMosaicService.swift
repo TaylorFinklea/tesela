@@ -525,28 +525,30 @@ final class MockMosaicService: ObservableObject, MosaicService {
             loadedLinks[id] = []
             pageLoadStates[id] = .ready
         case .http(let baseURL):
-            // HTTP-first with a fast local fallback. Earlier iterations
-            // did local-first + HTTP overlay, which raced: local (often
-            // a few seconds stale until the relay tick caught up)
-            // rendered first, then HTTP overlaid the fresher Mac
-            // content, then the next `onAppliedChanges` refresh fired
-            // and the cycle repeated → visible flicker between states.
+            // HTTP-first with a 5s deadline (matches `refresh(from:)`).
+            // Tailscale-routed cellular requests routinely take 2-3s; a
+            // tighter cutoff would falsely fail on a working network.
             //
-            // The new shape: try HTTP with a tight timeout. If Mac is
-            // reachable (LAN, Tailscale), we get the fresh content in
-            // ~50ms — no flicker. If Mac is unreachable (cellular
-            // without Tailscale), we fall back to the local sandbox
-            // after the timeout — still fast (~1.5s wait + render).
-            // The RelayTicker keeps local current in the background;
-            // there's no need to double-render once we've committed.
+            // If a page-load fails (timeout OR real error) AND we
+            // already have blocks loaded for this page (e.g. pull-to-
+            // refresh while viewing), keep what we have instead of
+            // replacing it with potentially-older local content. The
+            // RelayTicker keeps the sandbox close to current, so the
+            // gap between "in-memory" and "local file" is usually
+            // seconds, but in-memory was confirmed-fresh-last-time.
+            let hadDataBefore = (loadedPageBlocks[id]?.isEmpty == false)
             let httpResult: APINote? = await fetchNoteWithTimeout(
                 id: id,
                 baseURL: baseURL,
-                seconds: 1.5
+                seconds: 5
             )
             if let note = httpResult {
                 loadedPageBlocks[id] = parseBlocks(from: note.body, noteId: id)
                 loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
+                pageLoadStates[id] = .ready
+            } else if hadDataBefore {
+                // Keep existing render; just mark .ready so the spinner
+                // settles. Don't overwrite with stale local.
                 pageLoadStates[id] = .ready
             } else if let local = readLocalNote(id: id) {
                 loadedPageBlocks[id] = parseBlocks(from: local.body, noteId: id)
@@ -614,16 +616,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
             resetToSeed()
             connection = .idle
         case .http(let baseURL):
-            // HTTP-first with a tight 1.5s deadline. If Mac is
-            // reachable we get the fresh state immediately and avoid
-            // the local→HTTP overlay flicker. If Mac is unreachable
-            // we fall through to the local sandbox after the deadline.
-            // The RelayTicker keeps the sandbox close to current; one
-            // render either way (no double-paint).
+            // HTTP-first with a 5-second deadline. Tailscale-routed
+            // cellular requests can run 2-3s round-trip; we need to
+            // give them room to complete or every pull-down on a
+            // marginal network replaces good in-memory data with
+            // stale local-sandbox data. The local-fallback path
+            // below guards against THAT by only firing when the
+            // in-memory state is empty.
+            let hadDataBefore = !todayBlocks.isEmpty
             connection = .connecting
             do {
                 let daily: APINote = try await fetchOrTimeout(
-                    "/notes/daily", baseURL: baseURL, seconds: 1.5
+                    "/notes/daily", baseURL: baseURL, seconds: 5
                 )
                 let notes: [APINote] = try await httpGet("/notes?limit=200", baseURL: baseURL)
                 let yesterdayNote: APINote? = (try? await fetchYesterdayDaily(baseURL: baseURL))
@@ -656,8 +660,20 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     .map { RecentEntry(id: $0.id, title: $0.title, at: $0.edited) }
                 connection = .ready
             } catch {
-                // HTTP timed out or failed — fall back to the local
-                // sandbox. Single render either way.
+                // HTTP timed out or failed.
+                //   * If we already have data on screen (pull-down
+                //     refresh while a successful HTTP result is
+                //     already rendered), DO NOT overwrite it with
+                //     potentially-older local. The user keeps seeing
+                //     correct content; status flips to .ready since
+                //     we're not actually broken (just slow).
+                //   * Only fall back to local when in-memory is empty
+                //     (cold launch or backend swap), so the user sees
+                //     something rather than nothing.
+                if hadDataBefore {
+                    connection = .ready
+                    return
+                }
                 if applyLocalRefreshFallback() {
                     connection = .ready
                     return
