@@ -1,6 +1,20 @@
 # Current State
 
-*Last updated: 2026-05-25 evening (iOS Path B — full producer + consumer + local-first reads end-to-end; HA addon shipped)*
+*Last updated: 2026-05-25 late evening (iOS Path B fully complete + 4-feature overnight push: Settings honesty, WAN hardening, local search/backlinks, Cloudflare Worker port)*
+
+## Overnight session deliverables (4 features)
+
+While Taylor slept I shipped these in order:
+
+1. **iOS Settings UX honesty pass** (`e7458b4`). Removed 367 lines of lies (mock peer-list saying "3 of 3 reachable", non-functional Strategy/Conflict toggles, simulated-offline debug). Added real "This iPhone" + "Mac" relay panels driven by RelayTicker @Published state. The Settings → Sync surface now reflects truth.
+
+2. **WAN sync hardening** (`16072cd`). RelayTicker now persists inbound + outbound cursors across launches via UserDefaults (so cold start doesn't re-poll the entire relay history). Exponential backoff on consecutive errors (sleep doubles per failure up to ~60s cap; resets on success). UI shows "Backing off — N consecutive failures" alongside the error so users distinguish "still trying" from "permanently stuck". Two new FFI methods (`set_inbound_cursor_seq`, `set_outbound_cursor_ntp`) with monotonic-clamping so corrupted UserDefaults can't move us backwards.
+
+3. **iOS local-first search + backlinks** (`2fe20c6`). `MockMosaicService.runSearch` is now HTTP-first with 2s deadline + local-sandbox-scan fallback. `loadPage` backlinks are HTTP-first with 1.5s deadline + local-scan fallback (matches explicit `[[slug]]` references). iOS is now fully usable offline: open daily, search notes, follow backlinks, edit + create — all without Mac being reachable. Outgoing links + tag pages still HTTP-only (not on critical path).
+
+4. **Cloudflare Worker port** (`17d8984`). Full TypeScript Worker implementation under `cloudflare-relay/`. Per-group Durable Object holds SQLite state (registration, ops, device_seen) + in-memory nonce LRU. Same wire protocol as `crates/tesela-relay` — clients work against either interchangeably. Wrangler config ready for `wrangler deploy`. Conformance tests NOT yet ported to run against this implementation; treat as beta until Taylor deploys + smokes it. README has full deploy + threat-model + operating instructions.
+
+## Earlier in the same session (2026-05-25 evening)
 
 ## Where we left off (2026-05-25 evening)
 
