@@ -1500,6 +1500,21 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 break
             }
         }
+        // Swift task cancellation — fires when `fetchOrTimeout`
+        // cancels the losing branch of its TaskGroup race, or when
+        // SwiftUI tears down a `.task` modifier mid-flight. Neither
+        // is a real connection failure; the next tick / next refresh
+        // will retry without the user needing to know.
+        if error is CancellationError {
+            return
+        }
+        // NSError wrapper around the above — happens when URLSession's
+        // cancellation surfaces through a Decodable error path that
+        // bridges Swift errors into NSError. Same treatment.
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
+            return
+        }
         connection = .failed(humanizeError(error, host: host))
     }
 

@@ -78,6 +78,15 @@ final class RelayTicker: ObservableObject {
     /// cursors over the new one.
     private static let inboundCursorKey = "relay.inboundCursorSeq"
     private static let outboundCursorKey = "relay.outboundCursorNtp"
+    /// Cached pairing code (the long base64url blob from
+    /// `/sync/peer/pairing-code`). Once we've fetched this from the Mac
+    /// successfully, we reuse it forever — it encodes the stable group
+    /// identity + relay URL, none of which changes across sessions.
+    /// Without the cache, every coordinator rebuild after a tick error
+    /// required Mac to be reachable over direct HTTP, which made the
+    /// relay (whose whole purpose is to NOT need Mac reachable!)
+    /// uselessly dependent on Mac's network.
+    private static let pairingCodeKey = "relay.cachedPairingCode"
 
     /// Callback fired whenever a tick applied ≥1 incoming op. Hosts
     /// hook this up to nudge the iOS UI to re-render (typically by
@@ -282,11 +291,14 @@ final class RelayTicker: ObservableObject {
         self.engine = opened
     }
 
-    /// (Re)pair: fetch the Mac's pairing code over HTTP, decode it,
-    /// instantiate the relay client + coordinator on top of the
-    /// already-open engine. Engine open is handled separately by
-    /// `openEngineIfNeeded` so a failed pairing doesn't block local
-    /// writes.
+    /// (Re)pair: build the relay client + coordinator on top of the
+    /// already-open engine. **Uses a cached pairing code when one is
+    /// available**, falling back to HTTP only on the very first pair
+    /// or after an auth failure that invalidates the cache. This is
+    /// what makes the relay tick truly resilient to Mac being
+    /// unreachable: once we've paired once on any network we can
+    /// reach Mac on, we can keep talking to the relay forever
+    /// regardless of Mac's HTTP reachability.
     private func ensureCoordinator() async throws {
         guard let mosaic else {
             throw FfiSyncError.Other(message: "ticker not connected to mosaic")
@@ -295,12 +307,46 @@ final class RelayTicker: ObservableObject {
         guard let engine else {
             throw FfiSyncError.Other(message: "engine open failed")
         }
-        let server = try await mosaic.fetchPairingCode()
-        let pairing = try decodePairingCode(code: server.code)
+
+        // Try the cached pairing code first. If we have one, the
+        // path below skips the Mac HTTP fetch entirely.
+        let cached = UserDefaults.standard.string(forKey: Self.pairingCodeKey)
+        do {
+            let codeStr: String
+            if let cached {
+                codeStr = cached
+            } else {
+                // No cache yet — must fetch from Mac. This is the only
+                // network call that requires Mac to be HTTP-reachable.
+                let server = try await mosaic.fetchPairingCode()
+                codeStr = server.code
+            }
+            try await buildCoordinator(engine: engine, codeStr: codeStr)
+            // Survived the build → cache the code for future ticks.
+            if cached == nil {
+                UserDefaults.standard.set(codeStr, forKey: Self.pairingCodeKey)
+            }
+        } catch {
+            // If the cached code is stale (group rotated, auth_key
+            // mismatch, etc.), nuke it and let the next tick refetch
+            // from Mac. Don't recurse here — surface the error and
+            // wait for the next tick so we don't infinitely retry on
+            // a Mac that's actually unreachable.
+            if cached != nil {
+                UserDefaults.standard.removeObject(forKey: Self.pairingCodeKey)
+            }
+            throw error
+        }
+    }
+
+    /// Inner half of `ensureCoordinator`: decode `codeStr`, build the
+    /// relay client + coordinator, restore persisted cursors. Pure —
+    /// no HTTP to Mac.
+    private func buildCoordinator(engine: SyncEngineHandle, codeStr: String) async throws {
+        let pairing = try decodePairingCode(code: codeStr)
         guard let relayURL = pairing.relayUrl else {
             throw FfiSyncError.Other(message: "Mac has no relay configured")
         }
-
         let deviceHex = Self.persistedDeviceIdHex()
         let relay = try RelayClientHandle(
             relayUrl: relayURL,
@@ -315,9 +361,6 @@ final class RelayTicker: ObservableObject {
             relay: relay,
             groupIdHex: pairing.groupIdHex
         )
-        // Restore persisted cursors so we don't re-poll the entire
-        // relay history every cold launch + don't re-push every
-        // local op the relay already has.
         if let inbound = UserDefaults.standard.object(forKey: Self.inboundCursorKey) as? Int64 {
             await coordinator.setInboundCursorSeq(seq: inbound)
             inboundCursorSeq = inbound
