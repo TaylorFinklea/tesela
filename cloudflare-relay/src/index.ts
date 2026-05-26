@@ -1,0 +1,93 @@
+/**
+ * Tesela Sync Relay — Cloudflare Worker entry point.
+ *
+ * Routes:
+ *   POST   /groups/:id/register             — onboarding (TOFU)
+ *   GET    /groups/:id/registration         — read back to verify intent
+ *   PUT    /groups/:id/ops                  — deposit an envelope
+ *   GET    /groups/:id/ops?since=N          — drain since seq N
+ *   POST   /groups/:id/ack                  — record applied seq
+ *   DELETE /admin/groups/:id/register       — hijack recovery (admin token)
+ *   GET    /                                — health check
+ *
+ * Each `:id` is the 32-hex-char group_id. The Worker uses the id as
+ * the Durable Object name, so all requests for that group land on the
+ * same DO instance + share its SQLite storage + nonce LRU.
+ *
+ * Wire format is identical to the Rust self-host
+ * (crates/tesela-relay) — clients written against either work against
+ * both. See .docs/ai/phases/2026-05-24-relay-protocol-design.md.
+ */
+
+import { GroupDO, type Env } from "./group-do";
+export { GroupDO };
+
+// Constant-time-ish string compare via header-pinning. Outer Worker
+// uses these to ferry the original path/query into the DO so MAC
+// verification can rebuild the canonical request without us needing
+// to thread URL parsing through DO boundaries.
+const ORIGINAL_PATH_HEADER = "x-tesela-original-path";
+const ORIGINAL_QUERY_HEADER = "x-tesela-original-query";
+
+export default {
+  async fetch(req: Request, env: Env): Promise<Response> {
+    const url = new URL(req.url);
+
+    if (url.pathname === "/" || url.pathname === "/health") {
+      return json({ service: "tesela-relay", status: "ok", impl: "cloudflare-worker" });
+    }
+
+    // /groups/:id/<rest>
+    const groupsMatch = url.pathname.match(/^\/groups\/([0-9a-f]{32})(\/.*)$/);
+    if (groupsMatch) {
+      const groupIdHex = groupsMatch[1]!;
+      const innerPath = groupsMatch[2]!;
+      return await forwardToGroupDO(env, groupIdHex, innerPath, url, req);
+    }
+
+    // /admin/groups/:id/register → admin DELETE for hijack recovery.
+    const adminMatch = url.pathname.match(/^\/admin\/groups\/([0-9a-f]{32})\/register$/);
+    if (adminMatch && req.method === "DELETE") {
+      const groupIdHex = adminMatch[1]!;
+      return await forwardToGroupDO(env, groupIdHex, "/admin/registration", url, req);
+    }
+
+    return new Response("not found", { status: 404 });
+  },
+};
+
+async function forwardToGroupDO(
+  env: Env,
+  groupIdHex: string,
+  innerPath: string,
+  outerUrl: URL,
+  req: Request,
+): Promise<Response> {
+  const id = env.GROUP_DO.idFromName(groupIdHex);
+  const stub = env.GROUP_DO.get(id);
+
+  // Construct the DO-internal request. The DO sees the trimmed path
+  // (e.g. "/ops" instead of "/groups/<id>/ops") so its switch stays
+  // readable. We ferry the ORIGINAL path + query along so MAC
+  // verification can rebuild the canonical request.
+  const headers = new Headers(req.headers);
+  headers.set(ORIGINAL_PATH_HEADER, outerUrl.pathname);
+  headers.set(ORIGINAL_QUERY_HEADER, outerUrl.search.replace(/^\?/, ""));
+
+  // The DO doesn't care about hostname; use a fixed origin so the URL
+  // is well-formed.
+  const inner = new URL(`https://do.internal${innerPath}${outerUrl.search}`);
+  const innerReq = new Request(inner.toString(), {
+    method: req.method,
+    headers,
+    body: ["GET", "HEAD"].includes(req.method) ? undefined : req.body,
+  });
+  return await stub.fetch(innerReq);
+}
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}

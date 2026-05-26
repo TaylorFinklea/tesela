@@ -1,0 +1,25 @@
+name = "tesela-relay"
+main = "src/index.ts"
+compatibility_date = "2025-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+# Per-group Durable Object — each `group_id` gets its own DO instance
+# (sticky to one edge location), giving us serialized state per group
+# without a separate database. Built-in SQLite storage covers
+# registrations + ops + device-seen.
+[[durable_objects.bindings]]
+name = "GROUP_DO"
+class_name = "GroupDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GroupDO"]
+
+# Admin token — set with `wrangler secret put TESELA_RELAY_ADMIN_TOKEN`.
+# Used to gate `DELETE /admin/groups/:id/register` for hijack recovery.
+# Do NOT commit the value.
+
+# Optional knobs
+[vars]
+TESELA_RELAY_MAX_BODY = "5242880"        # 5 MB per PUT
+TESELA_RELAY_REPLAY_WINDOW_SECS = "300"  # ±5 min for X-Tesela-Ts
