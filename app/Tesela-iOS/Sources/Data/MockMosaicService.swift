@@ -531,6 +531,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
                 pageLoadStates[id] = .ready
             } catch {
+                // HTTP failed — usually because the Mac isn't reachable
+                // (cellular without Tailscale). Fall back to the local
+                // materialized file the RelayTicker wrote when it
+                // applied the inbound op. This is what makes
+                // "edit-on-Mac → open-on-iPhone" work offline.
+                if let local = readLocalNote(id: id) {
+                    loadedPageBlocks[id] = parseBlocks(from: local.body, noteId: id)
+                    loadedPageFrontmatter[id] = extractFrontmatter(from: local.content)
+                    pageLoadStates[id] = .ready
+                    return
+                }
                 // Cancelled / network-changed mid-flight is benign;
                 // leave the prior load state and let the next refresh
                 // try again. Only flip to `.failed` for real errors.
@@ -632,9 +643,73 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     .map { RecentEntry(id: $0.id, title: $0.title, at: $0.edited) }
                 connection = .ready
             } catch {
+                // HTTP failed — try to refresh from the local sandbox
+                // so the home screen at least reflects what the relay
+                // has applied locally. The list will be smaller (only
+                // notes the engine has seen) and the metadata leaner
+                // (no tag aggregations, no recent ordering — we only
+                // populate what's parseable from file frontmatter).
+                if applyLocalRefreshFallback() {
+                    connection = .ready
+                    return
+                }
                 setConnectionFailedIfReal(error, host: baseURL.host)
             }
         }
+    }
+
+    /// Read every `.md` file in the iOS sandbox notes/ directory and
+    /// hydrate the in-memory `pages` + `todayBlocks` from them. Used
+    /// as a fallback when HTTP refresh fails (cellular without
+    /// Tailscale, Mac asleep, etc.). Returns true when at least one
+    /// file was readable; false means there's nothing local to show
+    /// and the caller should surface the original HTTP error.
+    @discardableResult
+    private func applyLocalRefreshFallback() -> Bool {
+        let notesDir = localMosaicRoot().appendingPathComponent("notes")
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: notesDir.path),
+              !files.isEmpty
+        else { return false }
+        let mdFiles = files.filter { $0.hasSuffix(".md") }
+        guard !mdFiles.isEmpty else { return false }
+
+        var loadedNotes: [APINote] = []
+        for fname in mdFiles {
+            let id = String(fname.dropLast(3))  // strip ".md"
+            if let note = readLocalNote(id: id) {
+                loadedNotes.append(note)
+            }
+        }
+        guard !loadedNotes.isEmpty else { return false }
+
+        // Identify today's daily — `YYYY-MM-DD` of today as id.
+        let todayId = dailyId(daysAgo: 0)
+        if let daily = loadedNotes.first(where: { $0.id == todayId }) {
+            serverDailyId = daily.id
+            todayBlocks = parseBlocks(from: daily.body, noteId: daily.id)
+        }
+        // Yesterday's daily similarly.
+        let yesterdayId = dailyId(daysAgo: 1)
+        if let y = loadedNotes.first(where: { $0.id == yesterdayId }) {
+            yesterdayBlocks = parseBlocks(from: y.body, noteId: y.id)
+        }
+        // All other notes become pages.
+        pages = loadedNotes
+            .filter { $0.id != todayId }
+            .map { mapPage($0) }
+        // Tags: union of every note's tags, no usage counts.
+        let tagSet = Set(loadedNotes.flatMap { $0.metadata.tags })
+        tags = tagSet.sorted().map { name in
+            let parts = name.split(separator: "/")
+            let leaf = parts.last.map(String.init) ?? name
+            let parent = parts.count > 1 ? parts.dropLast().joined(separator: "/") : nil
+            return Tag(id: name, title: leaf, parent: parent, count: 0, recent: "today")
+        }
+        // Recent: edited-date-sorted top 8.
+        recent = pages.sorted(by: { $0.edited > $1.edited })
+            .prefix(8)
+            .map { RecentEntry(id: $0.id, title: $0.title, at: $0.edited) }
+        return true
     }
 
     private var currentBackend: Backend = .mock
@@ -948,6 +1023,96 @@ final class MockMosaicService: ObservableObject, MosaicService {
             let snippet = String(data: data.prefix(160), encoding: .utf8) ?? ""
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode): \(snippet)"])
         }
+    }
+
+    // MARK: - Local-file fallback (B.3.4)
+
+    /// Filesystem path of the iOS-side mosaic root the RelayTicker
+    /// writes into. Matches `RelayTicker.ensureCoordinator`. Reads
+    /// from this directory let the iOS UI render Mac-originated edits
+    /// without ever reaching the Mac over HTTP — critical for
+    /// cellular use, where the Mac isn't internet-routable.
+    private func localMosaicRoot() -> URL {
+        let docs = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        )[0]
+        return docs.appendingPathComponent("sync-ios-mosaic")
+    }
+
+    /// Read a materialized note from the local sandbox. Returns nil
+    /// when the file is missing, unreadable, or unparseable — caller
+    /// then falls back to its prior behaviour. Constructs an `APINote`
+    /// shape identical to what the Mac's HTTP `/notes/<id>` returns,
+    /// so the parse-and-render code path downstream is unchanged.
+    private func readLocalNote(id: String) -> APINote? {
+        let path = localMosaicRoot()
+            .appendingPathComponent("notes")
+            .appendingPathComponent("\(id).md")
+        guard let raw = try? String(contentsOf: path, encoding: .utf8) else {
+            return nil
+        }
+        let frontmatter = extractFrontmatter(from: raw)
+        let body: String = {
+            // Body is everything after the closing `---\n` of the
+            // frontmatter. If there's no frontmatter, body = full raw.
+            guard raw.hasPrefix("---"),
+                  let close = raw.range(of: "\n---", options: [], range: raw.index(raw.startIndex, offsetBy: 3)..<raw.endIndex)
+            else { return raw }
+            let after = raw.index(close.upperBound, offsetBy: 0)
+            return String(raw[after...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }()
+        let title = parseTitleFromFrontmatter(frontmatter) ?? id
+        let tags = parseTagsFromFrontmatter(frontmatter)
+        let mtime = (try? FileManager.default.attributesOfItem(atPath: path.path)[.modificationDate] as? Date)
+            ?? Date()
+        let mtimeISO = ISO8601DateFormatter().string(from: mtime)
+        return APINote(
+            id: id,
+            title: title,
+            content: raw,
+            body: body,
+            metadata: APINoteMetadata(
+                title: title,
+                tags: tags,
+                note_type: nil,
+                created: nil,
+                modified: mtimeISO
+            ),
+            modified_at: mtimeISO
+        )
+    }
+
+    /// Pull `title: "..."` out of a YAML frontmatter block. Returns
+    /// nil when not found. Quick + dirty — doesn't handle multi-line
+    /// titles or escaped quotes, but the Mac's writer never produces
+    /// either.
+    private func parseTitleFromFrontmatter(_ fm: String) -> String? {
+        for line in fm.split(separator: "\n") {
+            if line.hasPrefix("title:") {
+                let val = line.dropFirst("title:".count).trimmingCharacters(in: .whitespaces)
+                return val.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            }
+        }
+        return nil
+    }
+
+    /// Pull the `tags: [a, b, c]` flow-style array out of frontmatter.
+    /// Doesn't handle the block-style `tags:\n  - a\n  - b` form;
+    /// fine for now since the Mac writer always emits flow.
+    private func parseTagsFromFrontmatter(_ fm: String) -> [String] {
+        for line in fm.split(separator: "\n") {
+            if line.hasPrefix("tags:") {
+                let rest = line.dropFirst("tags:".count).trimmingCharacters(in: .whitespaces)
+                guard rest.hasPrefix("["), rest.hasSuffix("]") else { return [] }
+                let inner = rest.dropFirst().dropLast()
+                return inner.split(separator: ",").map {
+                    $0.trimmingCharacters(in: .whitespaces)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                }.filter { !$0.isEmpty }
+            }
+        }
+        return []
     }
 
     private func humanizeError(_ error: Error, host: String?) -> String {
