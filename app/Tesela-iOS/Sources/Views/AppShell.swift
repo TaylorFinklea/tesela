@@ -169,6 +169,7 @@ struct AppShell: View {
                     backend: backend,
                     appearance: appearance,
                     syncState: syncState,
+                    relayTicker: relayTicker,
                     transcription: transcription
                 )
             }
@@ -178,6 +179,7 @@ struct AppShell: View {
                     backend: backend,
                     appearance: appearance,
                     syncState: syncState,
+                    relayTicker: relayTicker,
                     transcription: transcription
                 )
             }
@@ -187,6 +189,7 @@ struct AppShell: View {
                     backend: backend,
                     appearance: appearance,
                     syncState: syncState,
+                    relayTicker: relayTicker,
                     transcription: transcription
                 )
             }
@@ -197,6 +200,7 @@ struct AppShell: View {
                     pageStack: pageStack,
                     syncState: syncState,
                     backend: backend,
+                    relayTicker: relayTicker,
                     transcription: transcription
                 )
             }

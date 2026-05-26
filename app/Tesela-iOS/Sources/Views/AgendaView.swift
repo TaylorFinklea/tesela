@@ -16,6 +16,7 @@ struct AgendaView: View {
     @ObservedObject var backend: BackendSettings
     var appearance: AppearanceController? = nil
     var syncState: SyncState? = nil
+    var relayTicker: RelayTicker? = nil
     var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
@@ -108,12 +109,13 @@ struct AgendaView: View {
                     .environment(\.theme, theme)
             }
             .sheet(isPresented: $showSettings) {
-                if let appearance, let syncState {
+                if let appearance, let syncState, let relayTicker {
                     SettingsView(
                         appearance: appearance,
                         mosaic: mosaic,
                         syncState: syncState,
                         backend: backend,
+                        relayTicker: relayTicker,
                         transcription: transcription
                     )
                     .environment(\.theme, theme)

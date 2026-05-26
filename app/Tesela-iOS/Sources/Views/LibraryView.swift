@@ -10,6 +10,7 @@ struct LibraryView: View {
     @ObservedObject var pageStack: PageStack
     @ObservedObject var syncState: SyncState
     @ObservedObject var backend: BackendSettings
+    var relayTicker: RelayTicker? = nil
     var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
@@ -41,15 +42,18 @@ struct LibraryView: View {
                     .environment(\.theme, theme)
             }
             .sheet(isPresented: $showSettings) {
-                SettingsView(
-                    appearance: appearance,
-                    mosaic: mosaic,
-                    syncState: syncState,
-                    backend: backend,
-                    transcription: transcription
-                )
-                .environment(\.theme, theme)
-                .environment(\.density, appearance.density)
+                if let relayTicker {
+                    SettingsView(
+                        appearance: appearance,
+                        mosaic: mosaic,
+                        syncState: syncState,
+                        backend: backend,
+                        relayTicker: relayTicker,
+                        transcription: transcription
+                    )
+                    .environment(\.theme, theme)
+                    .environment(\.density, appearance.density)
+                }
             }
             .navigationDestination(for: Page.self) { page in
                 PageView(page: page, mosaic: mosaic, pageStack: pageStack, syncState: syncState)

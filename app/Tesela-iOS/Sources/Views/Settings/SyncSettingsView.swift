@@ -9,8 +9,11 @@ import UIKit
 struct SyncSettingsView: View {
     @ObservedObject var syncState: SyncState
     @ObservedObject var mosaic: MockMosaicService
-    @State private var simulatedOffline: Bool = false
-    @State private var simulatedPending: Bool = false
+    /// Live iOS-side relay state — own cursors, last tick, errors.
+    /// `nil` when the host (Settings reached from a flow that doesn't
+    /// have the ticker yet, e.g. a standalone preview) hasn't passed
+    /// one in. UI degrades gracefully when nil.
+    @ObservedObject var relayTicker: RelayTicker
     @State private var relayStatus: RelayStatusInfo? = nil
     @State private var relayLoaded: Bool = false
     // B.1.4 — FFI smoke probe state. Removed once B.2/B.3 land and the
@@ -30,72 +33,8 @@ struct SyncSettingsView: View {
     var body: some View {
         Form {
             relaySection
-            ffiSmokeSection
             deviceNameSection
-
-            if simulatedOffline {
-                disconnectedBanner
-                disconnectedPeerList
-                diagnosticsSection
-            } else {
-                connectedBanner
-                peerListSection
-            }
-
-            Section("Strategy") {
-                ToggleRow(title: "Local Wi-Fi peers",
-                          detail: "Bonjour discovery on this network",
-                          initialOn: true)
-                ToggleRow(title: "Cross-network peers",
-                          detail: "Reach peers via Tailscale or direct internet",
-                          initialOn: true)
-                ToggleRow(title: "Only on Wi-Fi",
-                          detail: "Skip sync on cellular to save data",
-                          initialOn: false)
-            }
-
-            Section("Conflict policy") {
-                ToggleRow(title: "Show resolution sheet on conflict",
-                          detail: "Otherwise pick newest-wins",
-                          initialOn: true)
-                LabeledContent("History retention", value: "90 days")
-            }
-
-            Section {
-                Toggle("Simulate offline", isOn: $simulatedOffline)
-                    .tint(theme.accentPrimary)
-                    .onChange(of: simulatedOffline) { _, newValue in
-                        syncState.isReachable = !newValue
-                    }
-                Toggle("Simulate pending edits", isOn: $simulatedPending)
-                    .tint(theme.accentPrimary)
-                    .onChange(of: simulatedPending) { _, newValue in
-                        syncState.hasPendingEdits = newValue
-                    }
-            } header: {
-                Text("Debug")
-            } footer: {
-                Text("Enable both to surface the ● indicator on every page title.")
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(theme.fgFaint)
-            }
-
-            Section("Advanced") {
-                Button {
-                    // Phase 15: copy sync token to clipboard
-                } label: {
-                    LabeledContent("Sync token") {
-                        Text("copy")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(theme.accentPrimary)
-                    }
-                }
-                Button(role: .destructive) {
-                    // Phase 15: reset sync state
-                } label: {
-                    Text("Reset sync state")
-                }
-            }
+            ffiSmokeSection
         }
         .scrollContentBackground(.hidden)
         .background(theme.bg)
@@ -112,35 +51,126 @@ struct SyncSettingsView: View {
     // ── WAN relay (read-only — surfaces the Mac's relay state) ──────────
 
     /// iOS isn't a sync peer yet (UniFFI track is multi-week work);
-    /// this surface is intentionally read-only. It calls
-    /// `GET /sync/relay/status` on the configured Mac backend so the
-    /// user can see "your Mac is paired with relay X, last poll N
-    /// seconds ago" — the architecture is honest about the fact that
-    /// iOS still talks to the Mac over HTTP, and the Mac is what
-    /// talks to the relay.
+    /// Live WAN relay surface — shows BOTH iPhone's own ticker state
+    /// (lastTickAt, applied/sent counts, inbound cursor, errors) AND
+    /// the Mac's relay status when reachable. The honest framing now
+    /// that iOS is a real sync peer: this iPhone talks to the relay
+    /// directly; the Mac does the same; the relay is the shared
+    /// rendezvous.
     @ViewBuilder
     private var relaySection: some View {
         Section {
+            iphoneRelayPanel
             if !relayLoaded {
                 HStack(spacing: 10) {
                     ProgressView().scaleEffect(0.7)
-                    Text("Checking the Mac for relay status…")
+                    Text("Checking the Mac…")
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(theme.fgFaint)
                 }
-            } else if relayStatus == nil {
-                relayUnreachable
+            } else if let status = relayStatus, status.configured {
+                Divider().padding(.vertical, 4)
+                macRelayPanel(status)
             } else if let status = relayStatus, !status.configured {
+                Divider().padding(.vertical, 4)
                 relayUnconfigured
-            } else if let status = relayStatus {
-                relayConfigured(status)
             }
         } header: {
             Text("WAN Relay")
         } footer: {
-            Text("iOS itself isn't a sync peer yet — this iPhone talks to your Mac over HTTP. When the Mac is configured with a relay, edits from other devices land on the Mac through that relay, then flow to you. Future iOS sync (native peer) is on the roadmap.")
+            Text("Your iPhone is a real sync peer — edits go through both direct HTTP (LAN-fast) and the relay (cellular-tolerant). Reads fall back to a local sandbox when the Mac is unreachable. The Mac panel below shows the Mac's view of the same relay; both should be ticking when sync is healthy.")
                 .font(.caption2)
         }
+    }
+
+    /// iPhone-side relay state — pulled from RelayTicker's @Published
+    /// fields. Always rendered; this is where the user sees that THIS
+    /// device is talking to the relay.
+    @ViewBuilder
+    private var iphoneRelayPanel: some View {
+        let healthy = relayTicker.lastError == nil && relayTicker.lastTickAt != nil
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "iphone")
+                    .foregroundStyle(theme.fgFaint)
+                Text("This iPhone")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Circle()
+                    .fill(relayTicker.lastError != nil
+                        ? theme.typeTask
+                        : (relayTicker.isRunning ? theme.typeQuery : theme.accentPrimary))
+                    .frame(width: 8, height: 8)
+                Text(relayTicker.lastError != nil
+                    ? "error"
+                    : (relayTicker.isRunning ? (healthy ? "syncing" : "starting") : "paused"))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(theme.fgFaint)
+            }
+            if let err = relayTicker.lastError {
+                Text(err)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(theme.typeTask)
+                    .padding(8)
+                    .background(theme.typeTask.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                relayMetricRow("Last tick", relativeTime(relayTicker.lastTickAt.map { Int64($0.timeIntervalSince1970) }))
+                relayMetricRow("Last received", "\(relayTicker.lastApplied) op\(relayTicker.lastApplied == 1 ? "" : "s")")
+                relayMetricRow("Last sent",     "\(relayTicker.lastSent) op\(relayTicker.lastSent == 1 ? "" : "s")")
+                relayMetricRow("Inbound seq",   "\(relayTicker.inboundCursorSeq)")
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// Mac-side view — what the Mac is doing with the same relay.
+    /// Useful for debugging "where's my edit?" — if iPhone shows it
+    /// sent but Mac's inbound hasn't moved, the relay or Mac is the
+    /// problem; if iPhone's last tick is stale, iPhone is the problem.
+    @ViewBuilder
+    private func macRelayPanel(_ s: RelayStatusInfo) -> some View {
+        let healthy = s.last_error == nil && s.last_poll_at != nil
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "desktopcomputer")
+                    .foregroundStyle(theme.fgFaint)
+                Text("Mac")
+                    .font(.system(size: 13, weight: .semibold))
+                Spacer()
+                Circle()
+                    .fill(s.last_error != nil
+                        ? theme.typeTask
+                        : (s.last_poll_at != nil ? theme.typeQuery : theme.accentPrimary))
+                    .frame(width: 8, height: 8)
+                Text(healthy ? "connected" : (s.last_error != nil ? "error" : "idle"))
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(theme.fgFaint)
+            }
+            if let url = s.url {
+                Text(url)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(theme.fgFaint)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+            }
+            if let err = s.last_error {
+                Text(err)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(theme.typeTask)
+                    .padding(8)
+                    .background(theme.typeTask.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                relayMetricRow("Registered", relativeTime(s.registered_at))
+                relayMetricRow("Last poll", relativeTime(s.last_poll_at))
+                relayMetricRow("Last put",  relativeTime(s.last_put_at))
+                relayMetricRow("Inbound seq", "\(s.inbound_cursor)")
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     /// Mosaic-style sandbox root: `Documents/sync-ios-mosaic/`. The
@@ -351,21 +381,6 @@ struct SyncSettingsView: View {
         return fresh
     }
 
-    private var relayUnreachable: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "cloud.slash")
-                    .foregroundStyle(theme.fgFaint)
-                Text("Can't reach the Mac server")
-                    .font(.system(size: 13, weight: .medium))
-            }
-            Text("Check the backend URL in Settings → Backend, or that the Mac's tesela-server is running.")
-                .font(.system(size: 11))
-                .foregroundStyle(theme.fgFaint)
-        }
-        .padding(.vertical, 4)
-    }
-
     private var relayUnconfigured: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
@@ -377,45 +392,6 @@ struct SyncSettingsView: View {
             Text("To enable cross-network sync, add a `[sync.relay]` block to the Mac's `.tesela/config.toml`. See `crates/tesela-relay/DEPLOY.md` in the repo for the Docker recipe.")
                 .font(.system(size: 11))
                 .foregroundStyle(theme.fgFaint)
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private func relayConfigured(_ s: RelayStatusInfo) -> some View {
-        let healthy = s.last_error == nil && s.last_poll_at != nil
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(s.last_error != nil
-                        ? theme.typeTask
-                        : (s.last_poll_at != nil ? theme.typeQuery : theme.accentPrimary))
-                    .frame(width: 8, height: 8)
-                Text(healthy ? "Connected" : (s.last_error != nil ? "Error" : "Configured"))
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(healthy ? theme.typeQuery : (s.last_error != nil ? theme.typeTask : theme.fgDefault))
-            }
-            if let url = s.url {
-                Text(url)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(theme.fgFaint)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-            }
-            if let err = s.last_error {
-                Text(err)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(theme.typeTask)
-                    .padding(8)
-                    .background(theme.typeTask.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                relayMetricRow("Registered", relativeTime(s.registered_at))
-                relayMetricRow("Last poll", relativeTime(s.last_poll_at))
-                relayMetricRow("Last put", relativeTime(s.last_put_at))
-                relayMetricRow("Inbound seq", "\(s.inbound_cursor)")
-            }
         }
         .padding(.vertical, 4)
     }
@@ -476,225 +452,4 @@ struct SyncSettingsView: View {
         #endif
     }
 
-    // ── Connected banner ────────────────────────────────────────────────
-
-    private var connectedBanner: some View {
-        Section {
-            HStack(alignment: .center, spacing: 10) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.title2)
-                    .foregroundStyle(theme.typeQuery)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Up to date")
-                        .font(.headline)
-                        .foregroundStyle(theme.typeQuery)
-                    Text("3 of 3 peers reachable · last sync 12s ago")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(theme.fgSubtle)
-                }
-                Spacer()
-                Button("Sync now") { /* trigger sync */ }
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(theme.typeQuery)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(theme.typeQuery.opacity(0.15))
-                    .clipShape(Capsule())
-            }
-            .padding(.vertical, 6)
-        }
-    }
-
-    private var peerListSection: some View {
-        Section {
-            // Local device — always present, even before any pairing.
-            peerRow(
-                MockPeer(
-                    name: deviceName.isEmpty ? systemDeviceName : deviceName,
-                    host: "This device · \(systemPlatformLabel)",
-                    systemSymbol: localDeviceSymbol,
-                    lastSeen: "now"
-                ),
-                online: true
-            )
-        } header: {
-            Text("Paired devices")
-        } footer: {
-            Text("Pair another device from the Pair button to start syncing. Devices you've paired appear here once the LAN sync backend ships.")
-                .font(.caption2)
-        }
-    }
-
-    private var localDeviceSymbol: String {
-        #if os(iOS)
-        UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
-        #elseif os(macOS)
-        "laptopcomputer"
-        #else
-        "questionmark.circle"
-        #endif
-    }
-
-    private var systemPlatformLabel: String {
-        #if canImport(UIKit)
-        "\(UIDevice.current.systemName) \(UIDevice.current.systemVersion)"
-        #else
-        "macOS"
-        #endif
-    }
-
-    // ── Disconnected banner ─────────────────────────────────────────────
-
-    private var disconnectedBanner: some View {
-        Section {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .center, spacing: 10) {
-                    Image(systemName: "cloud.slash.fill")
-                        .font(.title2)
-                        .foregroundStyle(theme.typeTask)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Can't reach any peers")
-                            .font(.headline)
-                            .foregroundStyle(theme.typeTask)
-                        Text("offline 2h 14m · 12 local edits will sync when peers return")
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(theme.fgSubtle)
-                    }
-                    Spacer()
-                }
-                HStack(spacing: 8) {
-                    Button {
-                        simulatedOffline = false
-                    } label: {
-                        Text("Retry now")
-                            .font(.system(size: 12, design: .monospaced))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .foregroundStyle(theme.bg)
-                            .background(theme.typeTask)
-                            .clipShape(RoundedRectangle(cornerRadius: 6))
-                    }
-                    .buttonStyle(.plain)
-                    Button { /* placeholder */ } label: {
-                        Text("Diagnose")
-                            .font(.system(size: 12, design: .monospaced))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 8)
-                            .foregroundStyle(theme.fgMuted)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(theme.line, lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.vertical, 6)
-        }
-    }
-
-    private var disconnectedPeerList: some View {
-        Section {
-            peerRow(
-                MockPeer(
-                    name: deviceName.isEmpty ? systemDeviceName : deviceName,
-                    host: "This device · \(systemPlatformLabel)",
-                    systemSymbol: localDeviceSymbol,
-                    lastSeen: "—"
-                ),
-                online: false
-            )
-        } header: {
-            Text("Offline")
-        }
-    }
-
-    private var diagnosticsSection: some View {
-        Section("Diagnostics") {
-            LabeledContent("Wi-Fi",            value: "connected")
-            LabeledContent("Last attempt",     value: "2m ago")
-            LabeledContent("Pending edits",    value: "12 local")
-        }
-    }
-
-    // ── Peer row ────────────────────────────────────────────────────────
-
-    private func peerRow(_ peer: MockPeer, online: Bool) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: peer.systemSymbol)
-                .font(.title3)
-                .foregroundStyle(online ? theme.typeQuery : theme.typeTask)
-                .frame(width: 24, alignment: .center)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(peer.name)
-                    .foregroundStyle(theme.fgDefault)
-                Text(peer.host)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(theme.fgFaint)
-                    .lineLimit(1)
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                if online {
-                    HStack(spacing: 4) {
-                        Circle().fill(theme.typeQuery).frame(width: 6, height: 6)
-                        Text("up")
-                    }
-                } else {
-                    HStack(spacing: 4) {
-                        Circle().fill(theme.typeTask).frame(width: 6, height: 6)
-                        Text("unreachable")
-                    }
-                }
-                Text(online ? peer.lastSeen : "seen \(peer.lastSeen)")
-                    .foregroundStyle(theme.fgFaint)
-            }
-            .font(.system(size: 10.5, design: .monospaced))
-        }
-    }
-}
-
-// MARK: - Mock peer model (Phase 15 swaps in real values)
-
-struct MockPeer: Identifiable {
-    let id = UUID()
-    let name: String
-    let host: String
-    let systemSymbol: String
-    let lastSeen: String
-}
-
-enum MockPeers {
-    static let connected: [MockPeer] = [
-        MockPeer(name: "workshop",     host: "taylor-workshop · macOS 15",   systemSymbol: "laptopcomputer",    lastSeen: "now"),
-        MockPeer(name: "tower",        host: "taylor-tower · Linux",          systemSymbol: "desktopcomputer",   lastSeen: "12s"),
-        MockPeer(name: "kitchen-ipad", host: "iPad Pro · iPadOS 26",          systemSymbol: "ipad",              lastSeen: "4m"),
-    ]
-}
-
-/// Wrapper that gives each Toggle row its own State without forcing
-/// callers to manage a binding for each.
-struct ToggleRow: View {
-    let title: String
-    let detail: String?
-    @State var isOn: Bool
-
-    init(title: String, detail: String? = nil, initialOn: Bool) {
-        self.title = title
-        self.detail = detail
-        self._isOn = State(initialValue: initialOn)
-    }
-
-    var body: some View {
-        Toggle(isOn: $isOn) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                if let detail {
-                    Text(detail)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-    }
 }

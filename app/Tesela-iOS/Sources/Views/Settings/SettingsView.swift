@@ -10,6 +10,7 @@ struct SettingsView: View {
     @ObservedObject var mosaic: MockMosaicService
     @ObservedObject var syncState: SyncState
     @ObservedObject var backend: BackendSettings
+    @ObservedObject var relayTicker: RelayTicker
     var transcription: TranscriptionStore? = nil
 
     @Environment(\.theme) private var theme
@@ -83,7 +84,7 @@ struct SettingsView: View {
                 // Sync
                 Section("Sync") {
                     NavigationLink {
-                        SyncSettingsView(syncState: syncState, mosaic: mosaic)
+                        SyncSettingsView(syncState: syncState, mosaic: mosaic, relayTicker: relayTicker)
                     } label: {
                         LabeledContent("Sync") {
                             HStack(spacing: 6) {
