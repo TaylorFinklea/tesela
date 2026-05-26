@@ -111,8 +111,25 @@ final class RelayTicker: ObservableObject {
     /// no-op. Calling with a *different* reference replaces it but
     /// does NOT tear down the coordinator (which is keyed to the
     /// already-pulled group identity, not the mosaic per se).
+    ///
+    /// When this is the FIRST connect (the ticker was running with a
+    /// nil mosaic — typical on app launch where scenePhase.active
+    /// fires `start()` before AppShell's `.task` reaches `connect()`),
+    /// reset the consecutive-error counter and kick an immediate tick.
+    /// Without this, the ticker would still be in its backoff sleep
+    /// for 30 s+ and the user would think sync is broken.
     func connect(mosaic: MockMosaicService) {
+        let wasUnconnected = (self.mosaic == nil)
         self.mosaic = mosaic
+        if wasUnconnected {
+            // Clear the "no mosaic" stalls so the next tick reads
+            // green instead of "backing off" in Settings → Sync.
+            consecutiveErrors = 0
+            lastError = nil
+            if isRunning {
+                Task { await self.tickOnce() }
+            }
+        }
     }
 
     /// Record an iOS-authored edit to the local engine and (if the
@@ -301,7 +318,17 @@ final class RelayTicker: ObservableObject {
     /// regardless of Mac's HTTP reachability.
     private func ensureCoordinator() async throws {
         guard let mosaic else {
-            throw FfiSyncError.Other(message: "ticker not connected to mosaic")
+            // The ticker outran the host's `.task` setup — scenePhase
+            // becoming .active fires `start()` before AppShell's
+            // `.task` body has progressed past its initial HTTP
+            // refresh to reach `connect(mosaic:)`. Throwing here
+            // marks `lastError` + advances `consecutiveErrors`, which
+            // tips the backoff into a multi-minute sleep window and
+            // leaves the user staring at "Backing off — N consecutive
+            // failures" in Settings → Sync. Silent no-op instead;
+            // `connect(mosaic:)` will reset the counter and kick a
+            // fresh tick the moment the host wires us up.
+            return
         }
         try await openEngineIfNeeded()
         guard let engine else {
