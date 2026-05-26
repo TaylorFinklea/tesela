@@ -1089,6 +1089,20 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      */
     func recordNoteUpsert(noteIdHex: String, displayAlias: String?, title: String, content: String, createdAtMillis: Int64) async throws  -> String
     
+    /**
+     * Slug-flavoured variant of [`Self::record_note_upsert`]. Computes
+     * the note id with the same blake3-truncation Mac's server uses
+     * (`stable_uuid_from_slug` in `tesela-server::routes::notes`), so
+     * iOS-authored ops land on the same note id Mac would have
+     * assigned. Keeps the Swift caller from having to mirror that
+     * hash logic.
+     *
+     * `created_at_millis` should be a stable timestamp from the
+     * note's first creation. Reusing the same value on every edit
+     * keeps the engine's HLC ordering monotonic.
+     */
+    func recordNoteUpsertBySlug(slug: String, title: String, content: String, createdAtMillis: Int64) async throws  -> String
+    
 }
 /**
  * Handle to a SQLite-backed sync engine. Created with
@@ -1246,6 +1260,35 @@ open func recordNoteUpsert(noteIdHex: String, displayAlias: String?, title: Stri
                 uniffi_tesela_sync_ffi_fn_method_syncenginehandle_record_note_upsert(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(noteIdHex),FfiConverterOptionString.lower(displayAlias),FfiConverterString.lower(title),FfiConverterString.lower(content),FfiConverterInt64.lower(createdAtMillis)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Slug-flavoured variant of [`Self::record_note_upsert`]. Computes
+     * the note id with the same blake3-truncation Mac's server uses
+     * (`stable_uuid_from_slug` in `tesela-server::routes::notes`), so
+     * iOS-authored ops land on the same note id Mac would have
+     * assigned. Keeps the Swift caller from having to mirror that
+     * hash logic.
+     *
+     * `created_at_millis` should be a stable timestamp from the
+     * note's first creation. Reusing the same value on every edit
+     * keeps the engine's HLC ordering monotonic.
+     */
+open func recordNoteUpsertBySlug(slug: String, title: String, content: String, createdAtMillis: Int64)async throws  -> String  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_record_note_upsert_by_slug(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug),FfiConverterString.lower(title),FfiConverterString.lower(content),FfiConverterInt64.lower(createdAtMillis)
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
@@ -2079,6 +2122,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_upsert() != 31930) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_upsert_by_slug() != 28447) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_constructor_relayclienthandle_new() != 60933) {

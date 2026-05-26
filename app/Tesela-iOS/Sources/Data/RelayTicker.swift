@@ -86,6 +86,52 @@ final class RelayTicker: ObservableObject {
         self.mosaic = mosaic
     }
 
+    /// Record an iOS-authored edit to the local engine and trigger an
+    /// immediate outbound tick so it hits the relay quickly (instead
+    /// of waiting up to a full tick interval). Falls back silently if
+    /// the coordinator isn't ready yet — the op stays in the engine
+    /// oplog and the next regular tick picks it up.
+    ///
+    /// `slug` is the note's id (today's daily ID for today, or the
+    /// page's slug otherwise). `content` is the full markdown body
+    /// the user wants on disk. `createdAtMillis` should be stable
+    /// across edits of the same note (the daily's creation timestamp
+    /// at midnight, for example) so the engine HLC stays monotonic.
+    ///
+    /// This is what makes iOS writes work even when Mac is unreachable
+    /// over direct HTTP — the engine path doesn't need Mac to be up;
+    /// the relay holds the op until Mac's next tick picks it up.
+    func recordAndPush(slug: String, title: String, content: String, createdAtMillis: Int64) async {
+        // Try to ensure the coordinator + engine are ready. If we're
+        // mid-pair (e.g. first launch on a slow network), fall back to
+        // engine-only — the next tick will push.
+        if coordinator == nil {
+            try? await ensureCoordinator()
+        }
+        guard let engine, let coordinator else {
+            // No engine yet — nothing to record into. The HTTP path
+            // is still firing in parallel; we'll catch up on a later
+            // tick once pairing completes.
+            return
+        }
+        do {
+            _ = try await engine.recordNoteUpsertBySlug(
+                slug: slug,
+                title: title,
+                content: content,
+                createdAtMillis: createdAtMillis
+            )
+            // Immediate push — avoids a 5s wait if we're foregrounded.
+            let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
+            lastSent = outcome.opsSent
+            lastTickAt = Date()
+            lastError = nil
+        } catch {
+            // Engine recorded (or didn't); next tick will retry the push.
+            lastError = error.localizedDescription
+        }
+    }
+
     func start() {
         guard loopTask == nil else { return }
         isRunning = true

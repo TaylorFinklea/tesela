@@ -116,6 +116,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Same idea for today's daily, which has its own field.
     private var todayLoadedAt: Date? = nil
 
+    /// Callback fired whenever an iOS-authored edit needs to be
+    /// durably persisted to the sync layer. Wired in AppShell to
+    /// `relayTicker.recordAndPush(...)` so the edit goes into the
+    /// local sync engine AND gets pushed through the relay alongside
+    /// the existing HTTP PUT path. Without this, an iOS edit on
+    /// cellular (where Mac is unreachable for direct HTTP) would
+    /// be stuck in iOS memory until Mac came back into HTTP reach.
+    ///
+    /// Args: (slug, title, fullContent, createdAtMillis).
+    var onLocalWrite: ((String, String, String, Int64) -> Void)? = nil
+
     private let session = URLSession(configuration: .default)
     private let iso = ISO8601DateFormatter()
     private var serverDailyId: String = ""
@@ -610,6 +621,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let body = renderBody(from: blocks)
         let frontmatter = loadedPageFrontmatter[id] ?? "---\ntitle: \(id)\n---"
         let content = "\(frontmatter)\n\n\(body)\n"
+        // Engine path first — durable even when Mac unreachable.
+        onLocalWrite?(id, id, content, Int64(Date().timeIntervalSince1970 * 1000))
+        // HTTP path — LAN-speed fast path.
         do {
             try await httpPut("/notes/\(id)", baseURL: baseURL, body: ["content": content])
         } catch {
@@ -1554,10 +1568,34 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     private func pushTodayBlocks(_ blocks: [Block], baseURL: URL) async {
         guard !serverDailyId.isEmpty else { return }
+        // Compose the new content once. We use it for BOTH paths:
+        // HTTP PUT for LAN-speed convergence, AND the engine/relay
+        // path for cellular-tolerant durability. On LAN the HTTP path
+        // wins (faster); on cellular the engine path catches up
+        // within a tick interval.
+        let existingFrontmatter: String
         do {
-            let existing: APINote = try await httpGet("/notes/\(serverDailyId)", baseURL: baseURL)
-            let newBody = renderBody(from: blocks)
-            let content = combine(frontmatter: existing.content, body: newBody)
+            let existing: APINote = try await fetchOrTimeout(
+                "/notes/\(serverDailyId)", baseURL: baseURL, seconds: 5
+            )
+            existingFrontmatter = existing.content
+        } catch {
+            // Couldn't fetch existing frontmatter — fall back to a
+            // minimal one so the engine path still has SOMETHING
+            // sane. Mac's NoteUpsert apply will preserve what's on
+            // disk if the body changes don't disturb the frontmatter.
+            existingFrontmatter = "---\ntitle: \(serverDailyId)\n---"
+        }
+        let newBody = renderBody(from: blocks)
+        let content = combine(frontmatter: existingFrontmatter, body: newBody)
+        // Engine path — durable, cellular-tolerant. Fired first so
+        // the relay can start propagating even if the HTTP PUT below
+        // hangs on a marginal network.
+        let titleGuess = serverDailyId  // YYYY-MM-DD for dailies
+        onLocalWrite?(serverDailyId, titleGuess, content, Int64(Date().timeIntervalSince1970 * 1000))
+        // HTTP path — fast on LAN. Failure is silent; the engine path
+        // covers durability.
+        do {
             try await httpPut("/notes/\(serverDailyId)", baseURL: baseURL, body: ["content": content])
         } catch {
             setConnectionFailedIfReal(error, host: baseURL.host)

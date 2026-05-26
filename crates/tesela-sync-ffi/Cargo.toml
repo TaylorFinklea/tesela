@@ -26,6 +26,9 @@ reqwest = { workspace = true }
 # Outbound tick postcard-encodes the `Vec<EncodedOp>` batch into the
 # SyncEnvelope ciphertext, matching the Mac's tick.
 postcard = { workspace = true }
+# stable_uuid_from_slug — matches Mac's note-id derivation so iOS-
+# authored ops collide on the right note rather than minting orphans.
+blake3 = { workspace = true }
 
 [features]
 # Pulls in the binary scaffolding so `cargo run --bin uniffi-bindgen

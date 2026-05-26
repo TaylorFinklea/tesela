@@ -210,6 +210,19 @@ fn parse_hex(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Mirror of `tesela-server::routes::notes::stable_uuid_from_slug`:
+/// blake3-hash the slug, take the first 16 bytes as the note's stable
+/// 128-bit id. iOS uses this so its NoteUpsert ops land on the same
+/// note id Mac would have minted from the same slug, instead of
+/// creating an orphan.
+fn stable_uuid_from_slug(slug: &str) -> [u8; 16] {
+    let hash = blake3::hash(slug.as_bytes());
+    let bytes = hash.as_bytes();
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&bytes[..16]);
+    out
+}
+
 fn nibble(c: u8) -> Option<u8> {
     match c {
         b'0'..=b'9' => Some(c - b'0'),
@@ -309,6 +322,39 @@ impl SyncEngineHandle {
     /// reads this once at boot for display in Settings → Sync.
     pub fn device_hex(&self) -> String {
         self.inner.device().to_hex()
+    }
+
+    /// Slug-flavoured variant of [`Self::record_note_upsert`]. Computes
+    /// the note id with the same blake3-truncation Mac's server uses
+    /// (`stable_uuid_from_slug` in `tesela-server::routes::notes`), so
+    /// iOS-authored ops land on the same note id Mac would have
+    /// assigned. Keeps the Swift caller from having to mirror that
+    /// hash logic.
+    ///
+    /// `created_at_millis` should be a stable timestamp from the
+    /// note's first creation. Reusing the same value on every edit
+    /// keeps the engine's HLC ordering monotonic.
+    pub async fn record_note_upsert_by_slug(
+        &self,
+        slug: String,
+        title: String,
+        content: String,
+        created_at_millis: i64,
+    ) -> Result<String, FfiSyncError> {
+        let note_id = stable_uuid_from_slug(&slug);
+        let payload = OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some(slug.clone()),
+            title,
+            content,
+            created_at_millis,
+        };
+        let hash = self
+            .inner
+            .record_local(payload)
+            .await
+            .map_err(FfiSyncError::from)?;
+        Ok(hex_encode(&hash.0))
     }
 
     /// Record a "create or update a note" op locally. Returns the

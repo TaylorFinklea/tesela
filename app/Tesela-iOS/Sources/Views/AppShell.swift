@@ -45,6 +45,21 @@ struct AppShell: View {
                         // is up. connect() is idempotent so re-runs
                         // (e.g. on mosaic switch) don't churn.
                         relayTicker.connect(mosaic: mosaic)
+                        // Route iOS-authored writes through the engine
+                        // + relay alongside the existing HTTP PUT. On
+                        // LAN both succeed (HTTP first); on cellular
+                        // when Mac is unreachable the engine path is
+                        // the only one that gets there.
+                        mosaic.onLocalWrite = { [weak relayTicker] slug, title, content, createdAt in
+                            Task { @MainActor [weak relayTicker] in
+                                await relayTicker?.recordAndPush(
+                                    slug: slug,
+                                    title: title,
+                                    content: content,
+                                    createdAtMillis: createdAt
+                                )
+                            }
+                        }
                         // When the ticker applies new inbound ops,
                         // re-pull the user-visible pages over HTTP so
                         // the UI shows the change immediately. On
