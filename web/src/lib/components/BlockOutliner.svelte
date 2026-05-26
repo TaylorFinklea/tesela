@@ -316,6 +316,23 @@
   let focusedIndex = $state<number | null>(null);
   let lastExternalBody = $state(body);
   let lastSentBody = $state(body);
+  /** Wall-clock ms of the last local keystroke / structural edit
+   *  (new block, indent, etc.). The body-sync effect defers any
+   *  incoming server reparse for ~1200ms after this — long enough
+   *  that the user's PUT round-trips and `lastSentBody` catches up,
+   *  so the next reparse is a no-op. Without the defer, a WS event
+   *  from any OTHER source (iOS background sync; another browser
+   *  tab) that arrives mid-typing replaces the focused block's text
+   *  with the server's pre-keystroke view + drops any in-flight new
+   *  blocks the user just created with Enter. Symptoms Daisy saw:
+   *  "cursor hijacked, last character deleted, new block line undone." */
+  let lastLocalEditAt = $state(0);
+  /** Pending deferred reparse — the body we WOULD have applied if
+   *  the user hadn't been mid-typing. Held here so we can flush it
+   *  once typing settles instead of dropping the server update on
+   *  the floor. */
+  let deferredReparseBody: string | null = $state(null);
+  let deferredReparseTimer: ReturnType<typeof setTimeout> | null = null;
   // Track which note `lastExternalBody`/`lastSentBody` belong to so the
   // body-sync effect can distinguish a real noteId change (always replace)
   // from a same-note body update (preserve focus by block id).
@@ -493,12 +510,46 @@
     return new Set(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i));
   });
 
+  /** Apply an external body reparse. Extracted from the $effect below
+   *  so the deferred-flush timer can call it without re-triggering
+   *  the effect with stale dependencies. */
+  function applyExternalReparse(targetBody: string) {
+    lastExternalBody = targetBody;
+    if (targetBody === lastSentBody) return;
+    const reparsed = parseBlocks(noteId, targetBody);
+    if (focusedIndex === null) {
+      blocks = reparsed;
+      history.clear();
+      return;
+    }
+    const focusedId = blocks[focusedIndex]?.id;
+    const newIdx = focusedId ? reparsed.findIndex((b) => b.id === focusedId) : -1;
+    if (newIdx === -1) {
+      blocks = reparsed;
+      if (reparsed.length === 0) focusedIndex = null;
+      else focusedIndex = Math.min(Math.max(focusedIndex, 0), reparsed.length - 1);
+      history.clear();
+      return;
+    }
+    const localFocused = blocks[focusedIndex];
+    const merged = reparsed.map((b, i) => i === newIdx ? {
+      ...b,
+      raw_text: localFocused.raw_text,
+      text: localFocused.text,
+      tags: localFocused.tags,
+      properties: localFocused.properties,
+    } : b);
+    blocks = merged;
+    if (newIdx !== focusedIndex) focusedIndex = newIdx;
+    history.clear();
+  }
+
   $effect(() => {
     const noteChanged = noteId !== lastBodyNoteId;
     if (!noteChanged && body === lastExternalBody) return;
-    lastExternalBody = body;
     lastBodyNoteId = noteId;
     if (noteChanged) {
+      lastExternalBody = body;
       // Phase 9.9 follow-up — when noteId changes (page nav within same
       // BlockOutliner instance, e.g. drilling via gd or Esc-back), every
       // old block id has the previous note's prefix and won't exist in the
@@ -514,42 +565,32 @@
       history.clear();
       return;
     }
-    if (body === lastSentBody) return;
-    const reparsed = parseBlocks(noteId, body);
-    if (focusedIndex === null) {
-      blocks = reparsed;
-      history.clear();
+    // Mid-typing reparse protection. If the user has typed (or
+    // pressed Enter for a new block, etc.) within the last 1.2s, a
+    // reparse triggered by an *unrelated* WS event (iOS background
+    // sync, another tab) would clobber the in-flight local edit
+    // because the server's view doesn't include those keystrokes
+    // yet. Defer this reparse to a timer that fires after typing
+    // settles; the next typed character keeps pushing the deadline
+    // out, so as long as the user is actively typing we never apply
+    // a stale server reparse. The MERGE branch in applyExternalReparse
+    // is still a safety net for the focused block, but defer is
+    // strictly better when we can do it.
+    const cooldownMs = 1200;
+    const sinceEdit = Date.now() - lastLocalEditAt;
+    if (sinceEdit < cooldownMs && focusedIndex !== null) {
+      deferredReparseBody = body;
+      if (deferredReparseTimer) clearTimeout(deferredReparseTimer);
+      deferredReparseTimer = setTimeout(() => {
+        deferredReparseTimer = null;
+        const pending = deferredReparseBody;
+        deferredReparseBody = null;
+        if (pending !== null) applyExternalReparse(pending);
+      }, cooldownMs - sinceEdit + 50);
       return;
     }
-    // Phase 9.7 — when a block is focused, we used to skip the reparse to
-    // avoid yanking the user mid-typing. That made drawer-driven property
-    // edits invisible in the outliner until the user re-focused. Preserve
-    // focus by block id instead: if the focused block still exists in the
-    // reparsed list, swap blocks in place.
-    const focusedId = blocks[focusedIndex]?.id;
-    const newIdx = focusedId ? reparsed.findIndex((b) => b.id === focusedId) : -1;
-    if (newIdx === -1) {
-      // Focused block disappeared from the reparse — could be a remote
-      // delete (iOS dropped it) or a local delete whose server-canonical
-      // body arrived before our queueMicrotask refocus ran. Either way,
-      // keep the cursor where it was visually: clamp the old index into
-      // the new list. Falling back to `focusedIndex = null` (the prior
-      // behaviour) silently steals keyboard focus and makes the user
-      // click back in.
-      blocks = reparsed;
-      if (reparsed.length === 0) {
-        focusedIndex = null;
-      } else {
-        focusedIndex = Math.min(Math.max(focusedIndex, 0), reparsed.length - 1);
-      }
-      history.clear();
-      return;
-    }
-    blocks = reparsed;
-    if (newIdx !== focusedIndex) focusedIndex = newIdx;
-    // External body change wipes our snapshots — they reference block IDs
-    // that may no longer exist after the reparse.
-    history.clear();
+
+    applyExternalReparse(body);
   });
 
   // Clear undo/redo on page navigation. Snapshots are page-local: restoring
@@ -662,6 +703,10 @@
   }
 
   function handleBlockChange(blockId: string, newRawText: string) {
+    // Mark "actively editing" so the body-sync effect knows to defer
+    // any incoming server reparse until typing settles. See
+    // lastLocalEditAt's docstring for the why.
+    lastLocalEditAt = Date.now();
     // First keystroke of an insert session: promote the cached pre-edit
     // snapshot onto the undo stack. Programmatic callers (status cycle,
     // tag toggle, etc.) call pushUndo() themselves and aren't in Insert
@@ -837,6 +882,7 @@
   }
 
   function handleEnter(vi: number, textAfterCursor: string = "") {
+    lastLocalEditAt = Date.now();
     const current = visibleBlocks[vi];
     if (!current) return;
     const fullIdx = blocks.findIndex(b => b.id === current.id);
@@ -883,6 +929,7 @@
   }
 
   function handleIndent(vi: number, direction: "indent" | "outdent") {
+    lastLocalEditAt = Date.now();
     const block = visibleBlocks[vi];
     if (!block) return;
     // Outdent at root is a no-op; otherwise the parent and all descendants
@@ -952,6 +999,7 @@
   let blockClipboard = $state<ParsedBlock[]>([]);
 
   function handleDeleteBlock(vi: number) {
+    lastLocalEditAt = Date.now();
     if (visibleBlocks.length <= 1) return;
     const block = visibleBlocks[vi];
     if (!block) return;
@@ -994,6 +1042,7 @@
   }
 
   function handleNewBlockAbove(vi: number) {
+    lastLocalEditAt = Date.now();
     const current = visibleBlocks[vi];
     if (!current) return;
     const fullIdx = blocks.findIndex(b => b.id === current.id);

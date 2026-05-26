@@ -4,7 +4,9 @@
 Tesela-iOS.xcodeproj/
 
 # Xcode artifacts (DerivedData lives outside this tree, but other
-# transient bits land here on real-device builds).
+# transient bits land here on real-device builds). `build/` is the
+# default sim destination; `build-device/` is used for device builds.
 build/
+build-device/
 *.xcuserstate
 xcuserdata/
