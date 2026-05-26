@@ -108,12 +108,19 @@ struct SyncSettingsView: View {
                     .foregroundStyle(theme.fgFaint)
             }
             if let err = relayTicker.lastError {
-                Text(err)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(theme.typeTask)
-                    .padding(8)
-                    .background(theme.typeTask.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(err)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(theme.typeTask)
+                    if relayTicker.consecutiveErrors > 1 {
+                        Text("Backing off — \(relayTicker.consecutiveErrors) consecutive failures")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundStyle(theme.fgFaint)
+                    }
+                }
+                .padding(8)
+                .background(theme.typeTask.opacity(0.1))
+                .clipShape(RoundedRectangle(cornerRadius: 4))
             }
             VStack(alignment: .leading, spacing: 4) {
                 relayMetricRow("Last tick", relativeTime(relayTicker.lastTickAt.map { Int64($0.timeIntervalSince1970) }))

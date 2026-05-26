@@ -59,10 +59,25 @@ final class RelayTicker: ObservableObject {
     /// @StateObject, so it needs a synchronous initial value before
     /// it can be given the real mosaic reference).
     private var mosaic: MockMosaicService? = nil
-    /// Tick cadence. 5 s matches the Mac's relay tick by default; UI
-    /// can swap in a longer interval later when battery becomes a
-    /// concern (e.g. 30 s when the screen is off).
+    /// Base tick cadence. 5 s matches the Mac's relay tick by default.
+    /// Exponential backoff multiplies this on consecutive errors so we
+    /// don't hammer a flaky/down relay (or drain battery on cellular
+    /// when there's nothing to do).
     private let tickIntervalSeconds: UInt64
+    /// Count of consecutive failed ticks. Resets to 0 on each success.
+    /// Used to compute the next sleep via `2^min(consecutiveErrors, 6)`,
+    /// capped so the loop wakes at least once a minute regardless.
+    /// Published so the UI can show "retrying in 30s" or similar.
+    @Published private(set) var consecutiveErrors: UInt32 = 0
+    /// Max backoff cap, in seconds. Even after lots of consecutive
+    /// failures, the loop still wakes every `tickIntervalSeconds * cap`
+    /// to retry.
+    private let maxBackoffMultiplier: UInt32 = 12  // → 60s when base is 5s
+    /// Persisted-cursor UserDefaults keys. Scoped to the device id so
+    /// switching mosaics (future) doesn't replay another mosaic's
+    /// cursors over the new one.
+    private static let inboundCursorKey = "relay.inboundCursorSeq"
+    private static let outboundCursorKey = "relay.outboundCursorNtp"
 
     /// Callback fired whenever a tick applied ≥1 incoming op. Hosts
     /// hook this up to nudge the iOS UI to re-render (typically by
@@ -149,11 +164,14 @@ final class RelayTicker: ObservableObject {
     private func runLoop() async {
         while !Task.isCancelled {
             await tickOnce()
-            // Plain Task.sleep — when the app goes background iOS
-            // suspends us; on resume we wake up where we left off. No
-            // need for a separate scene-phase observer beyond start/stop.
+            // Backoff: on consecutive errors, sleep longer between
+            // ticks (capped). Successful tick resets to base cadence.
+            // Doubles per error up to maxBackoffMultiplier (~60s when
+            // base is 5s) so a flaky relay doesn't keep us hot-looping.
+            let multiplier = UInt64(min(consecutiveErrors, maxBackoffMultiplier))
+            let sleepSecs = tickIntervalSeconds * (1 << multiplier)
             do {
-                try await Task.sleep(nanoseconds: tickIntervalSeconds * 1_000_000_000)
+                try await Task.sleep(nanoseconds: sleepSecs * 1_000_000_000)
             } catch {
                 // Task cancelled mid-sleep — exit cleanly.
                 return
@@ -176,6 +194,13 @@ final class RelayTicker: ObservableObject {
             inboundCursorSeq = inbound.newCursorSeq
             lastTickAt = Date()
             lastError = nil
+            consecutiveErrors = 0
+            // Persist cursors so a cold launch resumes where we left
+            // off instead of re-polling the full relay history.
+            UserDefaults.standard.set(inbound.newCursorSeq, forKey: Self.inboundCursorKey)
+            if let ntp = outbound.newCursorNtp {
+                UserDefaults.standard.set(ntp, forKey: Self.outboundCursorKey)
+            }
             if inbound.applied > 0 {
                 // Tell the host UI that new data has landed in the
                 // local engine + sandbox. AppShell wires this to a
@@ -185,9 +210,11 @@ final class RelayTicker: ObservableObject {
             }
         } catch let err as FfiSyncError {
             lastError = err.localizedDescription
+            consecutiveErrors = consecutiveErrors &+ 1
             dropCoordinator()
         } catch {
             lastError = error.localizedDescription
+            consecutiveErrors = consecutiveErrors &+ 1
             dropCoordinator()
         }
     }
@@ -236,6 +263,16 @@ final class RelayTicker: ObservableObject {
             relay: relay,
             groupIdHex: pairing.groupIdHex
         )
+        // Restore persisted cursors so we don't re-poll the entire
+        // relay history every cold launch + don't re-push every
+        // local op the relay already has.
+        if let inbound = UserDefaults.standard.object(forKey: Self.inboundCursorKey) as? Int64 {
+            await coordinator.setInboundCursorSeq(seq: inbound)
+            inboundCursorSeq = inbound
+        }
+        if let outbound = UserDefaults.standard.object(forKey: Self.outboundCursorKey) as? Int64 {
+            await coordinator.setOutboundCursorNtp(ntp: outbound)
+        }
         self.engine = engine
         self.relay = relay
         self.coordinator = coordinator

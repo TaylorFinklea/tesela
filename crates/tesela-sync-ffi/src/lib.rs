@@ -624,6 +624,28 @@ impl SyncCoordinator {
     pub async fn inbound_cursor_seq(&self) -> i64 {
         *self.inbound_cursor.lock().await
     }
+
+    /// Restore the inbound cursor from prior-session persistence.
+    /// Idempotent and clamping: a request to move BACKWARDS is
+    /// ignored (the engine has already applied past that point and
+    /// re-applying is a waste of bandwidth, even though it's safe
+    /// thanks to content-hash dedupe).
+    pub async fn set_inbound_cursor_seq(&self, seq: i64) {
+        let mut guard = self.inbound_cursor.lock().await;
+        if seq > *guard {
+            *guard = seq;
+        }
+    }
+
+    /// Restore the outbound cursor (HLC ntp64) from prior-session
+    /// persistence. Same clamping rule as the inbound setter — won't
+    /// move backwards.
+    pub async fn set_outbound_cursor_ntp(&self, ntp: i64) {
+        let mut guard = self.outbound_cursor.lock().await;
+        if guard.map(|cur| ntp > cur).unwrap_or(true) {
+            *guard = Some(ntp);
+        }
+    }
 }
 
 /// Outcome of [`SyncCoordinator::tick_inbound`]. Designed to be small

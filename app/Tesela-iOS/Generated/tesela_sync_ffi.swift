@@ -761,6 +761,22 @@ public protocol SyncCoordinatorProtocol: AnyObject, Sendable {
     func outboundCursorNtp() async  -> Int64?
     
     /**
+     * Restore the inbound cursor from prior-session persistence.
+     * Idempotent and clamping: a request to move BACKWARDS is
+     * ignored (the engine has already applied past that point and
+     * re-applying is a waste of bandwidth, even though it's safe
+     * thanks to content-hash dedupe).
+     */
+    func setInboundCursorSeq(seq: Int64) async 
+    
+    /**
+     * Restore the outbound cursor (HLC ntp64) from prior-session
+     * persistence. Same clamping rule as the inbound setter — won't
+     * move backwards.
+     */
+    func setOutboundCursorNtp(ntp: Int64) async 
+    
+    /**
      * Drain incoming envelopes from the relay since the last applied
      * `seq`, decrypt + decode each, apply via the engine (which
      * materializes the resulting NoteUpsert/etc into the iOS sandbox
@@ -929,6 +945,54 @@ open func outboundCursorNtp()async  -> Int64?  {
             completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterOptionInt64.lift,
+            errorHandler: nil
+            
+        )
+}
+    
+    /**
+     * Restore the inbound cursor from prior-session persistence.
+     * Idempotent and clamping: a request to move BACKWARDS is
+     * ignored (the engine has already applied past that point and
+     * re-applying is a waste of bandwidth, even though it's safe
+     * thanks to content-hash dedupe).
+     */
+open func setInboundCursorSeq(seq: Int64)async   {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_synccoordinator_set_inbound_cursor_seq(
+                    self.uniffiCloneHandle(),
+                    FfiConverterInt64.lower(seq)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_void,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: nil
+            
+        )
+}
+    
+    /**
+     * Restore the outbound cursor (HLC ntp64) from prior-session
+     * persistence. Same clamping rule as the inbound setter — won't
+     * move backwards.
+     */
+open func setOutboundCursorNtp(ntp: Int64)async   {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_synccoordinator_set_outbound_cursor_ntp(
+                    self.uniffiCloneHandle(),
+                    FfiConverterInt64.lower(ntp)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_void,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
+            liftFunc: { $0 },
             errorHandler: nil
             
         )
@@ -2110,6 +2174,12 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_outbound_cursor_ntp() != 45049) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_set_inbound_cursor_seq() != 8750) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_set_outbound_cursor_ntp() != 22775) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_tick_inbound() != 22311) {
