@@ -197,8 +197,23 @@ pub async fn update_note(
     // (from prior saves) round-trip untouched.
     let stamped_new = stamp_block_ids(&new_content);
     note.content = stamped_new;
-    s.store.update(&note).await?;
-    // Re-read to get fresh parsed metadata and checksum
+    // Phase 1 (sync redesign 2026-05-26): single write path through
+    // the engine. Previously this called s.store.update(&note) to
+    // write the file via FsNoteStore AND then record_sync_update
+    // below to log the op + materialize again — two write paths to
+    // the same file, with race-on-mtime semantics when concurrent
+    // peer ops arrived between the two writes. Now record_sync_update
+    // is the sole writer: it emits BlockUpsert/Move/Delete ops (or a
+    // NoteUpsert fallback for frontmatter-only changes), each of
+    // which materializes the file via the engine's apply_block_*
+    // functions. The HTTP handler becomes a thin op-submission
+    // wrapper around the engine. See
+    // `.docs/ai/phases/2026-05-26-sync-architecture-redesign.md`.
+    record_sync_update(&s, &prev_content, &note).await;
+    // Re-read to get fresh parsed metadata and checksum from the
+    // file the engine just wrote. The engine's serialization is the
+    // canonical form; downstream indexing should index THAT, not the
+    // pre-canonicalization `note.content` we passed in.
     let updated = s
         .store
         .get(&note_id)
@@ -229,7 +244,8 @@ pub async fn update_note(
         }
     }
     ensure_tag_pages(&s, &updated).await;
-    record_sync_update(&s, &prev_content, &updated).await;
+    // `record_sync_update` already ran above before the re-read — it
+    // is what wrote the file. No second invocation here.
     let _ = s.ws_tx.send(WsEvent::NoteUpdated {
         note: updated.clone(),
     });
