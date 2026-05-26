@@ -13,6 +13,9 @@ bench = false
 
 [dependencies]
 tesela-sync = { path = "../tesela-sync" }
+# `record_note_diff` needs `parse_note` to parse the new + previous
+# body into NoteTrees before calling `diff_note_trees`.
+tesela-core = { path = "../tesela-core" }
 uniffi = { workspace = true, features = ["tokio"] }
 thiserror.workspace = true
 # Tokio needed for the async UniFFI runtime that drives the

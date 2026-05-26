@@ -1140,6 +1140,39 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func deviceHex()  -> String
     
     /**
+     * Block-granular variant of `record_note_upsert_by_slug`. Diffs
+     * the new body against the engine's last-materialized version of
+     * the note (read from `<mosaic>/notes/<slug>.md`) and emits
+     * `BlockUpsert` / `BlockMove` / `BlockDelete` ops for what
+     * actually changed, instead of a single whole-file `NoteUpsert`.
+     *
+     * **Why this matters for sync convergence.** When iOS pushes a
+     * `NoteUpsert(content: full_body)` via the relay and another
+     * peer (web, Mac, second iPhone) has independently edited a
+     * *different* block of the same note between iOS's read and
+     * iOS's push, the wholesale apply on the receiver overwrites
+     * the other peer's block. With block-granular ops, the two
+     * edits target distinct block ids and converge correctly.
+     *
+     * Returns the number of ops emitted (`0` on no-op, `1` for the
+     * frontmatter-only fallback NoteUpsert, otherwise one per block
+     * change). The 64-char hex content hash that
+     * `record_note_upsert_by_slug` returned isn't useful here since
+     * multiple ops may be emitted; callers that need de-dup tracking
+     * should hash the new body themselves.
+     *
+     * `title` + `created_at_millis` are only consulted for the
+     * frontmatter-only fallback `NoteUpsert` path (the block ops
+     * don't carry them). The fallback fires when the parsed block
+     * tree is identical but the raw content differs — e.g. a
+     * frontmatter `tags:` change with no block edits. That path is
+     * data-lossy under concurrent edits to the same note, matching
+     * the server-side `record_sync_update` behaviour documented in
+     * `crates/tesela-server/src/routes/notes.rs::record_sync_update`.
+     */
+    func recordNoteDiff(slug: String, newContent: String, title: String, createdAtMillis: Int64) async throws  -> UInt32
+    
+    /**
      * Record a "create or update a note" op locally. Returns the
      * resulting 64-char hex content hash that the engine assigned —
      * callers can use it to dedupe their UI's optimistic write against
@@ -1303,6 +1336,54 @@ open func deviceHex() -> String  {
             self.uniffiCloneHandle(),$0
     )
 })
+}
+    
+    /**
+     * Block-granular variant of `record_note_upsert_by_slug`. Diffs
+     * the new body against the engine's last-materialized version of
+     * the note (read from `<mosaic>/notes/<slug>.md`) and emits
+     * `BlockUpsert` / `BlockMove` / `BlockDelete` ops for what
+     * actually changed, instead of a single whole-file `NoteUpsert`.
+     *
+     * **Why this matters for sync convergence.** When iOS pushes a
+     * `NoteUpsert(content: full_body)` via the relay and another
+     * peer (web, Mac, second iPhone) has independently edited a
+     * *different* block of the same note between iOS's read and
+     * iOS's push, the wholesale apply on the receiver overwrites
+     * the other peer's block. With block-granular ops, the two
+     * edits target distinct block ids and converge correctly.
+     *
+     * Returns the number of ops emitted (`0` on no-op, `1` for the
+     * frontmatter-only fallback NoteUpsert, otherwise one per block
+     * change). The 64-char hex content hash that
+     * `record_note_upsert_by_slug` returned isn't useful here since
+     * multiple ops may be emitted; callers that need de-dup tracking
+     * should hash the new body themselves.
+     *
+     * `title` + `created_at_millis` are only consulted for the
+     * frontmatter-only fallback `NoteUpsert` path (the block ops
+     * don't carry them). The fallback fires when the parsed block
+     * tree is identical but the raw content differs — e.g. a
+     * frontmatter `tags:` change with no block edits. That path is
+     * data-lossy under concurrent edits to the same note, matching
+     * the server-side `record_sync_update` behaviour documented in
+     * `crates/tesela-server/src/routes/notes.rs::record_sync_update`.
+     */
+open func recordNoteDiff(slug: String, newContent: String, title: String, createdAtMillis: Int64)async throws  -> UInt32  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_record_note_diff(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug),FfiConverterString.lower(newContent),FfiConverterString.lower(title),FfiConverterInt64.lower(createdAtMillis)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u32,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u32,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u32,
+            liftFunc: FfiConverterUInt32.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
 }
     
     /**
@@ -2189,6 +2270,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_device_hex() != 4479) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_diff() != 20141) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_upsert() != 31930) {

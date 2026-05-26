@@ -166,10 +166,19 @@ final class RelayTicker: ObservableObject {
             return
         }
         do {
-            _ = try await engine.recordNoteUpsertBySlug(
+            // Phase 2 (sync redesign 2026-05-26): use the block-granular
+            // diff path instead of `recordNoteUpsertBySlug`. The engine
+            // reads the previously-materialized file from disk, parses
+            // both bodies into NoteTrees, emits BlockUpsert/Move/Delete
+            // ops for what actually changed, and materializes the
+            // updated file as a side effect. Concurrent edits to
+            // different blocks of the same note now converge correctly
+            // on the relay receiver instead of stomping each other via
+            // wholesale NoteUpsert apply.
+            _ = try await engine.recordNoteDiff(
                 slug: slug,
+                newContent: content,
                 title: title,
-                content: content,
                 createdAtMillis: createdAtMillis
             )
         } catch {

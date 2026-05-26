@@ -14,7 +14,7 @@ use crate::wire::envelope::SyncEnvelope;
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -77,6 +77,13 @@ impl SqliteEngine {
     /// Local device id.
     pub fn device(&self) -> DeviceId {
         self.inner.device
+    }
+
+    /// Filesystem path the engine materializes notes into, when set.
+    /// Returned as a reference so callers can probe individual files
+    /// (e.g. read-before-diff in the FFI's `record_note_diff`).
+    pub fn mosaic_dir(&self) -> Option<&Path> {
+        self.inner.mosaic_dir.as_deref()
     }
 
     /// Access the HLC (mostly for tests).

@@ -4387,6 +4387,7 @@ dependencies = [
  "blake3",
  "postcard",
  "reqwest",
+ "tesela-core",
  "tesela-sync",
  "thiserror 2.0.18",
  "tokio",

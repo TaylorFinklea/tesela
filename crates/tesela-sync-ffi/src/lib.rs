@@ -357,6 +357,95 @@ impl SyncEngineHandle {
         Ok(hex_encode(&hash.0))
     }
 
+    /// Block-granular variant of `record_note_upsert_by_slug`. Diffs
+    /// the new body against the engine's last-materialized version of
+    /// the note (read from `<mosaic>/notes/<slug>.md`) and emits
+    /// `BlockUpsert` / `BlockMove` / `BlockDelete` ops for what
+    /// actually changed, instead of a single whole-file `NoteUpsert`.
+    ///
+    /// **Why this matters for sync convergence.** When iOS pushes a
+    /// `NoteUpsert(content: full_body)` via the relay and another
+    /// peer (web, Mac, second iPhone) has independently edited a
+    /// *different* block of the same note between iOS's read and
+    /// iOS's push, the wholesale apply on the receiver overwrites
+    /// the other peer's block. With block-granular ops, the two
+    /// edits target distinct block ids and converge correctly.
+    ///
+    /// Returns the number of ops emitted (`0` on no-op, `1` for the
+    /// frontmatter-only fallback NoteUpsert, otherwise one per block
+    /// change). The 64-char hex content hash that
+    /// `record_note_upsert_by_slug` returned isn't useful here since
+    /// multiple ops may be emitted; callers that need de-dup tracking
+    /// should hash the new body themselves.
+    ///
+    /// `title` + `created_at_millis` are only consulted for the
+    /// frontmatter-only fallback `NoteUpsert` path (the block ops
+    /// don't carry them). The fallback fires when the parsed block
+    /// tree is identical but the raw content differs — e.g. a
+    /// frontmatter `tags:` change with no block edits. That path is
+    /// data-lossy under concurrent edits to the same note, matching
+    /// the server-side `record_sync_update` behaviour documented in
+    /// `crates/tesela-server/src/routes/notes.rs::record_sync_update`.
+    pub async fn record_note_diff(
+        &self,
+        slug: String,
+        new_content: String,
+        title: String,
+        created_at_millis: i64,
+    ) -> Result<u32, FfiSyncError> {
+        use tesela_core::note_tree::parse_note;
+        use tesela_sync::diff::diff_note_trees;
+
+        let note_id = stable_uuid_from_slug(&slug);
+
+        // Previous content is whatever the engine last materialized
+        // for this note. Read it straight from disk — `record_local`
+        // updates the file via `materialize` on every accepted op, so
+        // disk reflects the engine's view. Missing file → empty tree
+        // (first push for this note).
+        let prev_content = match self.inner.mosaic_dir() {
+            Some(root) => {
+                let path = root.join("notes").join(format!("{slug}.md"));
+                tokio::fs::read_to_string(&path).await.unwrap_or_default()
+            }
+            None => String::new(),
+        };
+
+        let old_tree = parse_note(&prev_content);
+        let new_tree = parse_note(&new_content);
+        let ops = diff_note_trees(note_id, &old_tree, &new_tree);
+
+        if ops.is_empty() {
+            if prev_content == new_content {
+                return Ok(0);
+            }
+            // Parsed tree identical but raw bytes differ (frontmatter
+            // change). Fall back to NoteUpsert — same fallback the
+            // server side uses.
+            let payload = OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some(slug),
+                title,
+                content: new_content,
+                created_at_millis,
+            };
+            self.inner
+                .record_local(payload)
+                .await
+                .map_err(FfiSyncError::from)?;
+            return Ok(1);
+        }
+
+        let count = ops.len() as u32;
+        for op in ops {
+            self.inner
+                .record_local(op)
+                .await
+                .map_err(FfiSyncError::from)?;
+        }
+        Ok(count)
+    }
+
     /// Record a "create or update a note" op locally. Returns the
     /// resulting 64-char hex content hash that the engine assigned —
     /// callers can use it to dedupe their UI's optimistic write against
