@@ -16,6 +16,11 @@ struct AppShell: View {
     @StateObject private var transcription = TranscriptionStore()
     @StateObject private var mosaicRegistry = MosaicRegistry()
     @StateObject private var liveSync = LiveSyncSocket()
+    /// B.3.3 — background relay poll/push loop. Runs whenever the app
+    /// is foregrounded; pauses in background. Mac-originated edits
+    /// arrive via this loop within ~5s instead of the prior "tap the
+    /// dev pull button or wait minutes" behaviour.
+    @StateObject private var relayTicker = RelayTicker()
     @State private var activeTab: AppTab = .daily
     @State private var captureContext: CaptureContext = .init()
     /// Lifted out of CaptureBar so the AVAudioEngine init isn't paid
@@ -34,7 +39,14 @@ struct AppShell: View {
         TeselaAppearance(controller: appearance) {
             if onboardingComplete {
                 shell
-                    .task { await activateMosaic(initial: true) }
+                    .task {
+                        await activateMosaic(initial: true)
+                        // Bind + start the relay ticker once the app
+                        // is up. connect() is idempotent so re-runs
+                        // (e.g. on mosaic switch) don't churn.
+                        relayTicker.connect(mosaic: mosaic)
+                        relayTicker.start()
+                    }
                     .onChange(of: mosaicRegistry.activeID) { _, _ in
                         Task { await activateMosaic(initial: false) }
                     }
@@ -49,12 +61,14 @@ struct AppShell: View {
                         switch newPhase {
                         case .active:
                             liveSync.nudge()
+                            relayTicker.start()
                             Task {
                                 await mosaic.refresh(from: backend.backend)
                                 await mosaic.refreshLoadedPages()
                             }
                         case .background:
                             liveSync.suspend()
+                            relayTicker.stop()
                         default:
                             break
                         }
