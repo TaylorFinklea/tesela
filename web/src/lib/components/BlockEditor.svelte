@@ -11,6 +11,10 @@
     view: EditorView | null;
     navigate: ((dir: "up" | "down") => void) | null;
     pageJump: ((dir: "up" | "down") => void) | null;
+    /** Jump to the previous / next top-level (indent_level === 0) block.
+     *  Lets `[` / `]` skip past nested sub-blocks the way vim's `{` / `}`
+     *  skip past inner paragraphs — useful in heavily-outlined notes. */
+    navigateTopLevel: ((dir: "up" | "down") => void) | null;
     deleteBlock: (() => void) | null;
     yankBlock: (() => void) | null;
     pasteBlock: (() => void) | null;
@@ -35,7 +39,7 @@
     endInsertSession: (() => void) | null;
     cycleDrawerTab: ((direction: 1 | -1) => void) | null;
   } = {
-    view: null, navigate: null, pageJump: null,
+    view: null, navigate: null, pageJump: null, navigateTopLevel: null,
     deleteBlock: null, yankBlock: null,
     pasteBlock: null, newBlockBelow: null, newBlockAbove: null,
     indent: null, leader: null,
@@ -110,6 +114,14 @@
 
     Vim.defineAction("openLeaderMenu", () => { vimCtx.leader?.(); });
     Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
+
+    // Phase 13 — `[` / `]` jump between top-level blocks (indent_level
+    // 0), skipping nested children. Mirrors vim's `{` / `}` for
+    // paragraph navigation but operates on the outliner's tree shape.
+    Vim.defineAction("prevTopLevel", () => { vimCtx.navigateTopLevel?.("up"); });
+    Vim.mapCommand("[", "action", "prevTopLevel", {}, { context: "normal" });
+    Vim.defineAction("nextTopLevel", () => { vimCtx.navigateTopLevel?.("down"); });
+    Vim.mapCommand("]", "action", "nextTopLevel", {}, { context: "normal" });
 
     // Phase 9.9 — Ctrl+U / Ctrl+D as outliner page-jump are wired via the
     // cm6-level blockKeymap below (component script), not through vim
@@ -359,6 +371,7 @@
     ontogglefold: onToggleFold,
     ontoggleprops: onToggleProps,
     onpagejump: onPageJump,
+    onnavigatetoplevel: onNavigateTopLevel,
     onUndoOutliner,
     onRedoOutliner,
     onBeginInsertSession,
@@ -406,6 +419,7 @@
     ontogglefold?: () => void;
     ontoggleprops?: () => void;
     onpagejump?: (direction: "up" | "down") => void;
+    onnavigatetoplevel?: (direction: "up" | "down") => void;
     onUndoOutliner?: () => boolean;
     onRedoOutliner?: () => boolean;
     onBeginInsertSession?: () => void;
@@ -1118,6 +1132,7 @@
     vimCtx.toggleFold = onToggleFold ?? null;
     vimCtx.toggleProps = onToggleProps ?? null;
     vimCtx.pageJump = onPageJump ?? null;
+    vimCtx.navigateTopLevel = onNavigateTopLevel ?? null;
     vimCtx.undoOutliner = onUndoOutliner ?? null;
     vimCtx.redoOutliner = onRedoOutliner ?? null;
     vimCtx.beginInsertSession = onBeginInsertSession ?? null;

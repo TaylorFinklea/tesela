@@ -106,6 +106,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Raw frontmatter for each loaded page, so writeback can splice
     /// new body content without stomping `tags:`, `title:`, etc.
     private var loadedPageFrontmatter: [String: String] = [:]
+    /// Cached frontmatter for today's daily, kept in sync with whatever
+    /// the last successful HTTP refresh (or local-hydration pass) saw.
+    /// Reused by `pushTodayBlocks` so an offline writeback doesn't need
+    /// to fetch the existing frontmatter over HTTP (5-second timeout)
+    /// before the engine path can fire. Without this cache, the engine
+    /// write was being blocked behind the HTTP probe — meaning if the
+    /// user kept typing or force-closed the app within the timeout
+    /// window, the edit never reached SQLite.
+    private var loadedDailyFrontmatter: String? = nil
 
     /// Wall-clock of the last successful in-memory hydration per note,
     /// used by the local-fallback path to decide whether the on-disk
@@ -659,55 +668,34 @@ final class MockMosaicService: ObservableObject, MosaicService {
             loadedLinks[id] = []
             pageLoadStates[id] = .ready
         case .http(let baseURL):
-            // HTTP-first with a 5s deadline (matches `refresh(from:)`).
-            // Tailscale-routed cellular requests routinely take 2-3s; a
-            // tighter cutoff would falsely fail on a working network.
-            //
-            // If a page-load fails (timeout OR real error) AND we
-            // already have blocks loaded for this page (e.g. pull-to-
-            // refresh while viewing), keep what we have instead of
-            // replacing it with potentially-older local content. The
-            // RelayTicker keeps the sandbox close to current, so the
-            // gap between "in-memory" and "local file" is usually
-            // seconds, but in-memory was confirmed-fresh-last-time.
-            let hadDataBefore = (loadedPageBlocks[id]?.isEmpty == false)
+            // Local-first: if we have a materialized file, show it
+            // immediately so the user sees the page right away,
+            // even on a slow / down network. Then fire HTTP in the
+            // background to freshen.
+            if let local = readLocalNote(id: id) {
+                loadedPageBlocks[id] = parseBlocks(from: local.body, noteId: id)
+                loadedPageFrontmatter[id] = extractFrontmatter(from: local.content)
+                inMemoryLoadedAt[id] = localNoteMTime(id: id) ?? Date()
+                loadedBacklinks[id] = localBacklinks(for: id)
+                pageLoadStates[id] = .ready
+            }
+            // HTTP freshen — best-effort. If we already rendered
+            // from local, a failure here is silent; the user keeps
+            // looking at the local copy. If we never had a local
+            // copy and HTTP also fails, then we honestly surface
+            // the "couldn't load" state.
             let httpResult: APINote? = await fetchNoteWithTimeout(
                 id: id,
                 baseURL: baseURL,
-                seconds: 5
+                seconds: 3
             )
             if let note = httpResult {
-                // Same "prefer local if engine has a newer materialized
-                // copy" rule as in the daily refresh above — keeps an
-                // iOS-authored edit from being clobbered by a server
-                // response that hasn't yet learned about it.
                 let pick = preferLocalIfNewer(serverNote: note)
                 loadedPageBlocks[id] = parseBlocks(from: pick.body, noteId: id)
                 loadedPageFrontmatter[id] = extractFrontmatter(from: pick.content)
                 inMemoryLoadedAt[id] = Date()
                 pageLoadStates[id] = .ready
-            } else if hadDataBefore,
-                      let mtime = localNoteMTime(id: id),
-                      mtime > (inMemoryLoadedAt[id] ?? .distantPast),
-                      let local = readLocalNote(id: id) {
-                // HTTP failed BUT the local file is newer than the
-                // in-memory render (RelayTicker applied a Mac edit
-                // since we last fetched). Use the local content — it's
-                // the freshest thing we have.
-                loadedPageBlocks[id] = parseBlocks(from: local.body, noteId: id)
-                loadedPageFrontmatter[id] = extractFrontmatter(from: local.content)
-                inMemoryLoadedAt[id] = mtime
-                pageLoadStates[id] = .ready
-            } else if hadDataBefore {
-                // HTTP failed and local isn't fresher — keep what we
-                // have rendered.
-                pageLoadStates[id] = .ready
-            } else if let local = readLocalNote(id: id) {
-                loadedPageBlocks[id] = parseBlocks(from: local.body, noteId: id)
-                loadedPageFrontmatter[id] = extractFrontmatter(from: local.content)
-                inMemoryLoadedAt[id] = localNoteMTime(id: id) ?? Date()
-                pageLoadStates[id] = .ready
-            } else {
+            } else if pageLoadStates[id] != .ready {
                 pageLoadStates[id] = .failed("Couldn't reach \(baseURL.host ?? "server")")
                 return
             }
@@ -753,12 +741,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let content = "\(frontmatter)\n\n\(body)\n"
         // Engine path first — durable even when Mac unreachable.
         onLocalWrite?(id, id, content, Int64(Date().timeIntervalSince1970 * 1000))
-        // HTTP path — LAN-speed fast path.
-        do {
-            try await httpPut("/notes/\(id)", baseURL: baseURL, body: ["content": content])
-        } catch {
-            setConnectionFailedIfReal(error, host: baseURL.host)
-        }
+        // HTTP path — best-effort LAN-speed convergence. Silent on
+        // failure: a writeback that can't reach Mac during normal
+        // offline editing is not an error worth interrupting the user
+        // over. The engine + relay carries durability.
+        try? await httpPut("/notes/\(id)", baseURL: baseURL, body: ["content": content])
     }
 
     private func extractFrontmatter(from content: String) -> String {
@@ -772,29 +759,47 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     // MARK: - HTTP refresh
 
-    /// Pull pages, daily, and tags from a `tesela-server` and replace
-    /// the in-memory snapshot. Resets to the built-in mock if the URL
-    /// can't be reached.
-    func refresh(from backend: Backend) async {
+    /// Hydrate the in-memory snapshot. **Local-first**: always render
+    /// the engine-materialized files immediately so the UI is usable
+    /// in <100ms even when offline, then fire HTTP in the background
+    /// to pick up server-side changes. The HTTP path is best-effort:
+    /// failures leave the local view in place silently. Pull-to-
+    /// refresh sets `userInitiated: true` so an HTTP failure can
+    /// surface its banner; the default (background refresh, app
+    /// foreground, RelayTicker callback) stays silent.
+    ///
+    /// This pattern is what makes iOS feel like a local-first app
+    /// (no "blank screen for 5 seconds" cold launches, no "offline
+    /// edit gets clobbered on reconnect"). HTTP becomes a freshen
+    /// pass on top of the local source of truth, not a gate that
+    /// blocks the UI.
+    func refresh(from backend: Backend, userInitiated: Bool = false) async {
         switch backend {
         case .mock:
-            // Reset to the seed mosaic so swapping back from HTTP is
-            // clean.
             resetToSeed()
             connection = .idle
         case .http(let baseURL):
-            // HTTP-first with a 5-second deadline. Tailscale-routed
-            // cellular requests can run 2-3s round-trip; we need to
-            // give them room to complete or every pull-down on a
-            // marginal network replaces good in-memory data with
-            // stale local-sandbox data. The local-fallback path
-            // below guards against THAT by only firing when the
-            // in-memory state is empty.
+            // Step 1: render local immediately. Cheap (filesystem
+            // walks the iOS sandbox), so we always do it before
+            // touching the network. After this point the UI is
+            // usable; the HTTP step that follows just freshens it.
             let hadDataBefore = !todayBlocks.isEmpty
-            connection = .connecting
+            let hydratedFromLocal = applyLocalRefreshFallback()
+            if hydratedFromLocal {
+                let todayId = dailyId(daysAgo: 0)
+                todayLoadedAt = localNoteMTime(id: todayId) ?? Date()
+                connection = .ready
+            }
+
+            // Step 2: HTTP freshen. Don't block the UI on this — if
+            // we have local data, the user can already see + edit
+            // their notes. The freshen call below catches up to any
+            // server-side changes that happened since the last
+            // RelayTicker apply.
+            connection = hydratedFromLocal ? .ready : .connecting
             do {
                 let daily: APINote = try await fetchOrTimeout(
-                    "/notes/daily", baseURL: baseURL, seconds: 5
+                    "/notes/daily", baseURL: baseURL, seconds: 3
                 )
                 let notes: [APINote] = try await httpGet("/notes?limit=200", baseURL: baseURL)
                 let yesterdayNote: APINote? = (try? await fetchYesterdayDaily(baseURL: baseURL))
@@ -802,18 +807,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 let serverTagNames: [String] = (try? await httpGet("/tags", baseURL: baseURL)) ?? []
 
                 serverDailyId = daily.id
-                // Prefer the local materialized file when it's newer
-                // than the server's view — this catches the "iOS made
-                // an offline edit, then reconnected" case. Without
-                // this, the HTTP refresh would land first (with Mac's
-                // pre-edit body) and overwrite the engine-materialized
-                // local edit in memory before the outbound relay tick
-                // had a chance to ship it. The local file is durable
-                // and reflects the most recent engine write, so
-                // preferring it on a tie or newer-than-server is safe.
+                // Per-note "use whichever is fresher" — local wins
+                // when iOS authored an edit since the server's last
+                // write, server wins otherwise.
                 let localDaily = preferLocalIfNewer(serverNote: daily)
                 todayBlocks = parseBlocks(from: localDaily.body, noteId: localDaily.id)
                 todayLoadedAt = Date()
+                loadedDailyFrontmatter = extractFrontmatter(from: localDaily.content)
                 pages = notes
                     .filter { $0.id != daily.id }
                     .map { mapPage($0) }
@@ -836,35 +836,35 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 recent = pages.sorted(by: { $0.edited > $1.edited })
                     .prefix(8)
                     .map { RecentEntry(id: $0.id, title: $0.title, at: $0.edited) }
+                // Snapshot Mac's notes to the iOS sandbox so offline
+                // search + backlinks see the whole mosaic, not just
+                // the subset the relay tick has delivered. This is
+                // the "first refresh on a new device pulls a full
+                // snapshot" behaviour Logseq has: after one
+                // successful online refresh, the device is fully
+                // usable offline. Subsequent refreshes only refresh
+                // notes that are stale (cheaper than re-writing
+                // everything every time).
+                snapshotNotesToSandbox(notes + [daily])
                 connection = .ready
             } catch {
-                // HTTP timed out or failed.
-                //   * If local sandbox is NEWER than our in-memory
-                //     render (RelayTicker has caught up to a Mac edit
-                //     we haven't seen), use local — it's the freshest
-                //     thing we have.
-                //   * Else if in-memory is populated, keep it. The
-                //     data was correct; the network was just slow.
-                //   * Else (cold launch with no in-memory), fall back
-                //     to whatever local has so the user sees something.
-                let todayId = dailyId(daysAgo: 0)
-                if hadDataBefore,
-                   let mtime = localNoteMTime(id: todayId),
-                   mtime > (todayLoadedAt ?? .distantPast),
-                   applyLocalRefreshFallback() {
-                    todayLoadedAt = mtime
+                // HTTP failed. If we already have local data on
+                // screen, the user sees no disruption — we just
+                // don't surface a banner. The only time we want
+                // to surface it is on an explicit pull-to-refresh
+                // (`userInitiated`) where the user actively asked
+                // for the network round-trip and deserves to know
+                // it failed. Even then, the existing local data
+                // stays in place; the banner is a hint, not a wipe.
+                if hadDataBefore || hydratedFromLocal {
                     connection = .ready
+                    if userInitiated {
+                        setConnectionFailedIfReal(error, host: baseURL.host)
+                    }
                     return
                 }
-                if hadDataBefore {
-                    connection = .ready
-                    return
-                }
-                if applyLocalRefreshFallback() {
-                    todayLoadedAt = localNoteMTime(id: todayId) ?? Date()
-                    connection = .ready
-                    return
-                }
+                // No local data either — surface the error so the
+                // user knows the app couldn't find anything to show.
                 setConnectionFailedIfReal(error, host: baseURL.host)
             }
         }
@@ -899,6 +899,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
         if let daily = loadedNotes.first(where: { $0.id == todayId }) {
             serverDailyId = daily.id
             todayBlocks = parseBlocks(from: daily.body, noteId: daily.id)
+            // Cache frontmatter from the local file so writebacks
+            // composed before any HTTP refresh still preserve Mac's
+            // tags / properties (the most recent state the engine
+            // applied to disk is the most reliable source we have).
+            loadedDailyFrontmatter = extractFrontmatter(from: daily.content)
         }
         // Yesterday's daily similarly.
         let yesterdayId = dailyId(daysAgo: 1)
@@ -1301,6 +1306,47 @@ final class MockMosaicService: ObservableObject, MosaicService {
             in: .userDomainMask
         )[0]
         return docs.appendingPathComponent("sync-ios-mosaic")
+    }
+
+    /// Write each server-side note to `<sandbox>/notes/<id>.md` so the
+    /// offline read paths (search, backlinks, page load, daily render)
+    /// see the full mosaic instead of only the subset the engine has
+    /// applied via the relay. Skips a note when the local file already
+    /// has the same content (cheap content compare) so we don't churn
+    /// the indexer / file watchers on every refresh.
+    ///
+    /// **Local-precedence rule:** never overwrite a local file that
+    /// is *newer* than the server's `modified_at`. That file
+    /// represents an iOS-authored edit the server hasn't seen yet;
+    /// stomping it here would cause exactly the offline-edit-loss bug
+    /// this whole rewrite is fixing. The mtime check is the same one
+    /// `preferLocalIfNewer` uses.
+    private func snapshotNotesToSandbox(_ notes: [APINote]) {
+        let notesDir = localMosaicRoot().appendingPathComponent("notes")
+        try? FileManager.default.createDirectory(
+            at: notesDir, withIntermediateDirectories: true
+        )
+        let serverFmt = ISO8601DateFormatter()
+        for note in notes {
+            let path = notesDir.appendingPathComponent("\(note.id).md")
+            let serverMtime = serverFmt.date(from: note.modified_at) ?? .distantPast
+            // Skip if local is newer (iOS edit pending push to server).
+            if let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
+               let localMtime = attrs[.modificationDate] as? Date,
+               localMtime > serverMtime {
+                continue
+            }
+            // Skip if local file already has identical content
+            // (avoids touching mtime + retriggering file-watchers
+            // for unchanged notes).
+            if let existing = try? String(contentsOf: path, encoding: .utf8),
+               existing == note.content {
+                continue
+            }
+            // Write — best-effort; we don't want a single bad note to
+            // stop the whole snapshot.
+            try? note.content.write(to: path, atomically: true, encoding: .utf8)
+        }
     }
 
     /// If the engine-materialized local file for `serverNote.id` has a
@@ -1740,37 +1786,37 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     private func pushTodayBlocks(_ blocks: [Block], baseURL: URL) async {
         guard !serverDailyId.isEmpty else { return }
-        // Compose the new content once. We use it for BOTH paths:
-        // HTTP PUT for LAN-speed convergence, AND the engine/relay
-        // path for cellular-tolerant durability. On LAN the HTTP path
-        // wins (faster); on cellular the engine path catches up
-        // within a tick interval.
-        let existingFrontmatter: String
-        do {
-            let existing: APINote = try await fetchOrTimeout(
-                "/notes/\(serverDailyId)", baseURL: baseURL, seconds: 5
-            )
-            existingFrontmatter = existing.content
-        } catch {
-            // Couldn't fetch existing frontmatter — fall back to a
-            // minimal one so the engine path still has SOMETHING
-            // sane. Mac's NoteUpsert apply will preserve what's on
-            // disk if the body changes don't disturb the frontmatter.
-            existingFrontmatter = "---\ntitle: \(serverDailyId)\n---"
-        }
+        // Build the new content from cached frontmatter rather than
+        // re-fetching it over HTTP — the old "fetch existing
+        // frontmatter, then write" sequence introduced a 5-second
+        // HTTP timeout BEFORE the engine path could fire, which
+        // meant offline edits never persisted if the user kept
+        // typing or backgrounded the app inside that window.
+        //
+        // `loadedDailyFrontmatter` is populated by every successful
+        // refresh + every local-hydration pass, so by the time the
+        // user can edit the daily we already have its frontmatter
+        // cached. The "first edit on a brand-new install" case
+        // falls through to a minimal `title: <id>` block, which
+        // Mac will accept; subsequent edits pick up Mac's enriched
+        // frontmatter on the next refresh tick.
+        let existingFrontmatter = loadedDailyFrontmatter ?? "---\ntitle: \(serverDailyId)\n---"
         let newBody = renderBody(from: blocks)
         let content = combine(frontmatter: existingFrontmatter, body: newBody)
-        // Engine path — durable, cellular-tolerant. Fired first so
-        // the relay can start propagating even if the HTTP PUT below
-        // hangs on a marginal network.
+        // Engine path — durable, cellular-tolerant, no network
+        // dependency. Fires synchronously (no await) so the SQLite
+        // + materialized file write happens before anything else.
         let titleGuess = serverDailyId  // YYYY-MM-DD for dailies
         onLocalWrite?(serverDailyId, titleGuess, content, Int64(Date().timeIntervalSince1970 * 1000))
-        // HTTP path — fast on LAN. Failure is silent; the engine path
-        // covers durability.
+        // HTTP path — best-effort LAN-speed convergence. We
+        // deliberately do NOT surface connection-failed banners
+        // here: a failed background writeback during offline use
+        // is the expected state, not an error worth interrupting
+        // the user over. The engine + relay path carries durability.
         do {
             try await httpPut("/notes/\(serverDailyId)", baseURL: baseURL, body: ["content": content])
         } catch {
-            setConnectionFailedIfReal(error, host: baseURL.host)
+            // Silent — no setConnectionFailedIfReal here.
         }
     }
 

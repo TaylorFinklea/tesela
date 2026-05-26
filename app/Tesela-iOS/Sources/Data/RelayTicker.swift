@@ -88,7 +88,12 @@ final class RelayTicker: ObservableObject {
     /// sandbox until B.3.4 swaps the read path to local-first.
     var onAppliedChanges: (() -> Void)? = nil
 
-    init(tickIntervalSeconds: UInt64 = 5) {
+    init(tickIntervalSeconds: UInt64 = 2) {
+        // Default 2 s in the foreground — keeps Web→iOS lag close to
+        // instant on a healthy network without thrashing battery (the
+        // tick body is just a relay GET if there's nothing new). On
+        // consecutive errors the exponential backoff still caps the
+        // poll at ~60 s so a down relay doesn't drain the device.
         self.tickIntervalSeconds = tickIntervalSeconds
     }
 

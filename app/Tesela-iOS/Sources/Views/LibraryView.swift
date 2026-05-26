@@ -31,7 +31,7 @@ struct LibraryView: View {
                     onTapMosaic: { showMosaicSwitcher = true }
                 )
                 ConnectionBanner(connection: mosaic.connection) {
-                    Task { await mosaic.refresh(from: backend.backend) }
+                    Task { await mosaic.refresh(from: backend.backend, userInitiated: true) }
                 }
                 filterStrip
                 content

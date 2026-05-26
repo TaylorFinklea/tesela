@@ -66,6 +66,7 @@
     openSettingsOverlay,
   } from "$lib/stores/fullscreen-overlay.svelte";
   import { togglePeek } from "$lib/stores/peek.svelte";
+  import { getConnected } from "$lib/ws-client.svelte";
 
   let { children } = $props();
 
@@ -410,6 +411,15 @@
       <VoiceCaptureButton />
       <button
         type="button"
+        class="v4-conn-dot"
+        class:online={getConnected()}
+        class:offline={!getConnected()}
+        title={getConnected() ? "Connected — live sync running. Click for Sync settings." : "Disconnected from server. Click for Sync settings."}
+        onclick={() => openSettingsOverlay("sync")}
+        aria-label={getConnected() ? "Connected" : "Disconnected"}
+      ></button>
+      <button
+        type="button"
         title="fullscreen graph · ⌘G"
         onclick={() => openFullscreenGraph()}
       >✦</button>
@@ -626,6 +636,32 @@
   .v4-topbar-icons button:disabled {
     cursor: default;
     opacity: 0.6;
+  }
+  .v4-conn-dot {
+    /* A 10x10 dot styled inside the existing icon-button frame.
+       Green when the WS is up, dim red when it's not. Click jumps
+       to the Sync settings panel so the user can investigate. */
+    width: 22px;
+    height: 22px;
+    padding: 0 !important;
+    position: relative;
+  }
+  .v4-conn-dot::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--v4-ink5);
+    transition: background 120ms ease;
+  }
+  .v4-conn-dot.online::after {
+    background: #4ade80; /* emerald-400 */
+  }
+  .v4-conn-dot.offline::after {
+    background: #f87171; /* red-400 */
   }
   .v4-grid {
     display: flex;

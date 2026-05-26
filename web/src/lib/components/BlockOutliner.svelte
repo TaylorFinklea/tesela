@@ -762,6 +762,43 @@
     handleNavigate(direction, PAGE_JUMP_BLOCKS);
   }
 
+  // Phase 13 — `[` / `]` jump to previous / next top-level block. Skips
+  // past any nested children, so in a heavily-outlined note the user
+  // can land on the next sibling-level item without j-mashing through
+  // every leaf. If we're already at the boundary (no further top-level
+  // block in that direction), focus stays put; no edge-handoff event,
+  // since cross-outliner top-level navigation isn't a natural extension
+  // of this affordance.
+  function handleNavigateTopLevel(direction: "up" | "down") {
+    if (focusedIndex === null) return;
+    const start = focusedIndex;
+    if (direction === "down") {
+      for (let i = start + 1; i < visibleBlocks.length; i++) {
+        if (visibleBlocks[i].indent_level === 0) {
+          focusedIndex = i;
+          restoredFocus = false;
+          requestAnimationFrame(() => {
+            const el = rootEl?.querySelector(`[data-block-vi="${i}"]`);
+            el?.scrollIntoView({ block: "nearest", behavior: "auto" });
+          });
+          return;
+        }
+      }
+    } else {
+      for (let i = start - 1; i >= 0; i--) {
+        if (visibleBlocks[i].indent_level === 0) {
+          focusedIndex = i;
+          restoredFocus = false;
+          requestAnimationFrame(() => {
+            const el = rootEl?.querySelector(`[data-block-vi="${i}"]`);
+            el?.scrollIntoView({ block: "nearest", behavior: "auto" });
+          });
+          return;
+        }
+      }
+    }
+  }
+
   /**
    * Fetch a template note and insert its body as child blocks under the
    * given parent block. Indents are normalized so the template's outermost
@@ -1387,6 +1424,7 @@
             ontogglefold={() => toggleFold(block.id)}
             ontoggleprops={() => {}}
             onpagejump={handlePageJump}
+            onnavigatetoplevel={handleNavigateTopLevel}
             inVisualMode={blockVisualMode}
             focused={focusedIndex === vi}
             noteslist={notesList}

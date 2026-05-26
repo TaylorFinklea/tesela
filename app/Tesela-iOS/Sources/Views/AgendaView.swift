@@ -70,7 +70,7 @@ struct AgendaView: View {
                     onTapMosaic: { showMosaicSwitcher = true }
                 )
                 ConnectionBanner(connection: mosaic.connection) {
-                    Task { await mosaic.refresh(from: backend.backend) }
+                    Task { await mosaic.refresh(from: backend.backend, userInitiated: true) }
                 }
                 content
                     .refreshable { await load() }
