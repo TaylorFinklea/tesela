@@ -1,6 +1,28 @@
 # Current State
 
-*Last updated: 2026-05-25 (sync relay — user-deployable end-to-end through stage 6 + iOS read-only status view)*
+*Last updated: 2026-05-25 evening (iOS Path B — full producer + consumer + local-first reads end-to-end; HA addon shipped)*
+
+## Where we left off (2026-05-25 evening)
+
+**Daily-driver sync is real.** iPhone is now a first-class sync peer — independent writes, independent reads, talks directly to the relay over cellular without needing Mac reachability for the read path.
+
+- **HA addon shipped.** `home-assistant/tesela-relay/` with `repository.yaml` at repo root + `.github/workflows/relay-container.yml` building + pushing multi-arch images to `ghcr.io/taylorfinklea/tesela-relay`. User installs in two clicks.
+- **Path B (iOS as real sync peer) milestone complete** — see [`phases/2026-05-25-ios-relay-peer-plan.md`](phases/2026-05-25-ios-relay-peer-plan.md):
+  - B.1: `SyncEngineHandle` + `RelayClientHandle` + `SyncCoordinator` exposed via UniFFI.
+  - B.2: iOS records `NoteUpsert` locally + pushes via `tick_outbound`. Smoke proved iOS→Mac in seconds.
+  - B.3.1–3: `tick_inbound` apply path, `RelayTicker` background poll loop (5s cadence, scenePhase-aware), `openWithMosaic` constructor.
+  - B.3.4: Local-first reads — `MockMosaicService.loadPage` + `refresh(from:)` read from `Documents/sync-ios-mosaic/notes/<slug>.md` when HTTP-to-Mac fails or times out.
+- **Bug fixes during testing**:
+  - `produce_changes_since(peer)` excludes peer's own ops — wrong for relay fanout. Added `produce_local_authored_since` and routed Mac `sync_relay::tick` + iOS `SyncCoordinator` through it.
+  - Web's WebSocket reconnect now invalidates queries to recover from missed events.
+  - BlockOutliner stops eating updates when the focused block is remotely deleted.
+  - Pull-down with slow network keeps the in-memory state instead of overwriting with stale local.
+  - `URLError.cancelled` no longer promotes to a red banner.
+- **What's NOT yet done** (B.3.5 polish + open items):
+  - "iOS itself isn't a sync peer yet" copy in Settings → Sync is now lying — flip it.
+  - "3 of 3 peers reachable" widget is from the old LAN/mDNS layer and lies on cellular — replace or remove.
+  - On-disk format hiccup observed once where iOS-PUT body had `<!-- bid: -->` mid-line; self-corrected on next edit, root cause not found. Capture if it reoccurs.
+  - Backlinks + search on iOS still require Mac via HTTP; not part of local-first yet.
 
 ## Active Branch
 
