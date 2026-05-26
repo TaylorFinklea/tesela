@@ -45,6 +45,21 @@ struct AppShell: View {
                         // is up. connect() is idempotent so re-runs
                         // (e.g. on mosaic switch) don't churn.
                         relayTicker.connect(mosaic: mosaic)
+                        // When the ticker applies new inbound ops,
+                        // re-pull the user-visible pages over HTTP so
+                        // the UI shows the change immediately. On
+                        // cellular this HTTP call will likely fail
+                        // (and silently swallow the URLError.cancelled
+                        // we filtered out above) — the data already
+                        // lives in the local engine + sandbox; B.3.4
+                        // makes the iOS UI read from there directly.
+                        relayTicker.onAppliedChanges = { [weak mosaic, weak backend] in
+                            guard let mosaic, let backend else { return }
+                            Task {
+                                await mosaic.refresh(from: backend.backend)
+                                await mosaic.refreshLoadedPages()
+                            }
+                        }
                         relayTicker.start()
                     }
                     .onChange(of: mosaicRegistry.activeID) { _, _ in

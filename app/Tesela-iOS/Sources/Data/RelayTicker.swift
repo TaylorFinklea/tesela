@@ -64,6 +64,15 @@ final class RelayTicker: ObservableObject {
     /// concern (e.g. 30 s when the screen is off).
     private let tickIntervalSeconds: UInt64
 
+    /// Callback fired whenever a tick applied ≥1 incoming op. Hosts
+    /// hook this up to nudge the iOS UI to re-render (typically by
+    /// calling `MockMosaicService.refresh(from:)` so HTTP fetches the
+    /// freshly-arrived data from the Mac). On Wi-Fi this gives near-
+    /// realtime "edits on Mac → visible on iPhone" feel; on cellular
+    /// where HTTP-to-Mac fails, the data lives in the local materialized
+    /// sandbox until B.3.4 swaps the read path to local-first.
+    var onAppliedChanges: (() -> Void)? = nil
+
     init(tickIntervalSeconds: UInt64 = 5) {
         self.tickIntervalSeconds = tickIntervalSeconds
     }
@@ -121,6 +130,13 @@ final class RelayTicker: ObservableObject {
             inboundCursorSeq = inbound.newCursorSeq
             lastTickAt = Date()
             lastError = nil
+            if inbound.applied > 0 {
+                // Tell the host UI that new data has landed in the
+                // local engine + sandbox. AppShell wires this to a
+                // MockMosaicService.refresh() so the page the user is
+                // looking at updates without a manual pull-down.
+                onAppliedChanges?()
+            }
         } catch let err as FfiSyncError {
             lastError = err.localizedDescription
             dropCoordinator()

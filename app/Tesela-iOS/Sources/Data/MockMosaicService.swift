@@ -531,6 +531,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
                 pageLoadStates[id] = .ready
             } catch {
+                // Cancelled / network-changed mid-flight is benign;
+                // leave the prior load state and let the next refresh
+                // try again. Only flip to `.failed` for real errors.
+                if let url = error as? URLError, url.code == .cancelled || url.code == .networkConnectionLost {
+                    return
+                }
                 pageLoadStates[id] = .failed(humanizeError(error, host: baseURL.host))
                 return
             }
@@ -566,7 +572,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         do {
             try await httpPut("/notes/\(id)", baseURL: baseURL, body: ["content": content])
         } catch {
-            connection = .failed(humanizeError(error, host: baseURL.host))
+            setConnectionFailedIfReal(error, host: baseURL.host)
         }
     }
 
@@ -626,7 +632,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     .map { RecentEntry(id: $0.id, title: $0.title, at: $0.edited) }
                 connection = .ready
             } catch {
-                connection = .failed(humanizeError(error, host: baseURL.host))
+                setConnectionFailedIfReal(error, host: baseURL.host)
             }
         }
     }
@@ -758,7 +764,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         do {
             try await MosaicServerClient.switchMosaic(serverURL: serverURL, path: path)
         } catch {
-            connection = .failed(humanizeError(error, host: URL(string: serverURL)?.host))
+            setConnectionFailedIfReal(error, host: URL(string: serverURL)?.host)
             return
         }
         // Best-effort: the server schedules its own SIGTERM, so a dropped
@@ -952,6 +958,31 @@ final class MockMosaicService: ObservableObject, MosaicService {
         case .some(.notConnectedToInternet): return "Device is offline"
         default:                          return error.localizedDescription
         }
+    }
+
+    /// Update `connection` to `.failed(...)` UNLESS the error is one of
+    /// the "benign in-flight" cases — `URLError.cancelled` (the request
+    /// was superseded or the network changed mid-flight) and friends.
+    ///
+    /// Why: the iOS app fires a flurry of HTTP requests on foreground
+    /// transitions and on background→cellular handover; those requests
+    /// often get cancelled by URLSession itself and surface as
+    /// `URLError.cancelled`. Promoting those to a red banner is wrong —
+    /// the next refresh will succeed. Once iOS reads notes from the
+    /// local engine instead of HTTP (B.3.4/B.3.5) this whole class of
+    /// noise disappears; until then, swallow the benign cases here.
+    private func setConnectionFailedIfReal(_ error: Error, host: String?) {
+        if let url = error as? URLError {
+            switch url.code {
+            case .cancelled, .networkConnectionLost:
+                // Drop silently — the running RelayTicker keeps real
+                // sync going, and the next mosaic refresh will retry.
+                return
+            default:
+                break
+            }
+        }
+        connection = .failed(humanizeError(error, host: host))
     }
 
     /// `YYYY-MM-DD` id of the daily note `daysAgo` days before today.
@@ -1243,7 +1274,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             let content = combine(frontmatter: existing.content, body: newBody)
             try await httpPut("/notes/\(serverDailyId)", baseURL: baseURL, body: ["content": content])
         } catch {
-            connection = .failed(humanizeError(error, host: baseURL.host))
+            setConnectionFailedIfReal(error, host: baseURL.host)
         }
     }
 
