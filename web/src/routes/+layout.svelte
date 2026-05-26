@@ -79,6 +79,17 @@
       onDeadlineApproaching: handleDeadlineApproaching,
       onScheduledFires: handleScheduledFires,
       onRecurringRolled: handleRecurringRolled,
+      onReconnected: () => {
+        // After a WebSocket drop, server-side WsEvents that fired
+        // during the gap were lost. Invalidate the same query keys
+        // the per-note handlers would have to recover. Cheaper than
+        // letting the user see stale data until next manual refresh.
+        queryClient.invalidateQueries({ queryKey: ["notes"] });
+        queryClient.invalidateQueries({ queryKey: ["note"] });
+        queryClient.invalidateQueries({ queryKey: ["typed-blocks"] });
+        queryClient.invalidateQueries({ queryKey: ["agenda"] });
+        queryClient.invalidateQueries({ queryKey: ["widget", "inbox"] });
+      },
     });
 
     void ensureSystemWidgets(api);

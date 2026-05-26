@@ -68,6 +68,15 @@ let onNoteDeleted: ((id: string) => void) | null = null;
 let onDeadlineApproaching: ((e: DeadlineApproachingEvent) => void) | null = null;
 let onScheduledFires: ((e: ScheduledFiresEvent) => void) | null = null;
 let onRecurringRolled: ((e: RecurringRolledEvent) => void) | null = null;
+/// Fires after a reconnect (NOT after the first connect). Hosts use
+/// this to invalidate any cached query state that might have missed
+/// events while the socket was down. Without this, an iOS push that
+/// arrives at the server during the reconnect-backoff window stays
+/// invisible until the user manually refreshes the page.
+let onReconnected: (() => void) | null = null;
+/// Set true once the first connect succeeds. After that, every
+/// subsequent open is a "reconnect" and fires `onReconnected`.
+let hasEverConnected = false;
 
 export function setHandlers(handlers: {
   onNoteCreated?: (note: Note) => void;
@@ -76,6 +85,7 @@ export function setHandlers(handlers: {
   onDeadlineApproaching?: (e: DeadlineApproachingEvent) => void;
   onScheduledFires?: (e: ScheduledFiresEvent) => void;
   onRecurringRolled?: (e: RecurringRolledEvent) => void;
+  onReconnected?: () => void;
 }) {
   onNoteCreated = handlers.onNoteCreated ?? null;
   onNoteUpdated = handlers.onNoteUpdated ?? null;
@@ -83,6 +93,7 @@ export function setHandlers(handlers: {
   onDeadlineApproaching = handlers.onDeadlineApproaching ?? null;
   onScheduledFires = handlers.onScheduledFires ?? null;
   onRecurringRolled = handlers.onRecurringRolled ?? null;
+  onReconnected = handlers.onReconnected ?? null;
 }
 
 export function connect() {
@@ -118,6 +129,14 @@ function openConnection() {
     if (myId !== connectionId) return;
     retryDelayMs = MIN_RETRY_MS;
     connected = true;
+    if (hasEverConnected) {
+      // Reconnect after a drop — events that arrived at the server
+      // during the gap were missed. Tell the host to invalidate so
+      // the freshly-reopened socket starts seeing a re-fetched UI.
+      onReconnected?.();
+    } else {
+      hasEverConnected = true;
+    }
   });
 
   ws.addEventListener("message", (ev) => {
