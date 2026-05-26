@@ -525,36 +525,36 @@ final class MockMosaicService: ObservableObject, MosaicService {
             loadedLinks[id] = []
             pageLoadStates[id] = .ready
         case .http(let baseURL):
-            // Local-first: if the engine has already materialized this
-            // note locally, show it IMMEDIATELY (no 8s URLSession wait).
-            // Then race an HTTP refresh in the background to pick up
-            // any fresher Mac-side edits that haven't reached us via
-            // the relay yet. This is the "feels offline-instant on
-            // cellular, still gets fresh data on Wi-Fi" pattern.
-            if let local = readLocalNote(id: id) {
+            // HTTP-first with a fast local fallback. Earlier iterations
+            // did local-first + HTTP overlay, which raced: local (often
+            // a few seconds stale until the relay tick caught up)
+            // rendered first, then HTTP overlaid the fresher Mac
+            // content, then the next `onAppliedChanges` refresh fired
+            // and the cycle repeated → visible flicker between states.
+            //
+            // The new shape: try HTTP with a tight timeout. If Mac is
+            // reachable (LAN, Tailscale), we get the fresh content in
+            // ~50ms — no flicker. If Mac is unreachable (cellular
+            // without Tailscale), we fall back to the local sandbox
+            // after the timeout — still fast (~1.5s wait + render).
+            // The RelayTicker keeps local current in the background;
+            // there's no need to double-render once we've committed.
+            let httpResult: APINote? = await fetchNoteWithTimeout(
+                id: id,
+                baseURL: baseURL,
+                seconds: 1.5
+            )
+            if let note = httpResult {
+                loadedPageBlocks[id] = parseBlocks(from: note.body, noteId: id)
+                loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
+                pageLoadStates[id] = .ready
+            } else if let local = readLocalNote(id: id) {
                 loadedPageBlocks[id] = parseBlocks(from: local.body, noteId: id)
                 loadedPageFrontmatter[id] = extractFrontmatter(from: local.content)
                 pageLoadStates[id] = .ready
-                Task { [weak self] in
-                    await self?.refreshPageViaHttp(id: id, baseURL: baseURL)
-                }
-                // Backlinks load happens below regardless; for a local
-                // hit we still want to try fetching them (they're
-                // best-effort and HTTP-only).
             } else {
-                do {
-                    let note: APINote = try await httpGet("/notes/\(id)", baseURL: baseURL)
-                    loadedPageBlocks[id] = parseBlocks(from: note.body, noteId: id)
-                    loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
-                    pageLoadStates[id] = .ready
-                } catch {
-                    // Cancelled / network-changed mid-flight is benign.
-                    if let url = error as? URLError, url.code == .cancelled || url.code == .networkConnectionLost {
-                        return
-                    }
-                    pageLoadStates[id] = .failed(humanizeError(error, host: baseURL.host))
-                    return
-                }
+                pageLoadStates[id] = .failed("Couldn't reach \(baseURL.host ?? "server")")
+                return
             }
             // Backlinks load independently of the body — a fetch
             // failure here leaves an empty list rather than failing
@@ -614,18 +614,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
             resetToSeed()
             connection = .idle
         case .http(let baseURL):
-            // Local-first: hydrate from sandbox immediately so the user
-            // sees their notes without the 8s URLSession wait. The HTTP
-            // refresh below then overlays anything Mac has that we
-            // haven't pulled via the relay yet.
-            let hadLocal = applyLocalRefreshFallback()
-            if hadLocal {
-                connection = .ready
-            } else {
-                connection = .connecting
-            }
+            // HTTP-first with a tight 1.5s deadline. If Mac is
+            // reachable we get the fresh state immediately and avoid
+            // the local→HTTP overlay flicker. If Mac is unreachable
+            // we fall through to the local sandbox after the deadline.
+            // The RelayTicker keeps the sandbox close to current; one
+            // render either way (no double-paint).
+            connection = .connecting
             do {
-                let daily: APINote = try await httpGet("/notes/daily", baseURL: baseURL)
+                let daily: APINote = try await fetchOrTimeout(
+                    "/notes/daily", baseURL: baseURL, seconds: 1.5
+                )
                 let notes: [APINote] = try await httpGet("/notes?limit=200", baseURL: baseURL)
                 let yesterdayNote: APINote? = (try? await fetchYesterdayDaily(baseURL: baseURL))
                 let dailyNotes: [APINote] = (try? await httpGet("/notes?tag=daily&limit=40", baseURL: baseURL)) ?? []
@@ -657,11 +656,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     .map { RecentEntry(id: $0.id, title: $0.title, at: $0.edited) }
                 connection = .ready
             } catch {
-                // HTTP failed. If we already hydrated from local
-                // above, the UI is fine — silently keep the local
-                // view. Otherwise either drop a benign cancel or
-                // surface a real failure.
-                if hadLocal {
+                // HTTP timed out or failed — fall back to the local
+                // sandbox. Single render either way.
+                if applyLocalRefreshFallback() {
+                    connection = .ready
                     return
                 }
                 setConnectionFailedIfReal(error, host: baseURL.host)
@@ -1036,17 +1034,54 @@ final class MockMosaicService: ObservableObject, MosaicService {
         }
     }
 
-    /// Background HTTP fetch that overlays fresher data when we
-    /// already shipped a local-cached render. Failure is silent — the
-    /// user already sees the local version; logging an HTTP error here
-    /// would just be noise.
-    private func refreshPageViaHttp(id: String, baseURL: URL) async {
-        do {
-            let note: APINote = try await httpGet("/notes/\(id)", baseURL: baseURL)
-            loadedPageBlocks[id] = parseBlocks(from: note.body, noteId: id)
-            loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
-        } catch {
-            // Swallow — local view is already in place.
+    /// Generic timeout wrapper around `httpGet`. Throws
+    /// `URLError(.timedOut)` after `seconds` if the call hasn't
+    /// returned yet; otherwise behaves identically to httpGet. The
+    /// home-screen `refresh` path uses this so the catch block's
+    /// existing local-fallback can fire after a short deadline
+    /// instead of waiting URLSession's default 8s.
+    private func fetchOrTimeout<T: Decodable>(_ path: String, baseURL: URL, seconds: Double) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { [weak self] in
+                guard let self else { throw URLError(.unknown) }
+                return try await self.httpGet(path, baseURL: baseURL)
+            }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw URLError(.timedOut)
+            }
+            guard let first = try await group.next() else {
+                throw URLError(.unknown)
+            }
+            group.cancelAll()
+            return first
+        }
+    }
+
+    /// Race an HTTP fetch against a wall-clock timeout. Returns the
+    /// note when HTTP returned first; nil when the deadline passed
+    /// (or the request itself failed). Used by the load-page path so
+    /// "Mac reachable on LAN" gets fresh content fast AND "Mac
+    /// unreachable on cellular" doesn't sit on URLSession's 8-second
+    /// default before falling back to local.
+    ///
+    /// Implementation: spawn the HTTP call as a Task, sleep for
+    /// `seconds`, whichever finishes first wins. The losing Task is
+    /// cancelled; the URLSession respects it.
+    private func fetchNoteWithTimeout(id: String, baseURL: URL, seconds: Double) async -> APINote? {
+        return await withTaskGroup(of: APINote?.self) { group in
+            group.addTask { [weak self] in
+                guard let self else { return nil }
+                return try? await self.httpGet("/notes/\(id)", baseURL: baseURL) as APINote
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                return nil
+            }
+            // First child to finish wins. Cancel the rest.
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
         }
     }
 
