@@ -107,6 +107,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// new body content without stomping `tags:`, `title:`, etc.
     private var loadedPageFrontmatter: [String: String] = [:]
 
+    /// Wall-clock of the last successful in-memory hydration per note,
+    /// used by the local-fallback path to decide whether the on-disk
+    /// sandbox copy is newer than what we're rendering. Without this,
+    /// "keep in-memory on HTTP fail" would mask Mac edits that the
+    /// RelayTicker has already applied to the local file.
+    private var inMemoryLoadedAt: [String: Date] = [:]
+    /// Same idea for today's daily, which has its own field.
+    private var todayLoadedAt: Date? = nil
+
     private let session = URLSession(configuration: .default)
     private let iso = ISO8601DateFormatter()
     private var serverDailyId: String = ""
@@ -545,14 +554,28 @@ final class MockMosaicService: ObservableObject, MosaicService {
             if let note = httpResult {
                 loadedPageBlocks[id] = parseBlocks(from: note.body, noteId: id)
                 loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
+                inMemoryLoadedAt[id] = Date()
+                pageLoadStates[id] = .ready
+            } else if hadDataBefore,
+                      let mtime = localNoteMTime(id: id),
+                      mtime > (inMemoryLoadedAt[id] ?? .distantPast),
+                      let local = readLocalNote(id: id) {
+                // HTTP failed BUT the local file is newer than the
+                // in-memory render (RelayTicker applied a Mac edit
+                // since we last fetched). Use the local content — it's
+                // the freshest thing we have.
+                loadedPageBlocks[id] = parseBlocks(from: local.body, noteId: id)
+                loadedPageFrontmatter[id] = extractFrontmatter(from: local.content)
+                inMemoryLoadedAt[id] = mtime
                 pageLoadStates[id] = .ready
             } else if hadDataBefore {
-                // Keep existing render; just mark .ready so the spinner
-                // settles. Don't overwrite with stale local.
+                // HTTP failed and local isn't fresher — keep what we
+                // have rendered.
                 pageLoadStates[id] = .ready
             } else if let local = readLocalNote(id: id) {
                 loadedPageBlocks[id] = parseBlocks(from: local.body, noteId: id)
                 loadedPageFrontmatter[id] = extractFrontmatter(from: local.content)
+                inMemoryLoadedAt[id] = localNoteMTime(id: id) ?? Date()
                 pageLoadStates[id] = .ready
             } else {
                 pageLoadStates[id] = .failed("Couldn't reach \(baseURL.host ?? "server")")
@@ -636,6 +659,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
                 serverDailyId = daily.id
                 todayBlocks = parseBlocks(from: daily.body, noteId: daily.id)
+                todayLoadedAt = Date()
                 pages = notes
                     .filter { $0.id != daily.id }
                     .map { mapPage($0) }
@@ -661,20 +685,29 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 connection = .ready
             } catch {
                 // HTTP timed out or failed.
-                //   * If we already have data on screen (pull-down
-                //     refresh while a successful HTTP result is
-                //     already rendered), DO NOT overwrite it with
-                //     potentially-older local. The user keeps seeing
-                //     correct content; status flips to .ready since
-                //     we're not actually broken (just slow).
-                //   * Only fall back to local when in-memory is empty
-                //     (cold launch or backend swap), so the user sees
-                //     something rather than nothing.
+                //   * If local sandbox is NEWER than our in-memory
+                //     render (RelayTicker has caught up to a Mac edit
+                //     we haven't seen), use local — it's the freshest
+                //     thing we have.
+                //   * Else if in-memory is populated, keep it. The
+                //     data was correct; the network was just slow.
+                //   * Else (cold launch with no in-memory), fall back
+                //     to whatever local has so the user sees something.
+                let todayId = dailyId(daysAgo: 0)
+                if hadDataBefore,
+                   let mtime = localNoteMTime(id: todayId),
+                   mtime > (todayLoadedAt ?? .distantPast),
+                   applyLocalRefreshFallback() {
+                    todayLoadedAt = mtime
+                    connection = .ready
+                    return
+                }
                 if hadDataBefore {
                     connection = .ready
                     return
                 }
                 if applyLocalRefreshFallback() {
+                    todayLoadedAt = localNoteMTime(id: todayId) ?? Date()
                     connection = .ready
                     return
                 }
@@ -1114,6 +1147,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
             in: .userDomainMask
         )[0]
         return docs.appendingPathComponent("sync-ios-mosaic")
+    }
+
+    /// File mtime of the local sandbox copy of a note, or nil when
+    /// missing. Used to decide whether to prefer local over in-memory
+    /// state when an HTTP refresh fails — if the file is newer than
+    /// the timestamp on the in-memory render, the relay has caught up
+    /// to something the user hasn't seen yet.
+    private func localNoteMTime(id: String) -> Date? {
+        let path = localMosaicRoot()
+            .appendingPathComponent("notes")
+            .appendingPathComponent("\(id).md")
+        return (try? FileManager.default.attributesOfItem(atPath: path.path)[.modificationDate]) as? Date
     }
 
     /// Read a materialized note from the local sandbox. Returns nil
