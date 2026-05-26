@@ -525,31 +525,36 @@ final class MockMosaicService: ObservableObject, MosaicService {
             loadedLinks[id] = []
             pageLoadStates[id] = .ready
         case .http(let baseURL):
-            do {
-                let note: APINote = try await httpGet("/notes/\(id)", baseURL: baseURL)
-                loadedPageBlocks[id] = parseBlocks(from: note.body, noteId: id)
-                loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
+            // Local-first: if the engine has already materialized this
+            // note locally, show it IMMEDIATELY (no 8s URLSession wait).
+            // Then race an HTTP refresh in the background to pick up
+            // any fresher Mac-side edits that haven't reached us via
+            // the relay yet. This is the "feels offline-instant on
+            // cellular, still gets fresh data on Wi-Fi" pattern.
+            if let local = readLocalNote(id: id) {
+                loadedPageBlocks[id] = parseBlocks(from: local.body, noteId: id)
+                loadedPageFrontmatter[id] = extractFrontmatter(from: local.content)
                 pageLoadStates[id] = .ready
-            } catch {
-                // HTTP failed — usually because the Mac isn't reachable
-                // (cellular without Tailscale). Fall back to the local
-                // materialized file the RelayTicker wrote when it
-                // applied the inbound op. This is what makes
-                // "edit-on-Mac → open-on-iPhone" work offline.
-                if let local = readLocalNote(id: id) {
-                    loadedPageBlocks[id] = parseBlocks(from: local.body, noteId: id)
-                    loadedPageFrontmatter[id] = extractFrontmatter(from: local.content)
+                Task { [weak self] in
+                    await self?.refreshPageViaHttp(id: id, baseURL: baseURL)
+                }
+                // Backlinks load happens below regardless; for a local
+                // hit we still want to try fetching them (they're
+                // best-effort and HTTP-only).
+            } else {
+                do {
+                    let note: APINote = try await httpGet("/notes/\(id)", baseURL: baseURL)
+                    loadedPageBlocks[id] = parseBlocks(from: note.body, noteId: id)
+                    loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
                     pageLoadStates[id] = .ready
+                } catch {
+                    // Cancelled / network-changed mid-flight is benign.
+                    if let url = error as? URLError, url.code == .cancelled || url.code == .networkConnectionLost {
+                        return
+                    }
+                    pageLoadStates[id] = .failed(humanizeError(error, host: baseURL.host))
                     return
                 }
-                // Cancelled / network-changed mid-flight is benign;
-                // leave the prior load state and let the next refresh
-                // try again. Only flip to `.failed` for real errors.
-                if let url = error as? URLError, url.code == .cancelled || url.code == .networkConnectionLost {
-                    return
-                }
-                pageLoadStates[id] = .failed(humanizeError(error, host: baseURL.host))
-                return
             }
             // Backlinks load independently of the body — a fetch
             // failure here leaves an empty list rather than failing
@@ -609,7 +614,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
             resetToSeed()
             connection = .idle
         case .http(let baseURL):
-            connection = .connecting
+            // Local-first: hydrate from sandbox immediately so the user
+            // sees their notes without the 8s URLSession wait. The HTTP
+            // refresh below then overlays anything Mac has that we
+            // haven't pulled via the relay yet.
+            let hadLocal = applyLocalRefreshFallback()
+            if hadLocal {
+                connection = .ready
+            } else {
+                connection = .connecting
+            }
             do {
                 let daily: APINote = try await httpGet("/notes/daily", baseURL: baseURL)
                 let notes: [APINote] = try await httpGet("/notes?limit=200", baseURL: baseURL)
@@ -643,14 +657,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     .map { RecentEntry(id: $0.id, title: $0.title, at: $0.edited) }
                 connection = .ready
             } catch {
-                // HTTP failed — try to refresh from the local sandbox
-                // so the home screen at least reflects what the relay
-                // has applied locally. The list will be smaller (only
-                // notes the engine has seen) and the metadata leaner
-                // (no tag aggregations, no recent ordering — we only
-                // populate what's parseable from file frontmatter).
-                if applyLocalRefreshFallback() {
-                    connection = .ready
+                // HTTP failed. If we already hydrated from local
+                // above, the UI is fine — silently keep the local
+                // view. Otherwise either drop a benign cancel or
+                // surface a real failure.
+                if hadLocal {
                     return
                 }
                 setConnectionFailedIfReal(error, host: baseURL.host)
@@ -1022,6 +1033,20 @@ final class MockMosaicService: ObservableObject, MosaicService {
         guard (200..<300).contains(http.statusCode) else {
             let snippet = String(data: data.prefix(160), encoding: .utf8) ?? ""
             throw URLError(.badServerResponse, userInfo: [NSLocalizedDescriptionKey: "HTTP \(http.statusCode): \(snippet)"])
+        }
+    }
+
+    /// Background HTTP fetch that overlays fresher data when we
+    /// already shipped a local-cached render. Failure is silent — the
+    /// user already sees the local version; logging an HTTP error here
+    /// would just be noise.
+    private func refreshPageViaHttp(id: String, baseURL: URL) async {
+        do {
+            let note: APINote = try await httpGet("/notes/\(id)", baseURL: baseURL)
+            loadedPageBlocks[id] = parseBlocks(from: note.body, noteId: id)
+            loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
+        } catch {
+            // Swallow — local view is already in place.
         }
     }
 
