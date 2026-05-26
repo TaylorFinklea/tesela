@@ -22,6 +22,10 @@ struct TabHeader: View {
     var onTapSettings: () -> Void = {}
     /// Opens the mosaic switcher sheet.
     var onTapMosaic: () -> Void = {}
+    /// Opens Settings → Sync directly. Surfaced via the chrome-button
+    /// menu alongside "Switch mosaic"; if the host doesn't provide
+    /// this, the menu only offers mosaic switching.
+    var onTapSync: (() -> Void)? = nil
 
     @EnvironmentObject private var mosaicRegistry: MosaicRegistry
     @Environment(\.theme) private var theme
@@ -50,7 +54,8 @@ struct TabHeader: View {
                 MosaicChromeButton(
                     registry: mosaicRegistry,
                     syncStatus: syncStatus,
-                    onTap: onTapMosaic
+                    onTapMosaic: onTapMosaic,
+                    onTapSync: onTapSync
                 )
             }
         }

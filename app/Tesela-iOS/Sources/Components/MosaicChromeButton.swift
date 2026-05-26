@@ -5,12 +5,21 @@ import SwiftUI
 /// itself communicates *which* mosaic, and its color communicates
 /// reachability (green / yellow / red).
 ///
-/// Tap → opens the mosaic switcher sheet.
+/// Tap shows a small native menu: "Switch mosaic" + "Sync settings".
+/// Both used to be separate gestures — Daisy asked for them in one
+/// place because they're both about "where am I + how am I talking
+/// to it." Reachability anomalies and mosaic identity are the two
+/// reasons you'd care about the dot in the first place.
 struct MosaicChromeButton: View {
     @ObservedObject var registry: MosaicRegistry
     /// Current sync state — drives the color halo around the icon.
     let syncStatus: TabHeader.SyncDotState
-    let onTap: () -> Void
+    /// "Switch which mosaic this app is talking to."
+    let onTapMosaic: () -> Void
+    /// "Show the sync diagnostics + manual controls." Optional so
+    /// hosts that don't have a Settings entry point can omit it; the
+    /// menu just shows mosaic actions then.
+    var onTapSync: (() -> Void)? = nil
 
     @Environment(\.theme) private var theme
 
@@ -35,10 +44,21 @@ struct MosaicChromeButton: View {
     }
 
     var body: some View {
-        Button(action: onTap) {
+        Menu {
+            Button {
+                onTapMosaic()
+            } label: {
+                Label("Switch mosaic…", systemImage: "square.stack.3d.up")
+            }
+            if let onTapSync {
+                Button {
+                    onTapSync()
+                } label: {
+                    Label("Sync settings…", systemImage: "arrow.triangle.2.circlepath")
+                }
+            }
+        } label: {
             ZStack {
-                // Subtle ring in the reachability color so the chip
-                // reads as "status + identity" at a glance.
                 Circle()
                     .fill(color.opacity(0.22))
                     .frame(width: 28, height: 28)
@@ -49,12 +69,11 @@ struct MosaicChromeButton: View {
             .frame(width: 36, height: 36)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
     }
 
     private var accessibilityLabel: String {
         let name = registry.activeProfile?.name ?? "No mosaic"
-        return "Mosaic \(name), \(accessibilityState). Tap to switch."
+        return "Mosaic \(name), \(accessibilityState). Tap to switch mosaic or open sync settings."
     }
 }

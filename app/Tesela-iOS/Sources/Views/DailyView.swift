@@ -27,6 +27,7 @@ struct DailyView: View {
     @State private var showDatePicker: Bool = false
     @State private var showSettings: Bool = false
     @State private var showMosaicSwitcher: Bool = false
+    @State private var showSyncSettings: Bool = false
     @State private var pickedDate: Date = Date()
 
     var body: some View {
@@ -38,7 +39,8 @@ struct DailyView: View {
                     syncStatus: syncStatus,
                     onTapCalendar: { showDatePicker = true },
                     onTapSettings: { showSettings = true },
-                    onTapMosaic: { showMosaicSwitcher = true }
+                    onTapMosaic: { showMosaicSwitcher = true },
+                    onTapSync: { showSyncSettings = true }
                 )
                 ConnectionBanner(connection: mosaic.connection) {
                     if let backend {
@@ -48,12 +50,25 @@ struct DailyView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 0) {
                         Spacer().frame(height: 12)
-                        todayBlocks
-                        addBlockRow
-                        daySpacer
-                        SectionEyebrow(title: "Yesterday")
-                        yesterdayBlocks
-                        pastDays
+                        if showsSkeleton {
+                            // Cold-launch with nothing local AND HTTP
+                            // still in flight — render placeholder
+                            // bullets so the screen isn't a black
+                            // void for the up-to-3-second HTTP
+                            // window. Subsequent launches with a
+                            // populated sandbox skip this branch
+                            // entirely (todayBlocks populates from
+                            // the engine-materialized files in
+                            // <100ms via the local-first refresh).
+                            skeletonBlocks
+                        } else {
+                            todayBlocks
+                            addBlockRow
+                            daySpacer
+                            SectionEyebrow(title: "Yesterday")
+                            yesterdayBlocks
+                            pastDays
+                        }
                         Spacer().frame(height: 80) // bottom chrome breathing room
                     }
                 }
@@ -136,6 +151,25 @@ struct DailyView: View {
                 } else {
                     Text("Settings unavailable in this context.")
                         .padding()
+                }
+            }
+            .sheet(isPresented: $showSyncSettings) {
+                // Deep-link to the Sync panel directly from the status
+                // pill menu. Reuses the same SyncSettingsView the gear
+                // → Sync path uses, just skipping the intermediate
+                // Settings root.
+                if let syncState, let relayTicker {
+                    NavigationStack {
+                        SyncSettingsView(
+                            syncState: syncState,
+                            mosaic: mosaic,
+                            relayTicker: relayTicker
+                        )
+                        .navigationTitle("Sync")
+                        .navigationBarTitleDisplayMode(.inline)
+                    }
+                    .environment(\.theme, theme)
+                    .environment(\.density, appearance?.density ?? .compact)
                 }
             }
         }
@@ -254,6 +288,43 @@ struct DailyView: View {
     private var daySpacer: some View {
         Color.clear
             .containerRelativeFrame(.vertical) { length, _ in length / 3 }
+    }
+
+    /// True when we should show skeleton bullets instead of the real
+    /// (empty) layout: HTTP is in flight AND we don't have any blocks
+    /// to render yet (neither today nor yesterday). This is the
+    /// genuine cold-launch case — a returning user with a populated
+    /// sandbox falls through to the real layout in <100ms via the
+    /// local-first hydrate path.
+    private var showsSkeleton: Bool {
+        mosaic.connection == .connecting
+            && mosaic.todayBlocks.isEmpty
+            && mosaic.yesterdayBlocks.isEmpty
+    }
+
+    /// Five placeholder bullets at varying widths. Wrapped in a
+    /// shimmer-ish opacity pulse so the user sees it's loading, not
+    /// stuck. Keep this *visually quiet* — it's a placeholder, not
+    /// content; over-styled skeletons fight for attention with the
+    /// real thing that's about to land.
+    private var skeletonBlocks: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach([0.65, 0.85, 0.5, 0.78, 0.42], id: \.self) { fraction in
+                HStack(spacing: 10) {
+                    Circle()
+                        .fill(theme.fgFaint)
+                        .frame(width: 4, height: 4)
+                    Capsule()
+                        .fill(theme.fgFaint.opacity(0.5))
+                        .frame(height: 14)
+                        .containerRelativeFrame(.horizontal) { length, _ in length * fraction }
+                }
+                .padding(.leading, 18)
+            }
+        }
+        .padding(.top, 4)
+        .opacity(0.7)
+        .transition(.opacity)
     }
 
     /// "2026-05-20" → "Tuesday, May 20". `SectionEyebrow` uppercases it.
