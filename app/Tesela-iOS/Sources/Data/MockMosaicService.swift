@@ -677,8 +677,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 seconds: 5
             )
             if let note = httpResult {
-                loadedPageBlocks[id] = parseBlocks(from: note.body, noteId: id)
-                loadedPageFrontmatter[id] = extractFrontmatter(from: note.content)
+                // Same "prefer local if engine has a newer materialized
+                // copy" rule as in the daily refresh above — keeps an
+                // iOS-authored edit from being clobbered by a server
+                // response that hasn't yet learned about it.
+                let pick = preferLocalIfNewer(serverNote: note)
+                loadedPageBlocks[id] = parseBlocks(from: pick.body, noteId: id)
+                loadedPageFrontmatter[id] = extractFrontmatter(from: pick.content)
                 inMemoryLoadedAt[id] = Date()
                 pageLoadStates[id] = .ready
             } else if hadDataBefore,
@@ -797,7 +802,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 let serverTagNames: [String] = (try? await httpGet("/tags", baseURL: baseURL)) ?? []
 
                 serverDailyId = daily.id
-                todayBlocks = parseBlocks(from: daily.body, noteId: daily.id)
+                // Prefer the local materialized file when it's newer
+                // than the server's view — this catches the "iOS made
+                // an offline edit, then reconnected" case. Without
+                // this, the HTTP refresh would land first (with Mac's
+                // pre-edit body) and overwrite the engine-materialized
+                // local edit in memory before the outbound relay tick
+                // had a chance to ship it. The local file is durable
+                // and reflects the most recent engine write, so
+                // preferring it on a tie or newer-than-server is safe.
+                let localDaily = preferLocalIfNewer(serverNote: daily)
+                todayBlocks = parseBlocks(from: localDaily.body, noteId: localDaily.id)
                 todayLoadedAt = Date()
                 pages = notes
                     .filter { $0.id != daily.id }
@@ -1286,6 +1301,38 @@ final class MockMosaicService: ObservableObject, MosaicService {
             in: .userDomainMask
         )[0]
         return docs.appendingPathComponent("sync-ios-mosaic")
+    }
+
+    /// If the engine-materialized local file for `serverNote.id` has a
+    /// strictly newer mtime than the server's reported `modified_at`,
+    /// return a synthesized `APINote` carrying the local file's body
+    /// instead of the server's. Otherwise return `serverNote`.
+    ///
+    /// Why this matters: when iOS edits a note while offline (or while
+    /// the Mac is unreachable on cellular), the sync engine writes the
+    /// new content to the local sandbox immediately but the outbound
+    /// relay tick may not have shipped the op yet. A subsequent HTTP
+    /// refresh then fetches the Mac's *pre-edit* view of the note and
+    /// would clobber the iOS-authored edit in memory. Comparing
+    /// mtimes catches that race: any time the local file is newer
+    /// than the server's claim, the local file represents an edit the
+    /// server hasn't yet learned about, so we keep what we have.
+    private func preferLocalIfNewer(serverNote: APINote) -> APINote {
+        guard let localMtime = localNoteMTime(id: serverNote.id) else {
+            return serverNote
+        }
+        let serverMtime = ISO8601DateFormatter().date(from: serverNote.modified_at)
+            ?? .distantPast
+        // Strict greater-than: equal mtimes mean the engine just
+        // materialized the same content (e.g. apply tick handed us
+        // the round-trip of a Mac edit). Either source has the same
+        // bytes; prefer HTTP because it carries server-side metadata
+        // we'd otherwise have to re-derive (note_type, tags, etc.).
+        guard localMtime > serverMtime else { return serverNote }
+        guard let local = readLocalNote(id: serverNote.id) else {
+            return serverNote
+        }
+        return local
     }
 
     /// File mtime of the local sandbox copy of a note, or nil when

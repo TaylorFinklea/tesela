@@ -45,6 +45,15 @@ struct AppShell: View {
                         // is up. connect() is idempotent so re-runs
                         // (e.g. on mosaic switch) don't churn.
                         relayTicker.connect(mosaic: mosaic)
+                        // Open the local sync engine eagerly — purely
+                        // local, no network, so this succeeds even on
+                        // an offline cold launch. Writes that happen
+                        // before pairing completes (or while the user
+                        // is on cellular without tailscale) still land
+                        // durably in SQLite + the materialized notes
+                        // dir, instead of being silently dropped.
+                        do { try await relayTicker.openEngineIfNeeded() }
+                        catch { /* surfaced via relayTicker.lastError */ }
                         // Route iOS-authored writes through the engine
                         // + relay alongside the existing HTTP PUT. On
                         // LAN both succeed (HTTP first); on cellular

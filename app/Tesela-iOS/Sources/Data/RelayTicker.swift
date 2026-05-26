@@ -101,11 +101,12 @@ final class RelayTicker: ObservableObject {
         self.mosaic = mosaic
     }
 
-    /// Record an iOS-authored edit to the local engine and trigger an
-    /// immediate outbound tick so it hits the relay quickly (instead
-    /// of waiting up to a full tick interval). Falls back silently if
-    /// the coordinator isn't ready yet — the op stays in the engine
-    /// oplog and the next regular tick picks it up.
+    /// Record an iOS-authored edit to the local engine and (if the
+    /// coordinator is ready) trigger an immediate outbound tick so the
+    /// op hits the relay quickly. The engine open is **not gated on
+    /// network reachability** — if the user is offline, the write still
+    /// lands durably in SQLite and the on-disk materialized file; the
+    /// next successful tick drains the buffered op to the relay.
     ///
     /// `slug` is the note's id (today's daily ID for today, or the
     /// page's slug otherwise). `content` is the full markdown body
@@ -113,20 +114,24 @@ final class RelayTicker: ObservableObject {
     /// across edits of the same note (the daily's creation timestamp
     /// at midnight, for example) so the engine HLC stays monotonic.
     ///
-    /// This is what makes iOS writes work even when Mac is unreachable
-    /// over direct HTTP — the engine path doesn't need Mac to be up;
-    /// the relay holds the op until Mac's next tick picks it up.
+    /// This is what makes iOS writes survive a force-close while
+    /// offline — the engine handle opens at app launch without
+    /// touching the network, so the write reaches SQLite even on
+    /// the first edit of a brand-new install that hasn't paired yet.
     func recordAndPush(slug: String, title: String, content: String, createdAtMillis: Int64) async {
-        // Try to ensure the coordinator + engine are ready. If we're
-        // mid-pair (e.g. first launch on a slow network), fall back to
-        // engine-only — the next tick will push.
-        if coordinator == nil {
-            try? await ensureCoordinator()
+        // Ensure the engine is open. This is purely local (SQLite +
+        // sandbox path), so it succeeds even when the relay/Mac is
+        // unreachable. If it can't even open SQLite, surface the error
+        // but don't pretend the write succeeded.
+        do {
+            try await openEngineIfNeeded()
+        } catch {
+            lastError = error.localizedDescription
+            return
         }
-        guard let engine, let coordinator else {
-            // No engine yet — nothing to record into. The HTTP path
-            // is still firing in parallel; we'll catch up on a later
-            // tick once pairing completes.
+        guard let engine else {
+            // openEngineIfNeeded set lastError already in the catch
+            // above; this is the can't-happen-but-be-safe branch.
             return
         }
         do {
@@ -136,13 +141,26 @@ final class RelayTicker: ObservableObject {
                 content: content,
                 createdAtMillis: createdAtMillis
             )
-            // Immediate push — avoids a 5s wait if we're foregrounded.
+        } catch {
+            lastError = error.localizedDescription
+            return
+        }
+        // Engine durability is now guaranteed. Best-effort push: if the
+        // coordinator is ready (i.e. we've paired with the Mac at least
+        // once), drain the op to the relay immediately so the other
+        // side sees it without waiting a full tick. If pairing hasn't
+        // happened or the network is down, the regular tick loop will
+        // catch up later.
+        if coordinator == nil {
+            try? await ensureCoordinator()
+        }
+        guard let coordinator else { return }
+        do {
             let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
             lastSent = outcome.opsSent
             lastTickAt = Date()
             lastError = nil
         } catch {
-            // Engine recorded (or didn't); next tick will retry the push.
             lastError = error.localizedDescription
         }
     }
@@ -219,13 +237,58 @@ final class RelayTicker: ObservableObject {
         }
     }
 
+    /// Path to the iOS sandbox mosaic root. Stable across launches;
+    /// the engine + the MockMosaicService local-fallback both read
+    /// from here so iOS-authored writes are visible to local reads
+    /// even before any pairing has happened.
+    private static func mosaicRootURL() -> URL {
+        let docs = FileManager.default.urls(
+            for: .documentDirectory,
+            in: .userDomainMask
+        )[0]
+        return docs.appendingPathComponent("sync-ios-mosaic")
+    }
+
+    /// Open the local engine if not already open. **Network-free** —
+    /// only needs SQLite + a stable device id, both of which are
+    /// available on cold launch regardless of reachability. Callers
+    /// can invoke this at app start so iOS writes are durable from
+    /// the very first edit, even before any pairing succeeds.
+    ///
+    /// Idempotent — subsequent calls are no-ops once the engine is
+    /// open. The handle stays alive across coordinator rebuilds: a
+    /// flaky relay tearing down its coordinator must not also nuke
+    /// the engine, or every transient WAN error would orphan in-
+    /// flight local writes.
+    func openEngineIfNeeded() async throws {
+        if engine != nil { return }
+        let mosaicRoot = Self.mosaicRootURL()
+        try? FileManager.default.createDirectory(
+            at: mosaicRoot,
+            withIntermediateDirectories: true
+        )
+        let sqliteURL = "sqlite:\(mosaicRoot.path)/sync.db"
+        let deviceHex = Self.persistedDeviceIdHex()
+        let opened = try await SyncEngineHandle.openWithMosaic(
+            sqliteUrl: sqliteURL,
+            mosaicPath: mosaicRoot.path,
+            deviceIdHex: deviceHex
+        )
+        self.engine = opened
+    }
+
     /// (Re)pair: fetch the Mac's pairing code over HTTP, decode it,
-    /// open the local engine with a sandbox mosaic root, instantiate
-    /// the relay client + coordinator. Caches the result so subsequent
-    /// ticks reuse the same handles.
+    /// instantiate the relay client + coordinator on top of the
+    /// already-open engine. Engine open is handled separately by
+    /// `openEngineIfNeeded` so a failed pairing doesn't block local
+    /// writes.
     private func ensureCoordinator() async throws {
         guard let mosaic else {
             throw FfiSyncError.Other(message: "ticker not connected to mosaic")
+        }
+        try await openEngineIfNeeded()
+        guard let engine else {
+            throw FfiSyncError.Other(message: "engine open failed")
         }
         let server = try await mosaic.fetchPairingCode()
         let pairing = try decodePairingCode(code: server.code)
@@ -233,23 +296,7 @@ final class RelayTicker: ObservableObject {
             throw FfiSyncError.Other(message: "Mac has no relay configured")
         }
 
-        let docs = FileManager.default.urls(
-            for: .documentDirectory,
-            in: .userDomainMask
-        )[0]
-        let mosaicRoot = docs.appendingPathComponent("sync-ios-mosaic")
-        try? FileManager.default.createDirectory(
-            at: mosaicRoot,
-            withIntermediateDirectories: true
-        )
-        let sqliteURL = "sqlite:\(mosaicRoot.path)/sync.db"
         let deviceHex = Self.persistedDeviceIdHex()
-
-        let engine = try await SyncEngineHandle.openWithMosaic(
-            sqliteUrl: sqliteURL,
-            mosaicPath: mosaicRoot.path,
-            deviceIdHex: deviceHex
-        )
         let relay = try RelayClientHandle(
             relayUrl: relayURL,
             groupIdHex: pairing.groupIdHex,
@@ -273,15 +320,47 @@ final class RelayTicker: ObservableObject {
         if let outbound = UserDefaults.standard.object(forKey: Self.outboundCursorKey) as? Int64 {
             await coordinator.setOutboundCursorNtp(ntp: outbound)
         }
-        self.engine = engine
         self.relay = relay
         self.coordinator = coordinator
     }
 
+    /// Drop the coordinator + relay so the next tick rebuilds them.
+    /// **Engine handle is preserved** — it's purely local and tied to
+    /// SQLite state, not to any network identity. Dropping it on a
+    /// transient relay error would orphan any local write that came in
+    /// between this tick and the next.
     private func dropCoordinator() {
         coordinator = nil
-        engine = nil
         relay = nil
+    }
+
+    /// Drain any pending outbound ops to the relay synchronously,
+    /// blocking until either every queued op has been acknowledged or
+    /// the coordinator fails. Called by the host app right before a
+    /// reconnect-triggered HTTP refresh — if the user made offline
+    /// edits, those ops need to reach the relay before the refresh
+    /// fetches the (still-stale) server state. Otherwise the refresh
+    /// would land first and overwrite in-memory blocks with the
+    /// pre-edit server view.
+    ///
+    /// Returns the number of ops that were sent. Zero means "nothing
+    /// was pending" OR "we never managed to build a coordinator" —
+    /// callers use the return only as a lower bound.
+    func flushPendingOutbound() async -> UInt32 {
+        if coordinator == nil {
+            try? await ensureCoordinator()
+        }
+        guard let coordinator else { return 0 }
+        do {
+            let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
+            lastSent = outcome.opsSent
+            lastTickAt = Date()
+            lastError = nil
+            return outcome.opsSent
+        } catch {
+            lastError = error.localizedDescription
+            return 0
+        }
     }
 
     /// Stable per-install device id, persisted across launches. iOS's

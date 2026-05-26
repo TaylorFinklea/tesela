@@ -529,13 +529,19 @@
     const focusedId = blocks[focusedIndex]?.id;
     const newIdx = focusedId ? reparsed.findIndex((b) => b.id === focusedId) : -1;
     if (newIdx === -1) {
-      // Focused block was deleted remotely (e.g. iOS dropped it). The
-      // earlier behaviour was to skip the reparse entirely — which left
-      // the web view stuck on stale content until the user refreshed.
-      // Accept the new state and drop the focus instead; the user
-      // re-focuses by clicking back into a block.
+      // Focused block disappeared from the reparse — could be a remote
+      // delete (iOS dropped it) or a local delete whose server-canonical
+      // body arrived before our queueMicrotask refocus ran. Either way,
+      // keep the cursor where it was visually: clamp the old index into
+      // the new list. Falling back to `focusedIndex = null` (the prior
+      // behaviour) silently steals keyboard focus and makes the user
+      // click back in.
       blocks = reparsed;
-      focusedIndex = null;
+      if (reparsed.length === 0) {
+        focusedIndex = null;
+      } else {
+        focusedIndex = Math.min(Math.max(focusedIndex, 0), reparsed.length - 1);
+      }
       history.clear();
       return;
     }

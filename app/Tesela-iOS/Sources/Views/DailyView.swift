@@ -81,6 +81,16 @@ struct DailyView: View {
                     captureContext.focusedBlock = nil
                 }
             }
+            .onChange(of: mosaic.todayBlocks.map(\.id) + mosaic.yesterdayBlocks.map(\.id)) { _, newIds in
+                // If the day rolled over (or a remote delete dropped the
+                // block we were editing), the previously-focused block id
+                // no longer exists in either visible section. Clear focus
+                // so the keyboard doesn't latch onto a stale id from a
+                // prior day's blocks.
+                if let editing = editingBlockId, !newIds.contains(editing) {
+                    editingBlockId = nil
+                }
+            }
             .onDisappear {
                 captureContext.focusedBlock = nil
                 mosaic.isEditingBlock = false

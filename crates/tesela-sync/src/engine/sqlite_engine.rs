@@ -178,6 +178,18 @@ impl SyncEngine for SqliteEngine {
         let op = EncodedOp::new(hlc, crate::SYNC_SCHEMA_VERSION, payload, None)?;
         let hash = op.content_hash;
         self.append_op(&op).await?;
+        // Materialize self-authored ops to disk so peers without an
+        // app-layer file writer (iOS via FFI) see their own edits
+        // reflected on the filesystem immediately — otherwise the only
+        // path that reached disk was the round-trip back from the
+        // relay, which never echoes self-ops, so iOS edits were lost
+        // across a force-close before any peer had pulled the op.
+        // Mac's tesela-server also calls FsNoteStore for the same
+        // file; the duplicate write is content-identical and the
+        // indexer dedupes by content hash so it's a benign no-op.
+        if self.inner.mosaic_dir.is_some() {
+            self.materialize(&op.payload).await?;
+        }
         Ok(hash)
     }
 
