@@ -381,17 +381,131 @@ final class MockMosaicService: ObservableObject, MosaicService {
             return
         case .http(let baseURL):
             searchInFlight = true
-            do {
-                let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
-                let hits: [APISearchHit] = try await httpGet("/search?q=\(encoded)", baseURL: baseURL)
-                searchHits = hits.map(mapSearchHit)
+            // HTTP-first with 2s deadline. If Mac is unreachable
+            // (cellular without Tailscale) fall back to a local scan
+            // of the iOS sandbox — slower but works offline.
+            let httpHits: [APISearchHit]? = await {
+                do {
+                    let encoded = q.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? q
+                    return try await fetchOrTimeout("/search?q=\(encoded)", baseURL: baseURL, seconds: 2)
+                } catch {
+                    return nil
+                }
+            }()
+            if let httpHits {
+                searchHits = httpHits.map(mapSearchHit)
                 searchError = nil
-            } catch {
-                searchError = humanizeError(error, host: baseURL.host)
-                searchHits = []
+            } else {
+                // Local scan over the iOS sandbox notes/ dir.
+                searchHits = localSearch(q)
+                searchError = nil
             }
             searchInFlight = false
         }
+    }
+
+    /// Walk the iOS sandbox notes/ directory + return matching hits.
+    /// Match rules — same casing-insensitive substring shape the
+    /// server's `/search` endpoint uses for v1 lexical search.
+    /// Title hits beat body hits (sorted first), capped at 30 results
+    /// so the UI doesn't grind on a query that matches "the".
+    ///
+    /// O(notes × body_size) per query; fine for a personal mosaic up
+    /// to ~2-3k notes. Beyond that, build an in-memory inverted index
+    /// in B.4 (Path B follow-up).
+    private func localSearch(_ query: String) -> [SearchResult] {
+        let notesDir = localMosaicRoot().appendingPathComponent("notes")
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: notesDir.path) else {
+            return []
+        }
+        let needle = query.lowercased()
+        var titleHits: [SearchResult] = []
+        var bodyHits: [SearchResult] = []
+        for fname in files where fname.hasSuffix(".md") {
+            let slug = String(fname.dropLast(3))
+            let path = notesDir.appendingPathComponent(fname).path
+            guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+            // Pull title from frontmatter if present; else fall back to slug.
+            let frontmatter = extractFrontmatter(from: raw)
+            let title = parseTitleFromFrontmatter(frontmatter) ?? slug
+
+            if title.lowercased().contains(needle) {
+                titleHits.append(SearchResult(id: slug, kind: .page, title: title, snippet: ""))
+                continue
+            }
+            // Body match — find the first line containing the needle
+            // (excluding the frontmatter block + bid comments).
+            let body = stripFrontmatter(raw)
+            for line in body.split(separator: "\n") {
+                let cleaned = String(line)
+                    .replacingOccurrences(of: #"<!--\s*bid:[^\s>]+\s*-->"#, with: "", options: .regularExpression)
+                if cleaned.lowercased().contains(needle) {
+                    let snippet = cleaned.trimmingCharacters(in: .whitespaces)
+                        .replacingOccurrences(of: "^- ", with: "", options: .regularExpression)
+                    bodyHits.append(SearchResult(id: slug, kind: .block, title: title, snippet: snippet))
+                    break
+                }
+            }
+        }
+        return Array((titleHits + bodyHits).prefix(30))
+    }
+
+    /// Strip the leading YAML frontmatter block from a raw note,
+    /// returning just the body. Mirror of what the body-extraction in
+    /// `readLocalNote` does — same logic but without constructing an
+    /// `APINote`.
+    private func stripFrontmatter(_ raw: String) -> String {
+        guard raw.hasPrefix("---"),
+              let close = raw.range(of: "\n---", options: [], range: raw.index(raw.startIndex, offsetBy: 3)..<raw.endIndex)
+        else { return raw }
+        return String(raw[close.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Local backlinks: scan every note in the iOS sandbox for
+    /// `[[targetSlug]]` references and return rows pointing back to
+    /// the source pages. Same shape as `mapBacklink` produces from
+    /// the server's `/notes/<id>/backlinks` endpoint.
+    ///
+    /// Slug-match is exact (case-insensitive). Title-aliasing (the
+    /// server's "linked references via title rather than slug") is
+    /// deliberately not done here — would require knowing every
+    /// note's title up front, which is what the indexer maintains.
+    /// Good enough for v1: explicit `[[slug]]` wiki-links resolve.
+    private func localBacklinks(for targetId: String) -> [Backlink] {
+        let notesDir = localMosaicRoot().appendingPathComponent("notes")
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: notesDir.path) else {
+            return []
+        }
+        let needle = targetId.lowercased()
+        var out: [Backlink] = []
+        // Match `[[anything]]` then post-filter on the slug inside.
+        let regex = try? NSRegularExpression(pattern: #"\[\[([^\]]+)\]\]"#, options: [])
+        for fname in files where fname.hasSuffix(".md") {
+            let sourceSlug = String(fname.dropLast(3))
+            if sourceSlug.lowercased() == needle { continue }  // skip self
+            let path = notesDir.appendingPathComponent(fname).path
+            guard let raw = try? String(contentsOfFile: path, encoding: .utf8) else { continue }
+            let body = stripFrontmatter(raw)
+            let nsBody = body as NSString
+            let matches = regex?.matches(in: body, range: NSRange(location: 0, length: nsBody.length)) ?? []
+            for m in matches where m.numberOfRanges >= 2 {
+                let inner = nsBody.substring(with: m.range(at: 1)).lowercased()
+                if inner == needle {
+                    // Use the first matching line as the snippet.
+                    let absLoc = m.range.location
+                    let beforeNL = (body as NSString).substring(to: absLoc).components(separatedBy: "\n").last ?? ""
+                    let afterNL = (body as NSString).substring(from: absLoc).components(separatedBy: "\n").first ?? ""
+                    var snippet = (beforeNL + afterNL)
+                        .replacingOccurrences(of: #"<!--\s*bid:[^\s>]+\s*-->"#, with: "", options: .regularExpression)
+                        .trimmingCharacters(in: .whitespaces)
+                    if snippet.hasPrefix("- ") { snippet.removeFirst(2) }
+                    let sourceTitle = parseTitleFromFrontmatter(extractFrontmatter(from: raw)) ?? sourceSlug
+                    out.append(Backlink(id: UUID(), from: sourceTitle, snippet: snippet, pageId: sourceSlug))
+                    break  // one snippet per source note
+                }
+            }
+        }
+        return out
     }
 
     // MARK: - Pairing-code fetch
@@ -592,11 +706,22 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 pageLoadStates[id] = .failed("Couldn't reach \(baseURL.host ?? "server")")
                 return
             }
-            // Backlinks load independently of the body — a fetch
-            // failure here leaves an empty list rather than failing
-            // the whole page.
-            let links: [APILink] = (try? await httpGet("/notes/\(id)/backlinks", baseURL: baseURL)) ?? []
-            loadedBacklinks[id] = links.map(mapBacklink)
+            // Backlinks: HTTP-first with a tight 1.5s deadline, then
+            // a local-sandbox scan as the fallback. Local-only matches
+            // explicit `[[slug]]` wiki-links (no title aliasing), which
+            // is the dominant use case.
+            let httpBacklinks: [APILink]? = try? await fetchOrTimeout(
+                "/notes/\(id)/backlinks", baseURL: baseURL, seconds: 1.5
+            )
+            if let httpBacklinks {
+                loadedBacklinks[id] = httpBacklinks.map(mapBacklink)
+            } else {
+                loadedBacklinks[id] = localBacklinks(for: id)
+            }
+            // Outgoing links: HTTP-only for now (computing locally would
+            // require parsing this page's body, which we already have
+            // in loadedPageBlocks but in a different shape). Cheap to
+            // wire up later; not on the critical path.
             let outgoing: [APILink] = (try? await httpGet("/notes/\(id)/links", baseURL: baseURL)) ?? []
             loadedLinks[id] = outgoing.map(mapBacklink)
         }
