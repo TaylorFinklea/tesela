@@ -91,6 +91,11 @@ impl DualEngine {
     /// Build a `DualEngine` from a `SqliteEngine`, deriving the device
     /// id + HLC from the primary so they're guaranteed to match.
     /// Convenience for the server-side wiring.
+    ///
+    /// Synchronous; does NOT pre-populate the shadow from the primary's
+    /// oplog. Call `prepopulate_shadow_from_oplog()` on the returned
+    /// instance if you want the divergence check to cover historical
+    /// notes from the first tick.
     pub fn from_primary(primary: SqliteEngine) -> Self {
         let device = primary.device();
         // SqliteEngine has its own HLC inside; for the scaffold we pass
@@ -100,6 +105,40 @@ impl DualEngine {
         let shadow_hlc = Arc::new(Hlc::new(device));
         let shadow = LoroEngine::new(device, shadow_hlc);
         Self { primary, shadow }
+    }
+
+    /// Replay the primary's full oplog through the shadow. Used at
+    /// startup so the divergence check covers all existing notes from
+    /// the first tick, not just notes touched since boot.
+    ///
+    /// Returns the number of payloads replayed (for the startup log
+    /// line). Errors out if the oplog read fails; individual payload
+    /// apply errors are logged and skipped (the primary remains
+    /// authoritative).
+    pub async fn prepopulate_shadow_from_oplog(&self) -> SyncResult<usize> {
+        let payloads = self.primary.iter_oplog_payloads().await?;
+        let total = payloads.len();
+        let mut skipped = 0usize;
+        let mut sample_errors: Vec<(String, String)> = Vec::new();
+        for payload in &payloads {
+            if let Err(e) = self.shadow.apply_payload(payload).await {
+                skipped += 1;
+                if sample_errors.len() < 5 {
+                    sample_errors.push((format!("{:?}", payload.kind()), format!("{e}")));
+                }
+            }
+        }
+        if skipped > 0 {
+            tracing::warn!(
+                "tesela-sync/dual-write: prepopulated shadow with {} payloads ({} skipped)",
+                total - skipped,
+                skipped
+            );
+            for (kind, err) in &sample_errors {
+                tracing::warn!("  prepopulate skip sample: {kind} -> {err}");
+            }
+        }
+        Ok(total - skipped)
     }
 
     /// Access to the shadow engine for tests + divergence-comparison
@@ -178,47 +217,107 @@ impl DualEngine {
                 tokio::time::sleep(DIVERGENCE_CHECK_INTERVAL).await;
                 let results = probe.compare_all().await;
                 let total = results.len();
-                let diverged: Vec<_> = results
-                    .into_iter()
-                    .filter(|(_, cmp)| matches!(cmp, NoteComparison::Diverge { .. }))
-                    .collect();
+                let mut matched = 0usize;
+                let mut diverged = Vec::new();
+                let mut primary_missing = 0usize;
+                let mut shadow_missing = 0usize;
+                for (id, cmp) in results {
+                    match cmp {
+                        NoteComparison::Match => matched += 1,
+                        NoteComparison::Diverge { primary, shadow } => {
+                            diverged.push((id, primary, shadow))
+                        }
+                        NoteComparison::PrimaryMissing => primary_missing += 1,
+                        NoteComparison::ShadowMissing => shadow_missing += 1,
+                    }
+                }
                 if diverged.is_empty() {
                     tracing::info!(
-                        "tesela-sync/dual-write: divergence check OK ({} notes)",
-                        total
+                        "tesela-sync/dual-write: divergence check OK ({} notes: \
+                         {} match, {} primary-missing, {} shadow-missing)",
+                        total,
+                        matched,
+                        primary_missing,
+                        shadow_missing
                     );
                     continue;
                 }
                 tracing::warn!(
-                    "tesela-sync/dual-write: {} of {} notes diverged",
+                    "tesela-sync/dual-write: {} of {} notes diverged \
+                     ({} match, {} primary-missing, {} shadow-missing)",
                     diverged.len(),
-                    total
+                    total,
+                    matched,
+                    primary_missing,
+                    shadow_missing
                 );
-                for (id, cmp) in diverged.iter().take(3) {
-                    if let NoteComparison::Diverge { primary, shadow } = cmp {
-                        tracing::warn!(
-                            "  note {} primary={:?} shadow={:?}",
-                            hex::encode(id),
-                            truncate(primary, 200),
-                            truncate(shadow, 200)
-                        );
-                    }
+                for (id, primary, shadow) in diverged.iter().take(3) {
+                    tracing::warn!(
+                        "  note {} primary={:?} shadow={:?}",
+                        hex::encode(id),
+                        truncate(primary, 200),
+                        truncate(shadow, 200)
+                    );
                 }
             }
         })
     }
 }
 
-/// Normalize a rendered note body for comparison: strip bid markers
-/// (`<!-- bid:UUID -->`) and trim trailing whitespace per line.
+/// Normalize a rendered note body for comparison. Keeps the comparison
+/// focused on what LoroEngine actually models (block bullet lines +
+/// hierarchy) and discards parts of the file format SqliteEngine
+/// preserves but LoroEngine doesn't yet:
+///
+/// - Strip `<!-- bid:UUID -->` markers (LoroEngine doesn't emit them).
+/// - Drop block-property lines (`  key:: value` indented under a
+///   bullet). LoroEngine doesn't model block properties yet — this
+///   normalization keeps the soak focused on block-content divergence.
+///   Removing this once `properties: LoroMap` lands in LoroEngine.
+/// - Drop blank lines (SqliteEngine preserves user-typed blank lines
+///   between blocks; LoroEngine's render is dense).
+/// - Trim trailing whitespace per line.
 fn normalize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for line in s.lines() {
         let stripped = strip_bid_markers(line);
-        out.push_str(stripped.trim_end());
+        let trimmed = stripped.trim_end();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if is_block_property_line(trimmed) {
+            continue;
+        }
+        out.push_str(trimmed);
         out.push('\n');
     }
     out
+}
+
+/// True for lines like `  status:: done` or `    tags:: Task` — a
+/// (possibly tab- or space-indented) identifier followed by `::` and a
+/// value. Used by `normalize` to drop block-property lines that
+/// LoroEngine doesn't model yet.
+fn is_block_property_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    // Must start with leading whitespace (otherwise it's a top-level
+    // line, not a child of a block).
+    if trimmed.len() == line.len() {
+        return false;
+    }
+    // Bullet lines aren't properties.
+    if trimmed.starts_with("- ") || trimmed == "-" {
+        return false;
+    }
+    // Look for `key::` where key is non-empty letters/digits/underscore/dash.
+    let Some(idx) = trimmed.find("::") else {
+        return false;
+    };
+    let key = &trimmed[..idx];
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
 }
 
 /// Remove every `<!-- bid:... -->` marker from a line. Markers are
@@ -355,6 +454,26 @@ mod tests {
     fn normalize_passes_through_markerless() {
         let raw = "- a\n\t- b\n";
         assert_eq!(normalize(raw), raw);
+    }
+
+    #[test]
+    fn normalize_drops_block_property_lines() {
+        let raw = "- do a thing\n  status:: done\n  tags:: Task\n- next block\n";
+        assert_eq!(normalize(raw), "- do a thing\n- next block\n");
+    }
+
+    #[test]
+    fn normalize_drops_blank_lines() {
+        let raw = "\n- a\n\n- b\n\n";
+        assert_eq!(normalize(raw), "- a\n- b\n");
+    }
+
+    #[test]
+    fn normalize_keeps_top_level_lines_that_look_like_properties() {
+        // `key:: value` at the top level (no indent) isn't a block
+        // property — leave it alone.
+        let raw = "key:: top-level\n- a block\n";
+        assert_eq!(normalize(raw), "key:: top-level\n- a block\n");
     }
 
     #[tokio::test]

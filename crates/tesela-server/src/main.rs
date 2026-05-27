@@ -266,6 +266,14 @@ async fn main() -> Result<()> {
             );
             let dual =
                 tesela_sync::engine::dual_engine::DualEngine::from_primary(primary);
+            match dual.prepopulate_shadow_from_oplog().await {
+                Ok(n) => info!(
+                    "tesela-sync: prepopulated LoroEngine shadow with {n} oplog payloads"
+                ),
+                Err(e) => tracing::warn!(
+                    "tesela-sync: prepopulate failed ({e}); shadow starts empty"
+                ),
+            }
             dual.spawn_divergence_check();
             Arc::new(dual)
         } else {

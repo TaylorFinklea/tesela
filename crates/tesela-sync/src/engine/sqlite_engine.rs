@@ -94,6 +94,38 @@ impl SqliteEngine {
         Ok(row.get(0))
     }
 
+    /// Enumerate every op payload in the local oplog, in HLC order.
+    /// Used by `DualEngine` at startup to replay the entire history
+    /// into `LoroEngine`'s shadow so the divergence check has coverage
+    /// over all existing notes from tick 1, not just notes touched
+    /// since boot.
+    ///
+    /// Returns payloads only; the caller doesn't need HLC/hash because
+    /// the shadow stamps its own per-replay. For a mosaic with N ops,
+    /// this is one full table scan + N postcard decodes. Acceptable for
+    /// the dual-write phase; replace with a streaming iterator if
+    /// startup latency becomes a problem.
+    pub async fn iter_oplog_payloads(&self) -> SyncResult<Vec<OpPayload>> {
+        let rows = sqlx::query(
+            "SELECT payload FROM oplog ORDER BY hlc_ntp ASC, device_id ASC",
+        )
+        .fetch_all(&self.inner.pool)
+        .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let bytes: Vec<u8> = row.get(0);
+            match postcard::from_bytes::<OpPayload>(&bytes) {
+                Ok(p) => out.push(p),
+                Err(e) => {
+                    tracing::debug!(
+                        "tesela-sync: skipping unparseable oplog payload: {e}"
+                    );
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Read the materialized note body for a given note id, with
     /// frontmatter stripped. Returns `None` if the note has no slug
     /// recorded yet, the engine isn't configured with a mosaic dir, or
@@ -112,7 +144,10 @@ impl SqliteEngine {
         let Some(mosaic) = self.inner.mosaic_dir.as_ref() else {
             return Ok(None);
         };
-        let path = mosaic.join(format!("{}.md", slug));
+        // Notes live in `<mosaic>/notes/<slug>.md` (matches the
+        // `notes_dir` setting in config.toml and the disk-scan fallback
+        // in `find_slug_for_note`).
+        let path = mosaic.join("notes").join(format!("{}.md", slug));
         let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             Err(_) => return Ok(None),
