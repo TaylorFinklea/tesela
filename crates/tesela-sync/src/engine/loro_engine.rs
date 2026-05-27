@@ -40,10 +40,14 @@ use crate::oplog::op::{ContentHash, EncodedOp, OpPayload};
 use crate::oplog::parked::ParkReason;
 use crate::wire::envelope::SyncEnvelope;
 use async_trait::async_trait;
-use loro::LoroDoc;
+use loro::{LoroDoc, LoroTree, TreeID, TreeParentId};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+fn hex_id(id: &[u8; 16]) -> String {
+    hex::encode(id)
+}
 
 /// Minimal Loro-backed engine for the dual-write scaffold. Most trait
 /// methods are stubbed; only `record_local` for `NoteUpsert` does real
@@ -95,37 +99,77 @@ impl LoroEngine {
     /// tree. Mirrors what `SqliteEngine`'s materialize step would write
     /// to disk. Used by the dual-write wrapper to compare outputs.
     ///
-    /// Returns `None` for unknown note ids.
+    /// Returns `None` for unknown note ids. The walk is parent-respecting:
+    /// each root node and its descendants emit indented `- text` lines.
+    /// `indent_level` from the BlockUpsert op is used directly so the
+    /// output matches SqliteEngine's materialization indent for indent.
     pub async fn render_note(&self, note_id: [u8; 16]) -> Option<String> {
         let docs = self.inner.docs.read().await;
         let doc = docs.get(&note_id)?;
         let tree = doc.get_tree("blocks");
-        // For the scaffold, walk all tree nodes and emit one bullet per
-        // node with its meta `"text"` value. Indent + parent-respecting
-        // walk lands as more op types come online.
         let mut out = String::new();
-        for node in tree.nodes() {
-            if let Ok(meta) = tree.get_meta(node) {
-                if let Some(text) = meta.get("text") {
-                    // `meta.get` returns a `ValueOrContainer`. For the
-                    // scaffold's plain-string values we just Debug-print;
-                    // when we move to `LoroText` per block the render
-                    // path swaps to `text.to_string()`.
-                    out.push_str("- ");
-                    out.push_str(&format!("{:?}", text));
-                    out.push('\n');
-                }
-            }
+        for root in tree.children(TreeParentId::Root).unwrap_or_default() {
+            render_node(&tree, root, &mut out);
         }
         Some(out)
     }
 
     /// Get-or-create the Loro doc for a given note id. Called from
-    /// `record_local` when a NoteUpsert lands.
+    /// `record_local` when a NoteUpsert or BlockUpsert lands.
     async fn doc_for_note_mut(&self, note_id: [u8; 16]) -> LoroDoc {
         let mut docs = self.inner.docs.write().await;
         docs.entry(note_id).or_insert_with(LoroDoc::new).clone()
     }
+}
+
+/// Walk a tree node + its descendants, emitting `- text` lines indented
+/// per the meta `indent_level`. Free function (not a method on Inner)
+/// so it can recurse cleanly without re-locking `docs`.
+fn render_node(tree: &LoroTree, node: TreeID, out: &mut String) {
+    if let Ok(meta) = tree.get_meta(node) {
+        let indent = meta
+            .get("indent_level")
+            .and_then(|v| v.into_value().ok())
+            .and_then(|v| v.into_i64().ok())
+            .unwrap_or(0) as usize;
+        let text = meta
+            .get("text")
+            .and_then(|v| v.into_value().ok())
+            .and_then(|v| v.into_string().ok())
+            .map(|s| (*s).clone())
+            .unwrap_or_default();
+        for _ in 0..indent {
+            out.push('\t');
+        }
+        out.push_str("- ");
+        out.push_str(&text);
+        out.push('\n');
+    }
+    if let Some(children) = tree.children(node) {
+        for child in children {
+            render_node(tree, child, out);
+        }
+    }
+}
+
+/// Walk a tree to find the node whose `block_id` meta matches `target`.
+/// O(n) over nodes in the doc; n is small (typical note < 100 blocks)
+/// for the scaffold. Replace with an index if profiling needs it.
+fn find_node_by_block_id(tree: &LoroTree, target_hex: &str) -> Option<TreeID> {
+    for node in tree.nodes() {
+        if let Ok(meta) = tree.get_meta(node) {
+            if let Some(v) = meta.get("block_id") {
+                if let Ok(val) = v.into_value() {
+                    if let Ok(s) = val.into_string() {
+                        if *s == target_hex {
+                            return Some(node);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 #[async_trait]
@@ -147,21 +191,66 @@ impl SyncEngine for LoroEngine {
         match &payload {
             OpPayload::NoteUpsert { note_id, content, .. } => {
                 let doc = self.doc_for_note_mut(*note_id).await;
-                // Scaffold approach: store the whole content on the doc's
-                // root meta. Lossy compared to the eventual block-tree
-                // shape, but enough to verify the wrapper round-trips.
+                // Frontmatter + raw content snapshot lives on the doc's
+                // root meta until block ops fully replace it. When the
+                // server emits BlockUpsert ops alongside NoteUpsert,
+                // this branch just keeps the convenience copy; the
+                // tree under `"blocks"` is the source of truth.
                 let root_meta = doc.get_map("root");
                 root_meta
                     .insert("content", content.as_str())
                     .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
                 doc.commit();
             }
+            OpPayload::BlockUpsert {
+                block_id,
+                note_id,
+                parent_block_id,
+                order_key,
+                indent_level,
+                text,
+            } => {
+                let doc = self.doc_for_note_mut(*note_id).await;
+                let tree = doc.get_tree("blocks");
+                let block_hex = hex_id(block_id);
+                let parent_id = match parent_block_id {
+                    Some(p) => find_node_by_block_id(&tree, &hex_id(p))
+                        .map(TreeParentId::Node)
+                        .unwrap_or(TreeParentId::Root),
+                    None => TreeParentId::Root,
+                };
+                let node = match find_node_by_block_id(&tree, &block_hex) {
+                    Some(existing) => {
+                        if tree.parent(existing) != Some(parent_id) {
+                            tree.mov(existing, parent_id).map_err(|e| {
+                                SyncError::Storage(format!("loro tree mov: {e}"))
+                            })?;
+                        }
+                        existing
+                    }
+                    None => tree
+                        .create(parent_id)
+                        .map_err(|e| SyncError::Storage(format!("loro tree create: {e}")))?,
+                };
+                let meta = tree
+                    .get_meta(node)
+                    .map_err(|e| SyncError::Storage(format!("loro get_meta: {e}")))?;
+                meta.insert("block_id", block_hex.as_str())
+                    .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
+                meta.insert("text", text.as_str())
+                    .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
+                meta.insert("order_key", order_key.as_str())
+                    .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
+                meta.insert("indent_level", *indent_level as i64)
+                    .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
+                doc.commit();
+            }
             _ => {
-                // Other op types: scaffold no-op. They'll land op-by-op
-                // during the rest of the migration phase. The
-                // SqliteEngine in the dual-write pair handles them in
-                // the meantime, so the system stays correct from the
-                // user's perspective.
+                // Other op types: scaffold no-op. BlockMove / BlockDelete
+                // / NoteDelete / Attachment* land op-by-op as the
+                // migration progresses. SqliteEngine in the dual-write
+                // pair handles them in the meantime, so the system
+                // stays correct from the user's perspective.
                 tracing::debug!(
                     "tesela-sync/loro: scaffold no-op for {:?}",
                     std::mem::discriminant(&payload)
@@ -278,5 +367,74 @@ mod tests {
             .await;
         assert!(result.is_ok());
         assert_eq!(engine.note_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn block_upsert_builds_indented_tree() {
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [1u8; 16];
+        let root_block = [10u8; 16];
+        let child_block = [11u8; 16];
+
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: root_block,
+                note_id,
+                parent_block_id: None,
+                order_key: "a0".into(),
+                indent_level: 0,
+                text: "root block".into(),
+            })
+            .await
+            .unwrap();
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: child_block,
+                note_id,
+                parent_block_id: Some(root_block),
+                order_key: "a0a".into(),
+                indent_level: 1,
+                text: "child block".into(),
+            })
+            .await
+            .unwrap();
+
+        let rendered = engine.render_note(note_id).await.unwrap();
+        assert_eq!(rendered, "- root block\n\t- child block\n");
+    }
+
+    #[tokio::test]
+    async fn block_upsert_with_same_block_id_updates_text() {
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [2u8; 16];
+        let block = [20u8; 16];
+
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: block,
+                note_id,
+                parent_block_id: None,
+                order_key: "a0".into(),
+                indent_level: 0,
+                text: "first".into(),
+            })
+            .await
+            .unwrap();
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: block,
+                note_id,
+                parent_block_id: None,
+                order_key: "a0".into(),
+                indent_level: 0,
+                text: "second".into(),
+            })
+            .await
+            .unwrap();
+
+        let rendered = engine.render_note(note_id).await.unwrap();
+        assert_eq!(rendered, "- second\n");
     }
 }
