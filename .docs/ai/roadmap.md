@@ -12,10 +12,11 @@ Active items. Trim as completed.
 2. [x] Scaffold LoroEngine + DualEngine wrapper in `tesela-sync` (`4015dc7`).
 3. [x] Wire DualEngine into `tesela-server` behind `TESELA_LORO_DUAL_WRITE` env var (`70f9ed2`). `AppState.sync_engine: Arc<dyn SyncEngine>`; relay/peer paths take `&dyn SyncEngine`.
 4. [x] Port `BlockUpsert` / `BlockMove` / `BlockDelete` into `LoroEngine::record_local` (`101b148`, `6b2ccc3`). Tree-per-note schema, block_id stored in meta, render_note walks parent/child.
-5. [ ] Add divergence-comparison hook. Needs a normalization-design pass first — see current-state.md "How to pick up tomorrow" for the options. Also needs `pub async fn materialize_note_body(note_id)` on SqliteEngine.
-6. [ ] Port NoteDelete + AttachmentUpsert/Delete into LoroEngine (low priority — block ops are the hard part).
-7. [ ] Verify DR procedure with current engine (engine-agnostic baseline).
-8. [ ] Full migration on 8–10 calendar week cadence (10–15 hr/week). iOS first (most pain, smallest surface), then web, then Mac.
+5. [x] Add divergence-comparison hook (`e7a3c82`). 30s periodic background task; strips bid markers + trims trailing ws before byte-compare; warns per-note on mismatch. Server running with `TESELA_LORO_DUAL_WRITE=1`.
+6. [ ] Wire `apply_changes` on LoroEngine so peer-applied ops also populate the shadow (currently only local writes do).
+7. [ ] Port NoteDelete + AttachmentUpsert/Delete into LoroEngine (low priority — block ops are the hard part).
+8. [ ] Verify DR procedure with current engine (engine-agnostic baseline).
+9. [ ] Full migration on 8–10 calendar week cadence (10–15 hr/week). iOS first (most pain, smallest surface), then web, then Mac.
 
 **Patch wave through 2026-05-27 is stable.** 11 commits today closing out Phases 1, 2, 2.1, 2.2 of the sync redesign + bid surfacing + multiple UI ghosting fixes. The hand-rolled engine is in the best state it's ever been; Loro is now the right move because *the next big problem (multi-user)* is not one this engine was designed for, not because the current bugs aren't fixable.
 
