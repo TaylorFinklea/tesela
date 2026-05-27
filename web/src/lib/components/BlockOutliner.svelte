@@ -707,7 +707,16 @@
       .map((b) => {
         const indent = "  ".repeat(b.indent_level);
         const lines = b.raw_text.split("\n");
-        const first = `${indent}- ${lines[0]}`;
+        // Strip any stray bid marker that crept into raw_text (rare but
+        // possible if the editor accepted a paste containing one) before
+        // we re-emit the bid below — without this we could end up with
+        // two bid markers on the same line.
+        const firstText = (lines[0] ?? "").replace(/\s*<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->/g, "");
+        // Re-emit the bid marker if the block has one. Brand-new local
+        // blocks (no bid yet) get stamped by the server's
+        // `stamp_block_ids` pass on receipt.
+        const bidSuffix = b.bid ? ` <!-- bid:${b.bid} -->` : "";
+        const first = `${indent}- ${firstText}${bidSuffix}`;
         const rest = lines.slice(1).map((l: string) => `${indent}  ${l}`);
         return [first, ...rest].join("\n");
       })
@@ -918,8 +927,16 @@
     const fullIdx = blocks.findIndex(b => b.id === current.id);
     if (fullIdx < 0) return;
     pushUndo();
+    // Mint a stable canonical UUID for the bid up front. Without it,
+    // the first save would emit a bid-less line, server's
+    // stamp_block_ids would assign one, and every SUBSEQUENT save
+    // (while web's local state still carries the local-only id and
+    // no bid) would trigger another stamp → another BlockUpsert with
+    // a different UUID → `apply_block_upsert` would append a new
+    // row instead of updating. Stamping client-side breaks the loop.
     const newBlock: ParsedBlock = {
       id: `${noteId}:new-${Date.now()}`,
+      bid: crypto.randomUUID(),
       text: (textAfterCursor.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
       raw_text: textAfterCursor,
       tags: [],
@@ -932,6 +949,8 @@
       parent_note_type: null,
     };
     if (textAfterCursor) {
+      // Split: current keeps its existing bid (inherited via spread);
+      // newBlock got its own above. Both blocks are now stable.
       const updatedCurrent: ParsedBlock = { ...current, id: `${noteId}:split-${Date.now() + 1}` };
       mountHint = { blockId: newBlock.id, pos: 0, startInInsert: true };
       blocks = [...blocks.slice(0, fullIdx), updatedCurrent, newBlock, ...blocks.slice(fullIdx + 1)];
@@ -983,7 +1002,12 @@
     // Explicit BlockDelete (Phase 2.2). See `handleDeleteBlock` for
     // the why; same shape: skip local-only ids.
     if (!isLocalOnlyId(block.id)) {
-      api.deleteBlock(noteId, block.id).catch((err) => {
+      // Prefer the canonical bid when surfaced — eliminates the race
+      // window where another edit shifts line numbers between web
+      // identifying the block and server processing the DELETE. Fall
+      // back to the line-based composite id for blocks the server
+      // hasn't stamped yet.
+      api.deleteBlock(noteId, block.bid ?? block.id).catch((err) => {
         console.warn("deleteBlock failed for", block.id, err);
       });
     }
@@ -1019,7 +1043,7 @@
     // Tell the server explicitly so the BlockDelete op propagates.
     // Skip for local-only ids.
     if (!isLocalOnlyId(current.id)) {
-      api.deleteBlock(noteId, current.id).catch((err) => {
+      api.deleteBlock(noteId, current.bid ?? current.id).catch((err) => {
         console.warn("deleteBlock (merge) failed for", current.id, err);
       });
     }
@@ -1065,7 +1089,12 @@
     // round-tripped through the server, dropping them locally is the
     // whole deletion.
     if (!isLocalOnlyId(block.id)) {
-      api.deleteBlock(noteId, block.id).catch((err) => {
+      // Prefer the canonical bid when surfaced — eliminates the race
+      // window where another edit shifts line numbers between web
+      // identifying the block and server processing the DELETE. Fall
+      // back to the line-based composite id for blocks the server
+      // hasn't stamped yet.
+      api.deleteBlock(noteId, block.bid ?? block.id).catch((err) => {
         console.warn("deleteBlock failed for", block.id, err);
       });
     }
@@ -1095,6 +1124,10 @@
     const pasted = blockClipboard.map((b, i) => ({
       ...b,
       id: `${noteId}:paste-${Date.now()}-${i}`,
+      // Fresh bid so each pasted copy is a distinct block on the
+      // server side. Without this they'd inherit the source block's
+      // bid and collide as the same logical row.
+      bid: crypto.randomUUID(),
     }));
     blocks = [...blocks.slice(0, fullIdx + 1), ...pasted, ...blocks.slice(fullIdx + 1)];
     saveBlocks(blocks);
@@ -1110,6 +1143,7 @@
     pushUndo();
     const newBlock: ParsedBlock = {
       id: `${noteId}:new-${Date.now()}`,
+      bid: crypto.randomUUID(),
       text: "",
       raw_text: "",
       tags: [],
@@ -1387,6 +1421,7 @@
       pushUndo();
       const newBlock: ParsedBlock = {
         id: `${noteId}:new-${Date.now()}`,
+        bid: crypto.randomUUID(),
         text: "",
         raw_text: "",
         tags: [],

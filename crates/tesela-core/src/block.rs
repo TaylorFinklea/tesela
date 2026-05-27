@@ -17,6 +17,15 @@ use ts_rs::TS;
 pub struct ParsedBlock {
     /// Deterministic ID: `{note_id}:{line_number}`
     pub id: String,
+    /// Canonical block UUID parsed from the on-disk `<!-- bid:UUID -->`
+    /// marker. `None` for blocks the server hasn't yet stamped (brand-
+    /// new local blocks before their first round-trip through
+    /// `stamp_block_ids`). Surfaced so clients can re-emit the bid on
+    /// save instead of dropping it — dropping it caused the server
+    /// to re-stamp a fresh UUID on every save, which then appended a
+    /// duplicate file row via `apply_block_upsert`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bid: Option<String>,
     /// The block's display text (first line without tags)
     pub text: String,
     /// Full raw text including continuation lines
@@ -175,9 +184,12 @@ fn make_block(
     let first_line = raw_text.lines().next().unwrap_or(raw_text);
     let bid_stripped = crate::note_tree::strip_bid_comment(first_line);
     let display_text = TAG_RE.replace_all(&bid_stripped, "").trim().to_string();
+    // Surface the on-disk bid so clients can re-emit it on save.
+    let bid = crate::note_tree::parse_bid(first_line).map(|u| u.to_string());
 
     ParsedBlock {
         id: format!("{}:{}", note_id, line_num),
+        bid,
         text: display_text,
         raw_text: raw_text.to_string(),
         tags,

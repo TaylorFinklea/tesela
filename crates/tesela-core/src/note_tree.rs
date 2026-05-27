@@ -309,6 +309,20 @@ pub fn strip_bid_comment(line: &str) -> String {
     extract_bid(line).0
 }
 
+/// Public wrapper around [`extract_bid`] for callers that need the
+/// canonical block id without the surrounding `<!-- bid:UUID -->`
+/// scaffolding. Returns the parsed UUID if the line carries one;
+/// `None` for bid-less local blocks the server hasn't stamped yet.
+/// Phase 2.2 (2026-05-27): used by `parse_blocks` so `ParsedBlock`
+/// surfaces the bid to clients, which then re-emit it on save —
+/// without this, every save round emits a bid-less line, the server
+/// stamps a fresh UUID, and `apply_block_upsert` appends a new file
+/// row instead of updating the existing one (visible as duplicate
+/// blocks across sync round-trips).
+pub fn parse_bid(line: &str) -> Option<Uuid> {
+    extract_bid(line).1
+}
+
 /// Strip `<!-- bid:UUID -->` comments from a line of text. Returns the
 /// cleaned text and the first parsed UUID, if any. Tolerates the comment
 /// appearing anywhere on the line (not only as a trailing token) so users

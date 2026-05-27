@@ -78,12 +78,23 @@ function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText
   }
 
   const firstLine = rawText.split("\n")[0] ?? rawText;
-  const text = firstLine.replace(TAG_RE, "").trim();
+  // Pull the bid out of the `<!-- bid:UUID -->` marker if present, so
+  // we can re-emit it on save. Without this the save would strip the
+  // bid (it only round-trips raw_text-with-stripped-bid), the server
+  // would re-stamp a fresh UUID for the bid-less line, and
+  // apply_block_upsert would append a duplicate file row.
+  const bidMatch = firstLine.match(/<!--\s*bid:([0-9a-fA-F-]{32,36})\s*-->/);
+  const bid = bidMatch?.[1] ?? null;
+  const text = firstLine
+    .replace(/<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->/g, "")
+    .replace(TAG_RE, "")
+    .trim();
 
   const { inline: inline_tags, trailing: trailing_tags } = splitInlineAndTrailingTags(rawText);
 
   return {
     id: `${noteId}:${lineNum}`,
+    bid,
     text,
     raw_text: rawText,
     tags,

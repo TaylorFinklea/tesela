@@ -1372,6 +1372,7 @@ impl SqliteIndex {
             // come from frontmatter, not from positional `#tag` tokens in body.
             let pseudo = ParsedBlock {
                 id: id.clone(),
+                bid: None,
                 text: title.clone(),
                 raw_text: title.clone(),
                 tags: tags.clone(),

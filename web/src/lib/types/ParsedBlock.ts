@@ -9,6 +9,16 @@ export type ParsedBlock = {
  */
 id: string, 
 /**
+ * Canonical block UUID parsed from the on-disk `<!-- bid:UUID -->`
+ * marker. `None` for blocks the server hasn't yet stamped (brand-
+ * new local blocks before their first round-trip through
+ * `stamp_block_ids`). Surfaced so clients can re-emit the bid on
+ * save instead of dropping it — dropping it caused the server
+ * to re-stamp a fresh UUID on every save, which then appended a
+ * duplicate file row via `apply_block_upsert`.
+ */
+bid?: string | null, 
+/**
  * The block's display text (first line without tags)
  */
 text: string, 

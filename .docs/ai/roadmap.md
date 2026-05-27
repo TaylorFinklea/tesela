@@ -531,7 +531,6 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
 
 ### Architectural (Sonnet candidates)
 
-- [ ] **Surface `bid` on `ParsedBlock` so web's `DELETE /notes/<id>/blocks/<bid>` carries the canonical UUID** — added Phase 2.2 (sync redesign 2026-05-27, `crates/tesela-server/src/routes/notes.rs::delete_block`). Web's `ParsedBlock.id` is line-based (`<note>:<line>`); the explicit-delete endpoint currently accepts that form and resolves it server-side by reading the file's `<!-- bid:UUID -->` marker at the target line. Race window: if another edit shifts line numbers between web identifying the block and server processing the DELETE, the wrong block can be deleted. Acceptable for an interactive action today, but the proper fix is to add `bid: Option<Uuid>` to `tesela_core::block::ParsedBlock`, populate it from the `<!-- bid:UUID -->` marker during `parse_blocks`, expose it via ts-rs to the web client, and pass the canonical UUID directly to `api.deleteBlock`. Once that lands, drop the line-number fallback from `delete_block`. Estimate: ~40 lines of Rust + a ts-rs regen + ~10 lines of web client wiring.
 - [ ] Split `crates/tesela-core/src/db/sqlite.rs` (1126 lines) into db/migrations.rs, db/search.rs, db/links.rs, db/types.rs
 - [ ] Split `crates/tesela-cli/src/main.rs` (826 lines) into `src/commands/` submodule
 - [ ] Extract duplicated backup logic into shared `tesela_core::backup` module

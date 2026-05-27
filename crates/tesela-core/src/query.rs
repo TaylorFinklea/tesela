@@ -1408,6 +1408,7 @@ mod tests {
         }
         ParsedBlock {
             id: "n:1".into(),
+            bid: None,
             text: "x".into(),
             raw_text: "- x".into(),
             tags: tags.iter().map(|s| (*s).into()).collect(),
@@ -1479,6 +1480,7 @@ mod tests {
     fn block_with_text(text: &str) -> ParsedBlock {
         ParsedBlock {
             id: "n:1".into(),
+            bid: None,
             text: text.into(),
             raw_text: format!("- {}", text),
             tags: vec![],
