@@ -1333,6 +1333,31 @@
   let rootEl = $state<HTMLDivElement | undefined>();
   let ctxMenu = $state<{ x: number; y: number; blockId: string; blockText: string; blockNoteId: string } | null>(null);
 
+  /** True when DOM focus is anywhere inside this outliner's subtree.
+   *  Drives the "focused row" background highlight — without this gate,
+   *  every outliner instance (journal view stacks one per day) keeps
+   *  its `focusedIndex` row highlighted in parallel, making it look
+   *  like the cursor is in multiple places at once. */
+  let outlinerHasFocus = $state(false);
+  onMount(() => {
+    if (!rootEl) return;
+    const onIn = () => { outlinerHasFocus = true; };
+    const onOut = (ev: FocusEvent) => {
+      // `focusout` fires before the new focus target is installed, so
+      // `relatedTarget` is the destination. If it's still inside this
+      // outliner, focus didn't really leave us; keep `hasFocus` true.
+      const next = ev.relatedTarget;
+      if (next instanceof Node && rootEl?.contains(next)) return;
+      outlinerHasFocus = false;
+    };
+    rootEl.addEventListener("focusin", onIn);
+    rootEl.addEventListener("focusout", onOut);
+    return () => {
+      rootEl?.removeEventListener("focusin", onIn);
+      rootEl?.removeEventListener("focusout", onOut);
+    };
+  });
+
   // Prism v4 — register this outliner's root element with the pane-tree
   // registry so later phases can target events at "the outliner in pane
   // X". No-op for the legacy chrome (paneId unset).
@@ -1450,7 +1475,7 @@
       <div
         data-block-vi={vi}
         class="group flex items-start transition-all relative
-          {focusedIndex === vi ? 'bg-accent/40' : ''}
+          {outlinerHasFocus && focusedIndex === vi ? 'bg-accent/40' : ''}
           {visualRange.has(vi) ? 'bg-primary/10 ring-1 ring-primary/20 rounded-md' : ''}"
         style="padding-left: {displayIndent * 24}px;"
       >
