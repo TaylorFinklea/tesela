@@ -1,14 +1,23 @@
 # Current State
 
-*Last updated: 2026-05-27 afternoon. Loro migration scaffold landed: spike GREEN → LoroEngine + DualEngine wrappers exist → tesela-server can dual-write behind `TESELA_LORO_DUAL_WRITE=1`. SqliteEngine still authoritative. Next: divergence comparison hook + porting BlockUpsert/Move/Delete to LoroEngine.*
+*Last updated: 2026-05-27 evening. Loro migration scaffold + all three block ops landed: LoroEngine now models BlockUpsert / BlockMove / BlockDelete as LoroTree operations. SqliteEngine still authoritative. Next: divergence comparison hook (needs a normalization-design pass before code).*
 
-## Latest commits (2026-05-27 afternoon)
+## Latest commits (2026-05-27)
 
+- `6b2ccc3` feat(sync): port BlockMove + BlockDelete into LoroEngine
+- `101b148` feat(sync): port BlockUpsert into LoroEngine using LoroTree
+- `fd3dd49` docs(ai): record DualEngine wire-up + reorder Loro work items
 - `70f9ed2` feat(sync): wire DualEngine into tesela-server behind TESELA_LORO_DUAL_WRITE
 - `4015dc7` feat(sync): scaffold LoroEngine + DualEngine wrapper
 - `3367ab5` chore(sync): Loro migration committed — spike GREEN, handoff docs updated
 
-Trait-objectified `AppState.sync_engine: Arc<dyn SyncEngine>`. `device()` + `produce_local_authored_since()` lifted onto the `SyncEngine` trait so the relay/peer paths program against `&dyn SyncEngine`. Server runs as default (SqliteEngine only) unless `TESELA_LORO_DUAL_WRITE=1` is set in the launch env, in which case it wraps the primary in `DualEngine::from_primary(...)`. LoroEngine currently shadows only `NoteUpsert`; other op types are silent no-ops until ported. Build + tests green; server restarted on the new binary.
+### Server wire-up (afternoon)
+Trait-objectified `AppState.sync_engine: Arc<dyn SyncEngine>`. `device()` + `produce_local_authored_since()` lifted onto the `SyncEngine` trait so relay/peer paths program against `&dyn SyncEngine`. Server runs default (SqliteEngine only) unless `TESELA_LORO_DUAL_WRITE=1` is set, then it wraps the primary in `DualEngine::from_primary(...)`. Build + tests green; server restarted on the new binary.
+
+### Block ops in LoroEngine (evening)
+`record_local` now handles all three block ops on a per-note `LoroTree` named "blocks". Block identity lives in `meta["block_id"]` as hex of the 16-byte UUID; `text`, `order_key`, `indent_level` round-trip through meta. BlockMove/BlockDelete scan all docs to find the owning note (no block→note index yet — scaffold scale). `render_note` walks the tree by parent/child and emits indented bullets. 7/7 LoroEngine tests pass.
+
+NoteDelete + AttachmentUpsert/Delete remain silent no-ops.
 
 ## The big decision
 
@@ -88,10 +97,10 @@ Deferred until after Loro lands — the payload shape changes and we don't want 
 
 ## How to pick up tomorrow
 
-1. Add a divergence-comparison hook to DualEngine (periodically diff `LoroEngine::render_note(id)` vs SqliteEngine's materialized markdown — emit `tracing::warn!` on divergence). Likely an async task spawned from `DualEngine::from_primary`.
-2. Port `BlockUpsert` / `BlockMove` / `BlockDelete` ops into `LoroEngine::record_local` so the shadow actually models block-level CRDT structure (currently only NoteUpsert lands content into a root LoroMap).
-3. Run a DR drill while the engine is still SqliteEngine-only (engine-agnostic baseline) — see [`phases/2026-05-27-loro-spike-spec.md`](phases/2026-05-27-loro-spike-spec.md) for the procedure sketch.
-4. Once block ops + divergence hook are in, flip `TESELA_LORO_DUAL_WRITE=1` for a day of normal use; tail the warn logs to find structural mismatches.
+1. **Divergence comparison hook — needs a design pass before code.** LoroEngine renders bullets only (`- text\n` with tab indent); SqliteEngine materializes to disk with `<!-- bid:UUID -->` markers appended per block. Byte-equal will always diverge. Options: (a) normalize both sides at compare time (strip bid markers + trim trailing ws); (b) emit bid markers from LoroEngine's render too; (c) compare structurally (parse both sides into ParsedBlock vectors and compare). (a) is cheapest and probably right for the first cut. Plumbing also needs a `pub async fn materialize_note_body(note_id) -> SyncResult<Option<String>>` on SqliteEngine (read `<mosaic>/<slug>.md`, strip frontmatter). Background-task vs on-write-trigger is the second design choice — periodic is simpler.
+2. Run a DR drill while the engine is still SqliteEngine-only (engine-agnostic baseline) — see [`phases/2026-05-27-loro-spike-spec.md`](phases/2026-05-27-loro-spike-spec.md).
+3. Once the divergence hook is in, flip `TESELA_LORO_DUAL_WRITE=1` for a day of normal use; tail the warn logs to find structural mismatches.
+4. NoteDelete + AttachmentUpsert/Delete still no-op in LoroEngine — port once divergence pipeline confirms BlockUpsert/Move/Delete are clean.
 
 ## Migration execution pattern (decided 2026-05-27)
 

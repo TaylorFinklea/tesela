@@ -11,10 +11,11 @@ Active items. Trim as completed.
 1. [x] Run the 5-item Loro spike per [`phases/2026-05-27-loro-spike-spec.md`](phases/2026-05-27-loro-spike-spec.md). GREEN across all 5 items (see [`phases/2026-05-27-loro-spike-report.md`](phases/2026-05-27-loro-spike-report.md)).
 2. [x] Scaffold LoroEngine + DualEngine wrapper in `tesela-sync` (`4015dc7`).
 3. [x] Wire DualEngine into `tesela-server` behind `TESELA_LORO_DUAL_WRITE` env var (`70f9ed2`). `AppState.sync_engine: Arc<dyn SyncEngine>`; relay/peer paths take `&dyn SyncEngine`.
-4. [ ] Add divergence-comparison hook (periodically diff `LoroEngine` rendered note vs SqliteEngine materialized markdown; `tracing::warn!` on divergence).
-5. [ ] Port `BlockUpsert` / `BlockMove` / `BlockDelete` into `LoroEngine::record_local` so the shadow models block-level CRDT structure (currently NoteUpsert only).
-6. [ ] Verify DR procedure with current engine (engine-agnostic baseline).
-7. [ ] Full migration on 8–10 calendar week cadence (10–15 hr/week). iOS first (most pain, smallest surface), then web, then Mac.
+4. [x] Port `BlockUpsert` / `BlockMove` / `BlockDelete` into `LoroEngine::record_local` (`101b148`, `6b2ccc3`). Tree-per-note schema, block_id stored in meta, render_note walks parent/child.
+5. [ ] Add divergence-comparison hook. Needs a normalization-design pass first — see current-state.md "How to pick up tomorrow" for the options. Also needs `pub async fn materialize_note_body(note_id)` on SqliteEngine.
+6. [ ] Port NoteDelete + AttachmentUpsert/Delete into LoroEngine (low priority — block ops are the hard part).
+7. [ ] Verify DR procedure with current engine (engine-agnostic baseline).
+8. [ ] Full migration on 8–10 calendar week cadence (10–15 hr/week). iOS first (most pain, smallest surface), then web, then Mac.
 
 **Patch wave through 2026-05-27 is stable.** 11 commits today closing out Phases 1, 2, 2.1, 2.2 of the sync redesign + bid surfacing + multiple UI ghosting fixes. The hand-rolled engine is in the best state it's ever been; Loro is now the right move because *the next big problem (multi-user)* is not one this engine was designed for, not because the current bugs aren't fixable.
 
