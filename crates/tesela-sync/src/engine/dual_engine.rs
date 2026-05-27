@@ -42,6 +42,35 @@ use crate::oplog::parked::ParkReason;
 use crate::wire::envelope::SyncEnvelope;
 use async_trait::async_trait;
 use std::sync::Arc;
+use std::time::Duration;
+
+/// Result of comparing one note's rendered output between the primary
+/// and shadow engines. `Match` means the two engines agree after
+/// normalization (bid markers stripped, trailing whitespace trimmed);
+/// `Diverge` carries both normalized forms for the warn log.
+#[derive(Debug, Clone)]
+pub enum NoteComparison {
+    /// Both engines rendered the same content after normalization.
+    Match,
+    /// Engines disagree; both normalized forms attached for diagnostics.
+    Diverge {
+        /// SqliteEngine's materialized markdown body, normalized.
+        primary: String,
+        /// LoroEngine's rendered tree, normalized.
+        shadow: String,
+    },
+    /// Primary engine has nothing materialized yet (no slug, no file).
+    /// Shadow may or may not have the note.
+    PrimaryMissing,
+    /// Shadow hasn't seen this note. Should not happen if we iterate
+    /// via `shadow.note_ids()`, but kept for symmetry.
+    ShadowMissing,
+}
+
+/// Default interval between divergence-check passes. Long enough that
+/// the check isn't a performance concern, short enough that a real
+/// divergence surfaces in a few minutes of normal usage.
+pub const DIVERGENCE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Wraps both a `SqliteEngine` (authoritative) and a `LoroEngine`
 /// (shadow). Reads come from SqliteEngine; writes fan out to both.
@@ -83,6 +112,141 @@ impl DualEngine {
     /// Access to the primary engine for the same reasons.
     pub fn primary(&self) -> &SqliteEngine {
         &self.primary
+    }
+
+    /// Compare one note's rendered output between primary and shadow,
+    /// after normalization. Used by the periodic divergence check and
+    /// available for ad-hoc inspection from tests / diagnostics.
+    pub async fn compare_note(&self, note_id: [u8; 16]) -> NoteComparison {
+        let shadow_render = self.shadow.render_note(note_id).await;
+        let primary_body = self
+            .primary
+            .materialize_note_body(note_id)
+            .await
+            .ok()
+            .flatten();
+        match (primary_body, shadow_render) {
+            (Some(p), Some(s)) => {
+                let p_norm = normalize(&p);
+                let s_norm = normalize(&s);
+                if p_norm == s_norm {
+                    NoteComparison::Match
+                } else {
+                    NoteComparison::Diverge {
+                        primary: p_norm,
+                        shadow: s_norm,
+                    }
+                }
+            }
+            (None, Some(_)) => NoteComparison::PrimaryMissing,
+            (Some(_), None) => NoteComparison::ShadowMissing,
+            (None, None) => NoteComparison::PrimaryMissing,
+        }
+    }
+
+    /// Compare every note the shadow has seen against the primary's
+    /// materialized output. Returns the per-note results plus a count
+    /// of divergences for the caller's log line.
+    pub async fn compare_all(&self) -> Vec<([u8; 16], NoteComparison)> {
+        let ids = self.shadow.note_ids().await;
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let cmp = self.compare_note(id).await;
+            out.push((id, cmp));
+        }
+        out
+    }
+
+    /// Spawn the periodic divergence-check loop. The loop wakes every
+    /// [`DIVERGENCE_CHECK_INTERVAL`] and walks `compare_all()`,
+    /// emitting `tracing::warn!` for any divergence found. Cloneable
+    /// `SqliteEngine` + `LoroEngine` mean we can hand the task its own
+    /// handles without sharing `Self`.
+    ///
+    /// The task is fire-and-forget; it runs until the tokio runtime
+    /// shuts down. Returns the `JoinHandle` mostly for tests that need
+    /// to abort the loop early.
+    pub fn spawn_divergence_check(&self) -> tokio::task::JoinHandle<()> {
+        let primary = self.primary.clone();
+        let shadow = self.shadow.clone();
+        tokio::spawn(async move {
+            let probe = DualEngine {
+                primary,
+                shadow,
+            };
+            loop {
+                tokio::time::sleep(DIVERGENCE_CHECK_INTERVAL).await;
+                let results = probe.compare_all().await;
+                let total = results.len();
+                let diverged: Vec<_> = results
+                    .into_iter()
+                    .filter(|(_, cmp)| matches!(cmp, NoteComparison::Diverge { .. }))
+                    .collect();
+                if diverged.is_empty() {
+                    tracing::info!(
+                        "tesela-sync/dual-write: divergence check OK ({} notes)",
+                        total
+                    );
+                    continue;
+                }
+                tracing::warn!(
+                    "tesela-sync/dual-write: {} of {} notes diverged",
+                    diverged.len(),
+                    total
+                );
+                for (id, cmp) in diverged.iter().take(3) {
+                    if let NoteComparison::Diverge { primary, shadow } = cmp {
+                        tracing::warn!(
+                            "  note {} primary={:?} shadow={:?}",
+                            hex::encode(id),
+                            truncate(primary, 200),
+                            truncate(shadow, 200)
+                        );
+                    }
+                }
+            }
+        })
+    }
+}
+
+/// Normalize a rendered note body for comparison: strip bid markers
+/// (`<!-- bid:UUID -->`) and trim trailing whitespace per line.
+fn normalize(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for line in s.lines() {
+        let stripped = strip_bid_markers(line);
+        out.push_str(stripped.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
+/// Remove every `<!-- bid:... -->` marker from a line. Markers are
+/// always emitted as a single space + the comment on the line where a
+/// block starts; stripping is byte-level scan, no regex.
+fn strip_bid_markers(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find("<!-- bid:") {
+        out.push_str(&rest[..start]);
+        if let Some(end) = rest[start..].find("-->") {
+            rest = &rest[start + end + 3..];
+        } else {
+            // Malformed marker; keep the rest verbatim.
+            out.push_str(&rest[start..]);
+            rest = "";
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max])
     }
 }
 
@@ -179,6 +343,45 @@ impl SyncEngine for DualEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_strips_bid_markers_and_trailing_ws() {
+        let raw = "- hello world <!-- bid:abc-123 -->   \n\t- child <!-- bid:def --> \n";
+        let normed = normalize(raw);
+        assert_eq!(normed, "- hello world\n\t- child\n");
+    }
+
+    #[test]
+    fn normalize_passes_through_markerless() {
+        let raw = "- a\n\t- b\n";
+        assert_eq!(normalize(raw), raw);
+    }
+
+    #[tokio::test]
+    async fn compare_note_returns_primary_missing_when_no_mosaic() {
+        let device = DeviceId::from_bytes([7u8; 16]);
+        let primary = SqliteEngine::open("sqlite::memory:", device).await.unwrap();
+        let dual = DualEngine::from_primary(primary);
+        let note_id = [99u8; 16];
+
+        // Record a NoteUpsert so the shadow has the note.
+        dual.record_local(OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("smoke".into()),
+            title: "Smoke".into(),
+            content: "---\ntitle: Smoke\n---\n- hi\n".into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+
+        // No mosaic_dir on the in-memory primary, so materialize returns
+        // None. Compare reports PrimaryMissing.
+        match dual.compare_note(note_id).await {
+            NoteComparison::PrimaryMissing => {}
+            other => panic!("expected PrimaryMissing, got {other:?}"),
+        }
+    }
 
     #[tokio::test]
     async fn note_upsert_lands_in_both_engines() {

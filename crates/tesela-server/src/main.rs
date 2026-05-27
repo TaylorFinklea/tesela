@@ -264,7 +264,10 @@ async fn main() -> Result<()> {
                 "tesela-sync: TESELA_LORO_DUAL_WRITE=1 — wrapping SqliteEngine \
                  in DualEngine; LoroEngine runs as shadow"
             );
-            Arc::new(tesela_sync::engine::dual_engine::DualEngine::from_primary(primary))
+            let dual =
+                tesela_sync::engine::dual_engine::DualEngine::from_primary(primary);
+            dual.spawn_divergence_check();
+            Arc::new(dual)
         } else {
             Arc::new(primary)
         }

@@ -54,6 +54,11 @@ fn hex_id(id: &[u8; 16]) -> String {
 /// work. The stubs return defaults that match `SqliteEngine`'s shape
 /// when there's nothing to do (empty batches, zero ops applied, etc.)
 /// so the dual-write wrapper doesn't have to special-case them.
+///
+/// Cloneable so the divergence-check background task can hold its own
+/// handle while the wrapper keeps another. `Inner` is Arc-wrapped, so
+/// clones share the same docs map and HLC.
+#[derive(Clone)]
 pub struct LoroEngine {
     inner: Arc<Inner>,
 }
@@ -93,6 +98,12 @@ impl LoroEngine {
     /// hook — not part of the SyncEngine trait.
     pub async fn note_count(&self) -> usize {
         self.inner.docs.read().await.len()
+    }
+
+    /// All note ids the engine has seen. Used by the divergence-check
+    /// background task to iterate over notes for comparison.
+    pub async fn note_ids(&self) -> Vec<[u8; 16]> {
+        self.inner.docs.read().await.keys().copied().collect()
     }
 
     /// Render a note's current state as markdown by walking its Loro

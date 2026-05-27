@@ -94,6 +94,32 @@ impl SqliteEngine {
         Ok(row.get(0))
     }
 
+    /// Read the materialized note body for a given note id, with
+    /// frontmatter stripped. Returns `None` if the note has no slug
+    /// recorded yet, the engine isn't configured with a mosaic dir, or
+    /// the file doesn't exist on disk.
+    ///
+    /// Used by `DualEngine`'s divergence-check to compare what
+    /// SqliteEngine actually wrote to disk against what LoroEngine's
+    /// shadow tree would render.
+    pub async fn materialize_note_body(
+        &self,
+        note_id: [u8; 16],
+    ) -> SyncResult<Option<String>> {
+        let Some(slug) = self.find_slug_for_note(note_id).await? else {
+            return Ok(None);
+        };
+        let Some(mosaic) = self.inner.mosaic_dir.as_ref() else {
+            return Ok(None);
+        };
+        let path = mosaic.join(format!("{}.md", slug));
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(c) => c,
+            Err(_) => return Ok(None),
+        };
+        Ok(Some(strip_frontmatter(&content)))
+    }
+
     async fn ensure_device_self(pool: &SqlitePool, device: DeviceId) -> SyncResult<()> {
         let row = sqlx::query("SELECT device_id FROM device_self WHERE rowid = 1")
             .fetch_optional(pool)
@@ -918,4 +944,16 @@ pub fn _compute_content_hash_for_test(
     payload: &OpPayload,
 ) -> SyncResult<ContentHash> {
     compute_content_hash(hlc, schema_version, payload)
+}
+
+/// Strip the leading `---\n...---\n` frontmatter block from a markdown
+/// note. Returns the body unchanged if there is no frontmatter.
+fn strip_frontmatter(s: &str) -> String {
+    let Some(rest) = s.strip_prefix("---\n") else {
+        return s.to_string();
+    };
+    match rest.find("\n---\n") {
+        Some(end) => rest[end + 5..].to_string(),
+        None => s.to_string(),
+    }
 }
