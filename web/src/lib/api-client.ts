@@ -96,6 +96,18 @@ export const api = {
     get<NoteVersion>(`/notes/${encodeURIComponent(id)}/versions/${versionId}`),
   deleteNote: (id: string) =>
     fetch(`${BASE_URL}/notes/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  /** Explicit per-block deletion. Phase 2.2 (sync redesign 2026-05-27):
+   *  the server-side PUT diff no longer infers `BlockDelete` from
+   *  "absent in PUT body" because clients with stale views were
+   *  stomping peer-added blocks they hadn't fetched yet. Web's local
+   *  block deletes (dd, backspace-into-empty, backspace-merge) call
+   *  this directly so the delete intent is carried explicitly. `bid`
+   *  must be the 36-char dashed canonical UUID. */
+  deleteBlock: (noteId: string, bid: string) =>
+    fetch(
+      `${BASE_URL}/notes/${encodeURIComponent(noteId)}/blocks/${encodeURIComponent(bid)}`,
+      { method: "DELETE" },
+    ),
   getBacklinks: (id: string) =>
     get<Link[]>(`/notes/${encodeURIComponent(id)}/backlinks`),
   getForwardLinks: (id: string) =>

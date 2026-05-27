@@ -31,18 +31,60 @@ use uuid::Uuid;
 /// Compare two trees of the same note and produce ops describing the
 /// transition. `new` is the post-write state; `old` is whatever the peer
 /// last knew about (or an empty tree for a brand-new note).
+///
+/// Backwards-compatible wrapper that defaults to emitting `BlockDelete`
+/// for ids missing from `new`. Use [`diff_note_trees_with_options`] when
+/// the diff source can't distinguish "user deleted this block" from
+/// "user never saw this block" — server-side PUT diffs against a Mac
+/// file that may have peer ops the requestor hasn't fetched yet, so
+/// inferring deletes from absence is data-lossy.
 pub fn diff_note_trees(note_id: [u8; 16], old: &NoteTree, new: &NoteTree) -> Vec<OpPayload> {
+    diff_note_trees_with_options(note_id, old, new, DiffOptions::default())
+}
+
+/// Tunables for [`diff_note_trees_with_options`].
+#[derive(Debug, Clone, Copy)]
+pub struct DiffOptions {
+    /// When `true` (default), emit a `BlockDelete` for every id present
+    /// in `old` but missing from `new`. Safe when the diff sides are
+    /// symmetric — i.e. both reflect the same client's view (iOS engine
+    /// diffs its own local file vs its own new content). Unsafe when
+    /// `old` is the server's authoritative file and `new` is a client
+    /// PUT body that may not include peer ops the server has applied
+    /// since the client's last fetch: those would be spuriously deleted.
+    pub emit_deletes: bool,
+}
+
+impl Default for DiffOptions {
+    fn default() -> Self {
+        Self { emit_deletes: true }
+    }
+}
+
+/// Like [`diff_note_trees`] but lets the caller suppress
+/// inferred-delete emission. The server-side PUT path passes
+/// `emit_deletes: false` and routes user-intent deletes through an
+/// explicit DELETE endpoint instead.
+pub fn diff_note_trees_with_options(
+    note_id: [u8; 16],
+    old: &NoteTree,
+    new: &NoteTree,
+    opts: DiffOptions,
+) -> Vec<OpPayload> {
     let old_index = index_blocks(&old.blocks);
     let new_index = index_blocks(&new.blocks);
 
     let mut ops = Vec::new();
 
-    // Deletions: anything in old that is missing from new.
-    for (id, _) in &old_index {
-        if !new_index.contains_key(id) {
-            ops.push(OpPayload::BlockDelete {
-                block_id: uuid_to_bytes(*id),
-            });
+    // Deletions: anything in old that is missing from new. Suppressed
+    // when the diff source isn't authoritative about absence.
+    if opts.emit_deletes {
+        for (id, _) in &old_index {
+            if !new_index.contains_key(id) {
+                ops.push(OpPayload::BlockDelete {
+                    block_id: uuid_to_bytes(*id),
+                });
+            }
         }
     }
 

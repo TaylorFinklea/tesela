@@ -973,15 +973,24 @@
   }
 
   function handleBackspace(vi: number) {
+    lastLocalEditAt = Date.now();
     const block = visibleBlocks[vi];
     if (!block || block.raw_text !== "" || blocks.length <= 1) return;
     pushUndo();
     blocks = blocks.filter(b => b.id !== block.id);
     saveBlocks(blocks);
     if (focusedIndex !== null && focusedIndex > 0) focusedIndex = focusedIndex - 1;
+    // Explicit BlockDelete (Phase 2.2). See `handleDeleteBlock` for
+    // the why; same shape: skip local-only ids.
+    if (!isLocalOnlyId(block.id)) {
+      api.deleteBlock(noteId, block.id).catch((err) => {
+        console.warn("deleteBlock failed for", block.id, err);
+      });
+    }
   }
 
   function handleBackspaceMerge(vi: number, currentText: string) {
+    lastLocalEditAt = Date.now();
     if (vi === 0) return;
     const prev = visibleBlocks[vi - 1];
     const current = visibleBlocks[vi];
@@ -1006,6 +1015,14 @@
     ];
     saveBlocks(blocks);
     focusedIndex = vi - 1;
+    // The `current` block was effectively deleted (merged into prev).
+    // Tell the server explicitly so the BlockDelete op propagates.
+    // Skip for local-only ids.
+    if (!isLocalOnlyId(current.id)) {
+      api.deleteBlock(noteId, current.id).catch((err) => {
+        console.warn("deleteBlock (merge) failed for", current.id, err);
+      });
+    }
   }
 
   // Pending mount hint: cursor position + optional insert-mode entry for the next block to mount
@@ -1039,6 +1056,19 @@
     blockClipboard = [{ ...block }];
     blocks = blocks.filter(b => b.id !== block.id);
     saveBlocks(blocks);
+    // Phase 2.2 (sync redesign 2026-05-27): explicit delete intent.
+    // Server-side PUT diff no longer infers BlockDelete from "absent
+    // in body" (it would stomp peer-added blocks the client hadn't
+    // fetched), so user-initiated deletes ping the dedicated endpoint
+    // to record an explicit BlockDelete op. Skip the call for local-
+    // only ids (`:new-` / `:paste-` infix) — those blocks were never
+    // round-tripped through the server, dropping them locally is the
+    // whole deletion.
+    if (!isLocalOnlyId(block.id)) {
+      api.deleteBlock(noteId, block.id).catch((err) => {
+        console.warn("deleteBlock failed for", block.id, err);
+      });
+    }
     // The deleted block's BlockEditor unmounts, firing a blur that
     // (synchronously) nulls focusedIndex via the per-row handler. Defer the
     // refocus to a microtask so it lands AFTER the unmount blur. Also clamp

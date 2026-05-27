@@ -161,7 +161,68 @@ final class MockMosaicService: ObservableObject, MosaicService {
             scheduleWriteback()
         } else if let idx = yesterdayBlocks.firstIndex(where: { $0.id == id }), yesterdayBlocks[idx].kind == .task {
             yesterdayBlocks[idx].done.toggle()
+            scheduleYesterdayWriteback()
         }
+    }
+
+    // MARK: - Yesterday edits (Phase 2.2)
+    //
+    // Yesterday's daily was display-only until 2026-05-27 — Daisy
+    // reported clicks did nothing. The note IS just a regular markdown
+    // note on disk (`YYYY-MM-DD.md` for yesterday's date), so we can
+    // edit it via the same engine path that powers `pushPage`. The only
+    // local-state distinction from today is which array holds the
+    // blocks (`yesterdayBlocks` vs `todayBlocks`); both flush via the
+    // shared engine.
+
+    /// Slug of yesterday's daily — `YYYY-MM-DD` of (today - 1 day).
+    /// Computed each call from `todayDate`, so this naturally rolls
+    /// over at midnight.
+    private var yesterdayId: String { dailyId(daysAgo: 1) }
+
+    /// Mirror of `editTodayBlock` for yesterday's daily.
+    func editYesterdayBlock(id: String, text: String) {
+        guard let idx = yesterdayBlocks.firstIndex(where: { $0.id == id }) else { return }
+        let (body, tags) = Self.splitInlineTags(text)
+        yesterdayBlocks[idx].text = body.components(separatedBy: "\n").first ?? body
+        yesterdayBlocks[idx].rawText = body
+        yesterdayBlocks[idx].tags = tags
+        scheduleYesterdayWriteback()
+    }
+
+    /// Append a fresh empty block to yesterday's daily. Returns the new
+    /// block's id so the caller can flip it into edit mode.
+    @discardableResult
+    func appendYesterdayBlock(kind: BlockKind = .note) -> String {
+        let id = UUID().uuidString.lowercased()
+        yesterdayBlocks.append(Block(id: id, kind: kind, text: ""))
+        scheduleYesterdayWriteback()
+        return id
+    }
+
+    /// Delete a block from yesterday's daily.
+    func deleteYesterdayBlock(id: String) {
+        yesterdayBlocks.removeAll { $0.id == id }
+        scheduleYesterdayWriteback()
+    }
+
+    /// Indent / outdent a yesterday block; clamps to the structural
+    /// invariant (`[0, prev + 1]`) the today path enforces.
+    func indentYesterdayBlock(id: String, by delta: Int) {
+        guard let idx = yesterdayBlocks.firstIndex(where: { $0.id == id }) else { return }
+        let maxIndent = idx > 0 ? yesterdayBlocks[idx - 1].indent + 1 : 0
+        yesterdayBlocks[idx].indent = max(0, min(maxIndent, yesterdayBlocks[idx].indent + delta))
+        scheduleYesterdayWriteback()
+    }
+
+    /// Mirror of `scheduleWriteback` for yesterday's daily. Routes
+    /// through `pushPage` since yesterday isn't tracked under
+    /// `serverDailyId`.
+    private func scheduleYesterdayWriteback() {
+        let slug = yesterdayId
+        guard !slug.isEmpty else { return }
+        let snapshot = yesterdayBlocks
+        Task { await pushPage(id: slug, blocks: snapshot) }
     }
 
     /// Cycle a block's status: note → open task → done task → note.
@@ -1889,7 +1950,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     private func renderBody(from blocks: [Block]) -> String {
         var out: [String] = []
-        for block in droppingBareLeafBlocks(blocks) {
+        // Phase 2.2 (2026-05-27): no longer strips blank-leaf blocks
+        // at render time. Web preserves blank blocks (empty bullets
+        // sit on disk until the user types into them or explicitly
+        // deletes them); iOS's earlier silent prune produced an
+        // asymmetry Daisy reported as confusing. If we ever want
+        // abandoned-block cleanup back, it should be a deliberate
+        // user-facing action (e.g. "tidy blanks") rather than a
+        // silent renderer-side filter that disagrees with the web
+        // client's behaviour.
+        for block in blocks {
             let indent = String(repeating: "  ", count: block.indent)
             let trailingTags = block.tags.isEmpty ? "" : " " + block.tags.joined(separator: " ")
             // Only emit a bid comment for ids that look like real UUIDs.

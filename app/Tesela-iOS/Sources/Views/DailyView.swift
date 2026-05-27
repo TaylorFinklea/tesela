@@ -251,9 +251,53 @@ struct DailyView: View {
                 indent: block.indent,
                 isDone: block.done,
                 tags: block.tags,
-                onToggleTask: { mosaic.toggleTask(id: block.id) }
+                properties: block.properties,
+                isEditing: editingBlockId == block.id,
+                onToggleTask: { mosaic.toggleTask(id: block.id) },
+                onTap: { editingBlockId = block.id },
+                onCommitEdit: { newText in
+                    mosaic.editYesterdayBlock(id: block.id, text: newText)
+                    editingBlockId = nil
+                },
+                onTextChanged: { newText in
+                    mosaic.editYesterdayBlock(id: block.id, text: newText)
+                },
+                onMenuAction: { action in
+                    handleYesterdayAction(action, on: block)
+                },
+                onSplitToNewBlock: { committedText in
+                    mosaic.editYesterdayBlock(id: block.id, text: committedText)
+                    let newId = mosaic.appendYesterdayBlock(kind: .note)
+                    editingBlockId = newId
+                },
+                onIndent: { delta in
+                    mosaic.indentYesterdayBlock(id: block.id, by: delta)
+                },
+                onCycleStatus: {
+                    // Today's cycle pulls from pageSlug=nil branch which
+                    // mutates todayBlocks; yesterday needs its own routing.
+                    // For now leave as a no-op until cycleBlockStatus
+                    // gains a yesterday-aware branch (cheap follow-up).
+                }
             )
             .opacity(0.7)
+        }
+    }
+
+    private func handleYesterdayAction(_ action: BlockAction, on block: Block) {
+        switch action {
+        case .edit:
+            editingBlockId = block.id
+        case .delete:
+            mosaic.deleteYesterdayBlock(id: block.id)
+        case .yankLink:
+            UIPasteboard.general.string = "tesela://block/\(block.id)"
+        case .indent:
+            mosaic.indentYesterdayBlock(id: block.id, by: 1)
+        case .archive:
+            mosaic.deleteYesterdayBlock(id: block.id)
+        case .promote, .convertToTag, .moveTo:
+            break
         }
     }
 

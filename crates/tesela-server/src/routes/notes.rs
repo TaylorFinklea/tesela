@@ -12,13 +12,13 @@ use tesela_core::{
     daily::DailyNoteConfig,
     link::{GraphEdge, Link, LinkType},
     note::NoteId,
-    note_tree::{parse_note, prune_bare_leaf_blocks, serialize_note},
+    note_tree::{parse_note, serialize_note},
     recurrence::{self, Recurrence},
     storage::markdown::parse_frontmatter,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     Note,
 };
-use tesela_sync::{diff::diff_note_trees, OpPayload, SyncEngine};
+use tesela_sync::{OpPayload, SyncEngine};
 
 use crate::{
     error::{AppError, AppResult},
@@ -143,11 +143,13 @@ pub async fn create_note(
         .iter()
         .map(String::as_str)
         .collect();
-    // Drop empty trailing/orphan bullets then stamp persistent block ids
-    // on any unstamped bullets before write so the on-disk form is
-    // canonical for sync. Both passes are idempotent.
-    let cleaned = prune_bare_leaf_blocks(&req.content);
-    let stamped = stamp_block_ids(&cleaned);
+    // Phase 2.2 (2026-05-27): no longer auto-prune blank blocks.
+    // Daisy reported web preserves blanks but iOS stripped them,
+    // creating an asymmetry. Both clients now preserve blanks; the
+    // user can delete blocks explicitly when they're genuinely
+    // abandoned. Re-introducing prune as an opt-in "tidy" action is
+    // a future-friendly option.
+    let stamped = stamp_block_ids(&req.content);
     let note = s.store.create(&req.title, &stamped, &tags).await?;
     s.index.reindex(&note).await?;
     {
@@ -186,15 +188,8 @@ pub async fn update_note(
     // `todo`. Cross-note dependencies are out of v1 scope; users can
     // manually unblock or wait for the dependent's own save to re-evaluate.
     let (new_content, unblocked) = apply_dependency_cycles(&prev_content, &new_content, &id);
-    // Drop empty trailing/orphan bullets (e.g. abandoned "Add block" taps
-    // that the client persisted without ever typing into) before we stamp
-    // and write — keeps the on-disk form clean across every client. The
-    // iOS writeback already does this; the server-side pass ensures
-    // web/other clients converge on the same canonical form.
-    let new_content = prune_bare_leaf_blocks(&new_content);
-    // Stamp persistent block ids on any newly-added bullets so the
-    // on-disk form is canonical for sync. Lines that already had bids
-    // (from prior saves) round-trip untouched.
+    // Phase 2.2 (2026-05-27): no longer auto-prune blank blocks here
+    // either. Both clients preserve blanks consistently.
     let stamped_new = stamp_block_ids(&new_content);
     note.content = stamped_new;
     // Phase 1 (sync redesign 2026-05-26): single write path through
@@ -278,6 +273,82 @@ pub async fn delete_note(
     s.index.remove(&note_id).await?;
     record_sync_delete(&s, &note_id).await;
     let _ = s.ws_tx.send(WsEvent::NoteDeleted { id });
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Explicit per-block deletion. Phase 2.2 (sync redesign 2026-05-27):
+/// the server-side PUT diff no longer infers `BlockDelete` from
+/// "absent in PUT body" because clients with stale views were
+/// stomping peer-added blocks they hadn't fetched yet. Genuine
+/// user-intent deletes now route through this endpoint instead.
+///
+/// `bid_param` accepts EITHER:
+///   1. A canonical 36-char dashed UUID — the bid stamped into the
+///      on-disk `<!-- bid:UUID -->` marker. iOS native passes this.
+///   2. The web client's composite id form `<note_id>:<line_number>`.
+///      Web's `ParsedBlock.id` is line-based (the server's block-parser
+///      shape) and doesn't currently surface the bid as a separate
+///      field, so we accept that form and resolve to the bid by
+///      reading the current file's line-N bid marker.
+///
+/// Either way the handler ends up recording a `BlockDelete(bid)` op
+/// via the sync engine, which materializes by removing the block from
+/// `<mosaic>/notes/<id>.md`; the file watcher + WS broadcast then
+/// propagate to other clients.
+pub async fn delete_block(
+    Path((id, bid_param)): Path<(String, String)>,
+    State(s): State<Arc<AppState>>,
+) -> AppResult<StatusCode> {
+    let block_uuid = if let Ok(u) = uuid::Uuid::parse_str(&bid_param) {
+        u
+    } else {
+        // Try the composite `<note>:<line>` form web sends. Split on
+        // the last `:` to tolerate note ids that themselves contain
+        // colons (rare but possible for tag pages etc.).
+        let (_, line_str) = bid_param
+            .rsplit_once(':')
+            .ok_or_else(|| AppError::Validation(format!("Invalid block id: {bid_param}")))?;
+        let line: usize = line_str
+            .parse()
+            .map_err(|_| AppError::Validation(format!("Invalid block id: {bid_param}")))?;
+        let note_id = NoteId::new(&id);
+        let note = match s.store.get(&note_id).await? {
+            Some(n) => n,
+            None => return Ok(StatusCode::NO_CONTENT),
+        };
+        let lines: Vec<&str> = note.content.lines().collect();
+        let raw_line = lines
+            .get(line)
+            .ok_or_else(|| AppError::Validation(format!("Line {line} out of range")))?;
+        // Pull the bid out of the `<!-- bid:UUID -->` marker. If the
+        // line doesn't have a bid, the block was created locally on web
+        // and hasn't round-tripped through the server's stamp pass yet
+        // — there's nothing to delete on the server side, the client
+        // can drop it locally.
+        let re = regex::Regex::new(r"<!--\s*bid:([0-9a-fA-F-]+)\s*-->").unwrap();
+        match re.captures(raw_line).and_then(|c| c.get(1)) {
+            Some(m) => uuid::Uuid::parse_str(m.as_str())
+                .map_err(|_| AppError::Validation("Malformed bid in file".into()))?,
+            None => return Ok(StatusCode::NO_CONTENT),
+        }
+    };
+    let payload = OpPayload::BlockDelete {
+        block_id: *block_uuid.as_bytes(),
+    };
+    if let Err(e) = s.sync_engine.record_local(payload).await {
+        tracing::warn!("sync: record_local BlockDelete failed for {bid_param}: {e}");
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "Failed to record BlockDelete: {e}"
+        )));
+    }
+    let note_id = NoteId::new(&id);
+    let updated = match s.store.get(&note_id).await {
+        Ok(Some(n)) => n,
+        Ok(None) => return Ok(StatusCode::NO_CONTENT),
+        Err(e) => return Err(e.into()),
+    };
+    s.index.reindex(&updated).await?;
+    let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated });
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -807,7 +878,22 @@ async fn record_sync_update(s: &Arc<AppState>, prev_content: &str, note: &Note) 
     let note_id = stable_uuid_from_slug(note.id.as_str());
     let old_tree = parse_note(prev_content);
     let new_tree = parse_note(&note.content);
-    let ops = diff_note_trees(note_id, &old_tree, &new_tree);
+    // Phase 2.2 (sync redesign 2026-05-27): suppress inferred
+    // `BlockDelete` emission. The server diffs Mac's authoritative
+    // file against the client's PUT body, but the client may have a
+    // stale view (e.g. typed locally while a peer's edit landed via
+    // WS but hasn't yet been merged into the client's local state).
+    // Treating "absent from PUT body" as "user deleted this block"
+    // then stomps the peer's edit on the receiver — exactly the data-
+    // loss class Daisy hit ("iOS's fella was cleared in favor of web's
+    // dude"). User-intent deletes now go through the explicit
+    // `DELETE /notes/<id>/blocks/<bid>` endpoint instead.
+    let ops = tesela_sync::diff::diff_note_trees_with_options(
+        note_id,
+        &old_tree,
+        &new_tree,
+        tesela_sync::diff::DiffOptions { emit_deletes: false },
+    );
 
     if ops.is_empty() {
         if prev_content == note.content {
