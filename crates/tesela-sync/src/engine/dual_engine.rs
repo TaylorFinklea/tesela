@@ -88,6 +88,10 @@ impl DualEngine {
 
 #[async_trait]
 impl SyncEngine for DualEngine {
+    fn device(&self) -> DeviceId {
+        self.primary.device()
+    }
+
     async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash> {
         // Primary first — its return value is authoritative. If it
         // fails we don't even try the shadow; the server caller
@@ -134,6 +138,16 @@ impl SyncEngine for DualEngine {
         // emitted the same set.
         self.primary
             .produce_changes_since(peer, since, max_bytes)
+            .await
+    }
+
+    async fn produce_local_authored_since(
+        &self,
+        since: PeerCursor,
+        max_bytes: usize,
+    ) -> SyncResult<ProducedBatch> {
+        self.primary
+            .produce_local_authored_since(since, max_bytes)
             .await
     }
 

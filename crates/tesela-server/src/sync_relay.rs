@@ -15,10 +15,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use tesela_sync::engine::{PeerCursor, SyncEngine};
+use tesela_sync::engine::PeerCursor;
 use tesela_sync::hlc::HlcTimestamp;
 use tesela_sync::transport::relay::RelayClient;
-use tesela_sync::{GroupIdentity, SqliteEngine, SyncEnvelope};
+use tesela_sync::{GroupIdentity, SyncEnvelope};
 
 /// Per-mosaic relay sync state, persisted to `.tesela/relay_state.json`
 /// so cursors survive restart. Schema is intentionally tiny — the
@@ -146,7 +146,7 @@ impl RelayStatus {
 ///
 /// Returns `(applied, sent)` for observability.
 pub async fn tick(
-    engine: &SqliteEngine,
+    engine: &dyn tesela_sync::SyncEngine,
     ident: &GroupIdentity,
     handle: &RelayHandle,
 ) -> Result<(u32, u32)> {

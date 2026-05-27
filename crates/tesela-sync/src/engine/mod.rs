@@ -49,9 +49,16 @@ pub struct ParkedSummary {
     pub oldest_parked_at_millis: Option<i64>,
 }
 
-/// The core sync engine trait. Implementations: [`SqliteEngine`].
+/// The core sync engine trait. Implementations: [`SqliteEngine`],
+/// [`LoroEngine`], [`DualEngine`].
 #[async_trait]
 pub trait SyncEngine: Send + Sync {
+    /// Local device id. Surfaced on the trait so server code can hold an
+    /// `Arc<dyn SyncEngine>` without reaching for a concrete engine —
+    /// the dual-write wrapper needs this when fanning out, and several
+    /// server routes use the device id for envelope addressing.
+    fn device(&self) -> DeviceId;
+
     /// Local-side mutation entry point. `tesela-core` funnels every write
     /// here when sync is enabled. The engine appends an oplog row and
     /// returns the resulting content hash.
@@ -70,6 +77,16 @@ pub trait SyncEngine: Send + Sync {
     async fn produce_changes_since(
         &self,
         peer: DeviceId,
+        since: PeerCursor,
+        max_bytes: usize,
+    ) -> SyncResult<ProducedBatch>;
+
+    /// Like [`produce_changes_since`] but filters to ops THIS device
+    /// authored. Used by the WAN relay outbound tick where we must not
+    /// re-publish ops we merely received from another peer (the relay
+    /// fan-out would otherwise loop them back to senders).
+    async fn produce_local_authored_since(
+        &self,
         since: PeerCursor,
         max_bytes: usize,
     ) -> SyncResult<ProducedBatch>;

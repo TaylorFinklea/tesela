@@ -18,7 +18,7 @@ use tesela_core::{
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     Note,
 };
-use tesela_sync::{OpPayload, SyncEngine};
+use tesela_sync::OpPayload;
 
 use crate::{
     error::{AppError, AppResult},

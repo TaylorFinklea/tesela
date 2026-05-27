@@ -39,7 +39,7 @@ use tesela_core::{
 use tesela_sync::oplog::op::EncodedOp;
 use tesela_sync::{
     aead_open, aead_seal, decode_pairing_code, encode_pairing_code, envelope_aad, DeviceId,
-    GroupIdentity, PairingCode, PeerCursor, SqliteEngine, SyncEngine, SyncEnvelope,
+    GroupIdentity, PairingCode, PeerCursor, SyncEnvelope,
 };
 use tokio::sync::broadcast;
 
@@ -652,7 +652,7 @@ async fn read_peers(mosaic_root: &Path) -> Vec<Peer> {
 /// and broadcast `WsEvent` so the web UI live-updates without a hard
 /// refresh.
 pub async fn sync_with_peer_minimal(
-    engine: &SqliteEngine,
+    engine: &dyn tesela_sync::SyncEngine,
     mosaic_root: &Path,
     store: &FsNoteStore,
     index: &SqliteIndex,

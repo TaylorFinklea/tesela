@@ -22,7 +22,7 @@ use tesela_core::{
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     types::TypeRegistry,
 };
-use tesela_sync::{DeviceId, LanDiscovery, SqliteEngine};
+use tesela_sync::{DeviceId, LanDiscovery, SqliteEngine, SyncEngine};
 use tokio::sync::RwLock;
 
 use reminders::auto::AutoSync;
@@ -236,18 +236,38 @@ async fn main() -> Result<()> {
     // Materializes incoming NoteUpsert ops into `{mosaic}/notes/{slug}.md`
     // so the existing file-watcher picks them up and the read path
     // through FsNoteStore sees them.
-    let sync_engine = {
+    // Phase 4 (Loro migration, decisions.md 2026-05-27): when the
+    // `TESELA_LORO_DUAL_WRITE` env var is set (any non-empty value), we
+    // wrap the canonical `SqliteEngine` in a `DualEngine` that fans
+    // every `record_local` to a shadow `LoroEngine`. Reads still come
+    // from SqliteEngine; the shadow exists for divergence comparison
+    // ahead of cutover. Unset (or empty) → behaves exactly like
+    // before. Safe to enable in production day 1 because the shadow's
+    // errors are logged warnings, never propagated.
+    let sync_engine: Arc<dyn tesela_sync::SyncEngine> = {
         let url = format!("sqlite:{}", db_path.display());
         let device = load_or_create_device_id(&mosaic).await;
-        let engine = SqliteEngine::open_with_mosaic(
+        let primary = SqliteEngine::open_with_mosaic(
             &url,
             Some(mosaic_for_shutdown.clone()),
             device,
         )
         .await
         .map_err(|e| anyhow::anyhow!("open sync engine: {e}"))?;
-        info!("tesela-sync: device id = {}", engine.device().to_hex());
-        Arc::new(engine)
+        info!("tesela-sync: device id = {}", primary.device().to_hex());
+
+        let dual_write_enabled = std::env::var("TESELA_LORO_DUAL_WRITE")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        if dual_write_enabled {
+            info!(
+                "tesela-sync: TESELA_LORO_DUAL_WRITE=1 — wrapping SqliteEngine \
+                 in DualEngine; LoroEngine runs as shadow"
+            );
+            Arc::new(tesela_sync::engine::dual_engine::DualEngine::from_primary(primary))
+        } else {
+            Arc::new(primary)
+        }
     };
 
     let addr = resolve_bind_addr();
@@ -514,7 +534,7 @@ fn device_display_name() -> String {
 /// doesn't stop sync for everyone else.
 async fn sync_daemon_loop(
     mosaic: PathBuf,
-    engine: Arc<SqliteEngine>,
+    engine: Arc<dyn tesela_sync::SyncEngine>,
     ws_tx: tokio::sync::broadcast::Sender<WsEvent>,
     store: Arc<FsNoteStore>,
     index: Arc<SqliteIndex>,
@@ -540,7 +560,7 @@ async fn sync_daemon_loop(
         let ident = group_identity.read().await.clone();
         for peer in peers {
             if let Err(e) = routes::peer_sync::sync_with_peer_minimal(
-                &engine, &mosaic, &store, &index, &ws_tx, &peer, &ident,
+                &*engine, &mosaic, &store, &index, &ws_tx, &peer, &ident,
             )
             .await
             {
@@ -765,7 +785,7 @@ async fn bring_up_relay_if_configured(
         loop {
             ticker.tick().await;
             if let Err(e) =
-                sync_relay::tick(&tick_engine, &tick_ident, &tick_handle).await
+                sync_relay::tick(&*tick_engine, &tick_ident, &tick_handle).await
             {
                 tracing::debug!("relay tick: {e}");
             }

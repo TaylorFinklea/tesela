@@ -74,11 +74,6 @@ impl SqliteEngine {
         })
     }
 
-    /// Local device id.
-    pub fn device(&self) -> DeviceId {
-        self.inner.device
-    }
-
     /// Filesystem path the engine materializes notes into, when set.
     /// Returned as a reference so callers can probe individual files
     /// (e.g. read-before-diff in the FFI's `record_note_diff`).
@@ -180,6 +175,10 @@ impl SqliteEngine {
 
 #[async_trait]
 impl SyncEngine for SqliteEngine {
+    fn device(&self) -> DeviceId {
+        self.inner.device
+    }
+
     async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash> {
         let hlc = self.inner.hlc.now();
         let op = EncodedOp::new(hlc, crate::SYNC_SCHEMA_VERSION, payload, None)?;
@@ -427,9 +426,7 @@ impl SyncEngine for SqliteEngine {
             oldest_parked_at_millis: oldest,
         })
     }
-}
 
-impl SqliteEngine {
     /// Like [`SyncEngine::produce_changes_since`] but returns ONLY ops
     /// authored by *this* device. This is the right shape for the relay
     /// fanout model: each device publishes its own ops to the relay,
@@ -442,7 +439,7 @@ impl SqliteEngine {
     /// LAN/HTTP transitive sync (`peer_sync.rs`) keeps using
     /// `produce_changes_since(peer, …)` because that path benefits
     /// from transitivity — two peers may share an op a third never saw.
-    pub async fn produce_local_authored_since(
+    async fn produce_local_authored_since(
         &self,
         since: PeerCursor,
         max_bytes: usize,
@@ -519,7 +516,10 @@ impl SqliteEngine {
 
         Ok(ProducedBatch { ops, new_cursor })
     }
+}
 
+// Private helpers — not part of the SyncEngine trait surface.
+impl SqliteEngine {
     /// Materialize an applied op into the on-disk markdown file (Phase 1.5
     /// blob model). No-op if `mosaic_dir` is None. The file watcher in
     /// `tesela-core::indexer::Indexer` will pick up the change and update

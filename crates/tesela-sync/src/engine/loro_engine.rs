@@ -130,6 +130,10 @@ impl LoroEngine {
 
 #[async_trait]
 impl SyncEngine for LoroEngine {
+    fn device(&self) -> DeviceId {
+        self.inner.device
+    }
+
     /// Local-side mutation. For the scaffold we handle `NoteUpsert` by
     /// dropping the full body content onto the doc's root meta as a
     /// single text value. The "real" port (`BlockUpsert`/`Move`/`Delete`
@@ -187,6 +191,21 @@ impl SyncEngine for LoroEngine {
         since: PeerCursor,
         _max_bytes: usize,
     ) -> SyncResult<ProducedBatch> {
+        Ok(ProducedBatch {
+            ops: Vec::new(),
+            new_cursor: since,
+        })
+    }
+
+    async fn produce_local_authored_since(
+        &self,
+        since: PeerCursor,
+        _max_bytes: usize,
+    ) -> SyncResult<ProducedBatch> {
+        // Scaffold: LoroEngine doesn't yet emit ops over the wire — the
+        // SqliteEngine in the dual-write pair carries that path. Empty
+        // batches are correct: nothing for the relay to publish from
+        // the shadow side.
         Ok(ProducedBatch {
             ops: Vec::new(),
             new_cursor: since,

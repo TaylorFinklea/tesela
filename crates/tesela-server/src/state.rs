@@ -5,7 +5,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use tesela_core::{db::SqliteIndex, storage::filesystem::FsNoteStore, types::TypeRegistry, Note};
-use tesela_sync::{GroupIdentity, LanDiscovery, SqliteEngine};
+use tesela_sync::{GroupIdentity, LanDiscovery, SyncEngine};
 use tokio::sync::RwLock;
 
 use crate::reminders::auto::AutoSync;
@@ -19,7 +19,14 @@ pub struct AppState {
     pub auto_sync: Arc<AutoSync>,
     /// Phase 1.5 multi-device sync engine. Records every local note
     /// write to the oplog and applies remote envelopes from peers.
-    pub sync_engine: Arc<SqliteEngine>,
+    ///
+    /// Held as `Arc<dyn SyncEngine>` so the server can run with either
+    /// the canonical `SqliteEngine` (default) or a `DualEngine` wrapper
+    /// during the Loro migration (decisions.md 2026-05-27). Routes call
+    /// trait methods only; engine-specific surfaces live behind the
+    /// concrete type and are reached via downcasting only when
+    /// strictly necessary (currently nowhere).
+    pub sync_engine: Arc<dyn SyncEngine>,
     /// Phase 2.1 mDNS-based LAN peer discovery. `None` if discovery was
     /// disabled or failed to start (we log and continue, since sync over
     /// manually-configured peers still works).
