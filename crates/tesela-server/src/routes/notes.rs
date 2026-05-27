@@ -316,7 +316,13 @@ pub async fn delete_block(
             Some(n) => n,
             None => return Ok(StatusCode::NO_CONTENT),
         };
-        let lines: Vec<&str> = note.content.lines().collect();
+        // Web's `ParsedBlock.id = <note>:<line_num>` numbers lines
+        // relative to the parsed BODY (post-frontmatter), not the
+        // whole file — see `tesela_core::block::parse_blocks`. Match
+        // that addressing here. Without this conversion, line 1 of
+        // the full content is `title: 2026-05-27`, no bid marker,
+        // delete is a silent no-op and the block survives.
+        let lines: Vec<&str> = note.body.lines().collect();
         let raw_line = lines
             .get(line)
             .ok_or_else(|| AppError::Validation(format!("Line {line} out of range")))?;
