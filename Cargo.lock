@@ -4953,6 +4953,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac",
+ "loro",
  "mdns-sd",
  "postcard",
  "rand 0.8.5",

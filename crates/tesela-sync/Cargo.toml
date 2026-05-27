@@ -57,6 +57,11 @@ hex = "0.4"
 reqwest.workspace = true
 serde_json.workspace = true
 
+# Loro CRDT — the migration target (decisions.md 2026-05-27). Currently
+# only used by `LoroEngine` behind the `TESELA_LORO_DUAL_WRITE` flag;
+# becomes the sole data layer after cutover.
+loro = "1.10"
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio-test.workspace = true

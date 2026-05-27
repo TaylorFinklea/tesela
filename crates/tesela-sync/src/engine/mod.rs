@@ -2,10 +2,14 @@
 
 pub mod applied;
 pub mod cursor;
+pub mod dual_engine;
+pub mod loro_engine;
 pub mod sqlite_engine;
 
 pub use applied::AppliedChanges;
 pub use cursor::{LocalCursor, PeerCursor};
+pub use dual_engine::DualEngine;
+pub use loro_engine::LoroEngine;
 pub use sqlite_engine::SqliteEngine;
 
 use crate::device::DeviceId;
