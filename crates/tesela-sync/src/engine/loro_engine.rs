@@ -120,6 +120,24 @@ impl LoroEngine {
         let mut docs = self.inner.docs.write().await;
         docs.entry(note_id).or_insert_with(LoroDoc::new).clone()
     }
+
+    /// Locate the doc + tree node hosting a given block id by walking
+    /// every doc the engine has seen. `BlockMove` / `BlockDelete` ops
+    /// carry only the block id (not the owning note), so this lookup
+    /// has to be a scan. For the scaffold it's fine — typical mosaics
+    /// have a few hundred notes. Replace with an index once profiling
+    /// flags it.
+    async fn find_doc_for_block(&self, block_id: &[u8; 16]) -> Option<(LoroDoc, TreeID)> {
+        let block_hex = hex_id(block_id);
+        let docs = self.inner.docs.read().await;
+        for doc in docs.values() {
+            let tree = doc.get_tree("blocks");
+            if let Some(node) = find_node_by_block_id(&tree, &block_hex) {
+                return Some((doc.clone(), node));
+            }
+        }
+        None
+    }
 }
 
 /// Walk a tree node + its descendants, emitting `- text` lines indented
@@ -245,12 +263,56 @@ impl SyncEngine for LoroEngine {
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 doc.commit();
             }
+            OpPayload::BlockMove {
+                block_id,
+                new_parent,
+                new_order_key,
+            } => {
+                let Some((doc, node)) = self.find_doc_for_block(block_id).await else {
+                    // We never saw the prior BlockUpsert (e.g. the
+                    // engine started after the block was created).
+                    // SqliteEngine handles it; LoroEngine catches up
+                    // when the next BlockUpsert for this block lands.
+                    tracing::debug!(
+                        "tesela-sync/loro: BlockMove for unknown block {}",
+                        hex_id(block_id)
+                    );
+                    return Ok(hash);
+                };
+                let tree = doc.get_tree("blocks");
+                let parent_id = match new_parent {
+                    Some(p) => find_node_by_block_id(&tree, &hex_id(p))
+                        .map(TreeParentId::Node)
+                        .unwrap_or(TreeParentId::Root),
+                    None => TreeParentId::Root,
+                };
+                tree.mov(node, parent_id)
+                    .map_err(|e| SyncError::Storage(format!("loro tree mov: {e}")))?;
+                let meta = tree
+                    .get_meta(node)
+                    .map_err(|e| SyncError::Storage(format!("loro get_meta: {e}")))?;
+                meta.insert("order_key", new_order_key.as_str())
+                    .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
+                doc.commit();
+            }
+            OpPayload::BlockDelete { block_id } => {
+                let Some((doc, node)) = self.find_doc_for_block(block_id).await else {
+                    tracing::debug!(
+                        "tesela-sync/loro: BlockDelete for unknown block {}",
+                        hex_id(block_id)
+                    );
+                    return Ok(hash);
+                };
+                let tree = doc.get_tree("blocks");
+                tree.delete(node)
+                    .map_err(|e| SyncError::Storage(format!("loro tree delete: {e}")))?;
+                doc.commit();
+            }
             _ => {
-                // Other op types: scaffold no-op. BlockMove / BlockDelete
-                // / NoteDelete / Attachment* land op-by-op as the
-                // migration progresses. SqliteEngine in the dual-write
-                // pair handles them in the meantime, so the system
-                // stays correct from the user's perspective.
+                // Other op types: scaffold no-op. NoteDelete / Attachment*
+                // land op-by-op as the migration progresses. SqliteEngine
+                // in the dual-write pair handles them in the meantime, so
+                // the system stays correct from the user's perspective.
                 tracing::debug!(
                     "tesela-sync/loro: scaffold no-op for {:?}",
                     std::mem::discriminant(&payload)
@@ -402,6 +464,100 @@ mod tests {
 
         let rendered = engine.render_note(note_id).await.unwrap();
         assert_eq!(rendered, "- root block\n\t- child block\n");
+    }
+
+    #[tokio::test]
+    async fn block_move_reparents_in_tree() {
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [3u8; 16];
+        let a = [30u8; 16];
+        let b = [31u8; 16];
+        let c = [32u8; 16];
+
+        // Set up: a (root), b (root), c child of a → render = "a / b / \tc"
+        for (id, parent, indent, text) in [
+            (a, None, 0u16, "a"),
+            (b, None, 0u16, "b"),
+            (c, Some(a), 1u16, "c"),
+        ] {
+            engine
+                .record_local(OpPayload::BlockUpsert {
+                    block_id: id,
+                    note_id,
+                    parent_block_id: parent,
+                    order_key: "a0".into(),
+                    indent_level: indent,
+                    text: text.into(),
+                })
+                .await
+                .unwrap();
+        }
+
+        engine
+            .record_local(OpPayload::BlockMove {
+                block_id: c,
+                new_parent: Some(b),
+                new_order_key: "b0".into(),
+            })
+            .await
+            .unwrap();
+
+        let rendered = engine.render_note(note_id).await.unwrap();
+        assert_eq!(rendered, "- a\n- b\n\t- c\n");
+    }
+
+    #[tokio::test]
+    async fn block_delete_removes_from_render() {
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [4u8; 16];
+        let a = [40u8; 16];
+        let b = [41u8; 16];
+
+        for (id, text) in [(a, "keep"), (b, "delete me")] {
+            engine
+                .record_local(OpPayload::BlockUpsert {
+                    block_id: id,
+                    note_id,
+                    parent_block_id: None,
+                    order_key: "a0".into(),
+                    indent_level: 0,
+                    text: text.into(),
+                })
+                .await
+                .unwrap();
+        }
+
+        engine
+            .record_local(OpPayload::BlockDelete { block_id: b })
+            .await
+            .unwrap();
+
+        let rendered = engine.render_note(note_id).await.unwrap();
+        assert_eq!(rendered, "- keep\n");
+    }
+
+    #[tokio::test]
+    async fn block_move_or_delete_for_unknown_block_is_noop() {
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+
+        let res = engine
+            .record_local(OpPayload::BlockMove {
+                block_id: [99u8; 16],
+                new_parent: None,
+                new_order_key: "z".into(),
+            })
+            .await;
+        assert!(res.is_ok());
+
+        let res = engine
+            .record_local(OpPayload::BlockDelete {
+                block_id: [99u8; 16],
+            })
+            .await;
+        assert!(res.is_ok());
     }
 
     #[tokio::test]
