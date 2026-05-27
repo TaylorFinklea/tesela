@@ -8,10 +8,13 @@ Active items. Trim as completed.
 **Sync architecture migration to Loro (committed 2026-05-27).** Multi-user (Savanne + Taylor) collaboration is now in scope, which means concurrent edits in a single mosaic stop being the rare pathological case and become the everyday case. The hand-rolled CRDT can't handle this; Loro is the system designed for it. See [decisions.md](decisions.md#2026-05-27) for the full reasoning.
 
 **Active work order:**
-1. Run the 5-item Loro spike per [`phases/2026-05-27-loro-spike-spec.md`](phases/2026-05-27-loro-spike-spec.md). Half-day. Outputs go/no-go.
-2. Verify DR procedure with current engine (engine-agnostic, should establish baseline NOW).
-3. If spike is green: scaffold dual-write feature flag + port one op type end-to-end (~2 evenings).
-4. Full migration on 8–10 calendar week cadence (10–15 hr/week). iOS first (most pain, smallest surface), then web, then Mac.
+1. [x] Run the 5-item Loro spike per [`phases/2026-05-27-loro-spike-spec.md`](phases/2026-05-27-loro-spike-spec.md). GREEN across all 5 items (see [`phases/2026-05-27-loro-spike-report.md`](phases/2026-05-27-loro-spike-report.md)).
+2. [x] Scaffold LoroEngine + DualEngine wrapper in `tesela-sync` (`4015dc7`).
+3. [x] Wire DualEngine into `tesela-server` behind `TESELA_LORO_DUAL_WRITE` env var (`70f9ed2`). `AppState.sync_engine: Arc<dyn SyncEngine>`; relay/peer paths take `&dyn SyncEngine`.
+4. [ ] Add divergence-comparison hook (periodically diff `LoroEngine` rendered note vs SqliteEngine materialized markdown; `tracing::warn!` on divergence).
+5. [ ] Port `BlockUpsert` / `BlockMove` / `BlockDelete` into `LoroEngine::record_local` so the shadow models block-level CRDT structure (currently NoteUpsert only).
+6. [ ] Verify DR procedure with current engine (engine-agnostic baseline).
+7. [ ] Full migration on 8–10 calendar week cadence (10–15 hr/week). iOS first (most pain, smallest surface), then web, then Mac.
 
 **Patch wave through 2026-05-27 is stable.** 11 commits today closing out Phases 1, 2, 2.1, 2.2 of the sync redesign + bid surfacing + multiple UI ghosting fixes. The hand-rolled engine is in the best state it's ever been; Loro is now the right move because *the next big problem (multi-user)* is not one this engine was designed for, not because the current bugs aren't fixable.
 
