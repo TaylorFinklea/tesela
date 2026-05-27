@@ -234,7 +234,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// block's id so the caller can flip it into edit mode immediately.
     @discardableResult
     func appendTodayBlock(kind: BlockKind = .note) -> String {
-        let id = "ios-\(UUID().uuidString.prefix(12).lowercased())"
+        // Canonical (36-char dashed) UUID so isCanonicalUUID(...) returns
+        // true and the rendered `- text <!-- bid:UUID -->` carries the
+        // id verbatim. The earlier "ios-<12char>" form was non-canonical,
+        // so the bid marker was omitted; the server-side parser would
+        // then generate a fresh random UUID on every parse, churning the
+        // block's identity across pushes — and racing the HTTP-PUT and
+        // relay paths to produce DUPLICATE blocks on the receiver
+        // (each path assigned a different bid for the same intent).
+        let id = UUID().uuidString.lowercased()
         todayBlocks.append(Block(id: id, kind: kind, text: ""))
         scheduleWriteback()
         return id
@@ -278,7 +286,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Append a new empty block on a non-daily page.
     @discardableResult
     func appendPageBlock(pageId: String, kind: BlockKind = .note) -> String {
-        let id = "ios-\(UUID().uuidString.prefix(12).lowercased())"
+        let id = UUID().uuidString.lowercased()
         var blocks = loadedPageBlocks[pageId] ?? []
         blocks.append(Block(id: id, kind: kind, text: ""))
         Task { await pushPage(id: pageId, blocks: blocks) }
@@ -303,7 +311,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     func capture(_ text: String, target: CaptureTarget) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        let id = "captured-\(UUID().uuidString.prefix(12).lowercased())"
+        let id = UUID().uuidString.lowercased()
         switch target {
         case .today:
             todayBlocks.insert(Block(id: id, kind: .note, text: trimmed), at: 0)
@@ -739,13 +747,25 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let body = renderBody(from: blocks)
         let frontmatter = loadedPageFrontmatter[id] ?? "---\ntitle: \(id)\n---"
         let content = "\(frontmatter)\n\n\(body)\n"
-        // Engine path first — durable even when Mac unreachable.
+        // Single write path through the engine + relay. The HTTP PUT
+        // path was removed in Phase 2.1 (sync redesign 2026-05-26)
+        // because it raced the relay path on Mac:
+        //   - HTTP PUT path emits server-side diff vs Mac's current
+        //     file — but iOS's view doesn't include peer edits Mac
+        //     already has, so the diff emits spurious BlockDeletes for
+        //     those peer blocks AND tries to insert iOS-authored
+        //     blocks under freshly-stamped server ids.
+        //   - The relay path concurrently delivers iOS's own ops with
+        //     DIFFERENT block ids (parse_note generates fresh UUIDs
+        //     for bid-less iOS content).
+        //   - When both apply on Mac, the result is duplicate blocks
+        //     (each path's separate ids both got appended) AND
+        //     overwritten peer blocks. Symptom: "web overwrites iOS"
+        //     and "web shows the same block 3 times."
+        // The engine path is the single, correct writer now. Relay
+        // tick (~2 s) carries to Mac; APNs silent push (Phase 4)
+        // will reduce that to sub-second.
         onLocalWrite?(id, id, content, Int64(Date().timeIntervalSince1970 * 1000))
-        // HTTP path — best-effort LAN-speed convergence. Silent on
-        // failure: a writeback that can't reach Mac during normal
-        // offline editing is not an error worth interrupting the user
-        // over. The engine + relay carries durability.
-        try? await httpPut("/notes/\(id)", baseURL: baseURL, body: ["content": content])
     }
 
     private func extractFrontmatter(from content: String) -> String {
@@ -845,7 +865,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 // usable offline. Subsequent refreshes only refresh
                 // notes that are stale (cheaper than re-writing
                 // everything every time).
-                snapshotNotesToSandbox(notes + [daily])
+                await snapshotNotesToSandbox(notes + [daily])
                 connection = .ready
             } catch {
                 // HTTP failed. If we already have local data on
@@ -1321,32 +1341,40 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// stomping it here would cause exactly the offline-edit-loss bug
     /// this whole rewrite is fixing. The mtime check is the same one
     /// `preferLocalIfNewer` uses.
-    private func snapshotNotesToSandbox(_ notes: [APINote]) {
+    private func snapshotNotesToSandbox(_ notes: [APINote]) async {
+        // Move the file I/O off the @MainActor — writing hundreds of
+        // notes synchronously on the main actor froze the UI for 9 s+
+        // on fresh-install cold launch (the "Tesela 9000+ ms fence
+        // hang" Daisy saw in the Xcode HUD). Captured locals only, no
+        // self access inside the detached task.
         let notesDir = localMosaicRoot().appendingPathComponent("notes")
-        try? FileManager.default.createDirectory(
-            at: notesDir, withIntermediateDirectories: true
-        )
-        let serverFmt = ISO8601DateFormatter()
-        for note in notes {
-            let path = notesDir.appendingPathComponent("\(note.id).md")
-            let serverMtime = serverFmt.date(from: note.modified_at) ?? .distantPast
-            // Skip if local is newer (iOS edit pending push to server).
-            if let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
-               let localMtime = attrs[.modificationDate] as? Date,
-               localMtime > serverMtime {
-                continue
+        let snapshot = notes
+        await Task.detached(priority: .utility) {
+            try? FileManager.default.createDirectory(
+                at: notesDir, withIntermediateDirectories: true
+            )
+            let serverFmt = ISO8601DateFormatter()
+            for note in snapshot {
+                let path = notesDir.appendingPathComponent("\(note.id).md")
+                let serverMtime = serverFmt.date(from: note.modified_at) ?? .distantPast
+                // Skip if local is newer (iOS edit pending push to server).
+                if let attrs = try? FileManager.default.attributesOfItem(atPath: path.path),
+                   let localMtime = attrs[.modificationDate] as? Date,
+                   localMtime > serverMtime {
+                    continue
+                }
+                // Skip if local file already has identical content
+                // (avoids touching mtime + retriggering file-watchers
+                // for unchanged notes).
+                if let existing = try? String(contentsOf: path, encoding: .utf8),
+                   existing == note.content {
+                    continue
+                }
+                // Write — best-effort; we don't want a single bad note to
+                // stop the whole snapshot.
+                try? note.content.write(to: path, atomically: true, encoding: .utf8)
             }
-            // Skip if local file already has identical content
-            // (avoids touching mtime + retriggering file-watchers
-            // for unchanged notes).
-            if let existing = try? String(contentsOf: path, encoding: .utf8),
-               existing == note.content {
-                continue
-            }
-            // Write — best-effort; we don't want a single bad note to
-            // stop the whole snapshot.
-            try? note.content.write(to: path, atomically: true, encoding: .utf8)
-        }
+        }.value
     }
 
     /// If the engine-materialized local file for `serverNote.id` has a
@@ -1822,17 +1850,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // dependency. Fires synchronously (no await) so the SQLite
         // + materialized file write happens before anything else.
         let titleGuess = serverDailyId  // YYYY-MM-DD for dailies
+        // Single write path through engine + relay. See `pushPage`
+        // for the full reasoning — duplicate writes via HTTP PUT
+        // raced the relay path and produced duplicate blocks +
+        // overwrote peer edits on Mac. Relay tick carries within
+        // ~2 s; APNs (Phase 4) will drop that further.
+        _ = baseURL // kept in signature for symmetry with pushPage; unused now
         onLocalWrite?(serverDailyId, titleGuess, content, Int64(Date().timeIntervalSince1970 * 1000))
-        // HTTP path — best-effort LAN-speed convergence. We
-        // deliberately do NOT surface connection-failed banners
-        // here: a failed background writeback during offline use
-        // is the expected state, not an error worth interrupting
-        // the user over. The engine + relay path carries durability.
-        do {
-            try await httpPut("/notes/\(serverDailyId)", baseURL: baseURL, body: ["content": content])
-        } catch {
-            // Silent — no setConnectionFailedIfReal here.
-        }
     }
 
     /// Drop blocks that carry nothing — empty text, no tags, no task
