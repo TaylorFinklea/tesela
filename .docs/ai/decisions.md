@@ -4,6 +4,30 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-05-27 — Migrate sync data layer to Loro; relay protocol stays as-is
+
+**Decision:** Replace the hand-rolled `tesela_sync::engine::sqlite_engine::SqliteEngine` with a Loro-backed implementation. The wire format (`SyncEnvelope`, AEAD-sealed `ciphertext`, HKDF per-group keys, pairing flow, Cloudflare Worker port) is unchanged — Loro updates slot into the existing opaque `ciphertext` field. Migration boundary: `engine/sqlite_engine.rs` + the FFI surface in `tesela-sync-ffi`.
+
+**Why:** Taylor wants Savanne to be a real collaborator in Tesela, not just a viewer. That makes multi-user-within-a-mosaic an explicit product goal. The hand-rolled engine was designed for eventual sync with one writer at a time; we've been treating concurrent edits as the bug case but they're now the everyday case. Every recent bug class (lost-update on whole-file PUT, duplicate-block storm from per-save bid churn, "fella vs dude" race on PUT diffs) is a variant of the same root cause: an eventual-sync engine being driven as if it were a real-time-collab system. Loro is the system designed for the case we're actually in.
+
+Bonus capabilities that fall out for free (not speculative):
+- Cursor presence — see where Savanne is editing in the same note
+- Intra-block character-level concurrent edits (current granularity is "the block")
+- Replayable history with per-author attribution
+- Time-travel ("show me this note as of last Tuesday") via Loro's snapshot/version graph
+
+**Triangulation:** Triangulated across Claude Code (in-repo, has visibility into the existing engine's investment depth) and Claude Desktop (independent reviewer). Initial split was Claude Code at "Phase 7 if triggered", Claude Desktop at "step 2 of redesign". Converged on "migrate now" after the Savanne-collaboration question made multi-user concurrency definite rather than hypothetical.
+
+**Trade-off:** 8–10 calendar weeks at 10–15 hr/week. Means roughly nothing else on Taylor's portfolio (Larkline, NebularNews, Joji, SimmerSmith, Finclade, Growjo, gardening, Telaradio) moves forward during that window. Patch path was the alternative — ~1–2 more weeks of work, no bonus features, no support for multi-user, and continued bug tail.
+
+**Execution pattern:** Dual-write behind a feature flag. `SyncEngine` trait already exists; wrapper fans-out to both `SqliteEngine` (current) and `LoroEngine` (new). Compare outputs each tick. When divergence is zero for a week of normal usage, flip the flag. One device at a time, starting with iOS (highest sync pain, smallest surface). Keep rollback path until at least a week of clean dual-write convergence. HLC must be shared between both engines so timestamps don't diverge on identity alone.
+
+**Gating spike (before committing weeks of work):** UniFFI compatibility with loro-swift; snapshot size vs current SQLite oplog; apply-changes latency on a representative batch; move-op semantics parity; oplog → Loro doc one-way import path. Spec at `.docs/ai/phases/2026-05-27-loro-spike-spec.md`. If any item reveals a structural problem, fall back to patch-then-migrate-later with a hard calendar deadline of Q1 2027.
+
+**Supersedes:** [project_sync_redesign_plan](../../.claude/projects/-Users-tfinklea-git-tesela/memory/project_sync_redesign_plan.md)'s "Loro at Phase 7 if triggered" position. Loro is now Phase 4 in the 7-step plan; Phase 4 (APNs) and Phase 5 (CF Worker deploy) slide later because Loro changes the payload shape.
+
+---
+
 ### 2026-05-21 — Workhorse/spark accent split; the spark is a theme, not a rule
 
 **Decision:** `--accent-primary` is an earthy terracotta (`#E07A5F`) — the everyday accent for links, bullets, selection. The neon coral (`#FB5950`) is a separate `--accent-spark` token. `--accent-spark` defaults to `var(--accent-primary)`, so standard themes show no neon; only the opt-in **Prism Spark** theme overrides it (`[data-theme="prism-spark"] { --accent-spark: #fb5950 }`). iOS mirrors this with a `Theme.accentSpark` computed property keyed on `id == .prismSpark`.

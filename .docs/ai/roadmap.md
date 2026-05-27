@@ -5,7 +5,17 @@
 Active items. Trim as completed.
 
 ### Now
-The web client is feature-complete through Phase 2 (Navigation & Discovery): outliner, Vim, slash commands, leader menu, sidebar, command palette, graph, timeline, tag tables, settings, themes, favorites, search highlighting, tag-table filtering, right-sidebar properties, graph filters. Pick a Phase 3 candidate based on daily-driver need; otherwise drain the Backlog.
+**Sync architecture migration to Loro (committed 2026-05-27).** Multi-user (Savanne + Taylor) collaboration is now in scope, which means concurrent edits in a single mosaic stop being the rare pathological case and become the everyday case. The hand-rolled CRDT can't handle this; Loro is the system designed for it. See [decisions.md](decisions.md#2026-05-27) for the full reasoning.
+
+**Active work order:**
+1. Run the 5-item Loro spike per [`phases/2026-05-27-loro-spike-spec.md`](phases/2026-05-27-loro-spike-spec.md). Half-day. Outputs go/no-go.
+2. Verify DR procedure with current engine (engine-agnostic, should establish baseline NOW).
+3. If spike is green: scaffold dual-write feature flag + port one op type end-to-end (~2 evenings).
+4. Full migration on 8–10 calendar week cadence (10–15 hr/week). iOS first (most pain, smallest surface), then web, then Mac.
+
+**Patch wave through 2026-05-27 is stable.** 11 commits today closing out Phases 1, 2, 2.1, 2.2 of the sync redesign + bid surfacing + multiple UI ghosting fixes. The hand-rolled engine is in the best state it's ever been; Loro is now the right move because *the next big problem (multi-user)* is not one this engine was designed for, not because the current bugs aren't fixable.
+
+The web client is feature-complete through Phase 2 (Navigation & Discovery): outliner, Vim, slash commands, leader menu, sidebar, command palette, graph, timeline, tag tables, settings, themes, favorites, search highlighting, tag-table filtering, right-sidebar properties, graph filters. Phase 3 candidates below are paused until Loro migration ships.
 
 ### Next — Phase 3 candidates (pick one)
 
