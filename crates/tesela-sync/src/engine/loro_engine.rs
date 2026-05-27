@@ -207,17 +207,96 @@ impl SyncEngine for LoroEngine {
         self.inner.device
     }
 
-    /// Local-side mutation. For the scaffold we handle `NoteUpsert` by
-    /// dropping the full body content onto the doc's root meta as a
-    /// single text value. The "real" port (`BlockUpsert`/`Move`/`Delete`
-    /// → tree operations) lands incrementally as we extract the markdown
-    /// parser into block-level ops we can replay one at a time.
+    /// Local-side mutation. Stamps a fresh HLC + content hash, then
+    /// runs the payload through the same per-op logic that
+    /// `apply_changes` uses for peer-originated ops.
     async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash> {
         let hlc = self.inner.hlc.now();
         let op = EncodedOp::new(hlc, crate::SYNC_SCHEMA_VERSION, payload.clone(), None)?;
         let hash = op.content_hash;
+        self.apply_payload(&payload).await?;
+        Ok(hash)
+    }
 
-        match &payload {
+    /// Apply incoming changes from a peer. The envelope's `ciphertext`
+    /// at this layer is a postcard-encoded `Vec<EncodedOp>` (transport
+    /// encryption already stripped). We replay each payload through the
+    /// shadow tree using the same logic as local writes so the divergence
+    /// check also catches peer-applied ops.
+    ///
+    /// Returns an `AppliedChanges` with the per-op counts; this isn't
+    /// authoritative (SqliteEngine's count is what callers act on) but
+    /// keeps the trait shape uniform.
+    async fn apply_changes(
+        &self,
+        _peer: DeviceId,
+        envelope: SyncEnvelope,
+    ) -> SyncResult<AppliedChanges> {
+        let ops = crate::wire::decode_op_batch(&envelope.ciphertext)?;
+        let mut applied = AppliedChanges::default();
+        for op in ops {
+            self.apply_payload(&op.payload).await?;
+            applied.applied += 1;
+        }
+        Ok(applied)
+    }
+
+    async fn produce_changes_since(
+        &self,
+        _peer: DeviceId,
+        since: PeerCursor,
+        _max_bytes: usize,
+    ) -> SyncResult<ProducedBatch> {
+        Ok(ProducedBatch {
+            ops: Vec::new(),
+            new_cursor: since,
+        })
+    }
+
+    async fn produce_local_authored_since(
+        &self,
+        since: PeerCursor,
+        _max_bytes: usize,
+    ) -> SyncResult<ProducedBatch> {
+        Ok(ProducedBatch {
+            ops: Vec::new(),
+            new_cursor: since,
+        })
+    }
+
+    async fn local_cursor(&self) -> SyncResult<LocalCursor> {
+        Ok(LocalCursor::Earliest)
+    }
+
+    async fn peer_cursor(&self, _peer: DeviceId) -> SyncResult<PeerCursor> {
+        Ok(PeerCursor::Earliest)
+    }
+
+    async fn ack_peer(&self, _peer: DeviceId, _ack: PeerCursor) -> SyncResult<()> {
+        Ok(())
+    }
+
+    async fn park_op(&self, _op: EncodedOp, _reason: ParkReason) -> SyncResult<()> {
+        Ok(())
+    }
+
+    async fn replay_parked(&self) -> SyncResult<ReplayReport> {
+        Ok(ReplayReport::default())
+    }
+
+    async fn parked_summary(&self) -> SyncResult<ParkedSummary> {
+        Ok(ParkedSummary::default())
+    }
+}
+
+impl LoroEngine {
+    /// Per-payload mutation shared between `record_local` and
+    /// `apply_changes`. Replays a single `OpPayload` against the
+    /// per-note Loro doc/tree. Unknown block ids on Move/Delete are
+    /// silent no-ops — SqliteEngine carries canonical state and the
+    /// shadow catches up when the next BlockUpsert reseeds the block.
+    async fn apply_payload(&self, payload: &OpPayload) -> SyncResult<()> {
+        match payload {
             OpPayload::NoteUpsert { note_id, content, .. } => {
                 let doc = self.doc_for_note_mut(*note_id).await;
                 // Frontmatter + raw content snapshot lives on the doc's
@@ -288,7 +367,7 @@ impl SyncEngine for LoroEngine {
                         "tesela-sync/loro: BlockMove for unknown block {}",
                         hex_id(block_id)
                     );
-                    return Ok(hash);
+                    return Ok(());
                 };
                 let tree = doc.get_tree("blocks");
                 let parent_id = match new_parent {
@@ -312,7 +391,7 @@ impl SyncEngine for LoroEngine {
                         "tesela-sync/loro: BlockDelete for unknown block {}",
                         hex_id(block_id)
                     );
-                    return Ok(hash);
+                    return Ok(());
                 };
                 let tree = doc.get_tree("blocks");
                 tree.delete(node)
@@ -324,78 +403,11 @@ impl SyncEngine for LoroEngine {
                 // land op-by-op as the migration progresses. SqliteEngine
                 // in the dual-write pair handles them in the meantime, so
                 // the system stays correct from the user's perspective.
-                tracing::debug!(
-                    "tesela-sync/loro: scaffold no-op for {:?}",
-                    std::mem::discriminant(&payload)
-                );
+                tracing::debug!("tesela-sync/loro: scaffold no-op for {:?}", payload.kind());
             }
         }
 
-        Ok(hash)
-    }
-
-    /// Apply incoming changes from a peer. Scaffold: no-op — the
-    /// SqliteEngine in the dual-write pair handles real apply, and
-    /// LoroEngine in this phase only needs to mirror local writes for
-    /// comparison. Real apply lands when we start sending Loro updates
-    /// over the wire (mid-migration).
-    async fn apply_changes(
-        &self,
-        _peer: DeviceId,
-        _envelope: SyncEnvelope,
-    ) -> SyncResult<AppliedChanges> {
-        Ok(AppliedChanges::default())
-    }
-
-    async fn produce_changes_since(
-        &self,
-        _peer: DeviceId,
-        since: PeerCursor,
-        _max_bytes: usize,
-    ) -> SyncResult<ProducedBatch> {
-        Ok(ProducedBatch {
-            ops: Vec::new(),
-            new_cursor: since,
-        })
-    }
-
-    async fn produce_local_authored_since(
-        &self,
-        since: PeerCursor,
-        _max_bytes: usize,
-    ) -> SyncResult<ProducedBatch> {
-        // Scaffold: LoroEngine doesn't yet emit ops over the wire — the
-        // SqliteEngine in the dual-write pair carries that path. Empty
-        // batches are correct: nothing for the relay to publish from
-        // the shadow side.
-        Ok(ProducedBatch {
-            ops: Vec::new(),
-            new_cursor: since,
-        })
-    }
-
-    async fn local_cursor(&self) -> SyncResult<LocalCursor> {
-        Ok(LocalCursor::Earliest)
-    }
-
-    async fn peer_cursor(&self, _peer: DeviceId) -> SyncResult<PeerCursor> {
-        Ok(PeerCursor::Earliest)
-    }
-
-    async fn ack_peer(&self, _peer: DeviceId, _ack: PeerCursor) -> SyncResult<()> {
         Ok(())
-    }
-
-    async fn park_op(&self, _op: EncodedOp, _reason: ParkReason) -> SyncResult<()> {
-        Ok(())
-    }
-
-    async fn replay_parked(&self) -> SyncResult<ReplayReport> {
-        Ok(ReplayReport::default())
-    }
-
-    async fn parked_summary(&self) -> SyncResult<ParkedSummary> {
-        Ok(ParkedSummary::default())
     }
 }
 
@@ -569,6 +581,41 @@ mod tests {
             })
             .await;
         assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn apply_changes_populates_shadow_from_peer_envelope() {
+        use crate::wire::envelope::SyncEnvelope;
+
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc.clone());
+        let note_id = [50u8; 16];
+        let block = [51u8; 16];
+        let peer_device = DeviceId::from_bytes([99u8; 16]);
+
+        let payload = OpPayload::BlockUpsert {
+            block_id: block,
+            note_id,
+            parent_block_id: None,
+            order_key: "a0".into(),
+            indent_level: 0,
+            text: "from peer".into(),
+        };
+        let op = EncodedOp::new(hlc.now(), crate::SYNC_SCHEMA_VERSION, payload, None).unwrap();
+        let ciphertext = postcard::to_allocvec(&vec![op]).unwrap();
+
+        let envelope = SyncEnvelope {
+            from_device: peer_device,
+            to_group: crate::group::GroupId([0u8; 16]),
+            nonce: [0u8; 24],
+            ciphertext,
+        };
+
+        let applied = engine.apply_changes(peer_device, envelope).await.unwrap();
+        assert_eq!(applied.applied, 1);
+
+        let rendered = engine.render_note(note_id).await.unwrap();
+        assert_eq!(rendered, "- from peer\n");
     }
 
     #[tokio::test]
