@@ -1494,7 +1494,7 @@
         {#if hasChildren(block)}
           <!-- svelte-ignore a11y_consider_explicit_label -->
           <button
-            class="shrink-0 pt-[12px] pl-1 cursor-pointer text-muted-foreground/40 hover:text-foreground/80 transition-colors {focusedIndex === vi || collapsedBlocks.has(block.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}"
+            class="shrink-0 pt-[12px] pl-1 cursor-pointer text-muted-foreground/40 hover:text-foreground/80 transition-colors {(outlinerHasFocus && focusedIndex === vi) || collapsedBlocks.has(block.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}"
             onclick={(e) => { e.stopPropagation(); toggleFold(block.id); }}
             title={collapsedBlocks.has(block.id) ? "Unfold" : "Fold"}
           >
@@ -1529,9 +1529,9 @@
           title="Drill in (right-click for more)"
         >
           {#if prefs.bulletStyle === "dot"}
-            <span class="block w-[5px] h-[5px] rounded-full transition-colors {focusedIndex === vi ? 'bg-primary' : 'bg-muted-foreground/40 hover:bg-muted-foreground/80'}"></span>
+            <span class="block w-[5px] h-[5px] rounded-full transition-colors {outlinerHasFocus && focusedIndex === vi ? 'bg-primary' : 'bg-muted-foreground/40 hover:bg-muted-foreground/80'}"></span>
           {:else}
-            <IconChevronRight size={12} stroke={2} class="transition-colors {focusedIndex === vi ? 'text-primary' : 'text-muted-foreground/40 hover:text-foreground/80'}" />
+            <IconChevronRight size={12} stroke={2} class="transition-colors {outlinerHasFocus && focusedIndex === vi ? 'text-primary' : 'text-muted-foreground/40 hover:text-foreground/80'}" />
           {/if}
         </button>
 
