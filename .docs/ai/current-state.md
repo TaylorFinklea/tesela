@@ -1,9 +1,16 @@
 # Current State
 
-*Last updated: 2026-05-27 evening. Loro migration scaffold + all three block ops landed + periodic divergence check live. Server running with `TESELA_LORO_DUAL_WRITE=1`; first tick reported `OK (0 notes)`. SqliteEngine still authoritative. Next: confirm divergence stays clean as user-driven web/iOS writes populate the shadow.*
+*Last updated: 2026-05-27 late evening. Loro migration is now end-to-end verified for block ops: web edits exercise `record_local` fan-out, iOS edits (via paired sim) exercise `apply_changes` fan-out. Divergence check has stayed `OK` across both paths. SqliteEngine still authoritative.*
+
+## End-to-end verification (this session)
+
+- **Web → record_local**: typed/indented/deleted blocks via Chrome DevTools MCP on `localhost:5174`. Divergence climbed `0 → 1 notes` after first post-restart edit, stayed `OK` thereafter.
+- **iOS → apply_changes**: iOS 26.0.1 sim downloaded + installed (iPhone 17 Pro device type), Tesela app built + installed + launched + paired with Mac's mosaic. iOS edit pushed via relay → Mac inbound_cursor advanced to 244 → DualEngine.apply_changes fanned to LoroEngine.apply_payload → divergence stayed `OK (1 notes)`.
+- **iOS sim cleanup**: device id `5B48EF63-34D8-44BE-8D4F-945509D21C53` is left booted with Tesela paired in case more iteration is needed.
 
 ## Latest commits (2026-05-27)
 
+- `cb278e5` feat(sync): LoroEngine::apply_changes mirrors peer ops into the shadow
 - `e7a3c82` feat(sync): periodic divergence check between SqliteEngine and LoroEngine
 - `7be70c4` docs(ai): record block-op port; flag divergence-hook design decisions
 - `6b2ccc3` feat(sync): port BlockMove + BlockDelete into LoroEngine
@@ -99,9 +106,9 @@ Deferred until after Loro lands — the payload shape changes and we don't want 
 
 ## How to pick up tomorrow
 
-1. **Watch the divergence log during normal usage.** Server is running with `TESELA_LORO_DUAL_WRITE=1`. Every 30s it emits `tesela-sync/dual-write: divergence check OK (N notes)` or, on mismatch, a `warn!` line per divergent note (truncated 200 chars each, first 3). Tail `/tmp/tesela-server.log | grep dual-write`. The shadow only sees notes that go through `record_local` (local writes), so peer-applied incoming ops won't populate it — that's expected for now.
-2. If divergence warns trickle in, decide whether to: (a) tighten normalization, (b) fix the LoroEngine port for the diverging op, or (c) ignore (some divergence is acceptable while bid markers etc. are still asymmetric).
-3. Once BlockUpsert/Move/Delete look clean, port NoteDelete + AttachmentUpsert/Delete into LoroEngine. Then add `apply_changes` handling so the shadow also catches incoming peer ops.
+1. **Soak the divergence check for a day of real usage.** Server is running with `TESELA_LORO_DUAL_WRITE=1`. Tail `/tmp/tesela-server.log | grep dual-write` and watch for any `WARN ... diverged` lines. Today's session confirmed both `record_local` (web) and `apply_changes` (iOS-via-relay) paths fan to the shadow cleanly for BlockUpsert; longer-run usage will surface op-type edge cases.
+2. Port NoteDelete + AttachmentUpsert/Delete into LoroEngine. NoteDelete is the highest priority of the remaining stubs — divergence will eventually flag deleted notes that linger in the shadow.
+3. If the soak stays clean for 24h+: start planning the read-path flip (LoroEngine becomes authoritative for rendering, SqliteEngine drops to verifier). This is the migration's actual cutover.
 4. Run a DR drill while the engine is still SqliteEngine-only (engine-agnostic baseline) — see [`phases/2026-05-27-loro-spike-spec.md`](phases/2026-05-27-loro-spike-spec.md).
 
 ## Migration execution pattern (decided 2026-05-27)

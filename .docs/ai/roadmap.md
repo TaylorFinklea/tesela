@@ -13,7 +13,7 @@ Active items. Trim as completed.
 3. [x] Wire DualEngine into `tesela-server` behind `TESELA_LORO_DUAL_WRITE` env var (`70f9ed2`). `AppState.sync_engine: Arc<dyn SyncEngine>`; relay/peer paths take `&dyn SyncEngine`.
 4. [x] Port `BlockUpsert` / `BlockMove` / `BlockDelete` into `LoroEngine::record_local` (`101b148`, `6b2ccc3`). Tree-per-note schema, block_id stored in meta, render_note walks parent/child.
 5. [x] Add divergence-comparison hook (`e7a3c82`). 30s periodic background task; strips bid markers + trims trailing ws before byte-compare; warns per-note on mismatch. Server running with `TESELA_LORO_DUAL_WRITE=1`.
-6. [ ] Wire `apply_changes` on LoroEngine so peer-applied ops also populate the shadow (currently only local writes do).
+6. [x] Wire `apply_changes` on LoroEngine so peer-applied ops also populate the shadow (`cb278e5`). Refactored per-payload work into shared `apply_payload(&self, &OpPayload)`; `record_local` and `apply_changes` both call it.
 7. [ ] Port NoteDelete + AttachmentUpsert/Delete into LoroEngine (low priority — block ops are the hard part).
 8. [ ] Verify DR procedure with current engine (engine-agnostic baseline).
 9. [ ] Full migration on 8–10 calendar week cadence (10–15 hr/week). iOS first (most pain, smallest surface), then web, then Mac.
