@@ -14,9 +14,11 @@ use crate::wire::envelope::SyncEnvelope;
 use async_trait::async_trait;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::{Row, SqlitePool};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 /// SQLite-backed sync engine.
 ///
@@ -35,6 +37,18 @@ struct Inner {
     /// NoteUpsert / NoteDelete ops under `{mosaic_dir}/notes/`. When
     /// None, the engine is oplog-only (used in unit tests).
     mosaic_dir: Option<PathBuf>,
+    /// Memoization for `find_slug_for_note` (note_id → slug). The
+    /// uncached path scans the entire oplog (decoding every payload),
+    /// which is O(oplog) per call — ~1.8s at 2700 rows and growing.
+    /// During a rapid-edit burst the same note's slug is looked up
+    /// repeatedly, so caching turns those into instant hits. Populated
+    /// on lookup and refreshed whenever a NoteUpsert materializes.
+    /// Derived state: a miss falls back to the authoritative scan.
+    slug_cache: RwLock<HashMap<[u8; 16], String>>,
+    /// Memoization for `find_note_for_block` (block_id → note_id). A
+    /// block's owning note never changes, so this only ever grows.
+    /// Same O(oplog)-scan motivation as `slug_cache`.
+    block_note_cache: RwLock<HashMap<[u8; 16], [u8; 16]>>,
 }
 
 impl SqliteEngine {
@@ -70,6 +84,8 @@ impl SqliteEngine {
                 hlc: Hlc::new(device),
                 device,
                 mosaic_dir,
+                slug_cache: RwLock::new(HashMap::new()),
+                block_note_cache: RwLock::new(HashMap::new()),
             }),
         })
     }
@@ -596,6 +612,7 @@ impl SqliteEngine {
         };
         match payload {
             OpPayload::NoteUpsert {
+                note_id,
                 display_alias,
                 content,
                 ..
@@ -606,6 +623,13 @@ impl SqliteEngine {
                     // written, so future ops with the slug will work.
                     return Ok(());
                 };
+                // Keep the slug cache fresh: this NoteUpsert is the
+                // authoritative slug for note_id as of now.
+                self.inner
+                    .slug_cache
+                    .write()
+                    .await
+                    .insert(*note_id, slug.to_string());
                 let notes_dir = mosaic.join("notes");
                 if let Err(e) = tokio::fs::create_dir_all(&notes_dir).await {
                     return Err(SyncError::Storage(format!(
@@ -622,7 +646,13 @@ impl SqliteEngine {
                 }
                 tracing::debug!(slug, "tesela-sync: materialized NoteUpsert");
             }
-            OpPayload::NoteDelete { display_alias, .. } => {
+            OpPayload::NoteDelete {
+                note_id,
+                display_alias,
+            } => {
+                // Note is gone — drop its cached slug so a future
+                // re-create re-resolves rather than serving the stale one.
+                self.inner.slug_cache.write().await.remove(note_id);
                 let Some(slug) = display_alias.as_deref() else {
                     tracing::debug!(
                         "tesela-sync: NoteDelete without slug; file delete skipped"
@@ -653,6 +683,13 @@ impl SqliteEngine {
                 indent_level,
                 text,
             } => {
+                // A block's owning note is fixed; cache it so BlockMove /
+                // BlockDelete for this block skip the oplog scan.
+                self.inner
+                    .block_note_cache
+                    .write()
+                    .await
+                    .insert(*block_id, *note_id);
                 self.apply_block_upsert(
                     mosaic,
                     *note_id,
@@ -690,6 +727,28 @@ impl SqliteEngine {
     /// pages prior to the sync-record fix, or any future code path that
     /// forgets to record the upsert).
     async fn find_slug_for_note(&self, note_id: [u8; 16]) -> SyncResult<Option<String>> {
+        // Fast path: memoized slug. Scoped so the read lock drops before
+        // any await below.
+        if let Some(slug) = self.inner.slug_cache.read().await.get(&note_id).cloned() {
+            return Ok(Some(slug));
+        }
+        let result = self.find_slug_for_note_uncached(note_id).await?;
+        if let Some(slug) = &result {
+            self.inner
+                .slug_cache
+                .write()
+                .await
+                .insert(note_id, slug.clone());
+        }
+        Ok(result)
+    }
+
+    /// The authoritative (uncached) slug lookup. Scans the oplog for a
+    /// NoteUpsert with `note_id`, then falls back to a disk scan.
+    async fn find_slug_for_note_uncached(
+        &self,
+        note_id: [u8; 16],
+    ) -> SyncResult<Option<String>> {
         let rows = sqlx::query(
             "SELECT payload FROM oplog ORDER BY hlc_ntp DESC",
         )
@@ -743,6 +802,28 @@ impl SqliteEngine {
     /// trace of the block exists in the oplog yet (e.g. a BlockMove
     /// arrived before the establishing NoteUpsert or BlockUpsert).
     async fn find_note_for_block(&self, block_id: [u8; 16]) -> SyncResult<Option<[u8; 16]>> {
+        // Fast path: memoized owning-note. A block's note never changes,
+        // so a hit is always valid. Read lock dropped before awaits.
+        if let Some(note_id) = self.inner.block_note_cache.read().await.get(&block_id).copied()
+        {
+            return Ok(Some(note_id));
+        }
+        let result = self.find_note_for_block_uncached(block_id).await?;
+        if let Some(note_id) = result {
+            self.inner
+                .block_note_cache
+                .write()
+                .await
+                .insert(block_id, note_id);
+        }
+        Ok(result)
+    }
+
+    /// The authoritative (uncached) owning-note lookup.
+    async fn find_note_for_block_uncached(
+        &self,
+        block_id: [u8; 16],
+    ) -> SyncResult<Option<[u8; 16]>> {
         let rows = sqlx::query(
             "SELECT payload FROM oplog ORDER BY hlc_ntp DESC",
         )
