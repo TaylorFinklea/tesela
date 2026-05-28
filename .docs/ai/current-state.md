@@ -1,6 +1,21 @@
 # Current State
 
-## State as of 2026-05-28 afternoon (latest)
+## State as of 2026-05-28 evening (latest)
+
+**Phases 0–2 of the Loro cutover are DONE + verified live; an adversarial multi-agent review of all ~3,700 lines of migration code is running before Phase 3.**
+
+- Phase 0 spike GREEN (flashing fix proven at CRDT layer). Phase 1 page-property parity. Phase 2 index doc (518 notes, 448 with tags, 128 with link edges) — all on the live corpus.
+- **Self-healing versioned index** (`902439e`): per-note docs are self-describing (content+slug+title on root meta); on boot a version-gated rebuild refreshes the index from them. No more manual cache clears on index schema changes — verified live ("rebuilt index schema 0 → 2"). This is reusable infra for every later phase.
+- Divergence holds at **2 of 518** (both #111 oplog-vs-disk, resolved at cutover) + 3 primary-missing.
+- Latest commits: `902439e` self-healing index, `1b07636` tags+link graph, `c8164d7` index doc, `74055e5`/`5959835` page-prop parity + structural divergence, `25fcbcb` note_tree page props, `8373139` Phase 0 spike.
+
+**NEXT (gated on review findings):** Phase 3 — lazy-load/evict (bounded iOS memory), then Phase 4 — Loro updates over the relay (the on-device flashing-fix proof). Do NOT start Phase 3 until the review workflow's confirmed findings are triaged + fixed — building on unreviewed foundation is the mistake the review prevents.
+
+Server running with `TESELA_LORO_DUAL_WRITE=1`, self-healing index live. Endpoints: `/loro/index`, `/loro/divergence`, `/loro/notes/<slug>`.
+
+---
+
+## State as of 2026-05-28 afternoon
 
 **Migration plan locked + Phase 0 spike GREEN.** The cutover plan is `phases/2026-05-28-loro-cutover-spec.md` (Phases 0–7, hybrid per-note-docs + index doc, full-parity hard cutover). Phase 0 spike (`crates/tesela-sync/tests/loro_cutover_spike.rs`, 8 tests) proved every load-bearing assumption — most importantly the **flashing fix at the CRDT layer** (concurrent same-block edits converge deterministically, no ping-pong) and a **full-content schema** that round-trips the non-bullet notes. Report: `phases/2026-05-28-loro-cutover-spike-report.md`.
 
