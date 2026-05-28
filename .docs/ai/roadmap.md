@@ -544,6 +544,10 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
 - [ ] Extract hardcoded server bind address `"127.0.0.1:7474"` into a named constant
 - [ ] Extract hardcoded backup-retention magic numbers into named constants
 
+### iOS bugs
+
+- [ ] **Yesterday block delete flicker** — Tapping rapid deletes on yesterday's blocks (`editYesterdayBlock` family) on iOS occasionally re-shows the deleted block for a tick before it disappears again. Almost certainly an optimistic-UI vs stale-snapshot race: the `BlockDelete` materializes, then a queued snapshot/reparse from before the delete lands and re-renders the pre-delete state, then the next render hides it. Web's `BlockOutliner` has "in-flight new-block protection" for the create side — iOS likely needs the symmetric "in-flight delete protection" on the yesterday-edit path. Repro: open yesterday on Roshar, mash delete on a few blocks fast. Reported 2026-05-27 by Taylor; not a sync correctness issue (dual-write divergence log stayed clean throughout).
+
 ### Architectural (Sonnet candidates)
 
 - [ ] Split `crates/tesela-core/src/db/sqlite.rs` (1126 lines) into db/migrations.rs, db/search.rs, db/links.rs, db/types.rs
