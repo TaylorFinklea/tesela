@@ -4,15 +4,20 @@
 
 **Migration plan locked + Phase 0 spike GREEN.** The cutover plan is `phases/2026-05-28-loro-cutover-spec.md` (Phases 0–7, hybrid per-note-docs + index doc, full-parity hard cutover). Phase 0 spike (`crates/tesela-sync/tests/loro_cutover_spike.rs`, 8 tests) proved every load-bearing assumption — most importantly the **flashing fix at the CRDT layer** (concurrent same-block edits converge deterministically, no ping-pong) and a **full-content schema** that round-trips the non-bullet notes. Report: `phases/2026-05-28-loro-cutover-spike-report.md`.
 
-**Phase 1 IN PROGRESS** — structured page properties for parity (decisions.md 2026-05-28: structured-first, properties not raw text).
+**Phase 1 — page-property parity ACHIEVED.** Divergence dropped 13–14 → **3** (match 512) on the live corpus. The structured-property model works end to end.
 
-- [x] **Foundation: `note_tree` captures page properties** (`25fcbcb`). `NoteTree.page_properties: Vec<(String,String)>`; `split_page_properties` parses leading `key:: value` lines; `serialize_note` emits them deterministically. Block-level props unchanged. Also fixed a latent data-loss bug (page props were dropped on any block op via apply_block_upsert's parse→serialize). `ParsedBlock`/web/iOS untouched (separate parser). 364 core+sync tests green.
-- [ ] **NEXT — wire LoroEngine to store + render page properties.** In `loro_engine.rs` `apply_payload_inner` NoteUpsert arm: `parse_note(content).page_properties` is now available — store it into the per-note doc; `render_note` (currently passes `page_properties: Vec::new()` at `loro_engine.rs:~182`) reads it back into the `NoteTree`. **DESIGN CHOICE to make first:** how to store ordered properties in the Loro doc — (a) a `LoroMovableList` of `{key,value}` maps (ordered + position-mergeable, more idiomatic), or (b) a `LoroMap` key→value rendered in canonical (sorted) order (simpler, loses original order — fine since parity is now STRUCTURAL not byte). Page props only arrive via NoteUpsert (full-content reparse), so they're overwritten wholesale for now — (b) is likely enough for Phase 1; (a) is better when multi-value/merge lands. Recommend (b) for now + revisit at the property-system phase.
-- [ ] **Rebuild `/loro/divergence` to compare PARSED STRUCTURE, not normalized bytes** (decisions.md: deterministic-not-byte-identical). Parse both shadow render + disk content via `note_tree::parse_note` and compare `{page_properties, blocks}` structurally. Else deterministic reformatting shows as false diffs.
-- [ ] Acceptance: structural divergence → 0 across the corpus. Needs dual-write ON (`TESELA_LORO_DUAL_WRITE=1`).
-- Carried: Loro `PeerID`↔`DeviceId` stable mapping (Phase 4). The `# 2026-05-17` header note + 3 primary-missing are edge cases to handle after the 12 page-property notes hit parity.
+- [x] `note_tree` captures page properties (`25fcbcb`). Also fixed a latent data-loss bug (page props dropped on block ops). 364 tests green.
+- [x] LoroEngine stores (ordered `page_props` LoroList, wholesale on NoteUpsert) + renders page properties (`74055e5`).
+- [x] Divergence check + `/loro/{divergence,notes}` endpoints compare PARSED STRUCTURE, not bytes (`74055e5`, `5959835`). `structurally_equal()` in dual_engine compares page_properties + block (text, indent); `normalize()` retained only for display.
+- Chose ordered LoroList over map+sort (preserves on-disk order deterministically); per-key/multi-value merge deferred to property-system phase.
 
-**Server is currently running WITHOUT dual-write** (plain single-engine). Turn dual-write back on to resume divergence measurement once the LoroEngine page-prop wiring lands.
+**Remaining divergence (3 + 3, NOT page-property):**
+- 3 structural diverges are the **oplog-vs-disk class (#111)** — block-order / stale-block mismatches from earlier edit history + some of my own leftover test debris in the live mosaic (`8320e597` has "perf test block four", `7d98c130` has stale "so they all rolled over"). To reach literal 0 we either reconcile those notes (re-derive oplog from disk) or accept them as known-stale history. NOT a model bug.
+- 3 primary-missing: files not found on disk for note_ids the oplog references (a73d66, affc1a, 0138057). Pre-existing.
+
+**NEXT — Phase 2: the index doc** (note_id → {title, slug, timestamps, tags} + link/graph). See cutover spec. Then Phase 3 lazy-load/evict, Phase 4 Loro-updates-over-relay (the on-device flashing-fix proof).
+
+**Server running WITH dual-write** (`TESELA_LORO_DUAL_WRITE=1`), structural divergence check live, periodic log shows `3 of 518 diverged`.
 
 ---
 
