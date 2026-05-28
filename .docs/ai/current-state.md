@@ -1,6 +1,20 @@
 # Current State
 
-## State as of 2026-05-28 midday (latest)
+## State as of 2026-05-28 afternoon (latest)
+
+**Migration plan locked + Phase 0 spike GREEN.** The cutover plan is `phases/2026-05-28-loro-cutover-spec.md` (Phases 0–7, hybrid per-note-docs + index doc, full-parity hard cutover). Phase 0 spike (`crates/tesela-sync/tests/loro_cutover_spike.rs`, 8 tests) proved every load-bearing assumption — most importantly the **flashing fix at the CRDT layer** (concurrent same-block edits converge deterministically, no ping-pong) and a **full-content schema** that round-trips the non-bullet notes. Report: `phases/2026-05-28-loro-cutover-spike-report.md`.
+
+**NEXT — Phase 1 (start here):** extend the per-note model to FULL note content so the ~13 non-bullet `query::`/`type::`/`# header` divergences go to 0.
+- Step 1 is the cross-cutting part: extend `tesela_core::note_tree` (`parse_body_blocks` drops non-bullet lines that precede any bullet — see `crates/tesela-core/src/note_tree.rs:263`, the `else if let Some(rb)` branch). Add a `raw` segment kind to `FlatBlock` (or a sibling segment type) so parse→serialize round-trips raw lines. **This touches the authoritative path (SqliteEngine materialize round-trips through note_tree) AND the client `ParsedBlock` type (ts-rs → web → iOS) — approach as its own careful, well-tested piece, not a rushed add-on.** note_tree has a round-trip property test to lean on.
+- Step 2: LoroEngine per-note doc uses the schema validated in the spike (frontmatter `LoroText` + body tree of `{kind, indent, text}`), render via the extended `serialize_note`.
+- Acceptance: `/loro/divergence` → 0 diverged / 0 primary-missing on the live corpus (needs dual-write back ON to measure: `TESELA_LORO_DUAL_WRITE=1`).
+- Carried design item: Loro `PeerID` (u64) ↔ `DeviceId` (16 bytes) stable mapping (needed Phase 4).
+
+**Server is currently running WITHOUT dual-write** (plain single-engine). Turn dual-write back on to resume divergence measurement once Phase 1 lands.
+
+---
+
+## State as of 2026-05-28 midday
 
 **Server is running WITHOUT dual-write** (`RUST_LOG=info`, no `TESELA_LORO_DUAL_WRITE`) — plain single-engine, the right state for Taylor's web↔iOS testing. The perf fix below is in the binary regardless of the flag.
 
