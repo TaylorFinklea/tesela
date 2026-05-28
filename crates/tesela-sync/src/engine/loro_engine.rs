@@ -148,23 +148,32 @@ impl LoroEngine {
     }
 
     /// Render a note's current state as markdown by walking its Loro
-    /// tree, building a `tesela_core::NoteTree`, and feeding it through
-    /// the same `serialize_note` SqliteEngine uses on disk. This gives
-    /// the divergence check a byte-identical comparison surface (modulo
-    /// frontmatter, which lives on the on-disk file but not in the
-    /// shadow).
+    /// tree and feeding `tesela_core::serialize_note`, the same renderer
+    /// SqliteEngine uses on disk. Gives the divergence check a
+    /// byte-identical comparison surface (modulo frontmatter, which is
+    /// on the file but not the shadow).
     ///
-    /// Returns `None` for unknown note ids. Order_key meta sorts
-    /// children to match SqliteEngine's fractional-index file layout.
+    /// **Ordering model matches SqliteEngine exactly:** a flat list in
+    /// insertion (document) order, each block rendered at its stored
+    /// `indent_level`. SqliteEngine never reorders by `order_key` and
+    /// keeps document position stable across moves (a move only changes
+    /// indent), so the shadow does the same — all blocks live directly
+    /// under root in creation order, and `tree.children(Root)` returns
+    /// them in that order.
+    ///
+    /// Returns `None` for unknown note ids.
     pub async fn render_note(&self, note_id: [u8; 16]) -> Option<String> {
         let docs = self.inner.docs.read().await;
         let doc = docs.get(&note_id)?;
         let tree = doc.get_tree("blocks");
         let mut blocks: Vec<tesela_core::note_tree::FlatBlock> = Vec::new();
-        let mut roots = tree.children(TreeParentId::Root).unwrap_or_default();
-        sort_children_by_order_key(&tree, &mut roots);
-        for root in roots {
-            collect_blocks(&tree, root, None, &mut blocks);
+        for node in tree.children(TreeParentId::Root).unwrap_or_default() {
+            if matches!(tree.is_node_deleted(&node), Ok(true)) {
+                continue;
+            }
+            if let Some(fb) = flatblock_from_node(&tree, node) {
+                blocks.push(fb);
+            }
         }
         let note_tree = tesela_core::note_tree::NoteTree {
             frontmatter: None,
@@ -325,23 +334,16 @@ fn parse_note_id_from_hex(s: &str) -> Option<[u8; 16]> {
     Some(arr)
 }
 
-/// Walk a tree node + its descendants, appending a `FlatBlock` for each
-/// to `out`. Children are walked sorted by their `order_key` meta so the
-/// rendered order matches SqliteEngine's fractional-index file layout.
-/// The collected blocks are handed to `tesela_core::serialize_note`,
-/// which emits the canonical on-disk format (continuation indentation
-/// for multi-line text, bid markers, etc.) so divergence checks compare
-/// byte-identical strings.
-fn collect_blocks(
+/// Build a `FlatBlock` from a single tree node's meta. Returns `None`
+/// if the node's meta can't be read. The block's `parent` field is left
+/// `None` because `serialize_note` renders purely off `indent` —
+/// matching SqliteEngine, which also derives the on-disk shape from
+/// document order + indent, not from the parent pointer.
+fn flatblock_from_node(
     tree: &LoroTree,
     node: TreeID,
-    parent_uuid: Option<uuid::Uuid>,
-    out: &mut Vec<tesela_core::note_tree::FlatBlock>,
-) {
-    let meta = match tree.get_meta(node) {
-        Ok(m) => m,
-        Err(_) => return,
-    };
+) -> Option<tesela_core::note_tree::FlatBlock> {
+    let meta = tree.get_meta(node).ok()?;
     let indent = meta
         .get("indent_level")
         .and_then(|v| v.into_value().ok())
@@ -360,44 +362,38 @@ fn collect_blocks(
         .map(|s| (*s).clone())
         .unwrap_or_default();
     let id_uuid = parse_uuid_from_hex(&id_hex).unwrap_or_else(uuid::Uuid::nil);
-    out.push(tesela_core::note_tree::FlatBlock {
+    Some(tesela_core::note_tree::FlatBlock {
         id: id_uuid,
-        parent: parent_uuid,
+        parent: None,
         indent,
         text,
-    });
-    if let Some(mut children) = tree.children(node) {
-        sort_children_by_order_key(tree, &mut children);
-        for child in children {
-            collect_blocks(tree, child, Some(id_uuid), out);
-        }
-    }
+    })
 }
 
-/// Seed a fresh tree from `tesela_core::FlatBlock`s parsed out of a
+/// Read a node's `indent_level` meta. Used by BlockMove to recompute a
+/// moved block's indent as parent.indent + 1, mirroring SqliteEngine.
+fn read_indent_level(tree: &LoroTree, node: TreeID) -> Option<u16> {
+    let meta = tree.get_meta(node).ok()?;
+    let v = meta.get("indent_level")?;
+    let val = v.into_value().ok()?;
+    Some(val.into_i64().ok()? as u16)
+}
+
+/// Seed a flat tree from `tesela_core::FlatBlock`s parsed out of a
 /// NoteUpsert's body content. Used when LoroEngine sees a note for the
-/// first time and the only op is the NoteUpsert (no later BlockUpserts
-/// to populate the tree).
+/// first time and the only op is the NoteUpsert.
 ///
-/// Builds the parent UUID → TreeID map in order so child blocks find
-/// their already-created parent. FlatBlocks come out of `parse_note`
-/// in document order, so this is a single pass.
+/// All blocks are created directly under root in document order so
+/// `tree.children(Root)` later returns them in that order — matching
+/// SqliteEngine's flat-document-order model. `indent_level` carries the
+/// visual hierarchy; the tree is intentionally flat.
 fn seed_tree_from_flatblocks(
     tree: &LoroTree,
     blocks: &[tesela_core::note_tree::FlatBlock],
 ) -> SyncResult<()> {
-    use std::collections::HashMap;
-    let mut uuid_to_node: HashMap<uuid::Uuid, TreeID> = HashMap::new();
-    // Synthetic order_keys so render output is stable. Real BlockUpserts
-    // will overwrite this when they arrive.
-    for (idx, block) in blocks.iter().enumerate() {
-        let parent_id = block
-            .parent
-            .and_then(|p| uuid_to_node.get(&p).copied())
-            .map(TreeParentId::Node)
-            .unwrap_or(TreeParentId::Root);
+    for block in blocks {
         let node = tree
-            .create(parent_id)
+            .create(TreeParentId::Root)
             .map_err(|e| SyncError::Storage(format!("seed tree.create: {e}")))?;
         let meta = tree
             .get_meta(node)
@@ -407,13 +403,8 @@ fn seed_tree_from_flatblocks(
             .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
         meta.insert("text", block.text.as_str())
             .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
-        // Pad idx so lexicographic compare matches numeric order up to
-        // 999999 blocks; good enough for the shadow's render order.
-        meta.insert("order_key", format!("{:06}", idx).as_str())
-            .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
         meta.insert("indent_level", block.indent as i64)
             .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
-        uuid_to_node.insert(block.id, node);
     }
     Ok(())
 }
@@ -430,16 +421,7 @@ fn parse_uuid_from_hex(s: &str) -> Option<uuid::Uuid> {
     Some(uuid::Uuid::from_bytes(arr))
 }
 
-/// Sort `nodes` in place by the `order_key` meta on each. Nodes with no
-/// `order_key` sort last with a stable identity tiebreaker.
-fn sort_children_by_order_key(tree: &LoroTree, nodes: &mut [TreeID]) {
-    nodes.sort_by(|a, b| {
-        let ka = read_order_key(tree, *a).unwrap_or_else(|| "~~~".to_string());
-        let kb = read_order_key(tree, *b).unwrap_or_else(|| "~~~".to_string());
-        ka.cmp(&kb)
-    });
-}
-
+#[allow(dead_code)]
 fn read_order_key(tree: &LoroTree, node: TreeID) -> Option<String> {
     let meta = tree.get_meta(node).ok()?;
     let v = meta.get("order_key")?;
@@ -635,31 +617,26 @@ impl LoroEngine {
             OpPayload::BlockUpsert {
                 block_id,
                 note_id,
-                parent_block_id,
-                order_key,
+                parent_block_id: _,
+                order_key: _,
                 indent_level,
                 text,
             } => {
+                // Flat model: every block is a direct child of root in
+                // creation order. `indent_level` (from the op) carries
+                // the visual hierarchy; `parent_block_id`/`order_key`
+                // are ignored for placement because SqliteEngine ignores
+                // them too — it appends new blocks at the end of the
+                // document and renders by document-order + indent. New
+                // blocks `create` under root (append); existing blocks
+                // update text/indent in place without moving.
                 let doc = self.doc_for_note_mut(*note_id).await;
                 let tree = doc.get_tree("blocks");
                 let block_hex = hex_id(block_id);
-                let parent_id = match parent_block_id {
-                    Some(p) => find_node_by_block_id(&tree, &hex_id(p))
-                        .map(TreeParentId::Node)
-                        .unwrap_or(TreeParentId::Root),
-                    None => TreeParentId::Root,
-                };
                 let node = match find_node_by_block_id(&tree, &block_hex) {
-                    Some(existing) => {
-                        if tree.parent(existing) != Some(parent_id) {
-                            tree.mov(existing, parent_id).map_err(|e| {
-                                SyncError::Storage(format!("loro tree mov: {e}"))
-                            })?;
-                        }
-                        existing
-                    }
+                    Some(existing) => existing,
                     None => tree
-                        .create(parent_id)
+                        .create(TreeParentId::Root)
                         .map_err(|e| SyncError::Storage(format!("loro tree create: {e}")))?,
                 };
                 let meta = tree
@@ -669,8 +646,6 @@ impl LoroEngine {
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 meta.insert("text", text.as_str())
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
-                meta.insert("order_key", order_key.as_str())
-                    .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 meta.insert("indent_level", *indent_level as i64)
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 doc.commit();
@@ -679,7 +654,7 @@ impl LoroEngine {
             OpPayload::BlockMove {
                 block_id,
                 new_parent,
-                new_order_key,
+                new_order_key: _,
             } => {
                 let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await
                 else {
@@ -693,19 +668,24 @@ impl LoroEngine {
                     );
                     return Ok(None);
                 };
+                // Flat model: a move only changes the block's indent, NOT
+                // its document position — exactly what SqliteEngine's
+                // apply_block_move does (it recomputes indent =
+                // parent.indent + 1 and leaves the block at its file
+                // position). So we DON'T reparent the tree node; we just
+                // recompute and update the indent_level meta.
                 let tree = doc.get_tree("blocks");
-                let parent_id = match new_parent {
+                let new_indent = match new_parent {
+                    None => 0u16,
                     Some(p) => find_node_by_block_id(&tree, &hex_id(p))
-                        .map(TreeParentId::Node)
-                        .unwrap_or(TreeParentId::Root),
-                    None => TreeParentId::Root,
+                        .and_then(|pn| read_indent_level(&tree, pn))
+                        .map(|i| i + 1)
+                        .unwrap_or(0),
                 };
-                tree.mov(node, parent_id)
-                    .map_err(|e| SyncError::Storage(format!("loro tree mov: {e}")))?;
                 let meta = tree
                     .get_meta(node)
                     .map_err(|e| SyncError::Storage(format!("loro get_meta: {e}")))?;
-                meta.insert("order_key", new_order_key.as_str())
+                meta.insert("indent_level", new_indent as i64)
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 doc.commit();
                 Some(note_id)
@@ -936,15 +916,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn render_orders_by_order_key_not_insertion() {
+    async fn render_uses_insertion_order_ignoring_order_key() {
+        // SqliteEngine renders by document/insertion order and ignores
+        // order_key entirely (apply_block_move's new_order_key param is
+        // unused). The shadow must match: blocks render in creation
+        // order regardless of the order_key carried on the op.
         let hlc = Arc::new(Hlc::new(test_device()));
         let engine = LoroEngine::new(test_device(), hlc);
         let note_id = [70u8; 16];
 
         for (id, order, text) in [
-            ([70u8; 16], "a5", "second by order"),
-            ([71u8; 16], "a0", "first by order"),
-            ([72u8; 16], "ar", "third by order"),
+            ([70u8; 16], "a5", "created first"),
+            ([71u8; 16], "a0", "created second"),
+            ([72u8; 16], "ar", "created third"),
         ] {
             engine
                 .record_local(OpPayload::BlockUpsert {
@@ -962,9 +946,56 @@ mod tests {
         let rendered = engine.render_note(note_id).await.unwrap();
         assert_eq!(
             rendered,
-            "- first by order <!-- bid:47474747-4747-4747-4747-474747474747 -->\n\
-             - second by order <!-- bid:46464646-4646-4646-4646-464646464646 -->\n\
-             - third by order <!-- bid:48484848-4848-4848-4848-484848484848 -->\n"
+            "- created first <!-- bid:46464646-4646-4646-4646-464646464646 -->\n\
+             - created second <!-- bid:47474747-4747-4747-4747-474747474747 -->\n\
+             - created third <!-- bid:48484848-4848-4848-4848-484848484848 -->\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn block_move_changes_indent_not_position() {
+        // Reproduces the 2026-05-28 nursery-rhyme divergence: a move
+        // must change only the block's indent, never its document
+        // position — matching SqliteEngine.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [73u8; 16];
+        let a = [0xa0; 16];
+        let b = [0xb0; 16];
+        let c = [0xc0; 16];
+
+        // Create three flat top-level blocks: a, b, c.
+        for (id, text) in [(a, "a"), (b, "b"), (c, "c")] {
+            engine
+                .record_local(OpPayload::BlockUpsert {
+                    block_id: id,
+                    note_id,
+                    parent_block_id: None,
+                    order_key: "x".into(),
+                    indent_level: 0,
+                    text: text.into(),
+                })
+                .await
+                .unwrap();
+        }
+        // Move c under a. SqliteEngine would set c.indent = a.indent+1
+        // = 1 and leave c at document position 3 (last). Order stays
+        // a, b, c; only c's indent changes.
+        engine
+            .record_local(OpPayload::BlockMove {
+                block_id: c,
+                new_parent: Some(a),
+                new_order_key: "y".into(),
+            })
+            .await
+            .unwrap();
+
+        let rendered = engine.render_note(note_id).await.unwrap();
+        assert_eq!(
+            rendered,
+            "- a <!-- bid:a0a0a0a0-a0a0-a0a0-a0a0-a0a0a0a0a0a0 -->\n\
+             - b <!-- bid:b0b0b0b0-b0b0-b0b0-b0b0-b0b0b0b0b0b0 -->\n  \
+             - c <!-- bid:c0c0c0c0-c0c0-c0c0-c0c0-c0c0c0c0c0c0 -->\n"
         );
     }
 
