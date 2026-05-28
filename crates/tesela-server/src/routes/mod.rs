@@ -40,6 +40,8 @@ pub fn build(state: AppState) -> Router {
             "/notes/{id}/blocks/{bid}",
             axum::routing::delete(notes::delete_block),
         )
+        .route("/loro/notes/{slug}", get(notes::get_loro_note))
+        .route("/loro/divergence", get(notes::get_loro_divergence))
         .route("/notes/{id}/backlinks", get(notes::get_backlinks))
         .route("/notes/{id}/links", get(notes::get_forward_links))
         .route("/notes/{id}/unlinked", get(notes::get_unlinked))

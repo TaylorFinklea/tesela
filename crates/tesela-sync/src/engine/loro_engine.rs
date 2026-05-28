@@ -561,6 +561,18 @@ impl SyncEngine for LoroEngine {
     async fn parked_summary(&self) -> SyncResult<ParkedSummary> {
         Ok(ParkedSummary::default())
     }
+
+    /// Trait-level override that forwards to the inherent
+    /// `LoroEngine::render_note`. Lets `Arc<dyn SyncEngine>` callers
+    /// (the server's HTTP routes) inspect the shadow without
+    /// downcasting.
+    async fn render_note(&self, note_id: [u8; 16]) -> Option<String> {
+        LoroEngine::render_note(self, note_id).await
+    }
+
+    async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
+        self.note_ids().await
+    }
 }
 
 impl LoroEngine {
@@ -1039,6 +1051,114 @@ mod tests {
             rendered,
             "- persisted <!-- bid:ffffffff-ffff-ffff-ffff-ffffffffffff -->\n"
         );
+    }
+
+    #[tokio::test]
+    async fn note_upsert_after_snapshot_load_does_not_duplicate_blocks() {
+        // Regression: NoteUpsert.content seeding is supposed to only
+        // run when the tree is empty. After a snapshot load the tree
+        // is non-empty, so a subsequent NoteUpsert should NOT re-parse
+        // and append duplicate nodes.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro");
+
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine =
+            LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+                .await
+                .unwrap();
+        let note_id = [0x10; 16];
+        let content = "---\ntitle: T\n---\n- a\n- b\n";
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("t".into()),
+                title: "T".into(),
+                content: content.into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let after_first = engine.render_note(note_id).await.unwrap();
+        drop(engine);
+
+        // Reload from snapshot, then re-fire NoteUpsert with same body.
+        let hlc2 = Arc::new(Hlc::new(test_device()));
+        let reloaded =
+            LoroEngine::with_snapshot_dir(test_device(), hlc2, dir)
+                .await
+                .unwrap();
+        reloaded
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("t".into()),
+                title: "T".into(),
+                content: content.into(),
+                created_at_millis: 2,
+            })
+            .await
+            .unwrap();
+        let after_second = reloaded.render_note(note_id).await.unwrap();
+
+        assert_eq!(
+            after_first, after_second,
+            "second NoteUpsert after snapshot load must not duplicate blocks"
+        );
+    }
+
+    #[tokio::test]
+    async fn corrupt_snapshot_skipped_on_load() {
+        // Write a garbage .bin file with a valid-looking hex name.
+        // Load should warn + skip without panicking, and the engine
+        // should still be functional.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro");
+        tokio::fs::create_dir_all(&dir).await.unwrap();
+        let bad_id = [0xab; 16];
+        let bad_path = dir.join(format!("{}.bin", hex::encode(bad_id)));
+        tokio::fs::write(&bad_path, b"this is not a Loro snapshot")
+            .await
+            .unwrap();
+
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine =
+            LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+                .await
+                .unwrap();
+        // Corrupt note didn't load; engine works for a fresh note.
+        assert_eq!(engine.note_count().await, 0);
+
+        let good_id = [0xcd; 16];
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: [0xef; 16],
+                note_id: good_id,
+                parent_block_id: None,
+                order_key: "a0".into(),
+                indent_level: 0,
+                text: "still works".into(),
+            })
+            .await
+            .unwrap();
+        assert!(engine.render_note(good_id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn snapshot_dir_created_when_missing() {
+        // Construct with a path that doesn't exist yet — should be
+        // created, not error.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro").join("nested").join("path");
+        assert!(!dir.exists());
+
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine =
+            LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+                .await
+                .unwrap();
+        assert!(dir.exists());
+        assert_eq!(engine.note_count().await, 0);
     }
 
     #[tokio::test]

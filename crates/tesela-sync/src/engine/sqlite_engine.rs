@@ -577,6 +577,10 @@ impl SyncEngine for SqliteEngine {
 
         Ok(ProducedBatch { ops, new_cursor })
     }
+
+    async fn primary_body(&self, note_id: [u8; 16]) -> Option<String> {
+        self.materialize_note_body(note_id).await.ok().flatten()
+    }
 }
 
 // Private helpers — not part of the SyncEngine trait surface.

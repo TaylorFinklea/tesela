@@ -92,6 +92,140 @@ pub async fn get_note(
     Ok(Json(note))
 }
 
+#[derive(serde::Serialize)]
+pub struct LoroNoteBody {
+    /// The slug requested.
+    pub slug: String,
+    /// 32-char hex of the note_id derived via blake3(slug).
+    pub note_id: String,
+    /// LoroEngine's rendered body, or `None` when the engine doesn't
+    /// track this note (e.g. dual-write disabled, or the note hasn't
+    /// been seeded into the shadow yet).
+    pub shadow_body: Option<String>,
+    /// SqliteEngine's view of the body (read from disk, frontmatter
+    /// stripped). `None` when the file isn't materializable.
+    pub primary_body: Option<String>,
+    /// Normalized shadow body (bid markers stripped, blank/property
+    /// lines dropped). Comparable to `primary_normalized`.
+    pub shadow_normalized: Option<String>,
+    /// Normalized primary body.
+    pub primary_normalized: Option<String>,
+    /// True iff both normalized forms are non-None and byte-equal.
+    pub matches: bool,
+}
+
+/// `GET /api/loro/notes/{slug}` — debug endpoint exposing both the
+/// LoroEngine shadow render and the SqliteEngine primary body for a
+/// given note slug, with their normalized forms and a match flag.
+/// Useful for inspecting divergences flagged by the periodic check
+/// and for verifying the eventual read-path flip behaves correctly.
+///
+/// Returns 200 even when the note doesn't exist anywhere — body
+/// fields will be null.
+pub async fn get_loro_note(
+    Path(slug): Path<String>,
+    State(s): State<Arc<AppState>>,
+) -> AppResult<Json<LoroNoteBody>> {
+    let note_id = stable_uuid_from_slug(&slug);
+    let shadow = s.sync_engine.render_note(note_id).await;
+    let primary = s.sync_engine.primary_body(note_id).await;
+    let shadow_norm = shadow
+        .as_ref()
+        .map(|s| tesela_sync::engine::dual_engine::normalize(s));
+    let primary_norm = primary
+        .as_ref()
+        .map(|s| tesela_sync::engine::dual_engine::normalize(s));
+    let matches = matches!((&shadow_norm, &primary_norm), (Some(a), Some(b)) if a == b);
+    Ok(Json(LoroNoteBody {
+        slug,
+        note_id: hex::encode(note_id),
+        shadow_body: shadow,
+        primary_body: primary,
+        shadow_normalized: shadow_norm,
+        primary_normalized: primary_norm,
+        matches,
+    }))
+}
+
+#[derive(serde::Serialize)]
+pub struct LoroDivergenceEntry {
+    pub note_id: String,
+    /// "match" | "diverge" | "primary_missing" | "shadow_missing"
+    pub status: &'static str,
+    pub shadow_normalized: Option<String>,
+    pub primary_normalized: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+pub struct LoroDivergenceReport {
+    pub total: usize,
+    pub matched: usize,
+    pub diverged: usize,
+    pub primary_missing: usize,
+    pub shadow_missing: usize,
+    pub entries: Vec<LoroDivergenceEntry>,
+}
+
+/// `GET /api/loro/divergence` — full divergence report across every
+/// note the LoroEngine shadow tracks. Returns counts plus per-note
+/// status (match / diverge / *_missing). For diverged + missing
+/// entries, includes the normalized bodies so callers can inspect
+/// what differs.
+pub async fn get_loro_divergence(
+    State(s): State<Arc<AppState>>,
+) -> AppResult<Json<LoroDivergenceReport>> {
+    let ids = s.sync_engine.tracked_note_ids().await;
+    let mut report = LoroDivergenceReport {
+        total: ids.len(),
+        matched: 0,
+        diverged: 0,
+        primary_missing: 0,
+        shadow_missing: 0,
+        entries: Vec::new(),
+    };
+    for id in ids {
+        let shadow = s.sync_engine.render_note(id).await;
+        let primary = s.sync_engine.primary_body(id).await;
+        let shadow_norm = shadow
+            .as_ref()
+            .map(|s| tesela_sync::engine::dual_engine::normalize(s));
+        let primary_norm = primary
+            .as_ref()
+            .map(|s| tesela_sync::engine::dual_engine::normalize(s));
+        let (status, include_bodies) = match (&shadow_norm, &primary_norm) {
+            (Some(a), Some(b)) if a == b => {
+                report.matched += 1;
+                ("match", false)
+            }
+            (Some(_), Some(_)) => {
+                report.diverged += 1;
+                ("diverge", true)
+            }
+            (Some(_), None) => {
+                report.primary_missing += 1;
+                ("primary_missing", true)
+            }
+            (None, Some(_)) => {
+                report.shadow_missing += 1;
+                ("shadow_missing", true)
+            }
+            (None, None) => {
+                report.primary_missing += 1;
+                ("primary_missing", false)
+            }
+        };
+        if include_bodies {
+            report.entries.push(LoroDivergenceEntry {
+                note_id: hex::encode(id),
+                status,
+                shadow_normalized: shadow_norm,
+                primary_normalized: primary_norm,
+            });
+        }
+    }
+    Ok(Json(report))
+}
+
 #[derive(Deserialize)]
 pub struct DailyQuery {
     pub date: Option<String>, // optional ISO date "2026-03-30"

@@ -110,4 +110,34 @@ pub trait SyncEngine: Send + Sync {
 
     /// Snapshot the parked-op queue for the UI banner.
     async fn parked_summary(&self) -> SyncResult<ParkedSummary>;
+
+    /// Render a note's body from the engine's internal state. Returns
+    /// `None` if the engine doesn't track this note (or doesn't support
+    /// rendering — SqliteEngine's default returns None since the
+    /// authoritative state lives on disk via materialize, not in the
+    /// engine).
+    ///
+    /// Used by the `GET /api/loro/notes/:slug` debug endpoint and the
+    /// per-request divergence check. LoroEngine overrides this to walk
+    /// its tree; DualEngine forwards to the shadow.
+    async fn render_note(&self, _note_id: [u8; 16]) -> Option<String> {
+        None
+    }
+
+    /// Enumerate every note id the engine tracks. Default empty.
+    /// `DualEngine` overrides to return the shadow's tracked notes;
+    /// `SqliteEngine` returns empty because oplog enumeration would be
+    /// expensive and not what callers want (they want the shadow's
+    /// view for divergence work).
+    async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
+        Vec::new()
+    }
+
+    /// Return the primary (authoritative) engine's view of a note's
+    /// body, for divergence comparison. SqliteEngine reads the
+    /// materialized markdown file; DualEngine forwards to its primary;
+    /// other impls default to `None`.
+    async fn primary_body(&self, _note_id: [u8; 16]) -> Option<String> {
+        None
+    }
 }

@@ -386,7 +386,7 @@ impl DualEngine {
 /// - Drop blank lines (SqliteEngine preserves user-typed blank lines
 ///   between blocks; LoroEngine's render is dense).
 /// - Trim trailing whitespace per line.
-fn normalize(s: &str) -> String {
+pub fn normalize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for line in s.lines() {
         let stripped = strip_bid_markers(line);
@@ -545,6 +545,22 @@ impl SyncEngine for DualEngine {
 
     async fn parked_summary(&self) -> SyncResult<ParkedSummary> {
         self.primary.parked_summary().await
+    }
+
+    /// Forward to the shadow LoroEngine so HTTP callers can inspect
+    /// what the migration target would render for a given note.
+    /// SqliteEngine's own render is None — the authoritative state
+    /// lives on disk, not in the engine.
+    async fn render_note(&self, note_id: [u8; 16]) -> Option<String> {
+        self.shadow.render_note(note_id).await
+    }
+
+    async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
+        self.shadow.note_ids().await
+    }
+
+    async fn primary_body(&self, note_id: [u8; 16]) -> Option<String> {
+        self.primary.primary_body(note_id).await
     }
 }
 
