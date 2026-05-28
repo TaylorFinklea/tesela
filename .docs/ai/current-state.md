@@ -7,6 +7,8 @@
 - **Web → record_local**: typed/indented/deleted blocks via Chrome DevTools MCP on `localhost:5174`. Burst test (4 new blocks + delete) added today's daily to the soak — matched on first tick.
 - **iOS → apply_changes**: iOS 26.0.1 sim (5B48EF63-34D8-44BE-8D4F-945509D21C53) built + installed + paired earlier. inbound_cursor advanced to 244 from real iOS edits → DualEngine.apply_changes fanned to LoroEngine → no divergence.
 - **Boot-time shadow coverage**: 2118 of 2118 oplog payloads applied (was 1795/323 skipped before tombstone fix). Divergence check now covers 23 notes immediately, not just notes touched since boot.
+- **Live soak on Roshar (real iPhone, paired)**: 10+ minutes of editing — Taylor added/deleted blocks on the today's daily note. Divergence stayed at the `7 of 23` baseline the whole time. Live blocks (`Dh`, `Ok`, `Nice`, `Cool`, `Fudge`) tracked in lockstep between primary and shadow. iOS → relay → DualEngine.apply_changes → LoroEngine.apply_payload fan-out works end-to-end on a physical device.
+- **iOS UX bug surfaced (not a sync issue)**: yesterday-block delete on iOS occasionally re-shows the block briefly. Optimistic-UI vs stale-snapshot race, no divergence impact. Logged to roadmap backlog under `iOS bugs`.
 
 ## Latest commits (2026-05-27)
 
