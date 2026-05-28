@@ -1,6 +1,26 @@
 # Current State
 
-*Last updated: 2026-05-28 ~02:00. **INCIDENT** during autonomous reconcile attempt: emitted 15 spurious `BlockDelete` ops for 6 previously-matching notes, propagated via relay to Roshar (iPhone). iOS files for those 6 notes may have lost real blocks. Endpoint disabled in `1b0b507`. Otherwise: persistence + full-corpus coverage landed cleanly; 498 → 496 match, baseline now 18 of 517 diverged.*
+## 🌅 Morning briefing (read first — autonomous session 2026-05-28)
+
+**Good news.** Migration is meaningfully closer to cutover. Five commits landed cleanly:
+- `8598c15` debug HTTP routes (`/api/loro/notes/:slug`, `/api/loro/divergence`) — observe the shadow without parsing logs
+- `3b29ee3` LoroEngine **persistence** — per-note snapshots on disk; boot loads in 28ms instead of 3s
+- `ebf9175` **full-corpus disk seed** — shadow now covers all 517 notes, not just the 23 oplog-tracked ones
+- Persistence edge-case tests + classification of the 16 divergent notes
+
+**Bad news (one item).** I attempted a reconcile-stale-blocks endpoint to clean up the 4 legacy divergences. It worked on those 4 — but also incorrectly deleted real blocks from 6 other previously-matching notes, and the relay propagated those deletes to Roshar. The endpoint is now disabled (returns 400). Six notes' iOS files may have lost real blocks. **First task in the morning: verify iOS file integrity for these 6 ids and re-edit if needed.** Details in the Incident section below.
+
+**Current state of the soak**: 496 match / 18 diverge / 3 primary-missing of 517 notes. Two notes worse than before the incident; everything else holds.
+
+**To get back to a clean state**: edit each affected note from iOS or web once (any change triggers a fresh BlockUpsert via record_local, which restores both engines). The notes are likely small — the affected ids in the Incident section have their (former) content shown via `/loro/notes/<slug>` if you can reverse-derive the slug.
+
+**Server is still running** with `TESELA_LORO_DUAL_WRITE=1`. Monitor is **stopped**. New endpoints to play with:
+- `curl http://127.0.0.1:7474/loro/divergence | jq` — full divergence dashboard
+- `curl http://127.0.0.1:7474/loro/notes/<slug> | jq` — inspect one note's shadow + primary side-by-side
+
+---
+
+*Last updated: 2026-05-28 ~02:00. INCIDENT during autonomous reconcile attempt: emitted 15 spurious `BlockDelete` ops for 6 previously-matching notes, propagated via relay to Roshar (iPhone). iOS files for those 6 notes may have lost real blocks. Endpoint disabled in `1b0b507`. Otherwise: persistence + full-corpus coverage landed cleanly; 498 → 496 match, baseline now 18 of 517 diverged.*
 
 ## 🚨 Incident: reconcile-stale-blocks endpoint, 2026-05-28T01:50 UTC
 
