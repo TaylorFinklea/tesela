@@ -7,16 +7,24 @@ Active items. Trim as completed.
 ### Now
 **Sync architecture migration to Loro (committed 2026-05-27).** Multi-user (Savanne + Taylor) collaboration is now in scope, which means concurrent edits in a single mosaic stop being the rare pathological case and become the everyday case. The hand-rolled CRDT can't handle this; Loro is the system designed for it. See [decisions.md](decisions.md#2026-05-27) for the full reasoning.
 
-**Active work order:**
-1. [x] Run the 5-item Loro spike per [`phases/2026-05-27-loro-spike-spec.md`](phases/2026-05-27-loro-spike-spec.md). GREEN across all 5 items (see [`phases/2026-05-27-loro-spike-report.md`](phases/2026-05-27-loro-spike-report.md)).
-2. [x] Scaffold LoroEngine + DualEngine wrapper in `tesela-sync` (`4015dc7`).
-3. [x] Wire DualEngine into `tesela-server` behind `TESELA_LORO_DUAL_WRITE` env var (`70f9ed2`). `AppState.sync_engine: Arc<dyn SyncEngine>`; relay/peer paths take `&dyn SyncEngine`.
-4. [x] Port `BlockUpsert` / `BlockMove` / `BlockDelete` into `LoroEngine::record_local` (`101b148`, `6b2ccc3`). Tree-per-note schema, block_id stored in meta, render_note walks parent/child.
-5. [x] Add divergence-comparison hook (`e7a3c82`). 30s periodic background task; strips bid markers + trims trailing ws before byte-compare; warns per-note on mismatch. Server running with `TESELA_LORO_DUAL_WRITE=1`.
-6. [x] Wire `apply_changes` on LoroEngine so peer-applied ops also populate the shadow (`cb278e5`). Refactored per-payload work into shared `apply_payload(&self, &OpPayload)`; `record_local` and `apply_changes` both call it.
-7. [ ] Port NoteDelete + AttachmentUpsert/Delete into LoroEngine (low priority — block ops are the hard part).
-8. [ ] Verify DR procedure with current engine (engine-agnostic baseline).
-9. [ ] Full migration on 8–10 calendar week cadence (10–15 hr/week). iOS first (most pain, smallest surface), then web, then Mac.
+**THE PLAN: [`phases/2026-05-28-loro-cutover-spec.md`](phases/2026-05-28-loro-cutover-spec.md)** — hard cutover to a Loro-authoritative engine, then delete the hand-rolled oplog. Doc model = **hybrid per-note docs + index doc** (NOT single mega-doc — would OOM iOS at scale; see [decisions.md](decisions.md) 2026-05-28). v1 = **full parity** before flip. Goal: kill the convergence "flashing" (LWW ping-pong observed live on Roshar 2026-05-28) that the hand-rolled engine can't fix.
+
+**Done (dual-write scaffold + shadow, 2026-05-27/28):**
+- [x] Loro spike GREEN (`phases/2026-05-27-loro-spike-report.md`).
+- [x] LoroEngine + DualEngine scaffold (`4015dc7`); wired behind `TESELA_LORO_DUAL_WRITE` (`70f9ed2`).
+- [x] Block ops + NoteDelete ported; flat insertion-order model matching SqliteEngine (`101b148`,`6b2ccc3`,`80cc60d`).
+- [x] Divergence check + debug endpoints `/loro/divergence`,`/loro/notes/:slug` (`e7a3c82`,`8598c15`); shadow persistence + full-corpus disk seed (`3b29ee3`,`ebf9175`).
+- [x] Perf: memoized note/block lookups, killed O(oplog) scans (`ab63d1c`).
+
+**Next — cutover Phases 0–7 (see spec):**
+1. [ ] **Phase 0 spike**: N-docs over relay (per-doc VV), index doc, full-content round-trip, lazy-load/evict, loro-swift multi-doc.
+2. [ ] **Phase 1**: per-note doc schema for FULL note content → divergence to 0 (parity gate).
+3. [ ] **Phase 2**: index doc (note_id→meta + graph).
+4. [ ] **Phase 3**: lazy-load + evict (bounded iOS memory).
+5. [ ] **Phase 4**: Loro updates over the relay — two engines converge on concurrent edits (flashing fix proof).
+6. [ ] **Phase 5**: LoroEngine authoritative for materialization.
+7. [ ] **Phase 6**: iOS FFI swap; verify on Roshar.
+8. [ ] **Phase 7**: flag-day cutover + delete oplog engine + DR drill.
 
 **Patch wave through 2026-05-27 is stable.** 11 commits today closing out Phases 1, 2, 2.1, 2.2 of the sync redesign + bid surfacing + multiple UI ghosting fixes. The hand-rolled engine is in the best state it's ever been; Loro is now the right move because *the next big problem (multi-user)* is not one this engine was designed for, not because the current bugs aren't fixable.
 
