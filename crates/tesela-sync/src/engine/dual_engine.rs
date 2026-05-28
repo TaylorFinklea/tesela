@@ -395,11 +395,13 @@ impl DualEngine {
 /// formatting (blank lines, property order vs storage) and bid
 /// representation — the semantic parity bar for the cutover.
 ///
-/// Block `text` is compared after stripping any folded block-property
-/// continuation lines (`key:: value`) so the comparison focuses on
-/// block content; property-level fidelity is covered by
-/// `page_properties` + the round-trip tests, and granular block-prop
-/// merge is deferred (decisions.md 2026-05-28).
+/// Block `text` is compared in FULL — including folded block-property
+/// continuation lines (`status:: done`, `priority:: high`, etc.). Those
+/// are real, mutable note content; stripping them before comparison
+/// (the prior behavior, review finding [4] 2026-05-28) made the gate
+/// blind to property-value drift, which would silently corrupt task
+/// metadata at cutover. We only normalize representation noise: bid
+/// markers and trailing whitespace.
 pub fn structurally_equal(primary: &str, shadow: &str) -> bool {
     let p = tesela_core::note_tree::parse_note(primary);
     let s = tesela_core::note_tree::parse_note(shadow);
@@ -414,24 +416,12 @@ pub fn structurally_equal(primary: &str, shadow: &str) -> bool {
     })
 }
 
-/// A block's content lines minus any folded `key:: value` block-property
-/// continuation lines (those merge granularly later; not part of the
-/// structural block-content comparison now).
+/// A block's content lines, normalized for comparison: bid markers
+/// stripped, trailing whitespace trimmed. Block-property continuation
+/// lines (`key:: value`) ARE included — they're real content.
 fn block_content(text: &str) -> Vec<String> {
     text.lines()
-        .filter(|l| {
-            let t = l.trim();
-            // Drop `key:: value` block-property lines.
-            match t.find("::") {
-                Some(i) => {
-                    let k = &t[..i];
-                    k.is_empty()
-                        || !k.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-                }
-                None => true,
-            }
-        })
-        .map(|l| l.trim_end().to_string())
+        .map(|l| strip_bid_markers(l).trim_end().to_string())
         .collect()
 }
 

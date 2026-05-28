@@ -43,18 +43,43 @@ use async_trait::async_trait;
 use loro::{ExportMode, LoroDoc, LoroTree, TreeID, TreeParentId};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+
+/// Process-wide counter for unique snapshot temp-file names, so two
+/// concurrent writers never collide on the same `.tmp` path and publish
+/// a torn snapshot via rename (review finding [8]).
+static SNAPSHOT_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Build a unique temp path next to `path` for atomic write+rename.
+fn unique_tmp(path: &Path) -> PathBuf {
+    let n = SNAPSHOT_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    path.with_extension(format!("tmp.{n}"))
+}
 
 fn hex_id(id: &[u8; 16]) -> String {
     hex::encode(id)
 }
 
 /// Schema version of the index doc's entry shape. Bump whenever the
-/// per-entry fields change so a stale on-disk index is rebuilt from the
-/// (self-describing) per-note docs on boot — no manual cache clear.
-/// v1 = {title, slug}. v2 = + {tags, links}.
-const INDEX_SCHEMA_VERSION: i64 = 2;
+/// per-entry fields OR their encoding change so a stale on-disk index is
+/// rebuilt from the (self-describing) per-note docs on boot — no manual
+/// cache clear. v1 = {title, slug}. v2 = + {tags, links} (comma-joined).
+/// v3 = tags/links newline-joined (comma collided with link targets like
+/// `[[Smith, John]]` — review finding [7]).
+const INDEX_SCHEMA_VERSION: i64 = 3;
+
+/// Delimiter for the multi-valued tags/links fields stored as a single
+/// string in an index entry. Newline can't appear in a tag name
+/// (`[A-Za-z0-9_/-]`) or a single-line `[[wiki-link]]` target, so it's
+/// collision-free — unlike the comma it replaced.
+const INDEX_LIST_SEP: char = '\n';
+
+/// Join a multi-valued index field with the collision-free separator.
+fn join_list(items: &[String]) -> String {
+    items.join(&INDEX_LIST_SEP.to_string())
+}
 
 /// Best-effort frontmatter `title:` extraction for index rebuild
 /// fallback. Returns None if there's no frontmatter title.
@@ -257,6 +282,24 @@ impl LoroEngine {
             .collect();
 
         let docs = self.inner.docs.read().await;
+
+        // Prune index entries that have no backing doc, so the rebuild is
+        // a TRUE projection of the loaded docs — not an upsert-merge that
+        // leaves ghost entries (review finding [6]). A doc can be absent
+        // because its snapshot was corrupt/unreadable on load; its index
+        // entry must not survive as a phantom note.
+        let live: std::collections::HashSet<String> =
+            docs.keys().map(hex_id).collect();
+        let notes_map = self.inner.index.get_map("notes");
+        let stale: Vec<String> = existing
+            .keys()
+            .filter(|k| !live.contains(*k))
+            .cloned()
+            .collect();
+        for key in stale {
+            let _ = notes_map.delete(&key);
+        }
+
         for (note_id, doc) in docs.iter() {
             let root = doc.get_map("root");
             let read = |k: &str| -> String {
@@ -330,8 +373,8 @@ impl LoroEngine {
         // Tags + links as comma-joined strings (derived, overwritten
         // wholesale; structured per-tag containers can come if granular
         // tag merge is ever needed).
-        let _ = entry.insert("tags", tags.join(","));
-        let _ = entry.insert("links", links.join(","));
+        let _ = entry.insert("tags", join_list(&tags));
+        let _ = entry.insert("links", join_list(&links));
         // Stamp the schema version so a freshly-built index (e.g. from
         // disk-seed) is recognized as current and not needlessly rebuilt
         // on the next boot.
@@ -371,7 +414,9 @@ impl LoroEngine {
                     let split = |k: &str| -> Vec<String> {
                         get(k)
                             .filter(|s| !s.is_empty())
-                            .map(|s| s.split(',').map(|t| t.to_string()).collect())
+                            .map(|s| {
+                                s.split(INDEX_LIST_SEP).map(|t| t.to_string()).collect()
+                            })
                             .unwrap_or_default()
                     };
                     out.push(crate::engine::IndexEntry {
@@ -486,7 +531,7 @@ impl LoroEngine {
                         return;
                     }
                 };
-                let tmp = path.with_extension("bin.tmp");
+                let tmp = unique_tmp(&path);
                 if let Err(e) = tokio::fs::write(&tmp, &bytes).await {
                     tracing::warn!(
                         "tesela-sync/loro: snapshot write {}: {e}",
@@ -499,6 +544,7 @@ impl LoroEngine {
                         "tesela-sync/loro: snapshot rename {}: {e}",
                         path.display()
                     );
+                    let _ = tokio::fs::remove_file(&tmp).await;
                 }
             }
             None => {
@@ -908,9 +954,13 @@ impl LoroEngine {
             }
         };
         let path = dir.join("_index.bin");
-        let tmp = path.with_extension("bin.tmp");
+        let tmp = unique_tmp(&path);
         if tokio::fs::write(&tmp, &bytes).await.is_ok() {
-            let _ = tokio::fs::rename(&tmp, &path).await;
+            if tokio::fs::rename(&tmp, &path).await.is_err() {
+                let _ = tokio::fs::remove_file(&tmp).await;
+            }
+        } else {
+            let _ = tokio::fs::remove_file(&tmp).await;
         }
     }
 
@@ -1669,6 +1719,64 @@ mod tests {
         let entries = engine.index_entries().await;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].title, "Beta");
+    }
+
+    #[tokio::test]
+    async fn index_link_with_comma_is_one_edge() {
+        // Review finding [7]: a wiki-link target containing a comma must
+        // remain a single link, not fragment into two.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: [8u8; 16],
+                display_alias: Some("c".into()),
+                title: "C".into(),
+                content: "- see [[Smith, John]] and [[plain]]\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let entries = engine.index_entries().await;
+        assert_eq!(entries.len(), 1);
+        let mut links = entries[0].links.clone();
+        links.sort();
+        assert_eq!(links, vec!["Smith, John".to_string(), "plain".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn index_rebuild_prunes_ghost_entries() {
+        // Review finding [6]: rebuild must drop index entries that have
+        // no backing per-note doc, not leave them as phantoms.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        // One real note with a doc.
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: [1u8; 16],
+                display_alias: Some("real".into()),
+                title: "Real".into(),
+                content: "- x\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        // Inject a ghost index entry with no backing doc.
+        {
+            let notes = engine.inner.index.get_map("notes");
+            let ghost = notes
+                .insert_container(&hex_id(&[0x99u8; 16]), loro::LoroMap::new())
+                .unwrap();
+            ghost.insert("title", "Ghost").unwrap();
+            ghost.insert("slug", "ghost").unwrap();
+            engine.inner.index.commit();
+        }
+        assert_eq!(engine.index_entries().await.len(), 2, "ghost present pre-rebuild");
+
+        engine.rebuild_index_from_docs().await;
+        let entries = engine.index_entries().await;
+        assert_eq!(entries.len(), 1, "ghost pruned");
+        assert_eq!(entries[0].title, "Real");
     }
 
     #[tokio::test]
