@@ -757,6 +757,49 @@ fn read_page_properties(doc: &LoroDoc) -> Vec<(String, String)> {
 /// `tree.children(Root)` later returns them in that order — matching
 /// SqliteEngine's flat-document-order model. `indent_level` carries the
 /// visual hierarchy; the tree is intentionally flat.
+/// True if the tree's live blocks (in render order) match `blocks` by
+/// id + text + indent. Used to decide whether a NoteUpsert needs to
+/// reconcile the tree (no-op when they already agree, preserving block
+/// identity on ordinary re-saves).
+fn tree_matches_blocks(
+    tree: &LoroTree,
+    blocks: &[tesela_core::note_tree::FlatBlock],
+) -> bool {
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+        .collect();
+    if live.len() != blocks.len() {
+        return false;
+    }
+    for (node, block) in live.iter().zip(blocks.iter()) {
+        let id_ok = read_meta_str(tree, *node, "block_id").as_deref()
+            == Some(hex::encode(block.id.as_bytes()).as_str());
+        let text_ok = read_meta_str(tree, *node, "text").unwrap_or_default() == block.text;
+        let indent_ok = read_indent_level(tree, *node).unwrap_or(0) == block.indent;
+        if !(id_ok && text_ok && indent_ok) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Delete every live block node from the tree (tombstones them). Used
+/// before a reseed when a NoteUpsert body differs from the current tree.
+fn clear_block_tree(tree: &LoroTree) {
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+        .collect();
+    for node in live {
+        let _ = tree.delete(node);
+    }
+}
+
 fn seed_tree_from_flatblocks(
     tree: &LoroTree,
     blocks: &[tesela_core::note_tree::FlatBlock],
@@ -1043,15 +1086,21 @@ impl LoroEngine {
                 // ops). Stored as an ordered list so render preserves
                 // their on-disk order deterministically.
                 set_page_properties(&doc, &parsed.page_properties)?;
-                // Seed blocks only on first sight; later NoteUpserts
-                // leave the tree to BlockUpsert/Move/Delete so we don't
-                // duplicate nodes.
+                // Reconcile the block tree to the parsed body. A
+                // full-content NoteUpsert is authoritative for the whole
+                // note (SqliteEngine overwrites the entire file —
+                // sqlite_engine.rs materialize). If the current tree
+                // already matches the body (the common no-op re-save),
+                // this is a fast no-op that PRESERVES block identity.
+                // When they differ — drift recovery, or a full-content
+                // rewrite the block-granular diff didn't capture — we
+                // reseed so the shadow matches the body exactly, instead
+                // of leaving stale blocks. Without this a drifted shadow
+                // never self-heals even when the user re-saves the whole
+                // note (review finding [2]).
                 let tree = doc.get_tree("blocks");
-                let already_has_blocks = tree
-                    .children(TreeParentId::Root)
-                    .map(|c| !c.is_empty())
-                    .unwrap_or(false);
-                if !already_has_blocks {
+                if !tree_matches_blocks(&tree, &parsed.blocks) {
+                    clear_block_tree(&tree);
                     seed_tree_from_flatblocks(&tree, &parsed.blocks)?;
                 }
                 doc.commit();
@@ -1561,10 +1610,12 @@ mod tests {
 
     #[tokio::test]
     async fn note_upsert_after_snapshot_load_does_not_duplicate_blocks() {
-        // Regression: NoteUpsert.content seeding is supposed to only
-        // run when the tree is empty. After a snapshot load the tree
-        // is non-empty, so a subsequent NoteUpsert should NOT re-parse
-        // and append duplicate nodes.
+        // Regression: a NoteUpsert re-save of the SAME (stamped) content
+        // after a snapshot reload must be a no-op — no duplicate nodes
+        // AND stable block identity (the tree_matches_blocks fast path).
+        // Content carries bid markers, as a real note file does after
+        // its first write (unstamped content would mint fresh ids each
+        // parse, which is not a realistic re-save).
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("loro");
 
@@ -1574,7 +1625,7 @@ mod tests {
                 .await
                 .unwrap();
         let note_id = [0x10; 16];
-        let content = "---\ntitle: T\n---\n- a\n- b\n";
+        let content = "---\ntitle: T\n---\n- a <!-- bid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa -->\n- b <!-- bid:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb -->\n";
 
         engine
             .record_local(OpPayload::NoteUpsert {
@@ -1772,6 +1823,46 @@ mod tests {
         let entries = engine.index_entries().await;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].title, "Beta");
+    }
+
+    #[tokio::test]
+    async fn note_upsert_reconciles_drifted_tree() {
+        // Review finding [2]: a full-content NoteUpsert must re-sync an
+        // already-populated tree that has drifted from the body, instead
+        // of skipping. Simulate drift by injecting a stale extra block,
+        // then re-upsert the canonical body and assert the render matches.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [0x55; 16];
+        let body = "- one <!-- bid:11111111-1111-1111-1111-111111111111 -->\n- two <!-- bid:22222222-2222-2222-2222-222222222222 -->\n";
+        let up = |content: String| OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some("n".into()),
+            title: "N".into(),
+            content,
+            created_at_millis: 1,
+        };
+        engine.record_local(up(body.to_string())).await.unwrap();
+        assert_eq!(engine.render_note(note_id).await.unwrap(), body);
+
+        // Drift the shadow tree out of band: append a stale block.
+        {
+            let doc = engine.doc_for_note_mut(note_id).await;
+            let tree = doc.get_tree("blocks");
+            let n = tree.create(TreeParentId::Root).unwrap();
+            let m = tree.get_meta(n).unwrap();
+            m.insert("block_id", "33333333-3333-3333-3333-333333333333").unwrap();
+            m.insert("text", "STALE").unwrap();
+            m.insert("indent_level", 0i64).unwrap();
+            doc.commit();
+        }
+        assert!(engine.render_note(note_id).await.unwrap().contains("STALE"));
+
+        // Re-save the canonical body — should reconcile away the drift.
+        engine.record_local(up(body.to_string())).await.unwrap();
+        let rendered = engine.render_note(note_id).await.unwrap();
+        assert_eq!(rendered, body, "full-content re-save heals drift");
+        assert!(!rendered.contains("STALE"));
     }
 
     #[tokio::test]
