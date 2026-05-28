@@ -50,6 +50,21 @@ fn hex_id(id: &[u8; 16]) -> String {
     hex::encode(id)
 }
 
+/// Schema version of the index doc's entry shape. Bump whenever the
+/// per-entry fields change so a stale on-disk index is rebuilt from the
+/// (self-describing) per-note docs on boot — no manual cache clear.
+/// v1 = {title, slug}. v2 = + {tags, links}.
+const INDEX_SCHEMA_VERSION: i64 = 2;
+
+/// Best-effort frontmatter `title:` extraction for index rebuild
+/// fallback. Returns None if there's no frontmatter title.
+fn frontmatter_title(content: &str) -> Option<String> {
+    tesela_core::storage::markdown::parse_frontmatter(content)
+        .ok()
+        .and_then(|(meta, _)| meta.title)
+        .filter(|t| !t.is_empty())
+}
+
 /// Derive a note's index metadata `(tags, links)` from its content +
 /// parsed page properties. Tags come from three sources (frontmatter
 /// `tags:`, the `tags::` page property, inline `#tags`); links are
@@ -191,15 +206,98 @@ impl LoroEngine {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => tracing::warn!("tesela-sync/loro: read index snapshot: {e}"),
         }
-        Ok(Self {
+        // Self-heal the index if its schema is stale (or absent): rebuild
+        // every entry from the self-describing per-note docs. Cheap —
+        // in-memory over already-loaded docs — and removes the need to
+        // ever hand-clear the cache when the index shape evolves.
+        let stored_version = index
+            .get_map("meta")
+            .get("schema_version")
+            .and_then(|v| v.into_value().ok())
+            .and_then(|v| v.into_i64().ok())
+            .unwrap_or(0);
+        let needs_rebuild = stored_version != INDEX_SCHEMA_VERSION && !docs.is_empty();
+        let engine = Self {
             inner: Arc::new(Inner {
                 docs: RwLock::new(docs),
                 device,
                 hlc,
-                snapshot_dir: Some(snapshot_dir),
+                snapshot_dir: Some(snapshot_dir.clone()),
                 index,
             }),
-        })
+        };
+        if needs_rebuild {
+            engine.rebuild_index_from_docs().await;
+            engine.save_index_snapshot(&snapshot_dir).await;
+            tracing::info!(
+                "tesela-sync/loro: rebuilt index (schema {} → {})",
+                stored_version,
+                INDEX_SCHEMA_VERSION
+            );
+        }
+        Ok(engine)
+    }
+
+    /// Rebuild every index entry from the loaded per-note docs. Each doc
+    /// stores its content on root meta (and, once written by a
+    /// current-version engine, its slug + title too), so the index is a
+    /// derived projection. tags/links are always re-derived from content.
+    /// title/slug prefer the doc's root meta, then fall back to the
+    /// existing index entry (so a rebuild against docs written by an
+    /// older engine — which lack slug/title on root meta — doesn't lose
+    /// the slugs the prior index already had), then to a frontmatter
+    /// title. Stamps the current schema version.
+    async fn rebuild_index_from_docs(&self) {
+        // Snapshot existing index title/slug as fallback.
+        let existing: std::collections::HashMap<String, (String, String)> = self
+            .index_entries()
+            .await
+            .into_iter()
+            .map(|e| (e.note_id, (e.title, e.slug)))
+            .collect();
+
+        let docs = self.inner.docs.read().await;
+        for (note_id, doc) in docs.iter() {
+            let root = doc.get_map("root");
+            let read = |k: &str| -> String {
+                root.get(k)
+                    .and_then(|v| v.into_value().ok())
+                    .and_then(|v| v.into_string().ok())
+                    .map(|s| (*s).clone())
+                    .unwrap_or_default()
+            };
+            let content = read("content");
+            let key = hex_id(note_id);
+            let prior = existing.get(&key);
+            let mut slug = read("slug");
+            if slug.is_empty() {
+                slug = prior.map(|(_, s)| s.clone()).unwrap_or_default();
+            }
+            let mut title = read("title");
+            if title.is_empty() {
+                title = prior
+                    .map(|(t, _)| t.clone())
+                    .filter(|t| !t.is_empty())
+                    .or_else(|| frontmatter_title(&content))
+                    .unwrap_or_else(|| slug.clone());
+            }
+            let parsed = tesela_core::note_tree::parse_note(&content);
+            self.index_upsert(
+                *note_id,
+                Some(slug.as_str()).filter(|s| !s.is_empty()),
+                &title,
+                &content,
+                &parsed.page_properties,
+            );
+        }
+        // Stamp schema version (index_upsert already stamps, but ensure
+        // it's set even when there are zero docs).
+        let _ = self
+            .inner
+            .index
+            .get_map("meta")
+            .insert("schema_version", INDEX_SCHEMA_VERSION);
+        self.inner.index.commit();
     }
 
     /// Update the index entry for a note. Called on NoteUpsert. Stores
@@ -234,6 +332,14 @@ impl LoroEngine {
         // tag merge is ever needed).
         let _ = entry.insert("tags", tags.join(","));
         let _ = entry.insert("links", links.join(","));
+        // Stamp the schema version so a freshly-built index (e.g. from
+        // disk-seed) is recognized as current and not needlessly rebuilt
+        // on the next boot.
+        let _ = self
+            .inner
+            .index
+            .get_map("meta")
+            .insert("schema_version", INDEX_SCHEMA_VERSION);
         self.inner.index.commit();
     }
 
@@ -822,11 +928,20 @@ impl LoroEngine {
                 ..
             } => {
                 let doc = self.doc_for_note_mut(*note_id).await;
-                // Save the convenience content snapshot on root meta
-                // (used by debugging; render_note ignores it).
+                // Root meta makes the per-note doc SELF-DESCRIBING:
+                // content (full markdown), slug, title. This lets the
+                // index be rebuilt purely from per-note docs (no
+                // dependence on a prior index), which is what makes the
+                // index self-healing across schema changes.
                 let root_meta = doc.get_map("root");
                 root_meta
                     .insert("content", content.as_str())
+                    .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
+                root_meta
+                    .insert("slug", display_alias.as_deref().unwrap_or(""))
+                    .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
+                root_meta
+                    .insert("title", title.as_str())
                     .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
 
                 // If the tree is empty, this is the first time we've
@@ -1554,6 +1669,90 @@ mod tests {
         let entries = engine.index_entries().await;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].title, "Beta");
+    }
+
+    #[tokio::test]
+    async fn index_self_heals_when_schema_stale() {
+        // Simulate a stale on-disk index: write notes, then hand-corrupt
+        // the persisted index's schema_version to 1 (pre-tags/links) and
+        // strip the tags field, then reload — the boot rebuild should
+        // restore tags/links from the self-describing per-note docs.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro");
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+            .await
+            .unwrap();
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: [3u8; 16],
+                display_alias: Some("n".into()),
+                title: "N".into(),
+                content: "---\ntitle: N\ntags: [alpha]\n---\n\n- see [[target]]\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        drop(engine);
+
+        // Downgrade the persisted index schema marker to force a rebuild.
+        let idx_path = dir.join("_index.bin");
+        let idx = LoroDoc::new();
+        idx.import(&tokio::fs::read(&idx_path).await.unwrap()).unwrap();
+        idx.get_map("meta").insert("schema_version", 1i64).unwrap();
+        idx.commit();
+        tokio::fs::write(&idx_path, idx.export(ExportMode::Snapshot).unwrap())
+            .await
+            .unwrap();
+
+        // Reload: boot rebuild should fire and restore tags/links.
+        let hlc2 = Arc::new(Hlc::new(test_device()));
+        let reloaded = LoroEngine::with_snapshot_dir(test_device(), hlc2, dir)
+            .await
+            .unwrap();
+        let entries = reloaded.index_entries().await;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].tags.contains(&"alpha".to_string()), "tags: {:?}", entries[0].tags);
+        assert_eq!(entries[0].links, vec!["target".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn index_rebuild_preserves_slug_when_doc_lacks_it() {
+        // The live upgrade scenario: per-note docs written by an older
+        // engine carry "content" but NOT slug/title on root meta, while
+        // the prior index DOES have the slug. Rebuild must keep the slug
+        // (from the prior index) rather than blanking it.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro");
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+            .await
+            .unwrap();
+        let note_id = [4u8; 16];
+        // Build a per-note doc WITHOUT slug/title on root (simulate old
+        // engine): only content. Then a prior index entry with the slug.
+        {
+            let doc = engine.doc_for_note_mut(note_id).await;
+            doc.get_map("root")
+                .insert("content", "---\ntitle: Kept\ntags: [z]\n---\n\n- body\n")
+                .unwrap();
+            doc.commit();
+        }
+        // Prior index entry (title+slug only, no tags) — like step 1.
+        {
+            let notes = engine.inner.index.get_map("notes");
+            let entry = notes.insert_container(&hex_id(&note_id), loro::LoroMap::new()).unwrap();
+            entry.insert("title", "Kept").unwrap();
+            entry.insert("slug", "kept-slug").unwrap();
+            engine.inner.index.commit();
+        }
+
+        engine.rebuild_index_from_docs().await;
+        let entries = engine.index_entries().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].slug, "kept-slug", "slug preserved from prior index");
+        assert_eq!(entries[0].title, "Kept");
+        assert!(entries[0].tags.contains(&"z".to_string()), "tags derived: {:?}", entries[0].tags);
     }
 
     #[tokio::test]
