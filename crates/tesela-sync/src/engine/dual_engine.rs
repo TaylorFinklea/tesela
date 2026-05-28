@@ -411,9 +411,86 @@ pub fn structurally_equal(primary: &str, shadow: &str) -> bool {
     if p.blocks.len() != s.blocks.len() {
         return false;
     }
-    p.blocks.iter().zip(s.blocks.iter()).all(|(a, b)| {
+    let blocks_match = p.blocks.iter().zip(s.blocks.iter()).all(|(a, b)| {
         a.indent == b.indent && block_content(&a.text) == block_content(&b.text)
-    })
+    });
+    if !blocks_match {
+        return false;
+    }
+    // Also compare UNMODELED body content — non-bullet lines (headings,
+    // prose) that note_tree drops. Without this, the same lossy parse on
+    // both sides would cancel the loss and report a false "match" while
+    // disk silently differs (review finding [5]). The shadow render only
+    // ever contains modeled content, so its residue is empty; a disk note
+    // with a bare heading therefore surfaces as a real divergence — which
+    // is accurate, since the CRDT can't represent it.
+    unmodeled_body_lines(primary) == unmodeled_body_lines(shadow)
+}
+
+/// Non-bullet body lines that the CRDT block model does NOT capture —
+/// the residue note_tree's parser drops. Biased toward over-reporting
+/// (treating ambiguous lines as unmodeled) because over-reporting
+/// divergence is safe; under-reporting before an irreversible cutover is
+/// not. Frontmatter and leading `key:: value` page properties are
+/// modeled and excluded; bullets and their indented continuations are
+/// modeled and excluded.
+fn unmodeled_body_lines(content: &str) -> Vec<String> {
+    // Strip frontmatter.
+    let body = if let Some(rest) = content.strip_prefix("---\n") {
+        match rest.find("\n---\n") {
+            Some(end) => &rest[end + 5..],
+            None => rest,
+        }
+    } else {
+        content
+    };
+    let mut out = Vec::new();
+    let mut seen_bullet = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let indented = line.starts_with(' ') || line.starts_with('\t');
+        if trimmed.starts_with("- ") || trimmed == "-" {
+            seen_bullet = true;
+            continue;
+        }
+        if indented {
+            // Continuation under a bullet is modeled; an indented line
+            // before any bullet is unmodeled (safe).
+            if seen_bullet {
+                continue;
+            }
+            out.push(trimmed.to_string());
+            continue;
+        }
+        // Unindented, non-bullet. A leading `key:: value` / `key::` page
+        // property (before any bullet) is modeled; anything else is not.
+        if !seen_bullet && is_page_property_line(trimmed) {
+            continue;
+        }
+        out.push(trimmed.to_string());
+    }
+    out
+}
+
+/// True for an unindented `key:: value` or bare `key::` page-property
+/// line (key = alphanumeric/_/-). Mirrors note_tree's page-property
+/// recognition.
+fn is_page_property_line(trimmed: &str) -> bool {
+    match trimmed.find("::") {
+        Some(i) => {
+            let key = &trimmed[..i];
+            let after = &trimmed[i + 2..];
+            !key.is_empty()
+                && key
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                && (after.is_empty() || after.starts_with(' '))
+        }
+        None => false,
+    }
 }
 
 /// A block's content lines, normalized for comparison: bid markers
@@ -672,6 +749,24 @@ mod tests {
             NoteComparison::PrimaryMissing => {}
             other => panic!("expected PrimaryMissing, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn structural_equal_catches_unmodeled_heading() {
+        // Review finding [5]: a disk note with a bare heading the CRDT
+        // can't model must NOT read as "match" against an empty shadow.
+        let disk = "---\ntitle: D\n---\n\n# 2026-05-17\n";
+        let shadow_render = ""; // CRDT renders nothing for it
+        assert!(
+            !structurally_equal(disk, shadow_render),
+            "bare heading on disk vs empty shadow must diverge, not falsely match"
+        );
+        // But two genuinely-equal bullet notes still match.
+        let a = "- x <!-- bid:11111111-1111-1111-1111-111111111111 -->\n";
+        let b = "- x <!-- bid:11111111-1111-1111-1111-111111111111 -->\n";
+        assert!(structurally_equal(a, b));
+        // And a normal note with no unmodeled content still matches.
+        assert!(structurally_equal("- a\n- b\n", "- a\n- b\n"));
     }
 
     #[tokio::test]
