@@ -27,11 +27,35 @@ only the opaque `SyncEnvelope.ciphertext` payload changes from
      resolve through it.
    - **Per-note docs** (lazy-loaded, evictable): full note content (see
      Phase 1 schema). One snapshot file per note on disk (already built).
-2. **v1 scope: FULL parity before cutover.** Loro must round-trip every
-   note byte-identically to disk — frontmatter, page properties, query/
-   type pages, non-bullet content — not just bullets. The ~13 structural
-   divergences in today's shadow must go to 0 before flipping.
-3. **Hard cutover, no coexistence.** Taylor is on Logseq until this is
+2. **v1 scope: FULL parity before cutover — STRUCTURAL parity, not
+   byte-identical.** Loro must round-trip every note's *structure*
+   (blocks + properties + frontmatter), reserialized **deterministically**
+   (same CRDT state → same bytes; clean diffs, stable grep) — NOT
+   byte-identical to the current hand-edited disk bytes. The ~13
+   structural divergences go to 0 measured by **parsed-structure
+   equivalence**, not raw byte compare. At cutover, a one-time canonical
+   reserialization rewrites the mosaic into Loro's deterministic form.
+   (Decided 2026-05-28 — byte-identical round-trip is the Logseq-fidelity
+   tar pit and pointless under structured-first; see decisions.md.)
+3. **Structured-first (Anytype direction): the CRDT is the source of
+   truth; markdown files are a deterministic materialized VIEW.** Inverts
+   the old "files are truth" line. `query::`/`type::`/`sort::` etc. are
+   PAGE PROPERTIES (first-class structured data), not raw text — the
+   parser dropping them is a gap, not a content category. Phase 1 models
+   block = `{text, properties: map, children}` + page-level properties.
+   - **Scope line:** Phase 1 *preserves + merges* properties (parse →
+     CRDT maps → deterministic serialize). It does NOT build the property
+     *system* (global registry, type inheritance, `extends`, table views)
+     — those are the separate roadmap phases in
+     `memory/project_property_system_vision` that sit on top of this.
+   - **Property values are scalar strings in Phase 1** (achieves parity
+     for the scalar page-props in the 13 notes). **Multi-value props
+     (`tags`, aliases) as Loro lists for clean union-merge is DEFERRED**
+     to the property-system / collaboration phase — needs `value_type` to
+     know which props are multi-valued. Known limit: until then,
+     concurrent multi-value edits are LWW-on-the-whole-string (tag merges
+     will misbehave). Conscious tradeoff, not a surprise.
+4. **Hard cutover, no coexistence.** Taylor is on Logseq until this is
    solid (memory `feedback-tesela-not-daily-driver-until-migrated`), so
    we flip all relay participants at once and delete the old engine. No
    dual-protocol envelopes, no gradual per-device rollout, no
@@ -59,35 +83,45 @@ only the opaque `SyncEnvelope.ciphertext` payload changes from
 
 ## Phases (each independently reviewable; one commit-group each)
 
-### Phase 0 — Spike the unknowns (½–1 day, before committing engine code)
-Throwaway, like the original Loro spike. Confirm:
-- **N-docs over the relay**: export/import per-doc updates keyed by
-  note_id; per-doc version vectors; out-of-order + gapped import (Loro
-  pending-updates buffering). The relay is already per-note so this
-  should be clean — verify.
-- **Index doc**: a small always-resident doc for note_id→meta + graph;
-  confirm size + update cost at ~3k notes.
-- **Full-content round-trip**: prototype a per-note doc schema that
-  serializes byte-identically for a frontmatter + bullets + non-bullet
-  (`query::` / `# header`) note.
-- **Lazy-load + evict**: load a note doc from snapshot, drop it from
-  memory, reload — confirm correctness + that eviction actually frees.
-- **loro-swift multi-doc**: confirm the FFI surface supports N docs +
-  index on iOS (the original spike confirmed basic UniFFI compat).
-Output: go/no-go + any schema adjustments. Report at
-`2026-05-28-loro-cutover-spike-report.md`.
+### Phase 0 — Spike the unknowns — ✅ DONE (GREEN)
+Result in `2026-05-28-loro-cutover-spike-report.md`; tests in
+`crates/tesela-sync/tests/loro_cutover_spike.rs` (8, all pass).
+Validated: N-docs convergence + per-doc VV cursor, the flashing fix at
+the CRDT layer, out-of-order/gapped import, snapshot bootstrap, and a
+full-content schema (frontmatter `LoroText` + body tree of
+`{kind:bullet|raw, indent, text}`) that round-trips non-bullet notes.
+Deferred (on-device, later phases): loro-swift multi-doc (Phase 6),
+lazy-load/evict memory (Phase 3), index doc perf (Phase 2).
+Carried: Loro `PeerID` ↔ `DeviceId` stable mapping.
 
-### Phase 1 — Per-note doc schema for FULL note content (parity)
-Rewrite the per-note Loro doc to represent the ENTIRE file, not just
-bullets:
-- frontmatter (verbatim, e.g. `LoroText` or a `LoroMap`),
-- block tree (`LoroTree`, text + indent — current flat model),
-- non-bullet / raw content (a raw-segment representation so `query::`,
-  `# header`, page-property notes round-trip).
-`render_note` → byte-identical `serialize_note(frontmatter + body)`.
-**Acceptance:** the dual-write divergence report hits **0 diverged /
-0 primary-missing** across the whole corpus (currently 13–14 + 3).
-This is the parity gate for cutover. Still shadow at this point.
+### Phase 1 — Per-note doc schema: structured properties, STRUCTURAL parity
+Model the note as structured data (the everything-is-a-block / Anytype
+direction — see locked decision 3):
+- **frontmatter**: `LoroText` (verbatim YAML incl. `---` markers).
+- **blocks**: `LoroTree`, each node `{text, indent, properties: map}`.
+- **page-level properties**: a map on the note (the `query::`/`type::`/
+  `sort::` lines that today render empty). Scalar-string values for now;
+  multi-value list semantics deferred (decision 3).
+- The spike used a `{kind:bullet|raw}` segment model as a stepping stone;
+  Phase 1 supersedes "raw" with structured **properties** — a `query::`
+  line is a page property, NOT a raw line. No raw-text escape hatch.
+- **`tesela_core::note_tree` extension** is the cross-cutting part:
+  `parse_body_blocks` currently drops non-bullet lines before the first
+  bullet (`note_tree.rs:263`). Extend parse+serialize to capture page +
+  block properties. This touches the authoritative SqliteEngine
+  materialize path AND the ts-rs `ParsedBlock` (→ web, iOS) — do it as
+  its own carefully-tested piece (note_tree has a round-trip property
+  test to extend). Serialization is **deterministic**, not byte-identical
+  to current disk (decision 2).
+`render_note` → deterministic `serialize_note(frontmatter + blocks +
+props)`.
+**Acceptance:** the divergence check (rebuilt to compare **parsed
+structure**, not raw bytes) hits **0 structural diverged / 0
+primary-missing** across the corpus (currently 13–14 + 3). This is the
+parity gate. Still shadow at this point. NOTE: the existing
+`/loro/divergence` does normalized byte-compare — Phase 1 must switch it
+to structural comparison, else deterministic-reformatting shows as false
+diffs.
 
 ### Phase 2 — Index doc
 Build the always-resident index `LoroDoc`: note_id → {title, slug,

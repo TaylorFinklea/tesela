@@ -232,3 +232,21 @@ Bonus capabilities that fall out for free (not speculative):
 **Why hard cutover:** No daily-driver dependence during migration → no need for dual-protocol coexistence or gradual rollout. Flip all relay participants (Mac server, iOS, Savanne's devices) at once; web is an HTTP client and unaffected.
 
 **Plan:** `.docs/ai/phases/2026-05-28-loro-cutover-spec.md` (Phases 0–7). Relay protocol + encryption unchanged; only the opaque ciphertext payload (Vec<EncodedOp> → Loro updates) and the engine swap.
+
+---
+
+## 2026-05-28 — Structured-first; CRDT is truth; structural (not byte) parity; scalar props for v1
+
+Triangulated Claude Code + Claude Desktop, decided by Taylor. Refines the Loro cutover spec.
+
+**1. Structured-first (Anytype direction).** `query::`/`type::`/`sort::` etc. are page PROPERTIES (first-class structured data), not raw text. The parser dropping non-bullet lines is a gap, not a content category. The per-note Loro doc models block = `{text, indent, properties: map}` + page-level properties. NO raw-text escape hatch (it'd be opaque, unreferenceable, and ripped out at property-system time).
+
+**2. The CRDT is the source of truth; markdown files are a deterministic materialized VIEW.** Inverts the old `project_property_system_vision` line "files are truth." Files stay readable/diffable/greppable but are no longer authoritative. Correct for structured-first + collaboration.
+
+**3. Parity bar = STRUCTURAL, serialization = DETERMINISTIC (not byte-identical).** Claude Desktop's key catch: byte-identical markdown round-trip is the Logseq-fidelity tar pit (whitespace/ordering/delimiter preservation) AND pointless under structured-first (you don't hand-edit a query-builder's output). Requirement is: same CRDT state → same bytes (clean diffs, stable grep), no verbatim-preservation of arbitrary input. The divergence check + Phase 1 acceptance compare PARSED STRUCTURE, not raw bytes. Cutover does a one-time canonical reserialization of the mosaic. This is what keeps Phase 1 from ballooning.
+
+**4. Scope line:** Phase 1 *preserves + merges* properties; it does NOT build the property SYSTEM (global registry, type inheritance, `extends`, table views) — those sit on top, per `project_property_system_vision`.
+
+**5. Property values scalar-string in v1; multi-value list semantics deferred.** Scalar achieves parity for the 13 notes (all scalar page-props). Clean union-merge for multi-value props (`tags`, aliases) needs Loro list containers + `value_type` knowledge → lands with the property system / collaboration phase. Known limit until then: concurrent multi-value edits are LWW-on-the-whole-string (tag merges misbehave). Conscious, not a surprise.
+
+Spec: `phases/2026-05-28-loro-cutover-spec.md` (decisions 2–4 in the locked-decisions block; Phase 1 updated).
