@@ -40,7 +40,7 @@ use crate::oplog::op::{ContentHash, EncodedOp, OpPayload};
 use crate::oplog::parked::ParkReason;
 use crate::wire::envelope::SyncEnvelope;
 use async_trait::async_trait;
-use loro::{ExportMode, LoroDoc, LoroTree, TreeID, TreeParentId};
+use loro::{ExportMode, LoroDoc, LoroTree, TreeID, TreeParentId, VersionVector};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -293,7 +293,101 @@ impl LoroEngine {
                 INDEX_SCHEMA_VERSION
             );
         }
+        // Stamp this engine's PeerID on every loaded doc + the index so
+        // future local ops are attributed to this device (Phase 4
+        // convergence prerequisite).
+        {
+            let docs = engine.inner.docs.read().await;
+            for doc in docs.values() {
+                engine.set_doc_peer(doc);
+            }
+        }
+        engine.set_doc_peer(&engine.inner.index);
         Ok(engine)
+    }
+
+    /// Encoded version vector of a note's doc — the relay cursor a peer
+    /// sends so we export only updates newer than what it has. None if
+    /// the doc isn't resident. (Phase 4.)
+    pub async fn doc_version(&self, note_id: [u8; 16]) -> Option<Vec<u8>> {
+        let docs = self.inner.docs.read().await;
+        Some(docs.get(&note_id)?.oplog_vv().encode())
+    }
+
+    /// Export a note's Loro updates since the peer's (encoded) version
+    /// vector. `since = None` exports full state — a fresh-device
+    /// bootstrap. None if the doc isn't resident or export fails.
+    /// (Phase 4.)
+    pub async fn export_doc_update(
+        &self,
+        note_id: [u8; 16],
+        since: Option<&[u8]>,
+    ) -> Option<Vec<u8>> {
+        let docs = self.inner.docs.read().await;
+        let doc = docs.get(&note_id)?;
+        let vv = match since {
+            Some(bytes) => VersionVector::decode(bytes).ok()?,
+            None => VersionVector::new(),
+        };
+        doc.export(ExportMode::updates(&vv)).ok()
+    }
+
+    /// Import a peer's Loro update bytes into the addressed note's doc
+    /// (creating it — stamped with this engine's PeerID — if absent),
+    /// then refresh derived state (block_index + index entry) and
+    /// persist the snapshot. Loro merge is commutative + idempotent, so
+    /// duplicate / out-of-order imports are safe. (Phase 4.)
+    pub async fn import_doc_update(
+        &self,
+        note_id: [u8; 16],
+        bytes: &[u8],
+    ) -> SyncResult<()> {
+        let doc = self.doc_for_note_mut(note_id).await;
+        doc.import(bytes)
+            .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
+        self.refresh_note_derived(note_id, &doc).await;
+        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+            self.save_snapshot(dir, note_id).await;
+        }
+        Ok(())
+    }
+
+    /// Refresh derived state for one note after its doc changed via an
+    /// import: re-register its live blocks in block_index and rebuild
+    /// its index entry from the doc's root content.
+    async fn refresh_note_derived(&self, note_id: [u8; 16], doc: &LoroDoc) {
+        let tree = doc.get_tree("blocks");
+        let mut ids = Vec::new();
+        for node in tree.children(TreeParentId::Root).unwrap_or_default() {
+            if matches!(tree.is_node_deleted(&node), Ok(true)) {
+                continue;
+            }
+            if let Some(hex) = read_meta_str(&tree, node, "block_id") {
+                if let Some(b) = parse_note_id_from_hex(&hex) {
+                    ids.push(b);
+                }
+            }
+        }
+        self.register_note_blocks(note_id, &ids).await;
+        let root = doc.get_map("root");
+        let read = |k: &str| -> String {
+            root.get(k)
+                .and_then(|v| v.into_value().ok())
+                .and_then(|v| v.into_string().ok())
+                .map(|s| (*s).clone())
+                .unwrap_or_default()
+        };
+        let content = read("content");
+        let slug = read("slug");
+        let title = read("title");
+        let parsed = tesela_core::note_tree::parse_note(&content);
+        self.index_upsert(
+            note_id,
+            Some(slug.as_str()).filter(|s| !s.is_empty()),
+            &title,
+            &content,
+            &parsed.page_properties,
+        );
     }
 
     /// Rebuild every index entry from the loaded per-note docs. Each doc
@@ -515,11 +609,42 @@ impl LoroEngine {
         Some(tesela_core::note_tree::serialize_note(&note_tree))
     }
 
-    /// Get-or-create the Loro doc for a given note id. Called from
-    /// `record_local` when a NoteUpsert or BlockUpsert lands.
+    /// This engine's Loro PeerID, derived deterministically from its
+    /// 16-byte DeviceId (first 8 bytes, top bit cleared to stay in
+    /// Loro's valid PeerID range). Stable across restarts so a device's
+    /// ops are always attributed to it — the prerequisite for two
+    /// engines' per-note docs merging cleanly (Phase 4).
+    fn peer_id(&self) -> u64 {
+        let b = self.inner.device.as_bytes();
+        let raw = u64::from_le_bytes([
+            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+        ]);
+        let masked = raw & 0x7FFF_FFFF_FFFF_FFFF;
+        if masked == 0 {
+            1
+        } else {
+            masked
+        }
+    }
+
+    /// Stamp this engine's PeerID on a doc so its subsequent local ops
+    /// are attributed to this device. Idempotent; safe on a loaded or
+    /// imported doc (sets the peer for FUTURE ops only).
+    fn set_doc_peer(&self, doc: &LoroDoc) {
+        let _ = doc.set_peer_id(self.peer_id());
+    }
+
+    /// Get-or-create the Loro doc for a given note id, with this engine's
+    /// PeerID stamped. Called from `record_local` when a NoteUpsert or
+    /// BlockUpsert lands.
     async fn doc_for_note_mut(&self, note_id: [u8; 16]) -> LoroDoc {
         let mut docs = self.inner.docs.write().await;
-        docs.entry(note_id).or_insert_with(LoroDoc::new).clone()
+        if !docs.contains_key(&note_id) {
+            let doc = LoroDoc::new();
+            self.set_doc_peer(&doc);
+            docs.insert(note_id, doc);
+        }
+        docs.get(&note_id).expect("just inserted").clone()
     }
 
     /// Locate the doc + tree node hosting a given block id by walking
@@ -1917,6 +2042,67 @@ mod tests {
         let rendered = engine.render_note(note_id).await.unwrap();
         assert_eq!(rendered, body, "full-content re-save heals drift");
         assert!(!rendered.contains("STALE"));
+    }
+
+    #[tokio::test]
+    async fn two_engines_converge_on_concurrent_edits_no_flashing() {
+        // PHASE 4 KEYSTONE: the flashing fix at the engine level. Two
+        // LoroEngines (distinct devices/PeerIDs) edit the SAME note
+        // concurrently, exchange Loro updates, and converge to one
+        // deterministic state on both sides — stable across repeated
+        // exchange (no ping-pong). The hand-rolled engine could not do
+        // this; that's the whole reason for the migration.
+        let a = LoroEngine::new(DeviceId::from_bytes([0xa1; 16]), Arc::new(Hlc::new(DeviceId::from_bytes([0xa1; 16]))));
+        let b = LoroEngine::new(DeviceId::from_bytes([0xb2; 16]), Arc::new(Hlc::new(DeviceId::from_bytes([0xb2; 16]))));
+        assert_ne!(a.peer_id(), b.peer_id(), "devices must have distinct peer ids");
+        let note = [0x77; 16];
+
+        // A creates the note with one stamped block; B bootstraps from
+        // A's full state (the new-device-join path).
+        a.record_local(OpPayload::NoteUpsert {
+            note_id: note,
+            display_alias: Some("shared".into()),
+            title: "Shared".into(),
+            content: "- base <!-- bid:01010101-0101-0101-0101-010101010101 -->\n".into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+        let bootstrap = a.export_doc_update(note, None).await.unwrap();
+        b.import_doc_update(note, &bootstrap).await.unwrap();
+        assert_eq!(a.render_note(note).await, b.render_note(note).await, "bootstrapped equal");
+
+        // Concurrent edits: A appends a block, B appends a different one.
+        a.record_local(OpPayload::BlockUpsert {
+            block_id: [0xaa; 16], note_id: note, parent_block_id: None,
+            order_key: "a".into(), indent_level: 0, text: "from A".into(),
+        }).await.unwrap();
+        b.record_local(OpPayload::BlockUpsert {
+            block_id: [0xbb; 16], note_id: note, parent_block_id: None,
+            order_key: "b".into(), indent_level: 0, text: "from B".into(),
+        }).await.unwrap();
+
+        // Exchange updates both ways (two relay ticks), using each peer's
+        // version vector as the cursor.
+        let b_vv = b.doc_version(note).await;
+        let a_upd = a.export_doc_update(note, b_vv.as_deref()).await.unwrap();
+        b.import_doc_update(note, &a_upd).await.unwrap();
+        let a_vv = a.doc_version(note).await;
+        let b_upd = b.export_doc_update(note, a_vv.as_deref()).await.unwrap();
+        a.import_doc_update(note, &b_upd).await.unwrap();
+
+        let ra = a.render_note(note).await.unwrap();
+        let rb = b.render_note(note).await.unwrap();
+        assert_eq!(ra, rb, "engines converge to identical state — no flashing");
+        assert!(ra.contains("base") && ra.contains("from A") && ra.contains("from B"));
+
+        // Re-exchange must be a stable no-op (no oscillation).
+        let b_vv2 = b.doc_version(note).await;
+        if let Some(u) = a.export_doc_update(note, b_vv2.as_deref()).await {
+            if !u.is_empty() { b.import_doc_update(note, &u).await.unwrap(); }
+        }
+        assert_eq!(a.render_note(note).await.unwrap(), ra, "stable after re-exchange");
+        assert_eq!(b.render_note(note).await.unwrap(), rb, "stable after re-exchange");
     }
 
     #[tokio::test]
