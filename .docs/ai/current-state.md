@@ -1,26 +1,31 @@
 # Current State
 
-## 🌅 Morning briefing (read first — autonomous session 2026-05-28)
+## State as of 2026-05-28 midday (latest)
 
-**Good news.** Migration is meaningfully closer to cutover. Five commits landed cleanly:
-- `8598c15` debug HTTP routes (`/api/loro/notes/:slug`, `/api/loro/divergence`) — observe the shadow without parsing logs
-- `3b29ee3` LoroEngine **persistence** — per-note snapshots on disk; boot loads in 28ms instead of 3s
-- `ebf9175` **full-corpus disk seed** — shadow now covers all 517 notes, not just the 23 oplog-tracked ones
-- Persistence edge-case tests + classification of the 16 divergent notes
+**Server is running WITHOUT dual-write** (`RUST_LOG=info`, no `TESELA_LORO_DUAL_WRITE`) — plain single-engine, the right state for Taylor's web↔iOS testing. The perf fix below is in the binary regardless of the flag.
 
-**Bad news (one item).** I attempted a reconcile-stale-blocks endpoint to clean up the 4 legacy divergences. It worked on those 4 — but also incorrectly deleted real blocks from 6 other previously-matching notes, and the relay propagated those deletes to Roshar. The endpoint is now disabled (returns 400). Six notes' iOS files may have lost real blocks. **First task in the morning: verify iOS file integrity for these 6 ids and re-edit if needed.** Details in the Incident section below.
+### Today's stress test (web + Roshar) surfaced 3 real bugs in the CURRENT engine — none from instrumentation:
 
-**Current state of the soak**: 496 match / 18 diverge / 3 primary-missing of 517 notes. Two notes worse than before the incident; everything else holds.
+1. **[FIXED `ab63d1c`] O(oplog) full-table scans.** `find_slug_for_note` / `find_note_for_block` scanned + decoded the entire oplog on every block op — ~1.8s at 2700 rows, growing. Caused `database is locked` (code 517) under rapid editing. Fixed with in-memory memo caches (note_id→slug, block_id→note_id), populated on write, scan as fallback. Verified: a ~5-op burst at 2733 rows now throws zero slow-statement + zero db-locked warnings (was several before).
 
-**To get back to a clean state**: edit each affected note from iOS or web once (any change triggers a fresh BlockUpsert via record_local, which restores both engines). The notes are likely small — the affected ids in the Incident section have their (former) content shown via `/loro/notes/<slug>` if you can reverse-derive the slug.
+2. **[FIXED `80cc60d`] LoroEngine shadow ordering.** Shadow rendered via hierarchical tree + order_key sort; SqliteEngine uses flat document order + indent, ignores order_key, keeps position stable on move. Rewrote the shadow to match. Caught live on the daily note ("nursery rhyme" repro).
 
-**Server is still running** with `TESELA_LORO_DUAL_WRITE=1`. Monitor is **stopped**. New endpoints to play with:
+3. **[OPEN — the big one] Convergence "flashing."** Two devices ping-pong a note's version via the relay until a new edit breaks the tie (Taylor saw iOS oscillating between two versions of yesterday's note). Worsened by relay 500 errors preventing push-confirmation. **This is the headline bug the Loro migration exists to fix** — it's a fundamental weakness of the hand-rolled LWW engine, not a quick patch. Both devices' ops ARE in the oplog (no data loss); they just don't converge stably. "Flashing" is Taylor's shorthand for this from now on.
+
+### Other open items
+- **Relay 500s** (task TBD): the HA-hosted relay intermittently returns 500 on PUT, so iOS can't confirm pushes — feeds the flashing. Needs relay-side investigation.
+- **#111**: oplog-order vs disk-order divergence (8320e597, 165c1a4c) — disk reflects full-file editor order, shadow follows op-arrival order; diverge when the editor reorders without emitting move ops. Shadow-only, dual-write specific.
+
+### Last night's reconcile incident — RESOLVED
+The reconcile-stale-blocks endpoint deleted real shadow blocks for 6 notes and propagated via relay. **Verified this morning: no disk data was lost** (the deletes carried spurious UUIDs that no-op'd on disk; only the shadow was affected). Shadow snapshot cache was cleared + rebuilt clean. Endpoint stays disabled (`1b0b507`).
+
+### Debug endpoints (only live when dual-write is ON)
 - `curl http://127.0.0.1:7474/loro/divergence | jq` — full divergence dashboard
-- `curl http://127.0.0.1:7474/loro/notes/<slug> | jq` — inspect one note's shadow + primary side-by-side
+- `curl http://127.0.0.1:7474/loro/notes/<slug> | jq` — one note's shadow + primary side-by-side
 
 ---
 
-*Last updated: 2026-05-28 ~02:00. INCIDENT during autonomous reconcile attempt: emitted 15 spurious `BlockDelete` ops for 6 previously-matching notes, propagated via relay to Roshar (iPhone). iOS files for those 6 notes may have lost real blocks. Endpoint disabled in `1b0b507`. Otherwise: persistence + full-corpus coverage landed cleanly; 498 → 496 match, baseline now 18 of 517 diverged.*
+*Earlier 2026-05-28 ~02:00 entry (incident, now resolved) retained below for history.*
 
 ## 🚨 Incident: reconcile-stale-blocks endpoint, 2026-05-28T01:50 UTC
 
