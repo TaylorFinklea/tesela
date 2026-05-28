@@ -1,6 +1,32 @@
 # Current State
 
-*Last updated: 2026-05-28 early hours. LoroEngine now persists per-note snapshots to `<mosaic>/.tesela/loro/` + loads them on boot (28ms vs 3s before). Shadow expanded from 23 oplog-tracked notes to 517 full-corpus coverage via boot-time disk seed. 498 of 517 match (96%); 16 diverge for structural reasons (non-bullet `query::` content + legacy stale blocks), 3 primary-missing. New edits hold the baseline; persistence survives restart cleanly.*
+*Last updated: 2026-05-28 ~02:00. **INCIDENT** during autonomous reconcile attempt: emitted 15 spurious `BlockDelete` ops for 6 previously-matching notes, propagated via relay to Roshar (iPhone). iOS files for those 6 notes may have lost real blocks. Endpoint disabled in `1b0b507`. Otherwise: persistence + full-corpus coverage landed cleanly; 498 → 496 match, baseline now 18 of 517 diverged.*
+
+## 🚨 Incident: reconcile-stale-blocks endpoint, 2026-05-28T01:50 UTC
+
+Implemented `POST /api/loro/reconcile-stale-blocks` to clear the 4 legacy-divergent notes. Logic computed `shadow.blocks - primary.blocks` via `parse_note` round-trips on rendered output. Bug: that comparison flagged 6 previously-matching notes as having orphans (likely a bid-marker re-stamp edge case in parse_note). Result:
+
+- **Mac shadow**: 6 notes now have empty trees (real blocks deleted).
+- **Mac oplog**: 15 spurious BlockDelete ops appended (immutable).
+- **Roshar (iPhone)**: relay tick almost certainly delivered the BlockDeletes; `apply_block_delete` in iOS SqliteEngine rewrites the local file with the block removed. **For the 6 affected note ids below, iOS files may have lost real blocks.**
+
+Affected note ids (need iOS-side verification):
+- `09d6e92520927a56e0a771b921d143de`
+- `63aa178593c5499284bf0d1ae006d688`
+- `0447949c7626c510b22a87b06d7e13f5`
+- `ed3143fba07f4fa6a94ac02e4ad95e72`
+- `e9fa084294ee4881bae349c187b2ea09`
+- `1e32ec37967f65238290cdf3fd2824f8`
+
+To diagnose tomorrow:
+```bash
+curl -s http://127.0.0.1:7474/loro/divergence | jq '.entries[] | select(.note_id | IN("09d6e9...", ...))'
+```
+Or hit `/loro/notes/{slug}` for each. Recover by editing affected notes from iOS or web (re-emits BlockUpsert via record_local).
+
+Endpoint now returns 400 with the message "disabled after 2026-05-28 incident". Redesign requirements in the `notes.rs` comment.
+
+**Net effect on soak baseline**: 16 → 18 diverged (10 broken − 4 legacy fixed + 4 newly-broken − wait the math). The reconcile report claimed 24 deletions across 10 notes (mix of 4 legitimate legacy fixes + 6 new breakages with the rest); the divergence count grew by 2 net.
 
 ## End-to-end verification (this session)
 
