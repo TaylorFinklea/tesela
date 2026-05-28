@@ -130,19 +130,54 @@ rename through it. This becomes the source for backlinks + the note
 list. **Acceptance:** index reconstructs the current note list + graph;
 create/rename/delete reflected.
 
-### Phase 3 — Lazy-load + evict
-LoroEngine loads a note's doc on access, evicts on close/idle (LRU,
-bounded memory). Snapshots already persist per-note. **Acceptance:**
-memory stays bounded under a scripted "open 500 notes sequentially"
-test; evicted notes reload correctly.
+### Phase 3 — Lazy-load + evict — RESEQUENCED to ~Phase 6 (decided 2026-05-28)
+Lazy-load/evict exists solely for iOS memory; iOS doesn't run this Rust
+engine until the FFI swap (Phase 6), and the Mac server holds all 518
+docs for free. So full lazy-load is deferred to when iOS needs it (and
+can be tested on-device). **Groundwork landed now** (`0430616`): a
+resident `block_index` (block_id → note_id) so block-only ops resolve
+without scanning all docs — the prerequisite for eviction.
+Remaining Phase-3 work (do at Phase 6): lazy boot (don't eager-load all
+snapshots), LRU evict with a capacity cap, load-on-access in
+render_note/doc_for_note_mut, lazy-aware index rebuild, divergence
+iteration sourced from the index. Acceptance: memory bounded under
+"open 500 sequentially", evicted notes reload.
 
-### Phase 4 — Loro updates over the relay
-- `produce_changes_since` → per-doc `export(Updates since peer VV)`.
-- `apply_changes` → import update bytes into the addressed doc (+ index).
-- Envelope payload format (above); per-doc VV cursors.
-- **Acceptance:** two LoroEngine instances (two mosaic dirs, one relay)
-  converge on concurrent edits to the same note — no flashing — in an
-  automated test. THIS is the bug-fix proof.
+### Phase 4 — Loro updates over the relay — NEXT (the keystone proof)
+**Start fresh-context; this is the migration's whole point.** Concrete plan:
+
+1. **Loro PeerID ↔ DeviceId (do first — it's load-bearing).** Two
+   engines' per-note docs only merge cleanly if each device stamps its
+   ops with a stable, distinct Loro PeerID. On doc create/load, call
+   `doc.set_peer_id(peer_id_from_device(device))`. Derive a u64 PeerID
+   deterministically from the 16-byte DeviceId (e.g. first 8 bytes, or a
+   hash) so a device's ops are always recognized as its own across
+   restarts. Root containers (`get_tree("blocks")`, `get_list`,
+   `get_map`) are name-identified, so two docs for the same note_id
+   share container ids and their ops merge — the spike confirmed this
+   for raw LoroDocs; the engine must set peer ids to keep ops distinct.
+2. **Engine-level convergence proof FIRST (additive, no live-relay
+   risk).** Add `export_doc_update(note_id, since_vv) -> Option<Vec<u8>>`
+   (per-doc `export(ExportMode::updates(&vv))`), `doc_version(note_id) ->
+   encoded VV` (the cursor), and `import_doc_update(note_id, bytes)`
+   (import into the addressed doc — create if absent, register blocks in
+   block_index, refresh the index entry, persist snapshot). Test: two
+   LoroEngines (separate snapshot dirs, distinct device/peer ids) make
+   CONCURRENT edits to the same note via record_local, exchange updates
+   via these methods, and converge to identical render with no
+   oscillation across repeated exchange. THIS is the flashing-fix proof
+   at the engine level (the spike proved it at the raw-LoroDoc level).
+3. **Then wire into the relay (cutover-adjacent — can wait for Phase
+   5/7).** The live relay envelope currently carries
+   `postcard(Vec<EncodedOp>)` for SqliteEngine; do NOT change that
+   format while dual-write runs (it would break the authoritative
+   engine). The Loro-update payload (`postcard({doc: NoteId|Index,
+   update_bytes})`) replaces it at cutover. Per-doc VV cursors replace
+   the HLC outbound cursor then.
+
+- **Acceptance (step 2):** automated two-engine convergence test, no
+  flashing. **Acceptance (step 3, at cutover):** live relay carries Loro
+  updates; two real devices converge.
 
 ### Phase 5 — LoroEngine authoritative for materialization
 Loro doc → serialize → disk is the sole writer. `record_local` mutates

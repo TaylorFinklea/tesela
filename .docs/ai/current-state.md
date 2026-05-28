@@ -12,6 +12,12 @@ Full report + per-finding triage: `phases/2026-05-28-loro-review-findings.md`.
 
 The review was worth it: [4]/[5] revealed the earlier "divergence → 2" rested on a too-lenient check. The **honest number is 3** (2 frozen #111 oplog-drift + 1 legacy heading) — strictly better to know before an irreversible cutover.
 
+### Resequencing + Phase 3 groundwork (decided 2026-05-28)
+Phase 3 (lazy-load/evict) is iOS-only with no consumer until the FFI swap, and is a big cross-cutting refactor. **Resequenced to ~Phase 6**; Phase 4 (the keystone flashing-fix proof) goes next. Landed the shared prerequisite now: a resident **block_index** (block_id → note_id, `0430616`) so block ops resolve O(1) and lazy-load is unblocked later. 88 sync tests green.
+
+### NEXT: Phase 4 — Loro updates over the relay (start fresh-context)
+Precise plan in `phases/2026-05-28-loro-cutover-spec.md` §Phase 4. Order: (1) Loro PeerID↔DeviceId stable mapping (load-bearing — two docs only merge with distinct stable peer ids; `doc.set_peer_id`), (2) engine-level two-engine convergence proof via `export_doc_update`/`import_doc_update`/`doc_version` (additive, no live-relay risk — THE flashing-fix proof at engine level), (3) relay payload switch at cutover (don't change the live `Vec<EncodedOp>` envelope while dual-write runs). This is the migration's whole point; deserves fresh context.
+
 ### Earlier in the session (still true)
 
 - Phase 0 spike GREEN (flashing fix proven at CRDT layer). Phase 1 page-property parity. Phase 2 index doc (518 notes, 448 with tags, 128 with link edges) — all on the live corpus.
