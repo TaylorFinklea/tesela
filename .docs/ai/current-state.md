@@ -1,8 +1,18 @@
 # Current State
 
-## State as of 2026-05-28 evening (latest)
+## State as of 2026-05-28 night (latest)
 
-**Phases 0–2 of the Loro cutover are DONE + verified live; an adversarial multi-agent review of all ~3,700 lines of migration code is running before Phase 3.**
+**Phases 0–2 DONE + verified live + adversarially reviewed + 7 review-bugs fixed. Honest divergence on the live 518-note corpus is 3 (all explained, all resolved at cutover). Ready for Phase 3 — the foundation is now reviewed, not assumed.**
+
+### Adversarial review (29 agents, 6 dimensions × verification) → 18 confirmed findings
+Full report + per-finding triage: `phases/2026-05-28-loro-review-findings.md`.
+- **7 fixed + tested + committed** (`c33a88d`,`c27818f`,`fad0280`,`ba2fffb`): [1/9] BlockDelete child-reparent, [2] NoteUpsert self-heal reconcile, [4] divergence check sees block-property values, [5] divergence check sees unmodeled non-bullet residue (killed a dangerous symmetric-lossy false-negative), [6] index ghost-prune, [7] index comma-collision, [8] snapshot tmp race.
+- **[3] deleted-note resurrection — won't-fix**: SqliteEngine-specific (append-only oplog slug resolution); cutover fixes it free (LoroEngine NoteDelete drops the doc). Per "don't baby the doomed engine."
+- **Backlogged (low-incidence/severity)**: [10/11] non-bullet body (1 note, `# 2026-05-17`, cutover cleanup), [12] divergence coverage, [13–18] hardening. All recorded in the findings doc.
+
+The review was worth it: [4]/[5] revealed the earlier "divergence → 2" rested on a too-lenient check. The **honest number is 3** (2 frozen #111 oplog-drift + 1 legacy heading) — strictly better to know before an irreversible cutover.
+
+### Earlier in the session (still true)
 
 - Phase 0 spike GREEN (flashing fix proven at CRDT layer). Phase 1 page-property parity. Phase 2 index doc (518 notes, 448 with tags, 128 with link edges) — all on the live corpus.
 - **Self-healing versioned index** (`902439e`): per-note docs are self-describing (content+slug+title on root meta); on boot a version-gated rebuild refreshes the index from them. No more manual cache clears on index schema changes — verified live ("rebuilt index schema 0 → 2"). This is reusable infra for every later phase.

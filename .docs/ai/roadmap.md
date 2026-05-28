@@ -17,14 +17,15 @@ Active items. Trim as completed.
 - [x] Perf: memoized note/block lookups, killed O(oplog) scans (`ab63d1c`).
 
 **Next — cutover Phases 0–7 (see spec):**
-1. [ ] **Phase 0 spike**: N-docs over relay (per-doc VV), index doc, full-content round-trip, lazy-load/evict, loro-swift multi-doc.
-2. [ ] **Phase 1**: per-note doc schema for FULL note content → divergence to 0 (parity gate).
-3. [ ] **Phase 2**: index doc (note_id→meta + graph).
-4. [ ] **Phase 3**: lazy-load + evict (bounded iOS memory).
-5. [ ] **Phase 4**: Loro updates over the relay — two engines converge on concurrent edits (flashing fix proof).
-6. [ ] **Phase 5**: LoroEngine authoritative for materialization.
-7. [ ] **Phase 6**: iOS FFI swap; verify on Roshar.
-8. [ ] **Phase 7**: flag-day cutover + delete oplog engine + DR drill.
+1. [x] **Phase 0 spike** — GREEN (`phases/2026-05-28-loro-cutover-spike-report.md`, `8373139`).
+2. [x] **Phase 1**: per-note structured content (page properties) → page-prop parity (`25fcbcb`,`74055e5`). Non-bullet body (1 legacy note) deferred — see review findings [5]/[10]/[11].
+3. [x] **Phase 2**: index doc — note_id→{title,slug,tags,links} + self-healing versioned rebuild (`c8164d7`,`1b07636`,`902439e`). Verified live: 518 notes, 448 tags, 128 link edges.
+4. [x] **Adversarial review of phases 0–2** (29 agents) → 18 findings; 7 fixed (`c33a88d`,`c27818f`,`fad0280`,`ba2fffb`), rest triaged in `phases/2026-05-28-loro-review-findings.md`. Honest divergence: 3/518, all resolved at cutover.
+5. [ ] **Phase 3**: lazy-load + evict (bounded iOS memory). NEXT.
+6. [ ] **Phase 4**: Loro updates over the relay — two engines converge on concurrent edits (the on-device flashing-fix proof).
+7. [ ] **Phase 5**: LoroEngine authoritative for materialization.
+8. [ ] **Phase 6**: iOS FFI swap; verify on Roshar.
+9. [ ] **Phase 7**: flag-day cutover + delete oplog engine + DR drill.
 
 **Patch wave through 2026-05-27 is stable.** 11 commits today closing out Phases 1, 2, 2.1, 2.2 of the sync redesign + bid surfacing + multiple UI ghosting fixes. The hand-rolled engine is in the best state it's ever been; Loro is now the right move because *the next big problem (multi-user)* is not one this engine was designed for, not because the current bugs aren't fixable.
 
