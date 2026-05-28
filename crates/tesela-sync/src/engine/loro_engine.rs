@@ -177,11 +177,7 @@ impl LoroEngine {
         }
         let note_tree = tesela_core::note_tree::NoteTree {
             frontmatter: None,
-            // Page properties not yet modeled in the Loro doc — wired in
-            // the next Phase 1 commit (capture page props into the shadow
-            // tree's note-level map). Empty here keeps render correct for
-            // bullet notes; page-property notes still diverge until then.
-            page_properties: Vec::new(),
+            page_properties: read_page_properties(doc),
             blocks,
             stamped_any: false,
         };
@@ -382,6 +378,57 @@ fn read_indent_level(tree: &LoroTree, node: TreeID) -> Option<u16> {
     let v = meta.get("indent_level")?;
     let val = v.into_value().ok()?;
     Some(val.into_i64().ok()? as u16)
+}
+
+/// Page-property storage: an ordered `LoroList` named "page_props" on
+/// the note doc, holding key, value, key, value, … (interleaved). Page
+/// properties arrive wholesale via NoteUpsert (full-content reparse),
+/// so we rewrite the whole list each time — clear + repush. Ordered so
+/// render reproduces on-disk order deterministically. (When granular
+/// per-property merge lands — the deferred multi-value work — this
+/// becomes a map/movable-list with per-key updates.)
+fn set_page_properties(
+    doc: &LoroDoc,
+    props: &[(String, String)],
+) -> SyncResult<()> {
+    let list = doc.get_list("page_props");
+    let len = list.len();
+    if len > 0 {
+        list.delete(0, len)
+            .map_err(|e| SyncError::Storage(format!("loro page_props clear: {e}")))?;
+    }
+    for (k, v) in props {
+        list.push(k.as_str())
+            .map_err(|e| SyncError::Storage(format!("loro page_props push: {e}")))?;
+        list.push(v.as_str())
+            .map_err(|e| SyncError::Storage(format!("loro page_props push: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Read the ordered page properties back out of the "page_props" list.
+fn read_page_properties(doc: &LoroDoc) -> Vec<(String, String)> {
+    let list = doc.get_list("page_props");
+    let len = list.len();
+    let mut out = Vec::with_capacity(len / 2);
+    let mut i = 0;
+    while i + 1 < len {
+        let k = list
+            .get(i)
+            .and_then(|v| v.into_value().ok())
+            .and_then(|v| v.into_string().ok())
+            .map(|s| (*s).clone());
+        let v = list
+            .get(i + 1)
+            .and_then(|v| v.into_value().ok())
+            .and_then(|v| v.into_string().ok())
+            .map(|s| (*s).clone());
+        if let (Some(k), Some(v)) = (k, v) {
+            out.push((k, v));
+        }
+        i += 2;
+    }
+    out
 }
 
 /// Seed a flat tree from `tesela_core::FlatBlock`s parsed out of a
@@ -607,13 +654,22 @@ impl LoroEngine {
                 // parse — BlockUpsert/Move/Delete ops keep the tree in
                 // sync from there. Without the skip, repeated
                 // NoteUpserts would create duplicate nodes.
+                let parsed = tesela_core::note_tree::parse_note(content);
+                // Page properties are authoritative from the full
+                // content and overwritten wholesale on every NoteUpsert
+                // (they only arrive via full-content ops, never block
+                // ops). Stored as an ordered list so render preserves
+                // their on-disk order deterministically.
+                set_page_properties(&doc, &parsed.page_properties)?;
+                // Seed blocks only on first sight; later NoteUpserts
+                // leave the tree to BlockUpsert/Move/Delete so we don't
+                // duplicate nodes.
                 let tree = doc.get_tree("blocks");
                 let already_has_blocks = tree
                     .children(TreeParentId::Root)
                     .map(|c| !c.is_empty())
                     .unwrap_or(false);
                 if !already_has_blocks {
-                    let parsed = tesela_core::note_tree::parse_note(content);
                     seed_tree_from_flatblocks(&tree, &parsed.blocks)?;
                 }
                 doc.commit();
@@ -1229,6 +1285,60 @@ mod tests {
             .await
             .unwrap();
         assert!(!path.exists(), "snapshot should be removed on NoteDelete");
+    }
+
+    #[tokio::test]
+    async fn note_upsert_renders_page_properties() {
+        // A page-property-only note (query page) must round-trip its
+        // properties through the shadow — previously rendered empty.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [0x5a; 16];
+        let content = "---\ntitle: Saved\n---\n\nquery:: kind:page\nsort:: modified desc\n";
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("saved".into()),
+                title: "Saved".into(),
+                content: content.into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        let rendered = engine.render_note(note_id).await.unwrap();
+        // render_note omits frontmatter (lives on disk, not the shadow);
+        // page properties render in order.
+        assert_eq!(rendered, "query:: kind:page\nsort:: modified desc\n");
+    }
+
+    #[tokio::test]
+    async fn note_upsert_overwrites_page_properties() {
+        // A second NoteUpsert with different props replaces the first
+        // wholesale (no stale leftovers).
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [0x5b; 16];
+
+        for content in [
+            "query:: kind:page\nsort:: modified desc\n",
+            "query:: kind:block\n",
+        ] {
+            engine
+                .record_local(OpPayload::NoteUpsert {
+                    note_id,
+                    display_alias: Some("q".into()),
+                    title: "Q".into(),
+                    content: content.into(),
+                    created_at_millis: 1,
+                })
+                .await
+                .unwrap();
+        }
+
+        let rendered = engine.render_note(note_id).await.unwrap();
+        assert_eq!(rendered, "query:: kind:block\n", "wholesale overwrite");
     }
 
     #[tokio::test]

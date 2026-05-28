@@ -262,9 +262,14 @@ impl DualEngine {
         &self.primary
     }
 
-    /// Compare one note's rendered output between primary and shadow,
-    /// after normalization. Used by the periodic divergence check and
-    /// available for ad-hoc inspection from tests / diagnostics.
+    /// Compare one note between primary and shadow by **parsed
+    /// structure**, not raw bytes (decisions.md 2026-05-28:
+    /// deterministic-not-byte-identical). Both sides go through
+    /// `note_tree::parse_note`; we compare page properties + blocks
+    /// (text + indent, in order), ignoring formatting differences a
+    /// deterministic re-serialize would introduce. The reported
+    /// `Diverge` payload still carries the normalized text forms for
+    /// human inspection.
     pub async fn compare_note(&self, note_id: [u8; 16]) -> NoteComparison {
         let shadow_render = self.shadow.render_note(note_id).await;
         let primary_body = self
@@ -275,14 +280,12 @@ impl DualEngine {
             .flatten();
         match (primary_body, shadow_render) {
             (Some(p), Some(s)) => {
-                let p_norm = normalize(&p);
-                let s_norm = normalize(&s);
-                if p_norm == s_norm {
+                if structurally_equal(&p, &s) {
                     NoteComparison::Match
                 } else {
                     NoteComparison::Diverge {
-                        primary: p_norm,
-                        shadow: s_norm,
+                        primary: normalize(&p),
+                        shadow: normalize(&s),
                     }
                 }
             }
@@ -386,6 +389,56 @@ impl DualEngine {
 /// - Drop blank lines (SqliteEngine preserves user-typed blank lines
 ///   between blocks; LoroEngine's render is dense).
 /// - Trim trailing whitespace per line.
+/// Structural equality between two note bodies: parse both with
+/// `note_tree::parse_note` and compare page properties + block
+/// (text, indent) sequences. Ignores deterministic-reserialize
+/// formatting (blank lines, property order vs storage) and bid
+/// representation — the semantic parity bar for the cutover.
+///
+/// Block `text` is compared after stripping any folded block-property
+/// continuation lines (`key:: value`) so the comparison focuses on
+/// block content; property-level fidelity is covered by
+/// `page_properties` + the round-trip tests, and granular block-prop
+/// merge is deferred (decisions.md 2026-05-28).
+fn structurally_equal(primary: &str, shadow: &str) -> bool {
+    let p = tesela_core::note_tree::parse_note(primary);
+    let s = tesela_core::note_tree::parse_note(shadow);
+    if p.page_properties != s.page_properties {
+        return false;
+    }
+    if p.blocks.len() != s.blocks.len() {
+        return false;
+    }
+    p.blocks.iter().zip(s.blocks.iter()).all(|(a, b)| {
+        a.indent == b.indent && block_content(&a.text) == block_content(&b.text)
+    })
+}
+
+/// A block's content lines minus any folded `key:: value` block-property
+/// continuation lines (those merge granularly later; not part of the
+/// structural block-content comparison now).
+fn block_content(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| {
+            let t = l.trim();
+            // Drop `key:: value` block-property lines.
+            match t.find("::") {
+                Some(i) => {
+                    let k = &t[..i];
+                    k.is_empty()
+                        || !k.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+                }
+                None => true,
+            }
+        })
+        .map(|l| l.trim_end().to_string())
+        .collect()
+}
+
+/// Normalize a rendered note body for **human-readable diff display**
+/// in the divergence report (the match/diverge decision is made by
+/// `structurally_equal`, not this). Strips `<!-- bid -->` markers,
+/// drops blank + block-property lines, trims trailing whitespace.
 pub fn normalize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for line in s.lines() {
