@@ -1,6 +1,6 @@
 # Current State
 
-*Last updated: 2026-05-27 night. Pre-flight pass landed: shadow now prepopulates from oplog at boot (~2118 ops), renders via the same `serialize_note` SqliteEngine writes, NoteUpsert seeds the tree from parsed content. Soak shows 13 of 23 touched notes match, 7 remaining diverge are legacy data (pre-engine direct-file writes that left no BlockDelete ops); new edits add zero divergence.*
+*Last updated: 2026-05-28 early hours. LoroEngine now persists per-note snapshots to `<mosaic>/.tesela/loro/` + loads them on boot (28ms vs 3s before). Shadow expanded from 23 oplog-tracked notes to 517 full-corpus coverage via boot-time disk seed. 498 of 517 match (96%); 16 diverge for structural reasons (non-bullet `query::` content + legacy stale blocks), 3 primary-missing. New edits hold the baseline; persistence survives restart cleanly.*
 
 ## End-to-end verification (this session)
 
@@ -10,7 +10,14 @@
 - **Live soak on Roshar (real iPhone, paired)**: 10+ minutes of editing — Taylor added/deleted blocks on the today's daily note. Divergence stayed at the `7 of 23` baseline the whole time. Live blocks (`Dh`, `Ok`, `Nice`, `Cool`, `Fudge`) tracked in lockstep between primary and shadow. iOS → relay → DualEngine.apply_changes → LoroEngine.apply_payload fan-out works end-to-end on a physical device.
 - **iOS UX bug surfaced (not a sync issue)**: yesterday-block delete on iOS occasionally re-shows the block briefly. Optimistic-UI vs stale-snapshot race, no divergence impact. Logged to roadmap backlog under `iOS bugs`.
 
-## Latest commits (2026-05-27)
+## Latest commits (2026-05-28 early hours)
+
+- `ebf9175` feat(sync): seed LoroEngine shadow from disk on boot for full-corpus coverage
+- `3b29ee3` feat(sync): persist LoroEngine shadow to disk; skip oplog replay when snapshots exist
+- `cde00bf` docs(roadmap): log iOS yesterday-delete flicker bug to backlog
+- `fecde7b` docs(ai): record physical-device soak result (Roshar)
+
+## Earlier (2026-05-27)
 
 - `70feb47` feat(sync): pre-flight LoroEngine for soak — prepopulate, NoteUpsert seeding, canonical render
 - `cb278e5` feat(sync): LoroEngine::apply_changes mirrors peer ops into the shadow
