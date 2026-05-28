@@ -40,8 +40,9 @@ use crate::oplog::op::{ContentHash, EncodedOp, OpPayload};
 use crate::oplog::parked::ParkReason;
 use crate::wire::envelope::SyncEnvelope;
 use async_trait::async_trait;
-use loro::{LoroDoc, LoroTree, TreeID, TreeParentId};
+use loro::{ExportMode, LoroDoc, LoroTree, TreeID, TreeParentId};
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -78,6 +79,12 @@ struct Inner {
     /// The `DualEngine` wrapper enforces this by injecting one `Hlc` at
     /// construction.
     hlc: Arc<Hlc>,
+    /// Optional directory for per-note snapshots
+    /// (`<dir>/<note-id-hex>.bin`). When `Some`, every successful
+    /// `apply_payload` writes a fresh snapshot so the shadow survives
+    /// process restart without re-replaying the oplog. When `None`,
+    /// the shadow is in-memory only.
+    snapshot_dir: Option<PathBuf>,
 }
 
 impl LoroEngine {
@@ -90,8 +97,42 @@ impl LoroEngine {
                 docs: RwLock::new(HashMap::new()),
                 device,
                 hlc,
+                snapshot_dir: None,
             }),
         }
+    }
+
+    /// Construct a Loro engine that persists per-note snapshots under
+    /// `snapshot_dir`. On construction, any existing snapshot files
+    /// (`<dir>/<note-id-hex>.bin`) are loaded into memory so the shadow
+    /// starts populated. Subsequent `apply_payload` calls write a fresh
+    /// snapshot for the touched note synchronously.
+    ///
+    /// Falling back to oplog replay (`DualEngine::prepopulate_shadow_from_oplog`)
+    /// is still valuable for notes whose snapshot is missing or corrupt
+    /// — combine the two for first-boot coverage.
+    pub async fn with_snapshot_dir(
+        device: DeviceId,
+        hlc: Arc<Hlc>,
+        snapshot_dir: PathBuf,
+    ) -> SyncResult<Self> {
+        tokio::fs::create_dir_all(&snapshot_dir)
+            .await
+            .map_err(|e| {
+                SyncError::Storage(format!(
+                    "create loro snapshot dir {}: {e}",
+                    snapshot_dir.display()
+                ))
+            })?;
+        let docs = load_snapshots_from_dir(&snapshot_dir).await?;
+        Ok(Self {
+            inner: Arc::new(Inner {
+                docs: RwLock::new(docs),
+                device,
+                hlc,
+                snapshot_dir: Some(snapshot_dir),
+            }),
+        })
     }
 
     /// Number of distinct notes the engine has seen. Test/diagnostic
@@ -146,17 +187,142 @@ impl LoroEngine {
     /// has to be a scan. For the scaffold it's fine — typical mosaics
     /// have a few hundred notes. Replace with an index once profiling
     /// flags it.
-    async fn find_doc_for_block(&self, block_id: &[u8; 16]) -> Option<(LoroDoc, TreeID)> {
+    ///
+    /// Returns the note_id alongside the doc+node so the outer
+    /// `apply_payload` wrapper knows which snapshot to refresh.
+    async fn find_doc_for_block(
+        &self,
+        block_id: &[u8; 16],
+    ) -> Option<([u8; 16], LoroDoc, TreeID)> {
         let block_hex = hex_id(block_id);
         let docs = self.inner.docs.read().await;
-        for doc in docs.values() {
+        for (note_id, doc) in docs.iter() {
             let tree = doc.get_tree("blocks");
             if let Some(node) = find_node_by_block_id(&tree, &block_hex) {
-                return Some((doc.clone(), node));
+                return Some((*note_id, doc.clone(), node));
             }
         }
         None
     }
+
+    /// Write the per-note snapshot to disk, or delete the snapshot
+    /// file if the note's doc has been removed (NoteDelete). Best-effort
+    /// — failures warn but don't propagate.
+    async fn save_snapshot(&self, dir: &Path, note_id: [u8; 16]) {
+        let path = dir.join(format!("{}.bin", hex_id(&note_id)));
+        let docs = self.inner.docs.read().await;
+        match docs.get(&note_id) {
+            Some(doc) => {
+                let bytes = match doc.export(ExportMode::Snapshot) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(
+                            "tesela-sync/loro: snapshot export for {}: {e}",
+                            hex_id(&note_id)
+                        );
+                        return;
+                    }
+                };
+                let tmp = path.with_extension("bin.tmp");
+                if let Err(e) = tokio::fs::write(&tmp, &bytes).await {
+                    tracing::warn!(
+                        "tesela-sync/loro: snapshot write {}: {e}",
+                        tmp.display()
+                    );
+                    return;
+                }
+                if let Err(e) = tokio::fs::rename(&tmp, &path).await {
+                    tracing::warn!(
+                        "tesela-sync/loro: snapshot rename {}: {e}",
+                        path.display()
+                    );
+                }
+            }
+            None => {
+                // Doc gone (NoteDelete). Remove the snapshot if present.
+                if let Err(e) = tokio::fs::remove_file(&path).await {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        tracing::warn!(
+                            "tesela-sync/loro: snapshot delete {}: {e}",
+                            path.display()
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Scan a snapshot directory for `<note-id-hex>.bin` files and import
+/// each into a `LoroDoc`. Used by `LoroEngine::with_snapshot_dir` at
+/// boot so the shadow starts with the state it had at shutdown,
+/// without re-replaying the entire oplog.
+///
+/// Files with malformed names or corrupt snapshot bytes are warned
+/// about and skipped — the caller's prepopulate-from-oplog path covers
+/// them.
+async fn load_snapshots_from_dir(
+    dir: &Path,
+) -> SyncResult<HashMap<[u8; 16], LoroDoc>> {
+    let mut docs: HashMap<[u8; 16], LoroDoc> = HashMap::new();
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(docs),
+        Err(e) => {
+            return Err(SyncError::Storage(format!(
+                "read snapshot dir {}: {e}",
+                dir.display()
+            )))
+        }
+    };
+    while let Some(entry) = entries.next_entry().await.map_err(|e| {
+        SyncError::Storage(format!("read_dir {}: {e}", dir.display()))
+    })? {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("bin") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        let Some(note_id) = parse_note_id_from_hex(stem) else {
+            tracing::warn!(
+                "tesela-sync/loro: snapshot filename not a hex note id: {}",
+                path.display()
+            );
+            continue;
+        };
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(
+                    "tesela-sync/loro: read snapshot {}: {e}",
+                    path.display()
+                );
+                continue;
+            }
+        };
+        let doc = LoroDoc::new();
+        if let Err(e) = doc.import(&bytes) {
+            tracing::warn!(
+                "tesela-sync/loro: import snapshot {}: {e}",
+                path.display()
+            );
+            continue;
+        }
+        docs.insert(note_id, doc);
+    }
+    Ok(docs)
+}
+
+fn parse_note_id_from_hex(s: &str) -> Option<[u8; 16]> {
+    let bytes = hex::decode(s).ok()?;
+    if bytes.len() != 16 {
+        return None;
+    }
+    let mut arr = [0u8; 16];
+    arr.copy_from_slice(&bytes);
+    Some(arr)
 }
 
 /// Walk a tree node + its descendants, appending a `FlatBlock` for each
@@ -404,8 +570,24 @@ impl LoroEngine {
     /// Unknown block ids on Move/Delete are silent no-ops — SqliteEngine
     /// carries canonical state and the shadow catches up when the next
     /// BlockUpsert reseeds the block.
+    ///
+    /// On successful apply, writes a per-note snapshot to disk if the
+    /// engine was constructed with `with_snapshot_dir` — so the shadow
+    /// survives process restart without re-replaying the oplog.
     pub async fn apply_payload(&self, payload: &OpPayload) -> SyncResult<()> {
-        match payload {
+        let touched_note = self.apply_payload_inner(payload).await?;
+        if let (Some(dir), Some(note_id)) = (self.inner.snapshot_dir.as_ref(), touched_note) {
+            self.save_snapshot(dir, note_id).await;
+        }
+        Ok(())
+    }
+
+    /// Inner per-payload apply that returns the affected note_id (so
+    /// the public wrapper knows which snapshot to refresh). Returns
+    /// `None` for ops that don't touch a single note (AttachmentUpsert,
+    /// no-op cases) — those don't trigger a snapshot write.
+    async fn apply_payload_inner(&self, payload: &OpPayload) -> SyncResult<Option<[u8; 16]>> {
+        let touched = match payload {
             OpPayload::NoteUpsert { note_id, content, .. } => {
                 let doc = self.doc_for_note_mut(*note_id).await;
                 // Save the convenience content snapshot on root meta
@@ -436,6 +618,7 @@ impl LoroEngine {
                     seed_tree_from_flatblocks(&tree, &parsed.blocks)?;
                 }
                 doc.commit();
+                Some(*note_id)
             }
             OpPayload::BlockUpsert {
                 block_id,
@@ -479,13 +662,15 @@ impl LoroEngine {
                 meta.insert("indent_level", *indent_level as i64)
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 doc.commit();
+                Some(*note_id)
             }
             OpPayload::BlockMove {
                 block_id,
                 new_parent,
                 new_order_key,
             } => {
-                let Some((doc, node)) = self.find_doc_for_block(block_id).await else {
+                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await
+                else {
                     // We never saw the prior BlockUpsert (e.g. the
                     // engine started after the block was created).
                     // SqliteEngine handles it; LoroEngine catches up
@@ -494,7 +679,7 @@ impl LoroEngine {
                         "tesela-sync/loro: BlockMove for unknown block {}",
                         hex_id(block_id)
                     );
-                    return Ok(());
+                    return Ok(None);
                 };
                 let tree = doc.get_tree("blocks");
                 let parent_id = match new_parent {
@@ -511,27 +696,33 @@ impl LoroEngine {
                 meta.insert("order_key", new_order_key.as_str())
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 doc.commit();
+                Some(note_id)
             }
             OpPayload::BlockDelete { block_id } => {
-                let Some((doc, node)) = self.find_doc_for_block(block_id).await else {
+                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await
+                else {
                     tracing::debug!(
                         "tesela-sync/loro: BlockDelete for unknown block {}",
                         hex_id(block_id)
                     );
-                    return Ok(());
+                    return Ok(None);
                 };
                 let tree = doc.get_tree("blocks");
                 tree.delete(node)
                     .map_err(|e| SyncError::Storage(format!("loro tree delete: {e}")))?;
                 doc.commit();
+                Some(note_id)
             }
             OpPayload::NoteDelete { note_id, .. } => {
                 // Drop the per-note doc entirely. SqliteEngine removes
                 // the on-disk file in its materialize step; the shadow
                 // needs to forget the doc so render_note returns None
                 // and the divergence check matches PrimaryMissing.
+                // The outer wrapper sees `save_snapshot(note_id)` find
+                // the doc missing and removes the .bin file too.
                 let mut docs = self.inner.docs.write().await;
                 docs.remove(note_id);
+                Some(*note_id)
             }
             OpPayload::AttachmentUpsert { .. } | OpPayload::AttachmentDelete { .. } => {
                 // Attachments don't affect the rendered markdown body
@@ -540,10 +731,11 @@ impl LoroEngine {
                 // markdown, so no shadow state change is needed. Kept
                 // as an explicit arm rather than a wildcard so future
                 // op types are caught by the compiler.
+                None
             }
-        }
+        };
 
-        Ok(())
+        Ok(touched)
     }
 }
 
@@ -806,6 +998,81 @@ mod tests {
             rendered,
             "- after <!-- bid:51515151-5151-5151-5151-515151515151 -->\n"
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_round_trip_survives_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro");
+
+        // First engine — write a block + verify snapshot file lands.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine =
+            LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+                .await
+                .unwrap();
+        let note_id = [0xee; 16];
+        let block = [0xff; 16];
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: block,
+                note_id,
+                parent_block_id: None,
+                order_key: "a0".into(),
+                indent_level: 0,
+                text: "persisted".into(),
+            })
+            .await
+            .unwrap();
+        drop(engine);
+
+        // Second engine — points at the same dir, loads snapshot,
+        // render should match without replaying any oplog ops.
+        let hlc2 = Arc::new(Hlc::new(test_device()));
+        let reloaded =
+            LoroEngine::with_snapshot_dir(test_device(), hlc2, dir.clone())
+                .await
+                .unwrap();
+        assert_eq!(reloaded.note_count().await, 1);
+        let rendered = reloaded.render_note(note_id).await.unwrap();
+        assert_eq!(
+            rendered,
+            "- persisted <!-- bid:ffffffff-ffff-ffff-ffff-ffffffffffff -->\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_deleted_on_note_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro");
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine =
+            LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+                .await
+                .unwrap();
+        let note_id = [0xdd; 16];
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("doomed".into()),
+                title: "Doomed".into(),
+                content: "---\ntitle: Doomed\n---\n- bye\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let path = dir.join(format!("{}.bin", hex::encode(note_id)));
+        assert!(path.exists(), "snapshot should land for new note");
+
+        engine
+            .record_local(OpPayload::NoteDelete {
+                note_id,
+                display_alias: Some("doomed".into()),
+            })
+            .await
+            .unwrap();
+        assert!(!path.exists(), "snapshot should be removed on NoteDelete");
     }
 
     #[tokio::test]

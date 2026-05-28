@@ -107,15 +107,45 @@ impl DualEngine {
         Self { primary, shadow }
     }
 
+    /// Build a `DualEngine` whose shadow persists per-note snapshots
+    /// under `snapshot_dir`. On construction, existing snapshots are
+    /// loaded into the shadow so it survives process restart without
+    /// re-replaying the entire oplog. For notes whose snapshot is
+    /// missing, the caller should still invoke
+    /// `prepopulate_shadow_from_oplog()` once — that path is idempotent
+    /// (existing tree nodes aren't duplicated when NoteUpsert re-fires
+    /// because the seed branch checks `already_has_blocks`).
+    pub async fn from_primary_with_snapshot_dir(
+        primary: SqliteEngine,
+        snapshot_dir: std::path::PathBuf,
+    ) -> crate::error::SyncResult<Self> {
+        let device = primary.device();
+        let shadow_hlc = Arc::new(Hlc::new(device));
+        let shadow =
+            LoroEngine::with_snapshot_dir(device, shadow_hlc, snapshot_dir).await?;
+        Ok(Self { primary, shadow })
+    }
+
     /// Replay the primary's full oplog through the shadow. Used at
     /// startup so the divergence check covers all existing notes from
     /// the first tick, not just notes touched since boot.
     ///
-    /// Returns the number of payloads replayed (for the startup log
-    /// line). Errors out if the oplog read fails; individual payload
-    /// apply errors are logged and skipped (the primary remains
-    /// authoritative).
+    /// If the shadow was loaded with snapshot persistence and already
+    /// has notes (i.e. snapshots survived the previous shutdown),
+    /// returns 0 immediately — the snapshots ARE the canonical state.
+    /// Force a replay by clearing `<mosaic>/.tesela/loro/` before boot.
+    ///
+    /// Returns the number of payloads replayed. Errors out if the
+    /// oplog read fails; individual payload apply errors are logged
+    /// and skipped.
     pub async fn prepopulate_shadow_from_oplog(&self) -> SyncResult<usize> {
+        if self.shadow.note_count().await > 0 {
+            tracing::info!(
+                "tesela-sync/dual-write: shadow loaded {} notes from snapshots; skipping oplog replay",
+                self.shadow.note_count().await
+            );
+            return Ok(0);
+        }
         let payloads = self.primary.iter_oplog_payloads().await?;
         let total = payloads.len();
         let mut skipped = 0usize;

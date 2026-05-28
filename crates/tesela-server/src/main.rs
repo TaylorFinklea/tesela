@@ -264,8 +264,15 @@ async fn main() -> Result<()> {
                 "tesela-sync: TESELA_LORO_DUAL_WRITE=1 — wrapping SqliteEngine \
                  in DualEngine; LoroEngine runs as shadow"
             );
-            let dual =
-                tesela_sync::engine::dual_engine::DualEngine::from_primary(primary);
+            // Shadow snapshots live at `<mosaic>/.tesela/loro/`. Loaded
+            // at construction; per-note writes after every apply.
+            let snapshot_dir = mosaic.join(".tesela").join("loro");
+            let dual = tesela_sync::engine::dual_engine::DualEngine::from_primary_with_snapshot_dir(
+                primary,
+                snapshot_dir,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("open dual engine: {e}"))?;
             match dual.prepopulate_shadow_from_oplog().await {
                 Ok(n) => info!(
                     "tesela-sync: prepopulated LoroEngine shadow with {n} oplog payloads"
