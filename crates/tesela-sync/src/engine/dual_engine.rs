@@ -126,6 +126,85 @@ impl DualEngine {
         Ok(Self { primary, shadow })
     }
 
+    /// Walk the mosaic's `notes/` directory and seed the shadow with
+    /// every note file that isn't already tracked. Catches notes that
+    /// were created via the pre-Phase-1 `FsNoteStore.write_note` path
+    /// and never made it into the oplog. After this runs, the
+    /// divergence check has coverage over the entire corpus, not just
+    /// notes touched by record_local since the engine became
+    /// authoritative.
+    ///
+    /// Returns the number of NEW notes added to the shadow. Idempotent
+    /// — re-running skips notes already in the shadow. Each new note's
+    /// snapshot lands on disk so the next boot loads from snapshot
+    /// without re-scanning.
+    pub async fn seed_shadow_from_disk(
+        &self,
+        notes_dir: &std::path::Path,
+    ) -> SyncResult<usize> {
+        let mut entries = match tokio::fs::read_dir(notes_dir).await {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => {
+                return Err(crate::error::SyncError::Storage(format!(
+                    "read notes dir {}: {e}",
+                    notes_dir.display()
+                )))
+            }
+        };
+        let mut added = 0usize;
+        let known_ids: std::collections::HashSet<[u8; 16]> =
+            self.shadow.note_ids().await.into_iter().collect();
+        while let Some(entry) = entries.next_entry().await.map_err(|e| {
+            crate::error::SyncError::Storage(format!(
+                "read_dir {}: {e}",
+                notes_dir.display()
+            ))
+        })? {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let hash = blake3::hash(stem.as_bytes());
+            let mut note_id = [0u8; 16];
+            note_id.copy_from_slice(&hash.as_bytes()[..16]);
+            if known_ids.contains(&note_id) {
+                continue;
+            }
+            let content = match tokio::fs::read_to_string(&path).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(
+                        "tesela-sync/dual-write: seed_from_disk read {}: {e}",
+                        path.display()
+                    );
+                    continue;
+                }
+            };
+            // Synthesize a NoteUpsert and apply it through the shadow's
+            // normal seed path. apply_payload handles snapshot write.
+            let payload = OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some(stem.to_string()),
+                title: stem.to_string(),
+                content,
+                created_at_millis: 0,
+            };
+            if let Err(e) = self.shadow.apply_payload(&payload).await {
+                tracing::warn!(
+                    "tesela-sync/dual-write: seed_from_disk apply {}: {e}",
+                    stem
+                );
+                continue;
+            }
+            added += 1;
+        }
+        Ok(added)
+    }
+
     /// Replay the primary's full oplog through the shadow. Used at
     /// startup so the divergence check covers all existing notes from
     /// the first tick, not just notes touched since boot.

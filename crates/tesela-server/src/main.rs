@@ -281,6 +281,19 @@ async fn main() -> Result<()> {
                     "tesela-sync: prepopulate failed ({e}); shadow starts empty"
                 ),
             }
+            // Seed any disk note that didn't come through the oplog
+            // (pre-Phase-1 FsNoteStore writes). Makes the divergence
+            // check cover the full corpus, not just oplog-tracked notes.
+            let notes_dir = mosaic.join("notes");
+            match dual.seed_shadow_from_disk(&notes_dir).await {
+                Ok(0) => {}
+                Ok(n) => info!(
+                    "tesela-sync: seeded LoroEngine shadow with {n} additional notes from disk"
+                ),
+                Err(e) => tracing::warn!(
+                    "tesela-sync: disk seed failed ({e}); shadow coverage limited to oplog-tracked notes"
+                ),
+            }
             dual.spawn_divergence_check();
             Arc::new(dual)
         } else {
