@@ -366,3 +366,31 @@ REACHABILITY CAVEAT lowering severity: no current server write path produces dis
 
 ---
 
+
+---
+
+# TRIAGE / DISPOSITION (2026-05-28, after fixes)
+
+**Fixed + tested + committed (7):**
+- [1]/[9] BlockDelete reparents direct children to indent 0 — `c33a88d`
+- [2] NoteUpsert reconciles a drifted block tree (self-heal) — `c27818f`
+- [4] divergence check compares full block text (no longer blind to block-property values) — `fad0280`
+- [5] divergence check compares unmodeled non-bullet residue (no symmetric-lossy false-negative) — `ba2fffb`
+- [6] index rebuild prunes ghost entries — `fad0280`
+- [7] index tags/links newline-joined (comma collision) — `fad0280`
+- [8] snapshot unique temp filename (concurrent-write race) — `fad0280`
+
+**Won't-fix / resolved-by-cutover:**
+- [3] deleted-note resurrection — real but SPECIFIC to SqliteEngine's append-only-oplog slug resolution. After cutover LoroEngine's NoteDelete drops the doc and a late block op no-ops (find_doc_for_block→None), so cutover fixes it for free. Per "don't baby the doomed engine" (memory feedback-tesela-not-daily-driver-until-migrated), not patching the engine being deleted. If cutover slips, revisit.
+
+**Deferred to backlog (low-incidence / low-severity, durably recorded here):**
+- [10]/[11] non-bullet body content dropped by note_tree (authoritative). Same root as [5]. Measured incidence: exactly 1 of 518 notes (`2026-05-17.md` `# 2026-05-17`). NoteUpsert materialize writes raw content (heading preserved on disk); block ops don't target bulletless notes, so disk loss is essentially non-occurring. Not worth a CRDT raw-segment content model; that 1 note is cutover cleanup. The honest divergence check ([5]) now surfaces it rather than hiding it.
+- [12] divergence iterates shadow note_ids only — disk-seed covers all 518 at boot, so coverage is complete in practice; a note added to disk out-of-band wouldn't be checked until reseed. Minor.
+- [13] snapshot export not ordered with mutation (low; single-writer in practice).
+- [14] NoteDelete orphan index entry on crash between snapshot-delete and index-persist (low; self-heal rebuild + ghost-prune [6] now clean it on next boot).
+- [15] disk-seeded notes get slug as title; .bin.tmp leftovers (partly addressed: unique_tmp now cleans up on failure; title-from-slug is cosmetic, real title comes from frontmatter via rebuild).
+- [16] blank line between page properties swallowed (minor churn).
+- [17] empty `key::` → `key:: ` (minor churn).
+- [18] PrimaryMissing logged benign (observability; the 3 primary-missing are explained slug-less iOS test artifacts).
+
+**True divergence after fixes: 3 of 518** (2 frozen #111 oplog-drift + 1 legacy heading), all resolved at cutover. 0 unexplained.
