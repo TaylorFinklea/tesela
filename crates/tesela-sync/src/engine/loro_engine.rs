@@ -675,6 +675,20 @@ fn flatblock_from_node(
     })
 }
 
+/// Read a string meta field off a tree node, or None if absent/empty.
+fn read_meta_str(tree: &LoroTree, node: TreeID, key: &str) -> Option<String> {
+    let meta = tree.get_meta(node).ok()?;
+    let v = meta.get(key)?;
+    let val = v.into_value().ok()?;
+    let s = val.into_string().ok()?;
+    let s = (*s).clone();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 /// Read a node's `indent_level` meta. Used by BlockMove to recompute a
 /// moved block's indent as parent.indent + 1, mirroring SqliteEngine.
 fn read_indent_level(tree: &LoroTree, node: TreeID) -> Option<u16> {
@@ -761,6 +775,14 @@ fn seed_tree_from_flatblocks(
             .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
         meta.insert("indent_level", block.indent as i64)
             .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
+        meta.insert(
+            "parent",
+            block
+                .parent
+                .map(|p| hex::encode(p.as_bytes()))
+                .unwrap_or_default(),
+        )
+        .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
     }
     Ok(())
 }
@@ -1038,19 +1060,22 @@ impl LoroEngine {
             OpPayload::BlockUpsert {
                 block_id,
                 note_id,
-                parent_block_id: _,
+                parent_block_id,
                 order_key: _,
                 indent_level,
                 text,
             } => {
                 // Flat model: every block is a direct child of root in
                 // creation order. `indent_level` (from the op) carries
-                // the visual hierarchy; `parent_block_id`/`order_key`
-                // are ignored for placement because SqliteEngine ignores
-                // them too — it appends new blocks at the end of the
-                // document and renders by document-order + indent. New
-                // blocks `create` under root (append); existing blocks
-                // update text/indent in place without moving.
+                // the visual hierarchy; `order_key` is ignored for
+                // placement because SqliteEngine ignores it too — it
+                // appends new blocks at the end of the document and
+                // renders by document-order + indent. New blocks
+                // `create` under root (append); existing blocks update
+                // text/indent in place without moving. `parent_block_id`
+                // is recorded in meta (NOT used for tree placement) so
+                // BlockDelete can reparent a deleted block's direct
+                // children, matching SqliteEngine (review finding [1]).
                 let doc = self.doc_for_note_mut(*note_id).await;
                 let tree = doc.get_tree("blocks");
                 let block_hex = hex_id(block_id);
@@ -1069,6 +1094,11 @@ impl LoroEngine {
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 meta.insert("indent_level", *indent_level as i64)
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
+                meta.insert(
+                    "parent",
+                    parent_block_id.map(|p| hex_id(&p)).unwrap_or_default(),
+                )
+                .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 doc.commit();
                 Some(*note_id)
             }
@@ -1108,6 +1138,11 @@ impl LoroEngine {
                     .map_err(|e| SyncError::Storage(format!("loro get_meta: {e}")))?;
                 meta.insert("indent_level", new_indent as i64)
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
+                meta.insert(
+                    "parent",
+                    new_parent.map(|p| hex_id(&p)).unwrap_or_default(),
+                )
+                .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 doc.commit();
                 Some(note_id)
             }
@@ -1121,6 +1156,24 @@ impl LoroEngine {
                     return Ok(None);
                 };
                 let tree = doc.get_tree("blocks");
+                // Match SqliteEngine::apply_block_delete: reparent the
+                // deleted block's DIRECT children to top level
+                // (parent=none, indent=0) before removing it. Grandchildren
+                // keep their indent. Without this the flat-model children
+                // keep their deeper indent and the shadow diverges from
+                // disk on every parent-with-children delete (finding [1]).
+                let deleted_hex = hex_id(block_id);
+                for sib in tree.nodes() {
+                    if matches!(tree.is_node_deleted(&sib), Ok(true)) {
+                        continue;
+                    }
+                    if read_meta_str(&tree, sib, "parent").as_deref() == Some(&deleted_hex) {
+                        if let Ok(m) = tree.get_meta(sib) {
+                            let _ = m.insert("indent_level", 0i64);
+                            let _ = m.insert("parent", "");
+                        }
+                    }
+                }
                 tree.delete(node)
                     .map_err(|e| SyncError::Storage(format!("loro tree delete: {e}")))?;
                 doc.commit();
@@ -1719,6 +1772,54 @@ mod tests {
         let entries = engine.index_entries().await;
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].title, "Beta");
+    }
+
+    #[tokio::test]
+    async fn block_delete_reparents_direct_children_to_indent_0() {
+        // Review finding [1]/[9]: deleting a parent must flatten its
+        // DIRECT children to indent 0 (matching SqliteEngine), while
+        // grandchildren keep their indent.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [0x44; 16];
+        let a = [0xa1; 16];
+        let b = [0xb1; 16]; // direct child of a (indent 1)
+        let c = [0xc1; 16]; // child of b (indent 2, grandchild of a)
+
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: a, note_id, parent_block_id: None,
+                order_key: "a".into(), indent_level: 0, text: "A".into(),
+            })
+            .await
+            .unwrap();
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: b, note_id, parent_block_id: Some(a),
+                order_key: "b".into(), indent_level: 1, text: "B".into(),
+            })
+            .await
+            .unwrap();
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: c, note_id, parent_block_id: Some(b),
+                order_key: "c".into(), indent_level: 2, text: "C".into(),
+            })
+            .await
+            .unwrap();
+        // Delete A (the parent with a direct child B).
+        engine
+            .record_local(OpPayload::BlockDelete { block_id: a })
+            .await
+            .unwrap();
+
+        let rendered = engine.render_note(note_id).await.unwrap();
+        // B (direct child) flattened to indent 0; C (grandchild) keeps
+        // indent 2 — exactly SqliteEngine's apply_block_delete behavior.
+        assert_eq!(
+            rendered,
+            "- B <!-- bid:b1b1b1b1-b1b1-b1b1-b1b1-b1b1b1b1b1b1 -->\n    - C <!-- bid:c1c1c1c1-c1c1-c1c1-c1c1-c1c1c1c1c1c1 -->\n"
+        );
     }
 
     #[tokio::test]
