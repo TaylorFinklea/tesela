@@ -400,7 +400,7 @@ impl DualEngine {
 /// block content; property-level fidelity is covered by
 /// `page_properties` + the round-trip tests, and granular block-prop
 /// merge is deferred (decisions.md 2026-05-28).
-fn structurally_equal(primary: &str, shadow: &str) -> bool {
+pub fn structurally_equal(primary: &str, shadow: &str) -> bool {
     let p = tesela_core::note_tree::parse_note(primary);
     let s = tesela_core::note_tree::parse_note(shadow);
     if p.page_properties != s.page_properties {

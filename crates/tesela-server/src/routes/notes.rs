@@ -135,7 +135,13 @@ pub async fn get_loro_note(
     let primary_norm = primary
         .as_ref()
         .map(|s| tesela_sync::engine::dual_engine::normalize(s));
-    let matches = matches!((&shadow_norm, &primary_norm), (Some(a), Some(b)) if a == b);
+    // Match by parsed STRUCTURE, not normalized bytes (decisions.md
+    // 2026-05-28: deterministic-not-byte-identical). Normalized text is
+    // kept only for human-readable display.
+    let matches = matches!(
+        (&shadow, &primary),
+        (Some(sh), Some(pr)) if tesela_sync::engine::dual_engine::structurally_equal(pr, sh)
+    );
     Ok(Json(LoroNoteBody {
         slug,
         note_id: hex::encode(note_id),
@@ -291,8 +297,10 @@ pub async fn get_loro_divergence(
         let primary_norm = primary
             .as_ref()
             .map(|s| tesela_sync::engine::dual_engine::normalize(s));
-        let (status, include_bodies) = match (&shadow_norm, &primary_norm) {
-            (Some(a), Some(b)) if a == b => {
+        let (status, include_bodies) = match (&shadow, &primary) {
+            (Some(sh), Some(pr))
+                if tesela_sync::engine::dual_engine::structurally_equal(pr, sh) =>
+            {
                 report.matched += 1;
                 ("match", false)
             }
