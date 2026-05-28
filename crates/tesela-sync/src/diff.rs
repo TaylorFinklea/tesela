@@ -195,6 +195,7 @@ mod tests {
         let new = parse("- One\n- Two\n");
         let old = NoteTree {
             frontmatter: None,
+            page_properties: vec![],
             blocks: vec![],
             stamped_any: false,
         };
@@ -266,6 +267,7 @@ mod tests {
         let b_id = initial.blocks[1].id;
         let new = NoteTree {
             frontmatter: None,
+            page_properties: vec![],
             blocks: vec![
                 FlatBlock {
                     id: a_id,
@@ -311,6 +313,7 @@ mod tests {
         let x_id = Uuid::now_v7();
         let new = NoteTree {
             frontmatter: None,
+            page_properties: vec![],
             blocks: vec![
                 FlatBlock {
                     id: a_id,

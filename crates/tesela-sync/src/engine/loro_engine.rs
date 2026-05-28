@@ -177,6 +177,11 @@ impl LoroEngine {
         }
         let note_tree = tesela_core::note_tree::NoteTree {
             frontmatter: None,
+            // Page properties not yet modeled in the Loro doc — wired in
+            // the next Phase 1 commit (capture page props into the shadow
+            // tree's note-level map). Empty here keeps render correct for
+            // bullet notes; page-property notes still diverge until then.
+            page_properties: Vec::new(),
             blocks,
             stamped_any: false,
         };

@@ -46,6 +46,14 @@ pub struct NoteTree {
     /// trailing newline preserved. `None` when the file has no
     /// frontmatter block.
     pub frontmatter: Option<String>,
+    /// Page-level properties — `key:: value` lines at the top of the
+    /// body, before any bullet (Logseq page properties). Ordered for
+    /// deterministic serialization. These are the `query::` / `type::` /
+    /// `sort::` lines that the bullet-only parser previously DROPPED
+    /// (silent data loss on any block op to such a note). Block-level
+    /// properties (indented `key:: value` under a bullet) are NOT here —
+    /// those still fold into the owning block's `text`.
+    pub page_properties: Vec<(String, String)>,
     /// The blocks in document order.
     pub blocks: Vec<FlatBlock>,
     /// Whether parsing minted at least one new block id. Producers can
@@ -84,12 +92,106 @@ pub const BID_SUFFIX: &str = " -->";
 /// note that hits this.
 pub fn parse_note(content: &str) -> NoteTree {
     let (frontmatter, body) = split_frontmatter(content);
-    let (blocks, stamped_any) = parse_body_blocks(body);
+    let (page_properties, rest) = split_page_properties(body);
+    let (blocks, stamped_any) = parse_body_blocks(rest);
     NoteTree {
         frontmatter,
+        page_properties,
         blocks,
         stamped_any,
     }
+}
+
+/// Consume leading page-property lines (`key:: value`) from the top of
+/// the body, before any bullet. Returns the parsed properties (ordered)
+/// and the remaining body for block parsing.
+///
+/// Rules (Logseq page-property semantics):
+/// - Skip leading blank lines (the frontmatter separator).
+/// - A line at indent 0 matching `key:: value` (key = word chars / `-`)
+///   that is NOT a bullet is a page property.
+/// - The first bullet or non-property line ends collection; everything
+///   from there is the block body.
+/// - If no properties are found, the body is returned UNCHANGED (so the
+///   block parser sees the original, including leading blanks).
+fn split_page_properties(body: &str) -> (Vec<(String, String)>, &str) {
+    let mut props: Vec<(String, String)> = Vec::new();
+    let mut consumed_end = 0usize; // byte offset up to which we've consumed
+    for (line, line_range) in line_spans(body) {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            // Blank line: part of the leading separator only while we
+            // haven't hit content yet. Tentatively consume it; if no
+            // props ultimately follow we return the original body.
+            consumed_end = line_range.end;
+            continue;
+        }
+        // A bullet ends page-property collection.
+        if trimmed.starts_with("- ") || trimmed == "-" {
+            break;
+        }
+        // Page properties are unindented.
+        let indented = line.len() != trimmed.len();
+        if indented {
+            break;
+        }
+        match parse_property_line(trimmed) {
+            Some((k, v)) => {
+                props.push((k, v));
+                consumed_end = line_range.end;
+            }
+            None => break,
+        }
+    }
+    if props.is_empty() {
+        (props, body)
+    } else {
+        (props, &body[consumed_end..])
+    }
+}
+
+/// Iterate lines with their byte ranges (so we can slice the remainder).
+/// Each yielded range covers the line plus its trailing `\n` if present.
+fn line_spans(s: &str) -> impl Iterator<Item = (&str, std::ops::Range<usize>)> {
+    let mut start = 0usize;
+    std::iter::from_fn(move || {
+        if start >= s.len() {
+            return None;
+        }
+        let rest = &s[start..];
+        let (line, next) = match rest.find('\n') {
+            Some(nl) => (&rest[..nl], start + nl + 1),
+            None => (rest, s.len()),
+        };
+        let range = start..next;
+        start = next;
+        Some((line, range))
+    })
+}
+
+/// Parse a single `key:: value` property line. Key is one or more word
+/// characters or `-`; the separator is `::` followed by an optional
+/// space; value is the rest (may be empty, may contain `::`). Returns
+/// `None` if the line isn't a property.
+fn parse_property_line(line: &str) -> Option<(String, String)> {
+    let idx = line.find("::")?;
+    let key = &line[..idx];
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
+    }
+    let after = &line[idx + 2..];
+    // Require the `::` to be followed by a space or end-of-line, so a
+    // bare `http://x` style isn't mistaken for a property.
+    let value = match after.strip_prefix(' ') {
+        Some(v) => v,
+        None if after.is_empty() => "",
+        None => return None,
+    };
+    Some((key.to_string(), value.to_string()))
 }
 
 /// Drop "bare leaf" bullets from a note's body. A block is bare if its
@@ -158,10 +260,18 @@ pub fn serialize_note(tree: &NoteTree) -> String {
     if let Some(fm) = &tree.frontmatter {
         out.push_str(fm);
         // Frontmatter strings always end with `---\n`. Add the blank
-        // separator line before the body if there are blocks to write.
-        if !tree.blocks.is_empty() {
+        // separator line before the body if there's any body to write.
+        if !tree.blocks.is_empty() || !tree.page_properties.is_empty() {
             out.push('\n');
         }
+    }
+    // Page properties, in order, immediately after the separator and
+    // before the blocks. `key:: value` per line (canonical form).
+    for (key, value) in &tree.page_properties {
+        out.push_str(key);
+        out.push_str(":: ");
+        out.push_str(value);
+        out.push('\n');
     }
     for block in &tree.blocks {
         let indent_spaces = "  ".repeat(block.indent as usize);
@@ -533,6 +643,72 @@ mod tests {
             assert_eq!(a.indent, b.indent);
             assert_eq!(a.parent, b.parent);
         }
+    }
+
+    #[test]
+    fn parse_page_properties_only_note() {
+        // A query/page-property page — NO bullets. Previously parsed to
+        // zero blocks and serialized empty (silent data loss).
+        let content = "---\ntitle: Saved\n---\n\nquery:: kind:page\nsort:: modified desc\nicon:: clock\n";
+        let t = parse_note(content);
+        assert_eq!(
+            t.page_properties,
+            vec![
+                ("query".to_string(), "kind:page".to_string()),
+                ("sort".to_string(), "modified desc".to_string()),
+                ("icon".to_string(), "clock".to_string()),
+            ]
+        );
+        assert!(t.blocks.is_empty());
+    }
+
+    #[test]
+    fn round_trip_page_properties_only() {
+        let content = "---\ntitle: Saved\n---\n\nquery:: kind:page\nsort:: modified desc\n";
+        let t = parse_note(content);
+        assert_eq!(serialize_note(&t), content, "byte round-trip for clean input");
+    }
+
+    #[test]
+    fn round_trip_page_property_value_with_colons() {
+        // Values may contain `::` and operators — only the first `:: `
+        // splits key from value.
+        let content = "query:: status != done AND type IN (task, issue)\n";
+        let t = parse_note(content);
+        assert_eq!(t.page_properties.len(), 1);
+        assert_eq!(t.page_properties[0].0, "query");
+        assert_eq!(
+            t.page_properties[0].1,
+            "status != done AND type IN (task, issue)"
+        );
+        assert_eq!(serialize_note(&t), content);
+    }
+
+    #[test]
+    fn page_properties_then_bullets() {
+        let content = "type:: ChatGPT\n- a bullet\n";
+        let t = parse_note(content);
+        assert_eq!(t.page_properties, vec![("type".to_string(), "ChatGPT".to_string())]);
+        assert_eq!(t.blocks.len(), 1);
+        assert_eq!(t.blocks[0].text, "a bullet");
+        // Re-parse the serialized form is stable.
+        let s = serialize_note(&t);
+        let t2 = parse_note(&s);
+        assert_eq!(t2.page_properties, t.page_properties);
+        assert_eq!(t2.blocks.len(), 1);
+        assert_eq!(serialize_note(&t2), s);
+    }
+
+    #[test]
+    fn bullet_starting_note_has_no_page_properties() {
+        // Regression: a normal bullet note must not absorb anything as
+        // page properties, and block-level `key:: value` continuations
+        // still fold into block text.
+        let content = "- Task\n  status:: doing\n";
+        let t = parse_note(content);
+        assert!(t.page_properties.is_empty());
+        assert_eq!(t.blocks.len(), 1);
+        assert!(t.blocks[0].text.contains("status:: doing"));
     }
 
     #[test]
