@@ -148,6 +148,105 @@ pub async fn get_loro_note(
 }
 
 #[derive(serde::Serialize)]
+pub struct ReconcileNoteReport {
+    pub note_id: String,
+    pub orphans_deleted: usize,
+}
+
+#[derive(serde::Serialize)]
+pub struct ReconcileReport {
+    pub notes_scanned: usize,
+    pub total_orphans_deleted: usize,
+    pub by_note: Vec<ReconcileNoteReport>,
+}
+
+/// `POST /api/loro/reconcile-stale-blocks` — DISABLED 2026-05-28.
+///
+/// First attempt deleted real shadow blocks (and propagated via relay
+/// to iOS) on 6 notes whose oplog had BlockUpserts the current disk
+/// file no longer carried. Root cause: `parse_note` on the shadow's
+/// rendered markdown returned different UUIDs than the disk file's
+/// markers for the same content in some edge case, making the
+/// `shadow - primary` set non-empty for matching notes.
+///
+/// Endpoint returns 410 Gone until a safe version lands. Future
+/// design: compare bid-marker strings as literal substrings against
+/// the raw disk content, not via parse_note round-trip. Also
+/// dry-run-by-default with explicit confirmation.
+pub async fn reconcile_stale_blocks(
+    State(_s): State<Arc<AppState>>,
+) -> AppResult<Json<ReconcileReport>> {
+    Err(AppError::Validation(
+        "reconcile-stale-blocks disabled after 2026-05-28 incident; \
+         see notes.rs comment for redesign requirements"
+            .to_string(),
+    ))
+}
+
+#[allow(dead_code)]
+async fn reconcile_stale_blocks_disabled_impl(
+    State(s): State<Arc<AppState>>,
+) -> AppResult<Json<ReconcileReport>> {
+    use std::collections::HashSet;
+    use tesela_sync::OpPayload;
+    let ids = s.sync_engine.tracked_note_ids().await;
+    let mut report = ReconcileReport {
+        notes_scanned: ids.len(),
+        total_orphans_deleted: 0,
+        by_note: Vec::new(),
+    };
+    for id in ids {
+        let (Some(shadow_md), Some(primary_md)) =
+            (s.sync_engine.render_note(id).await, s.sync_engine.primary_body(id).await)
+        else {
+            continue;
+        };
+        let shadow_blocks: HashSet<uuid::Uuid> = tesela_core::note_tree::parse_note(
+            &shadow_md,
+        )
+        .blocks
+        .iter()
+        .map(|b| b.id)
+        .collect();
+        let primary_blocks: HashSet<uuid::Uuid> = tesela_core::note_tree::parse_note(
+            &primary_md,
+        )
+        .blocks
+        .iter()
+        .map(|b| b.id)
+        .collect();
+        let orphans: Vec<uuid::Uuid> =
+            shadow_blocks.difference(&primary_blocks).copied().collect();
+        if orphans.is_empty() {
+            continue;
+        }
+        let mut deleted = 0usize;
+        for orphan in orphans {
+            let payload = OpPayload::BlockDelete {
+                block_id: *orphan.as_bytes(),
+            };
+            if let Err(e) = s.sync_engine.record_local(payload).await {
+                tracing::warn!(
+                    "tesela-sync/reconcile: BlockDelete for {} in note {}: {e}",
+                    orphan,
+                    hex::encode(id)
+                );
+                continue;
+            }
+            deleted += 1;
+        }
+        if deleted > 0 {
+            report.total_orphans_deleted += deleted;
+            report.by_note.push(ReconcileNoteReport {
+                note_id: hex::encode(id),
+                orphans_deleted: deleted,
+            });
+        }
+    }
+    Ok(Json(report))
+}
+
+#[derive(serde::Serialize)]
 pub struct LoroDivergenceEntry {
     pub note_id: String,
     /// "match" | "diverge" | "primary_missing" | "shadow_missing"
