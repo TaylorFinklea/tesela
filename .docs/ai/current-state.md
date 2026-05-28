@@ -15,9 +15,15 @@
 - 3 structural diverges are the **oplog-vs-disk class (#111)** — block-order / stale-block mismatches from earlier edit history + some of my own leftover test debris in the live mosaic (`8320e597` has "perf test block four", `7d98c130` has stale "so they all rolled over"). To reach literal 0 we either reconcile those notes (re-derive oplog from disk) or accept them as known-stale history. NOT a model bug.
 - 3 primary-missing: files not found on disk for note_ids the oplog references (a73d66, affc1a, 0138057). Pre-existing.
 
-**NEXT — Phase 2: the index doc** (note_id → {title, slug, timestamps, tags} + link/graph). See cutover spec. Then Phase 3 lazy-load/evict, Phase 4 Loro-updates-over-relay (the on-device flashing-fix proof).
+**Phase 2 step 1 DONE + verified live** (`c8164d7`): always-resident Loro **index doc** (note_id → {title, slug}), separate from per-note docs, persisted to `<dir>/_index.bin`. `GET /api/loro/index` dumps it. On the live corpus it populated **all 518 notes**. This is the hybrid-model spine that enables lazy-load/evict (Phase 3). Step 1 scope = title+slug; **step 2 = tags + link graph** (parse `tags::`/frontmatter tags + `[[...]]`/`((...))` refs into the index).
 
-**Server running WITH dual-write** (`TESELA_LORO_DUAL_WRITE=1`), structural divergence check live, periodic log shows `3 of 518 diverged`.
+Test-debris cleanup done — divergence now **2 of 518** (513 match, 3 primary-missing). The 2 remaining (`8320e597` stale TGA text, `165c1a4c` block order) are genuine #111 oplog-vs-disk, resolved at cutover (Phase 7 reseeds from disk).
+
+**NEXT:** Phase 2 step 2 (tags + graph in the index), then Phase 3 (lazy-load/evict — bounded iOS memory), Phase 4 (Loro updates over the relay — the on-device flashing-fix proof).
+
+**Server running WITH dual-write** (`TESELA_LORO_DUAL_WRITE=1`), structural divergence check live, periodic log `2 of 518 diverged`. Shadow cache was cleared + rebuilt this session so the index is populated.
+
+**Debug endpoints (dual-write on):** `/loro/index`, `/loro/divergence`, `/loro/notes/<slug>` (all via `curl … | jq`).
 
 ---
 
