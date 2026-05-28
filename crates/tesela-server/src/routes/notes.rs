@@ -271,6 +271,29 @@ pub struct LoroDivergenceReport {
     pub entries: Vec<LoroDivergenceEntry>,
 }
 
+#[derive(serde::Serialize)]
+pub struct LoroIndexEntry {
+    pub note_id: String,
+    pub title: String,
+    pub slug: String,
+}
+
+/// `GET /api/loro/index` — dump the Loro index doc (the hybrid-model
+/// spine): every note's `{note_id, title, slug}`. Debug surface for
+/// Phase 2.
+pub async fn get_loro_index(
+    State(s): State<Arc<AppState>>,
+) -> AppResult<Json<Vec<LoroIndexEntry>>> {
+    let entries = s
+        .sync_engine
+        .index_entries()
+        .await
+        .into_iter()
+        .map(|(note_id, title, slug)| LoroIndexEntry { note_id, title, slug })
+        .collect();
+    Ok(Json(entries))
+}
+
 /// `GET /api/loro/divergence` — full divergence report across every
 /// note the LoroEngine shadow tracks. Returns counts plus per-note
 /// status (match / diverge / *_missing). For diverged + missing

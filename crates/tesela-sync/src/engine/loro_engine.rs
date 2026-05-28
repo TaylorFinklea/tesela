@@ -85,6 +85,12 @@ struct Inner {
     /// process restart without re-replaying the oplog. When `None`,
     /// the shadow is in-memory only.
     snapshot_dir: Option<PathBuf>,
+    /// Always-resident index doc (the hybrid model's spine; cutover spec
+    /// Phase 2). A single small Loro doc holding a `"notes"` LoroMap of
+    /// `hex(note_id) → {title, slug}` (tags + link graph land in step 2).
+    /// Lets callers list notes / resolve refs without loading every
+    /// per-note doc into memory. Persisted to `<dir>/_index.bin`.
+    index: LoroDoc,
 }
 
 impl LoroEngine {
@@ -98,6 +104,7 @@ impl LoroEngine {
                 device,
                 hlc,
                 snapshot_dir: None,
+                index: LoroDoc::new(),
             }),
         }
     }
@@ -125,14 +132,87 @@ impl LoroEngine {
                 ))
             })?;
         let docs = load_snapshots_from_dir(&snapshot_dir).await?;
+        // Load the index doc snapshot if present (best-effort: a missing
+        // or corrupt index is rebuilt as NoteUpserts re-flow / re-seed).
+        let index = LoroDoc::new();
+        let index_path = snapshot_dir.join("_index.bin");
+        match tokio::fs::read(&index_path).await {
+            Ok(bytes) => {
+                if let Err(e) = index.import(&bytes) {
+                    tracing::warn!("tesela-sync/loro: import index snapshot: {e}");
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!("tesela-sync/loro: read index snapshot: {e}"),
+        }
         Ok(Self {
             inner: Arc::new(Inner {
                 docs: RwLock::new(docs),
                 device,
                 hlc,
                 snapshot_dir: Some(snapshot_dir),
+                index,
             }),
         })
+    }
+
+    /// Update the index entry for a note (title + slug). Called on
+    /// NoteUpsert. Title is derived from the note's frontmatter `title:`
+    /// when present, else the slug.
+    fn index_upsert(&self, note_id: [u8; 16], slug: Option<&str>, title: &str) {
+        let notes = self.inner.index.get_map("notes");
+        let key = hex_id(&note_id);
+        let entry = match notes.get(&key) {
+            Some(loro::ValueOrContainer::Container(loro::Container::Map(m))) => m,
+            _ => match notes.insert_container(&key, loro::LoroMap::new()) {
+                Ok(m) => m,
+                Err(e) => {
+                    tracing::warn!("tesela-sync/loro: index insert_container: {e}");
+                    return;
+                }
+            },
+        };
+        let _ = entry.insert("title", title);
+        let _ = entry.insert("slug", slug.unwrap_or(""));
+        self.inner.index.commit();
+    }
+
+    /// Remove a note's index entry (NoteDelete).
+    fn index_remove(&self, note_id: [u8; 16]) {
+        let notes = self.inner.index.get_map("notes");
+        let _ = notes.delete(&hex_id(&note_id));
+        self.inner.index.commit();
+    }
+
+    /// List all index entries as `(note_id_hex, title, slug)`. The hybrid
+    /// model's note list — sourced from the always-resident index, no
+    /// per-note docs loaded.
+    pub async fn index_entries(&self) -> Vec<(String, String, String)> {
+        let notes = self.inner.index.get_map("notes");
+        let value = notes.get_deep_value();
+        let mut out = Vec::new();
+        if let loro::LoroValue::Map(m) = value {
+            for (key, v) in m.iter() {
+                if let loro::LoroValue::Map(entry) = v {
+                    let get = |k: &str| {
+                        entry.get(k).and_then(|x| {
+                            if let loro::LoroValue::String(s) = x {
+                                Some((**s).to_string())
+                            } else {
+                                None
+                            }
+                        })
+                    };
+                    out.push((
+                        key.to_string(),
+                        get("title").unwrap_or_default(),
+                        get("slug").unwrap_or_default(),
+                    ));
+                }
+            }
+        }
+        out.sort();
+        out
     }
 
     /// Number of distinct notes the engine has seen. Test/diagnostic
@@ -295,6 +375,11 @@ async fn load_snapshots_from_dir(
         let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
+        // The index doc (`_index.bin`) is loaded separately, not as a
+        // per-note snapshot.
+        if stem == "_index" {
+            continue;
+        }
         let Some(note_id) = parse_note_id_from_hex(stem) else {
             tracing::warn!(
                 "tesela-sync/loro: snapshot filename not a hex note id: {}",
@@ -607,6 +692,10 @@ impl SyncEngine for LoroEngine {
     async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
         self.note_ids().await
     }
+
+    async fn index_entries(&self) -> Vec<(String, String, String)> {
+        LoroEngine::index_entries(self).await
+    }
 }
 
 impl LoroEngine {
@@ -624,8 +713,32 @@ impl LoroEngine {
         let touched_note = self.apply_payload_inner(payload).await?;
         if let (Some(dir), Some(note_id)) = (self.inner.snapshot_dir.as_ref(), touched_note) {
             self.save_snapshot(dir, note_id).await;
+            // The index only changes on note create/delete; persist it
+            // then (cheap, infrequent).
+            if matches!(
+                payload,
+                OpPayload::NoteUpsert { .. } | OpPayload::NoteDelete { .. }
+            ) {
+                self.save_index_snapshot(dir).await;
+            }
         }
         Ok(())
+    }
+
+    /// Persist the index doc to `<dir>/_index.bin`. Best-effort.
+    async fn save_index_snapshot(&self, dir: &Path) {
+        let bytes = match self.inner.index.export(ExportMode::Snapshot) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("tesela-sync/loro: index snapshot export: {e}");
+                return;
+            }
+        };
+        let path = dir.join("_index.bin");
+        let tmp = path.with_extension("bin.tmp");
+        if tokio::fs::write(&tmp, &bytes).await.is_ok() {
+            let _ = tokio::fs::rename(&tmp, &path).await;
+        }
     }
 
     /// Inner per-payload apply that returns the affected note_id (so
@@ -634,7 +747,15 @@ impl LoroEngine {
     /// no-op cases) — those don't trigger a snapshot write.
     async fn apply_payload_inner(&self, payload: &OpPayload) -> SyncResult<Option<[u8; 16]>> {
         let touched = match payload {
-            OpPayload::NoteUpsert { note_id, content, .. } => {
+            OpPayload::NoteUpsert {
+                note_id,
+                content,
+                title,
+                display_alias,
+                ..
+            } => {
+                // Index spine: record note_id → {title, slug}.
+                self.index_upsert(*note_id, display_alias.as_deref(), title);
                 let doc = self.doc_for_note_mut(*note_id).await;
                 // Save the convenience content snapshot on root meta
                 // (used by debugging; render_note ignores it).
@@ -773,6 +894,7 @@ impl LoroEngine {
                 // and the divergence check matches PrimaryMissing.
                 // The outer wrapper sees `save_snapshot(note_id)` find
                 // the doc missing and removes the .bin file too.
+                self.index_remove(*note_id);
                 let mut docs = self.inner.docs.write().await;
                 docs.remove(note_id);
                 Some(*note_id)
@@ -1311,6 +1433,83 @@ mod tests {
         // render_note omits frontmatter (lives on disk, not the shadow);
         // page properties render in order.
         assert_eq!(rendered, "query:: kind:page\nsort:: modified desc\n");
+    }
+
+    #[tokio::test]
+    async fn index_doc_tracks_notes() {
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: [1u8; 16],
+                display_alias: Some("alpha".into()),
+                title: "Alpha".into(),
+                content: "- a\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: [2u8; 16],
+                display_alias: Some("beta".into()),
+                title: "Beta".into(),
+                content: "- b\n".into(),
+                created_at_millis: 2,
+            })
+            .await
+            .unwrap();
+
+        let entries = engine.index_entries().await;
+        assert_eq!(entries.len(), 2);
+        let titles: Vec<_> = entries.iter().map(|(_, t, _)| t.as_str()).collect();
+        assert!(titles.contains(&"Alpha"));
+        assert!(titles.contains(&"Beta"));
+        let slugs: Vec<_> = entries.iter().map(|(_, _, s)| s.as_str()).collect();
+        assert!(slugs.contains(&"alpha"));
+
+        // Delete removes the index entry.
+        engine
+            .record_local(OpPayload::NoteDelete {
+                note_id: [1u8; 16],
+                display_alias: Some("alpha".into()),
+            })
+            .await
+            .unwrap();
+        let entries = engine.index_entries().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1, "Beta");
+    }
+
+    #[tokio::test]
+    async fn index_doc_survives_reload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("loro");
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+            .await
+            .unwrap();
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: [9u8; 16],
+                display_alias: Some("kept".into()),
+                title: "Kept".into(),
+                content: "- x\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        drop(engine);
+
+        let hlc2 = Arc::new(Hlc::new(test_device()));
+        let reloaded = LoroEngine::with_snapshot_dir(test_device(), hlc2, dir)
+            .await
+            .unwrap();
+        let entries = reloaded.index_entries().await;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].1, "Kept");
+        assert_eq!(entries[0].2, "kept");
     }
 
     #[tokio::test]

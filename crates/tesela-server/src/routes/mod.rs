@@ -42,6 +42,7 @@ pub fn build(state: AppState) -> Router {
         )
         .route("/loro/notes/{slug}", get(notes::get_loro_note))
         .route("/loro/divergence", get(notes::get_loro_divergence))
+        .route("/loro/index", get(notes::get_loro_index))
         .route(
             "/loro/reconcile-stale-blocks",
             post(notes::reconcile_stale_blocks),

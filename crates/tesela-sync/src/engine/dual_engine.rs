@@ -615,6 +615,10 @@ impl SyncEngine for DualEngine {
     async fn primary_body(&self, note_id: [u8; 16]) -> Option<String> {
         self.primary.primary_body(note_id).await
     }
+
+    async fn index_entries(&self) -> Vec<(String, String, String)> {
+        self.shadow.index_entries().await
+    }
 }
 
 #[cfg(test)]

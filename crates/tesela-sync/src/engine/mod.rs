@@ -140,4 +140,12 @@ pub trait SyncEngine: Send + Sync {
     async fn primary_body(&self, _note_id: [u8; 16]) -> Option<String> {
         None
     }
+
+    /// Entries from the Loro index doc as `(note_id_hex, title, slug)`.
+    /// The hybrid-model spine (cutover spec Phase 2). Default empty;
+    /// LoroEngine/DualEngine override. Used by the `/loro/index` debug
+    /// endpoint and, eventually, the note list + ref resolution.
+    async fn index_entries(&self) -> Vec<(String, String, String)> {
+        Vec::new()
+    }
 }
