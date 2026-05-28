@@ -81,6 +81,28 @@ fn join_list(items: &[String]) -> String {
     items.join(&INDEX_LIST_SEP.to_string())
 }
 
+/// Build the block_id → note_id map from a set of loaded per-note docs
+/// by reading each block node's `block_id` meta. Used at boot.
+fn build_block_index(
+    docs: &HashMap<[u8; 16], LoroDoc>,
+) -> HashMap<[u8; 16], [u8; 16]> {
+    let mut out = HashMap::new();
+    for (note_id, doc) in docs.iter() {
+        let tree = doc.get_tree("blocks");
+        for node in tree.children(TreeParentId::Root).unwrap_or_default() {
+            if matches!(tree.is_node_deleted(&node), Ok(true)) {
+                continue;
+            }
+            if let Some(hex) = read_meta_str(&tree, node, "block_id") {
+                if let Some(bid) = parse_note_id_from_hex(&hex) {
+                    out.insert(bid, *note_id);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Best-effort frontmatter `title:` extraction for index rebuild
 /// fallback. Returns None if there's no frontmatter title.
 fn frontmatter_title(content: &str) -> Option<String> {
@@ -177,6 +199,13 @@ struct Inner {
     /// Lets callers list notes / resolve refs without loading every
     /// per-note doc into memory. Persisted to `<dir>/_index.bin`.
     index: LoroDoc,
+    /// Resident block_id → note_id map. Lets block-only ops
+    /// (BlockMove/BlockDelete) resolve the owning note in O(1) instead
+    /// of scanning every doc's tree, and is the prerequisite for
+    /// lazy-load/evict (an evicted doc can't be scanned, but this map
+    /// still points at the note so it can be loaded on demand). Derived
+    /// state, rebuilt from the per-note docs at boot.
+    block_index: RwLock<HashMap<[u8; 16], [u8; 16]>>,
 }
 
 impl LoroEngine {
@@ -191,6 +220,7 @@ impl LoroEngine {
                 hlc,
                 snapshot_dir: None,
                 index: LoroDoc::new(),
+                block_index: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -242,6 +272,8 @@ impl LoroEngine {
             .and_then(|v| v.into_i64().ok())
             .unwrap_or(0);
         let needs_rebuild = stored_version != INDEX_SCHEMA_VERSION && !docs.is_empty();
+        // Build the block_index from the loaded docs (block_id → note_id).
+        let block_index = build_block_index(&docs);
         let engine = Self {
             inner: Arc::new(Inner {
                 docs: RwLock::new(docs),
@@ -249,6 +281,7 @@ impl LoroEngine {
                 hlc,
                 snapshot_dir: Some(snapshot_dir.clone()),
                 index,
+                block_index: RwLock::new(block_index),
             }),
         };
         if needs_rebuild {
@@ -498,19 +531,35 @@ impl LoroEngine {
     ///
     /// Returns the note_id alongside the doc+node so the outer
     /// `apply_payload` wrapper knows which snapshot to refresh.
+    ///
+    /// Resolves via the resident `block_index` (block_id → note_id)
+    /// rather than scanning every doc's tree. Besides being O(1), this
+    /// is a prerequisite for lazy-load/evict (Phase 3/6): once docs can
+    /// be evicted, a scan can't see them, but the block_index always can
+    /// point at the owning note so its doc can be loaded on demand.
+    /// Stale entries (note deleted) self-correct: the docs lookup misses
+    /// and we return None, matching "unknown block → no-op".
     async fn find_doc_for_block(
         &self,
         block_id: &[u8; 16],
     ) -> Option<([u8; 16], LoroDoc, TreeID)> {
+        let note_id = *self.inner.block_index.read().await.get(block_id)?;
         let block_hex = hex_id(block_id);
         let docs = self.inner.docs.read().await;
-        for (note_id, doc) in docs.iter() {
-            let tree = doc.get_tree("blocks");
-            if let Some(node) = find_node_by_block_id(&tree, &block_hex) {
-                return Some((*note_id, doc.clone(), node));
-            }
+        let doc = docs.get(&note_id)?;
+        let tree = doc.get_tree("blocks");
+        let node = find_node_by_block_id(&tree, &block_hex)?;
+        Some((note_id, doc.clone(), node))
+    }
+
+    /// Register every block in a note as owned by it (block_id →
+    /// note_id), so block-only ops (BlockMove/BlockDelete) and lazy-load
+    /// can resolve the owning note without scanning all docs.
+    async fn register_note_blocks(&self, note_id: [u8; 16], block_ids: &[[u8; 16]]) {
+        let mut idx = self.inner.block_index.write().await;
+        for b in block_ids {
+            idx.insert(*b, note_id);
         }
-        None
     }
 
     /// Write the per-note snapshot to disk, or delete the snapshot
@@ -1104,6 +1153,10 @@ impl LoroEngine {
                     seed_tree_from_flatblocks(&tree, &parsed.blocks)?;
                 }
                 doc.commit();
+                // Register this note's blocks in the block_index.
+                let block_ids: Vec<[u8; 16]> =
+                    parsed.blocks.iter().map(|b| *b.id.as_bytes()).collect();
+                self.register_note_blocks(*note_id, &block_ids).await;
                 Some(*note_id)
             }
             OpPayload::BlockUpsert {
@@ -1149,6 +1202,7 @@ impl LoroEngine {
                 )
                 .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 doc.commit();
+                self.register_note_blocks(*note_id, &[*block_id]).await;
                 Some(*note_id)
             }
             OpPayload::BlockMove {
@@ -1863,6 +1917,39 @@ mod tests {
         let rendered = engine.render_note(note_id).await.unwrap();
         assert_eq!(rendered, body, "full-content re-save heals drift");
         assert!(!rendered.contains("STALE"));
+    }
+
+    #[tokio::test]
+    async fn block_op_resolves_seeded_block_via_index() {
+        // A block created via NoteUpsert seed (not BlockUpsert) must be
+        // resolvable by a later block-only op through the block_index.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [0x66; 16];
+        // Seed two stamped blocks via NoteUpsert.
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("n".into()),
+                title: "N".into(),
+                content: "- keep <!-- bid:10101010-1010-1010-1010-101010101010 -->\n- drop <!-- bid:20202020-2020-2020-2020-202020202020 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        // BlockDelete the second block by id — only resolvable via the
+        // block_index (the op carries no note_id).
+        let drop_id = [0x20; 16];
+        engine
+            .record_local(OpPayload::BlockDelete { block_id: drop_id })
+            .await
+            .unwrap();
+        let rendered = engine.render_note(note_id).await.unwrap();
+        assert_eq!(
+            rendered,
+            "- keep <!-- bid:10101010-1010-1010-1010-101010101010 -->\n",
+            "seeded block resolved + deleted via block_index"
+        );
     }
 
     #[tokio::test]
