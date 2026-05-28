@@ -15,8 +15,13 @@ The review was worth it: [4]/[5] revealed the earlier "divergence → 2" rested 
 ### Resequencing + Phase 3 groundwork (decided 2026-05-28)
 Phase 3 (lazy-load/evict) is iOS-only with no consumer until the FFI swap, and is a big cross-cutting refactor. **Resequenced to ~Phase 6**; Phase 4 (the keystone flashing-fix proof) goes next. Landed the shared prerequisite now: a resident **block_index** (block_id → note_id, `0430616`) so block ops resolve O(1) and lazy-load is unblocked later. 88 sync tests green.
 
-### NEXT: Phase 4 — Loro updates over the relay (start fresh-context)
-Precise plan in `phases/2026-05-28-loro-cutover-spec.md` §Phase 4. Order: (1) Loro PeerID↔DeviceId stable mapping (load-bearing — two docs only merge with distinct stable peer ids; `doc.set_peer_id`), (2) engine-level two-engine convergence proof via `export_doc_update`/`import_doc_update`/`doc_version` (additive, no live-relay risk — THE flashing-fix proof at engine level), (3) relay payload switch at cutover (don't change the live `Vec<EncodedOp>` envelope while dual-write runs). This is the migration's whole point; deserves fresh context.
+### Phase 4 step 1+2 DONE — the flashing fix is PROVEN at the engine level (`80a1cd1`)
+- Loro PeerID↔DeviceId stable mapping (`peer_id()`, `set_doc_peer()` on every doc create/load/import).
+- Per-doc update sync: `doc_version` (encoded VV cursor), `export_doc_update(note_id, since_vv)`, `import_doc_update(note_id, bytes)` + `refresh_note_derived`. Additive — the live `Vec<EncodedOp>` relay path is untouched (dual-write intact).
+- **Keystone test** `two_engines_converge_on_concurrent_edits_no_flashing`: two engines (distinct peers) edit the same note concurrently, exchange Loro updates via VV cursors, converge to identical render, stable across re-exchange. The hand-rolled LWW engine could not do this — this is why the migration exists.
+
+### NEXT: Phase 4 step 3 / Phase 5 — wire Loro updates into the LIVE relay
+The remaining cutover-adjacent work: replace the relay envelope payload (`postcard(Vec<EncodedOp>)`) with Loro update bytes (`postcard({doc: NoteId|Index, update_bytes})`) + per-doc VV cursors, and make LoroEngine authoritative for materialization. Do NOT change the live envelope while dual-write with SqliteEngine runs — this is the cutover (Phase 5→7). Also at Phase 6: full lazy-load/evict (groundwork = block_index, done) + iOS FFI swap, verify on Roshar. Then Phase 7: flag-day cutover + delete oplog engine + DR drill.
 
 ### Earlier in the session (still true)
 

@@ -22,8 +22,8 @@ Active items. Trim as completed.
 3. [x] **Phase 2**: index doc — note_id→{title,slug,tags,links} + self-healing versioned rebuild (`c8164d7`,`1b07636`,`902439e`). Verified live: 518 notes, 448 tags, 128 link edges.
 4. [x] **Adversarial review of phases 0–2** (29 agents) → 18 findings; 7 fixed (`c33a88d`,`c27818f`,`fad0280`,`ba2fffb`), rest triaged in `phases/2026-05-28-loro-review-findings.md`. Honest divergence: 3/518, all resolved at cutover.
 5. [~] **Phase 3** (lazy-load/evict) — RESEQUENCED to ~Phase 6 (iOS-only benefit, no consumer until the FFI swap; decided 2026-05-28). Groundwork landed: resident block_index (`0430616`).
-6. [ ] **Phase 4 — NEXT, the keystone**: Loro updates over the relay. Plan in the spec: (1) Loro PeerID↔DeviceId mapping, (2) engine-level two-engine convergence proof (additive, no live-relay risk — the flashing fix), (3) relay wiring at cutover. Start fresh-context.
-7. [ ] **Phase 5**: LoroEngine authoritative for materialization.
+6. [~] **Phase 4 — keystone, step 1+2 DONE** (`80a1cd1`): Loro PeerID↔DeviceId mapping + per-doc update sync (`doc_version`/`export_doc_update`/`import_doc_update`). **Engine-level convergence proven**: two LoroEngines converge on concurrent same-note edits, no flashing, stable (the migration's whole point). Step 3 (wire into the live relay, replacing the `Vec<EncodedOp>` payload) is cutover-adjacent → Phase 5/7.
+7. [ ] **Phase 5**: LoroEngine authoritative for materialization (incl. Phase 4 step 3 — live relay carries Loro updates).
 8. [ ] **Phase 6**: iOS FFI swap (+ full lazy-load/evict here); verify on Roshar.
 9. [ ] **Phase 7**: flag-day cutover + delete oplog engine + DR drill.
 
