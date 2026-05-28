@@ -616,7 +616,7 @@ impl SyncEngine for DualEngine {
         self.primary.primary_body(note_id).await
     }
 
-    async fn index_entries(&self) -> Vec<(String, String, String)> {
+    async fn index_entries(&self) -> Vec<crate::engine::IndexEntry> {
         self.shadow.index_entries().await
     }
 }

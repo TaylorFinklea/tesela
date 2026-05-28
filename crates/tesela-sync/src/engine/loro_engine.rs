@@ -50,6 +50,52 @@ fn hex_id(id: &[u8; 16]) -> String {
     hex::encode(id)
 }
 
+/// Derive a note's index metadata `(tags, links)` from its content +
+/// parsed page properties. Tags come from three sources (frontmatter
+/// `tags:`, the `tags::` page property, inline `#tags`); links are
+/// `[[wiki-link]]` targets. Both deduped + sorted.
+fn extract_index_metadata(
+    content: &str,
+    page_properties: &[(String, String)],
+) -> (Vec<String>, Vec<String>) {
+    use std::collections::BTreeSet;
+    let mut tags: BTreeSet<String> = BTreeSet::new();
+
+    // Frontmatter `tags:` (gray_matter via tesela_core).
+    if let Ok((meta, _body)) = tesela_core::storage::markdown::parse_frontmatter(content) {
+        for t in meta.tags {
+            if !t.is_empty() {
+                tags.insert(t);
+            }
+        }
+    }
+    // `tags::` page property (comma- or space-separated).
+    for (k, v) in page_properties {
+        if k == "tags" {
+            for t in v.split(|c| c == ',' || c == ' ') {
+                let t = t.trim().trim_start_matches('#');
+                if !t.is_empty() {
+                    tags.insert(t.to_string());
+                }
+            }
+        }
+    }
+    // Inline `#tags`.
+    for t in tesela_core::block::extract_tags(content) {
+        if !t.is_empty() {
+            tags.insert(t);
+        }
+    }
+
+    let links: BTreeSet<String> = tesela_core::link::extract_wiki_links(content)
+        .into_iter()
+        .map(|l| l.target)
+        .filter(|t| !t.is_empty())
+        .collect();
+
+    (tags.into_iter().collect(), links.into_iter().collect())
+}
+
 /// Minimal Loro-backed engine for the dual-write scaffold. Most trait
 /// methods are stubbed; only `record_local` for `NoteUpsert` does real
 /// work. The stubs return defaults that match `SqliteEngine`'s shape
@@ -156,10 +202,19 @@ impl LoroEngine {
         })
     }
 
-    /// Update the index entry for a note (title + slug). Called on
-    /// NoteUpsert. Title is derived from the note's frontmatter `title:`
-    /// when present, else the slug.
-    fn index_upsert(&self, note_id: [u8; 16], slug: Option<&str>, title: &str) {
+    /// Update the index entry for a note. Called on NoteUpsert. Stores
+    /// title + slug + tags + outbound link targets — all derived from
+    /// the note content and overwritten wholesale (the index is a
+    /// derived projection of the notes).
+    fn index_upsert(
+        &self,
+        note_id: [u8; 16],
+        slug: Option<&str>,
+        title: &str,
+        content: &str,
+        page_properties: &[(String, String)],
+    ) {
+        let (tags, links) = extract_index_metadata(content, page_properties);
         let notes = self.inner.index.get_map("notes");
         let key = hex_id(&note_id);
         let entry = match notes.get(&key) {
@@ -174,6 +229,11 @@ impl LoroEngine {
         };
         let _ = entry.insert("title", title);
         let _ = entry.insert("slug", slug.unwrap_or(""));
+        // Tags + links as comma-joined strings (derived, overwritten
+        // wholesale; structured per-tag containers can come if granular
+        // tag merge is ever needed).
+        let _ = entry.insert("tags", tags.join(","));
+        let _ = entry.insert("links", links.join(","));
         self.inner.index.commit();
     }
 
@@ -184,10 +244,9 @@ impl LoroEngine {
         self.inner.index.commit();
     }
 
-    /// List all index entries as `(note_id_hex, title, slug)`. The hybrid
-    /// model's note list — sourced from the always-resident index, no
-    /// per-note docs loaded.
-    pub async fn index_entries(&self) -> Vec<(String, String, String)> {
+    /// List all index entries. The hybrid model's note list — sourced
+    /// from the always-resident index, no per-note docs loaded.
+    pub async fn index_entries(&self) -> Vec<crate::engine::IndexEntry> {
         let notes = self.inner.index.get_map("notes");
         let value = notes.get_deep_value();
         let mut out = Vec::new();
@@ -203,15 +262,23 @@ impl LoroEngine {
                             }
                         })
                     };
-                    out.push((
-                        key.to_string(),
-                        get("title").unwrap_or_default(),
-                        get("slug").unwrap_or_default(),
-                    ));
+                    let split = |k: &str| -> Vec<String> {
+                        get(k)
+                            .filter(|s| !s.is_empty())
+                            .map(|s| s.split(',').map(|t| t.to_string()).collect())
+                            .unwrap_or_default()
+                    };
+                    out.push(crate::engine::IndexEntry {
+                        note_id: key.to_string(),
+                        title: get("title").unwrap_or_default(),
+                        slug: get("slug").unwrap_or_default(),
+                        tags: split("tags"),
+                        links: split("links"),
+                    });
                 }
             }
         }
-        out.sort();
+        out.sort_by(|a, b| a.note_id.cmp(&b.note_id));
         out
     }
 
@@ -693,7 +760,7 @@ impl SyncEngine for LoroEngine {
         self.note_ids().await
     }
 
-    async fn index_entries(&self) -> Vec<(String, String, String)> {
+    async fn index_entries(&self) -> Vec<crate::engine::IndexEntry> {
         LoroEngine::index_entries(self).await
     }
 }
@@ -754,8 +821,6 @@ impl LoroEngine {
                 display_alias,
                 ..
             } => {
-                // Index spine: record note_id → {title, slug}.
-                self.index_upsert(*note_id, display_alias.as_deref(), title);
                 let doc = self.doc_for_note_mut(*note_id).await;
                 // Save the convenience content snapshot on root meta
                 // (used by debugging; render_note ignores it).
@@ -776,6 +841,15 @@ impl LoroEngine {
                 // sync from there. Without the skip, repeated
                 // NoteUpserts would create duplicate nodes.
                 let parsed = tesela_core::note_tree::parse_note(content);
+                // Index spine: note_id → {title, slug, tags, links},
+                // derived from content + page properties.
+                self.index_upsert(
+                    *note_id,
+                    display_alias.as_deref(),
+                    title,
+                    content,
+                    &parsed.page_properties,
+                );
                 // Page properties are authoritative from the full
                 // content and overwritten wholesale on every NoteUpsert
                 // (they only arrive via full-content ops, never block
@@ -1463,10 +1537,10 @@ mod tests {
 
         let entries = engine.index_entries().await;
         assert_eq!(entries.len(), 2);
-        let titles: Vec<_> = entries.iter().map(|(_, t, _)| t.as_str()).collect();
+        let titles: Vec<_> = entries.iter().map(|e| e.title.as_str()).collect();
         assert!(titles.contains(&"Alpha"));
         assert!(titles.contains(&"Beta"));
-        let slugs: Vec<_> = entries.iter().map(|(_, _, s)| s.as_str()).collect();
+        let slugs: Vec<_> = entries.iter().map(|e| e.slug.as_str()).collect();
         assert!(slugs.contains(&"alpha"));
 
         // Delete removes the index entry.
@@ -1479,7 +1553,35 @@ mod tests {
             .unwrap();
         let entries = engine.index_entries().await;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].1, "Beta");
+        assert_eq!(entries[0].title, "Beta");
+    }
+
+    #[tokio::test]
+    async fn index_doc_captures_tags_and_links() {
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let content = "---\ntitle: T\ntags: [daily]\n---\n\ntags:: project\n- see [[other-note]] and #urgent stuff\n";
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: [7u8; 16],
+                display_alias: Some("t".into()),
+                title: "T".into(),
+                content: content.into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        let entries = engine.index_entries().await;
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        // tags from frontmatter (daily), page property (project), inline (#urgent)
+        assert!(e.tags.contains(&"daily".to_string()), "frontmatter tag: {:?}", e.tags);
+        assert!(e.tags.contains(&"project".to_string()), "page-prop tag: {:?}", e.tags);
+        assert!(e.tags.contains(&"urgent".to_string()), "inline tag: {:?}", e.tags);
+        // link target
+        assert_eq!(e.links, vec!["other-note".to_string()]);
     }
 
     #[tokio::test]
@@ -1508,8 +1610,8 @@ mod tests {
             .unwrap();
         let entries = reloaded.index_entries().await;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].1, "Kept");
-        assert_eq!(entries[0].2, "kept");
+        assert_eq!(entries[0].title, "Kept");
+        assert_eq!(entries[0].slug, "kept");
     }
 
     #[tokio::test]

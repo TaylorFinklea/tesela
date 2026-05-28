@@ -141,11 +141,28 @@ pub trait SyncEngine: Send + Sync {
         None
     }
 
-    /// Entries from the Loro index doc as `(note_id_hex, title, slug)`.
-    /// The hybrid-model spine (cutover spec Phase 2). Default empty;
-    /// LoroEngine/DualEngine override. Used by the `/loro/index` debug
-    /// endpoint and, eventually, the note list + ref resolution.
-    async fn index_entries(&self) -> Vec<(String, String, String)> {
+    /// Entries from the Loro index doc. The hybrid-model spine (cutover
+    /// spec Phase 2). Default empty; LoroEngine/DualEngine override. Used
+    /// by the `/loro/index` debug endpoint and, eventually, the note
+    /// list + backlinks + ref resolution.
+    async fn index_entries(&self) -> Vec<IndexEntry> {
         Vec::new()
     }
+}
+
+/// One note's entry in the Loro index doc.
+#[derive(Debug, Clone)]
+pub struct IndexEntry {
+    /// 32-char hex of the note_id.
+    pub note_id: String,
+    /// Note title (frontmatter `title:` or slug).
+    pub title: String,
+    /// Filename slug (display_alias).
+    pub slug: String,
+    /// All tags for the note — frontmatter `tags:` + `tags::` page
+    /// property + inline `#tags`, deduped + sorted.
+    pub tags: Vec<String>,
+    /// Outbound `[[wiki-link]]` targets, deduped + sorted (the link
+    /// graph edges originating from this note).
+    pub links: Vec<String>,
 }

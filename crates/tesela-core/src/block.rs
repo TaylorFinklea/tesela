@@ -273,7 +273,8 @@ pub fn split_inline_and_trailing_tags(raw_text: &str) -> (Vec<String>, Vec<Strin
     (inline_tags, trailing_tags)
 }
 
-fn extract_tags(text: &str) -> Vec<String> {
+/// Extract all `#tag` names from text (inline + trailing), via `TAG_RE`.
+pub fn extract_tags(text: &str) -> Vec<String> {
     TAG_RE
         .captures_iter(text)
         .map(|cap| cap[1].to_string())

@@ -276,11 +276,13 @@ pub struct LoroIndexEntry {
     pub note_id: String,
     pub title: String,
     pub slug: String,
+    pub tags: Vec<String>,
+    pub links: Vec<String>,
 }
 
 /// `GET /api/loro/index` — dump the Loro index doc (the hybrid-model
-/// spine): every note's `{note_id, title, slug}`. Debug surface for
-/// Phase 2.
+/// spine): every note's `{note_id, title, slug, tags, links}`. Debug
+/// surface for Phase 2.
 pub async fn get_loro_index(
     State(s): State<Arc<AppState>>,
 ) -> AppResult<Json<Vec<LoroIndexEntry>>> {
@@ -289,7 +291,13 @@ pub async fn get_loro_index(
         .index_entries()
         .await
         .into_iter()
-        .map(|(note_id, title, slug)| LoroIndexEntry { note_id, title, slug })
+        .map(|e| LoroIndexEntry {
+            note_id: e.note_id,
+            title: e.title,
+            slug: e.slug,
+            tags: e.tags,
+            links: e.links,
+        })
         .collect();
     Ok(Json(entries))
 }
