@@ -270,3 +270,13 @@ Spec: `phases/2026-05-28-loro-cutover-spec.md` (decisions 2–4 in the locked-de
 Taylor: "I want blank blocks/headings dropped." So the flat-block CRDT does NOT preserve:
 - **Headings / non-bullet body lines** — already absent (the flat-block model never captured them; this is why `2026-05-17`'s bare `# heading` drops on cutover — now confirmed DESIRED, not a regression). No heading-modeling will be added.
 - **Blank blocks** — empty/whitespace-only bullets are transient editing artifacts; `note_tree_from_doc` (the single render chokepoint feeding materialization + the comparison surface) now skips `fb.text.trim().is_empty()`. The Loro tree may still hold a transient empty node mid-edit, but it never materializes to disk or syncs as content. Reverses the old Phase-2.2 "blank blocks survive symmetrically" behavior for the Loro era.
+
+## 2026-05-29 — Web daily-editing bugs (post-authoritative-cutover)
+
+Three symptoms (`:daily`→wrong day, empty days un-editable, click-to-add broken) had two root causes, both surfaced by the cutover:
+1. **Blank-block drop** (the 2026-05-29 experiment) made empty days zero-block; the web outliner needs a trailing empty bullet as the editing surface (`JournalView.ensureTrailingEmpty`). REVERTED — blank bullets are kept (the editing surface, like Logseq). Headings still drop (flat-block model never modeled them).
+2. **Reseed clobbered file mtimes** — the authoritative reseed rewrote all 513 files at boot → all mtimes ~equal. `FsNoteStore::list` sorted by mtime then `limit`, so the journal's `limit:60` daily query returned the wrong 60 → recent days (with content) rendered as false "empty day · click" synthetics. FIX: `list` sorts by **title (date) descending**; reseed-proof; only the journal's bounded query is affected (other callers fetch all + re-sort).
+
+Also: `ensureTrailingEmpty` dedup regex didn't account for the stamped bid marker (`- <!-- bid:… -->`) → appended a fresh empty bullet every mount (accumulation); fixed by stripping the bid before the empty-bullet test. Daily template now seeds `- ` (blank block) not `# heading`.
+
+**Known remaining**: genuine gap days (date never created, no file) still show "empty day · click to add an entry"; rendering them as a no-click blank block needs create-on-focus (PUT doesn't upsert). Keyboard j/k nav into them already creates+focuses. Per "every daily should just have a blank block" this is the next piece. (Also: a stray note like 2026-05-26 can lack `tags: [daily]` in frontmatter → excluded from the daily list = a per-note data quirk, not the general bug.)
