@@ -107,7 +107,12 @@
     const note = await api.getNote(noteId);
     const body = (note.body ?? "").replace(/\n+$/, "");
     const lastLine = body.split("\n").pop() ?? "";
-    if (/^\s*-\s*$/.test(lastLine)) return false;
+    // An empty bullet materializes WITH a stamped bid marker
+    // (`- <!-- bid:UUID -->`). Strip a trailing bid comment before the
+    // empty-bullet test, else the regex never matches a real trailing
+    // empty and we append a fresh one on every mount (accumulation).
+    const lastLineNoBid = lastLine.replace(/<!--\s*bid:[^>]*-->\s*$/, "").trimEnd();
+    if (/^\s*-\s*$/.test(lastLineNoBid)) return false;
     const newBody = (body.length > 0 ? body + "\n" : "") + "- \n";
     const fmEnd = note.content.startsWith("---") ? note.content.indexOf("---", 3) : -1;
     const splitAt = fmEnd >= 0 ? fmEnd + 3 + (note.content[fmEnd + 3] === "\n" ? 1 : 0) : 0;
