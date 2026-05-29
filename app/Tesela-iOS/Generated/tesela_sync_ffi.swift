@@ -1299,6 +1299,36 @@ public static func `open`(sqliteUrl: String, deviceIdHex: String)async throws  -
 }
     
     /**
+     * Open an authoritative **LoroEngine** for iOS (the Loro cutover).
+     * LoroEngine becomes the sole writer: it materializes
+     * `<mosaic_path>/notes/<slug>.md` on every applied change and drives
+     * the relay with the v2 (TLR2) Loro payload. Per-note Loro snapshots
+     * persist under `<mosaic_path>/.tesela/loro/` so cold launches load
+     * from snapshot instead of replaying. The read path (the iOS data
+     * layer reading sandbox `.md` files) is unchanged — Loro just owns
+     * the writes now.
+     *
+     * `mosaic_path` must be absolute (the app sandbox's mosaic dir);
+     * `device_id_hex` is the stable per-device id ([`generate_device_id_hex`]
+     * persisted across launches) — its bytes seed the Loro PeerID, the
+     * prerequisite for clean cross-device merge.
+     */
+public static func openLoro(mosaicPath: String, deviceIdHex: String)async throws  -> SyncEngineHandle  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_constructor_syncenginehandle_open_loro(FfiConverterString.lower(mosaicPath),FfiConverterString.lower(deviceIdHex)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u64,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u64,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeSyncEngineHandle_lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
      * Like [`Self::open`] but ALSO knows about a mosaic root directory,
      * so applied ops materialize into `<mosaic_path>/notes/<slug>.md`.
      * This is the iOS production shape: pass the app sandbox's
@@ -2288,6 +2318,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_constructor_syncenginehandle_open() != 2821) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_constructor_syncenginehandle_open_loro() != 54255) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_constructor_syncenginehandle_open_with_mosaic() != 11981) {

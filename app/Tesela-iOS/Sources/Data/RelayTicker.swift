@@ -307,10 +307,14 @@ final class RelayTicker: ObservableObject {
             at: mosaicRoot,
             withIntermediateDirectories: true
         )
-        let sqliteURL = "sqlite:\(mosaicRoot.path)/sync.db"
         let deviceHex = Self.persistedDeviceIdHex()
-        let opened = try await SyncEngineHandle.openWithMosaic(
-            sqliteUrl: sqliteURL,
+        // Loro cutover: the iOS engine is now the authoritative LoroEngine.
+        // It materializes <mosaic>/notes/<slug>.md (the read path is
+        // unchanged — the data layer still reads those files) and drives
+        // the relay with the v2 (TLR2) Loro payload. Per-note snapshots
+        // live under <mosaic>/.tesela/loro/ for fast cold launches. No
+        // sqlite db; SqliteEngine is bypassed.
+        let opened = try await SyncEngineHandle.openLoro(
             mosaicPath: mosaicRoot.path,
             deviceIdHex: deviceHex
         )
