@@ -213,7 +213,17 @@ struct Inner {
     /// (bounded — each op is re-sent at most once per device that
     /// imports it). In-memory for now; the live relay wiring will
     /// persist it alongside relay_state.
+    ///
+    /// Persisted to `<snapshot_dir>/_broadcast.bin` so a restart doesn't
+    /// re-broadcast every note's full state. Loaded in `with_dirs`, saved
+    /// after each `produce_relay_updates`.
     broadcast_cursor: RwLock<HashMap<[u8; 16], Vec<u8>>>,
+    /// When set (authoritative-writer mode), the `notes/` directory this
+    /// engine materializes `<slug>.md` files into on every applied change
+    /// — making LoroEngine the SOLE writer of the mosaic. `None` for the
+    /// in-memory shadow / non-authoritative paths, which never touch disk
+    /// beyond their `.bin` snapshots.
+    materialize_dir: Option<PathBuf>,
 }
 
 impl LoroEngine {
@@ -230,6 +240,7 @@ impl LoroEngine {
                 index: LoroDoc::new(),
                 block_index: RwLock::new(HashMap::new()),
                 broadcast_cursor: RwLock::new(HashMap::new()),
+                materialize_dir: None,
             }),
         }
     }
@@ -248,6 +259,21 @@ impl LoroEngine {
         hlc: Arc<Hlc>,
         snapshot_dir: PathBuf,
     ) -> SyncResult<Self> {
+        Self::with_dirs(device, hlc, snapshot_dir, None).await
+    }
+
+    /// Construct a Loro engine that persists snapshots under
+    /// `snapshot_dir` and, when `materialize_dir` is `Some`, writes
+    /// canonical `<slug>.md` files into it on every applied change
+    /// (authoritative-writer mode — LoroEngine becomes the sole writer of
+    /// the mosaic). `materialize_dir` is the `notes/` directory, matching
+    /// the `<mosaic>/notes/<slug>.md` convention `FsNoteStore` reads from.
+    pub async fn with_dirs(
+        device: DeviceId,
+        hlc: Arc<Hlc>,
+        snapshot_dir: PathBuf,
+        materialize_dir: Option<PathBuf>,
+    ) -> SyncResult<Self> {
         tokio::fs::create_dir_all(&snapshot_dir)
             .await
             .map_err(|e| {
@@ -256,6 +282,14 @@ impl LoroEngine {
                     snapshot_dir.display()
                 ))
             })?;
+        if let Some(dir) = materialize_dir.as_ref() {
+            tokio::fs::create_dir_all(dir).await.map_err(|e| {
+                SyncError::Storage(format!(
+                    "create loro materialize dir {}: {e}",
+                    dir.display()
+                ))
+            })?;
+        }
         let docs = load_snapshots_from_dir(&snapshot_dir).await?;
         // Load the index doc snapshot if present (best-effort: a missing
         // or corrupt index is rebuilt as NoteUpserts re-flow / re-seed).
@@ -283,6 +317,9 @@ impl LoroEngine {
         let needs_rebuild = stored_version != INDEX_SCHEMA_VERSION && !docs.is_empty();
         // Build the block_index from the loaded docs (block_id → note_id).
         let block_index = build_block_index(&docs);
+        // Restore per-note broadcast cursors so a restart doesn't re-emit
+        // every note's full state on the next relay tick (best-effort).
+        let broadcast_cursor = load_broadcast_cursors(&snapshot_dir).await;
         let engine = Self {
             inner: Arc::new(Inner {
                 docs: RwLock::new(docs),
@@ -291,7 +328,8 @@ impl LoroEngine {
                 snapshot_dir: Some(snapshot_dir.clone()),
                 index,
                 block_index: RwLock::new(block_index),
-                broadcast_cursor: RwLock::new(HashMap::new()),
+                broadcast_cursor: RwLock::new(broadcast_cursor),
+                materialize_dir,
             }),
         };
         if needs_rebuild {
@@ -359,6 +397,10 @@ impl LoroEngine {
         if let Some(dir) = self.inner.snapshot_dir.as_ref() {
             self.save_snapshot(dir, note_id).await;
         }
+        // Authoritative-writer mode: a peer's edit must land on disk too.
+        if self.inner.materialize_dir.is_some() {
+            self.materialize_note(note_id).await;
+        }
         Ok(())
     }
 
@@ -392,6 +434,11 @@ impl LoroEngine {
                     .await
                     .insert(note_id, current);
             }
+        }
+        // Persist advanced cursors so a restart doesn't re-broadcast
+        // every note's full state (best-effort).
+        if !out.is_empty() {
+            self.save_broadcast_cursors().await;
         }
         out
     }
@@ -809,6 +856,190 @@ impl LoroEngine {
                 }
             }
         }
+    }
+
+    /// Resolve a note's filename slug. Reads the doc's `root.slug` meta
+    /// (set on every NoteUpsert), falling back to the index entry. Used
+    /// to name the materialized `<slug>.md` file.
+    async fn slug_for_note(&self, note_id: [u8; 16]) -> Option<String> {
+        {
+            let docs = self.inner.docs.read().await;
+            if let Some(doc) = docs.get(&note_id) {
+                let slug = doc
+                    .get_map("root")
+                    .get("slug")
+                    .and_then(|v| v.into_value().ok())
+                    .and_then(|v| v.into_string().ok())
+                    .map(|s| (*s).clone())
+                    .unwrap_or_default();
+                if !slug.is_empty() {
+                    return Some(slug);
+                }
+            }
+        }
+        let key = hex_id(&note_id);
+        self.index_entries()
+            .await
+            .into_iter()
+            .find(|e| e.note_id == key)
+            .map(|e| e.slug)
+            .filter(|s| !s.is_empty())
+    }
+
+    /// Write the note's canonical full `.md` (frontmatter + body) to
+    /// `<materialize_dir>/<slug>.md` via atomic tmp+rename. No-op when
+    /// `materialize_dir` is unset (non-authoritative) or the slug can't
+    /// be resolved. This is what makes LoroEngine the sole writer of the
+    /// mosaic in authoritative mode.
+    async fn materialize_note(&self, note_id: [u8; 16]) {
+        let Some(dir) = self.inner.materialize_dir.as_ref() else {
+            return;
+        };
+        let Some(full) = self.render_note_full(note_id).await else {
+            return;
+        };
+        let Some(slug) = self.slug_for_note(note_id).await else {
+            tracing::warn!(
+                "tesela-sync/loro: cannot materialize {} — no slug",
+                hex_id(&note_id)
+            );
+            return;
+        };
+        let path = dir.join(format!("{slug}.md"));
+        let tmp = unique_tmp(&path);
+        if let Err(e) = tokio::fs::write(&tmp, full.as_bytes()).await {
+            tracing::warn!("tesela-sync/loro: materialize write {}: {e}", tmp.display());
+            return;
+        }
+        if let Err(e) = tokio::fs::rename(&tmp, &path).await {
+            tracing::warn!("tesela-sync/loro: materialize rename {}: {e}", path.display());
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
+    }
+
+    /// Remove a materialized `<slug>.md` (authoritative NoteDelete). No-op
+    /// when `materialize_dir` is unset or the file is already gone.
+    async fn remove_materialized(&self, slug: &str) {
+        let Some(dir) = self.inner.materialize_dir.as_ref() else {
+            return;
+        };
+        let path = dir.join(format!("{slug}.md"));
+        if let Err(e) = tokio::fs::remove_file(&path).await {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                tracing::warn!("tesela-sync/loro: materialize delete {}: {e}", path.display());
+            }
+        }
+    }
+
+    /// Persist the per-note broadcast cursors to `<snapshot_dir>/_broadcast.bin`
+    /// (postcard of `Vec<(note_id, encoded_vv)>`). Best-effort; a lost
+    /// cursor only costs a redundant (idempotent) full re-broadcast.
+    async fn save_broadcast_cursors(&self) {
+        let Some(dir) = self.inner.snapshot_dir.as_ref() else {
+            return;
+        };
+        let entries: Vec<([u8; 16], Vec<u8>)> = self
+            .inner
+            .broadcast_cursor
+            .read()
+            .await
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+        let bytes = match postcard::to_allocvec(&entries) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!("tesela-sync/loro: broadcast cursor encode: {e}");
+                return;
+            }
+        };
+        let path = dir.join("_broadcast.bin");
+        let tmp = unique_tmp(&path);
+        if tokio::fs::write(&tmp, &bytes).await.is_ok() {
+            if tokio::fs::rename(&tmp, &path).await.is_err() {
+                let _ = tokio::fs::remove_file(&tmp).await;
+            }
+        } else {
+            let _ = tokio::fs::remove_file(&tmp).await;
+        }
+    }
+
+    /// Reseed every note's Loro doc from the authoritative `.md` files in
+    /// `notes_dir` by replaying a `NoteUpsert` per file. For notes already
+    /// resident, `apply_payload`'s NoteUpsert tree-reconcile corrects a
+    /// drifted/stale doc to match disk (the fix for the stale-shadow
+    /// divergences the materialization dry-run found). For new notes it
+    /// seeds them. This is the canonical-device bootstrap for the cutover
+    /// — the source of truth on first authoritative boot is DISK, not the
+    /// frozen oplog/snapshots. Returns the number of files processed.
+    ///
+    /// NOTE: independent disk-reseed on multiple devices mints
+    /// non-merging Loro nodes; only the designated canonical device
+    /// reseeds, the rest bootstrap by importing from the relay.
+    pub async fn reseed_from_disk(&self, notes_dir: &Path) -> SyncResult<usize> {
+        let mut entries = match tokio::fs::read_dir(notes_dir).await {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => {
+                return Err(SyncError::Storage(format!(
+                    "reseed read dir {}: {e}",
+                    notes_dir.display()
+                )))
+            }
+        };
+        let mut count = 0usize;
+        while let Some(entry) = entries.next_entry().await.map_err(|e| {
+            SyncError::Storage(format!("reseed read_dir {}: {e}", notes_dir.display()))
+        })? {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            let content = match tokio::fs::read_to_string(&path).await {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("tesela-sync/loro: reseed read {}: {e}", path.display());
+                    continue;
+                }
+            };
+            let hash = blake3::hash(stem.as_bytes());
+            let mut note_id = [0u8; 16];
+            note_id.copy_from_slice(&hash.as_bytes()[..16]);
+            let title = frontmatter_title(&content).unwrap_or_else(|| stem.to_string());
+            let payload = OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some(stem.to_string()),
+                title,
+                content,
+                created_at_millis: 0,
+            };
+            if let Err(e) = self.apply_payload(&payload).await {
+                tracing::warn!("tesela-sync/loro: reseed apply {stem}: {e}");
+                continue;
+            }
+            count += 1;
+        }
+        Ok(count)
+    }
+}
+
+/// Load per-note broadcast cursors persisted by
+/// `LoroEngine::save_broadcast_cursors`. Missing/corrupt → empty map
+/// (a full re-broadcast on the next tick is idempotent).
+async fn load_broadcast_cursors(dir: &Path) -> HashMap<[u8; 16], Vec<u8>> {
+    let path = dir.join("_broadcast.bin");
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => match postcard::from_bytes::<Vec<([u8; 16], Vec<u8>)>>(&bytes) {
+            Ok(entries) => entries.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!("tesela-sync/loro: broadcast cursor decode: {e}");
+                HashMap::new()
+            }
+        },
+        Err(_) => HashMap::new(),
     }
 }
 
@@ -1258,6 +1489,22 @@ impl SyncEngine for LoroEngine {
         LoroEngine::render_note_full(self, note_id).await
     }
 
+    /// Loro drives the relay with the v2 payload only when it's the
+    /// authoritative writer (materialize_dir set). A non-authoritative
+    /// LoroEngine (e.g. a dual-write shadow used directly) stays off the
+    /// relay-producer path.
+    fn uses_loro_relay_payload(&self) -> bool {
+        self.inner.materialize_dir.is_some()
+    }
+
+    async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>)> {
+        LoroEngine::produce_relay_updates(self).await
+    }
+
+    async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> usize {
+        LoroEngine::apply_relay_updates(self, updates).await
+    }
+
     async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
         self.note_ids().await
     }
@@ -1289,6 +1536,25 @@ impl LoroEngine {
                 OpPayload::NoteUpsert { .. } | OpPayload::NoteDelete { .. }
             ) {
                 self.save_index_snapshot(dir).await;
+            }
+        }
+        // Authoritative-writer materialization: write (or delete) the
+        // `<slug>.md` file so disk reflects the CRDT. No-op unless
+        // `materialize_dir` is set. NoteDelete removes the file (its doc
+        // is already gone, so render returns None) using the slug the op
+        // carries; all other ops re-render the touched note.
+        if self.inner.materialize_dir.is_some() {
+            match payload {
+                OpPayload::NoteDelete { display_alias, .. } => {
+                    if let Some(slug) = display_alias {
+                        self.remove_materialized(slug).await;
+                    }
+                }
+                _ => {
+                    if let Some(note_id) = touched_note {
+                        self.materialize_note(note_id).await;
+                    }
+                }
             }
         }
         Ok(())
@@ -2771,5 +3037,286 @@ mod tests {
             rendered,
             "- second <!-- bid:14141414-1414-1414-1414-141414141414 -->\n"
         );
+    }
+
+    // ── Authoritative-writer cutover ─────────────────────────────────
+
+    #[tokio::test]
+    async fn authoritative_engine_materializes_and_deletes_md_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("loro");
+        let notes = tmp.path().join("notes");
+        let dev = test_device();
+        let engine = LoroEngine::with_dirs(
+            dev,
+            Arc::new(Hlc::new(dev)),
+            snap,
+            Some(notes.clone()),
+        )
+        .await
+        .unwrap();
+        let note_id = blake3_note_id("daily");
+        let content =
+            "---\ntitle: Daily\n---\n\n- one <!-- bid:30303030-3030-3030-3030-303030303030 -->\n";
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("daily".into()),
+                title: "Daily".into(),
+                content: content.into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let path = notes.join("daily.md");
+        let on_disk = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(on_disk, content, "NoteUpsert materializes the full file");
+
+        // A block append rewrites the file with both bullets.
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: [0x31; 16],
+                note_id,
+                parent_block_id: None,
+                order_key: "b".into(),
+                indent_level: 0,
+                text: "two".into(),
+            })
+            .await
+            .unwrap();
+        let on_disk = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(on_disk.contains("- one ") && on_disk.contains("- two "), "block append materialized: {on_disk:?}");
+        assert!(on_disk.starts_with("---\ntitle: Daily\n---\n"), "frontmatter preserved");
+
+        // NoteDelete removes the file.
+        engine
+            .record_local(OpPayload::NoteDelete {
+                note_id,
+                display_alias: Some("daily".into()),
+            })
+            .await
+            .unwrap();
+        assert!(!path.exists(), "NoteDelete removes the materialized file");
+    }
+
+    #[tokio::test]
+    async fn non_authoritative_engine_writes_no_md_files() {
+        // Without materialize_dir, the engine must not touch the notes dir.
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("loro");
+        let dev = test_device();
+        let engine = LoroEngine::with_dirs(dev, Arc::new(Hlc::new(dev)), snap, None)
+            .await
+            .unwrap();
+        assert!(!engine.uses_loro_relay_payload(), "no materialize_dir → not authoritative");
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: blake3_note_id("x"),
+                display_alias: Some("x".into()),
+                title: "X".into(),
+                content: "- hi <!-- bid:32323232-3232-3232-3232-323232323232 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        // Only the snapshot dir should exist; no notes/ dir was created.
+        assert!(!tmp.path().join("notes").exists(), "no .md materialization when non-authoritative");
+    }
+
+    #[tokio::test]
+    async fn reseed_from_disk_tracks_and_canonicalizes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("loro");
+        let notes = tmp.path().join("notes");
+        tokio::fs::create_dir_all(&notes).await.unwrap();
+        // A canonical note and a non-canonical one (bullet missing its bid
+        // — reseed will stamp + re-render canonically).
+        tokio::fs::write(
+            notes.join("alpha.md"),
+            "---\ntitle: Alpha\n---\n\n- a1 <!-- bid:40404040-4040-4040-4040-404040404040 -->\n",
+        )
+        .await
+        .unwrap();
+        tokio::fs::write(notes.join("beta.md"), "- just text\n")
+            .await
+            .unwrap();
+        let dev = test_device();
+        let engine = LoroEngine::with_dirs(
+            dev,
+            Arc::new(Hlc::new(dev)),
+            snap,
+            Some(notes.clone()),
+        )
+        .await
+        .unwrap();
+        let n = engine.reseed_from_disk(&notes).await.unwrap();
+        assert_eq!(n, 2, "both .md files reseeded");
+        // Both notes are now tracked + render their content.
+        let alpha = blake3_note_id("alpha");
+        let rendered = engine.render_note(alpha).await.unwrap();
+        assert!(rendered.contains("a1"), "alpha block present: {rendered:?}");
+        // beta got a canonical bid stamped on its bullet (was bare).
+        let beta = blake3_note_id("beta");
+        let rb = engine.render_note(beta).await.unwrap();
+        assert!(rb.contains("- just text") && rb.contains("<!-- bid:"), "beta canonicalized: {rb:?}");
+    }
+
+    #[tokio::test]
+    async fn two_authoritative_engines_converge_through_wire_codec() {
+        // The real relay-payload path minus HTTP: A produces relay
+        // updates → encode_loro_relay_payload (the TLR2 v2 wire) → decode
+        // → B.apply_relay_updates. Both materialize identical files and
+        // converge with no flashing, exactly as two Macs over the relay.
+        use crate::wire::{decode_loro_relay_payload, encode_loro_relay_payload, LoroDocUpdate};
+
+        let tmp_a = tempfile::tempdir().unwrap();
+        let tmp_b = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let a = LoroEngine::with_dirs(
+            dev_a,
+            Arc::new(Hlc::new(dev_a)),
+            tmp_a.path().join("loro"),
+            Some(tmp_a.path().join("notes")),
+        )
+        .await
+        .unwrap();
+        let b = LoroEngine::with_dirs(
+            dev_b,
+            Arc::new(Hlc::new(dev_b)),
+            tmp_b.path().join("loro"),
+            Some(tmp_b.path().join("notes")),
+        )
+        .await
+        .unwrap();
+        assert!(a.uses_loro_relay_payload() && b.uses_loro_relay_payload());
+
+        // Helper: ship A's produced updates to B through the wire codec.
+        async fn ship(from: &LoroEngine, to: &LoroEngine) -> usize {
+            let updates = from.produce_relay_updates().await;
+            if updates.is_empty() {
+                return 0;
+            }
+            let payload: Vec<LoroDocUpdate> = updates
+                .into_iter()
+                .map(|(doc, update_bytes)| LoroDocUpdate { doc, update_bytes })
+                .collect();
+            let wire = encode_loro_relay_payload(&payload).unwrap();
+            let decoded = decode_loro_relay_payload(&wire).unwrap().expect("v2 payload");
+            let pairs: Vec<([u8; 16], Vec<u8>)> =
+                decoded.into_iter().map(|u| (u.doc, u.update_bytes)).collect();
+            to.apply_relay_updates(&pairs).await
+        }
+
+        let note = blake3_note_id("shared");
+        a.record_local(OpPayload::NoteUpsert {
+            note_id: note,
+            display_alias: Some("shared".into()),
+            title: "Shared".into(),
+            content: "- base <!-- bid:50505050-5050-5050-5050-505050505050 -->\n".into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+        // A → B bootstrap.
+        assert!(ship(&a, &b).await >= 1, "B received the note");
+        assert_eq!(
+            a.render_note(note).await,
+            b.render_note(note).await,
+            "bootstrapped equal"
+        );
+        // Both have materialized the file.
+        let fa = tmp_a.path().join("notes").join("shared.md");
+        let fb = tmp_b.path().join("notes").join("shared.md");
+        assert!(fa.exists() && fb.exists(), "both materialized shared.md");
+        assert_eq!(
+            tokio::fs::read_to_string(&fa).await.unwrap(),
+            tokio::fs::read_to_string(&fb).await.unwrap(),
+            "materialized files identical"
+        );
+
+        // Concurrent edits, exchanged both ways.
+        a.record_local(OpPayload::BlockUpsert {
+            block_id: [0x5a; 16],
+            note_id: note,
+            parent_block_id: None,
+            order_key: "a".into(),
+            indent_level: 0,
+            text: "from A".into(),
+        })
+        .await
+        .unwrap();
+        b.record_local(OpPayload::BlockUpsert {
+            block_id: [0x5b; 16],
+            note_id: note,
+            parent_block_id: None,
+            order_key: "b".into(),
+            indent_level: 0,
+            text: "from B".into(),
+        })
+        .await
+        .unwrap();
+        // Two ticks each direction to fully exchange.
+        ship(&a, &b).await;
+        ship(&b, &a).await;
+        ship(&a, &b).await;
+        ship(&b, &a).await;
+
+        let ra = a.render_note(note).await.unwrap();
+        let rb = b.render_note(note).await.unwrap();
+        assert_eq!(ra, rb, "engines converge — no flashing");
+        assert!(ra.contains("base") && ra.contains("from A") && ra.contains("from B"));
+        assert_eq!(
+            tokio::fs::read_to_string(&fa).await.unwrap(),
+            tokio::fs::read_to_string(&fb).await.unwrap(),
+            "materialized files converge"
+        );
+
+        // Steady state: another exchange ships nothing (bounded broadcast).
+        assert_eq!(ship(&a, &b).await, 0, "no re-broadcast at steady state");
+    }
+
+    #[tokio::test]
+    async fn broadcast_cursors_persist_across_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("loro");
+        let notes = tmp.path().join("notes");
+        let dev = test_device();
+        let note = blake3_note_id("persist");
+        {
+            let engine = LoroEngine::with_dirs(
+                dev,
+                Arc::new(Hlc::new(dev)),
+                snap.clone(),
+                Some(notes.clone()),
+            )
+            .await
+            .unwrap();
+            engine
+                .record_local(OpPayload::NoteUpsert {
+                    note_id: note,
+                    display_alias: Some("persist".into()),
+                    title: "P".into(),
+                    content: "- x <!-- bid:60606060-6060-6060-6060-606060606060 -->\n".into(),
+                    created_at_millis: 1,
+                })
+                .await
+                .unwrap();
+            let first = engine.produce_relay_updates().await;
+            assert_eq!(first.len(), 1, "first produce emits the note");
+        }
+        // Reopen: cursor was persisted, so produce emits nothing new.
+        let engine = LoroEngine::with_dirs(dev, Arc::new(Hlc::new(dev)), snap, Some(notes))
+            .await
+            .unwrap();
+        let again = engine.produce_relay_updates().await;
+        assert!(again.is_empty(), "persisted cursor suppresses re-broadcast after restart");
+    }
+
+    fn blake3_note_id(slug: &str) -> [u8; 16] {
+        let h = blake3::hash(slug.as_bytes());
+        let mut id = [0u8; 16];
+        id.copy_from_slice(&h.as_bytes()[..16]);
+        id
     }
 }

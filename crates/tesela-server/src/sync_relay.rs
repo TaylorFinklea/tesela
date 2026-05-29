@@ -169,20 +169,60 @@ pub async fn tick(
                     continue;
                 }
                 let peer = env.from_device;
-                match engine.apply_changes(peer, env).await {
-                    Ok(_applied) => {
-                        applied_total += 1;
-                        if seq > max_seq {
-                            max_seq = seq;
+                if engine.uses_loro_relay_payload() {
+                    // Loro v2 path: the envelope plaintext is the `TLR2`
+                    // magic + postcard(Vec<LoroDocUpdate>). Import each
+                    // per-note update (idempotent + commutative). A
+                    // non-v2 payload (legacy / foreign) decodes to None;
+                    // we skip it but still advance the relay cursor so we
+                    // don't re-fetch it forever.
+                    match tesela_sync::decode_loro_relay_payload(&env.ciphertext) {
+                        Ok(Some(updates)) => {
+                            let pairs: Vec<([u8; 16], Vec<u8>)> = updates
+                                .into_iter()
+                                .map(|u| (u.doc, u.update_bytes))
+                                .collect();
+                            let n = engine.apply_relay_updates(&pairs).await;
+                            applied_total += n as u32;
+                            if seq > max_seq {
+                                max_seq = seq;
+                            }
+                        }
+                        Ok(None) => {
+                            tracing::debug!(
+                                "relay: skip non-v2 payload seq={} from={}",
+                                seq,
+                                hex::encode(peer.as_bytes())
+                            );
+                            if seq > max_seq {
+                                max_seq = seq;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "relay loro apply seq={} from={}: {}",
+                                seq,
+                                hex::encode(peer.as_bytes()),
+                                e
+                            );
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            "relay apply seq={} from={}: {}",
-                            seq,
-                            hex::encode(peer.as_bytes()),
-                            e
-                        );
+                } else {
+                    match engine.apply_changes(peer, env).await {
+                        Ok(_applied) => {
+                            applied_total += 1;
+                            if seq > max_seq {
+                                max_seq = seq;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "relay apply seq={} from={}: {}",
+                                seq,
+                                hex::encode(peer.as_bytes()),
+                                e
+                            );
+                        }
                     }
                 }
             }
@@ -204,6 +244,51 @@ pub async fn tick(
 
     // ─── Outbound ────────────────────────────────────────────────────
     let our_device = engine.device();
+
+    // Loro v2 outbound: broadcast per-note Loro updates accrued since
+    // each note's last-broadcast version vector (the engine tracks +
+    // persists those cursors internally). One envelope carries the whole
+    // batch; receivers import idempotently. No HLC outbound cursor — the
+    // engine's per-note VV cursors are the watermark.
+    if engine.uses_loro_relay_payload() {
+        let updates = engine.produce_relay_updates().await;
+        if !updates.is_empty() {
+            let payload: Vec<tesela_sync::LoroDocUpdate> = updates
+                .into_iter()
+                .map(|(doc, update_bytes)| tesela_sync::LoroDocUpdate { doc, update_bytes })
+                .collect();
+            match tesela_sync::encode_loro_relay_payload(&payload) {
+                Ok(ciphertext) => {
+                    let envelope = SyncEnvelope {
+                        from_device: our_device,
+                        to_group: ident.group_id,
+                        nonce: [0u8; 24],
+                        ciphertext,
+                    };
+                    match handle.client.put_envelope(envelope).await {
+                        Ok((_seq, _ts)) => {
+                            sent_total += 1;
+                            state.last_put_at = Some(now_secs_i64());
+                            state.last_error = None;
+                        }
+                        Err(e) => {
+                            let msg = format!("relay put (loro): {e}");
+                            tracing::warn!("{msg}");
+                            state.last_error = Some(msg);
+                        }
+                    }
+                }
+                Err(e) => {
+                    state.last_error = Some(format!("encode loro payload: {e}"));
+                }
+            }
+        }
+        if let Err(e) = state.save(&handle.mosaic_root).await {
+            tracing::warn!("relay state save: {e}");
+        }
+        return Ok((applied_total, sent_total));
+    }
+
     let outbound_cursor = match state.outbound_cursor_ntp {
         Some(ntp) => PeerCursor::At(HlcTimestamp::from_ntp64_i64(ntp, our_device)),
         None => PeerCursor::Earliest,

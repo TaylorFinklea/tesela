@@ -61,6 +61,7 @@ pub use engine::{
     AppliedChanges, LocalCursor, ParkedSummary, PeerCursor, ProducedBatch, ReplayReport,
     SyncEngine,
 };
+pub use engine::loro_engine::LoroEngine;
 pub use engine::sqlite_engine::SqliteEngine;
 pub use oplog::parked::ParkReason;
 pub use error::{SyncError, SyncResult};
@@ -71,6 +72,9 @@ pub use oplog::op::{ContentHash, EncodedOp, OpKind, OpPayload};
 pub use transport::loopback::LoopbackTransport;
 pub use transport::{Transport, TransportSession, TransportTarget, TransportTickReport};
 pub use wire::envelope::SyncEnvelope;
+pub use wire::{
+    decode_loro_relay_payload, encode_loro_relay_payload, LoroDocUpdate, LORO_RELAY_MAGIC,
+};
 
 /// The sync op schema version stamped onto every locally produced op.
 ///

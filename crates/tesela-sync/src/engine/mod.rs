@@ -134,6 +134,29 @@ pub trait SyncEngine: Send + Sync {
         None
     }
 
+    /// True when this engine drives the relay with the Loro v2 payload
+    /// (per-note `LoroDocUpdate` bytes behind the `TLR2` magic) instead of
+    /// the legacy `Vec<EncodedOp>`. Only the authoritative `LoroEngine`
+    /// returns true; the relay `tick` branches on it. Default false keeps
+    /// every other engine on the legacy wire.
+    fn uses_loro_relay_payload(&self) -> bool {
+        false
+    }
+
+    /// Produce the per-note Loro updates to broadcast this relay tick:
+    /// `(note_id, update_bytes)` for every note changed since its last
+    /// broadcast. The `tick` wraps these in the v2 envelope payload.
+    /// Default empty (non-Loro engines).
+    async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>)> {
+        Vec::new()
+    }
+
+    /// Apply a batch of inbound per-note Loro updates from the relay
+    /// (idempotent + commutative). Returns the count applied. Default 0.
+    async fn apply_relay_updates(&self, _updates: &[([u8; 16], Vec<u8>)]) -> usize {
+        0
+    }
+
     /// Enumerate every note id the engine tracks. Default empty.
     /// `DualEngine` overrides to return the shadow's tracked notes;
     /// `SqliteEngine` returns empty because oplog enumeration would be

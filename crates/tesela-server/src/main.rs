@@ -247,6 +247,52 @@ async fn main() -> Result<()> {
     let sync_engine: Arc<dyn tesela_sync::SyncEngine> = {
         let url = format!("sqlite:{}", db_path.display());
         let device = load_or_create_device_id(&mosaic).await;
+
+        // Authoritative cutover: when `TESELA_LORO_AUTHORITATIVE` is set,
+        // LoroEngine becomes the SOLE writer — it materializes
+        // `<mosaic>/notes/<slug>.md` on every change and drives the relay
+        // with the Loro v2 payload. SqliteEngine is bypassed entirely
+        // (reads come from `FsNoteStore` off disk, which Loro now owns).
+        // `TESELA_LORO_RESEED` additionally reseeds every note from disk
+        // at boot — the canonical-device bootstrap (source of truth =
+        // disk, not the frozen oplog/snapshots). Only ONE device should
+        // reseed; peers bootstrap by importing from the relay.
+        let loro_authoritative = std::env::var("TESELA_LORO_AUTHORITATIVE")
+            .map(|v| !v.is_empty())
+            .unwrap_or(false);
+        if loro_authoritative {
+            info!(
+                "tesela-sync: TESELA_LORO_AUTHORITATIVE=1 — LoroEngine is the \
+                 sole writer; SqliteEngine bypassed"
+            );
+            let snapshot_dir = mosaic.join(".tesela").join("loro");
+            let notes_dir = mosaic.join("notes");
+            let hlc = Arc::new(tesela_sync::Hlc::new(device));
+            let loro = tesela_sync::LoroEngine::with_dirs(
+                device,
+                hlc,
+                snapshot_dir,
+                Some(notes_dir.clone()),
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("open loro engine: {e}"))?;
+            info!("tesela-sync: device id = {}", loro.device().to_hex());
+            let reseed = std::env::var("TESELA_LORO_RESEED")
+                .map(|v| !v.is_empty())
+                .unwrap_or(false);
+            if reseed {
+                match loro.reseed_from_disk(&notes_dir).await {
+                    Ok(n) => info!(
+                        "tesela-sync: reseeded {n} notes from disk into Loro \
+                         (authoritative canonical bootstrap)"
+                    ),
+                    Err(e) => {
+                        tracing::warn!("tesela-sync: reseed_from_disk failed: {e}")
+                    }
+                }
+            }
+            Arc::new(loro)
+        } else {
         let primary = SqliteEngine::open_with_mosaic(
             &url,
             Some(mosaic_for_shutdown.clone()),
@@ -298,6 +344,7 @@ async fn main() -> Result<()> {
             Arc::new(dual)
         } else {
             Arc::new(primary)
+        }
         }
     };
 
