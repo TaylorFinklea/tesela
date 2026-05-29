@@ -62,6 +62,11 @@ serde_json.workspace = true
 # becomes the sole data layer after cutover.
 loro = "1.10"
 
+# DEFLATE for the relay payload — Loro snapshots are text-heavy and
+# compress ~3-4×, keeping large notes under the relay body limit. Pure
+# Rust, already in the tree transitively.
+miniz_oxide = "0.8"
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio-test.workspace = true

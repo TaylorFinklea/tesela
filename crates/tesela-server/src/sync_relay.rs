@@ -264,44 +264,44 @@ pub async fn tick(
         // advanced — we commit it only after the PUT is confirmed, so a
         // failed send is retried next tick rather than dropped.
         let updates = engine.produce_relay_updates().await;
-        if !updates.is_empty() {
-            let payload: Vec<tesela_sync::LoroDocUpdate> = updates
-                .iter()
-                .map(|(doc, update_bytes, _vv)| tesela_sync::LoroDocUpdate {
-                    doc: *doc,
-                    update_bytes: update_bytes.clone(),
-                })
-                .collect();
-            match tesela_sync::encode_loro_relay_payload(&payload) {
-                Ok(ciphertext) => {
-                    let envelope = SyncEnvelope {
-                        from_device: our_device,
-                        to_group: ident.group_id,
-                        nonce: [0u8; 24],
-                        ciphertext,
-                    };
-                    match handle.client.put_envelope(envelope).await {
-                        Ok((_seq, _ts)) => {
-                            // Confirmed — advance + persist the cursors.
-                            let committed: Vec<([u8; 16], Vec<u8>)> = updates
-                                .into_iter()
-                                .map(|(doc, _bytes, vv)| (doc, vv))
-                                .collect();
-                            engine.commit_broadcast_cursors(&committed).await;
-                            sent_total += 1;
-                            state.last_put_at = Some(now_secs_i64());
-                            state.last_error = None;
-                        }
-                        Err(e) => {
-                            // No commit → same deltas re-produced next tick.
-                            let msg = format!("relay put (loro): {e}");
-                            tracing::warn!("{msg}");
-                            state.last_error = Some(msg);
-                        }
-                    }
-                }
+        // Chunk into size-bounded batches so each PUT fits the relay body
+        // limit — the canonical bootstrap broadcasts every note's full
+        // state and would otherwise 413. Commit each batch's cursors only
+        // after its PUT confirms; stop on the first failure so uncommitted
+        // batches re-produce next tick.
+        let batches = tesela_sync::pack_loro_relay_batches(
+            updates,
+            tesela_sync::MAX_RELAY_PLAINTEXT_BYTES,
+        );
+        for (payload, committed) in batches {
+            let ciphertext = match tesela_sync::encode_loro_relay_payload(&payload) {
+                Ok(c) => c,
                 Err(e) => {
                     state.last_error = Some(format!("encode loro payload: {e}"));
+                    continue;
+                }
+            };
+            let envelope = SyncEnvelope {
+                from_device: our_device,
+                to_group: ident.group_id,
+                nonce: [0u8; 24],
+                ciphertext,
+            };
+            match handle.client.put_envelope(envelope).await {
+                Ok((_seq, _ts)) => {
+                    engine.commit_broadcast_cursors(&committed).await;
+                    sent_total += 1;
+                    state.last_put_at = Some(now_secs_i64());
+                    state.last_error = None;
+                }
+                Err(e) => {
+                    // Don't let one over-limit / transient-failed batch
+                    // block the other notes — skip it (its cursor stays
+                    // uncommitted, so it retries next tick) and keep going.
+                    let msg = format!("relay put (loro): {e}");
+                    tracing::warn!("{msg}");
+                    state.last_error = Some(msg);
+                    continue;
                 }
             }
         }

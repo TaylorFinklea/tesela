@@ -73,7 +73,8 @@ pub use transport::loopback::LoopbackTransport;
 pub use transport::{Transport, TransportSession, TransportTarget, TransportTickReport};
 pub use wire::envelope::SyncEnvelope;
 pub use wire::{
-    decode_loro_relay_payload, encode_loro_relay_payload, LoroDocUpdate, LORO_RELAY_MAGIC,
+    decode_loro_relay_payload, encode_loro_relay_payload, pack_loro_relay_batches, LoroDocUpdate,
+    LORO_RELAY_MAGIC, MAX_RELAY_PLAINTEXT_BYTES,
 };
 
 /// The sync op schema version stamped onto every locally produced op.

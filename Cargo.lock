@@ -4955,6 +4955,7 @@ dependencies = [
  "hmac",
  "loro",
  "mdns-sd",
+ "miniz_oxide",
  "postcard",
  "rand 0.8.5",
  "reqwest",

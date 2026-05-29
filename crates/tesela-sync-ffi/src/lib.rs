@@ -16,7 +16,7 @@ use tesela_sync::{
     engine::{PeerCursor, SqliteEngine, SyncEngine},
     oplog::op::OpPayload,
     transport::relay::RelayClient,
-    DeviceId, GroupId, GroupKey, Hlc, LoroDocUpdate, LoroEngine, SyncEnvelope,
+    DeviceId, GroupId, GroupKey, Hlc, LoroEngine, SyncEnvelope,
     PairingCode as InnerPairingCode,
 };
 use tokio::sync::Mutex;
@@ -620,44 +620,47 @@ impl SyncCoordinator {
         // send retries the same delta. Mirrors `tesela_server::sync_relay::tick`.
         if self.engine.inner.uses_loro_relay_payload() {
             let updates = self.engine.inner.produce_relay_updates().await;
-            if updates.is_empty() {
-                return Ok(TickOutboundRecord {
-                    ops_sent: 0,
-                    relay_seq: None,
-                    new_cursor_ntp: None,
-                });
+            // Chunk into size-bounded batches so each PUT fits the relay
+            // body limit (the canonical bootstrap would otherwise 413).
+            // Commit each batch's cursors only after its PUT confirms; stop
+            // on the first failure so uncommitted batches retry next tick.
+            let batches = tesela_sync::pack_loro_relay_batches(
+                updates,
+                tesela_sync::MAX_RELAY_PLAINTEXT_BYTES,
+            );
+            let mut ops_count = 0u32;
+            let mut last_seq = None;
+            for (payload, committed) in batches {
+                let ciphertext = match encode_loro_relay_payload(&payload) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("tesela-sync-ffi: encode loro payload: {e}");
+                        continue;
+                    }
+                };
+                let envelope = SyncEnvelope {
+                    from_device: our_device,
+                    to_group: self.group_id,
+                    nonce: [0u8; 24],
+                    ciphertext,
+                };
+                // Skip a single failed/over-limit batch rather than
+                // aborting the whole tick — its cursor stays uncommitted
+                // so it retries next tick.
+                match self.relay.inner.put_envelope(envelope).await {
+                    Ok((seq, _ts)) => {
+                        self.engine.inner.commit_broadcast_cursors(&committed).await;
+                        ops_count += payload.len() as u32;
+                        last_seq = Some(seq);
+                    }
+                    Err(e) => {
+                        eprintln!("tesela-sync-ffi: relay put (loro): {e}");
+                    }
+                }
             }
-            let payload: Vec<LoroDocUpdate> = updates
-                .iter()
-                .map(|(doc, update_bytes, _vv)| LoroDocUpdate {
-                    doc: *doc,
-                    update_bytes: update_bytes.clone(),
-                })
-                .collect();
-            let ciphertext =
-                encode_loro_relay_payload(&payload).map_err(|e| FfiSyncError::Other {
-                    message: format!("encode loro payload: {e}"),
-                })?;
-            let ops_count = payload.len() as u32;
-            let envelope = SyncEnvelope {
-                from_device: our_device,
-                to_group: self.group_id,
-                nonce: [0u8; 24],
-                ciphertext,
-            };
-            let (seq, _ts) = self
-                .relay
-                .inner
-                .put_envelope(envelope)
-                .await
-                .map_err(FfiSyncError::from)?;
-            // Confirmed — advance + persist the per-note cursors.
-            let committed: Vec<([u8; 16], Vec<u8>)> =
-                updates.into_iter().map(|(doc, _b, vv)| (doc, vv)).collect();
-            self.engine.inner.commit_broadcast_cursors(&committed).await;
             return Ok(TickOutboundRecord {
                 ops_sent: ops_count,
-                relay_seq: Some(seq),
+                relay_seq: last_seq,
                 new_cursor_ntp: None,
             });
         }
