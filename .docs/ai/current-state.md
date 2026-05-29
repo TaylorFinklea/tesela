@@ -25,7 +25,9 @@ Booted authoritative+reseed server (port 7475) on `/tmp/tesela-auth-smoke.*` (co
 - **Two real Macs** (optional pre-iOS): point two authoritative servers at one relay group (copy group identity between mosaics) — exercises the literal tesela-server `tick()` wrapper, which the e2e test mirrors but doesn't call (tesela-server is bin-only).
 - **Flag-day**: flip Taylor's real mosaic to authoritative+reseed once, delete SqliteEngine/DualEngine/Vec<EncodedOp> wire, DR drill.
 - **BlockMove under Loro**: verify web indent/outdent round-trips before flag-day.
-- An adversarial review of this diff is running (`cutover-adversarial-review` workflow); triage findings before flag-day.
+
+### Adversarial review DONE (2026-05-29) — 8 confirmed, 3 fixed, 2 deferred
+3-reviewer + per-finding-verify workflow on the diff. Fixed (commit after `1c64d52`): **[#1]** cursor advanced before send-confirm → lost delta on failed PUT (now `produce_relay_updates` returns `(id,bytes,captured_vv)` + new `commit_broadcast_cursors` advances only after confirmed PUT; failed send retries); **[#2/#3]** Loro decode-Err didn't advance `max_seq` → poison envelope stalled inbound forever; **[#4/#5/#6]** NoteDelete orphaned the `.md` when `display_alias=None` (now resolves slug before inner-delete). **Deferred [#7/#8]**: slug-rename orphans/dups — only on rename (no rename flow here; `blake3(slug)` ids consistent everywhere; common bootstrap verified on 512 notes). 102 sync + 17 relay tests green. See `decisions.md` 2026-05-29.
 
 Architecture decisions recorded in `decisions.md` (2026-05-28 entry). Old dual-write server still runs on the REAL mosaic (pid was 92195, release binary, port 7474) — harmless; not the cutover path.
 
