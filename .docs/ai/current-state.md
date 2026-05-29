@@ -20,7 +20,16 @@ Phase 3 (lazy-load/evict) is iOS-only with no consumer until the FFI swap, and i
 - Per-doc update sync: `doc_version` (encoded VV cursor), `export_doc_update(note_id, since_vv)`, `import_doc_update(note_id, bytes)` + `refresh_note_derived`. Additive — the live `Vec<EncodedOp>` relay path is untouched (dual-write intact).
 - **Keystone test** `two_engines_converge_on_concurrent_edits_no_flashing`: two engines (distinct peers) edit the same note concurrently, exchange Loro updates via VV cursors, converge to identical render, stable across re-exchange. The hand-rolled LWW engine could not do this — this is why the migration exists.
 
-### NEXT: Phase 4 step 3 / Phase 5 — wire Loro updates into the LIVE relay
+### Phase 5 engine-level DONE — relay broadcast cursor model proven (`d29e631`)
+`produce_relay_updates`/`apply_relay_updates` + per-note `broadcast_cursor`. Test `three_engines_converge_via_broadcast_relay`: 3 distinct-peer engines edit one note concurrently, broadcast rounds converge all three, steady-state round broadcasts nothing (bounded re-broadcast). The recon's #1 risk (cursor model) is de-risked at the engine level, non-destructively (live relay still on Vec<EncodedOp>). 90 sync tests green.
+
+### Cutover recon + plan banked (`edfac22`): `phases/2026-05-28-loro-cutover-phase5-6-plan.md`
+4-agent map of relay tick / FFI / materialization / iOS. **Critical resolution: the relay MUST carry Loro update bytes, not Vec<EncodedOp>** (one recon agent's op-wire approach would reintroduce flashing — replaying ops into independent docs mints non-merging peer-specific nodes). Verified: iOS runs a Rust FFI engine (SyncEngineHandle→SqliteEngine); LoroEngine producer methods were the gap (now built).
+
+### NEXT (the DESTRUCTIVE cutover — fresh effort + device): wire into the LIVE relay
+Everything up to here is non-destructive + tested by me. Remaining = the cutover proper, all in `phase5-6-plan.md` §recommended order: (1) expose per-doc sync + render via FFI; (2) live relay envelope = Loro payload behind a protocol-version byte + persist per-note broadcast cursor; (3) `TESELA_LORO_AUTHORITATIVE` flag → LoroEngine writes the .md files; (4) iOS LoroEngine + snapshot load + device-id bridge, build .a for both ios targets, install Roshar+sim; (5) flag-day + delete DualEngine/SqliteEngine/op-wire + DR drill; (6) verify web indent/outdent (BlockMove) under Loro. The hard "does Loro fix flashing" question is PROVEN; this remaining work is integration + a destructive live-wire flip whose final test (web↔iPhone convergence) needs the device.
+
+### (superseded) earlier NEXT note
 The remaining cutover-adjacent work: replace the relay envelope payload (`postcard(Vec<EncodedOp>)`) with Loro update bytes (`postcard({doc: NoteId|Index, update_bytes})`) + per-doc VV cursors, and make LoroEngine authoritative for materialization. Do NOT change the live envelope while dual-write with SqliteEngine runs — this is the cutover (Phase 5→7). Also at Phase 6: full lazy-load/evict (groundwork = block_index, done) + iOS FFI swap, verify on Roshar. Then Phase 7: flag-day cutover + delete oplog engine + DR drill.
 
 ### Earlier in the session (still true)
