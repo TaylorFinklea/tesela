@@ -26,6 +26,7 @@ enum ThemeID: String, CaseIterable, Identifiable, Codable {
     case ayuDark           = "ayu-dark"
     case monokaiPro        = "monokai-pro"
     case palenight         = "palenight"
+    case graphite          = "graphite"
 
     var id: String { rawValue }
 
@@ -51,6 +52,7 @@ enum ThemeID: String, CaseIterable, Identifiable, Codable {
         case .ayuDark:            return "Ayu · Dark"
         case .monokaiPro:         return "Monokai Pro"
         case .palenight:          return "Material · Palenight"
+        case .graphite:           return "Graphite"
         }
     }
 }
@@ -392,6 +394,47 @@ extension Theme {
         typeProject: 0x82AAFF, typePerson: 0xC792EA,
         typeQuery: 0xC3E88D, typeTemplate: 0xCC9966))
 
+    /// **Graphite.** The redesign foundation's dark palette (see
+    /// `.docs/ai/design/graphite/tokens.json`). Maps the canonical Graphite
+    /// tokens onto the role struct: surfaces `bg/surface/raised/raised-2`,
+    /// coral primary, project-blue secondary, the type-semantic set. The
+    /// line hairlines use white-with-opacity (the only theme that does), so
+    /// it's built via the memberwise init rather than the `ThemeHexes`
+    /// (opaque-only) path. `muted #AAB0BB` and `raised-3 #272C37` have no
+    /// role slot — nearest (`fgMuted`/`bg4`) is used per the plan's note.
+    static let graphite: Theme = {
+        let cBg        = Color(hex: 0x0E1014)              // --bg
+        let cBg2       = Color(hex: 0x14171D)              // --surface
+        let cBg3       = Color(hex: 0x1A1E26)              // --raised
+        let cBg4       = Color(hex: 0x20242D)              // --raised-2
+        let cLine      = Color.white.opacity(0.12)         // --line-2
+        let cLineSoft  = Color.white.opacity(0.07)         // --line
+        let cFgDefault = Color(hex: 0xEDEFF2)              // --fg
+        let cFgMuted   = Color(hex: 0xCBD0D9)              // --fg2
+        let cFgSubtle  = Color(hex: 0x8A909C)              // --subtle
+        let cFgFaint   = Color(hex: 0x646B78)              // --faint
+        let cAccentP   = Color(hex: 0xFF6B5A)              // --coral
+        let cAccentS   = Color(hex: 0x7493E8)              // --project
+        let cTask      = Color(hex: 0xE8697F)              // --task
+        let cEvent     = Color(hex: 0x62B8CE)              // --event
+        let cNote      = Color(hex: 0xE4AE66)              // --note
+        let cProject   = Color(hex: 0x7493E8)              // --project
+        let cPerson    = Color(hex: 0xAE90E6)              // --person
+        let cQuery     = Color(hex: 0x85BC63)              // --query
+        let cTemplate  = Color(hex: 0xAE90E6)              // --person (no template token)
+        return Theme(
+            id: .graphite,
+            bg: cBg, bg2: cBg2, bg3: cBg3, bg4: cBg4,
+            line: cLine, lineSoft: cLineSoft,
+            fgDefault: cFgDefault, fgMuted: cFgMuted,
+            fgSubtle: cFgSubtle, fgFaint: cFgFaint,
+            accentPrimary: cAccentP, accentSecondary: cAccentS,
+            typeTask: cTask, typeEvent: cEvent, typeNote: cNote,
+            typeProject: cProject, typePerson: cPerson,
+            typeQuery: cQuery, typeTemplate: cTemplate
+        )
+    }()
+
     /// All themes in picker order.
     static let all: [Theme] = [
         .prism, .prismSpark, .prismLight,
@@ -403,6 +446,7 @@ extension Theme {
         .nord, .dracula,
         .carbonfox, .ayuDark,
         .monokaiPro, .palenight,
+        .graphite,
     ]
 
     static func byId(_ id: ThemeID) -> Theme {
