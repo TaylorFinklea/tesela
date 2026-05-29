@@ -58,11 +58,9 @@ pub use crypto::pairing::{decode as decode_pairing_code, encode as encode_pairin
 pub use device::{DeviceId, DeviceMetadata};
 pub use discovery::{DiscoveredPeer, LanDiscovery, TESELA_SERVICE_TYPE};
 pub use engine::{
-    AppliedChanges, LocalCursor, ParkedSummary, PeerCursor, ProducedBatch, ReplayReport,
-    SyncEngine,
+    AppliedChanges, LocalCursor, ParkedSummary, PeerCursor, ReplayReport, SyncEngine,
 };
 pub use engine::loro_engine::LoroEngine;
-pub use engine::sqlite_engine::SqliteEngine;
 pub use oplog::parked::ParkReason;
 pub use error::{SyncError, SyncResult};
 pub use group::{GroupId, GroupMember};

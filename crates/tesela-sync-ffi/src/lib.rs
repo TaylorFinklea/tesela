@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tesela_sync::{
     decode_loro_relay_payload, decode_pairing_code as decode_pairing_code_inner,
     encode_loro_relay_payload, encode_pairing_code as encode_pairing_code_inner,
-    engine::{PeerCursor, SqliteEngine, SyncEngine},
+    engine::SyncEngine,
     oplog::op::OpPayload,
     transport::relay::RelayClient,
     DeviceId, GroupId, GroupKey, Hlc, LoroEngine, SyncEnvelope,
@@ -237,98 +237,27 @@ fn nibble(c: u8) -> Option<u8> {
 // B.1.1 — SyncEngineHandle (minimal — open + device_hex)
 // ============================================================================
 
-/// Handle to a SQLite-backed sync engine. Created with
-/// [`SyncEngineHandle::open`]; lives behind an `Arc` so multiple Swift
+/// Handle to the authoritative Loro sync engine. Created with
+/// [`SyncEngineHandle::open_loro`]; lives behind an `Arc` so multiple Swift
 /// callers (UI + background sync task) can hold references concurrently
 /// without copying engine state.
 ///
-/// What the iOS app gets out of this in B.1: just enough to prove the
-/// FFI pipeline carries an opened engine round-trip. The producer +
-/// consumer methods (`apply_changes`, `produce_changes_since`) are wired
-/// in B.2 / B.3 — exposing them ahead of time would force a serialized
-/// `SyncEnvelope` shape across the FFI boundary before we've nailed
-/// down how iOS consumes ops.
+/// Post-flag-day (2026-05-29) the only constructor is `open_loro`; the
+/// legacy SQLite constructors (`open` / `open_with_mosaic`) were removed
+/// with the SqliteEngine stack. Sync flows through the Loro relay-update
+/// methods, not the retired op-replay path.
 #[derive(uniffi::Object)]
 pub struct SyncEngineHandle {
-    /// The backing engine. `SqliteEngine` (legacy) or the authoritative
-    /// `LoroEngine` (the cutover) — both behind the `SyncEngine` trait so
-    /// the coordinator + write path are engine-agnostic.
+    /// The backing engine — the authoritative `LoroEngine`, held behind the
+    /// `SyncEngine` trait so the coordinator + write path stay engine-agnostic.
     inner: Arc<dyn SyncEngine>,
-    /// The `notes/` directory the engine materializes `<slug>.md` into,
-    /// when materializing. `record_note_diff` reads the prior content from
-    /// here. `None` for the headless (no-materialize) `open`.
+    /// The `notes/` directory the engine materializes `<slug>.md` into.
+    /// `record_note_diff` reads the prior content from here.
     notes_dir: Option<PathBuf>,
 }
 
 #[uniffi::export(async_runtime = "tokio")]
 impl SyncEngineHandle {
-    /// Open (or create) a SQLite-backed sync engine at the given URL,
-    /// without filesystem materialization. Applied ops land in the
-    /// oplog but no `.md` files are written. Useful for headless
-    /// engines or tests; **iOS should normally use
-    /// [`Self::open_with_mosaic`] instead** so apply ticks
-    /// materialize into the iOS app sandbox.
-    ///
-    /// `sqlite_url` follows the sqlx convention: `sqlite:/path/to/file`
-    /// (the leading slash makes it absolute). iOS callers typically
-    /// pass `format!("sqlite:{}", url.path())` where `url` is a
-    /// `FileManager`-derived path inside the app's sandbox.
-    ///
-    /// `device_id_hex` must be 32 lowercase hex chars — typically the
-    /// output of [`generate_device_id_hex`] persisted across launches.
-    /// Reusing a stable device id is what keeps HLC timestamps
-    /// monotonic across app restarts.
-    #[uniffi::constructor]
-    pub async fn open(
-        sqlite_url: String,
-        device_id_hex: String,
-    ) -> Result<Arc<Self>, FfiSyncError> {
-        let bytes = parse_hex_16(&device_id_hex).ok_or_else(|| FfiSyncError::Other {
-            message: "device_id_hex must be 32 hex chars".to_string(),
-        })?;
-        let device = DeviceId::from_bytes(bytes);
-        let engine = SqliteEngine::open(&sqlite_url, device)
-            .await
-            .map_err(FfiSyncError::from)?;
-        Ok(Arc::new(Self {
-            inner: Arc::new(engine),
-            notes_dir: None,
-        }))
-    }
-
-    /// Like [`Self::open`] but ALSO knows about a mosaic root directory,
-    /// so applied ops materialize into `<mosaic_path>/notes/<slug>.md`.
-    /// This is the iOS production shape: pass the app sandbox's
-    /// Documents/<mosaic-name>/ as `mosaic_path` and the engine takes
-    /// care of writing the on-disk notes for the indexer (and the iOS
-    /// data layer) to read.
-    ///
-    /// `mosaic_path` must be an absolute filesystem path; the engine
-    /// creates `mosaic_path/notes/` if missing.
-    #[uniffi::constructor]
-    pub async fn open_with_mosaic(
-        sqlite_url: String,
-        mosaic_path: String,
-        device_id_hex: String,
-    ) -> Result<Arc<Self>, FfiSyncError> {
-        let bytes = parse_hex_16(&device_id_hex).ok_or_else(|| FfiSyncError::Other {
-            message: "device_id_hex must be 32 hex chars".to_string(),
-        })?;
-        let device = DeviceId::from_bytes(bytes);
-        let mosaic = PathBuf::from(&mosaic_path);
-        let engine = SqliteEngine::open_with_mosaic(
-            &sqlite_url,
-            Some(mosaic.clone()),
-            device,
-        )
-        .await
-        .map_err(FfiSyncError::from)?;
-        Ok(Arc::new(Self {
-            inner: Arc::new(engine),
-            notes_dir: Some(mosaic.join("notes")),
-        }))
-    }
-
     /// Open an authoritative **LoroEngine** for iOS (the Loro cutover).
     /// LoroEngine becomes the sole writer: it materializes
     /// `<mosaic_path>/notes/<slug>.md` on every applied change and drives
@@ -611,121 +540,54 @@ impl SyncCoordinator {
         &self,
         max_bytes: u32,
     ) -> Result<TickOutboundRecord, FfiSyncError> {
+        let _ = max_bytes; // Loro batching uses MAX_RELAY_PLAINTEXT_BYTES, not this.
         let our_device = self.engine.inner.device();
 
-        // Loro v2 outbound (authoritative LoroEngine): broadcast per-note
-        // Loro update bytes behind the TLR2 magic. The cursor lives inside
-        // the engine (per-note version vectors), advanced via
-        // commit_broadcast_cursors ONLY after a confirmed PUT — so a failed
-        // send retries the same delta. Mirrors `tesela_server::sync_relay::tick`.
-        if self.engine.inner.uses_loro_relay_payload() {
-            let updates = self.engine.inner.produce_relay_updates().await;
-            // Chunk into size-bounded batches so each PUT fits the relay
-            // body limit (the canonical bootstrap would otherwise 413).
-            // Commit each batch's cursors only after its PUT confirms; stop
-            // on the first failure so uncommitted batches retry next tick.
-            let batches = tesela_sync::pack_loro_relay_batches(
-                updates,
-                tesela_sync::MAX_RELAY_PLAINTEXT_BYTES,
-            );
-            let mut ops_count = 0u32;
-            let mut last_seq = None;
-            for (payload, committed) in batches {
-                let ciphertext = match encode_loro_relay_payload(&payload) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        eprintln!("tesela-sync-ffi: encode loro payload: {e}");
-                        continue;
-                    }
-                };
-                let envelope = SyncEnvelope {
-                    from_device: our_device,
-                    to_group: self.group_id,
-                    nonce: [0u8; 24],
-                    ciphertext,
-                };
-                // Skip a single failed/over-limit batch rather than
-                // aborting the whole tick — its cursor stays uncommitted
-                // so it retries next tick.
-                match self.relay.inner.put_envelope(envelope).await {
-                    Ok((seq, _ts)) => {
-                        self.engine.inner.commit_broadcast_cursors(&committed).await;
-                        ops_count += payload.len() as u32;
-                        last_seq = Some(seq);
-                    }
-                    Err(e) => {
-                        eprintln!("tesela-sync-ffi: relay put (loro): {e}");
-                    }
+        // Loro v2 outbound: broadcast per-note Loro update bytes behind the
+        // TLR2 magic. The cursor lives inside the engine (per-note version
+        // vectors), advanced via commit_broadcast_cursors ONLY after a
+        // confirmed PUT — so a failed send retries the same delta. Mirrors
+        // `tesela_server::sync_relay::tick`.
+        let updates = self.engine.inner.produce_relay_updates().await;
+        // Chunk into size-bounded batches so each PUT fits the relay body
+        // limit (the canonical bootstrap would otherwise 413). Commit each
+        // batch's cursors only after its PUT confirms; skip a failed batch so
+        // it retries next tick rather than aborting the whole tick.
+        let batches = tesela_sync::pack_loro_relay_batches(
+            updates,
+            tesela_sync::MAX_RELAY_PLAINTEXT_BYTES,
+        );
+        let mut ops_count = 0u32;
+        let mut last_seq = None;
+        for (payload, committed) in batches {
+            let ciphertext = match encode_loro_relay_payload(&payload) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("tesela-sync-ffi: encode loro payload: {e}");
+                    continue;
+                }
+            };
+            let envelope = SyncEnvelope {
+                from_device: our_device,
+                to_group: self.group_id,
+                nonce: [0u8; 24],
+                ciphertext,
+            };
+            match self.relay.inner.put_envelope(envelope).await {
+                Ok((seq, _ts)) => {
+                    self.engine.inner.commit_broadcast_cursors(&committed).await;
+                    ops_count += payload.len() as u32;
+                    last_seq = Some(seq);
+                }
+                Err(e) => {
+                    eprintln!("tesela-sync-ffi: relay put (loro): {e}");
                 }
             }
-            return Ok(TickOutboundRecord {
-                ops_sent: ops_count,
-                relay_seq: last_seq,
-                new_cursor_ntp: None,
-            });
         }
-
-        let cursor_guard = self.outbound_cursor.lock().await;
-        let cursor = match *cursor_guard {
-            Some(ntp) => PeerCursor::At(
-                tesela_sync::hlc::HlcTimestamp::from_ntp64_i64(ntp, our_device),
-            ),
-            None => PeerCursor::Earliest,
-        };
-        drop(cursor_guard);
-
-        // Relay fanout: publish only ops we authored. See the docstring
-        // on `produce_local_authored_since` for why transitive
-        // republishing is wrong here.
-        let _ = our_device; // kept for cursor construction above
-        let batch = self
-            .engine
-            .inner
-            .produce_local_authored_since(cursor, max_bytes as usize)
-            .await
-            .map_err(FfiSyncError::from)?;
-        if batch.ops.is_empty() {
-            return Ok(TickOutboundRecord {
-                ops_sent: 0,
-                relay_seq: None,
-                new_cursor_ntp: None,
-            });
-        }
-
-        let ciphertext = postcard::to_allocvec(&batch.ops).map_err(|e| FfiSyncError::Other {
-            message: format!("postcard encode: {e}"),
-        })?;
-        let envelope = SyncEnvelope {
-            from_device: our_device,
-            to_group: self.group_id,
-            // Unused on this layer — RelayClient.put_envelope mints its
-            // own outer nonce for the AEAD seal. Kept zero to match the
-            // Mac's tick.
-            nonce: [0u8; 24],
-            ciphertext,
-        };
-
-        let ops_count = batch.ops.len() as u32;
-        let (seq, _ts) = self
-            .relay
-            .inner
-            .put_envelope(envelope)
-            .await
-            .map_err(FfiSyncError::from)?;
-
-        // Advance cursor only on full success.
-        let new_cursor_ntp = if let PeerCursor::At(ts) = batch.new_cursor {
-            let ntp = ts.ntp64_as_i64();
-            *self.outbound_cursor.lock().await = Some(ntp);
-            Some(ntp)
-        } else {
-            None
-        };
-
         Ok(TickOutboundRecord {
             ops_sent: ops_count,
-            relay_seq: Some(seq),
-            new_cursor_ntp,
+            relay_seq: last_seq,
+            new_cursor_ntp: None,
         })
     }
 
@@ -764,7 +626,6 @@ impl SyncCoordinator {
             .await
             .map_err(FfiSyncError::from)?;
 
-        let loro = self.engine.inner.uses_loro_relay_payload();
         let mut applied = 0u32;
         let mut skipped_own = 0u32;
         let mut errors = 0u32;
@@ -779,48 +640,31 @@ impl SyncCoordinator {
                 skipped_own += 1;
                 continue;
             }
-            let peer = env.from_device;
-            if loro {
-                // Loro v2 inbound: decode the TLR2 payload + import each
-                // per-note update (idempotent). A non-v2 payload (legacy /
-                // foreign) decodes to None — skip but advance. A decode
-                // error is deterministic, so advance past it too rather
-                // than re-fetching the same bytes forever.
-                match decode_loro_relay_payload(&env.ciphertext) {
-                    Ok(Some(updates)) => {
-                        let pairs: Vec<([u8; 16], Vec<u8>)> =
-                            updates.into_iter().map(|u| (u.doc, u.update_bytes)).collect();
-                        self.engine.inner.apply_relay_updates(&pairs).await;
-                        applied += 1;
-                        if seq > max_seq {
-                            max_seq = seq;
-                        }
-                    }
-                    Ok(None) => {
-                        if seq > max_seq {
-                            max_seq = seq;
-                        }
-                    }
-                    Err(e) => {
-                        errors += 1;
-                        eprintln!("tesela-sync-ffi: relay loro decode seq={seq} err={e} (skipping)");
-                        if seq > max_seq {
-                            max_seq = seq;
-                        }
+            // Loro v2 inbound: decode the TLR2 payload + import each per-note
+            // update (idempotent). A non-v2 payload (legacy / foreign) decodes
+            // to None — skip but advance. A decode error is deterministic, so
+            // advance past it too rather than re-fetching the same bytes.
+            match decode_loro_relay_payload(&env.ciphertext) {
+                Ok(Some(updates)) => {
+                    let pairs: Vec<([u8; 16], Vec<u8>)> =
+                        updates.into_iter().map(|u| (u.doc, u.update_bytes)).collect();
+                    self.engine.inner.apply_relay_updates(&pairs).await;
+                    applied += 1;
+                    if seq > max_seq {
+                        max_seq = seq;
                     }
                 }
-                continue;
-            }
-            match SyncEngine::apply_changes(self.engine.inner.as_ref(), peer, env).await {
-                Ok(_applied_set) => {
-                    applied += 1;
+                Ok(None) => {
                     if seq > max_seq {
                         max_seq = seq;
                     }
                 }
                 Err(e) => {
                     errors += 1;
-                    eprintln!("tesela-sync-ffi: relay apply seq={seq} err={e}");
+                    eprintln!("tesela-sync-ffi: relay loro decode seq={seq} err={e} (skipping)");
+                    if seq > max_seq {
+                        max_seq = seq;
+                    }
                 }
             }
         }

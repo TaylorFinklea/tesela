@@ -24,22 +24,15 @@ use std::time::{Duration, Instant};
 use axum::{
     body::Bytes,
     extract::{Path as AxPath, State},
-    http::{header, StatusCode},
-    response::{IntoResponse, Response},
+    http::StatusCode,
+    response::Response,
     Json,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tesela_core::{
-    db::SqliteIndex,
-    note::NoteId,
-    storage::filesystem::FsNoteStore,
-    traits::{note_store::NoteStore, search_index::SearchIndex},
-};
-use tesela_sync::oplog::op::EncodedOp;
+use tesela_core::{db::SqliteIndex, storage::filesystem::FsNoteStore};
 use tesela_sync::{
-    aead_open, aead_seal, decode_pairing_code, encode_pairing_code, envelope_aad, DeviceId,
-    GroupIdentity, PairingCode, PeerCursor, SyncEnvelope,
+    decode_pairing_code, encode_pairing_code, DeviceId, GroupIdentity, PairingCode, PeerCursor,
 };
 use tokio::sync::broadcast;
 
@@ -69,17 +62,6 @@ pub struct ProduceRequest {
     pub since_hlc_ntp: Option<i64>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ProduceResponse {
-    /// Phase 2.3 — AEAD-sealed op batch. Receiver opens the envelope
-    /// with the shared group key before applying. An empty envelope
-    /// (ciphertext == ops-postcard-of-empty-vec) is a legal response
-    /// when there's nothing new to send.
-    pub envelope: SyncEnvelope,
-    /// New cursor (NTP64) pointing past the last produced op. None if
-    /// no ops were produced.
-    pub new_cursor_ntp: Option<i64>,
-}
 
 #[derive(Debug, Serialize)]
 pub struct PeerStatus {
@@ -142,141 +124,44 @@ pub async fn remove_peer(
     }
 }
 
+// ─── LAN peer-to-peer data plane — RETIRED at the Loro flag-day ──────────
+//
+// 2026-05-29: the op-replay pull model below (peer asks "give me your ops
+// since cursor X", applies them locally) is fundamentally incompatible with
+// the Loro engine — Loro has no per-device op log to replay from an HLC
+// cursor; its unit of sync is a per-note version-vector update. Devices
+// already converge through the relay spine (the proven web↔iOS path), which
+// makes LAN P2P a pure latency optimization that is fully redundant with the
+// relay for correctness. So the data-plane endpoints below return 501 and the
+// daemon path is a no-op. Pairing + discovery (get_device / add_peer /
+// pairing-code / discovered / status) stay live so a future LAN P2P built on
+// the Loro relay-update protocol can reuse them.
+
+const PEER_DATA_PLANE_RETIRED: &str =
+    "LAN peer op-pull was retired at the Loro cutover; devices sync via the relay";
+
 pub async fn produce(
-    State(s): State<Arc<AppState>>,
-    Json(req): Json<ProduceRequest>,
+    State(_s): State<Arc<AppState>>,
+    Json(_req): Json<ProduceRequest>,
 ) -> Result<Response, (StatusCode, String)> {
-    let peer = hex_to_device_id(&req.peer_device).ok_or_else(|| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("invalid peer_device hex: {}", req.peer_device),
-        )
-    })?;
-    let since = match req.since_hlc_ntp {
-        None => PeerCursor::Earliest,
-        Some(ntp) => PeerCursor::At(tesela_sync::HlcTimestamp::from_ntp64_i64(ntp, peer)),
-    };
-    let batch = s
-        .sync_engine
-        .produce_changes_since(peer, since, 1024 * 1024)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let new_cursor_ntp = match batch.new_cursor {
-        PeerCursor::Earliest => None,
-        PeerCursor::At(ts) => Some(ts.ntp64_as_i64()),
-    };
-    let ident = s.group_identity.read().await.clone();
-    let envelope = seal_ops_envelope(&s.sync_engine.device(), &ident, &batch.ops)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    let resp = ProduceResponse {
-        envelope,
-        new_cursor_ntp,
-    };
-    let body = postcard::to_allocvec(&resp)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok((
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/octet-stream")],
-        body,
-    )
-        .into_response())
-}
-
-/// Bundle a batch of ops into an AEAD-sealed envelope addressed to the
-/// local group. AAD binds the routing metadata so a relay can't rewrite
-/// either field without invalidating the tag.
-fn seal_ops_envelope(
-    from: &DeviceId,
-    ident: &GroupIdentity,
-    ops: &[EncodedOp],
-) -> Result<SyncEnvelope, String> {
-    let plaintext =
-        postcard::to_allocvec(&ops.to_vec()).map_err(|e| format!("encode ops: {e}"))?;
-    let aad = envelope_aad(from.as_bytes(), ident.group_id.as_bytes());
-    let sealed = aead_seal(&ident.group_key, &plaintext, &aad)
-        .map_err(|e| format!("seal envelope: {e}"))?;
-    Ok(SyncEnvelope {
-        from_device: *from,
-        to_group: ident.group_id,
-        nonce: sealed.nonce,
-        ciphertext: sealed.ciphertext,
-    })
-}
-
-/// Open an AEAD-sealed envelope back into a `Vec<EncodedOp>`. Rejects
-/// envelopes addressed to a group we don't belong to.
-fn open_ops_envelope(
-    envelope: &SyncEnvelope,
-    ident: &GroupIdentity,
-) -> Result<Vec<EncodedOp>, String> {
-    if envelope.to_group != ident.group_id {
-        return Err(format!(
-            "envelope group_id {:02x?} doesn't match local {:02x?} (pair via code first?)",
-            envelope.to_group.as_bytes(),
-            ident.group_id.as_bytes()
-        ));
-    }
-    let aad = envelope_aad(envelope.from_device.as_bytes(), ident.group_id.as_bytes());
-    let plaintext = aead_open(
-        &ident.group_key,
-        &envelope.nonce,
-        &envelope.ciphertext,
-        &aad,
-    )
-    .map_err(|e| format!("open envelope: {e}"))?;
-    postcard::from_bytes::<Vec<EncodedOp>>(&plaintext)
-        .map_err(|e| format!("decode ops: {e}"))
+    Err((
+        StatusCode::NOT_IMPLEMENTED,
+        PEER_DATA_PLANE_RETIRED.to_string(),
+    ))
 }
 
 pub async fn receive_envelope(
-    State(s): State<Arc<AppState>>,
-    body: Bytes,
+    State(_s): State<Arc<AppState>>,
+    _body: Bytes,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let envelope: SyncEnvelope = postcard::from_bytes(&body)
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("postcard: {e}")))?;
-    let from = envelope.from_device;
-    let ident = s.group_identity.read().await.clone();
-    let ops = open_ops_envelope(&envelope, &ident).map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
-    // The engine still consumes a cleartext-ciphertext envelope. Wrap
-    // the decrypted ops back into an internal-only envelope so
-    // apply_changes stays unchanged (it'll move into the engine once we
-    // refactor the trait to take a GroupKey directly).
-    let internal = SyncEnvelope {
-        from_device: from,
-        to_group: ident.group_id,
-        nonce: [0u8; 24],
-        ciphertext: postcard::to_allocvec(&ops)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
-    };
-    let applied = s
-        .sync_engine
-        .apply_changes(from, internal)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    tracing::info!(
-        "sync_peer: applied {} ops from {} (deduped={}, parked={})",
-        applied.applied,
-        from.to_hex(),
-        applied.deduped,
-        applied.parked
-    );
-    Ok(StatusCode::NO_CONTENT)
+    Err((
+        StatusCode::NOT_IMPLEMENTED,
+        PEER_DATA_PLANE_RETIRED.to_string(),
+    ))
 }
 
-pub async fn sync_now(State(s): State<Arc<AppState>>) -> Json<Value> {
-    let peers = read_peers(&s.mosaic_root).await;
-    let mut results = serde_json::Map::new();
-    for peer in &peers {
-        match sync_with_peer(&s, peer).await {
-            Ok(applied) => {
-                results.insert(peer.device_id_hex.clone(), json!({ "applied": applied }));
-            }
-            Err(e) => {
-                results.insert(peer.device_id_hex.clone(), json!({ "error": e }));
-            }
-        }
-    }
-    Json(json!({ "peers": results }))
+pub async fn sync_now(State(_s): State<Arc<AppState>>) -> Json<Value> {
+    Json(json!({ "peers": {}, "note": PEER_DATA_PLANE_RETIRED }))
 }
 
 /// Phase 2.1 — mDNS-discovered LAN peers. These are candidates only;
@@ -550,93 +435,6 @@ pub async fn status(State(s): State<Arc<AppState>>) -> Json<Vec<PeerStatus>> {
     Json(out)
 }
 
-/// One round of pull-then-push with a single peer.
-///
-/// 1. Ask peer for ops they have not-from-us since our peer_cursor.
-/// 2. Apply locally.
-/// 3. Send peer our ops not-from-them since their peer_cursor (which we
-///    learn by asking them to ack what they have).
-///
-/// For Phase 1.5 we only do step 1 (pull). Step 3 is symmetric and runs
-/// when the peer pulls from us. Both sides' daemons handle their own
-/// pulls so transitively everyone converges.
-pub async fn sync_with_peer(s: &AppState, peer: &Peer) -> Result<u32, String> {
-    let peer_device = hex_to_device_id(&peer.device_id_hex)
-        .ok_or_else(|| format!("invalid device id hex: {}", peer.device_id_hex))?;
-
-    // Our cursor for this peer.
-    let our_cursor = s
-        .sync_engine
-        .peer_cursor(peer_device)
-        .await
-        .map_err(|e| format!("peer_cursor: {e}"))?;
-    let since_ntp = match our_cursor {
-        PeerCursor::Earliest => None,
-        PeerCursor::At(ts) => Some(ts.ntp64_as_i64()),
-    };
-
-    // Build the produce request. We tell the peer "I am `our_device`;
-    // give me ops not from me since my cursor."
-    let req = ProduceRequest {
-        peer_device: s.sync_engine.device().to_hex(),
-        since_hlc_ntp: since_ntp,
-    };
-    let url = format!("{}/sync/peer/produce", peer.url.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let resp = client
-        .post(&url)
-        .json(&req)
-        .send()
-        .await
-        .map_err(|e| format!("POST {url}: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("peer responded {}: {url}", resp.status()));
-    }
-    let body_bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("read response body: {e}"))?;
-    let produced: ProduceResponse = postcard::from_bytes(&body_bytes)
-        .map_err(|e| format!("decode ProduceResponse: {e}"))?;
-
-    let ident = s.group_identity.read().await.clone();
-    let ops = open_ops_envelope(&produced.envelope, &ident)?;
-    if ops.is_empty() {
-        return Ok(0);
-    }
-
-    // Wrap the decrypted ops into a synthetic cleartext envelope for
-    // apply_changes (which still consumes plaintext via the ciphertext
-    // field). When the engine grows decrypt-in-apply this conversion
-    // collapses.
-    let internal = SyncEnvelope {
-        from_device: peer_device,
-        to_group: ident.group_id,
-        nonce: [0u8; 24],
-        ciphertext: postcard::to_allocvec(&ops)
-            .map_err(|e| format!("re-encode ops: {e}"))?,
-    };
-    let applied = s
-        .sync_engine
-        .apply_changes(peer_device, internal)
-        .await
-        .map_err(|e| format!("apply_changes: {e}"))?;
-
-    rebroadcast_touched_notes(
-        &s.mosaic_root,
-        &s.store,
-        &s.index,
-        &s.ws_tx,
-        &applied.note_ids,
-    )
-    .await;
-
-    Ok(applied.applied)
-}
-
 async fn read_peers(mosaic_root: &Path) -> Vec<Peer> {
     let path = peers_path(mosaic_root);
     match tokio::fs::read(&path).await {
@@ -652,66 +450,19 @@ async fn read_peers(mosaic_root: &Path) -> Vec<Peer> {
 /// and broadcast `WsEvent` so the web UI live-updates without a hard
 /// refresh.
 pub async fn sync_with_peer_minimal(
-    engine: &dyn tesela_sync::SyncEngine,
-    mosaic_root: &Path,
-    store: &FsNoteStore,
-    index: &SqliteIndex,
-    ws_tx: &broadcast::Sender<WsEvent>,
-    peer: &Peer,
-    ident: &GroupIdentity,
+    _engine: &dyn tesela_sync::SyncEngine,
+    _mosaic_root: &Path,
+    _store: &FsNoteStore,
+    _index: &SqliteIndex,
+    _ws_tx: &broadcast::Sender<WsEvent>,
+    _peer: &Peer,
+    _ident: &GroupIdentity,
 ) -> Result<u32, String> {
-    let peer_device = hex_to_device_id(&peer.device_id_hex)
-        .ok_or_else(|| format!("invalid device id hex: {}", peer.device_id_hex))?;
-
-    let our_cursor = engine
-        .peer_cursor(peer_device)
-        .await
-        .map_err(|e| format!("peer_cursor: {e}"))?;
-    let since_ntp = match our_cursor {
-        PeerCursor::Earliest => None,
-        PeerCursor::At(ts) => Some(ts.ntp64_as_i64()),
-    };
-    let req = ProduceRequest {
-        peer_device: engine.device().to_hex(),
-        since_hlc_ntp: since_ntp,
-    };
-    let url = format!("{}/sync/peer/produce", peer.url.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let resp = client
-        .post(&url)
-        .json(&req)
-        .send()
-        .await
-        .map_err(|e| format!("POST {url}: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("peer responded {}: {url}", resp.status()));
-    }
-    let body_bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("read response body: {e}"))?;
-    let produced: ProduceResponse = postcard::from_bytes(&body_bytes)
-        .map_err(|e| format!("decode ProduceResponse: {e}"))?;
-    let ops = open_ops_envelope(&produced.envelope, ident)?;
-    if ops.is_empty() {
-        return Ok(0);
-    }
-    let internal = SyncEnvelope {
-        from_device: peer_device,
-        to_group: ident.group_id,
-        nonce: [0u8; 24],
-        ciphertext: postcard::to_allocvec(&ops)
-            .map_err(|e| format!("re-encode ops: {e}"))?,
-    };
-    let applied = engine
-        .apply_changes(peer_device, internal)
-        .await
-        .map_err(|e| format!("apply_changes: {e}"))?;
-    rebroadcast_touched_notes(mosaic_root, store, index, ws_tx, &applied.note_ids).await;
-    Ok(applied.applied)
+    // Retired at the Loro flag-day — see the data-plane note above. The
+    // background daemon still calls this each tick; it's a no-op (devices sync
+    // via the relay). Kept with its signature so the daemon wiring in main.rs
+    // and a future Loro-based LAN sync slot in without further plumbing.
+    Ok(0)
 }
 
 /// After `apply_changes` materializes ops onto disk, walk the set of
@@ -727,80 +478,6 @@ pub async fn sync_with_peer_minimal(
 /// resolved (file deleted concurrently, e.g.) are skipped silently rather
 /// than failing the broader sync round; missing-file is normal under
 /// concurrent deletion.
-async fn rebroadcast_touched_notes(
-    mosaic_root: &Path,
-    store: &FsNoteStore,
-    index: &SqliteIndex,
-    ws_tx: &broadcast::Sender<WsEvent>,
-    note_ids: &[[u8; 16]],
-) {
-    if note_ids.is_empty() {
-        return;
-    }
-    let slug_index = match build_slug_index(mosaic_root).await {
-        Ok(m) => m,
-        Err(e) => {
-            tracing::warn!("sync_peer: failed to build slug index: {e}");
-            return;
-        }
-    };
-    for nid in note_ids {
-        let Some(slug) = slug_index.get(nid) else {
-            continue;
-        };
-        let note_id = NoteId::new(slug);
-        match store.get(&note_id).await {
-            Ok(Some(note)) => {
-                if let Err(e) = index.reindex(&note).await {
-                    tracing::warn!("sync_peer: reindex {slug} after apply: {e}");
-                }
-                let _ = ws_tx.send(WsEvent::NoteUpdated { note });
-            }
-            Ok(None) => {
-                let _ = ws_tx.send(WsEvent::NoteDeleted {
-                    id: slug.to_string(),
-                });
-            }
-            Err(e) => {
-                tracing::warn!("sync_peer: store.get {slug} after apply: {e}");
-            }
-        }
-    }
-}
-
-/// One-shot scan of `mosaic_root/notes/` returning a `note_id -> slug`
-/// map. The note_id derivation matches `stable_uuid_from_slug` in
-/// `routes/notes.rs` (blake3 of slug bytes, truncated to 16 bytes).
-async fn build_slug_index(mosaic_root: &Path) -> Result<std::collections::HashMap<[u8; 16], String>, String> {
-    let notes_dir = mosaic_root.join("notes");
-    let mut entries = match tokio::fs::read_dir(&notes_dir).await {
-        Ok(e) => e,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(std::collections::HashMap::new());
-        }
-        Err(e) => return Err(format!("read_dir {}: {e}", notes_dir.display())),
-    };
-    let mut out = std::collections::HashMap::new();
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|e| format!("read_dir entry: {e}"))?
-    {
-        let path = entry.path();
-        if path.extension().and_then(|s| s.to_str()) != Some("md") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        let hash = blake3::hash(stem.as_bytes());
-        let mut key = [0u8; 16];
-        key.copy_from_slice(&hash.as_bytes()[..16]);
-        out.insert(key, stem.to_string());
-    }
-    Ok(out)
-}
-
 async fn write_peers(mosaic_root: &Path, peers: &[Peer]) -> Result<(), std::io::Error> {
     let tesela_dir = mosaic_root.join(".tesela");
     tokio::fs::create_dir_all(&tesela_dir).await?;

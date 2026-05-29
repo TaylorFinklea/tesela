@@ -22,7 +22,7 @@ use tesela_core::{
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     types::TypeRegistry,
 };
-use tesela_sync::{DeviceId, LanDiscovery, SqliteEngine, SyncEngine};
+use tesela_sync::{DeviceId, LanDiscovery, SyncEngine};
 use tokio::sync::RwLock;
 
 use reminders::auto::AutoSync;
@@ -231,121 +231,45 @@ async fn main() -> Result<()> {
     let index_for_shutdown = Arc::clone(&index);
     let backup_cfg_for_shutdown = config.backup.clone();
 
-    // Phase 1.5 — multi-device sync engine. Reuses the same SQLite file
-    // tesela-core opened above (WAL mode tolerates multiple connections).
-    // Materializes incoming NoteUpsert ops into `{mosaic}/notes/{slug}.md`
-    // so the existing file-watcher picks them up and the read path
-    // through FsNoteStore sees them.
-    // Phase 4 (Loro migration, decisions.md 2026-05-27): when the
-    // `TESELA_LORO_DUAL_WRITE` env var is set (any non-empty value), we
-    // wrap the canonical `SqliteEngine` in a `DualEngine` that fans
-    // every `record_local` to a shadow `LoroEngine`. Reads still come
-    // from SqliteEngine; the shadow exists for divergence comparison
-    // ahead of cutover. Unset (or empty) → behaves exactly like
-    // before. Safe to enable in production day 1 because the shadow's
-    // errors are logged warnings, never propagated.
+    // Phase 4 (Loro migration, decisions.md 2026-05-27 → flag-day
+    // 2026-05-29): `LoroEngine` is the SOLE sync engine and the
+    // authoritative writer — it materializes `<mosaic>/notes/<slug>.md` on
+    // every change so the file-watcher picks them up, and drives the relay
+    // with the Loro v2 payload. Reads come from `FsNoteStore` off disk,
+    // which Loro now owns. The legacy SqliteEngine/DualEngine/dual-write
+    // stack was deleted at the flag-day; there is no fallback engine.
+    //
+    // `TESELA_LORO_RESEED` reseeds every note from disk at boot — the
+    // canonical-device bootstrap (source of truth = disk, not the frozen
+    // snapshots). Only ONE device should reseed; peers bootstrap by
+    // importing from the relay.
     let sync_engine: Arc<dyn tesela_sync::SyncEngine> = {
-        let url = format!("sqlite:{}", db_path.display());
         let device = load_or_create_device_id(&mosaic).await;
-
-        // Authoritative cutover: when `TESELA_LORO_AUTHORITATIVE` is set,
-        // LoroEngine becomes the SOLE writer — it materializes
-        // `<mosaic>/notes/<slug>.md` on every change and drives the relay
-        // with the Loro v2 payload. SqliteEngine is bypassed entirely
-        // (reads come from `FsNoteStore` off disk, which Loro now owns).
-        // `TESELA_LORO_RESEED` additionally reseeds every note from disk
-        // at boot — the canonical-device bootstrap (source of truth =
-        // disk, not the frozen oplog/snapshots). Only ONE device should
-        // reseed; peers bootstrap by importing from the relay.
-        let loro_authoritative = std::env::var("TESELA_LORO_AUTHORITATIVE")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false);
-        if loro_authoritative {
-            info!(
-                "tesela-sync: TESELA_LORO_AUTHORITATIVE=1 — LoroEngine is the \
-                 sole writer; SqliteEngine bypassed"
-            );
-            let snapshot_dir = mosaic.join(".tesela").join("loro");
-            let notes_dir = mosaic.join("notes");
-            let hlc = Arc::new(tesela_sync::Hlc::new(device));
-            let loro = tesela_sync::LoroEngine::with_dirs(
-                device,
-                hlc,
-                snapshot_dir,
-                Some(notes_dir.clone()),
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("open loro engine: {e}"))?;
-            info!("tesela-sync: device id = {}", loro.device().to_hex());
-            let reseed = std::env::var("TESELA_LORO_RESEED")
-                .map(|v| !v.is_empty())
-                .unwrap_or(false);
-            if reseed {
-                match loro.reseed_from_disk(&notes_dir).await {
-                    Ok(n) => info!(
-                        "tesela-sync: reseeded {n} notes from disk into Loro \
-                         (authoritative canonical bootstrap)"
-                    ),
-                    Err(e) => {
-                        tracing::warn!("tesela-sync: reseed_from_disk failed: {e}")
-                    }
-                }
-            }
-            Arc::new(loro)
-        } else {
-        let primary = SqliteEngine::open_with_mosaic(
-            &url,
-            Some(mosaic_for_shutdown.clone()),
+        let snapshot_dir = mosaic.join(".tesela").join("loro");
+        let notes_dir = mosaic.join("notes");
+        let hlc = Arc::new(tesela_sync::Hlc::new(device));
+        let loro = tesela_sync::LoroEngine::with_dirs(
             device,
+            hlc,
+            snapshot_dir,
+            Some(notes_dir.clone()),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("open sync engine: {e}"))?;
-        info!("tesela-sync: device id = {}", primary.device().to_hex());
-
-        let dual_write_enabled = std::env::var("TESELA_LORO_DUAL_WRITE")
+        .map_err(|e| anyhow::anyhow!("open loro engine: {e}"))?;
+        info!("tesela-sync: device id = {}", loro.device().to_hex());
+        let reseed = std::env::var("TESELA_LORO_RESEED")
             .map(|v| !v.is_empty())
             .unwrap_or(false);
-        if dual_write_enabled {
-            info!(
-                "tesela-sync: TESELA_LORO_DUAL_WRITE=1 — wrapping SqliteEngine \
-                 in DualEngine; LoroEngine runs as shadow"
-            );
-            // Shadow snapshots live at `<mosaic>/.tesela/loro/`. Loaded
-            // at construction; per-note writes after every apply.
-            let snapshot_dir = mosaic.join(".tesela").join("loro");
-            let dual = tesela_sync::engine::dual_engine::DualEngine::from_primary_with_snapshot_dir(
-                primary,
-                snapshot_dir,
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!("open dual engine: {e}"))?;
-            match dual.prepopulate_shadow_from_oplog().await {
+        if reseed {
+            match loro.reseed_from_disk(&notes_dir).await {
                 Ok(n) => info!(
-                    "tesela-sync: prepopulated LoroEngine shadow with {n} oplog payloads"
+                    "tesela-sync: reseeded {n} notes from disk into Loro \
+                     (canonical bootstrap)"
                 ),
-                Err(e) => tracing::warn!(
-                    "tesela-sync: prepopulate failed ({e}); shadow starts empty"
-                ),
+                Err(e) => tracing::warn!("tesela-sync: reseed_from_disk failed: {e}"),
             }
-            // Seed any disk note that didn't come through the oplog
-            // (pre-Phase-1 FsNoteStore writes). Makes the divergence
-            // check cover the full corpus, not just oplog-tracked notes.
-            let notes_dir = mosaic.join("notes");
-            match dual.seed_shadow_from_disk(&notes_dir).await {
-                Ok(0) => {}
-                Ok(n) => info!(
-                    "tesela-sync: seeded LoroEngine shadow with {n} additional notes from disk"
-                ),
-                Err(e) => tracing::warn!(
-                    "tesela-sync: disk seed failed ({e}); shadow coverage limited to oplog-tracked notes"
-                ),
-            }
-            dual.spawn_divergence_check();
-            Arc::new(dual)
-        } else {
-            Arc::new(primary)
         }
-        }
+        Arc::new(loro)
     };
 
     let addr = resolve_bind_addr();

@@ -15,24 +15,18 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use tesela_sync::engine::PeerCursor;
-use tesela_sync::hlc::HlcTimestamp;
 use tesela_sync::transport::relay::RelayClient;
 use tesela_sync::{GroupIdentity, SyncEnvelope};
 
 /// Per-mosaic relay sync state, persisted to `.tesela/relay_state.json`
 /// so cursors survive restart. Schema is intentionally tiny — the
 /// real state-of-record is the relay itself (server-side ops table)
-/// plus the engine's oplog.
+/// plus the engine's per-note Loro snapshots + broadcast cursors.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RelayState {
     /// Highest relay-assigned `seq` we've applied + acked. Drives the
     /// `?since=N` query parameter on poll.
     pub inbound_cursor: i64,
-    /// HLC ntp64 of the most-recent local op we've PUT to the relay.
-    /// `None` means "we've never put anything yet" → next produce
-    /// emits from the beginning.
-    pub outbound_cursor_ntp: Option<i64>,
     /// Wall-clock seconds of the last successful poll. Surfaces in
     /// the web settings page so the user can see "last fetch 12s ago".
     pub last_poll_at: Option<i64>,
@@ -104,7 +98,6 @@ pub struct RelayStatus {
     pub url: Option<String>,
     /// Last persisted cursors + timestamps.
     pub inbound_cursor: i64,
-    pub outbound_cursor_ntp: Option<i64>,
     pub last_poll_at: Option<i64>,
     pub last_put_at: Option<i64>,
     pub registered_at: Option<i64>,
@@ -117,7 +110,6 @@ impl RelayStatus {
             configured: true,
             url: Some(h.url.clone()),
             inbound_cursor: state.inbound_cursor,
-            outbound_cursor_ntp: state.outbound_cursor_ntp,
             last_poll_at: state.last_poll_at,
             last_put_at: state.last_put_at,
             registered_at: state.registered_at,
@@ -130,7 +122,6 @@ impl RelayStatus {
             configured: false,
             url: None,
             inbound_cursor: 0,
-            outbound_cursor_ntp: None,
             last_poll_at: None,
             last_put_at: None,
             registered_at: None,
@@ -169,68 +160,48 @@ pub async fn tick(
                     continue;
                 }
                 let peer = env.from_device;
-                if engine.uses_loro_relay_payload() {
-                    // Loro v2 path: the envelope plaintext is the `TLR2`
-                    // magic + postcard(Vec<LoroDocUpdate>). Import each
-                    // per-note update (idempotent + commutative). A
-                    // non-v2 payload (legacy / foreign) decodes to None;
-                    // we skip it but still advance the relay cursor so we
-                    // don't re-fetch it forever.
-                    match tesela_sync::decode_loro_relay_payload(&env.ciphertext) {
-                        Ok(Some(updates)) => {
-                            let pairs: Vec<([u8; 16], Vec<u8>)> = updates
-                                .into_iter()
-                                .map(|u| (u.doc, u.update_bytes))
-                                .collect();
-                            let n = engine.apply_relay_updates(&pairs).await;
-                            applied_total += n as u32;
-                            if seq > max_seq {
-                                max_seq = seq;
-                            }
-                        }
-                        Ok(None) => {
-                            tracing::debug!(
-                                "relay: skip non-v2 payload seq={} from={}",
-                                seq,
-                                hex::encode(peer.as_bytes())
-                            );
-                            if seq > max_seq {
-                                max_seq = seq;
-                            }
-                        }
-                        Err(e) => {
-                            // A decode error is deterministic — re-fetching
-                            // the same bytes will fail identically. Advance
-                            // past it so one malformed envelope can't stall
-                            // inbound sync forever (the AEAD layer already
-                            // authenticated the sender, so this is a sender
-                            // bug, not tampering; skipping is safe).
-                            tracing::warn!(
-                                "relay loro decode seq={} from={}: {} (skipping)",
-                                seq,
-                                hex::encode(peer.as_bytes()),
-                                e
-                            );
-                            if seq > max_seq {
-                                max_seq = seq;
-                            }
+                // The envelope plaintext is the `TLR2` magic +
+                // postcard(Vec<LoroDocUpdate>). Import each per-note update
+                // (idempotent + commutative). A non-v2 payload (legacy /
+                // foreign) decodes to None; we skip it but still advance the
+                // relay cursor so we don't re-fetch it forever.
+                match tesela_sync::decode_loro_relay_payload(&env.ciphertext) {
+                    Ok(Some(updates)) => {
+                        let pairs: Vec<([u8; 16], Vec<u8>)> = updates
+                            .into_iter()
+                            .map(|u| (u.doc, u.update_bytes))
+                            .collect();
+                        let n = engine.apply_relay_updates(&pairs).await;
+                        applied_total += n as u32;
+                        if seq > max_seq {
+                            max_seq = seq;
                         }
                     }
-                } else {
-                    match engine.apply_changes(peer, env).await {
-                        Ok(_applied) => {
-                            applied_total += 1;
-                            if seq > max_seq {
-                                max_seq = seq;
-                            }
+                    Ok(None) => {
+                        tracing::debug!(
+                            "relay: skip non-v2 payload seq={} from={}",
+                            seq,
+                            hex::encode(peer.as_bytes())
+                        );
+                        if seq > max_seq {
+                            max_seq = seq;
                         }
-                        Err(e) => {
-                            tracing::warn!(
-                                "relay apply seq={} from={}: {}",
-                                seq,
-                                hex::encode(peer.as_bytes()),
-                                e
-                            );
+                    }
+                    Err(e) => {
+                        // A decode error is deterministic — re-fetching the
+                        // same bytes will fail identically. Advance past it so
+                        // one malformed envelope can't stall inbound sync
+                        // forever (the AEAD layer already authenticated the
+                        // sender, so this is a sender bug, not tampering;
+                        // skipping is safe).
+                        tracing::warn!(
+                            "relay loro decode seq={} from={}: {} (skipping)",
+                            seq,
+                            hex::encode(peer.as_bytes()),
+                            e
+                        );
+                        if seq > max_seq {
+                            max_seq = seq;
                         }
                     }
                 }
@@ -254,110 +225,52 @@ pub async fn tick(
     // ─── Outbound ────────────────────────────────────────────────────
     let our_device = engine.device();
 
-    // Loro v2 outbound: broadcast per-note Loro updates accrued since
-    // each note's last-broadcast version vector (the engine tracks +
-    // persists those cursors internally). One envelope carries the whole
-    // batch; receivers import idempotently. No HLC outbound cursor — the
-    // engine's per-note VV cursors are the watermark.
-    if engine.uses_loro_relay_payload() {
-        // (note_id, update_bytes, captured_vv). The cursor is NOT yet
-        // advanced — we commit it only after the PUT is confirmed, so a
-        // failed send is retried next tick rather than dropped.
-        let updates = engine.produce_relay_updates().await;
-        // Chunk into size-bounded batches so each PUT fits the relay body
-        // limit — the canonical bootstrap broadcasts every note's full
-        // state and would otherwise 413. Commit each batch's cursors only
-        // after its PUT confirms; stop on the first failure so uncommitted
-        // batches re-produce next tick.
-        let batches = tesela_sync::pack_loro_relay_batches(
-            updates,
-            tesela_sync::MAX_RELAY_PLAINTEXT_BYTES,
-        );
-        for (payload, committed) in batches {
-            let ciphertext = match tesela_sync::encode_loro_relay_payload(&payload) {
-                Ok(c) => c,
-                Err(e) => {
-                    state.last_error = Some(format!("encode loro payload: {e}"));
-                    continue;
-                }
-            };
-            let envelope = SyncEnvelope {
-                from_device: our_device,
-                to_group: ident.group_id,
-                nonce: [0u8; 24],
-                ciphertext,
-            };
-            match handle.client.put_envelope(envelope).await {
-                Ok((_seq, _ts)) => {
-                    engine.commit_broadcast_cursors(&committed).await;
-                    sent_total += 1;
-                    state.last_put_at = Some(now_secs_i64());
-                    state.last_error = None;
-                }
-                Err(e) => {
-                    // Don't let one over-limit / transient-failed batch
-                    // block the other notes — skip it (its cursor stays
-                    // uncommitted, so it retries next tick) and keep going.
-                    let msg = format!("relay put (loro): {e}");
-                    tracing::warn!("{msg}");
-                    state.last_error = Some(msg);
-                    continue;
-                }
+    // Broadcast per-note Loro updates accrued since each note's
+    // last-broadcast version vector (the engine tracks + persists those
+    // cursors internally). One envelope carries the whole batch; receivers
+    // import idempotently. There is no HLC outbound cursor — the engine's
+    // per-note VV cursors are the watermark.
+    //
+    // produce_relay_updates returns (note_id, update_bytes, captured_vv).
+    // The cursor is NOT yet advanced — we commit it only after the PUT is
+    // confirmed, so a failed send is retried next tick rather than dropped.
+    let updates = engine.produce_relay_updates().await;
+    // Chunk into size-bounded batches so each PUT fits the relay body limit —
+    // the canonical bootstrap broadcasts every note's full state and would
+    // otherwise 413. Commit each batch's cursors only after its PUT confirms;
+    // skip (don't stop) on failure so one over-limit batch can't block the
+    // others, and uncommitted batches re-produce next tick.
+    let batches = tesela_sync::pack_loro_relay_batches(
+        updates,
+        tesela_sync::MAX_RELAY_PLAINTEXT_BYTES,
+    );
+    for (payload, committed) in batches {
+        let ciphertext = match tesela_sync::encode_loro_relay_payload(&payload) {
+            Ok(c) => c,
+            Err(e) => {
+                state.last_error = Some(format!("encode loro payload: {e}"));
+                continue;
             }
-        }
-        if let Err(e) = state.save(&handle.mosaic_root).await {
-            tracing::warn!("relay state save: {e}");
-        }
-        return Ok((applied_total, sent_total));
-    }
-
-    let outbound_cursor = match state.outbound_cursor_ntp {
-        Some(ntp) => PeerCursor::At(HlcTimestamp::from_ntp64_i64(ntp, our_device)),
-        None => PeerCursor::Earliest,
-    };
-    // Relay fanout: publish only ops we authored. Transitive ops get
-    // to other devices via *their* own relay publish, not via us
-    // re-broadcasting them (which would create publish loops). See the
-    // docstring on `produce_local_authored_since` for the full reasoning.
-    match engine
-        .produce_local_authored_since(outbound_cursor, 1_000_000)
-        .await
-    {
-        Ok(batch) => {
-            if !batch.ops.is_empty() {
-                let envelope = SyncEnvelope {
-                    from_device: our_device,
-                    to_group: ident.group_id,
-                    nonce: [0u8; 24],
-                    ciphertext: match postcard::to_allocvec(&batch.ops) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            state.last_error = Some(format!("encode ops: {e}"));
-                            return Ok((applied_total, sent_total));
-                        }
-                    },
-                };
-                match handle.client.put_envelope(envelope).await {
-                    Ok((_seq, _ts)) => {
-                        sent_total += 1;
-                        if let PeerCursor::At(ts) = batch.new_cursor {
-                            state.outbound_cursor_ntp = Some(ts.ntp64_as_i64());
-                        }
-                        state.last_put_at = Some(now_secs_i64());
-                        state.last_error = None;
-                    }
-                    Err(e) => {
-                        let msg = format!("relay put: {e}");
-                        tracing::warn!("{msg}");
-                        state.last_error = Some(msg);
-                    }
-                }
+        };
+        let envelope = SyncEnvelope {
+            from_device: our_device,
+            to_group: ident.group_id,
+            nonce: [0u8; 24],
+            ciphertext,
+        };
+        match handle.client.put_envelope(envelope).await {
+            Ok((_seq, _ts)) => {
+                engine.commit_broadcast_cursors(&committed).await;
+                sent_total += 1;
+                state.last_put_at = Some(now_secs_i64());
+                state.last_error = None;
             }
-        }
-        Err(e) => {
-            let msg = format!("relay produce: {e}");
-            tracing::warn!("{msg}");
-            state.last_error = Some(msg);
+            Err(e) => {
+                let msg = format!("relay put (loro): {e}");
+                tracing::warn!("{msg}");
+                state.last_error = Some(msg);
+                continue;
+            }
         }
     }
 

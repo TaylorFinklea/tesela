@@ -2,34 +2,18 @@
 
 pub mod applied;
 pub mod cursor;
-pub mod dual_engine;
 pub mod loro_engine;
-pub mod sqlite_engine;
 
 pub use applied::AppliedChanges;
 pub use cursor::{LocalCursor, PeerCursor};
-pub use dual_engine::DualEngine;
 pub use loro_engine::LoroEngine;
-pub use sqlite_engine::SqliteEngine;
 
 use crate::device::DeviceId;
 use crate::error::SyncResult;
 use crate::oplog::op::{ContentHash, EncodedOp, OpPayload};
 use crate::oplog::parked::ParkReason;
-use crate::wire::envelope::SyncEnvelope;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-
-/// A batch of ops produced by [`SyncEngine::produce_changes_since`], plus
-/// the cursor pointing past the last yielded op.
-#[derive(Debug, Clone)]
-pub struct ProducedBatch {
-    /// The ops, oldest first.
-    pub ops: Vec<EncodedOp>,
-    /// The new cursor pointing past the last op in `ops`. If `ops` is
-    /// empty, this equals the input cursor.
-    pub new_cursor: PeerCursor,
-}
 
 /// Summary of a parked-op replay attempt.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -49,47 +33,24 @@ pub struct ParkedSummary {
     pub oldest_parked_at_millis: Option<i64>,
 }
 
-/// The core sync engine trait. Implementations: [`SqliteEngine`],
-/// [`LoroEngine`], [`DualEngine`].
+/// The core sync engine trait. Post-flag-day (2026-05-29) the only
+/// implementation is [`LoroEngine`]; the trait remains as the boundary
+/// the server's `Arc<dyn SyncEngine>` and the FFI hold. The legacy
+/// op-replay methods (`apply_changes` / `produce_changes_since` /
+/// `produce_local_authored_since`) were removed with the SqliteEngine
+/// stack — sync now flows entirely through the Loro relay-update methods
+/// below.
 #[async_trait]
 pub trait SyncEngine: Send + Sync {
     /// Local device id. Surfaced on the trait so server code can hold an
     /// `Arc<dyn SyncEngine>` without reaching for a concrete engine —
-    /// the dual-write wrapper needs this when fanning out, and several
-    /// server routes use the device id for envelope addressing.
+    /// several server routes use the device id for envelope addressing.
     fn device(&self) -> DeviceId;
 
     /// Local-side mutation entry point. `tesela-core` funnels every write
     /// here when sync is enabled. The engine appends an oplog row and
     /// returns the resulting content hash.
     async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash>;
-
-    /// Apply incoming changes from a peer. Returns the set of canonical
-    /// row identifiers that changed so callers can rebuild derived tables.
-    async fn apply_changes(
-        &self,
-        peer: DeviceId,
-        envelope: SyncEnvelope,
-    ) -> SyncResult<AppliedChanges>;
-
-    /// Produce ops authored locally with HLC strictly greater than
-    /// `since`, up to `max_bytes` of postcard-encoded payload.
-    async fn produce_changes_since(
-        &self,
-        peer: DeviceId,
-        since: PeerCursor,
-        max_bytes: usize,
-    ) -> SyncResult<ProducedBatch>;
-
-    /// Like [`produce_changes_since`] but filters to ops THIS device
-    /// authored. Used by the WAN relay outbound tick where we must not
-    /// re-publish ops we merely received from another peer (the relay
-    /// fan-out would otherwise loop them back to senders).
-    async fn produce_local_authored_since(
-        &self,
-        since: PeerCursor,
-        max_bytes: usize,
-    ) -> SyncResult<ProducedBatch>;
 
     /// Current cursor for ops THIS device has produced.
     async fn local_cursor(&self) -> SyncResult<LocalCursor>;
@@ -132,15 +93,6 @@ pub trait SyncEngine: Send + Sync {
     /// include frontmatter; DualEngine forwards to the shadow.
     async fn render_note_full(&self, _note_id: [u8; 16]) -> Option<String> {
         None
-    }
-
-    /// True when this engine drives the relay with the Loro v2 payload
-    /// (per-note `LoroDocUpdate` bytes behind the `TLR2` magic) instead of
-    /// the legacy `Vec<EncodedOp>`. Only the authoritative `LoroEngine`
-    /// returns true; the relay `tick` branches on it. Default false keeps
-    /// every other engine on the legacy wire.
-    fn uses_loro_relay_payload(&self) -> bool {
-        false
     }
 
     /// Compute the per-note Loro updates to broadcast this relay tick:

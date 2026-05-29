@@ -31,14 +31,12 @@
 
 use crate::device::DeviceId;
 use crate::engine::{
-    applied::AppliedChanges, cursor::PeerCursor, LocalCursor, ParkedSummary, ProducedBatch,
-    ReplayReport, SyncEngine,
+    cursor::PeerCursor, LocalCursor, ParkedSummary, ReplayReport, SyncEngine,
 };
 use crate::error::{SyncError, SyncResult};
 use crate::hlc::Hlc;
 use crate::oplog::op::{ContentHash, EncodedOp, OpPayload};
 use crate::oplog::parked::ParkReason;
-use crate::wire::envelope::SyncEnvelope;
 use async_trait::async_trait;
 use loro::{ExportMode, LoroDoc, LoroTree, TreeID, TreeParentId, VersionVector};
 use std::collections::HashMap;
@@ -1460,52 +1458,6 @@ impl SyncEngine for LoroEngine {
         Ok(hash)
     }
 
-    /// Apply incoming changes from a peer. The envelope's `ciphertext`
-    /// at this layer is a postcard-encoded `Vec<EncodedOp>` (transport
-    /// encryption already stripped). We replay each payload through the
-    /// shadow tree using the same logic as local writes so the divergence
-    /// check also catches peer-applied ops.
-    ///
-    /// Returns an `AppliedChanges` with the per-op counts; this isn't
-    /// authoritative (SqliteEngine's count is what callers act on) but
-    /// keeps the trait shape uniform.
-    async fn apply_changes(
-        &self,
-        _peer: DeviceId,
-        envelope: SyncEnvelope,
-    ) -> SyncResult<AppliedChanges> {
-        let ops = crate::wire::decode_op_batch(&envelope.ciphertext)?;
-        let mut applied = AppliedChanges::default();
-        for op in ops {
-            self.apply_payload(&op.payload).await?;
-            applied.applied += 1;
-        }
-        Ok(applied)
-    }
-
-    async fn produce_changes_since(
-        &self,
-        _peer: DeviceId,
-        since: PeerCursor,
-        _max_bytes: usize,
-    ) -> SyncResult<ProducedBatch> {
-        Ok(ProducedBatch {
-            ops: Vec::new(),
-            new_cursor: since,
-        })
-    }
-
-    async fn produce_local_authored_since(
-        &self,
-        since: PeerCursor,
-        _max_bytes: usize,
-    ) -> SyncResult<ProducedBatch> {
-        Ok(ProducedBatch {
-            ops: Vec::new(),
-            new_cursor: since,
-        })
-    }
-
     async fn local_cursor(&self) -> SyncResult<LocalCursor> {
         Ok(LocalCursor::Earliest)
     }
@@ -1543,14 +1495,6 @@ impl SyncEngine for LoroEngine {
     /// dry-run surface).
     async fn render_note_full(&self, note_id: [u8; 16]) -> Option<String> {
         LoroEngine::render_note_full(self, note_id).await
-    }
-
-    /// Loro drives the relay with the v2 payload only when it's the
-    /// authoritative writer (materialize_dir set). A non-authoritative
-    /// LoroEngine (e.g. a dual-write shadow used directly) stays off the
-    /// relay-producer path.
-    fn uses_loro_relay_payload(&self) -> bool {
-        self.inner.materialize_dir.is_some()
     }
 
     async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>, Vec<u8>)> {
@@ -3147,44 +3091,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn apply_changes_populates_shadow_from_peer_envelope() {
-        use crate::wire::envelope::SyncEnvelope;
-
-        let hlc = Arc::new(Hlc::new(test_device()));
-        let engine = LoroEngine::new(test_device(), hlc.clone());
-        let note_id = [50u8; 16];
-        let block = [51u8; 16];
-        let peer_device = DeviceId::from_bytes([99u8; 16]);
-
-        let payload = OpPayload::BlockUpsert {
-            block_id: block,
-            note_id,
-            parent_block_id: None,
-            order_key: "a0".into(),
-            indent_level: 0,
-            text: "from peer".into(),
-        };
-        let op = EncodedOp::new(hlc.now(), crate::SYNC_SCHEMA_VERSION, payload, None).unwrap();
-        let ciphertext = postcard::to_allocvec(&vec![op]).unwrap();
-
-        let envelope = SyncEnvelope {
-            from_device: peer_device,
-            to_group: crate::group::GroupId([0u8; 16]),
-            nonce: [0u8; 24],
-            ciphertext,
-        };
-
-        let applied = engine.apply_changes(peer_device, envelope).await.unwrap();
-        assert_eq!(applied.applied, 1);
-
-        let rendered = engine.render_note(note_id).await.unwrap();
-        assert_eq!(
-            rendered,
-            "- from peer <!-- bid:33333333-3333-3333-3333-333333333333 -->\n"
-        );
-    }
-
-    #[tokio::test]
     async fn block_upsert_with_same_block_id_updates_text() {
         let hlc = Arc::new(Hlc::new(test_device()));
         let engine = LoroEngine::new(test_device(), hlc);
@@ -3332,7 +3238,6 @@ mod tests {
         let engine = LoroEngine::with_dirs(dev, Arc::new(Hlc::new(dev)), snap, None)
             .await
             .unwrap();
-        assert!(!engine.uses_loro_relay_payload(), "no materialize_dir → not authoritative");
         engine
             .record_local(OpPayload::NoteUpsert {
                 note_id: blake3_note_id("x"),
@@ -3413,7 +3318,6 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(a.uses_loro_relay_payload() && b.uses_loro_relay_payload());
 
         // Helper: ship A's produced updates to B through the wire codec,
         // then commit A's cursor (simulating a confirmed send).

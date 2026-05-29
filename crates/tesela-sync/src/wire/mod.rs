@@ -113,20 +113,6 @@ pub fn decode_op(bytes: &[u8]) -> SyncResult<EncodedOp> {
     Ok(postcard::from_bytes(bytes)?)
 }
 
-/// Encode a batch of ops as a single postcard-serialized blob.
-///
-/// This is the shape that becomes `SyncEnvelope::ciphertext` in Phase 2
-/// (after AEAD wraps it). Phase 1 carries it in cleartext for the loopback
-/// transport.
-pub fn encode_op_batch(ops: &[EncodedOp]) -> SyncResult<Vec<u8>> {
-    Ok(postcard::to_allocvec(&ops.to_vec())?)
-}
-
-/// Decode a batch of ops produced by [`encode_op_batch`].
-pub fn decode_op_batch(bytes: &[u8]) -> SyncResult<Vec<EncodedOp>> {
-    Ok(postcard::from_bytes(bytes)?)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,23 +161,6 @@ mod tests {
     }
 
     #[test]
-    fn op_batch_roundtrip() {
-        let dev = DeviceId::new_random();
-        let ops: Vec<EncodedOp> = (0..5)
-            .map(|i| {
-                let hlc = HlcTimestamp {
-                    ntp64: i as u64,
-                    device: dev,
-                };
-                EncodedOp::new(hlc, 1, note_upsert(i as u8, &format!("Note {i}")), None).unwrap()
-            })
-            .collect();
-        let bytes = encode_op_batch(&ops).unwrap();
-        let back = decode_op_batch(&bytes).unwrap();
-        assert_eq!(ops, back);
-    }
-
-    #[test]
     fn distinct_payloads_have_distinct_hashes() {
         let dev = DeviceId::new_random();
         let hlc = HlcTimestamp { ntp64: 1, device: dev };
@@ -214,9 +183,9 @@ mod tests {
 
     #[test]
     fn legacy_v1_payload_is_not_misread_as_loro_v2() {
-        // A bare postcard(Vec<EncodedOp>) (the v1 wire) must decode to
-        // None on the v2 path, so an authoritative peer skips it instead
-        // of corrupting state.
+        // A bare postcard(Vec<EncodedOp>) (the retired v1 wire) must decode
+        // to None on the v2 path, so an authoritative peer skips a stray
+        // legacy / foreign envelope instead of corrupting state.
         let dev = DeviceId::new_random();
         let ops: Vec<EncodedOp> = (0..3)
             .map(|i| {
@@ -224,7 +193,7 @@ mod tests {
                 EncodedOp::new(hlc, 1, note_upsert(i as u8, "x"), None).unwrap()
             })
             .collect();
-        let v1 = encode_op_batch(&ops).unwrap();
+        let v1 = postcard::to_allocvec(&ops).unwrap();
         assert!(
             decode_loro_relay_payload(&v1).unwrap().is_none(),
             "v1 payload must not be mistaken for v2"

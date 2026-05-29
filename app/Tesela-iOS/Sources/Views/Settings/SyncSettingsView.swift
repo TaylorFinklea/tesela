@@ -205,10 +205,11 @@ struct SyncSettingsView: View {
             throw FfiSyncError.Other(message: "no relay URL on Mac")
         }
         let mosaicRoot = iosMosaicRoot()
-        let sqliteURL = "sqlite:\(mosaicRoot)/sync.db"
         let deviceHex = persistedDeviceIdHex()
-        let engine = try await SyncEngineHandle.openWithMosaic(
-            sqliteUrl: sqliteURL,
+        // Loro is the sole engine post-flag-day; the legacy SQLite
+        // constructors were removed. open_loro materializes + drives the
+        // relay with the v2 payload.
+        let engine = try await SyncEngineHandle.openLoro(
             mosaicPath: mosaicRoot,
             deviceIdHex: deviceHex
         )
