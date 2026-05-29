@@ -185,7 +185,11 @@
     return {
       id: dateStr,
       title: dateStr,
-      content: "",
+      // Carry the daily frontmatter so the BlockOutliner's saved content
+      // is a proper daily (tags: [daily]) when the user types — the file
+      // is created lazily on first edit (see flushSave). Body stays empty;
+      // the outliner seeds one editable blank block.
+      content: `---\ntitle: ${dateStr}\ntags: [daily]\ncreated: ${dateStr}T00:00:00Z\n---\n\n`,
       body: "",
       metadata: {
         title: dateStr,
@@ -299,21 +303,26 @@
     timer: ReturnType<typeof setTimeout> | null;
     pending: string | null;
     inFlight: AbortController | null;
+    // True when the note has no file on disk yet (a synthetic day the user
+    // just typed into) and must be CREATED before/instead of updated. PUT
+    // 404s on a missing note, so the first save POSTs the full content.
+    needsCreate: boolean;
   };
   const saveStates = new Map<string, SaveState>();
 
   function getState(noteId: string): SaveState {
     let s = saveStates.get(noteId);
     if (!s) {
-      s = { timer: null, pending: null, inFlight: null };
+      s = { timer: null, pending: null, inFlight: null, needsCreate: false };
       saveStates.set(noteId, s);
     }
     return s;
   }
 
-  function handleContentChange(noteId: string, fullContent: string) {
+  function handleContentChange(noteId: string, fullContent: string, isSynthetic = false) {
     const s = getState(noteId);
     s.pending = fullContent;
+    if (isSynthetic) s.needsCreate = true;
     if (s.timer) clearTimeout(s.timer);
     setSaving();
     s.timer = setTimeout(() => { void flushSave(noteId); }, 500);
@@ -332,6 +341,23 @@
     const cached = queryClient.getQueryData<Note>(["note", noteId]);
     if (cached) queryClient.setQueryData(["note", noteId], { ...cached, content });
     try {
+      // Lazy-create: a synthetic day's first edit POSTs the full content
+      // (which already carries the daily frontmatter), then the journal
+      // refetch re-renders it as a real day. Claim needsCreate up front so
+      // a coalesced double-flush doesn't double-create.
+      if (s.needsCreate) {
+        s.needsCreate = false;
+        try {
+          const created = await api.createNote(noteId, content);
+          queryClient.setQueryData(["note", noteId], created);
+          queryClient.invalidateQueries({ queryKey: ["notes"] });
+          setSaved();
+          return;
+        } catch (createErr) {
+          // Already exists (race) or create failed — fall through to PUT.
+          console.warn(`Daily lazy-create fell back to update for ${noteId}:`, createErr);
+        }
+      }
       const updated = await api.updateNote(noteId, content, controller.signal);
       if (controller.signal.aborted) return;
       queryClient.setQueryData(["note", noteId], updated);
@@ -562,7 +588,7 @@
       {@const isToday = note.title === todayStr}
       {@const isAnchor = note.title === anchorDate}
       {@const isSynthetic = note.checksum === ""}
-      {@const isMounted = !isSynthetic && (mountedSections.has(note.id) || shouldStartMounted(note.title))}
+      {@const isMounted = mountedSections.has(note.id) || shouldStartMounted(note.title)}
       <section
         class="day"
         class:synthetic={isSynthetic}
@@ -578,44 +604,39 @@
           {/if}
           <span class="day-year">{formatYear(note.title)}</span>
         </header>
-        {#if isSynthetic}
-          <!-- Day has no file on disk yet. Show a click-to-create hint;
-               the action creates the file via the daily endpoint and
-               TanStack invalidation re-renders this section as a real
-               BlockOutliner. -->
-          <button
-            type="button"
-            class="day-create"
-            onclick={async () => {
-              await api.getDailyNote(note.title);
-              queryClient.invalidateQueries({ queryKey: ["notes"] });
-            }}
-          >
-            empty day · click to add an entry
-          </button>
-        {/if}
-        {#if !isSynthetic && isMounted}
+        {#if isMounted}
+          <!-- Every day — even one with no file yet (synthetic) — mounts a
+               BlockOutliner with a ready blank block. A synthetic day's
+               file is created lazily on the first edit (handleContentChange
+               passes isSynthetic → flushSave creates it), so untouched days
+               stay zero-byte on disk: no "click to add" placeholder, no
+               file pollution. -->
           <BlockOutliner
             noteId={note.id}
             body={split.body}
             frontmatter={split.frontmatter}
-            onContentChange={(content) => handleContentChange(note.id, content)}
+            onContentChange={(content) => handleContentChange(note.id, content, isSynthetic)}
             onCancelAndFlush={(content) => cancelAndFlush(note.id, content)}
             onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
             onfocusedblockchange={(b) => setFocusedBlock(b)}
           />
-        {:else if !isSynthetic}
+        {:else}
           <!-- Cheap preview until the section scrolls near the viewport.
                No cm-editor is mounted yet — keeps initial paint fast on
-               large imported journals (e.g. 459 Logseq dailies). -->
+               large imported journals (e.g. 459 Logseq dailies). A
+               synthetic day previews as a single empty bullet. -->
           <div class="day-placeholder">
-            {#each split.body.split("\n").slice(0, 6) as line}
-              {#if line.trim().length > 0}
-                <div class="placeholder-line">{line.replace(/^\s*-\s?/, "• ")}</div>
+            {#if isSynthetic}
+              <div class="placeholder-line">•</div>
+            {:else}
+              {#each split.body.split("\n").slice(0, 6) as line}
+                {#if line.trim().length > 0}
+                  <div class="placeholder-line">{line.replace(/^\s*-\s?/, "• ")}</div>
+                {/if}
+              {/each}
+              {#if split.body.split("\n").length > 6}
+                <div class="placeholder-more">…</div>
               {/if}
-            {/each}
-            {#if split.body.split("\n").length > 6}
-              <div class="placeholder-more">…</div>
             {/if}
           </div>
         {/if}

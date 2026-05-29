@@ -312,7 +312,34 @@
   });
   const statusCycle = $derived(["", ...statusChoices]);
 
-  let blocks = $state<ParsedBlock[]>(parseBlocks(noteId, body));
+  // A blank seed block so every note — even an empty one — presents one
+  // editable, focusable bullet (how outliners work), instead of a
+  // click-to-create placeholder. The seed is LOCAL-ONLY (`:new-` id, so
+  // applyExternalReparse won't drop it) and is NOT persisted until the
+  // user actually types — saveBlocks only runs from edit handlers, never
+  // from seeding — so empty days stay zero-byte on disk until written.
+  function seedEmptyBlock(nid: string): ParsedBlock {
+    return {
+      id: `${nid}:new-seed`,
+      bid: crypto.randomUUID(),
+      text: "",
+      raw_text: "",
+      tags: [],
+      inline_tags: [],
+      trailing_tags: [],
+      inherited_tags: [],
+      properties: {},
+      indent_level: 0,
+      note_id: nid,
+      parent_note_type: null,
+    } as ParsedBlock;
+  }
+  function parseBlocksSeeded(nid: string, b: string): ParsedBlock[] {
+    const parsed = parseBlocks(nid, b);
+    return parsed.length > 0 ? parsed : [seedEmptyBlock(nid)];
+  }
+
+  let blocks = $state<ParsedBlock[]>(parseBlocksSeeded(noteId, body));
   let focusedIndex = $state<number | null>(null);
   let lastExternalBody = $state(body);
   let lastSentBody = $state(body);
@@ -527,7 +554,7 @@
   function applyExternalReparse(targetBody: string) {
     lastExternalBody = targetBody;
     if (targetBody === lastSentBody) return;
-    const reparsed = parseBlocks(noteId, targetBody);
+    const reparsed = parseBlocksSeeded(noteId, targetBody);
     if (focusedIndex === null) {
       blocks = reparsed;
       history.clear();
