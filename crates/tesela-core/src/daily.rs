@@ -32,11 +32,15 @@ pub fn daily_note_content(date: NaiveDate, config: &DailyNoteConfig) -> String {
         template.replace("{{date}}", &date.format(&config.date_format).to_string())
     } else {
         let title = daily_note_title(date, config);
+        // Seed an empty bullet, not a `# heading`: outliners start every
+        // page with one blank block as the editing surface (the day title
+        // already shows in the journal UI). A heading is a non-bullet line
+        // the block model doesn't capture, which left new dailies
+        // zero-block + un-editable.
         format!(
-            "---\ntitle: {}\ntags: [daily]\ncreated: {}\n---\n\n# {}\n\n",
+            "---\ntitle: {}\ntags: [daily]\ncreated: {}\n---\n\n- \n",
             title,
             date.format("%Y-%m-%dT00:00:00Z"),
-            title
         )
     }
 }
@@ -77,7 +81,9 @@ mod tests {
         let content = daily_note_content(date, &config);
         assert!(content.contains("title: 2026-03-18"));
         assert!(content.contains("tags: [daily]"));
-        assert!(content.contains("# 2026-03-18"));
+        // Seeds one empty bullet (the editing surface), no `# heading`.
+        assert!(content.contains("---\n\n- \n"));
+        assert!(!content.contains("# 2026-03-18"));
     }
 
     #[test]

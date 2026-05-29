@@ -280,8 +280,17 @@ impl NoteStore for FsNoteStore {
             }
         }
 
-        // Sort by modified_at descending
-        notes.sort_by_key(|note| std::cmp::Reverse(note.modified_at));
+        // Sort by title descending. Titles for daily notes are
+        // `YYYY-MM-DD`, so this is date-descending (newest first) — the
+        // order the journal needs when it requests a small `limit`. We
+        // deliberately do NOT sort by filesystem `modified_at`: a bulk
+        // re-materialization (e.g. the Loro authoritative reseed) rewrites
+        // every file at once, clobbering mtimes to ~the same instant, which
+        // made a `limit`-bounded daily query return an arbitrary set and
+        // hid recent days. Unlimited callers re-sort client-side, so this
+        // only changes which notes a small-`limit` query keeps — and for
+        // the daily journal that must be the most recent BY DATE.
+        notes.sort_by(|a, b| b.title.cmp(&a.title));
 
         Ok(notes.into_iter().skip(offset).take(limit).collect())
     }
