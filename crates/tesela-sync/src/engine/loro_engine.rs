@@ -1237,6 +1237,14 @@ fn note_tree_from_doc(
             continue;
         }
         if let Some(fb) = flatblock_from_node(&tree, node) {
+            // Drop blank blocks: empty/whitespace-only bullets are
+            // transient editing artifacts and per product decision
+            // (2026-05-29) are NOT persisted. Headings + other non-bullet
+            // body lines are already absent — the flat-block model never
+            // captured them.
+            if fb.text.trim().is_empty() {
+                continue;
+            }
             blocks.push(fb);
         }
     }
@@ -2406,6 +2414,33 @@ mod tests {
         assert!(
             full.starts_with("---\ntitle: Full\n---\n"),
             "render_note_full must carry frontmatter, got: {full:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn blank_blocks_are_dropped_from_render() {
+        // Product decision 2026-05-29: blank (empty/whitespace) bullets are
+        // not persisted. A note with a real block + a blank one renders
+        // only the real block.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [0x4b; 16];
+        let content = "- real <!-- bid:aaaaaaaa-0000-0000-0000-000000000001 -->\n-  <!-- bid:aaaaaaaa-0000-0000-0000-000000000002 -->\n";
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("b".into()),
+                title: "B".into(),
+                content: content.into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let rendered = engine.render_note(note_id).await.unwrap();
+        assert_eq!(
+            rendered,
+            "- real <!-- bid:aaaaaaaa-0000-0000-0000-000000000001 -->\n",
+            "blank block dropped, real block kept: {rendered:?}"
         );
     }
 
