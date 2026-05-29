@@ -1,0 +1,14 @@
+/* web/src/lib/graphite/tokens.css — Graphite design tokens (see .docs/ai/design/graphite/tokens.json) */
+.gr-root {
+  --bg:#0E1014; --surface:#14171D; --raised:#1A1E26; --raised-2:#20242D; --raised-3:#272C37;
+  --line:rgba(255,255,255,.07); --line-2:rgba(255,255,255,.12); --line-3:rgba(255,255,255,.18);
+  --fg:#EDEFF2; --fg2:#CBD0D9; --muted:#AAB0BB; --subtle:#8A909C; --faint:#646B78;
+  --coral:#FF6B5A; --coral-dim:rgba(255,107,90,.14); --coral-line:rgba(255,107,90,.40);
+  --task:#E8697F; --event:#62B8CE; --note:#E4AE66; --project:#7493E8; --person:#AE90E6; --query:#85BC63;
+  --sans:'Geist','Inter Tight',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
+
+  background:var(--bg); color:var(--fg);
+  font-family:var(--sans); font-size:13.5px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+.gr-mono{font-family:var(--mono);}
