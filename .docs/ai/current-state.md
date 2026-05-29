@@ -1,6 +1,30 @@
 # Current State
 
-## State as of 2026-05-29 (latest) — Loro relay payload + authoritative writer LANDED + live-validated
+## State as of 2026-05-29 (latest) — iOS FFI swapped to LoroEngine + blank/heading drop
+
+**iOS now runs the authoritative LoroEngine over the FFI** (commit `5b00fe7`), and **blank blocks + headings are dropped** per Taylor (`feat(sync): drop blank blocks...`). The cutover is code-complete on both Mac + iOS; what remains is the paired on-device cross-device test + the flag-day flip of Taylor's real mosaic.
+
+### iOS FFI swap (done + sim-verified)
+- `SyncEngineHandle.inner` → `Arc<dyn SyncEngine>` + `notes_dir` field; new `open_loro(mosaic_path, device_id_hex)` builds an authoritative LoroEngine (snapshot=`<mosaic>/.tesela/loro`, materialize=`<mosaic>/notes`). `SyncCoordinator` ticks branch on `uses_loro_relay_payload()` internally (mirrors the Mac tick: produce→TLR2→put→commit on confirmed send; poll→TLR2 decode→apply, decode-err skips). No new uniffi exports — Swift only swapped the constructor (`RelayTicker.openEngineIfNeeded` → `openLoro`).
+- Build pipeline (uniffi **0.31 = library mode**): `cargo build -p tesela-sync-ffi --target aarch64-apple-ios{,-sim} --release` → `cargo run -p tesela-sync-ffi --features cli --bin uniffi-bindgen -- generate --library target/debug/libtesela_sync_ffi.dylib --language swift --out-dir app/Tesela-iOS/Generated/` → copy `Generated/tesela_sync_ffiFFI.h` to `CFFI/` (the modulemap reads CFFI's copy) → `cd app/Tesela-iOS && xcodegen generate` → `xcodebuild -scheme Tesela -sdk iphonesimulator -configuration Debug -destination 'generic/platform=iOS Simulator' build`.
+- **Verified**: both targets cross-compile; bindings regen (+44 lines, just open_loro); app builds + links; launches on the booted sim (Tesela-Test `5B48EF63-...`) without crashing; **LoroEngine opens on-device** (`with_dirs` created `Documents/sync-ios-mosaic/.tesela/loro`). iOS starts EMPTY + bootstraps from the relay (non-canonical device → no reseed), per the multi-device design.
+
+### Blank blocks + headings dropped
+`note_tree_from_doc` skips empty/whitespace bullets; headings were already absent (flat-block model). Confirmed-desired (the `2026-05-17` heading drop is intended, not a regression). `decisions.md` 2026-05-29.
+
+### NEXT — the paired on-device cross-device test (needs Taylor + iPhone)
+1. **Install the new build on Roshar** (physical iPhone 15 Pro): the device `.a` is built (`target/aarch64-apple-ios/release/libtesela_sync_ffi.a`); run the app to Roshar from Xcode (or `xcodebuild -sdk iphoneos` + devicectl). Device-gated.
+2. **Run the Mac authoritative server** on the real mosaic — but ⚠️ this REWRITES the Logseq graph (reseed + canonicalize 512 files, drop the `2026-05-17` heading + blank blocks). Taylor cleared destroying data, but it's his live Logseq files: `TESELA_LORO_AUTHORITATIVE=1 TESELA_LORO_RESEED=1 tesela-server --mosaic ~/Library/Application\ Support/tesela/logseq`. (Test on a copy first if preserving Logseq.) The HA relay is already configured; Mac = canonical Loro broadcaster.
+3. **Cross-device**: iPhone (paired, same relay group) imports the Mac's v2 broadcasts → materializes notes; edit concurrently on web + iPhone → verify convergence, no flashing.
+4. **Flag-day** afterward: delete SqliteEngine/DualEngine/op-wire + DR drill.
+
+Convergence is already proven at 3 levels incl. the real HTTP relay (`tesela-relay/tests/loro_cutover_e2e.rs`); the on-device test confirms it end-to-end across real Mac↔iPhone.
+
+A copy-based authoritative smoke `/tmp/tesela-auth-smoke.tHfTGN` (port 7475) + the dual-write server (real mosaic, port 7474) may still be running — both disposable.
+
+---
+
+## State as of 2026-05-29 — Loro relay payload + authoritative writer LANDED + live-validated
 
 **The reversible, Mac-testable core of the cutover is done, behind flags, and proven on the real 512-note corpus.** Taylor cleared destroying data ("I'm just using logseq while you do this"). Commits: `1c64d52` (relay payload + flag), `db21ded` (real-relay e2e test). 100 sync lib tests + 17 relay tests green.
 
