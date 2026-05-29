@@ -143,13 +143,18 @@ pub trait SyncEngine: Send + Sync {
         false
     }
 
-    /// Produce the per-note Loro updates to broadcast this relay tick:
-    /// `(note_id, update_bytes)` for every note changed since its last
-    /// broadcast. The `tick` wraps these in the v2 envelope payload.
-    /// Default empty (non-Loro engines).
-    async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>)> {
+    /// Compute the per-note Loro updates to broadcast this relay tick:
+    /// `(note_id, update_bytes, captured_vv)` for every note changed since
+    /// its last broadcast. Does NOT advance the broadcast cursor — the
+    /// `tick` calls [`commit_broadcast_cursors`](Self::commit_broadcast_cursors)
+    /// only after a confirmed PUT, so a failed send retries. Default empty.
+    async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>, Vec<u8>)> {
         Vec::new()
     }
+
+    /// Advance + persist the broadcast cursor for notes confirmed sent
+    /// (paired with `produce_relay_updates`' `captured_vv`). Default no-op.
+    async fn commit_broadcast_cursors(&self, _committed: &[([u8; 16], Vec<u8>)]) {}
 
     /// Apply a batch of inbound per-note Loro updates from the relay
     /// (idempotent + commutative). Returns the count applied. Default 0.

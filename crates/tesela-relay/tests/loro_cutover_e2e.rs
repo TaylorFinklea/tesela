@@ -88,9 +88,14 @@ async fn relay_push(engine: &LoroEngine, client: &RelayClient, from: DeviceId, g
         return;
     }
     let payload: Vec<LoroDocUpdate> = updates
-        .into_iter()
-        .map(|(doc, update_bytes)| LoroDocUpdate { doc, update_bytes })
+        .iter()
+        .map(|(doc, update_bytes, _vv)| LoroDocUpdate {
+            doc: *doc,
+            update_bytes: update_bytes.clone(),
+        })
         .collect();
+    let committed: Vec<([u8; 16], Vec<u8>)> =
+        updates.into_iter().map(|(doc, _b, vv)| (doc, vv)).collect();
     let ciphertext = encode_loro_relay_payload(&payload).expect("encode v2");
     let env = SyncEnvelope {
         from_device: from,
@@ -99,6 +104,8 @@ async fn relay_push(engine: &LoroEngine, client: &RelayClient, from: DeviceId, g
         ciphertext,
     };
     client.put_envelope(env).await.expect("put envelope");
+    // Confirmed send → advance the broadcast cursor.
+    engine.commit_broadcast_cursors(&committed).await;
 }
 
 /// Mirror of `tick`'s inbound Loro branch: poll, skip own echoes, decode

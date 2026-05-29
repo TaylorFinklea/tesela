@@ -404,15 +404,20 @@ impl LoroEngine {
         Ok(())
     }
 
-    /// Produce the per-note Loro updates to broadcast on a relay tick:
+    /// Compute the per-note Loro updates to broadcast on a relay tick:
     /// for every note that has accrued ops since its last broadcast,
-    /// export the delta and advance the per-note broadcast cursor.
-    /// Returns `(note_id, update_bytes)` pairs. This is the relay
-    /// BROADCAST model (Phase 5): we don't target a specific peer; we
-    /// emit our deltas and let every receiver import idempotently. (The
-    /// live-relay wiring will pack these into SyncEnvelopes + persist the
-    /// cursor; here they're returned for the engine-level proof.)
-    pub async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>)> {
+    /// export the delta. Returns `(note_id, update_bytes, captured_vv)`
+    /// where `captured_vv` is the doc's version at capture time.
+    ///
+    /// **This does NOT advance the broadcast cursor.** The caller advances
+    /// it via [`commit_broadcast_cursors`](Self::commit_broadcast_cursors)
+    /// ONLY after the relay PUT is confirmed, so a failed send is retried
+    /// on the next tick instead of being silently dropped (the delta would
+    /// otherwise be lost forever — review finding, 2026-05-29). The method
+    /// is therefore idempotent: called twice with no commit between, it
+    /// returns the same set. This is the relay BROADCAST model (Phase 5):
+    /// we emit our deltas and let every receiver import idempotently.
+    pub async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>, Vec<u8>)> {
         let note_ids: Vec<[u8; 16]> =
             self.inner.docs.read().await.keys().copied().collect();
         let mut out = Vec::new();
@@ -427,20 +432,30 @@ impl LoroEngine {
                 continue;
             }
             if let Some(bytes) = self.export_doc_update(note_id, since.as_deref()).await {
-                out.push((note_id, bytes));
-                self.inner
-                    .broadcast_cursor
-                    .write()
-                    .await
-                    .insert(note_id, current);
+                out.push((note_id, bytes, current));
             }
         }
-        // Persist advanced cursors so a restart doesn't re-broadcast
-        // every note's full state (best-effort).
-        if !out.is_empty() {
-            self.save_broadcast_cursors().await;
-        }
         out
+    }
+
+    /// Advance + persist the broadcast cursor for notes whose updates were
+    /// confirmed sent. Call ONLY after a successful relay PUT (paired with
+    /// [`produce_relay_updates`](Self::produce_relay_updates), passing each
+    /// note's `captured_vv`). On send failure, skip this so the same delta
+    /// is re-produced next tick.
+    pub async fn commit_broadcast_cursors(&self, committed: &[([u8; 16], Vec<u8>)]) {
+        if committed.is_empty() {
+            return;
+        }
+        {
+            let mut cur = self.inner.broadcast_cursor.write().await;
+            for (note_id, vv) in committed {
+                cur.insert(*note_id, vv.clone());
+            }
+        }
+        // Persist so a restart doesn't re-broadcast every note's full
+        // state (best-effort).
+        self.save_broadcast_cursors().await;
     }
 
     /// Apply a batch of broadcast per-note Loro updates (the inbound
@@ -1497,8 +1512,12 @@ impl SyncEngine for LoroEngine {
         self.inner.materialize_dir.is_some()
     }
 
-    async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>)> {
+    async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>, Vec<u8>)> {
         LoroEngine::produce_relay_updates(self).await
+    }
+
+    async fn commit_broadcast_cursors(&self, committed: &[([u8; 16], Vec<u8>)]) {
+        LoroEngine::commit_broadcast_cursors(self, committed).await
     }
 
     async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> usize {
@@ -1526,6 +1545,25 @@ impl LoroEngine {
     /// engine was constructed with `with_snapshot_dir` — so the shadow
     /// survives process restart without re-replaying the oplog.
     pub async fn apply_payload(&self, payload: &OpPayload) -> SyncResult<()> {
+        // For an authoritative NoteDelete, resolve the slug BEFORE the
+        // inner apply drops the doc + index entry — afterwards
+        // `slug_for_note` can't find it, so a NoteDelete whose op carries
+        // no `display_alias` would orphan the `.md` file (review finding,
+        // 2026-05-29). Prefer the op's alias; fall back to the resident
+        // doc/index slug.
+        let delete_slug: Option<String> = if self.inner.materialize_dir.is_some() {
+            match payload {
+                OpPayload::NoteDelete {
+                    note_id,
+                    display_alias,
+                } => display_alias
+                    .clone()
+                    .or(self.slug_for_note(*note_id).await),
+                _ => None,
+            }
+        } else {
+            None
+        };
         let touched_note = self.apply_payload_inner(payload).await?;
         if let (Some(dir), Some(note_id)) = (self.inner.snapshot_dir.as_ref(), touched_note) {
             self.save_snapshot(dir, note_id).await;
@@ -1545,9 +1583,9 @@ impl LoroEngine {
         // carries; all other ops re-render the touched note.
         if self.inner.materialize_dir.is_some() {
             match payload {
-                OpPayload::NoteDelete { display_alias, .. } => {
-                    if let Some(slug) = display_alias {
-                        self.remove_materialized(slug).await;
+                OpPayload::NoteDelete { .. } => {
+                    if let Some(slug) = delete_slug {
+                        self.remove_materialized(&slug).await;
                     }
                 }
                 _ => {
@@ -2517,7 +2555,14 @@ mod tests {
         async fn relay_round(engines: &[&LoroEngine]) {
             let mut bus: Vec<([u8; 16], Vec<u8>)> = Vec::new();
             for e in engines {
-                bus.extend(e.produce_relay_updates().await);
+                let produced = e.produce_relay_updates().await;
+                let committed: Vec<([u8; 16], Vec<u8>)> =
+                    produced.iter().map(|(d, _, vv)| (*d, vv.clone())).collect();
+                for (d, b, _) in &produced {
+                    bus.push((*d, b.clone()));
+                }
+                // Simulate a confirmed send → advance the cursor.
+                e.commit_broadcast_cursors(&committed).await;
             }
             for e in engines {
                 e.apply_relay_updates(&bus).await;
@@ -3100,6 +3145,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn note_delete_without_alias_still_removes_file() {
+        // Review finding: a NoteDelete whose op carries no display_alias
+        // (op.rs: "None means the producer did not know the slug") must
+        // still remove the materialized file — the slug is resolved from
+        // the resident doc/index BEFORE the inner apply drops them.
+        let tmp = tempfile::tempdir().unwrap();
+        let dev = test_device();
+        let engine = LoroEngine::with_dirs(
+            dev,
+            Arc::new(Hlc::new(dev)),
+            tmp.path().join("loro"),
+            Some(tmp.path().join("notes")),
+        )
+        .await
+        .unwrap();
+        let note_id = blake3_note_id("orphan");
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("orphan".into()),
+                title: "Orphan".into(),
+                content: "- x <!-- bid:33333333-3333-3333-3333-333333333333 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let path = tmp.path().join("notes").join("orphan.md");
+        assert!(path.exists(), "materialized");
+        engine
+            .record_local(OpPayload::NoteDelete {
+                note_id,
+                display_alias: None,
+            })
+            .await
+            .unwrap();
+        assert!(
+            !path.exists(),
+            "NoteDelete with display_alias=None must still remove the file"
+        );
+    }
+
+    #[tokio::test]
     async fn non_authoritative_engine_writes_no_md_files() {
         // Without materialize_dir, the engine must not touch the notes dir.
         let tmp = tempfile::tempdir().unwrap();
@@ -3191,21 +3278,29 @@ mod tests {
         .unwrap();
         assert!(a.uses_loro_relay_payload() && b.uses_loro_relay_payload());
 
-        // Helper: ship A's produced updates to B through the wire codec.
+        // Helper: ship A's produced updates to B through the wire codec,
+        // then commit A's cursor (simulating a confirmed send).
         async fn ship(from: &LoroEngine, to: &LoroEngine) -> usize {
             let updates = from.produce_relay_updates().await;
             if updates.is_empty() {
                 return 0;
             }
             let payload: Vec<LoroDocUpdate> = updates
-                .into_iter()
-                .map(|(doc, update_bytes)| LoroDocUpdate { doc, update_bytes })
+                .iter()
+                .map(|(doc, update_bytes, _vv)| LoroDocUpdate {
+                    doc: *doc,
+                    update_bytes: update_bytes.clone(),
+                })
                 .collect();
+            let committed: Vec<([u8; 16], Vec<u8>)> =
+                updates.into_iter().map(|(doc, _b, vv)| (doc, vv)).collect();
             let wire = encode_loro_relay_payload(&payload).unwrap();
             let decoded = decode_loro_relay_payload(&wire).unwrap().expect("v2 payload");
             let pairs: Vec<([u8; 16], Vec<u8>)> =
                 decoded.into_iter().map(|u| (u.doc, u.update_bytes)).collect();
-            to.apply_relay_updates(&pairs).await
+            let n = to.apply_relay_updates(&pairs).await;
+            from.commit_broadcast_cursors(&committed).await;
+            n
         }
 
         let note = blake3_note_id("shared");
@@ -3304,6 +3399,10 @@ mod tests {
                 .unwrap();
             let first = engine.produce_relay_updates().await;
             assert_eq!(first.len(), 1, "first produce emits the note");
+            // Commit (confirmed send) advances + persists the cursor.
+            let committed: Vec<([u8; 16], Vec<u8>)> =
+                first.into_iter().map(|(d, _b, vv)| (d, vv)).collect();
+            engine.commit_broadcast_cursors(&committed).await;
         }
         // Reopen: cursor was persisted, so produce emits nothing new.
         let engine = LoroEngine::with_dirs(dev, Arc::new(Hlc::new(dev)), snap, Some(notes))
@@ -3311,6 +3410,51 @@ mod tests {
             .unwrap();
         let again = engine.produce_relay_updates().await;
         assert!(again.is_empty(), "persisted cursor suppresses re-broadcast after restart");
+    }
+
+    #[tokio::test]
+    async fn produce_without_commit_re_emits_delta_on_failed_send() {
+        // Review finding #1: produce_relay_updates must NOT advance the
+        // cursor — only commit_broadcast_cursors does. So a failed relay
+        // send (no commit) re-emits the same delta next tick instead of
+        // losing it forever.
+        let tmp = tempfile::tempdir().unwrap();
+        let dev = test_device();
+        let engine = LoroEngine::with_dirs(
+            dev,
+            Arc::new(Hlc::new(dev)),
+            tmp.path().join("loro"),
+            Some(tmp.path().join("notes")),
+        )
+        .await
+        .unwrap();
+        let note = blake3_note_id("retry");
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("retry".into()),
+                title: "R".into(),
+                content: "- x <!-- bid:90909090-9090-9090-9090-909090909090 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        // First produce: one delta.
+        let first = engine.produce_relay_updates().await;
+        assert_eq!(first.len(), 1, "produce emits the note");
+        // Simulate a FAILED send: do NOT commit. Next produce must still
+        // emit the same delta (not lost).
+        let retry = engine.produce_relay_updates().await;
+        assert_eq!(retry.len(), 1, "failed send re-emits the delta — not dropped");
+        assert_eq!(retry[0].0, note);
+        // Now commit (confirmed send). Subsequent produce is empty.
+        let committed: Vec<([u8; 16], Vec<u8>)> =
+            retry.into_iter().map(|(d, _b, vv)| (d, vv)).collect();
+        engine.commit_broadcast_cursors(&committed).await;
+        assert!(
+            engine.produce_relay_updates().await.is_empty(),
+            "committed cursor suppresses re-broadcast"
+        );
     }
 
     fn blake3_note_id(slug: &str) -> [u8; 16] {

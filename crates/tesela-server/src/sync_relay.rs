@@ -199,12 +199,21 @@ pub async fn tick(
                             }
                         }
                         Err(e) => {
+                            // A decode error is deterministic — re-fetching
+                            // the same bytes will fail identically. Advance
+                            // past it so one malformed envelope can't stall
+                            // inbound sync forever (the AEAD layer already
+                            // authenticated the sender, so this is a sender
+                            // bug, not tampering; skipping is safe).
                             tracing::warn!(
-                                "relay loro apply seq={} from={}: {}",
+                                "relay loro decode seq={} from={}: {} (skipping)",
                                 seq,
                                 hex::encode(peer.as_bytes()),
                                 e
                             );
+                            if seq > max_seq {
+                                max_seq = seq;
+                            }
                         }
                     }
                 } else {
@@ -251,11 +260,17 @@ pub async fn tick(
     // batch; receivers import idempotently. No HLC outbound cursor — the
     // engine's per-note VV cursors are the watermark.
     if engine.uses_loro_relay_payload() {
+        // (note_id, update_bytes, captured_vv). The cursor is NOT yet
+        // advanced — we commit it only after the PUT is confirmed, so a
+        // failed send is retried next tick rather than dropped.
         let updates = engine.produce_relay_updates().await;
         if !updates.is_empty() {
             let payload: Vec<tesela_sync::LoroDocUpdate> = updates
-                .into_iter()
-                .map(|(doc, update_bytes)| tesela_sync::LoroDocUpdate { doc, update_bytes })
+                .iter()
+                .map(|(doc, update_bytes, _vv)| tesela_sync::LoroDocUpdate {
+                    doc: *doc,
+                    update_bytes: update_bytes.clone(),
+                })
                 .collect();
             match tesela_sync::encode_loro_relay_payload(&payload) {
                 Ok(ciphertext) => {
@@ -267,11 +282,18 @@ pub async fn tick(
                     };
                     match handle.client.put_envelope(envelope).await {
                         Ok((_seq, _ts)) => {
+                            // Confirmed — advance + persist the cursors.
+                            let committed: Vec<([u8; 16], Vec<u8>)> = updates
+                                .into_iter()
+                                .map(|(doc, _bytes, vv)| (doc, vv))
+                                .collect();
+                            engine.commit_broadcast_cursors(&committed).await;
                             sent_total += 1;
                             state.last_put_at = Some(now_secs_i64());
                             state.last_error = None;
                         }
                         Err(e) => {
+                            // No commit → same deltas re-produced next tick.
                             let msg = format!("relay put (loro): {e}");
                             tracing::warn!("{msg}");
                             state.last_error = Some(msg);
