@@ -1,6 +1,37 @@
 # Current State
 
-## State as of 2026-05-28 late night (latest) — cutover dry-run landed
+## State as of 2026-05-29 (latest) — Loro relay payload + authoritative writer LANDED + live-validated
+
+**The reversible, Mac-testable core of the cutover is done, behind flags, and proven on the real 512-note corpus.** Taylor cleared destroying data ("I'm just using logseq while you do this"). Commits: `1c64d52` (relay payload + flag), `db21ded` (real-relay e2e test). 100 sync lib tests + 17 relay tests green.
+
+### What shipped
+- **v2 relay payload** (`wire/mod.rs`): `LoroDocUpdate{doc,update_bytes}` + `TLR2`-magic-prefixed postcard codec. Collision-proof vs legacy bare `postcard(Vec<EncodedOp>)` (a v1 payload decodes to `None` on the v2 path → skipped, never mis-applied). Index doc NOT broadcast (peers rebuild locally — self-healing index).
+- **Authoritative LoroEngine** (`loro_engine.rs`): `with_dirs(.., materialize_dir)` → writes `<slug>.md` on every apply (apply_payload + import_doc_update), atomic tmp+rename; NoteDelete removes the file. `reseed_from_disk` (canonical-device bootstrap). Broadcast cursors persisted to `_broadcast.bin`. New trait methods `uses_loro_relay_payload`/`produce_relay_updates`/`apply_relay_updates`.
+- **Relay tick** (`sync_relay.rs`): branches on `uses_loro_relay_payload()` — Loro path does decode→apply / produce→encode→put; legacy path untouched. AEAD seal/open unchanged (payload-opaque).
+- **main.rs**: `TESELA_LORO_AUTHORITATIVE` → bare LoroEngine as sync_engine (SqliteEngine bypassed; reads via FsNoteStore off disk Loro owns). `TESELA_LORO_RESEED` → reseed at boot.
+
+### Convergence proven at 3 levels (no flashing)
+1. engine (`two_engines_converge...`), 2. engine+wire (`..._through_wire_codec`), 3. **engine+wire+AEAD+HTTP-relay** (`tesela-relay/tests/loro_cutover_e2e.rs` — two authoritative engines over the in-process relay converge to identical render AND identical on-disk files, stable across extra rounds).
+
+### Live smoke on a COPY of the real logseq mosaic (512 notes) — ALL GREEN
+Booted authoritative+reseed server (port 7475) on `/tmp/tesela-auth-smoke.*` (copy, to not touch Taylor's live Logseq files):
+- reseeded **512 notes**, booted, listening.
+- **Stale-shadow fix validated**: `2026-05-27` regained its `status::`/`tags::` block props + full "...send out posts were it can" text (reseed-from-disk corrects staleness); `2026-05-22` cleaned 2 orphaned malformed `status:: done` lines. Dry-run `2026-05-27` now **byte-identical**.
+- Only data change is the KNOWN `2026-05-17` bare-`# heading` drop (CRDT model limit, documented).
+- Read path (GET /notes, GET /notes/:id) via FsNoteStore ✓. Write path (PUT → record_local → materialize → re-read with canonical bid) ✓.
+
+### NEXT (genuinely remaining, mostly device-gated)
+- **iOS FFI swap** (the real device-gated mile): expose Loro per-doc + relay methods via uniffi, swap SyncEngineHandle to LoroEngine, build `.a` for both ios targets, install Roshar+sim, pass stable device id, snapshot load on open. Then the web↔iPhone cross-device convergence test (needs the iPhone).
+- **Two real Macs** (optional pre-iOS): point two authoritative servers at one relay group (copy group identity between mosaics) — exercises the literal tesela-server `tick()` wrapper, which the e2e test mirrors but doesn't call (tesela-server is bin-only).
+- **Flag-day**: flip Taylor's real mosaic to authoritative+reseed once, delete SqliteEngine/DualEngine/Vec<EncodedOp> wire, DR drill.
+- **BlockMove under Loro**: verify web indent/outdent round-trips before flag-day.
+- An adversarial review of this diff is running (`cutover-adversarial-review` workflow); triage findings before flag-day.
+
+Architecture decisions recorded in `decisions.md` (2026-05-28 entry). Old dual-write server still runs on the REAL mosaic (pid was 92195, release binary, port 7474) — harmless; not the cutover path.
+
+---
+
+## State as of 2026-05-28 late night — cutover dry-run landed
 
 **Pushed the cutover's NON-destructive leading edge: a materialization dry-run that shows exactly what LoroEngine would write to disk as sole writer, diffed against every live file BEFORE any writer flip.** Commit `7d4f214`. 92 sync tests green. Server running `TESELA_LORO_DUAL_WRITE=1` (pid 92195), port 7474.
 
