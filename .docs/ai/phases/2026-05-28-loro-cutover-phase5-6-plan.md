@@ -185,3 +185,16 @@ Phases 5-6 are the cutover: a relay-protocol redesign (Loro update payload + per
 4. iOS: swap SyncEngineHandle to LoroEngine (or add openLoro constructor), add snapshot load on open, pass the stable device id, build the FFI .a for both ios targets, build+install on Roshar + sim.
 5. Flag-day: all participants on the Loro payload at once; one-time canonical reserialize; delete DualEngine + SqliteEngine + Vec<EncodedOp> wire. DR drill.
 6. BlockMove: web emits it for indent/outdent; LoroEngine BlockMove updates indent only (done). Verify web indent/outdent round-trips under Loro before flag-day.
+
+## Materialization dry-run results (2026-05-28, commit 7d4f214)
+
+Built the NON-destructive leading edge of step 3 first: `render_note_full` (full `.md` LoroEngine would write as sole writer) + `GET /loro/notes/:slug` fields `would_materialize` / `disk_raw` / `materialize_byte_identical` / `materialize_structurally_equal`. Diffed the engine's materialization against every live disk file BEFORE any writer flip. This quantifies the cutover blast radius exactly.
+
+**Result across all 512 notes in the logseq mosaic (dual-write server, snapshots loaded):**
+- **495 byte-identical** — writer flip is a pure no-op (no file change).
+- **14 structural-only** — semantically equal, would canonically reformat on flip. Mostly query/index pages (`recent`, `calendar`, `pages`, `people`, `dailies`, `projects`, `tasks`, `pinned`, `observation`, `ober`, `oberburst`, `chatgpt__2025-06-01-...`) + 2 recent dailies (`2026-05-20/21`). Acceptable (this IS the one-time canonical reserialize).
+- **3 real diverge** — content WOULD change:
+  - `2026-05-27`, `2026-05-22` = **shadow STALE vs disk.** Block text drift + missing `status::`/`tags::` block properties + block reorder. Root cause: `.bin` snapshots loaded at boot predate Taylor's later Logseq hand-edits, and `seed_shadow_from_disk` (dual_engine.rs:174) SKIPS already-tracked notes, so they never reconcile against newer disk. **Flag-day fix:** reseed Loro docs from authoritative disk (force NoteUpsert → existing tree-reconcile path) rather than trusting oplog/snapshots.
+  - `2026-05-17` = **CRDT model limitation.** Disk has a bare `# 2026-05-17` heading (non-bullet body line) the flat-block model can't represent; materialization drops it. Not staleness — a real (small) model gap. Decide at flag-day: accept dropping bare headings, or model headings as blocks.
+
+**Cutover-critical conclusion:** the flag-day "one-time canonical reserialize" (step 5) is MANDATORY, not cosmetic — without a disk reseed the 2 stale notes lose data on the writer flip. The dry-run endpoint is the verification tool: after a reseed, re-run it; expect the 2 stale notes to flip to byte-identical/structural and only `2026-05-17` (heading) to remain. Re-run before AND after flag-day as the DR check.

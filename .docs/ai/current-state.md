@@ -1,6 +1,18 @@
 # Current State
 
-## State as of 2026-05-28 night (latest)
+## State as of 2026-05-28 late night (latest) — cutover dry-run landed
+
+**Pushed the cutover's NON-destructive leading edge: a materialization dry-run that shows exactly what LoroEngine would write to disk as sole writer, diffed against every live file BEFORE any writer flip.** Commit `7d4f214`. 92 sync tests green. Server running `TESELA_LORO_DUAL_WRITE=1` (pid 92195), port 7474.
+
+- `LoroEngine::render_note_full` (full `.md`: verbatim frontmatter + page props + blocks) + `SyncEngine` trait method + DualEngine forward. `GET /loro/notes/:slug` now returns `would_materialize`, `disk_raw`, `materialize_byte_identical`, `materialize_structurally_equal`.
+- **Live dry-run over all 512 notes:** 495 byte-identical (flip = no-op), 14 structural-only (cosmetic reformat, mostly query pages), **3 real diverge**: `2026-05-27` + `2026-05-22` = shadow STALE vs disk (`.bin` snapshots predate Logseq edits; `seed_shadow_from_disk` skips already-tracked notes); `2026-05-17` = CRDT model limit (bare `# heading` body not a bullet block).
+- **Cutover-critical conclusion (recorded in `phases/2026-05-28-loro-cutover-phase5-6-plan.md` §dry-run):** flag-day MUST reseed Loro docs from authoritative DISK (force NoteUpsert → tree-reconcile), not oplog/snapshots — else the 2 stale notes lose data on the flip. Dry-run endpoint is the DR verification tool (re-run before+after reseed).
+
+**STOPPED before the destructive parts** (writer flip, live relay protocol change, deleting SqliteEngine) — confirmed via tracing the plumbing that making LoroEngine authoritative requires suppressing SqliteEngine's writes (two writers conflict), a delicate cross-engine flip whose flag-on test mutates the real mosaic + whose final web↔iPhone test needs the device. The dry-run de-risks materialization correctness without that danger. NEXT remains the destructive cutover per `phase5-6-plan.md` §recommended order (1→6).
+
+---
+
+## State as of 2026-05-28 night
 
 **Phases 0–2 DONE + verified live + adversarially reviewed + 7 review-bugs fixed. Honest divergence on the live 518-note corpus is 3 (all explained, all resolved at cutover). Ready for Phase 3 — the foundation is now reviewed, not assumed.**
 
