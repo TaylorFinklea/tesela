@@ -69,3 +69,7 @@ logseq-*.png
 
 # Claude Code local hook scripts
 .claude/hooks/
+
+# T9 redesign raw package (curated copy lives in .docs/ai/design/graphite/)
+T9.zip
+.tmp-t9/

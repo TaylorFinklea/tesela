@@ -9,6 +9,12 @@ Active items. Trim as completed.
 
 **THE PLAN: [`phases/2026-05-28-loro-cutover-spec.md`](phases/2026-05-28-loro-cutover-spec.md)** — hard cutover to a Loro-authoritative engine, then delete the hand-rolled oplog. Doc model = **hybrid per-note docs + index doc** (NOT single mega-doc — would OOM iOS at scale; see [decisions.md](decisions.md) 2026-05-28). v1 = **full parity** before flip. Goal: kill the convergence "flashing" (LWW ping-pong observed live on Roshar 2026-05-28) that the hand-rolled engine can't fix.
 
+> **2026-05-29 STATUS — cutover is functionally done; only cleanup remains.** Relay v2 payload (TLR2 + DEFLATE), `TESELA_LORO_AUTHORITATIVE` (LoroEngine = sole writer, materializes `.md`), reseed-from-disk bootstrap, **iOS FFI swapped to LoroEngine**, and **web↔iPhone sync CONFIRMED WORKING** (Taylor, 2026-05-29). Authoritative server live on the real mosaic.
+>
+> **Remaining Loro work (immediate Now):** (a) **flag-day** — delete SqliteEngine / DualEngine / `Vec<EncodedOp>` wire; (b) **`ai-business` snapshot-dedup** (store frontmatter-only in root meta so the 1.3 MB page fits the 5 MB relay); (c) **DR drill**.
+>
+> **THEN → next milestone: the Graphite redesign** — [`phases/2026-05-29-graphite-redesign-spec.md`](phases/2026-05-29-graphite-redesign-spec.md). Brand-new **SvelteKit web + SwiftUI iOS** frontends to the Graphite design system (clean rebuild, reuse vetted logic + Loro FFI), **web + iOS in parallel**, **daily-driver parity then cut over** + delete the old. Rail = AnyType-style widget host. Design source: [`design/graphite/`](design/graphite/). Later: window splits, extra themes, graph/tag-table/settings polish.
+
 **Done (dual-write scaffold + shadow, 2026-05-27/28):**
 - [x] Loro spike GREEN (`phases/2026-05-27-loro-spike-report.md`).
 - [x] LoroEngine + DualEngine scaffold (`4015dc7`); wired behind `TESELA_LORO_DUAL_WRITE` (`70f9ed2`).
