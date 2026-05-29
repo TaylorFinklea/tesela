@@ -1119,17 +1119,15 @@ public func FfiConverterTypeSyncCoordinator_lower(_ value: SyncCoordinator) -> U
 
 
 /**
- * Handle to a SQLite-backed sync engine. Created with
- * [`SyncEngineHandle::open`]; lives behind an `Arc` so multiple Swift
+ * Handle to the authoritative Loro sync engine. Created with
+ * [`SyncEngineHandle::open_loro`]; lives behind an `Arc` so multiple Swift
  * callers (UI + background sync task) can hold references concurrently
  * without copying engine state.
  *
- * What the iOS app gets out of this in B.1: just enough to prove the
- * FFI pipeline carries an opened engine round-trip. The producer +
- * consumer methods (`apply_changes`, `produce_changes_since`) are wired
- * in B.2 / B.3 — exposing them ahead of time would force a serialized
- * `SyncEnvelope` shape across the FFI boundary before we've nailed
- * down how iOS consumes ops.
+ * Post-flag-day (2026-05-29) the only constructor is `open_loro`; the
+ * legacy SQLite constructors (`open` / `open_with_mosaic`) were removed
+ * with the SqliteEngine stack. Sync flows through the Loro relay-update
+ * methods, not the retired op-replay path.
  */
 public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     
@@ -1202,17 +1200,15 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     
 }
 /**
- * Handle to a SQLite-backed sync engine. Created with
- * [`SyncEngineHandle::open`]; lives behind an `Arc` so multiple Swift
+ * Handle to the authoritative Loro sync engine. Created with
+ * [`SyncEngineHandle::open_loro`]; lives behind an `Arc` so multiple Swift
  * callers (UI + background sync task) can hold references concurrently
  * without copying engine state.
  *
- * What the iOS app gets out of this in B.1: just enough to prove the
- * FFI pipeline carries an opened engine round-trip. The producer +
- * consumer methods (`apply_changes`, `produce_changes_since`) are wired
- * in B.2 / B.3 — exposing them ahead of time would force a serialized
- * `SyncEnvelope` shape across the FFI boundary before we've nailed
- * down how iOS consumes ops.
+ * Post-flag-day (2026-05-29) the only constructor is `open_loro`; the
+ * legacy SQLite constructors (`open` / `open_with_mosaic`) were removed
+ * with the SqliteEngine stack. Sync flows through the Loro relay-update
+ * methods, not the retired op-replay path.
  */
 open class SyncEngineHandle: SyncEngineHandleProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -1266,39 +1262,6 @@ open class SyncEngineHandle: SyncEngineHandleProtocol, @unchecked Sendable {
 
     
     /**
-     * Open (or create) a SQLite-backed sync engine at the given URL,
-     * without filesystem materialization. Applied ops land in the
-     * oplog but no `.md` files are written. Useful for headless
-     * engines or tests; **iOS should normally use
-     * [`Self::open_with_mosaic`] instead** so apply ticks
-     * materialize into the iOS app sandbox.
-     *
-     * `sqlite_url` follows the sqlx convention: `sqlite:/path/to/file`
-     * (the leading slash makes it absolute). iOS callers typically
-     * pass `format!("sqlite:{}", url.path())` where `url` is a
-     * `FileManager`-derived path inside the app's sandbox.
-     *
-     * `device_id_hex` must be 32 lowercase hex chars — typically the
-     * output of [`generate_device_id_hex`] persisted across launches.
-     * Reusing a stable device id is what keeps HLC timestamps
-     * monotonic across app restarts.
-     */
-public static func `open`(sqliteUrl: String, deviceIdHex: String)async throws  -> SyncEngineHandle  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_tesela_sync_ffi_fn_constructor_syncenginehandle_open(FfiConverterString.lower(sqliteUrl),FfiConverterString.lower(deviceIdHex)
-                )
-            },
-            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u64,
-            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u64,
-            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u64,
-            liftFunc: FfiConverterTypeSyncEngineHandle_lift,
-            errorHandler: FfiConverterTypeFfiSyncError_lift
-        )
-}
-    
-    /**
      * Open an authoritative **LoroEngine** for iOS (the Loro cutover).
      * LoroEngine becomes the sole writer: it materializes
      * `<mosaic_path>/notes/<slug>.md` on every applied change and drives
@@ -1318,32 +1281,6 @@ public static func openLoro(mosaicPath: String, deviceIdHex: String)async throws
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
                 uniffi_tesela_sync_ffi_fn_constructor_syncenginehandle_open_loro(FfiConverterString.lower(mosaicPath),FfiConverterString.lower(deviceIdHex)
-                )
-            },
-            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u64,
-            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u64,
-            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u64,
-            liftFunc: FfiConverterTypeSyncEngineHandle_lift,
-            errorHandler: FfiConverterTypeFfiSyncError_lift
-        )
-}
-    
-    /**
-     * Like [`Self::open`] but ALSO knows about a mosaic root directory,
-     * so applied ops materialize into `<mosaic_path>/notes/<slug>.md`.
-     * This is the iOS production shape: pass the app sandbox's
-     * Documents/<mosaic-name>/ as `mosaic_path` and the engine takes
-     * care of writing the on-disk notes for the indexer (and the iOS
-     * data layer) to read.
-     *
-     * `mosaic_path` must be an absolute filesystem path; the engine
-     * creates `mosaic_path/notes/` if missing.
-     */
-public static func openWithMosaic(sqliteUrl: String, mosaicPath: String, deviceIdHex: String)async throws  -> SyncEngineHandle  {
-    return
-        try  await uniffiRustCallAsync(
-            rustFutureFunc: {
-                uniffi_tesela_sync_ffi_fn_constructor_syncenginehandle_open_with_mosaic(FfiConverterString.lower(sqliteUrl),FfiConverterString.lower(mosaicPath),FfiConverterString.lower(deviceIdHex)
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u64,
@@ -2317,13 +2254,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_constructor_synccoordinator_new() != 10024) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_constructor_syncenginehandle_open() != 2821) {
-        return InitializationResult.apiChecksumMismatch
-    }
     if (uniffi_tesela_sync_ffi_checksum_constructor_syncenginehandle_open_loro() != 54255) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_tesela_sync_ffi_checksum_constructor_syncenginehandle_open_with_mosaic() != 11981) {
         return InitializationResult.apiChecksumMismatch
     }
 
