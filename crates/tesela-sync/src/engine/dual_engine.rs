@@ -675,6 +675,10 @@ impl SyncEngine for DualEngine {
         self.shadow.render_note(note_id).await
     }
 
+    async fn render_note_full(&self, note_id: [u8; 16]) -> Option<String> {
+        self.shadow.render_note_full(note_id).await
+    }
+
     async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
         self.shadow.note_ids().await
     }

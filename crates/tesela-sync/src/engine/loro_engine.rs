@@ -647,23 +647,42 @@ impl LoroEngine {
     pub async fn render_note(&self, note_id: [u8; 16]) -> Option<String> {
         let docs = self.inner.docs.read().await;
         let doc = docs.get(&note_id)?;
-        let tree = doc.get_tree("blocks");
-        let mut blocks: Vec<tesela_core::note_tree::FlatBlock> = Vec::new();
-        for node in tree.children(TreeParentId::Root).unwrap_or_default() {
-            if matches!(tree.is_node_deleted(&node), Ok(true)) {
-                continue;
-            }
-            if let Some(fb) = flatblock_from_node(&tree, node) {
-                blocks.push(fb);
-            }
-        }
-        let note_tree = tesela_core::note_tree::NoteTree {
-            frontmatter: None,
-            page_properties: read_page_properties(doc),
-            blocks,
-            stamped_any: false,
-        };
-        Some(tesela_core::note_tree::serialize_note(&note_tree))
+        Some(tesela_core::note_tree::serialize_note(&note_tree_from_doc(
+            doc, None,
+        )))
+    }
+
+    /// Render the *complete* `.md` file the engine would write to disk as
+    /// the authoritative writer: verbatim frontmatter (read from the doc's
+    /// stored `content` meta) + page properties + blocks. Identical to
+    /// [`render_note`](Self::render_note) except the frontmatter is
+    /// included, so this is the exact byte stream materialization would
+    /// emit.
+    ///
+    /// This is the **dry-run surface for the Loro cutover**: it answers
+    /// "what would LoroEngine write to `<mosaic>/notes/<slug>.md`?" without
+    /// touching the file, so the materialized output can be diffed against
+    /// the live on-disk file *before* the authoritative-writer flip. The
+    /// frontmatter is reproduced verbatim from the parsed source content;
+    /// the CRDT does not model it, so a note whose frontmatter never
+    /// reached the doc (`content` empty) materializes body-only — which is
+    /// itself a useful signal in the diff.
+    ///
+    /// Returns `None` for unknown note ids.
+    pub async fn render_note_full(&self, note_id: [u8; 16]) -> Option<String> {
+        let docs = self.inner.docs.read().await;
+        let doc = docs.get(&note_id)?;
+        let root = doc.get_map("root");
+        let content = root
+            .get("content")
+            .and_then(|v| v.into_value().ok())
+            .and_then(|v| v.into_string().ok())
+            .map(|s| (*s).clone())
+            .unwrap_or_default();
+        let frontmatter = tesela_core::note_tree::parse_note(&content).frontmatter;
+        Some(tesela_core::note_tree::serialize_note(&note_tree_from_doc(
+            doc, frontmatter,
+        )))
     }
 
     /// This engine's Loro PeerID, derived deterministically from its
@@ -955,6 +974,34 @@ fn set_page_properties(
     Ok(())
 }
 
+/// Walk a doc's `blocks` tree into a `NoteTree` — flat blocks in document
+/// (insertion) order at their stored indent, plus the ordered page
+/// properties — attaching the given `frontmatter`. Shared renderer behind
+/// both [`LoroEngine::render_note`] (frontmatter `None`, the shadow
+/// comparison surface) and [`LoroEngine::render_note_full`] (frontmatter
+/// from the doc's stored content, the exact bytes materialization emits).
+fn note_tree_from_doc(
+    doc: &LoroDoc,
+    frontmatter: Option<String>,
+) -> tesela_core::note_tree::NoteTree {
+    let tree = doc.get_tree("blocks");
+    let mut blocks: Vec<tesela_core::note_tree::FlatBlock> = Vec::new();
+    for node in tree.children(TreeParentId::Root).unwrap_or_default() {
+        if matches!(tree.is_node_deleted(&node), Ok(true)) {
+            continue;
+        }
+        if let Some(fb) = flatblock_from_node(&tree, node) {
+            blocks.push(fb);
+        }
+    }
+    tesela_core::note_tree::NoteTree {
+        frontmatter,
+        page_properties: read_page_properties(doc),
+        blocks,
+        stamped_any: false,
+    }
+}
+
 /// Read the ordered page properties back out of the "page_props" list.
 fn read_page_properties(doc: &LoroDoc) -> Vec<(String, String)> {
     let list = doc.get_list("page_props");
@@ -1202,6 +1249,13 @@ impl SyncEngine for LoroEngine {
     /// downcasting.
     async fn render_note(&self, note_id: [u8; 16]) -> Option<String> {
         LoroEngine::render_note(self, note_id).await
+    }
+
+    /// Trait-level override forwarding to the inherent
+    /// `LoroEngine::render_note_full` (the full-file materialization
+    /// dry-run surface).
+    async fn render_note_full(&self, note_id: [u8; 16]) -> Option<String> {
+        LoroEngine::render_note_full(self, note_id).await
     }
 
     async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
@@ -2012,6 +2066,69 @@ mod tests {
         // render_note omits frontmatter (lives on disk, not the shadow);
         // page properties render in order.
         assert_eq!(rendered, "query:: kind:page\nsort:: modified desc\n");
+    }
+
+    #[tokio::test]
+    async fn render_note_full_includes_frontmatter() {
+        // The cutover dry-run surface: render_note_full must reproduce the
+        // verbatim frontmatter (from the doc's stored content) + body, so
+        // it equals what materialization would write to disk. For a note
+        // whose source is itself canonical, this round-trips byte-for-byte.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [0x7f; 16];
+        let content = "---\ntitle: Full\n---\n\n- hello <!-- bid:00000000-0000-0000-0000-000000000001 -->\n";
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("full".into()),
+                title: "Full".into(),
+                content: content.into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // render_note (body only) drops the frontmatter…
+        let body = engine.render_note(note_id).await.unwrap();
+        assert!(
+            !body.starts_with("---"),
+            "render_note must omit frontmatter, got: {body:?}"
+        );
+        // …render_note_full prepends it back, byte-identical to the source.
+        let full = engine.render_note_full(note_id).await.unwrap();
+        assert_eq!(full, content, "render_note_full should reproduce source");
+        assert!(
+            full.starts_with("---\ntitle: Full\n---\n"),
+            "render_note_full must carry frontmatter, got: {full:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn render_note_full_body_only_when_no_frontmatter() {
+        // A note whose content never carried frontmatter materializes
+        // body-only — render_note_full == render_note in that case.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [0x80; 16];
+        let content = "- bare <!-- bid:00000000-0000-0000-0000-000000000002 -->\n";
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("bare".into()),
+                title: "bare".into(),
+                content: content.into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        let body = engine.render_note(note_id).await.unwrap();
+        let full = engine.render_note_full(note_id).await.unwrap();
+        assert_eq!(full, body, "no frontmatter → full equals body");
+        assert_eq!(full, content);
     }
 
     #[tokio::test]

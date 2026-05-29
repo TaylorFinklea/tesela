@@ -112,6 +112,23 @@ pub struct LoroNoteBody {
     pub primary_normalized: Option<String>,
     /// True iff both normalized forms are non-None and byte-equal.
     pub matches: bool,
+    /// **Cutover dry-run.** The complete `.md` file (frontmatter + page
+    /// properties + blocks) LoroEngine WOULD write to disk as the
+    /// authoritative writer. `None` when the engine doesn't track the
+    /// note. Diff this against `disk_raw` before flipping the writer.
+    pub would_materialize: Option<String>,
+    /// The current raw on-disk file at `<mosaic>/notes/<slug>.md`,
+    /// verbatim (frontmatter included). `None` when the file is absent.
+    pub disk_raw: Option<String>,
+    /// True iff `would_materialize` is byte-identical to `disk_raw` —
+    /// i.e. the authoritative flip would be a pure no-op for this note
+    /// (no reformatting). The ideal cutover state.
+    pub materialize_byte_identical: bool,
+    /// True iff `would_materialize` and `disk_raw` are structurally
+    /// equal (deterministic-not-byte-identical, per decisions.md
+    /// 2026-05-28) — acceptable even when not byte-identical, since the
+    /// flip would only canonically reformat.
+    pub materialize_structurally_equal: bool,
 }
 
 /// `GET /api/loro/notes/{slug}` — debug endpoint exposing both the
@@ -142,6 +159,25 @@ pub async fn get_loro_note(
         (&shadow, &primary),
         (Some(sh), Some(pr)) if tesela_sync::engine::dual_engine::structurally_equal(pr, sh)
     );
+    // Cutover dry-run: full-file materialization vs the live on-disk file.
+    let would_materialize = s.sync_engine.render_note_full(note_id).await;
+    let disk_path = s.mosaic_root.join("notes").join(format!("{slug}.md"));
+    let disk_raw = tokio::fs::read_to_string(&disk_path).await.ok();
+    let materialize_byte_identical = matches!(
+        (&would_materialize, &disk_raw),
+        (Some(w), Some(d)) if w == d
+    );
+    // Full-file structural equality. `structurally_equal` compares page
+    // properties + blocks + unmodeled body but NOT frontmatter, so for the
+    // full-file dry-run we additionally require frontmatter parity —
+    // otherwise a reformatted-frontmatter flip would read as "equal".
+    let materialize_structurally_equal = matches!(
+        (&would_materialize, &disk_raw),
+        (Some(w), Some(d))
+            if tesela_sync::engine::dual_engine::structurally_equal(d, w)
+                && tesela_core::note_tree::parse_note(d).frontmatter
+                    == tesela_core::note_tree::parse_note(w).frontmatter
+    );
     Ok(Json(LoroNoteBody {
         slug,
         note_id: hex::encode(note_id),
@@ -150,6 +186,10 @@ pub async fn get_loro_note(
         shadow_normalized: shadow_norm,
         primary_normalized: primary_norm,
         matches,
+        would_materialize,
+        disk_raw,
+        materialize_byte_identical,
+        materialize_structurally_equal,
     }))
 }
 

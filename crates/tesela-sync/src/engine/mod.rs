@@ -124,6 +124,16 @@ pub trait SyncEngine: Send + Sync {
         None
     }
 
+    /// Render the *complete* `.md` file (frontmatter + page properties +
+    /// blocks) the engine would write to disk as the authoritative writer.
+    /// This is the dry-run surface for the Loro cutover: what
+    /// materialization WOULD emit, diffable against the live on-disk file
+    /// before any write flips. Default `None`; LoroEngine overrides to
+    /// include frontmatter; DualEngine forwards to the shadow.
+    async fn render_note_full(&self, _note_id: [u8; 16]) -> Option<String> {
+        None
+    }
+
     /// Enumerate every note id the engine tracks. Default empty.
     /// `DualEngine` overrides to return the shadow's tracked notes;
     /// `SqliteEngine` returns empty because oplog enumeration would be
