@@ -206,6 +206,14 @@ struct Inner {
     /// still points at the note so it can be loaded on demand). Derived
     /// state, rebuilt from the per-note docs at boot.
     block_index: RwLock<HashMap<[u8; 16], [u8; 16]>>,
+    /// Per-note "last broadcast version vector" (encoded) for the relay
+    /// broadcast model (Phase 5): each tick exports the updates a note
+    /// has accrued since this marker and advances it. Idempotent imports
+    /// on the receiving side mean transitive re-broadcast is harmless
+    /// (bounded — each op is re-sent at most once per device that
+    /// imports it). In-memory for now; the live relay wiring will
+    /// persist it alongside relay_state.
+    broadcast_cursor: RwLock<HashMap<[u8; 16], Vec<u8>>>,
 }
 
 impl LoroEngine {
@@ -221,6 +229,7 @@ impl LoroEngine {
                 snapshot_dir: None,
                 index: LoroDoc::new(),
                 block_index: RwLock::new(HashMap::new()),
+                broadcast_cursor: RwLock::new(HashMap::new()),
             }),
         }
     }
@@ -282,6 +291,7 @@ impl LoroEngine {
                 snapshot_dir: Some(snapshot_dir.clone()),
                 index,
                 block_index: RwLock::new(block_index),
+                broadcast_cursor: RwLock::new(HashMap::new()),
             }),
         };
         if needs_rebuild {
@@ -350,6 +360,53 @@ impl LoroEngine {
             self.save_snapshot(dir, note_id).await;
         }
         Ok(())
+    }
+
+    /// Produce the per-note Loro updates to broadcast on a relay tick:
+    /// for every note that has accrued ops since its last broadcast,
+    /// export the delta and advance the per-note broadcast cursor.
+    /// Returns `(note_id, update_bytes)` pairs. This is the relay
+    /// BROADCAST model (Phase 5): we don't target a specific peer; we
+    /// emit our deltas and let every receiver import idempotently. (The
+    /// live-relay wiring will pack these into SyncEnvelopes + persist the
+    /// cursor; here they're returned for the engine-level proof.)
+    pub async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>)> {
+        let note_ids: Vec<[u8; 16]> =
+            self.inner.docs.read().await.keys().copied().collect();
+        let mut out = Vec::new();
+        for note_id in note_ids {
+            let current = match self.doc_version(note_id).await {
+                Some(v) => v,
+                None => continue,
+            };
+            let since = self.inner.broadcast_cursor.read().await.get(&note_id).cloned();
+            // Nothing new since last broadcast → skip.
+            if since.as_deref() == Some(current.as_slice()) {
+                continue;
+            }
+            if let Some(bytes) = self.export_doc_update(note_id, since.as_deref()).await {
+                out.push((note_id, bytes));
+                self.inner
+                    .broadcast_cursor
+                    .write()
+                    .await
+                    .insert(note_id, current);
+            }
+        }
+        out
+    }
+
+    /// Apply a batch of broadcast per-note Loro updates (the inbound
+    /// relay tick). Idempotent + commutative — duplicate / out-of-order
+    /// batches are safe. Returns the count applied.
+    pub async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> usize {
+        let mut applied = 0;
+        for (note_id, bytes) in updates {
+            if self.import_doc_update(*note_id, bytes).await.is_ok() {
+                applied += 1;
+            }
+        }
+        applied
     }
 
     /// Refresh derived state for one note after its doc changed via an
@@ -2042,6 +2099,87 @@ mod tests {
         let rendered = engine.render_note(note_id).await.unwrap();
         assert_eq!(rendered, body, "full-content re-save heals drift");
         assert!(!rendered.contains("STALE"));
+    }
+
+    #[tokio::test]
+    async fn three_engines_converge_via_broadcast_relay() {
+        // PHASE 5: the relay BROADCAST cursor model (the recon's #1
+        // flagged risk). Three engines edit the same note; each tick
+        // every engine broadcasts its per-note deltas and every other
+        // engine imports them idempotently. Assert all three converge,
+        // and that a steady-state tick produces nothing (bounded
+        // re-broadcast, no infinite loop).
+        let mk = |seed: u8| {
+            let d = DeviceId::from_bytes([seed; 16]);
+            LoroEngine::new(d, Arc::new(Hlc::new(d)))
+        };
+        let a = mk(0xa1);
+        let b = mk(0xb2);
+        let c = mk(0xc3);
+        let note = [0x88; 16];
+
+        // A creates the note; one broadcast round seeds B and C.
+        a.record_local(OpPayload::NoteUpsert {
+            note_id: note,
+            display_alias: Some("n".into()),
+            title: "N".into(),
+            content: "- base <!-- bid:01010101-0101-0101-0101-010101010101 -->\n".into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+
+        // Helper: one full relay round — everyone broadcasts, everyone
+        // else imports.
+        async fn relay_round(engines: &[&LoroEngine]) {
+            let mut bus: Vec<([u8; 16], Vec<u8>)> = Vec::new();
+            for e in engines {
+                bus.extend(e.produce_relay_updates().await);
+            }
+            for e in engines {
+                e.apply_relay_updates(&bus).await;
+            }
+        }
+        let all = [&a, &b, &c];
+        relay_round(&all).await;
+        relay_round(&all).await; // second round propagates any transitive deltas
+
+        // Concurrent edits on all three.
+        a.record_local(OpPayload::BlockUpsert {
+            block_id: [0xaa; 16], note_id: note, parent_block_id: None,
+            order_key: "a".into(), indent_level: 0, text: "A edit".into(),
+        }).await.unwrap();
+        b.record_local(OpPayload::BlockUpsert {
+            block_id: [0xbb; 16], note_id: note, parent_block_id: None,
+            order_key: "b".into(), indent_level: 0, text: "B edit".into(),
+        }).await.unwrap();
+        c.record_local(OpPayload::BlockUpsert {
+            block_id: [0xcc; 16], note_id: note, parent_block_id: None,
+            order_key: "c".into(), indent_level: 0, text: "C edit".into(),
+        }).await.unwrap();
+
+        // A couple of relay rounds to fully propagate.
+        relay_round(&all).await;
+        relay_round(&all).await;
+
+        let ra = a.render_note(note).await.unwrap();
+        let rb = b.render_note(note).await.unwrap();
+        let rc = c.render_note(note).await.unwrap();
+        assert_eq!(ra, rb, "A and B converge");
+        assert_eq!(rb, rc, "B and C converge");
+        for needle in ["base", "A edit", "B edit", "C edit"] {
+            assert!(ra.contains(needle), "converged state has {needle}: {ra}");
+        }
+
+        // Steady state: a further round broadcasts nothing new.
+        let nothing: usize = {
+            let mut n = 0;
+            for e in &all {
+                n += e.produce_relay_updates().await.len();
+            }
+            n
+        };
+        assert_eq!(nothing, 0, "no new broadcasts at steady state (bounded re-broadcast)");
     }
 
     #[tokio::test]
