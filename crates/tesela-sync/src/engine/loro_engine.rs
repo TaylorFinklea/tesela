@@ -496,7 +496,7 @@ impl LoroEngine {
                 .map(|s| (*s).clone())
                 .unwrap_or_default()
         };
-        let content = read("content");
+        let content = doc_full_markdown(doc);
         let slug = read("slug");
         let title = read("title");
         let parsed = tesela_core::note_tree::parse_note(&content);
@@ -509,10 +509,11 @@ impl LoroEngine {
         );
     }
 
-    /// Rebuild every index entry from the loaded per-note docs. Each doc
-    /// stores its content on root meta (and, once written by a
-    /// current-version engine, its slug + title too), so the index is a
-    /// derived projection. tags/links are always re-derived from content.
+    /// Rebuild every index entry from the loaded per-note docs. Each doc's
+    /// full markdown is reconstructed via `doc_full_markdown` (frontmatter +
+    /// rendered body, or the legacy root `content` for pre-dedup docs), and
+    /// slug + title come from root meta, so the index is a derived
+    /// projection. tags/links are always re-derived from that markdown.
     /// title/slug prefer the doc's root meta, then fall back to the
     /// existing index entry (so a rebuild against docs written by an
     /// older engine — which lack slug/title on root meta — doesn't lose
@@ -555,7 +556,7 @@ impl LoroEngine {
                     .map(|s| (*s).clone())
                     .unwrap_or_default()
             };
-            let content = read("content");
+            let content = doc_full_markdown(doc);
             let key = hex_id(note_id);
             let prior = existing.get(&key);
             let mut slug = read("slug");
@@ -714,37 +715,22 @@ impl LoroEngine {
         )))
     }
 
-    /// Render the *complete* `.md` file the engine would write to disk as
-    /// the authoritative writer: verbatim frontmatter (read from the doc's
-    /// stored `content` meta) + page properties + blocks. Identical to
+    /// Render the *complete* `.md` file the engine writes to disk as the
+    /// authoritative writer: verbatim frontmatter (root `frontmatter` meta)
+    /// + page properties + blocks. Identical to
     /// [`render_note`](Self::render_note) except the frontmatter is
-    /// included, so this is the exact byte stream materialization would
-    /// emit.
+    /// included, so this is the exact byte stream materialization emits.
+    /// Delegates to [`doc_full_markdown`], which also handles pre-dedup docs
+    /// that still carry the full markdown on root `content`.
     ///
-    /// This is the **dry-run surface for the Loro cutover**: it answers
-    /// "what would LoroEngine write to `<mosaic>/notes/<slug>.md`?" without
-    /// touching the file, so the materialized output can be diffed against
-    /// the live on-disk file *before* the authoritative-writer flip. The
-    /// frontmatter is reproduced verbatim from the parsed source content;
-    /// the CRDT does not model it, so a note whose frontmatter never
-    /// reached the doc (`content` empty) materializes body-only — which is
-    /// itself a useful signal in the diff.
+    /// A note whose frontmatter never reached the doc materializes
+    /// body-only.
     ///
     /// Returns `None` for unknown note ids.
     pub async fn render_note_full(&self, note_id: [u8; 16]) -> Option<String> {
         let docs = self.inner.docs.read().await;
         let doc = docs.get(&note_id)?;
-        let root = doc.get_map("root");
-        let content = root
-            .get("content")
-            .and_then(|v| v.into_value().ok())
-            .and_then(|v| v.into_string().ok())
-            .map(|s| (*s).clone())
-            .unwrap_or_default();
-        let frontmatter = tesela_core::note_tree::parse_note(&content).frontmatter;
-        Some(tesela_core::note_tree::serialize_note(&note_tree_from_doc(
-            doc, frontmatter,
-        )))
+        Some(doc_full_markdown(doc))
     }
 
     /// This engine's Loro PeerID, derived deterministically from its
@@ -1282,6 +1268,52 @@ fn read_page_properties(doc: &LoroDoc) -> Vec<(String, String)> {
     out
 }
 
+/// Read a per-note doc's verbatim frontmatter. Current-version docs store
+/// it directly on root `frontmatter` (the lean schema — the body lives in
+/// the tree, so the full markdown is never duplicated on root meta).
+/// Pre-dedup docs instead stored the full markdown on root `content`; fall
+/// back to parsing that so their frontmatter still renders until a reseed
+/// rebuilds them lean. Returns `None` when neither is present (body-only).
+fn doc_frontmatter(doc: &LoroDoc) -> Option<String> {
+    let root = doc.get_map("root");
+    let read = |k: &str| -> String {
+        root.get(k)
+            .and_then(|v| v.into_value().ok())
+            .and_then(|v| v.into_string().ok())
+            .map(|s| (*s).clone())
+            .unwrap_or_default()
+    };
+    let fm = read("frontmatter");
+    if !fm.is_empty() {
+        return Some(fm);
+    }
+    let content = read("content");
+    if !content.is_empty() {
+        return tesela_core::note_tree::parse_note(&content).frontmatter;
+    }
+    None
+}
+
+/// Reconstruct the full `.md` for a per-note doc — frontmatter + rendered
+/// body — which equals what materialization writes to disk and what the
+/// index derives tags/links from. Lean (current-version) docs reconstruct
+/// from the tree; pre-dedup docs that still carry the full markdown on root
+/// `content` return it verbatim (matching the old derivation exactly until
+/// a reseed converts them).
+fn doc_full_markdown(doc: &LoroDoc) -> String {
+    let content = doc
+        .get_map("root")
+        .get("content")
+        .and_then(|v| v.into_value().ok())
+        .and_then(|v| v.into_string().ok())
+        .map(|s| (*s).clone())
+        .unwrap_or_default();
+    if !content.is_empty() {
+        return content;
+    }
+    tesela_core::note_tree::serialize_note(&note_tree_from_doc(doc, doc_frontmatter(doc)))
+}
+
 /// Seed a flat tree from `tesela_core::FlatBlock`s parsed out of a
 /// NoteUpsert's body content. Used when LoroEngine sees a note for the
 /// first time and the only op is the NoteUpsert.
@@ -1642,13 +1674,22 @@ impl LoroEngine {
             } => {
                 let doc = self.doc_for_note_mut(*note_id).await;
                 // Root meta makes the per-note doc SELF-DESCRIBING:
-                // content (full markdown), slug, title. This lets the
-                // index be rebuilt purely from per-note docs (no
-                // dependence on a prior index), which is what makes the
+                // frontmatter (verbatim), slug, title. The body is NOT
+                // duplicated here — it lives in the "blocks" tree, and the
+                // full markdown is reconstructed on demand
+                // (`doc_full_markdown`). Storing the whole content on root
+                // meta doubled every snapshot (a 1.3 MB page → +1.3 MB of
+                // redundant history that pushed it past the relay's body
+                // limit); the lean schema keeps snapshots ~half the size.
+                // This lets the index still be rebuilt purely from per-note
+                // docs (no dependence on a prior index) — what makes the
                 // index self-healing across schema changes.
                 let root_meta = doc.get_map("root");
+                let frontmatter = tesela_core::note_tree::parse_note(content)
+                    .frontmatter
+                    .unwrap_or_default();
                 root_meta
-                    .insert("content", content.as_str())
+                    .insert("frontmatter", frontmatter.as_str())
                     .map_err(|e| SyncError::Storage(format!("loro insert: {e}")))?;
                 root_meta
                     .insert("slug", display_alias.as_deref().unwrap_or(""))
@@ -2416,6 +2457,66 @@ mod tests {
             full.starts_with("---\ntitle: Full\n---\n"),
             "render_note_full must carry frontmatter, got: {full:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn note_upsert_stores_lean_frontmatter_not_full_content() {
+        // The dedup invariant: a NoteUpsert must NOT duplicate the body onto
+        // root meta. Storing the full markdown there doubled every snapshot
+        // (a 1.3 MB page → +1.3 MB of redundant history past the relay's body
+        // limit). The body lives only in the tree; root carries just the
+        // verbatim frontmatter, and the full markdown is reconstructed on
+        // demand. tags (frontmatter) + links (body) must still index from the
+        // reconstruction — proving nothing was lost by not storing content.
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [0x6c; 16];
+        let content =
+            "---\ntitle: Lean\ntags: [alpha]\n---\n\n- see [[target]] #beta <!-- bid:00000000-0000-0000-0000-00000000000a -->\n";
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("lean".into()),
+                title: "Lean".into(),
+                content: content.into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        {
+            let docs = engine.inner.docs.read().await;
+            let root = docs.get(&note_id).unwrap().get_map("root");
+            assert!(
+                root.get("content").is_none(),
+                "lean schema must not store full content on root meta"
+            );
+            assert_eq!(
+                root.get("frontmatter")
+                    .and_then(|v| v.into_value().ok())
+                    .and_then(|v| v.into_string().ok())
+                    .map(|s| (*s).clone()),
+                Some("---\ntitle: Lean\ntags: [alpha]\n---\n".to_string()),
+                "verbatim frontmatter stored on root meta"
+            );
+        }
+
+        // Reconstruction round-trips the source byte-for-byte…
+        let full = engine.render_note_full(note_id).await.unwrap();
+        assert_eq!(full, content, "render_note_full reconstructs from the tree");
+
+        // …and the index still derives the frontmatter tag + body tag/link
+        // from the reconstruction (not from a stored copy of content).
+        let entry = engine
+            .index_entries()
+            .await
+            .into_iter()
+            .find(|e| e.note_id == hex_id(&note_id))
+            .unwrap();
+        assert!(entry.tags.contains(&"alpha".to_string()), "frontmatter tag: {:?}", entry.tags);
+        assert!(entry.tags.contains(&"beta".to_string()), "inline body tag: {:?}", entry.tags);
+        assert_eq!(entry.links, vec!["target".to_string()], "body link indexed");
     }
 
     #[tokio::test]
