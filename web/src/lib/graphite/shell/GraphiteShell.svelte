@@ -14,8 +14,10 @@
    * The `.gr-root` scope + tokens are provided by /g/+layout.svelte
    * (the foundation), so this component renders inside that.
    *
-   * Pane content is a placeholder this phase — the daily-driver views fill it
-   * in the next plan.
+   * Pane content routes by the focused buffer's kind (A6): a daily (empty
+   * pageId or a YYYY-MM-DD page) → GrDaily; any other page → GrPage; the
+   * "inbox"/"agenda" ambients → GrInbox/GrAgenda; everything else falls
+   * back to the placeholder.
    */
   import { onMount } from 'svelte';
   import GrTopBar from './GrTopBar.svelte';
@@ -24,22 +26,51 @@
   import GrStatus from './GrStatus.svelte';
   import GrCommandPalette from './GrCommandPalette.svelte';
   import GrLeaderOverlay from './GrLeaderOverlay.svelte';
+  import GrDaily from '$lib/graphite/views/GrDaily.svelte';
+  import GrPage from '$lib/graphite/views/GrPage.svelte';
+  import GrInbox from '$lib/graphite/views/GrInbox.svelte';
+  import GrAgenda from '$lib/graphite/views/GrAgenda.svelte';
   import { getFocusedBuffer, getFocusedLeafId } from '$lib/buffer/state.svelte';
   import { openStation } from '$lib/stores/station.svelte';
   import { openLeader } from '$lib/v5/leader-tree.svelte';
   import { openColonMode } from '$lib/stores/colon-mode.svelte';
 
   const focusedBuffer = $derived(getFocusedBuffer());
+  const focusedLeafId = $derived(getFocusedLeafId());
 
-  // Placeholder pane title from the focused buffer (real views come next).
+  // A daily page is either the default (empty pageId) leaf or a page whose
+  // id is a YYYY-MM-DD date — those render as the continuous JournalView.
+  function isDailyPageId(pageId: string): boolean {
+    return pageId === '' || /^\d{4}-\d{2}-\d{2}$/.test(pageId);
+  }
+
+  // Which top-level view the focused buffer maps to. `placeholder` keeps
+  // the original "coming soon" card for any kind we don't render yet.
+  type ViewKind = 'daily' | 'page' | 'inbox' | 'agenda' | 'placeholder';
+  const view = $derived.by<ViewKind>(() => {
+    const b = focusedBuffer;
+    if (!b) return 'daily';
+    if (b.kind === 'page') return isDailyPageId(b.pageId) ? 'daily' : 'page';
+    if (b.kind === 'ambient') {
+      if (b.ambientName === 'inbox') return 'inbox';
+      if (b.ambientName === 'agenda') return 'agenda';
+    }
+    return 'placeholder';
+  });
+
+  // Pane title for the daily / placeholder GrPane head + the status path.
   const paneTitle = $derived.by(() => {
     const b = focusedBuffer;
-    if (!b) return 'Graphite';
-    if (b.kind === 'page') return b.pageId || 'Untitled page';
+    if (!b) return 'Journal';
+    if (b.kind === 'page') return isDailyPageId(b.pageId) ? 'Journal' : (b.pageId || 'Untitled page');
     if (b.kind === 'derived') return b.rendererName;
     if (b.kind === 'ambient') return b.ambientName;
     return 'Graphite';
   });
+
+  const activePageId = $derived(
+    focusedBuffer?.kind === 'page' ? focusedBuffer.pageId : '',
+  );
 
   // ── keydown wiring (mirror of v4/+layout.svelte) ─────────────────────────
   function isTextEntry(target: EventTarget | null): boolean {
@@ -124,12 +155,28 @@
   <div class="gr-body">
     <GrRail />
     <div class="gr-main">
-      <GrPane title={paneTitle} variant="focus">
-        <div class="gr-placeholder">
-          <div class="ph-title">{paneTitle}</div>
-          <div class="ph-sub">Daily-driver views land in the next phase.</div>
-        </div>
-      </GrPane>
+      {#if view === 'daily'}
+        <GrPane title={paneTitle} variant="focus">
+          {#key activePageId}
+            <GrDaily anchorDate={/^\d{4}-\d{2}-\d{2}$/.test(activePageId) ? activePageId : undefined} />
+          {/key}
+        </GrPane>
+      {:else if view === 'page'}
+        {#key activePageId}
+          <GrPage pageId={activePageId} paneId={focusedLeafId as unknown as string | undefined} />
+        {/key}
+      {:else if view === 'inbox'}
+        <GrInbox />
+      {:else if view === 'agenda'}
+        <GrAgenda />
+      {:else}
+        <GrPane title={paneTitle} variant="focus">
+          <div class="gr-placeholder">
+            <div class="ph-title">{paneTitle}</div>
+            <div class="ph-sub">This view lands in a later phase.</div>
+          </div>
+        </GrPane>
+      {/if}
     </div>
   </div>
 

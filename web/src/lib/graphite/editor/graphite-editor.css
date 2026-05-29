@@ -1,0 +1,163 @@
+/* graphite-editor.css — Part A, Task A1.
+ *
+ * Re-skins the REUSED editor stack (BlockOutliner / BlockEditor /
+ * cm-decorations) to Graphite WITHOUT touching that code. Two mechanisms:
+ *
+ *  1. Variable remap. The editor + its Tailwind utilities + the inline
+ *     CodeMirror theme all resolve through semantic CSS variables
+ *     (`--foreground`, `--primary`, `--background`, `--muted-foreground`,
+ *     `--theme-font-sans`, the v9-* journal vars, …). Tailwind's
+ *     `@theme inline` maps `--color-*` → `var(--*)` at use-site, so
+ *     redefining the `--*` vars on `.gr-root` cascades into every reused
+ *     component. This is what makes the editor read Graphite.
+ *
+ *  2. Decoration overrides. The cm decoration classes (`cm-tesela-tag`,
+ *     `cm-tesela-tag-chip`, `cm-tesela-wikilink`, `cm-tesela-prop-*`) get
+ *     Graphite chip/link/property styling matching the mockup's
+ *     `.gr-tagchip` / `.gr-link` / `.gr-mention` / `.gr-pchip`. Scoped under
+ *     `.gr-root` so v4/v5 surfaces are untouched.
+ *
+ * Imported once by `routes/g/+layout.svelte`.
+ */
+
+/* ── 1. Semantic-variable remap (Graphite palette for the reused editor) ── */
+.gr-root {
+  /* Tailwind / shadcn semantic surface + text */
+  --background: var(--bg);
+  --foreground: var(--fg);
+  --surface: var(--surface);
+  --surface-2: var(--raised-2);
+  --muted: var(--raised);
+  --muted-foreground: var(--subtle);
+  --accent: var(--raised);
+  --accent-foreground: var(--fg);
+  --primary: var(--coral);
+  --primary-foreground: #10110f;
+  --destructive: var(--task);
+  --border: var(--line);
+  --ring: var(--coral);
+  --popover: var(--raised);
+  --popover-foreground: var(--fg);
+  --card: var(--surface);
+  --secondary: var(--raised);
+  --secondary-foreground: var(--fg2);
+
+  /* shadcn `@theme inline` indirection (`--color-*` ← `--*`). Setting the
+     `--color-*` too is belt-and-braces in case a utility compiled to the
+     concrete `--color-*` name rather than the indirect one. */
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--raised-2);
+  --color-muted: var(--raised);
+  --color-muted-foreground: var(--subtle);
+  --color-accent: var(--raised);
+  --color-accent-foreground: var(--fg);
+  --color-primary: var(--coral);
+  --color-primary-foreground: #10110f;
+  --color-destructive: var(--task);
+  --color-border: var(--line);
+  --color-popover: var(--raised);
+  --color-popover-foreground: var(--fg);
+
+  /* Base palette some components reach for directly (block bg/border, etc). */
+  --bg-2: var(--surface);
+  --bg-3: var(--raised);
+  --fg-default: var(--fg);
+  --fg-subtle: var(--subtle);
+  --line-soft: var(--line-2);
+  --accent-primary: var(--coral);
+  --accent-secondary: var(--person);
+  --accent-spark: var(--coral);
+  --block-bg: transparent;
+  --block-border: var(--line);
+
+  /* Fonts — the editor + journal read `--theme-font-sans/mono`. */
+  --theme-font-sans: var(--sans);
+  --theme-font-mono: var(--mono);
+
+  /* JournalView (reused for GrDaily) reads the v9-* journal vars directly. */
+  --v9-mono: var(--mono);
+  --v9-sans: var(--sans);
+  --v9-line: var(--line);
+  --v9-line-soft: var(--line-2);
+  --v9-ink-faint: var(--faint);
+  --v9-ink-muted: var(--subtle);
+  --v9-ink-2: var(--muted);
+}
+
+/* ── 2. Decoration overrides → Graphite marks ──────────────────────────── */
+
+/* Inline #tag mark (cm-tesela-tag) — coral, in the prose flow. */
+.gr-root .cm-tesela-tag {
+  color: var(--coral);
+  opacity: 1;
+}
+
+/* Trailing-cluster #tag chip (cm-tesela-tag-chip) → `.gr-tagchip`. */
+.gr-root .cm-tesela-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  margin: 0 4px 0 0;
+  border-radius: 5px;
+  border: none;
+  background: var(--coral-dim);
+  color: var(--coral);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 18px;
+  text-transform: none;
+  vertical-align: 0.04em;
+}
+.gr-root .cm-tesela-tag-chip:hover {
+  background: rgba(255, 107, 90, 0.22);
+}
+
+/* Wiki-link (cm-tesela-wikilink) → `.gr-link` (project-blue). */
+.gr-root .cm-tesela-wikilink {
+  color: var(--project);
+  background: rgba(116, 147, 232, 0.14);
+  padding: 0 4px;
+  border-radius: 4px;
+  text-decoration: none;
+}
+.gr-root .cm-tesela-wikilink-bracket {
+  color: var(--project);
+  opacity: 0.5;
+}
+
+/* Inline property key/value (cm-tesela-prop-*) → `.gr-pchip` palette. */
+.gr-root .cm-tesela-prop-key {
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+.gr-root .cm-tesela-prop-value {
+  color: var(--fg2);
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+
+/* Fenced code surface — Graphite raised panel. */
+.gr-root .cm-tesela-code-line {
+  background: var(--raised);
+  font-family: var(--mono);
+}
+.gr-root .cm-tesela-code-fence-line {
+  color: var(--faint);
+}
+
+/* Block bullet / status — let the bullets read against the Graphite canvas.
+   BlockOutliner colors bullets via Tailwind (`bg-primary`, `bg-muted-foreground`)
+   which already remap above; nothing extra needed for the dot itself. */
+
+/* Editor caret + selection, in case the inline cm theme is overridden by
+   the variable remap above (defensive — matches graphite-cm-theme.ts). */
+.gr-root .cm-editor .cm-cursor {
+  border-left-color: var(--coral);
+}
+.gr-root .cm-editor .cm-content {
+  caret-color: var(--coral);
+}

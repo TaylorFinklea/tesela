@@ -1,6 +1,7 @@
 <!-- web/src/routes/g/+layout.svelte -->
 <script lang="ts">
   import '$lib/graphite/tokens.css';
+  import '$lib/graphite/editor/graphite-editor.css';
   let { children } = $props();
 </script>
 
