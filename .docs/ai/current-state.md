@@ -1,6 +1,25 @@
 # Current State
 
-## State as of 2026-05-29 (latest) — iOS FFI swapped to LoroEngine + blank/heading drop
+## State as of 2026-05-29 (latest) — authoritative server LIVE on real mosaic + relay chunk/compress
+
+**Clarified: the tesela mosaic named "logseq" (`~/Library/Application Support/tesela/logseq`) is tesela's imported copy, NOT the Logseq app's files — safe to rewrite (Taylor has a backup).** So the authoritative Loro server now runs on the real mosaic.
+
+### Running services (I own these per feedback)
+- **Authoritative server**: `TESELA_LORO_AUTHORITATIVE=1 tesela-server --mosaic <real logseq mosaic>` on `0.0.0.0:7474`. Reseeded 513 notes (canonical bootstrap), materialized canonically, relay (HA) registered. Log: `/tmp/tesela-authoritative.log`. (One-time bootstrap used `TESELA_LORO_RESEED=1`; restart WITHOUT reseed to avoid re-bloating history.)
+- **Web client**: `pnpm dev` in `web/` → **http://localhost:5176/** (Vite; proxies `/api`→7474, `/ws`→ws). Verified end-to-end: web → authoritative LoroEngine → FsNoteStore. Log: `/tmp/tesela-web.log`.
+
+### Relay broadcast 413 → chunk + compress fix (`389aacc`)
+Bootstrap broadcasts every note's FULL Loro state; on 513 notes that blew past the relay's 5 MB envelope (413). Fixed: `pack_loro_relay_batches` (2.5 MB raw batches) + DEFLATE the payload (`miniz_oxide`, TLR2 = magic ++ deflate(postcard)) + tick/FFI `continue` past a failed batch (was `break`). **Live result: 512/513 notes broadcast OK** (`_broadcast.bin` ~512 cursors). 
+
+### KNOWN GAP — `ai-business` (1.3 MB markdown page) won't sync
+Its Loro snapshot is 5.13 MB → 5.16 MB even deflated → over the 5 MB relay limit ALONE. Root cause: the doc stores the full markdown TWICE (`root.content` meta + block text). **Deferred fix: store frontmatter-only in root meta** (readers: `render_note_full` + `rebuild_index_from_docs` at loro_engine.rs ~499/558/739; writer ~1650) → halves every snapshot, lets ai-business through. Schema change → needs a reseed after. Not blocking the cross-device test (512 notes is plenty). Alt: bump the HA relay `max_body`.
+
+### iOS must be rebuilt for compression
+The TLR2 payload is now DEFLATE'd, so the iPhone needs the new FFI `.a` to DECODE it. Rebuilding `libtesela_sync_ffi.a` for both targets (bindings UNCHANGED — compression is internal to encode/decode). After: reinstall the sim app + (Taylor) install on Roshar. The pre-compression sim build CANNOT read the Mac's payloads.
+
+---
+
+## State as of 2026-05-29 — iOS FFI swapped to LoroEngine + blank/heading drop
 
 **iOS now runs the authoritative LoroEngine over the FFI** (commit `5b00fe7`), and **blank blocks + headings are dropped** per Taylor (`feat(sync): drop blank blocks...`). The cutover is code-complete on both Mac + iOS; what remains is the paired on-device cross-device test + the flag-day flip of Taylor's real mosaic.
 
