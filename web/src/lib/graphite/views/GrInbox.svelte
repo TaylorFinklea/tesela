@@ -117,15 +117,25 @@
 
   async function processAll() {
     const qc = getAppQueryClient();
+    // Track per-row outcomes. applyTriage signals failure two ways — it
+    // throws (network / concurrent edit) OR returns false (block not found /
+    // stale row). Count both so a partial failure is reported, not silently
+    // dropped (the single-row triage()/snooze() already toast on failure).
+    let ok = 0;
+    let failed = 0;
+    const total = rows.filter((r) => r.block_id).length;
     for (const row of rows) {
       if (!row.block_id) continue;
       try {
-        await applyTriage(row.page_id, row.block_id, "todo");
-      } catch {
-        /* keep going; one failure shouldn't abort the batch */
+        if (await applyTriage(row.page_id, row.block_id, "todo")) ok++;
+        else failed++;
+      } catch (e) {
+        failed++;
+        console.warn("processAll: triage failed for", row.block_id, e);
       }
     }
     if (qc) await qc.invalidateQueries({ queryKey: ["widget", "inbox"] });
+    if (failed > 0) toast(`Triaged ${ok} of ${total} items; ${failed} failed`, "error");
   }
 
   function openSource(row: QueryItem) {

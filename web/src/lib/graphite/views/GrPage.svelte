@@ -18,6 +18,8 @@
   import type { Link } from "$lib/types/Link";
   import { openPageInFocused } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
+  import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
+  import { toast } from "$lib/stores/toast.svelte";
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
   import GrTypeTag from "$lib/graphite/GrTypeTag.svelte";
   import GrIcon from "$lib/graphite/GrIcon.svelte";
@@ -80,6 +82,7 @@
 
   function handleContentChange(fullContent: string) {
     pending = fullContent;
+    setSaving();
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => void flushSave(), 500);
   }
@@ -100,9 +103,16 @@
       const updated = await api.updateNote(pageId, content, controller.signal);
       if (controller.signal.aborted) return;
       queryClient.setQueryData(["note", pageId], updated);
+      setSaved();
     } catch (e) {
       if ((e as { name?: string })?.name === "AbortError") return;
+      // Surface the failure instead of swallowing it. Keep the optimistic
+      // cache (the user's only live copy of the unsaved edit) — do NOT roll
+      // back, which would feed pre-edit content into the live editor and
+      // destroy in-progress work. Mirrors BufferShell's setSaveError path.
       console.error("GrPage save failed:", e);
+      setSaveError(e instanceof Error ? e.message : "Unknown error");
+      toast("Failed to save page", "error");
     } finally {
       if (inFlight === controller) inFlight = null;
     }

@@ -6,19 +6,29 @@ import SwiftUI
 /// (4 labeled tabs + the `Tab(role: .search)` glass circle), the
 /// `@StateObject MockMosaicService` + `RelayTicker`, the
 /// `CaptureComposer` / `StreamingVoiceRecorder` capture wiring, and the
-/// relay-ticker poll/push loop are all reused exactly as AppShell wires
-/// them. Only the chrome (Graphite header, capture pill → sheet) and the
-/// `.graphite` theme are new; the four content tabs render the real
-/// daily-driver views (`GrDailyView` / `GrAgendaView` / `GrInboxView` /
-/// `GrLibraryView`) over the shared `MockMosaicService`, while `.search`
-/// keeps the placeholder (native search is wired separately).
+/// relay-ticker poll/push loop + the `LiveSyncSocket` WS push are reused as
+/// AppShell wires them. Only the chrome (Graphite header, capture pill →
+/// sheet) and the `.graphite` theme are new; the four content tabs render
+/// the real daily-driver views (`GrDailyView` / `GrAgendaView` /
+/// `GrInboxView` / `GrLibraryView`) over the shared `MockMosaicService`,
+/// while `.search` keeps the placeholder (native search is wired separately).
 ///
-/// `GrAppShell` is NOT the app entry yet — `TeselaApp.swift` still mounts
-/// the legacy `AppShell`. This becomes the root only at cutover.
+/// Reachable today behind the `-graphite` launch arg / `tesela.useGraphiteShell`
+/// default (see `TeselaApp.swift`); the default entry is still the shipping
+/// `AppShell`, and GrAppShell becomes the sole root at cutover.
+///
+/// DEFERRED to cutover (NOT yet reused): `MosaicRegistry` — so GrAppShell
+/// attaches the single `backend.serverURL` profile directly and has no
+/// multi-profile switching / per-profile serverURL routing yet.
 struct GrAppShell: View {
     @StateObject private var mosaic = MockMosaicService()
     @StateObject private var backend = BackendSettings()
     @StateObject private var relayTicker = RelayTicker()
+    /// Live WS push channel (note_created/updated/deleted) — mirrors
+    /// AppShell. Gives instant Mac→app updates instead of waiting for the
+    /// RelayTicker poll, and routes through `applyRemoteChange()` so the
+    /// refresh respects the edit-suppression guards.
+    @StateObject private var liveSync = LiveSyncSocket()
     /// Lifted out of the capture bar so the `AVAudioEngine` init isn't
     /// paid every time the accessory is added/removed — mirrors AppShell.
     @StateObject private var streamRecorder = StreamingVoiceRecorder()
@@ -68,18 +78,31 @@ struct GrAppShell: View {
                         await mosaic.refreshLoadedPages()
                     }
                 }
+                // Live WS push (mirrors AppShell.activateMosaic): instant
+                // re-pull on Mac-originated note changes, routed through
+                // applyRemoteChange() so it defers while editing.
+                liveSync.onNoteChange = { [mosaic] in
+                    Task { await mosaic.applyRemoteChange() }
+                }
+                if case .http = backend.backend {
+                    liveSync.connect(serverURL: backend.serverURL)
+                } else {
+                    liveSync.connect(serverURL: nil)
+                }
                 relayTicker.start()
             }
             .onChange(of: scenePhase) { _, newPhase in
                 switch newPhase {
                 case .active:
                     relayTicker.start()
+                    liveSync.nudge()
                     Task {
                         await mosaic.refresh(from: backend.backend)
                         await mosaic.refreshLoadedPages()
                     }
                 case .background:
                     relayTicker.stop()
+                    liveSync.suspend()
                 default:
                     break
                 }
