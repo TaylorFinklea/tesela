@@ -14,6 +14,10 @@ Active items. Trim as completed.
 > **One operational step remains (USER-COORDINATED, needs the iPhone):** the live data reset — stop server → backup → `rm -rf <mosaic>/.tesela/loro/` → reseed (`TESELA_LORO_RESEED=1`, one device) → wipe + re-bootstrap the iPhone's local docs — so the dedup lands in production (the size win only applies to fresh docs). Until then the server runs fine on existing docs; ai-business stays unsynced as before. Server launch is now flag-free: `tesela-server --mosaic <real mosaic>`.
 >
 > **→ ACTIVE MILESTONE: the Graphite redesign** — [`phases/2026-05-29-graphite-redesign-spec.md`](phases/2026-05-29-graphite-redesign-spec.md). Brand-new **SvelteKit web + SwiftUI iOS** frontends to the Graphite design system (clean rebuild, reuse vetted lib logic + Loro FFI/MosaicService), **web + iOS in parallel**, **daily-driver parity then cut over** + delete the old. Phasing: foundation (tokens/icons/primitives) → shell → daily-driver views → cutover → iterate. Rail = AnyType-style widget host. Design source: [`design/graphite/`](design/graphite/). Later: window splits, extra themes, graph/tag-table/settings polish.
+>
+> - [x] **Foundation** (2026-05-29, `7083956` web + `e316a6f` iOS): shared `tokens.json`, web `--gr-*` token CSS + `/g` tree, iOS `.graphite` Theme; primitives both platforms (GrIcon/Button/Chip/TypeDot/TypeTag/Row/Widget). Gates green (svelte-check clean; xcodebuild SUCCEEDED). Plan: [`phases/2026-05-29-graphite-foundation-plan.md`](phases/2026-05-29-graphite-foundation-plan.md). Deferred: visual parity check of `/g` gallery.
+> - [ ] **Shell** (next plan): web topbar + widget-rail host + panes + status line + ⌘K palette + leader overlay; iOS liquid-glass tab bar + header + capture sheet + nav.
+> - [ ] **Daily-driver views** → **cutover** (delete old) → **iterate**.
 
 **Done (dual-write scaffold + shadow, 2026-05-27/28):**
 - [x] Loro spike GREEN (`phases/2026-05-27-loro-spike-report.md`).
