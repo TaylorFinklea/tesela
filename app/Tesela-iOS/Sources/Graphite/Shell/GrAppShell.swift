@@ -8,8 +8,10 @@ import SwiftUI
 /// `CaptureComposer` / `StreamingVoiceRecorder` capture wiring, and the
 /// relay-ticker poll/push loop are all reused exactly as AppShell wires
 /// them. Only the chrome (Graphite header, capture pill → sheet) and the
-/// `.graphite` theme are new; tab CONTENT is `GrTabPlaceholder` this
-/// phase (the daily-driver views are the next plan).
+/// `.graphite` theme are new; the four content tabs render the real
+/// daily-driver views (`GrDailyView` / `GrAgendaView` / `GrInboxView` /
+/// `GrLibraryView`) over the shared `MockMosaicService`, while `.search`
+/// keeps the placeholder (native search is wired separately).
 ///
 /// `GrAppShell` is NOT the app entry yet — `TeselaApp.swift` still mounts
 /// the legacy `AppShell`. This becomes the root only at cutover.
@@ -95,20 +97,21 @@ struct GrAppShell: View {
     /// labeled `Tab`s + the trailing `Tab(role: .search)` glass circle,
     /// the compact capture bar in `tabViewBottomAccessory`, and the
     /// expanded composer riding above the keyboard via
-    /// `safeAreaInset(.bottom)`. Tab content is the Graphite placeholder.
+    /// `safeAreaInset(.bottom)`. The four content tabs render their
+    /// Graphite daily-driver views; `.search` keeps the placeholder.
     private var shell: some View {
         TabView(selection: $activeTab) {
             Tab(AppTab.daily.label, systemImage: AppTab.daily.systemImage, value: AppTab.daily) {
-                GrTabPlaceholder(tab: .daily)
+                GrDailyView(mosaic: mosaic, backend: backend)
             }
             Tab(AppTab.agenda.label, systemImage: AppTab.agenda.systemImage, value: AppTab.agenda) {
-                GrTabPlaceholder(tab: .agenda)
+                GrAgendaView(mosaic: mosaic, backend: backend)
             }
             Tab(AppTab.inbox.label, systemImage: AppTab.inbox.systemImage, value: AppTab.inbox) {
-                GrTabPlaceholder(tab: .inbox)
+                GrInboxView(mosaic: mosaic, backend: backend)
             }
             Tab(AppTab.library.label, systemImage: AppTab.library.systemImage, value: AppTab.library) {
-                GrTabPlaceholder(tab: .library)
+                GrLibraryView(mosaic: mosaic, backend: backend)
             }
             Tab(value: AppTab.search, role: .search) {
                 GrTabPlaceholder(tab: .search)
