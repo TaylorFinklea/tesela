@@ -16,7 +16,7 @@ use tesela_sync::{
     engine::SyncEngine,
     oplog::op::OpPayload,
     transport::relay::RelayClient,
-    DeviceId, GroupId, GroupKey, Hlc, LoroEngine, SyncEnvelope,
+    DeviceId, GroupId, GroupKey, Hlc, LoroDocUpdate, LoroEngine, SyncEnvelope,
     PairingCode as InnerPairingCode,
 };
 use tokio::sync::Mutex;
@@ -459,6 +459,85 @@ impl SyncEngineHandle {
             .await
             .map_err(FfiSyncError::from)?;
         Ok(hex_encode(&hash.0))
+    }
+
+    /// Produce the live Loro delta for a just-changed note, framed as a
+    /// single TLR2 relay frame ready to push over the instant-multidevice
+    /// WebSocket. Computes the note id with the same blake3-truncation
+    /// (`stable_uuid_from_slug`) the rest of this bridge uses, exports the
+    /// per-doc update via the engine's **cursor-free** `export_doc_update`,
+    /// and wraps it in the same TLR2 framing the relay payload uses, so the
+    /// WS and relay carry byte-identical frames.
+    ///
+    /// `since_vv` is a peer's encoded version vector — pass the value a
+    /// prior [`Self::note_version`] handed back so we export only the delta
+    /// newer than what the peer already has. `since_vv = None` means "full
+    /// compact snapshot" (the bootstrap a freshly-joined device needs).
+    ///
+    /// **Cursor-free by construction.** `export_doc_update` does NOT read or
+    /// advance the relay's broadcast cursor (instant-multidevice spec,
+    /// finding #3), so driving the WS through this method never contends
+    /// with the relay producer (`SyncCoordinator::tick_outbound`) — the
+    /// relay path still sees the note as pending. Do NOT route this through
+    /// `produce_relay_updates`; that path is cursor-bound.
+    ///
+    /// Returns `Ok(None)` when the doc isn't resident (nothing to send),
+    /// `Ok(Some(frame))` with the TLR2-framed bytes otherwise.
+    pub async fn produce_note_delta(
+        &self,
+        slug: String,
+        since_vv: Option<Vec<u8>>,
+    ) -> Result<Option<Vec<u8>>, FfiSyncError> {
+        let note_id = stable_uuid_from_slug(&slug);
+        let Some(update_bytes) = self
+            .inner
+            .export_doc_update(note_id, since_vv.as_deref())
+            .await
+        else {
+            return Ok(None);
+        };
+        let frame = encode_loro_relay_payload(&[LoroDocUpdate {
+            doc: note_id,
+            update_bytes,
+        }])
+        .map_err(FfiSyncError::from)?;
+        Ok(Some(frame))
+    }
+
+    /// Apply a TLR2-framed delta frame received over the instant-multidevice
+    /// WebSocket. Decodes the TLR2 payload and imports each per-note Loro
+    /// update via the engine (which is commutative + idempotent, so
+    /// duplicate / out-of-order frames are safe, and materializes the
+    /// resulting `<slug>.md` into the iOS sandbox). Returns the number of
+    /// per-note updates applied.
+    ///
+    /// A frame that lacks the TLR2 magic (a legacy v1 payload or foreign
+    /// data) decodes to `None`; we return `Ok(0)` rather than erroring so
+    /// the caller can skip it. A genuine decode failure (corrupt TLR2 body)
+    /// surfaces as `FfiSyncError`.
+    pub async fn apply_delta_frame(&self, frame: Vec<u8>) -> Result<u32, FfiSyncError> {
+        let Some(updates) = decode_loro_relay_payload(&frame).map_err(FfiSyncError::from)? else {
+            return Ok(0);
+        };
+        let mut applied = 0u32;
+        for u in updates {
+            self.inner
+                .import_doc_update(u.doc, &u.update_bytes)
+                .await
+                .map_err(FfiSyncError::from)?;
+            applied += 1;
+        }
+        Ok(applied)
+    }
+
+    /// Encoded version vector of a note's current Loro doc, for the
+    /// reconnect/catch-up handshake: a peer hands this to the other side's
+    /// [`Self::produce_note_delta`] (`since_vv`) so the response carries only
+    /// the updates this device is missing. `None` when the doc isn't
+    /// resident (nothing to catch up on). Cursor-free — see
+    /// [`Self::produce_note_delta`].
+    pub async fn note_version(&self, slug: String) -> Option<Vec<u8>> {
+        self.inner.doc_version(stable_uuid_from_slug(&slug)).await
     }
 }
 
@@ -905,5 +984,131 @@ mod tests {
             FfiSyncError::InvalidPairingCode { .. } => {}
             other => panic!("wrong error variant: {other:?}"),
         }
+    }
+
+    /// Open a `SyncEngineHandle` on a throwaway mosaic dir with the given
+    /// device id. Returns the handle so the WS-delta methods can be driven
+    /// through the real FFI surface (not the engine directly).
+    async fn open_handle(dir: &std::path::Path, device_hex: &str) -> Arc<SyncEngineHandle> {
+        SyncEngineHandle::open_loro(dir.to_string_lossy().into_owned(), device_hex.to_string())
+            .await
+            .expect("open_loro")
+    }
+
+    #[tokio::test]
+    async fn ws_delta_round_trip_and_concurrent_edits_converge() {
+        // PHASE B: the live WS path holds `Arc<dyn SyncEngine>` through this
+        // FFI and exchanges Loro deltas via produce_note_delta /
+        // apply_delta_frame. Two handles on distinct mosaics + distinct
+        // device ids (so their Loro PeerIDs differ — the prerequisite for
+        // clean merge) must (1) bootstrap a note A→B, then (2) converge on a
+        // concurrent edit exchanged both ways — no flashing.
+        let dir_a = tempfile::tempdir().expect("tempdir a");
+        let dir_b = tempfile::tempdir().expect("tempdir b");
+        // Two FIXED distinct device ids (→ distinct, stable Loro PeerIDs) so
+        // the merge is deterministic — mirrors the engine-level convergence
+        // tests' `[0xc1;16]` / `[0xd2;16]` devices.
+        let dev_a = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1";
+        let dev_b = "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2";
+        assert_ne!(dev_a, dev_b, "handles need distinct device ids");
+
+        let a = open_handle(dir_a.path(), dev_a).await;
+        let b = open_handle(dir_b.path(), dev_b).await;
+
+        let slug = "shared-note".to_string();
+        let note_id = stable_uuid_from_slug(&slug);
+
+        // A records the note, then produces a full-snapshot bootstrap frame
+        // (since_vv = None). B applies it and must now render A's content.
+        a.record_note_upsert_by_slug(
+            slug.clone(),
+            "Shared".into(),
+            "- base <!-- bid:02020202-0202-0202-0202-020202020202 -->\n".into(),
+            1,
+        )
+        .await
+        .unwrap();
+
+        let bootstrap = a
+            .produce_note_delta(slug.clone(), None)
+            .await
+            .unwrap()
+            .expect("resident doc yields a bootstrap frame");
+        assert_eq!(&bootstrap[..4], &tesela_sync::LORO_RELAY_MAGIC, "TLR2 framed");
+
+        let applied = b.apply_delta_frame(bootstrap).await.unwrap();
+        assert_eq!(applied, 1, "one per-note update applied");
+        assert_eq!(
+            a.inner.render_note(note_id).await,
+            b.inner.render_note(note_id).await,
+            "bootstrap via WS-delta methods converges"
+        );
+
+        // A doc that isn't resident on B yields no frame (Ok(None)).
+        assert!(
+            b.produce_note_delta("never-seen".into(), None)
+                .await
+                .unwrap()
+                .is_none(),
+            "absent doc → no frame"
+        );
+
+        // Concurrent edits: A and B each append a distinct block, then
+        // exchange deltas both ways using the peer's version vector as the
+        // catch-up cursor (the reconnect handshake shape).
+        let ops_a = a.record_note_diff(
+            slug.clone(),
+            "- base <!-- bid:02020202-0202-0202-0202-020202020202 -->\n- from A <!-- bid:0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a -->\n".into(),
+            "Shared".into(),
+            1,
+        )
+        .await
+        .unwrap();
+        let ops_b = b.record_note_diff(
+            slug.clone(),
+            "- base <!-- bid:02020202-0202-0202-0202-020202020202 -->\n- from B <!-- bid:0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b -->\n".into(),
+            "Shared".into(),
+            1,
+        )
+        .await
+        .unwrap();
+        assert!(ops_a >= 1 && ops_b >= 1, "each side emitted a block op (a={ops_a}, b={ops_b})");
+
+        // B → A: A advertises its version vector; B exports the complement
+        // (the reconnect/catch-up handshake `note_version` → `produce_note_delta`).
+        let a_vv = a.note_version(slug.clone()).await;
+        let b_to_a = b
+            .produce_note_delta(slug.clone(), a_vv)
+            .await
+            .unwrap()
+            .expect("B has a delta for A");
+        a.apply_delta_frame(b_to_a).await.unwrap();
+
+        // A → B: symmetric exchange.
+        let b_vv = b.note_version(slug.clone()).await;
+        let a_to_b = a
+            .produce_note_delta(slug.clone(), b_vv)
+            .await
+            .unwrap()
+            .expect("A has a delta for B");
+        b.apply_delta_frame(a_to_b).await.unwrap();
+
+        let ra = a.inner.render_note(note_id).await.unwrap();
+        let rb = b.inner.render_note(note_id).await.unwrap();
+        assert_eq!(ra, rb, "concurrent edits converge — no flashing");
+        assert!(
+            ra.contains("base") && ra.contains("from A") && ra.contains("from B"),
+            "converged state carries every block: {ra:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_delta_frame_ignores_non_tlr2_frame() {
+        // A frame without the TLR2 magic (legacy/foreign) must be skipped
+        // (Ok(0)), not error.
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        assert_eq!(h.apply_delta_frame(b"not a tlr2 frame".to_vec()).await.unwrap(), 0);
+        assert_eq!(h.apply_delta_frame(Vec::new()).await.unwrap(), 0);
     }
 }

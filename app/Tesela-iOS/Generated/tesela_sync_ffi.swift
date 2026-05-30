@@ -489,6 +489,24 @@ fileprivate struct FfiConverterString: FfiConverter {
     }
 }
 
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterData: FfiConverterRustBuffer {
+    typealias SwiftType = Data
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        let len: Int32 = try readInt(&buf)
+        return Data(try readBytes(&buf, count: Int(len)))
+    }
+
+    public static func write(_ value: Data, into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        writeBytes(&buf, value)
+    }
+}
+
 
 
 
@@ -1132,10 +1150,61 @@ public func FfiConverterTypeSyncCoordinator_lower(_ value: SyncCoordinator) -> U
 public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     
     /**
+     * Apply a TLR2-framed delta frame received over the instant-multidevice
+     * WebSocket. Decodes the TLR2 payload and imports each per-note Loro
+     * update via the engine (which is commutative + idempotent, so
+     * duplicate / out-of-order frames are safe, and materializes the
+     * resulting `<slug>.md` into the iOS sandbox). Returns the number of
+     * per-note updates applied.
+     *
+     * A frame that lacks the TLR2 magic (a legacy v1 payload or foreign
+     * data) decodes to `None`; we return `Ok(0)` rather than erroring so
+     * the caller can skip it. A genuine decode failure (corrupt TLR2 body)
+     * surfaces as `FfiSyncError`.
+     */
+    func applyDeltaFrame(frame: Data) async throws  -> UInt32
+    
+    /**
      * 32-char hex of this engine's device id. The Swift coordinator
      * reads this once at boot for display in Settings → Sync.
      */
     func deviceHex()  -> String
+    
+    /**
+     * Encoded version vector of a note's current Loro doc, for the
+     * reconnect/catch-up handshake: a peer hands this to the other side's
+     * [`Self::produce_note_delta`] (`since_vv`) so the response carries only
+     * the updates this device is missing. `None` when the doc isn't
+     * resident (nothing to catch up on). Cursor-free — see
+     * [`Self::produce_note_delta`].
+     */
+    func noteVersion(slug: String) async  -> Data?
+    
+    /**
+     * Produce the live Loro delta for a just-changed note, framed as a
+     * single TLR2 relay frame ready to push over the instant-multidevice
+     * WebSocket. Computes the note id with the same blake3-truncation
+     * (`stable_uuid_from_slug`) the rest of this bridge uses, exports the
+     * per-doc update via the engine's **cursor-free** `export_doc_update`,
+     * and wraps it in the same TLR2 framing the relay payload uses, so the
+     * WS and relay carry byte-identical frames.
+     *
+     * `since_vv` is a peer's encoded version vector — pass the value a
+     * prior [`Self::note_version`] handed back so we export only the delta
+     * newer than what the peer already has. `since_vv = None` means "full
+     * compact snapshot" (the bootstrap a freshly-joined device needs).
+     *
+     * **Cursor-free by construction.** `export_doc_update` does NOT read or
+     * advance the relay's broadcast cursor (instant-multidevice spec,
+     * finding #3), so driving the WS through this method never contends
+     * with the relay producer (`SyncCoordinator::tick_outbound`) — the
+     * relay path still sees the note as pending. Do NOT route this through
+     * `produce_relay_updates`; that path is cursor-bound.
+     *
+     * Returns `Ok(None)` when the doc isn't resident (nothing to send),
+     * `Ok(Some(frame))` with the TLR2-framed bytes otherwise.
+     */
+    func produceNoteDelta(slug: String, sinceVv: Data?) async throws  -> Data?
     
     /**
      * Block-granular variant of `record_note_upsert_by_slug`. Diffs
@@ -1294,6 +1363,36 @@ public static func openLoro(mosaicPath: String, deviceIdHex: String)async throws
 
     
     /**
+     * Apply a TLR2-framed delta frame received over the instant-multidevice
+     * WebSocket. Decodes the TLR2 payload and imports each per-note Loro
+     * update via the engine (which is commutative + idempotent, so
+     * duplicate / out-of-order frames are safe, and materializes the
+     * resulting `<slug>.md` into the iOS sandbox). Returns the number of
+     * per-note updates applied.
+     *
+     * A frame that lacks the TLR2 magic (a legacy v1 payload or foreign
+     * data) decodes to `None`; we return `Ok(0)` rather than erroring so
+     * the caller can skip it. A genuine decode failure (corrupt TLR2 body)
+     * surfaces as `FfiSyncError`.
+     */
+open func applyDeltaFrame(frame: Data)async throws  -> UInt32  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_apply_delta_frame(
+                    self.uniffiCloneHandle(),
+                    FfiConverterData.lower(frame)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u32,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u32,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u32,
+            liftFunc: FfiConverterUInt32.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
      * 32-char hex of this engine's device id. The Swift coordinator
      * reads this once at boot for display in Settings → Sync.
      */
@@ -1303,6 +1402,73 @@ open func deviceHex() -> String  {
             self.uniffiCloneHandle(),$0
     )
 })
+}
+    
+    /**
+     * Encoded version vector of a note's current Loro doc, for the
+     * reconnect/catch-up handshake: a peer hands this to the other side's
+     * [`Self::produce_note_delta`] (`since_vv`) so the response carries only
+     * the updates this device is missing. `None` when the doc isn't
+     * resident (nothing to catch up on). Cursor-free — see
+     * [`Self::produce_note_delta`].
+     */
+open func noteVersion(slug: String)async  -> Data?  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_note_version(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionData.lift,
+            errorHandler: nil
+            
+        )
+}
+    
+    /**
+     * Produce the live Loro delta for a just-changed note, framed as a
+     * single TLR2 relay frame ready to push over the instant-multidevice
+     * WebSocket. Computes the note id with the same blake3-truncation
+     * (`stable_uuid_from_slug`) the rest of this bridge uses, exports the
+     * per-doc update via the engine's **cursor-free** `export_doc_update`,
+     * and wraps it in the same TLR2 framing the relay payload uses, so the
+     * WS and relay carry byte-identical frames.
+     *
+     * `since_vv` is a peer's encoded version vector — pass the value a
+     * prior [`Self::note_version`] handed back so we export only the delta
+     * newer than what the peer already has. `since_vv = None` means "full
+     * compact snapshot" (the bootstrap a freshly-joined device needs).
+     *
+     * **Cursor-free by construction.** `export_doc_update` does NOT read or
+     * advance the relay's broadcast cursor (instant-multidevice spec,
+     * finding #3), so driving the WS through this method never contends
+     * with the relay producer (`SyncCoordinator::tick_outbound`) — the
+     * relay path still sees the note as pending. Do NOT route this through
+     * `produce_relay_updates`; that path is cursor-bound.
+     *
+     * Returns `Ok(None)` when the doc isn't resident (nothing to send),
+     * `Ok(Some(frame))` with the TLR2-framed bytes otherwise.
+     */
+open func produceNoteDelta(slug: String, sinceVv: Data?)async throws  -> Data?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_produce_note_delta(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug),FfiConverterOptionData.lower(sinceVv)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionData.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
 }
     
     /**
@@ -2056,6 +2222,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
         }
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
+    typealias SwiftType = Data?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterData.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterData.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
 private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
 
@@ -2236,7 +2426,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_tick_outbound() != 26776) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_apply_delta_frame() != 63855) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_device_hex() != 4479) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_note_version() != 24306) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_produce_note_delta() != 37163) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_diff() != 20141) {

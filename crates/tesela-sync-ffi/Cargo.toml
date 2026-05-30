@@ -33,6 +33,11 @@ postcard = { workspace = true }
 # authored ops collide on the right note rather than minting orphans.
 blake3 = { workspace = true }
 
+[dev-dependencies]
+# The Phase B WS-delta round-trip test opens two real LoroEngine handles
+# (open_loro takes an on-disk mosaic path), so it needs throwaway dirs.
+tempfile = { workspace = true }
+
 [features]
 # Pulls in the binary scaffolding so `cargo run --bin uniffi-bindgen
 # --features cli` can generate Swift / Kotlin / Python bindings from
