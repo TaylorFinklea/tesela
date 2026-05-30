@@ -475,7 +475,12 @@ impl LoroEngine {
     pub async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> usize {
         let mut applied = 0;
         for (note_id, bytes) in updates {
-            if self.import_doc_update(*note_id, bytes).await.is_ok() {
+            // Fully-qualified call: `import_doc_update` now also exists on the
+            // `SyncEngine` trait, so the unqualified `self.import_doc_update`
+            // would be ambiguous-by-convention here (and a recursion trap if
+            // this body were ever reached through `dyn SyncEngine`). Pin it to
+            // the inherent method like every other call site in this file.
+            if LoroEngine::import_doc_update(self, *note_id, bytes).await.is_ok() {
                 applied += 1;
             }
         }
@@ -1520,6 +1525,30 @@ impl SyncEngine for LoroEngine {
 
     async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> usize {
         LoroEngine::apply_relay_updates(self, updates).await
+    }
+
+    /// Trait-level override forwarding to the inherent
+    /// `LoroEngine::doc_version`. The live WS path (holding `dyn
+    /// SyncEngine`) uses this to capture a note's pre-edit version vector.
+    async fn doc_version(&self, note_id: [u8; 16]) -> Option<Vec<u8>> {
+        LoroEngine::doc_version(self, note_id).await
+    }
+
+    /// Trait-level override forwarding to the inherent
+    /// `LoroEngine::export_doc_update` — the cursor-free delta export the
+    /// live WS path uses (does NOT touch the relay broadcast cursor).
+    async fn export_doc_update(
+        &self,
+        note_id: [u8; 16],
+        since: Option<&[u8]>,
+    ) -> Option<Vec<u8>> {
+        LoroEngine::export_doc_update(self, note_id, since).await
+    }
+
+    /// Trait-level override forwarding to the inherent
+    /// `LoroEngine::import_doc_update` — applies one received delta.
+    async fn import_doc_update(&self, note_id: [u8; 16], bytes: &[u8]) -> SyncResult<()> {
+        LoroEngine::import_doc_update(self, note_id, bytes).await
     }
 
     async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
@@ -2702,6 +2731,84 @@ mod tests {
             n
         };
         assert_eq!(nothing, 0, "no new broadcasts at steady state (bounded re-broadcast)");
+    }
+
+    #[tokio::test]
+    async fn trait_level_delta_methods_converge_cursor_free() {
+        // INSTANT-MULTIDEVICE PHASE 0: the live WS path holds `dyn SyncEngine`
+        // and exchanges deltas via the NEW trait-level doc_version /
+        // export_doc_update / import_doc_update. This proves (1) those methods
+        // are reachable + correct through the trait object (the FFI/server
+        // holder shape), and (2) the live export is CURSOR-FREE — it must NOT
+        // advance the relay's broadcast cursor, so the relay path still sees
+        // the note as pending (spec finding #3: no WS/relay cursor contention).
+        let a_concrete =
+            LoroEngine::new(DeviceId::from_bytes([0xc1; 16]), Arc::new(Hlc::new(DeviceId::from_bytes([0xc1; 16]))));
+        let b_concrete =
+            LoroEngine::new(DeviceId::from_bytes([0xd2; 16]), Arc::new(Hlc::new(DeviceId::from_bytes([0xd2; 16]))));
+        let note = [0x88; 16];
+
+        a_concrete
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("shared".into()),
+                title: "Shared".into(),
+                content: "- base <!-- bid:02020202-0202-0202-0202-020202020202 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // Drive the exchange THROUGH the trait object, exactly as the live WS
+        // path (and the FFI) will.
+        let a: &dyn SyncEngine = &a_concrete;
+        let b: &dyn SyncEngine = &b_concrete;
+
+        let bootstrap = a.export_doc_update(note, None).await.unwrap();
+        b.import_doc_update(note, &bootstrap).await.unwrap();
+        assert_eq!(
+            a.render_note(note).await,
+            b.render_note(note).await,
+            "bootstrap via trait methods converges"
+        );
+
+        // Cursor-free invariant: the live export above did NOT advance the
+        // broadcast cursor, so the relay producer still owes this note. (If
+        // export had consumed the cursor, produce_relay_updates would return
+        // nothing — the finding-#3 bug.)
+        let pending = a.produce_relay_updates().await;
+        assert!(
+            pending.iter().any(|(nid, _, _)| *nid == note),
+            "cursor-free export must leave the note pending for the relay path"
+        );
+
+        // Concurrent edits, exchanged both ways via the trait object.
+        a_concrete
+            .record_local(OpPayload::BlockUpsert {
+                block_id: [0xca; 16], note_id: note, parent_block_id: None,
+                order_key: "a".into(), indent_level: 0, text: "from A".into(),
+            })
+            .await
+            .unwrap();
+        b_concrete
+            .record_local(OpPayload::BlockUpsert {
+                block_id: [0xcb; 16], note_id: note, parent_block_id: None,
+                order_key: "b".into(), indent_level: 0, text: "from B".into(),
+            })
+            .await
+            .unwrap();
+
+        let b_vv = b.doc_version(note).await;
+        let a_upd = a.export_doc_update(note, b_vv.as_deref()).await.unwrap();
+        b.import_doc_update(note, &a_upd).await.unwrap();
+        let a_vv = a.doc_version(note).await;
+        let b_upd = b.export_doc_update(note, a_vv.as_deref()).await.unwrap();
+        a.import_doc_update(note, &b_upd).await.unwrap();
+
+        let ra = a.render_note(note).await.unwrap();
+        let rb = b.render_note(note).await.unwrap();
+        assert_eq!(ra, rb, "trait-level exchange converges — no flashing");
+        assert!(ra.contains("base") && ra.contains("from A") && ra.contains("from B"));
     }
 
     #[tokio::test]

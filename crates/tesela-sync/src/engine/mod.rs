@@ -114,6 +114,41 @@ pub trait SyncEngine: Send + Sync {
         0
     }
 
+    /// Encoded version vector of a note's doc — a peer sends this so we
+    /// export only updates newer than what it has. `None` if the doc isn't
+    /// resident (or the engine doesn't track Loro docs). Surfaced on the
+    /// trait (2026-05-30) so the live WS path, holding `dyn SyncEngine`, can
+    /// capture a note's pre-edit version vector. Default `None`; LoroEngine
+    /// overrides. Does NOT touch the relay's broadcast cursor.
+    async fn doc_version(&self, _note_id: [u8; 16]) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Export a note's Loro update bytes since the given encoded version
+    /// vector (`None` = full compact snapshot, for a fresh-device
+    /// bootstrap). `None` if the doc isn't resident or export fails. This is
+    /// the **cursor-free** delta export the live WS path uses — it does NOT
+    /// read or advance the relay's `broadcast_cursor`, so the WS and relay
+    /// paths never contend (instant-multidevice spec, finding #3). Default
+    /// `None`; LoroEngine overrides.
+    async fn export_doc_update(
+        &self,
+        _note_id: [u8; 16],
+        _since: Option<&[u8]>,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Import a peer's Loro update bytes into the addressed note's doc
+    /// (creating it if absent), refresh derived state, and persist. Loro
+    /// merge is commutative + idempotent, so duplicate / out-of-order
+    /// imports are safe. Surfaced on the trait (2026-05-30) so the live WS
+    /// path can apply a single received delta. Default no-op `Ok(())`;
+    /// LoroEngine overrides.
+    async fn import_doc_update(&self, _note_id: [u8; 16], _bytes: &[u8]) -> SyncResult<()> {
+        Ok(())
+    }
+
     /// Enumerate every note id the engine tracks. Default empty.
     /// `DualEngine` overrides to return the shadow's tracked notes;
     /// `SqliteEngine` returns empty because oplog enumeration would be
