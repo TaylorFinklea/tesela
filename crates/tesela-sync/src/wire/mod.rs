@@ -62,13 +62,33 @@ pub fn decode_loro_relay_payload(bytes: &[u8]) -> SyncResult<Option<Vec<LoroDocU
     Ok(Some(postcard::from_bytes(&body)?))
 }
 
-/// Per-PUT plaintext budget for relay broadcast, well under typical relay
-/// body limits (the self-host + HA relay default to 5 MiB; base64 + AEAD +
-/// JSON inflate the wire body ~1.4×, so a 2.5 MB plaintext batch lands
-/// ~3.5 MB on the wire). The canonical-device bootstrap broadcasts every
-/// note's FULL state at once — without chunking that one envelope blows
-/// past the limit (413). See [`pack_loro_relay_batches`].
-pub const MAX_RELAY_PLAINTEXT_BYTES: usize = 2_500_000;
+/// The relay's `PUT /ops` body limit. Mirrors `tesela-relay`'s `--max-body`
+/// default. A single Loro doc cannot be split across envelopes, so this MUST
+/// exceed the wire size of the largest single note's snapshot. The biggest real
+/// note here (`ai-business`, 1.3 MB markdown) is a ~5 MB Loro snapshot ≈ 7 MB on
+/// the wire, so the cap is set generously at 16 MiB — the relay only ever stores
+/// rate-limited ciphertext, so a large body cap is cheap. Producers MUST keep
+/// each PUT's wire body at or under this; operators must run `tesela-relay`
+/// with `--max-body`/`TESELA_RELAY_MAX_BODY` at least this large.
+pub const RELAY_MAX_BODY_BYTES: usize = 16 * 1024 * 1024; // 16 MiB
+
+/// Per-PUT *plaintext* budget for relay broadcast, kept comfortably under
+/// [`RELAY_MAX_BODY_BYTES`]. The wire body is
+/// `base64(aead_seal(deflate(postcard(batch))))` in a tiny JSON wrapper:
+/// DEFLATE only ever shrinks the plaintext, base64 inflates it ×4/3, and the
+/// AEAD nonce/tag + JSON keys add a few hundred bytes. So worst-case
+/// (incompressible) wire ≈ plaintext × 4/3 + overhead. An 8 MiB plaintext budget
+/// lands ≤ ~11.2 MiB on the wire even with zero compression — well under the
+/// 16 MiB cap. The canonical-device bootstrap broadcasts every note's FULL
+/// state at once; this chunking keeps each multi-note envelope under the limit
+/// (413) while a single oversized note rides alone. See
+/// [`pack_loro_relay_batches`].
+///
+/// NOTE: a single note whose snapshot exceeds the relay cap still can't ship
+/// (no intra-doc chunking yet). Today the largest snapshot (~5 MB) fits the
+/// 16 MiB cap with room to spare; a note that outgrew the cap would need
+/// intra-doc chunking. Tracked as a follow-up.
+pub const MAX_RELAY_PLAINTEXT_BYTES: usize = 8 * 1024 * 1024; // 8 MiB
 
 /// Greedily pack per-note updates (`(note_id, update_bytes, captured_vv)`,
 /// from `produce_relay_updates`) into batches whose summed `update_bytes`
@@ -243,5 +263,47 @@ mod tests {
     #[test]
     fn pack_batches_empty_input_is_empty() {
         assert!(pack_loro_relay_batches(Vec::new(), 1_000).is_empty());
+    }
+
+    #[test]
+    fn plaintext_budget_stays_under_relay_body_limit() {
+        // Worst case: incompressible plaintext, base64 ×4/3, plus headroom for
+        // the AEAD nonce/tag + JSON wrapper. A full-budget batch must never
+        // 413. Locks the two constants against drifting apart (the original
+        // bug: a 2.5 MB budget aimed at a 5 MiB relay, deployed at 1 MiB).
+        let worst_case_wire = MAX_RELAY_PLAINTEXT_BYTES * 4 / 3 + 4096;
+        assert!(
+            worst_case_wire <= RELAY_MAX_BODY_BYTES,
+            "plaintext budget {MAX_RELAY_PLAINTEXT_BYTES} → ~{worst_case_wire} B wire \
+             exceeds relay limit {RELAY_MAX_BODY_BYTES}"
+        );
+    }
+
+    #[test]
+    fn full_budget_batch_encodes_under_relay_limit() {
+        // Build a single batch at the plaintext budget out of INCOMPRESSIBLE
+        // bytes (an LCG stream DEFLATE can't shrink), run the real encoder, and
+        // confirm the base64'd wire body (+ generous AEAD/JSON overhead) fits
+        // the relay cap. Exercises the actual compression+framing path, not
+        // just the arithmetic estimate.
+        let mut lcg: u32 = 0x1234_5678;
+        let bytes: Vec<u8> = (0..MAX_RELAY_PLAINTEXT_BYTES)
+            .map(|_| {
+                lcg = lcg.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                (lcg >> 24) as u8
+            })
+            .collect();
+        let updates = vec![LoroDocUpdate {
+            doc: [7u8; 16],
+            update_bytes: bytes,
+        }];
+        let encoded = encode_loro_relay_payload(&updates).unwrap();
+        // Wire body = base64(aead_seal(encoded)) in a small JSON wrapper:
+        // base64 = ×4/3; AEAD nonce+tag ≈ 40 B; JSON keys + device hex ≈ 256 B.
+        let wire_estimate = encoded.len() * 4 / 3 + 40 + 256;
+        assert!(
+            wire_estimate <= RELAY_MAX_BODY_BYTES,
+            "full-budget incompressible batch → ~{wire_estimate} B wire exceeds {RELAY_MAX_BODY_BYTES}"
+        );
     }
 }

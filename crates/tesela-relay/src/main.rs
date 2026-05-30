@@ -53,10 +53,13 @@ pub struct Args {
     #[arg(long, env = "TESELA_RELAY_ADMIN_TOKEN")]
     pub admin_token: Option<String>,
 
-    /// Maximum body size (bytes) accepted on PUT /ops. Spec recommends
-    /// 1 MiB; anything larger should be split into multiple envelopes
-    /// by the producing client.
-    #[arg(long, env = "TESELA_RELAY_MAX_BODY", default_value_t = 1_048_576)]
+    /// Maximum body size (bytes) accepted on PUT /ops. A single Loro doc can't
+    /// be split across envelopes, so this must exceed the largest note's
+    /// snapshot on the wire (the biggest real note, ai-business, is ~5 MB
+    /// snapshot ≈ 7 MB encoded). Default 16 MiB — the relay only stores
+    /// rate-limited ciphertext, so a generous cap is cheap. Producing clients
+    /// still chunk multi-note batches (see `MAX_RELAY_PLAINTEXT_BYTES`).
+    #[arg(long, env = "TESELA_RELAY_MAX_BODY", default_value_t = 16 * 1024 * 1024)]
     pub max_body: usize,
 }
 

@@ -371,11 +371,24 @@ impl LoroEngine {
     ) -> Option<Vec<u8>> {
         let docs = self.inner.docs.read().await;
         let doc = docs.get(&note_id)?;
-        let vv = match since {
-            Some(bytes) => VersionVector::decode(bytes).ok()?,
-            None => VersionVector::new(),
-        };
-        doc.export(ExportMode::updates(&vv)).ok()
+        // First broadcast (no cursor yet): ship a COMPACT snapshot, not the
+        // full op history from an empty version vector. `updates(empty)` replays
+        // every op ever applied — including content later deleted — so a note
+        // whose history churned megabytes exports even more than its snapshot.
+        // `ExportMode::Snapshot` is GC-compacted (the exact bytes `save_snapshot`
+        // writes), so it is the smallest faithful representation, and the
+        // receiver's `import` merges a snapshot identically to an update. This
+        // still can't shrink a genuinely large note below the relay body cap
+        // (e.g. ai-business ≈ 5 MB snapshot) — that relies on a large enough
+        // `RELAY_MAX_BODY_BYTES` — but it never inflates it past the snapshot.
+        // Once a cursor exists, send only the incremental delta since it.
+        match since {
+            Some(bytes) => {
+                let vv = VersionVector::decode(bytes).ok()?;
+                doc.export(ExportMode::updates(&vv)).ok()
+            }
+            None => doc.export(ExportMode::Snapshot).ok(),
+        }
     }
 
     /// Import a peer's Loro update bytes into the addressed note's doc
