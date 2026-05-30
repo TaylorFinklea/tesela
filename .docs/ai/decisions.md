@@ -4,6 +4,18 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-05-30 — Defer the HA-relay sync redesign until after Loro/RTC; bypass it locally for now
+
+**Decision:** Do NOT keep patching the current relay path. Park a full sync-relay redesign until the Loro migration + real-time-collab (RTC) work is done — at which point we'll likely need an RTC server/proxy anyway and would redesign the transport regardless. For now, **bypass the relay** so the Graphite redesign can be tested locally: relay disabled in the Mac mosaic's `config.toml` (`[sync.relay]` commented out; backup at `config.toml.relay-bak`), making the Mac a standalone local server. Verified: a PUT persists, survives past the old 5s poll window (no inbound-clobber), and hits disk.
+
+**Why:** A real bug surfaced while installing the Graphite build on the iPhone — cross-device edits reverted on both web + iOS. Root cause: `ai-business` (1.3 MB markdown → ~5 MB Loro snapshot ≈ 7 MB on the wire) exceeds the HA relay add-on's `max_body`, so every outbound PUT 413'd while the Mac kept pulling stale inbound ops over fresh edits. We fixed the *code* (binary `--max-body` default → 16 MiB, client chunk budget realigned, first-broadcast ships a compact snapshot instead of full deleted-history; commits `08e941b`, `0c97b92`). The live HA add-on still enforces its saved 1 MiB until its Configuration-tab `max_body` is raised — and rather than chase that, Taylor chose to stop investing in this relay shape. A single Loro doc can't be split across envelopes; the proper long-term answer (intra-doc chunking, or an RTC-aware transport) belongs in the post-Loro redesign, not a patch.
+
+**Trade-off:** No cross-device sync while bypassed — the phone won't see Mac edits and vice-versa. Fine for now: testing the Graphite redesign only needs one device + persistence, which the standalone local server gives. Re-enable by restoring `config.toml.relay-bak` (or raising the HA add-on `max_body` to 16777216 in its Configuration tab) and restarting the server.
+
+**Status of the deferred work:** Code fixes are committed and correct (relay binary + deploy configs all default to 16 MiB now). The remaining items — raising the live HA add-on limit, the coordinated live-data reseed + iPhone re-bootstrap, and intra-doc chunking — fold into the future relay/RTC redesign. See [project_relay_413_blocks_sync](../../.claude/projects/-Users-tfinklea-git-tesela/memory/project_relay_413_blocks_sync.md).
+
+---
+
 ### 2026-05-27 — Migrate sync data layer to Loro; relay protocol stays as-is
 
 **Decision:** Replace the hand-rolled `tesela_sync::engine::sqlite_engine::SqliteEngine` with a Loro-backed implementation. The wire format (`SyncEnvelope`, AEAD-sealed `ciphertext`, HKDF per-group keys, pairing flow, Cloudflare Worker port) is unchanged — Loro updates slot into the existing opaque `ciphertext` field. Migration boundary: `engine/sqlite_engine.rs` + the FFI surface in `tesela-sync-ffi`.

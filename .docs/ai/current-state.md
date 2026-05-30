@@ -1,5 +1,16 @@
 # Current State
 
+## 2026-05-30 — Graphite on the iPhone; relay 413 fixed-in-code then BYPASSED
+
+**Graphite build is installed on Roshar (iPhone 15 Pro).** Built device SDK (signed, fixed FFI), boots straight into Graphite (temp `useGraphiteShell→true` flip during build, reverted in-repo — shipping default stays AppShell). Sim + device both run the redesign.
+
+**Relay 413 — root-caused, fixed in code, then deferred + bypassed.** Testing on the phone surfaced the real bug behind "edits revert on web + iOS": the Mac's outbound relay PUT 413'd (ai-business 1.3 MB note → ~5 MB Loro snapshot ≈ 7 MB wire > HA relay `max_body`), while inbound polling kept applying stale ops over fresh edits.
+- **Fixed in code** (`08e941b`, `0c97b92`): relay binary `--max-body` default 1 MiB→16 MiB; client `MAX_RELAY_PLAINTEXT_BYTES` 2.5 MB→8 MiB under a new `RELAY_MAX_BODY_BYTES`=16 MiB invariant (+2 regression tests); first-broadcast ships a compact `ExportMode::Snapshot` not full deleted-history; HA add-on/compose/DOCS deploy defaults → 16 MiB (add-on 0.1.0→0.1.1).
+- **HA-add-on gotcha:** the live relay reads `max_body` from the add-on **Configuration tab** (`/data/options.json` via `run.sh`), NOT any shell env — so the user's env-var restart never changed it, and config defaults don't retro-apply to an existing install.
+- **DECISION (Taylor, 2026-05-30):** stop patching this relay; redesign it after Loro/RTC (likely need an RTC server/proxy anyway). **Relay BYPASSED for local testing** — `[sync.relay]` commented out in the Mac mosaic `config.toml` (backup `config.toml.relay-bak`); Mac is a standalone local server. Verified a PUT persists + survives the old poll window + hits disk. No cross-device sync while bypassed (fine for single-device Graphite testing). See decisions.md + [project_relay_413_blocks_sync].
+
+---
+
 ## 2026-05-29 — Loro cutover FINISHED; redesign is next
 
 **Loro is the sole sync engine.** Flag-day + ai-business dedup + DR drill all done, committed, green. Full report: `phases/2026-05-29-loro-cutover-report.md`.
