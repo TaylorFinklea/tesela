@@ -174,6 +174,27 @@ both converge, no flashing. Sim is insufficient (shares the Mac's network) — v
 iPhone.
 
 **Phase D — latency + correctness hardening.**
+**Relay-path follow-ups deferred here from the Phase A review (both confined to the dormant,
+config-bypassed relay tick — neither affects the live Tailscale path or convergence):**
+- *Relay re-export bloat:* the relay fan-out re-exports `export_doc_update(note, None)` (full
+  snapshot) instead of forwarding the exact applied bytes (spec §4 says forward exact bytes). Loro-
+  idempotent + single fan-out so loop-free and correct, just bloated. Fix: thread the raw applied
+  bytes through `TickOutcome` (`Vec<([u8;16], Vec<u8>)>`) and forward those.
+- *Spurious multi-note invalidation:* the inbound-apply path emits `WsEvent::NoteUpdated` for every
+  note in a multi-note batch even when a given note's apply was an idempotent no-op (because
+  `apply_relay_updates` returns an aggregate count, not per-note). Fix: return per-note applied
+  note-ids and emit only for those. Harmless for the 1-note-per-frame live path; observable only on
+  multi-note relay batches.
+
+**Load-bearing requirement (verified against Loro docs 2026-05-30, Phase B review):** the reconnect
+catch-up MUST be **bidirectional** — each side sends its per-note `doc_version` (oplog VV) and the
+other exports its missing ops via `export_doc_update(note, since_vv)`. A reconnecting device with
+*offline* edits must PUSH them (server is missing them), not just pull. Loro's
+`export(updates(&vv))` correctly exports only "what the exporter has that the VV lacks", so a
+receiver-ahead VV safely exports nothing for that peer (NOT a bug — the receiver isn't missing those
+ops; the Phase B reviewer's "clamp the since_vv" fix would be a behavioral no-op and is intentionally
+omitted). The real risk is a *one-directional* catch-up; the Phase D test must cover concurrent
+offline edits on BOTH sides → reconnect → converge.
 Reconnect catch-up (the cursor/version-vector exchange from §4), echo-suppression verification under
 concurrent edits, and a "hub offline" graceful path (fall back to relay if/when re-enabled, or just
 queue locally). Measure actual edit→peer latency and record it.
