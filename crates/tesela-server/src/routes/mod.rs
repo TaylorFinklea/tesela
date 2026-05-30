@@ -11,7 +11,7 @@ mod sync;
 mod tags;
 mod transcription;
 mod types;
-mod ws;
+pub mod ws;
 
 use std::sync::Arc;
 

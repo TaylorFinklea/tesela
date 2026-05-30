@@ -130,20 +130,38 @@ impl RelayStatus {
     }
 }
 
+/// Outcome of one relay [`tick`]: observability counts plus the set of
+/// note ids whose docs were mutated by an inbound apply this tick. The
+/// caller uses `applied_note_ids` to drive the live-WS fan-out for
+/// relay-originated edits — emit a `WsEvent::NoteUpdated` (so web
+/// invalidates) and re-broadcast the applied delta on `ws_delta_tx` (spec
+/// finding #4). Empty when nothing inbound applied.
+#[derive(Debug, Clone, Default)]
+pub struct TickOutcome {
+    /// Count of inbound per-note updates applied this tick.
+    pub applied: u32,
+    /// Count of outbound envelopes PUT this tick.
+    pub sent: u32,
+    /// Note ids touched by an inbound apply, deduped, in first-seen order.
+    pub applied_note_ids: Vec<[u8; 16]>,
+}
+
 /// One iteration of the relay sync loop: inbound (poll + apply +
 /// ack) followed by outbound (produce + put). Logs at debug level on
 /// each step; surfaces hard errors through `RelayState.last_error`
 /// for the web UI.
 ///
-/// Returns `(applied, sent)` for observability.
+/// Returns a [`TickOutcome`] (counts + applied note ids) for observability
+/// and the live-WS fan-out of relay-originated edits.
 pub async fn tick(
     engine: &dyn tesela_sync::SyncEngine,
     ident: &GroupIdentity,
     handle: &RelayHandle,
-) -> Result<(u32, u32)> {
+) -> Result<TickOutcome> {
     let mut state = handle.state.write().await;
     let mut applied_total = 0u32;
     let mut sent_total = 0u32;
+    let mut applied_note_ids: Vec<[u8; 16]> = Vec::new();
 
     // ─── Inbound ─────────────────────────────────────────────────────
     match handle.client.poll(state.inbound_cursor).await {
@@ -173,6 +191,17 @@ pub async fn tick(
                             .collect();
                         let n = engine.apply_relay_updates(&pairs).await;
                         applied_total += n as u32;
+                        if n > 0 {
+                            // Loro apply is idempotent, so the caller emitting a
+                            // WsEvent for a no-op merge is harmless; record each
+                            // doc in this applied batch (deduped) so the live-WS
+                            // fan-out can notify web + re-broadcast the delta.
+                            for (doc, _) in &pairs {
+                                if !applied_note_ids.contains(doc) {
+                                    applied_note_ids.push(*doc);
+                                }
+                            }
+                        }
                         if seq > max_seq {
                             max_seq = seq;
                         }
@@ -278,7 +307,11 @@ pub async fn tick(
     if let Err(e) = state.save(&handle.mosaic_root).await {
         tracing::warn!("relay state save: {e}");
     }
-    Ok((applied_total, sent_total))
+    Ok(TickOutcome {
+        applied: applied_total,
+        sent: sent_total,
+        applied_note_ids,
+    })
 }
 
 /// One-time bring-up: register on the relay (idempotent / recovery

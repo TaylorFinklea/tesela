@@ -81,6 +81,9 @@ criterion = { workspace = true }
 reqwest = { workspace = true }
 walkdir = { workspace = true }
 tesela-fixtures = { path = "../tesela-fixtures" }
+# Real-socket WS round-trip test (instant-multidevice Phase A). Pinned to
+# the same version axum 0.8 already pulls in, so no new lockfile entry.
+tokio-tungstenite = "0.28"
 
 [[bench]]
 name = "http"

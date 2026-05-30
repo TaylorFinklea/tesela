@@ -110,8 +110,13 @@ async fn main() -> Result<()> {
     let index_dyn: Arc<dyn SearchIndex> = Arc::clone(&index) as Arc<dyn SearchIndex>;
     let graph_dyn: Arc<dyn LinkGraph> = Arc::clone(&index) as Arc<dyn LinkGraph>;
 
-    // WebSocket broadcast channel
+    // WebSocket broadcast channel (text JSON WsEvents).
     let (ws_tx, _) = broadcast::channel::<WsEvent>(64);
+
+    // Instant-multidevice (Phase A) — separate binary channel carrying
+    // `TLR2`-framed Loro deltas, kept distinct from the text-only `ws_tx`
+    // (spec finding #2).
+    let (ws_delta_tx, _) = broadcast::channel::<state::WsDelta>(64);
 
     // Indexer notify channel — maps file-system events to WsEvents
     let (note_event_tx, _) = broadcast::channel::<NoteEvent>(64);
@@ -344,6 +349,8 @@ async fn main() -> Result<()> {
         store,
         index,
         ws_tx,
+        ws_delta_tx,
+        ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
         type_registry,
         auto_sync,
         sync_engine,
@@ -781,15 +788,64 @@ async fn bring_up_relay_if_configured(
     let tick_handle = handle.clone();
     let tick_engine = state.sync_engine.clone();
     let tick_ident = ident.clone();
+    // Instant-multidevice (Phase A, spec finding #4): give the relay loop
+    // the WS fan-out handles so a relay-originated edit notifies web
+    // (`ws_tx`) and reaches live device sockets (`ws_delta_tx`). Cloning
+    // the channel/store/index handles into the task is cleaner than
+    // threading the not-yet-assembled `Arc<AppState>` through the relay
+    // bring-up. The relay is config-bypassed in the live mosaic today, so
+    // this path is dormant there but kept correct for when it re-enables.
+    let tick_ws_tx = state.ws_tx.clone();
+    let tick_ws_delta_tx = state.ws_delta_tx.clone();
+    let tick_store = std::sync::Arc::clone(&state.store);
+    let tick_index = std::sync::Arc::clone(&state.index);
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(poll_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
-            if let Err(e) =
-                sync_relay::tick(&*tick_engine, &tick_ident, &tick_handle).await
-            {
-                tracing::debug!("relay tick: {e}");
+            match sync_relay::tick(&*tick_engine, &tick_ident, &tick_handle).await {
+                Ok(outcome) => {
+                    if outcome.applied > 0 || outcome.sent > 0 {
+                        tracing::debug!(
+                            "relay tick: applied {}, sent {}",
+                            outcome.applied,
+                            outcome.sent
+                        );
+                    }
+                    for note_id in outcome.applied_note_ids {
+                        // Notify web that this remote-originated edit landed.
+                        routes::ws::emit_note_updated(
+                            &*tick_engine,
+                            &tick_store,
+                            &tick_index,
+                            &tick_ws_tx,
+                            note_id,
+                        )
+                        .await;
+                        // Push the merged note's delta to live device sockets
+                        // so they converge without waiting on their own poll.
+                        // `origin: None` — fan out to everyone (the relay has
+                        // no originating WS socket). Cursor-free export.
+                        if let Some(bytes) = tick_engine
+                            .export_doc_update(note_id, None)
+                            .await
+                        {
+                            if let Ok(frame) = tesela_sync::encode_loro_relay_payload(&[
+                                tesela_sync::LoroDocUpdate {
+                                    doc: note_id,
+                                    update_bytes: bytes,
+                                },
+                            ]) {
+                                let _ = tick_ws_delta_tx.send(state::WsDelta {
+                                    origin: None,
+                                    frame,
+                                });
+                            }
+                        }
+                    }
+                }
+                Err(e) => tracing::debug!("relay tick: {e}"),
             }
         }
     });
@@ -903,5 +959,180 @@ mod tests {
         assert!(!is_tailscale_cgnat(&Ipv4Addr::new(100, 128, 0, 0)));
         assert!(!is_tailscale_cgnat(&Ipv4Addr::new(10, 15, 109, 184)));
         assert!(!is_tailscale_cgnat(&Ipv4Addr::new(192, 168, 1, 5)));
+    }
+
+    /// End-to-end real-socket round-trip for the Phase A bidirectional WS:
+    /// two clients connect to a live `/ws`; client A pushes a binary Loro
+    /// delta; assert (a) client B receives the binary frame, (b) a text
+    /// `WsEvent::NoteUpdated` is delivered (web invalidation), (c) client A
+    /// does NOT receive its own delta back (echo-suppression), and (d) the
+    /// server engine converged on A's edit.
+    #[tokio::test]
+    async fn ws_binary_delta_round_trip_over_real_socket() {
+        use futures::{SinkExt, StreamExt};
+        use tesela_sync::{DeviceId, Hlc, LoroDocUpdate, LoroEngine, OpPayload, SyncEngine};
+        use tokio_tungstenite::tungstenite::Message as TMessage;
+
+        // ── Build a full AppState over a tempdir ──────────────────────────
+        let tmp = tempfile::tempdir().unwrap();
+        let mosaic = tmp.path().to_path_buf();
+        let notes_dir = mosaic.join("notes");
+        std::fs::create_dir_all(&notes_dir).unwrap();
+        std::fs::create_dir_all(mosaic.join(".tesela")).unwrap();
+
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server_engine = LoroEngine::with_dirs(
+            sdev,
+            Arc::new(Hlc::new(sdev)),
+            mosaic.join(".tesela").join("loro"),
+            Some(notes_dir.clone()),
+        )
+        .await
+        .unwrap();
+
+        // Slug → note_id derivation matches notes.rs::stable_uuid_from_slug.
+        let note_id = {
+            let h = blake3::hash(b"n");
+            let mut out = [0u8; 16];
+            out.copy_from_slice(&h.as_bytes()[..16]);
+            out
+        };
+
+        // Device A authors the note locally (separate engine), then we
+        // pre-seed the SAME base into the server so its index resolves the
+        // slug for the WsEvent re-read.
+        let adev = DeviceId::from_bytes([0xa1; 16]);
+        let device_a = LoroEngine::new(adev, Arc::new(Hlc::new(adev)));
+        device_a
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("n".into()),
+                title: "N".into(),
+                content: "- seed <!-- bid:03030303-0303-0303-0303-030303030303 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let base = device_a.export_doc_update(note_id, None).await.unwrap();
+        server_engine.import_doc_update(note_id, &base).await.unwrap();
+
+        // Now A makes the edit we expect to propagate.
+        device_a
+            .record_local(OpPayload::BlockUpsert {
+                block_id: [0xab; 16],
+                note_id,
+                parent_block_id: None,
+                order_key: "z".into(),
+                indent_level: 0,
+                text: "live edit from A".into(),
+            })
+            .await
+            .unwrap();
+        // Export the device's current full state as the delta frame. The
+        // server already holds the base, so importing this is a no-op merge
+        // for the shared history plus A's new edit (Loro is idempotent +
+        // commutative — exactly the live-path forward-the-applied-bytes
+        // model). A pre-edit-VV delta would also work; full-state keeps the
+        // test independent of VV-capture timing.
+        let delta = device_a.export_doc_update(note_id, None).await.unwrap();
+        let frame = tesela_sync::encode_loro_relay_payload(&[LoroDocUpdate {
+            doc: note_id,
+            update_bytes: delta,
+        }])
+        .unwrap();
+
+        let store = Arc::new(FsNoteStore::new(
+            mosaic.clone(),
+            tesela_core::config::StorageConfig::default(),
+        ));
+        let index = Arc::new(SqliteIndex::open(&mosaic.join(".tesela").join("test.db")).await.unwrap());
+        let (ws_tx, _) = broadcast::channel::<WsEvent>(64);
+        let (ws_delta_tx, _) = broadcast::channel::<state::WsDelta>(64);
+        let group_identity = Arc::new(RwLock::new(tesela_sync::GroupIdentity {
+            group_id: tesela_sync::GroupId::new_random(),
+            group_key: tesela_sync::GroupKey::random(),
+        }));
+        let app_state = AppState {
+            mosaic_root: mosaic.clone(),
+            store,
+            index,
+            ws_tx,
+            ws_delta_tx,
+            ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
+            type_registry: tesela_core::types::TypeRegistry::load(&mosaic),
+            auto_sync: Arc::new(reminders::auto::AutoSync::new()),
+            sync_engine: Arc::new(server_engine) as Arc<dyn tesela_sync::SyncEngine>,
+            lan_discovery: None,
+            group_identity,
+            display_name: "test".into(),
+            public_url: "http://127.0.0.1:0".into(),
+            relay_url: None,
+            relay: None,
+        };
+        let server_engine_handle = Arc::clone(&app_state.sync_engine);
+        let router = routes::build(app_state);
+
+        // ── Serve on an ephemeral port ────────────────────────────────────
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let url = format!("ws://{}/ws", addr);
+        let (mut client_b, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut client_a, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+
+        // Give both subscriptions a moment to register on the broadcast bus.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Client A sends the binary delta.
+        client_a
+            .send(TMessage::Binary(frame.clone().into()))
+            .await
+            .unwrap();
+
+        // ── Client B must receive BOTH a binary delta and a text WsEvent ──
+        let mut got_binary_b = false;
+        let mut got_text_b = false;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while (!got_binary_b || !got_text_b) && tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), client_b.next()).await {
+                Ok(Some(Ok(TMessage::Binary(b)))) => {
+                    assert_eq!(b.as_ref(), frame.as_slice(), "B gets the exact applied bytes");
+                    got_binary_b = true;
+                }
+                Ok(Some(Ok(TMessage::Text(t)))) => {
+                    assert!(t.contains("note_updated"), "B gets a NoteUpdated event: {t}");
+                    assert!(t.contains("live edit from A"), "event carries merged content");
+                    got_text_b = true;
+                }
+                Ok(Some(Ok(_))) => {}
+                _ => break,
+            }
+        }
+        assert!(got_binary_b, "client B received the binary delta");
+        assert!(got_text_b, "client B received the NoteUpdated text event");
+
+        // ── Client A must NOT receive its own binary frame back ───────────
+        // (it may receive the text event — that fans out to everyone).
+        let mut echoed_to_a = false;
+        let a_deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+        while tokio::time::Instant::now() < a_deadline {
+            match tokio::time::timeout(std::time::Duration::from_millis(200), client_a.next()).await
+            {
+                Ok(Some(Ok(TMessage::Binary(_)))) => {
+                    echoed_to_a = true;
+                    break;
+                }
+                Ok(Some(Ok(_))) => {}
+                _ => break,
+            }
+        }
+        assert!(!echoed_to_a, "echo-suppression: A never gets its own delta back");
+
+        // ── Server engine converged on A's edit ───────────────────────────
+        let rendered = server_engine_handle.render_note(note_id).await.unwrap();
+        assert!(rendered.contains("live edit from A"), "server converged: {rendered:?}");
     }
 }

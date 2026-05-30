@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use serde::Serialize;
@@ -15,6 +16,19 @@ pub struct AppState {
     pub store: Arc<FsNoteStore>,
     pub index: Arc<SqliteIndex>,
     pub ws_tx: broadcast::Sender<WsEvent>,
+    /// Instant-multidevice (Phase A) — a SEPARATE binary broadcast channel
+    /// for Loro delta frames, distinct from `ws_tx` (which is text-JSON
+    /// only). iOS UTF-8-decodes every `ws_tx` frame as JSON and would
+    /// silently drop a binary frame mixed onto that channel (spec finding
+    /// #2), so live deltas ride here. Each frame is a `TLR2`-encoded
+    /// `Vec<LoroDocUpdate>` plus an origin connection id used for
+    /// echo-suppression (a delta is never sent back to the socket it
+    /// arrived on; frames from the HTTP/relay path carry `origin: None` and
+    /// fan out to everyone).
+    pub ws_delta_tx: broadcast::Sender<WsDelta>,
+    /// Monotonic source of per-connection ids for echo-suppression on
+    /// `ws_delta_tx`. Each upgraded `/ws` socket claims one id at connect.
+    pub ws_conn_seq: AtomicU64,
     pub type_registry: TypeRegistry,
     pub auto_sync: Arc<AutoSync>,
     /// Phase 1.5 multi-device sync engine. Records every local note
@@ -53,6 +67,25 @@ pub struct AppState {
     /// relay is configured OR bring-up failed (the daemon retries
     /// on its tick). The status endpoint reads through this.
     pub relay: Option<crate::sync_relay::RelayHandle>,
+}
+
+/// Unique id assigned to each upgraded `/ws` socket, used to suppress
+/// echoing a delta back to the connection it arrived on.
+pub type ConnId = u64;
+
+/// A Loro delta frame fanned out on [`AppState::ws_delta_tx`].
+///
+/// `frame` is the `TLR2`-encoded `Vec<LoroDocUpdate>` (the same bytes the
+/// relay and the iOS FFI exchange). `origin` is the connection id of the
+/// socket the delta arrived on, or `None` for HTTP/relay-originated deltas
+/// that should fan out to every connected socket. The per-socket send loop
+/// skips any frame whose `origin` equals its own id (echo-suppression;
+/// spec finding #4) — Loro apply is idempotent so a stray echo is harmless,
+/// but suppressing it keeps the fan-out finite and loop-free.
+#[derive(Debug, Clone)]
+pub struct WsDelta {
+    pub origin: Option<ConnId>,
+    pub frame: Vec<u8>,
 }
 
 /// Events broadcast to WebSocket clients when notes change.

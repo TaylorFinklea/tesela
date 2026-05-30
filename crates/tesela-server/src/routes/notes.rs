@@ -223,6 +223,15 @@ pub async fn update_note(
     // either. Both clients preserve blanks consistently.
     let stamped_new = stamp_block_ids(&new_content);
     note.content = stamped_new;
+    // Instant-multidevice (Phase A): capture this note's Loro version
+    // vector BEFORE the edit so we can export the cursor-free delta for
+    // just-this-change afterward and push it to live WS clients. Cursor-
+    // free (`doc_version` + `export_doc_update(.., Some(pre_vv))`) so the
+    // live path never contends with the relay's broadcast cursor (spec
+    // finding #3). `None` when the doc isn't yet resident (first write) —
+    // we then export the full state below.
+    let delta_note_id = stable_uuid_from_slug(note.id.as_str());
+    let pre_vv = s.sync_engine.doc_version(delta_note_id).await;
     // Phase 1 (sync redesign 2026-05-26): single write path through
     // the engine. Previously this called s.store.update(&note) to
     // write the file via FsNoteStore AND then record_sync_update
@@ -275,6 +284,31 @@ pub async fn update_note(
     let _ = s.ws_tx.send(WsEvent::NoteUpdated {
         note: updated.clone(),
     });
+    // Instant-multidevice (Phase A): export the cursor-free delta for the
+    // change `record_sync_update` just applied and push it to live WS
+    // clients as a binary frame, so peer devices converge in <1s without
+    // waiting on the relay poll. `origin: None` — an HTTP edit fans out to
+    // every connected socket. Best-effort: if the doc isn't resident or
+    // export fails we skip the push (the slower relay/poll path still
+    // carries it). Does NOT touch the relay's broadcast cursor.
+    if let Some(delta) = s
+        .sync_engine
+        .export_doc_update(delta_note_id, pre_vv.as_deref())
+        .await
+    {
+        match tesela_sync::encode_loro_relay_payload(&[tesela_sync::LoroDocUpdate {
+            doc: delta_note_id,
+            update_bytes: delta,
+        }]) {
+            Ok(frame) => {
+                let _ = s.ws_delta_tx.send(crate::state::WsDelta {
+                    origin: None,
+                    frame,
+                });
+            }
+            Err(e) => tracing::warn!("ws: encode live delta for {} failed: {}", id, e),
+        }
+    }
     // Phase 12.3 — fire RecurringRolled per bumped block so the client
     // can surface "rolled to next month" notifications.
     for info in bumps {
