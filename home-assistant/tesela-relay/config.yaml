@@ -1,5 +1,5 @@
 name: Tesela Sync Relay
-version: "0.1.0"
+version: "0.1.1"
 slug: tesela_relay
 description: Zero-knowledge sync relay for Tesela notes. Stores AEAD-sealed envelopes only — never sees your data.
 url: https://github.com/TaylorFinklea/tesela
@@ -18,7 +18,7 @@ ports_description:
   8484/tcp: Relay HTTP API (front with TLS reverse proxy / Cloudflare for WAN access)
 options:
   admin_token: ""
-  max_body: 5242880
+  max_body: 16777216
   log_level: info
 schema:
   admin_token: password

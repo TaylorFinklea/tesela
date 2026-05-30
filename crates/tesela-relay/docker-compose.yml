@@ -32,9 +32,12 @@ services:
       # it. Empty = admin endpoints disabled (still safe; only the
       # recovery hatch is unavailable).
       TESELA_RELAY_ADMIN_TOKEN: "${TESELA_RELAY_ADMIN_TOKEN:?set TESELA_RELAY_ADMIN_TOKEN in .env}"
-      # Max body bytes per PUT — default 1 MiB matches spec; the
-      # client splits larger envelopes into multiple ops.
-      TESELA_RELAY_MAX_BODY: "1048576"
+      # Max body bytes per PUT. A single Loro doc can't be split across
+      # envelopes, so this must exceed the largest note's snapshot on the
+      # wire (the biggest real note, ai-business, is ~5 MB snapshot ≈ 7 MB
+      # encoded). 16 MiB matches the binary default; the relay only stores
+      # rate-limited ciphertext, so a generous cap is cheap.
+      TESELA_RELAY_MAX_BODY: "16777216"
       # Bind inside the container. Don't change unless you also
       # change `ports:` above.
       TESELA_RELAY_BIND: "0.0.0.0:8484"

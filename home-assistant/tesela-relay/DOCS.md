@@ -34,7 +34,7 @@ your relay rides on infrastructure you already own.
 | Option         | Default     | Notes                                              |
 |----------------|-------------|----------------------------------------------------|
 | `admin_token`  | _empty_     | **Required.** Used for `DELETE /admin/registration/:id` hijack recovery. Generate with `openssl rand -hex 32`. |
-| `max_body`     | `5242880`   | Per-PUT body cap in bytes (5 MB default).          |
+| `max_body`     | `16777216`  | Per-PUT body cap in bytes (16 MiB default). Must exceed the largest note's Loro snapshot on the wire — a single doc can't be split across envelopes. |
 | `log_level`    | `info`      | One of `trace · debug · info · warn · error`.      |
 
 Save → **Start**. Check the **Log** tab — you should see

@@ -18,7 +18,7 @@ if [[ ! -f "$OPTS" ]]; then
 fi
 
 ADMIN_TOKEN="$(jq -r '.admin_token // empty' "$OPTS")"
-MAX_BODY="$(jq -r '.max_body // 5242880' "$OPTS")"
+MAX_BODY="$(jq -r '.max_body // 16777216' "$OPTS")"
 LOG_LEVEL="$(jq -r '.log_level // "info"' "$OPTS")"
 
 if [[ -z "$ADMIN_TOKEN" ]]; then
