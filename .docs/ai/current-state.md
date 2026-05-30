@@ -1,5 +1,21 @@
 # Current State
 
+## 2026-05-30 (PM) — Instant multi-device sync: Phases 0/A/B landed (engine + server + FFI)
+
+**Active milestone: instant multi-device sync (Mac-hub WebSocket over Tailscale).** Approved + red-teamed spec: `phases/2026-05-30-instant-multidevice-spec.md`. Goal: Mac+phone edits appear <1s, conflict-free, relay bypassed (relay/RTC redesign stays deferred beyond this). Subagent-driven, commit per phase, two-stage review each.
+
+- **Phase 0** (`453db61`): lifted `doc_version`/`export_doc_update`/`import_doc_update` onto the `SyncEngine` trait (were concrete-LoroEngine-only — the FFI holds `Arc<dyn SyncEngine>` and couldn't call them) + fixed a latent recursion trap in `apply_relay_updates` + added `trait_level_delta_methods_converge_cursor_free` test. Relay path untouched. `cargo test -p tesela-sync --lib` = 100 passed.
+- **Phase B** (`21029b3`): iOS FFI `SyncEngineHandle` gained `produce_note_delta` / `apply_delta_frame` / `note_version` (cursor-free, TLR2-framed `Vec<u8>`↔Swift `Data`). Bindings regenerated (uniffi 0.31 library mode, mirrors c626d25) into `Generated/` + `CFFI/`. FFI tests pass. **Review verified** the catch-up VV concern is NOT a bug (Loro export(updates(&vv)) is correct; the "clamp" idea was a no-op) — the real requirement is bidirectional catch-up, recorded in Phase D.
+- **Phase A** (`4fdaf72`): server is now a real-time hub. New `ws_delta_tx: broadcast::Sender<WsDelta>` (separate binary channel from text `ws_tx`), bidirectional `/ws` (forwards binary delta frames + reads inbound → apply → emit `WsEvent::NoteUpdated` for web + re-fan-out), per-conn-id echo-suppression, emit-on-apply across HTTP/WS-inbound/relay-tick origins. `sync_relay::tick` → `TickOutcome{applied, sent, applied_note_ids}`. **Review confirmed** the two load-bearing invariants sound (cursor rule upheld — pre-VV captured before mutation; loop-freedom sound; concurrency correct). Two Important findings both confined to the DORMANT config-bypassed relay path (snapshot-not-bytes re-export; spurious multi-note WsEvents) → deferred to Phase D. `cargo test -p tesela-server` = 26+2 passed, `--workspace` green.
+
+### NEXT — Phase C (needs the user for final verification)
+iOS `LiveSyncSocket` (`app/Tesela-iOS/Sources/Sync/SyncState.swift`): dispatch on frame type (.string→existing JSON path; .data→decode Loro delta + apply via Phase B FFI `applyDeltaFrame` + refresh affected note, NOT full re-fetch); on local write produce via `produceNoteDelta` + `send(.data)`; point socket at Mac Tailscale `ws://100.112.34.59:7474/ws`; relay ticker stays idle/bypassed. **Acceptance = live device round-trip on Roshar** (sim shares Mac network, hides reachability — `feedback_ios_test_on_device`): Mac web↔Roshar edits <1s both ways, concurrent same-note edits converge no flashing. I build/install/launch + drive Mac side; the user confirms the phone screen. Then **Phase D** = bidirectional reconnect catch-up + the 2 deferred relay follow-ups + latency measurement.
+
+### Server currently running (relay bypassed)
+`TESELA_SERVER_BIND=0.0.0.0:7474 tesela-server --mosaic "<real logseq mosaic>"` — standalone local hub, `[sync.relay]` commented in mosaic config.toml (backup `config.toml.relay-bak`). NOTE: this running instance predates Phases A — needs a restart on the new binary before Phase C device testing so the `/ws` delta path is live.
+
+---
+
 ## 2026-05-30 — Graphite on the iPhone; relay 413 fixed-in-code then BYPASSED
 
 **Graphite build is installed on Roshar (iPhone 15 Pro).** Built device SDK (signed, fixed FFI), boots straight into Graphite (temp `useGraphiteShell→true` flip during build, reverted in-repo — shipping default stays AppShell). Sim + device both run the redesign.
