@@ -173,6 +173,36 @@ final class RelayTicker: ObservableObject {
     /// offline — the engine handle opens at app launch without
     /// touching the network, so the write reaches SQLite even on
     /// the first edit of a brand-new install that hasn't paired yet.
+    /// Give the engine the server's note doc as a **shared base** before
+    /// this device authors locally. With the base resident, the next
+    /// `recordNoteDiff` resolves its BlockUpserts to the server's existing
+    /// tree nodes instead of minting rival TreeIDs, so concurrent edits
+    /// converge instead of duplicating (multi-device convergence — Part D).
+    ///
+    /// Skips when the doc is already resident (`noteVersion(slug:)`
+    /// non-nil), so an already-bootstrapped note pays no network cost.
+    /// Best-effort: any network/non-200 failure returns silently — the
+    /// device keeps working without the base (graceful degradation), and a
+    /// later edit retries. The fetch+import is CRDT-safe under R3/R4: the
+    /// import is idempotent and merges commutatively, so a bootstrap that
+    /// races a concurrent edit or imports a snapshot captured mid-edit
+    /// never loses data.
+    func bootstrapNoteIfNeeded(slug: String) async {
+        guard let engine else { return }
+        // Already resident → nothing to bootstrap.
+        if await engine.noteVersion(slug: slug) != nil { return }
+        guard let mosaic else { return }
+        do {
+            guard let bytes = try await mosaic.fetchLoroSnapshot(slug: slug) else {
+                return  // server has no doc for this slug yet (404)
+            }
+            try await engine.importNoteSnapshot(slug: slug, bytes: bytes)
+        } catch {
+            // Graceful degradation: keep working without the base.
+            return
+        }
+    }
+
     func recordAndPush(slug: String, title: String, content: String, createdAtMillis: Int64) async {
         // Ensure the engine is open. This is purely local (SQLite +
         // sandbox path), so it succeeds even when the relay/Mac is
@@ -189,6 +219,11 @@ final class RelayTicker: ObservableObject {
             // above; this is the can't-happen-but-be-safe branch.
             return
         }
+        // Part D: pull the server's doc as a shared base before the first
+        // local edit so this note's BlockUpserts resolve to the server's
+        // existing tree nodes (no rival TreeIDs / duplicate bullets). No-op
+        // once the doc is resident; best-effort otherwise.
+        await bootstrapNoteIfNeeded(slug: slug)
         do {
             // Phase 2 (sync redesign 2026-05-26): use the block-granular
             // diff path instead of `recordNoteUpsertBySlug`. The engine

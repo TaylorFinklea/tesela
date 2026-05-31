@@ -608,6 +608,28 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return try await httpGet("/sync/peer/pairing-code", baseURL: baseURL)
     }
 
+    /// Fetch the server's full Loro snapshot for a note (raw bytes), so a
+    /// fresh device can import it as a shared base before authoring
+    /// locally (multi-device convergence — Part D). Returns `nil` when the
+    /// server has no resident doc for the slug (404), so the caller treats
+    /// a missing base as "nothing to bootstrap" rather than an error.
+    func fetchLoroSnapshot(slug: String) async throws -> Data? {
+        guard case .http(let baseURL) = currentBackend else {
+            throw URLError(.badURL)
+        }
+        let req = {
+            var r = URLRequest(url: endpoint("/loro/notes/\(slug)/snapshot", baseURL: baseURL))
+            r.timeoutInterval = 8
+            return r
+        }()
+        let (data, response) = try await session.data(for: req)
+        if let http = response as? HTTPURLResponse, http.statusCode == 404 {
+            return nil
+        }
+        try ensureOk(response, data: data)
+        return data
+    }
+
     // MARK: - Voice transcription
 
     /// Upload a WAV file to the server's /transcription/transcribe
