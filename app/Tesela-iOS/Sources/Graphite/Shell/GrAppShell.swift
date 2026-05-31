@@ -61,14 +61,23 @@ struct GrAppShell: View {
                 relayTicker.connect(mosaic: mosaic)
                 do { try await relayTicker.openEngineIfNeeded() }
                 catch { /* surfaced via relayTicker.lastError */ }
-                mosaic.onLocalWrite = { [weak relayTicker] slug, title, content, createdAt in
-                    Task { @MainActor [weak relayTicker] in
+                mosaic.onLocalWrite = { [weak relayTicker, weak liveSync] slug, title, content, createdAt in
+                    Task { @MainActor [weak relayTicker, weak liveSync] in
+                        // 1) Record the edit into the engine + push to the
+                        //    relay (the fallback delivery path).
                         await relayTicker?.recordAndPush(
                             slug: slug,
                             title: title,
                             content: content,
                             createdAtMillis: createdAt
                         )
+                        // 2) Produce the cursor-free delta from the
+                        //    now-recorded engine state and send it over the
+                        //    live WS for sub-second delivery (Phase C). This
+                        //    runs alongside the relay push, not instead of it.
+                        if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
+                            liveSync?.sendDelta(frame)
+                        }
                     }
                 }
                 relayTicker.onAppliedChanges = { [weak mosaic, weak backend] in
@@ -83,6 +92,12 @@ struct GrAppShell: View {
                 // applyRemoteChange() so it defers while editing.
                 liveSync.onNoteChange = { [mosaic] in
                     Task { await mosaic.applyRemoteChange() }
+                }
+                // Binary frames = inbound Loro deltas. Apply through the
+                // RelayTicker (sole engine owner) for sub-second remote
+                // edits (Phase C).
+                liveSync.onBinaryDelta = { [weak relayTicker] frame in
+                    Task { await relayTicker?.applyInboundDelta(frame) }
                 }
                 if case .http = backend.backend {
                     liveSync.connect(serverURL: backend.serverURL)

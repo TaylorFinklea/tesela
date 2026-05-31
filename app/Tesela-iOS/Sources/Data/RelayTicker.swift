@@ -205,6 +205,62 @@ final class RelayTicker: ObservableObject {
         }
     }
 
+    /// Apply a TLR2-framed Loro delta that arrived over the live WS
+    /// (instant-multidevice spec, Phase C). Mediates the engine the
+    /// `LiveSyncSocket` deliberately does not own: ensure the engine is
+    /// open, apply the frame (commutative + idempotent — a delta the
+    /// engine already has is a harmless no-op), and on ≥1 applied
+    /// update reuse the same inbound-refresh seam the relay tick uses
+    /// (`onAppliedChanges`) so the affected note's view freshens. The
+    /// delta is NOT re-broadcast — the server owns fan-out; the phone
+    /// only applies what it receives. Returns whether ≥1 update applied.
+    @discardableResult
+    func applyInboundDelta(_ frame: Data) async -> Bool {
+        do {
+            try await openEngineIfNeeded()
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+        guard let engine else { return false }
+        let applied: UInt32
+        do {
+            applied = try await engine.applyDeltaFrame(frame: frame)
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+        guard applied > 0 else { return false }
+        // Same refresh path the relay inbound tick uses — keeps the UI
+        // update logic in one place.
+        onAppliedChanges?()
+        return true
+    }
+
+    /// Produce the live (cursor-free) TLR2 delta frame for a just-edited
+    /// note so the host can push it over the WS (instant-multidevice
+    /// spec, Phase C). Reads the engine state AS-IS — it does NOT record
+    /// the edit; the caller must have already recorded it (via
+    /// `recordAndPush`) so the engine holds the change before this exports
+    /// it. `since_vv = nil` exports the full-state snapshot (bidirectional
+    /// VV catch-up is Phase D). Returns `nil` when the doc isn't resident
+    /// (nothing to send) or the engine can't open.
+    func produceDeltaFrame(slug: String) async -> Data? {
+        do {
+            try await openEngineIfNeeded()
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+        guard let engine else { return nil }
+        do {
+            return try await engine.produceNoteDelta(slug: slug, sinceVv: nil)
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
     func start() {
         guard loopTask == nil else { return }
         isRunning = true

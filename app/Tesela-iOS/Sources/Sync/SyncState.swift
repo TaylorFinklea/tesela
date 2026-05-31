@@ -38,6 +38,15 @@ final class LiveSyncSocket: ObservableObject {
     /// or deleted on the server (by any client, including this one).
     var onNoteChange: (() -> Void)?
 
+    /// Invoked on the main actor whenever the socket receives a binary
+    /// Loro delta frame (instant-multidevice spec §4: text = JSON
+    /// `WsEvent`, binary = TLR2 Loro delta). The shell wires this to
+    /// `RelayTicker.applyInboundDelta(_:)` — the ONLY owner of the Loro
+    /// engine — so the bytes are applied via the engine `LiveSyncSocket`
+    /// deliberately does not hold. The frame is NOT re-broadcast from
+    /// here; the server handles fan-out.
+    var onBinaryDelta: ((Data) -> Void)?
+
     private let session = URLSession(configuration: .default)
     private var task: URLSessionWebSocketTask?
     private var currentURL: URL?
@@ -121,14 +130,21 @@ final class LiveSyncSocket: ObservableObject {
     }
 
     private func handle(_ message: URLSessionWebSocketTask.Message) {
-        let text: String?
         switch message {
-        case .string(let s): text = s
-        case .data(let d):   text = String(data: d, encoding: .utf8)
-        @unknown default:    text = nil
+        case .data(let d):
+            // Binary frame = TLR2 Loro delta (instant-multidevice spec
+            // §4). Hand the raw bytes to the engine owner via the
+            // callback; do NOT attempt to UTF-8/JSON-decode them.
+            onBinaryDelta?(d)
+        case .string(let s):
+            handleTextFrame(s)
+        @unknown default:
+            break
         }
-        guard let text,
-              let data = text.data(using: .utf8),
+    }
+
+    private func handleTextFrame(_ text: String) {
+        guard let data = text.data(using: .utf8),
               let envelope = try? JSONDecoder().decode(WSEnvelope.self, from: data)
         else { return }
         switch envelope.event {
@@ -136,6 +152,20 @@ final class LiveSyncSocket: ObservableObject {
             onNoteChange?()
         default:
             break  // deadline / scheduled notifications — not handled here
+        }
+    }
+
+    /// Push a TLR2-framed Loro delta to the hub as a binary WS frame.
+    /// No-op when the socket isn't connected — the relay tick remains
+    /// the fallback delivery path, and a reconnect catch-up (Phase D)
+    /// will reconcile anything dropped here. The bytes are produced by
+    /// the engine owner (`RelayTicker.produceDeltaFrame(slug:)`); this
+    /// type never touches the engine.
+    func sendDelta(_ frame: Data) {
+        guard connected, let task else { return }
+        task.send(.data(frame)) { _ in
+            // Best-effort: a send failure surfaces as the next receive
+            // failure, which drives the existing reconnect/backoff path.
         }
     }
 

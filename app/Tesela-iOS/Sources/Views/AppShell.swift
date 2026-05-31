@@ -59,14 +59,24 @@ struct AppShell: View {
                         // LAN both succeed (HTTP first); on cellular
                         // when Mac is unreachable the engine path is
                         // the only one that gets there.
-                        mosaic.onLocalWrite = { [weak relayTicker] slug, title, content, createdAt in
-                            Task { @MainActor [weak relayTicker] in
+                        mosaic.onLocalWrite = { [weak relayTicker, weak liveSync] slug, title, content, createdAt in
+                            Task { @MainActor [weak relayTicker, weak liveSync] in
+                                // 1) Record into the engine + relay push
+                                //    (the fallback delivery path).
                                 await relayTicker?.recordAndPush(
                                     slug: slug,
                                     title: title,
                                     content: content,
                                     createdAtMillis: createdAt
                                 )
+                                // 2) Produce the cursor-free delta from the
+                                //    now-recorded engine state and push it
+                                //    over the live WS for sub-second
+                                //    delivery (Phase C) — alongside the
+                                //    relay push, not instead of it.
+                                if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
+                                    liveSync?.sendDelta(frame)
+                                }
                             }
                         }
                         // When the ticker applies new inbound ops,
@@ -147,6 +157,12 @@ struct AppShell: View {
             // socket itself is repointed per-mosaic below.
             liveSync.onNoteChange = { [mosaic] in
                 Task { await mosaic.applyRemoteChange() }
+            }
+            // Binary frames = inbound Loro deltas. Apply through the
+            // RelayTicker (sole engine owner) for sub-second remote
+            // edits (Phase C).
+            liveSync.onBinaryDelta = { [weak relayTicker] frame in
+                Task { await relayTicker?.applyInboundDelta(frame) }
             }
         }
         if let active = mosaicRegistry.activeProfile {
