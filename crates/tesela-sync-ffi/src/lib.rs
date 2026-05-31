@@ -539,6 +539,27 @@ impl SyncEngineHandle {
     pub async fn note_version(&self, slug: String) -> Option<Vec<u8>> {
         self.inner.doc_version(stable_uuid_from_slug(&slug)).await
     }
+
+    /// Import the server's full Loro snapshot for a note as a **shared
+    /// base**, before this device authors locally. With the base resident,
+    /// a later `recordNoteDiff` BlockUpsert resolves to the server's
+    /// existing tree nodes instead of minting rival TreeIDs, so concurrent
+    /// edits converge instead of duplicating (multi-device convergence —
+    /// Part D). Computes the note id with the same `stable_uuid_from_slug`
+    /// blake3-truncation the rest of this bridge uses; the engine import is
+    /// commutative + idempotent, so a re-import or a snapshot captured
+    /// mid-edit is safe (no data loss).
+    pub async fn import_note_snapshot(
+        &self,
+        slug: String,
+        bytes: Vec<u8>,
+    ) -> Result<(), FfiSyncError> {
+        let note_id = stable_uuid_from_slug(&slug);
+        self.inner
+            .import_doc_update(note_id, &bytes)
+            .await
+            .map_err(FfiSyncError::from)
+    }
 }
 
 // ============================================================================

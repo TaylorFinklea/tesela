@@ -1171,6 +1171,19 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func deviceHex()  -> String
     
     /**
+     * Import the server's full Loro snapshot for a note as a **shared
+     * base**, before this device authors locally. With the base resident,
+     * a later `recordNoteDiff` BlockUpsert resolves to the server's
+     * existing tree nodes instead of minting rival TreeIDs, so concurrent
+     * edits converge instead of duplicating (multi-device convergence —
+     * Part D). Computes the note id with the same `stable_uuid_from_slug`
+     * blake3-truncation the rest of this bridge uses; the engine import is
+     * commutative + idempotent, so a re-import or a snapshot captured
+     * mid-edit is safe (no data loss).
+     */
+    func importNoteSnapshot(slug: String, bytes: Data) async throws 
+    
+    /**
      * Encoded version vector of a note's current Loro doc, for the
      * reconnect/catch-up handshake: a peer hands this to the other side's
      * [`Self::produce_note_delta`] (`since_vv`) so the response carries only
@@ -1402,6 +1415,34 @@ open func deviceHex() -> String  {
             self.uniffiCloneHandle(),$0
     )
 })
+}
+    
+    /**
+     * Import the server's full Loro snapshot for a note as a **shared
+     * base**, before this device authors locally. With the base resident,
+     * a later `recordNoteDiff` BlockUpsert resolves to the server's
+     * existing tree nodes instead of minting rival TreeIDs, so concurrent
+     * edits converge instead of duplicating (multi-device convergence —
+     * Part D). Computes the note id with the same `stable_uuid_from_slug`
+     * blake3-truncation the rest of this bridge uses; the engine import is
+     * commutative + idempotent, so a re-import or a snapshot captured
+     * mid-edit is safe (no data loss).
+     */
+open func importNoteSnapshot(slug: String, bytes: Data)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_import_note_snapshot(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug),FfiConverterData.lower(bytes)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_void,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
 }
     
     /**
@@ -2430,6 +2471,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_device_hex() != 4479) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_import_note_snapshot() != 42561) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_note_version() != 24306) {
