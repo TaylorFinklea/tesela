@@ -548,10 +548,54 @@
     return id.includes(":new-") || id.includes(":paste-");
   }
 
+  /** True when the editor holds local structural edits the server hasn't
+   *  confirmed yet: any `:new-` / `:paste-` block is present in `blocks` but
+   *  not in any server-canonical body until its PUT round-trips back as a WS
+   *  broadcast (the echo carries the same block re-serialised with a
+   *  canonical `<noteId>:<line>` id, so the local-only id is gone).
+   *
+   *  This is the dirty signal the body-sync reseed must respect — unlike the
+   *  per-focused-block guard in `applyExternalReparse`, it holds even after
+   *  the user moves focus OFF a freshly-added bullet onto an existing block.
+   *  That focus-moved case is exactly how the daily LIST query (the broad,
+   *  un-suppressed refresh) reseeds `body` and drops not-yet-saved new
+   *  bullets — mirrors the iOS `pendingRemoteRefresh`/`isEditingBlock` defer.
+   *
+   *  Self-clearing (no "dirty forever" deadlock): the only thing that mints
+   *  local-only ids is the user adding blocks; the user's own debounced save
+   *  PUTs them, and the server's echo (byte-identical to `lastSentBody`)
+   *  reaches `applyExternalReparse` via the `targetBody === lastSentBody`
+   *  fast-path that bypasses this guard entirely, so the held state resolves
+   *  the moment our save round-trips. */
+  function hasUnsavedLocalEdits(): boolean {
+    return blocks.some((b) => isLocalOnlyId(b.id));
+  }
+
   /** Apply an external body reparse. Extracted from the $effect below
    *  so the deferred-flush timer can call it without re-triggering
    *  the effect with stale dependencies. */
   function applyExternalReparse(targetBody: string) {
+    // **Dirty guard.** Hold any remote reseed while the editor has unsaved
+    // local structural edits (new bullets not yet round-tripped, or a save
+    // still in flight). Re-arm the deferred timer so the held body is RE-
+    // TRIED once the editor goes clean — never dropped on the floor. Without
+    // this, a daily LIST-query refetch (the broad refresh, which is NOT
+    // own-echo-suppressed) reseeds `body` with the pre-edit server view and
+    // clobbers brand-new bullets the user just added, even after they've
+    // moved focus off the new block. The genuine-remote-update path is
+    // preserved: when the editor is clean this is a no-op and the reseed
+    // applies immediately.
+    if (targetBody !== lastSentBody && hasUnsavedLocalEdits()) {
+      deferredReparseBody = targetBody;
+      if (deferredReparseTimer) clearTimeout(deferredReparseTimer);
+      deferredReparseTimer = setTimeout(() => {
+        deferredReparseTimer = null;
+        const pending = deferredReparseBody;
+        deferredReparseBody = null;
+        if (pending !== null) applyExternalReparse(pending);
+      }, 400);
+      return;
+    }
     lastExternalBody = targetBody;
     if (targetBody === lastSentBody) return;
     const reparsed = parseBlocksSeeded(noteId, targetBody);
