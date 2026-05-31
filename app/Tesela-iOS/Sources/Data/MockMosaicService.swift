@@ -1094,8 +1094,30 @@ final class MockMosaicService: ObservableObject, MosaicService {
     private var suppressRemoteUntil: Date?
     private var suppressionFlush: Task<Void, Never>?
 
+    /// Debounce handle for the inbound-refresh coalescing window. Each
+    /// inbound WS event (`WsEvent::NoteUpdated` text + binary delta)
+    /// calls `applyRemoteChange()`; a burst of web edits would otherwise
+    /// fire one full-note HTTP `refresh()` + `refreshLoadedPages()` PER
+    /// event, backing the main actor up until the UI freezes and the
+    /// refreshes never visibly land. Instead each call cancels the prior
+    /// pending refresh and schedules a fresh one ~300 ms out, so a burst
+    /// of N events collapses to O(1) refresh when the burst settles
+    /// (delivery-layer redesign 2026-05-31, T4).
+    private var remoteRefreshDebounce: Task<Void, Never>?
+    /// Coalescing window for the debounce above. Long enough to absorb a
+    /// rapid burst of web edits, short enough that a single edit still
+    /// shows on the device in well under a second.
+    private static let remoteRefreshDebounceNanos: UInt64 = 300_000_000
+
     /// React to a server-side note change announced over the live-sync
-    /// WebSocket: re-fetch the daily, the page list, and any open page.
+    /// WebSocket. Coalesces a burst of inbound events into a single
+    /// debounced refresh (~300 ms) so N rapid web edits cause O(1-few)
+    /// full-note re-fetches instead of N — the per-event storm froze the
+    /// app and the refreshes never visibly landed (delivery-layer
+    /// redesign 2026-05-31, T4). The existing edit-suppression guards
+    /// still apply: an event that arrives mid-edit or inside the
+    /// post-local-write window is deferred (`pendingRemoteRefresh`) and
+    /// flushed when the guard clears, never refreshing over a live edit.
     func applyRemoteChange() async {
         guard case .http = currentBackend else { return }
         if isEditingBlock {
@@ -1108,8 +1130,42 @@ final class MockMosaicService: ObservableObject, MosaicService {
             return
         }
         pendingRemoteRefresh = false
-        await refresh(from: currentBackend)
-        await refreshLoadedPages()
+        scheduleRemoteRefresh()
+    }
+
+    /// Cancel any pending debounced refresh and schedule a fresh one
+    /// ~300 ms out. The actual `refresh(from:)` + `refreshLoadedPages()`
+    /// runs once, when the inbound burst settles. Re-checks the
+    /// edit/suppression guards at fire time: an edit (or a fresh
+    /// post-local-write window) that began during the debounce window
+    /// re-defers the refresh via `pendingRemoteRefresh` instead of
+    /// clobbering the in-progress edit. `@MainActor` throughout — the
+    /// scheduled `Task` inherits the service's main-actor isolation, so
+    /// the mutations stay race-free.
+    private func scheduleRemoteRefresh() {
+        remoteRefreshDebounce?.cancel()
+        remoteRefreshDebounce = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.remoteRefreshDebounceNanos)
+            guard let self, !Task.isCancelled else { return }
+            self.remoteRefreshDebounce = nil
+            // Re-check the guards: an edit may have started, or a local
+            // write may have opened a new suppression window, while we
+            // were debouncing. Defer rather than refresh over the edit.
+            if self.isEditingBlock {
+                self.pendingRemoteRefresh = true
+                return
+            }
+            if let until = self.suppressRemoteUntil, until > Date() {
+                self.pendingRemoteRefresh = true
+                self.scheduleSuppressionFlush(at: until)
+                return
+            }
+            // Single coalesced pass for the whole settled burst: the
+            // daily (+ page list) plus every open page, folded into one
+            // refresh rather than one per inbound event.
+            await self.refresh(from: self.currentBackend)
+            await self.refreshLoadedPages()
+        }
     }
 
     /// Open a 2s window during which remote refreshes are deferred —
