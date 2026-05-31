@@ -80,12 +80,14 @@ struct GrAppShell: View {
                         }
                     }
                 }
-                relayTicker.onAppliedChanges = { [weak mosaic, weak backend] in
-                    guard let mosaic, let backend else { return }
-                    Task {
-                        await mosaic.refresh(from: backend.backend)
-                        await mosaic.refreshLoadedPages()
-                    }
+                relayTicker.onAppliedChanges = { [weak mosaic] in
+                    // Route through applyRemoteChange() — NOT a direct
+                    // refresh() — so the isEditingBlock + post-local-write
+                    // suppression guards defer the re-pull instead of
+                    // clobbering an in-progress edit. With Phase C's sub-second
+                    // WS delivery an applied delta can land mid-keystroke; the
+                    // direct refresh raced the editor. Mirrors onNoteChange.
+                    Task { await mosaic?.applyRemoteChange() }
                 }
                 // Live WS push (mirrors AppShell.activateMosaic): instant
                 // re-pull on Mac-originated note changes, routed through

@@ -87,12 +87,14 @@ struct AppShell: View {
                         // we filtered out above) — the data already
                         // lives in the local engine + sandbox; B.3.4
                         // makes the iOS UI read from there directly.
-                        relayTicker.onAppliedChanges = { [weak mosaic, weak backend] in
-                            guard let mosaic, let backend else { return }
-                            Task {
-                                await mosaic.refresh(from: backend.backend)
-                                await mosaic.refreshLoadedPages()
-                            }
+                        relayTicker.onAppliedChanges = { [weak mosaic] in
+                            // Route through applyRemoteChange() — NOT a direct
+                            // refresh() — so the isEditingBlock + post-local-
+                            // write suppression guards defer the re-pull instead
+                            // of clobbering an in-progress edit. Phase C's sub-
+                            // second WS delivery can land an applied delta mid-
+                            // keystroke; the direct refresh raced the editor.
+                            Task { await mosaic?.applyRemoteChange() }
                         }
                         relayTicker.start()
                     }
