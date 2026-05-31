@@ -404,6 +404,12 @@ impl LoroEngine {
         let doc = self.doc_for_note_mut(note_id).await;
         doc.import(bytes)
             .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
+        // A peer's snapshot can union same-bid twins minted on a disjoint
+        // history (see `dedup_twins_by_block_id`). Tombstone the strays now —
+        // before deriving the index/markdown from the tree — so the persisted
+        // doc carries exactly one node per bid and later block-diff saves
+        // can't update a ghost. Idempotent: a re-import finds nothing to drop.
+        tombstone_duplicate_twins(&doc, note_id);
         self.refresh_note_derived(note_id, &doc).await;
         if let Some(dir) = self.inner.snapshot_dir.as_ref() {
             self.save_snapshot(dir, note_id).await;
@@ -1234,10 +1240,18 @@ fn note_tree_from_doc(
 ) -> tesela_core::note_tree::NoteTree {
     let tree = doc.get_tree("blocks");
     let mut blocks: Vec<tesela_core::note_tree::FlatBlock> = Vec::new();
-    for node in tree.children(TreeParentId::Root).unwrap_or_default() {
-        if matches!(tree.is_node_deleted(&node), Ok(true)) {
-            continue;
-        }
+    // Live root children in walk order, mirroring the `is_node_deleted`
+    // filtering used elsewhere, then collapse any duplicate-bid twins to a
+    // single canonical node (Loro unions same-bid nodes minted on disjoint
+    // histories — see `dedup_twins_by_block_id`). Render-side heal so an
+    // already-corrupted on-disk doc shows each block exactly once.
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+        .collect();
+    for node in dedup_twins_by_block_id(&tree, live) {
         if let Some(fb) = flatblock_from_node(&tree, node) {
             // NOTE: blank (empty) bullets are KEPT. They are the editing
             // surface — the web outliner relies on a trailing empty bullet
@@ -1457,6 +1471,103 @@ fn find_node_by_block_id(tree: &LoroTree, target_hex: &str) -> Option<TreeID> {
         }
     }
     None
+}
+
+/// Collapse duplicate-`block_id` twins to a single canonical node, returning
+/// the survivors in their original `nodes` walk order.
+///
+/// **Why this exists (the bug):** Loro tree node identity is the internal
+/// `TreeID` (peer + counter), NOT the `block_id` meta. When two engines that
+/// never shared a Loro base both author the same bid (e.g. the Mac server
+/// seeds a note from disk while iOS re-authors blocks from its own markdown),
+/// each mints a DIFFERENT `TreeID` for that bid. On merge Loro UNIONS the
+/// nodes, so two live nodes carry the same `block_id` meta → the renderer
+/// emits the block twice and block-diff saves update only one twin (leaving a
+/// stale ghost = "my web edit reverted on refresh"). This dedups them.
+///
+/// **Tie-break rule — lexicographically-min `TreeID` (lower `peer`, then lower
+/// `counter`).** loro 1.12's `TreeID` exposes public `peer: u64` / `counter:
+/// i32` fields and derives `Ord` over `(peer, counter)`, so this is a stable,
+/// process-restart-independent comparator. We deliberately do NOT use a
+/// "most-recently-edited" rule: the `text` meta is a plain LWW map-register
+/// (`meta.insert("text", ...)`), and loro 1.12's `LoroMap` only exposes
+/// `get_last_editor(key) -> PeerID` — the *peer* that last wrote a key, not a
+/// comparable per-update lamport/timestamp. `LoroTree::get_last_move_id`
+/// reflects the last STRUCTURAL (create/move) op, not text-meta updates, so it
+/// can't order twins by text recency either. With no reliable cross-peer
+/// recency signal available, min-`TreeID` is the deterministic choice. It is
+/// NOT recency-aware: in a disjoint merge it may keep a stale twin's text — so
+/// the *true* convergence fix is giving the device the server's doc as a shared
+/// base before it authors (then both sides resolve to the same `TreeID`). This
+/// helper only guarantees no duplicate render + a deterministic survivor.
+fn dedup_twins_by_block_id(tree: &LoroTree, nodes: Vec<TreeID>) -> Vec<TreeID> {
+    // First pass: for each block_id, find the canonical (min-TreeID) survivor.
+    let mut canonical: HashMap<String, TreeID> = HashMap::new();
+    for node in &nodes {
+        if let Some(hex) = read_meta_str(tree, *node, "block_id") {
+            canonical
+                .entry(hex)
+                .and_modify(|kept| {
+                    if node < kept {
+                        *kept = *node;
+                    }
+                })
+                .or_insert(*node);
+        }
+    }
+    // Second pass: keep nodes in original walk order, emitting each block_id's
+    // canonical survivor exactly once. Nodes with no block_id meta are kept
+    // (they can't be twins by bid; preserve existing behavior).
+    let mut out = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        match read_meta_str(tree, node, "block_id") {
+            Some(hex) => {
+                if canonical.get(&hex) == Some(&node) {
+                    out.push(node);
+                }
+            }
+            None => out.push(node),
+        }
+    }
+    out
+}
+
+/// Permanently tombstone every non-canonical duplicate-`block_id` twin in a
+/// doc's `blocks` tree, committing if anything was deleted. This is the
+/// persistent counterpart to the render-side heal in `note_tree_from_doc`:
+/// after a peer's snapshot is imported (which unions same-bid twins), it
+/// removes the strays from the doc itself so later block-diff saves can't
+/// resurrect or update a ghost.
+///
+/// Uses the same min-`TreeID` survivor rule as `dedup_twins_by_block_id`, so
+/// the survivor a render shows is the one that stays in the doc. Idempotent:
+/// after one pass each bid has exactly one live node, so a re-import (which
+/// merges identical state) finds nothing to delete and returns `false`
+/// without committing. `note_id` is accepted for log/parity with the other
+/// per-note helpers (the doc is already addressed).
+fn tombstone_duplicate_twins(doc: &LoroDoc, _note_id: [u8; 16]) -> bool {
+    let tree = doc.get_tree("blocks");
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+        .collect();
+    let kept = dedup_twins_by_block_id(&tree, live.clone());
+    let mut deleted_any = false;
+    for node in live {
+        if !kept.contains(&node) {
+            // Already-deleted nodes were filtered out above, so this only
+            // hits live non-canonical twins; delete is safe (no double-free).
+            if tree.delete(node).is_ok() {
+                deleted_any = true;
+            }
+        }
+    }
+    if deleted_any {
+        doc.commit();
+    }
+    deleted_any
 }
 
 #[async_trait]
