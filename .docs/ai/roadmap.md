@@ -5,6 +5,9 @@
 Active items. Trim as completed.
 
 ### Now
+**ACTIVE: instant multi-device sync (Mac-hub WS over Tailscale) — #140.** Spec `phases/2026-05-30-instant-multidevice-spec.md`. Phases 0/A/B/C landed (engine trait + server bidirectional binary-delta /ws + iOS FFI + iOS client). 
+> **2026-05-31 — multi-device REVERT bug root-caused + FULLY FIXED.** Web edits vanished with 2 iOS devices open. Cause: disjoint Loro histories (iOS re-authored notes from markdown → different `TreeID`s per bid → Loro unioned twins → stale ghost). Fix (spec `phases/2026-05-31-multidevice-converge-spec.md`, built subagent-driven, repro red→green): [x] E1 deterministic dedup-by-bid heal (`5b05306`,`d1d7b49`), [x] E2 `hubMode` relay-gate + B WS cap (`cc48174`,`09cbb63`), [x] D shared-base bootstrap (`b3b5eef`,`979b2ff`,`2f1b729`,`f381e14`). Server rebuilt+restarted on the fix; Roshar reinstalled clean. **[ ] USER: live device round-trip** (connect iPad Sel → clean install; web↔phone↔pad converge, no revert). [ ] #150 follow-up: iOS snapshot→delta.
+
 **Sync architecture migration to Loro (committed 2026-05-27).** Multi-user (Savanne + Taylor) collaboration is now in scope, which means concurrent edits in a single mosaic stop being the rare pathological case and become the everyday case. The hand-rolled CRDT can't handle this; Loro is the system designed for it. See [decisions.md](decisions.md#2026-05-27) for the full reasoning.
 
 **THE PLAN: [`phases/2026-05-28-loro-cutover-spec.md`](phases/2026-05-28-loro-cutover-spec.md)** — hard cutover to a Loro-authoritative engine, then delete the hand-rolled oplog. Doc model = **hybrid per-note docs + index doc** (NOT single mega-doc — would OOM iOS at scale; see [decisions.md](decisions.md) 2026-05-28). v1 = **full parity** before flip. Goal: kill the convergence "flashing" (LWW ping-pong observed live on Roshar 2026-05-28) that the hand-rolled engine can't fix.

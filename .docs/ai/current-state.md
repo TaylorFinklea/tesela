@@ -1,5 +1,30 @@
 # Current State
 
+## 2026-05-31 — Multi-device web-edit REVERT root-caused + FULLY FIXED (code+server+Roshar live; user device test pending)
+
+**Symptom (user):** with iPhone (Roshar) + iPad (Sel) both open, web edits stopped persisting — refresh "cleared them away". Worked a while, then broke.
+
+**Root cause (CONFIRMED by deterministic repro):** Loro tree node identity is the internal `TreeID` (peer+counter), NOT our `block_id`/bid. The Mac seeds note docs from disk; iOS `recordNoteDiff` re-authors blocks from its OWN markdown into a doc that **never imported the server's doc as a base** → `BlockUpsert` mints a NEW TreeID per bid under the iOS peer → same bid = two TreeIDs. iOS shipped a full snapshot every keystroke; server imported it and Loro **unioned** the twins. `note_tree_from_doc` rendered both (no dedup); the next web block-diff save updated only ONE twin (FxHashMap scan order = nondeterministic), leaving a stale ghost = "revert". Self-heal quirk: a title/frontmatter edit takes the NoteUpsert reseed path → "works for a while". The disabled-on-Mac relay didn't help because the DEVICES (cached pairing code, shared engine handle) were the injection vector.
+
+**Fix (user chose FULL — heal + converge). Spec: `phases/2026-05-31-multidevice-converge-spec.md`.** Built subagent-driven, two-stage review each, repro test red→green.
+- **E1 dedup-by-bid** (`5b05306`,`d1d7b49`): `dedup_twins_by_block_id` (deterministic **min-TreeID** — loro 1.12 exposes no per-text recency, so it's a LOSSY heal, NOT recency-aware) wired into `note_tree_from_doc` (render) + `tombstone_duplicate_twins` in `import_doc_update` (heals on-disk corruption). Repro reframed into T-heal (deterministic non-dup) + T-converge (shared-base correct text).
+- **E2 relay gate + B WS cap** (`cc48174`,`09cbb63`): `RelayTicker.hubMode` (gates `tickOnce`/`recordAndPush` coordinator, `dropCoordinator()` on set, cache NOT cleared → reversible); set in BOTH shells under `.http`. `SyncState` `task.maximumMessageSize=64 MiB` (was silently dropping >1 MiB snapshot frames).
+- **D shared-base bootstrap** (`b3b5eef`,`979b2ff`,`2f1b729`,`f381e14`): `GET /loro/notes/{id}/snapshot` (mirrors get_loro_index) → FFI `import_note_snapshot` (+regen bindings, +rebuilt device/sim `.a`) → iOS `bootstrapNoteIfNeeded(slug:)` imports the server doc **before first author** (gated on `noteVersion!=nil`, best-effort). Then `recordNoteDiff`'s BlockUpserts resolve to the EXISTING server nodes → true convergence. Reviewer verified the slug/path match makes this hold.
+- **Skipped C** (deterministic TreeID-from-bid): loro 1.12 forbids caller-chosen TreeIDs (`pub(crate)`).
+
+**Verified (code):** `cargo test -p tesela-sync` 110 green (incl. T-heal+T-converge), `-p tesela-server` 29 green (incl. `snapshot_bootstrap_converge`); `xcodebuild` (device) → BUILD SUCCEEDED.
+
+**LIVE NOW:** server REBUILT + RESTARTED on the fixed binary — `target/debug/tesela-server --mosaic "<real logseq mosaic>"` (RUST_LOG=info, log `/tmp/tesela-server-fix.log`); `/loro/notes/2026-05-31/snapshot` → 200 (26 KB). Roshar **uninstalled→reinstalled fresh (clean sandbox) + launched** on the fixed Graphite build (flag flip reverted, tree clean).
+
+**PENDING — USER device round-trip (their step; the clean-sandbox part matters):**
+- Roshar ready. **Sel (iPad) is paired-but-NOT-connected** — must be connected, then Claude builds+installs there too (clean install). Phone backend serverURL must be `http://100.112.34.59:7474` (Mac Tailscale IP), HTTP mode.
+- **CLEAN SANDBOX REQUIRED:** bootstrap SKIPS already-resident docs, so a device still holding PRE-FIX disjoint docs won't re-base them (only the lossy E1 server tombstone heals those). That's why Roshar was uninstalled first; do the same for Sel.
+- Test: edit on Mac web `/g` → Roshar <1s; edit on Roshar → web <1s; concurrent edits on web+iPad+iPhone on the SAME note → converge, **no duplicated bullets, no revert**.
+
+**Follow-ups:** #150 iOS snapshot→delta (real `sinceVv` now base is shared) + relay re-export-snapshot + latency; `flushPendingOutbound` not hub-gated (0 callers — guard if ever wired); slug not percent-encoded in iOS `endpoint()` (codebase-wide latent, slugs URL-safe by convention); `cargo install -p tesela-server` to refresh the PATH binary (currently running the debug build from `target/`).
+
+---
+
 ## 2026-05-30 (PM) — Instant multi-device sync: Phases 0/A/B landed (engine + server + FFI)
 
 **Active milestone: instant multi-device sync (Mac-hub WebSocket over Tailscale).** Approved + red-teamed spec: `phases/2026-05-30-instant-multidevice-spec.md`. Goal: Mac+phone edits appear <1s, conflict-free, relay bypassed (relay/RTC redesign stays deferred beyond this). Subagent-driven, commit per phase, two-stage review each.
