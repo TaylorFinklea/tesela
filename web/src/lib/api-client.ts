@@ -12,6 +12,7 @@ import type { QueryResult } from "$lib/types/QueryResult";
 import type { CalendarMarks } from "$lib/types/CalendarMarks";
 import type { NoteVersion } from "$lib/types/NoteVersion";
 import type { AgendaRow } from "$lib/types/AgendaRow";
+import { recordLocalSave } from "$lib/ws-refresh-coordinator";
 
 // Same-origin path; vite dev server proxies `/api/*` → tesela-server at
 // 127.0.0.1:7474. Relative URL means the LAN client (phone) hits whatever
@@ -70,10 +71,26 @@ export const api = {
     return get<Note[]>(`/notes${qs ? `?${qs}` : ""}`);
   },
   getNote: (id: string) => get<Note>(`/notes/${encodeURIComponent(id)}`),
-  updateNote: (id: string, content: string, signal?: AbortSignal) =>
-    put<Note>(`/notes/${encodeURIComponent(id)}`, { content }, signal),
-  createNote: (title: string, content: string, tags: string[] = []) =>
-    post<Note>("/notes", { title, content, tags }),
+  updateNote: (id: string, content: string, signal?: AbortSignal) => {
+    // Open the own-echo suppression window BEFORE the PUT round-trips, so the
+    // server's `note_updated` echo for this id is recognised as ours even if
+    // it races back ahead of the response. Re-record on the response in case
+    // the canonical id differs.
+    recordLocalSave(id);
+    return put<Note>(`/notes/${encodeURIComponent(id)}`, { content }, signal).then(
+      (note) => {
+        recordLocalSave(note.id);
+        return note;
+      },
+    );
+  },
+  createNote: (title: string, content: string, tags: string[] = []) => {
+    recordLocalSave(title);
+    return post<Note>("/notes", { title, content, tags }).then((note) => {
+      recordLocalSave(note.id);
+      return note;
+    });
+  },
   getDailyNote: (date?: string) => {
     const q = date ? `?date=${date}` : "";
     return get<Note>(`/notes/daily${q}`);

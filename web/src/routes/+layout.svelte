@@ -22,6 +22,11 @@
   import { onMount } from "svelte";
   import { connect, setHandlers } from "$lib/ws-client.svelte";
   import {
+    setRefreshCallback,
+    scheduleNoteRefresh,
+    flushNoteRefreshNow,
+  } from "$lib/ws-refresh-coordinator";
+  import {
     handleDeadlineApproaching,
     handleScheduledFires,
     handleRecurringRolled,
@@ -50,45 +55,67 @@
   onMount(() => {
     connect();
 
-    setHandlers({
-      onNoteCreated: () => {
+    // The coordinator owns the *timing* of WS-driven refetches (coalescing a
+    // burst into ONE pass) and own-echo suppression; this callback owns *which*
+    // queries to touch. Without coalescing, the server's per-PUT `note_updated`
+    // echo made each edit fan out into a full multi-query refetch (the daily
+    // list, the autocomplete list, every sidebar/ambient `["notes",...]` query)
+    // — N edits → N passes, none merged — and those stale list responses
+    // reseeded the actively-edited editor's body prop, clobbering the edit.
+    setRefreshCallback(({ noteIds, broad }) => {
+      if (broad) {
+        // `["notes"]` prefix-matches every mounted `["notes", {…}]` query
+        // (daily list, autocomplete list, sidebar/ambient lists). These feed
+        // *views*, not the focused editor's body, so refreshing them on the
+        // coalesced pass can't clobber an in-flight edit.
         queryClient.invalidateQueries({ queryKey: ["notes"] });
-        // A new note may carry dated/untriaged blocks that belong on
-        // the agenda or in the inbox — refresh both ambients so they
-        // pick up the new rows without a manual reload.
+        queryClient.invalidateQueries({ queryKey: ["typed-blocks"] });
         queryClient.invalidateQueries({ queryKey: ["agenda"] });
         queryClient.invalidateQueries({ queryKey: ["widget", "inbox"] });
+      }
+      // Targeted `["note", id]` refetches feed the page/editor buffer
+      // directly. Own-echo ids were already filtered out upstream
+      // (`scheduleNoteRefresh`), so this only fires for genuine remote
+      // changes to notes this client did NOT just save.
+      for (const id of noteIds) {
+        queryClient.invalidateQueries({ queryKey: ["note", id] });
+      }
+    });
+
+    setHandlers({
+      onNoteCreated: (note) => {
+        // A new note may carry dated/untriaged blocks that belong on the
+        // agenda or in the inbox — broad refresh picks them up.
+        scheduleNoteRefresh(note.id, true);
       },
       onNoteUpdated: (note) => {
-        queryClient.invalidateQueries({ queryKey: ["notes"] });
-        queryClient.invalidateQueries({ queryKey: ["note", note.id] });
-        queryClient.invalidateQueries({ queryKey: ["typed-blocks"] });
         // Any block-level change (status flip, scheduled / deadline /
-        // recurring property edit, text edit) can shift which rows
-        // belong on the agenda or in the inbox. Cheaper to invalidate
-        // unconditionally than to scan the diff.
-        queryClient.invalidateQueries({ queryKey: ["agenda"] });
-        queryClient.invalidateQueries({ queryKey: ["widget", "inbox"] });
+        // recurring property edit, text edit) can shift which rows belong on
+        // the agenda or in the inbox, so request the broad list refresh. The
+        // targeted `["note", id]` refetch is skipped for our own echo inside
+        // the coordinator so it can't race our optimistic editor update.
+        scheduleNoteRefresh(note.id, true);
       },
       onNoteDeleted: (id) => {
-        queryClient.invalidateQueries({ queryKey: ["notes"] });
-        queryClient.invalidateQueries({ queryKey: ["note", id] });
-        queryClient.invalidateQueries({ queryKey: ["agenda"] });
-        queryClient.invalidateQueries({ queryKey: ["widget", "inbox"] });
+        // A delete is never our own optimistic edit clobbering itself, but
+        // routing it through the coordinator still coalesces it with any
+        // concurrent burst. `isOwnEcho` would suppress a recently-saved id's
+        // targeted refetch, which is fine — a deleted note's `["note", id]`
+        // query is unmounted anyway; the broad refresh removes it from lists.
+        scheduleNoteRefresh(id, true);
       },
       onDeadlineApproaching: handleDeadlineApproaching,
       onScheduledFires: handleScheduledFires,
       onRecurringRolled: handleRecurringRolled,
       onReconnected: () => {
-        // After a WebSocket drop, server-side WsEvents that fired
-        // during the gap were lost. Invalidate the same query keys
-        // the per-note handlers would have to recover. Cheaper than
-        // letting the user see stale data until next manual refresh.
-        queryClient.invalidateQueries({ queryKey: ["notes"] });
+        // After a WebSocket drop, server-side WsEvents that fired during the
+        // gap were lost. Recover by forcing an immediate broad refresh (no
+        // debounce — we want missed remote changes visible at once). Also
+        // refresh every `["note", …]` query since we can't know which notes
+        // changed while the socket was down.
+        scheduleNoteRefresh(null, true);
         queryClient.invalidateQueries({ queryKey: ["note"] });
-        queryClient.invalidateQueries({ queryKey: ["typed-blocks"] });
-        queryClient.invalidateQueries({ queryKey: ["agenda"] });
-        queryClient.invalidateQueries({ queryKey: ["widget", "inbox"] });
+        flushNoteRefreshNow();
       },
     });
 
