@@ -1,6 +1,30 @@
 # Current State
 
-## 2026-05-31 — Multi-device web-edit REVERT root-caused + FULLY FIXED (code+server+Roshar live; user device test pending)
+## 2026-05-31 (PM) — First convergence fix REGRESSED the live path; delivery-layer redesign in progress
+
+**The device test FAILED.** The engine-convergence fix (below) was correct at the engine level but the LIVE DELIVERY layer regressed: iOS froze, web edits didn't show on iOS, edits reverted. Engine tests proved convergence-given-a-base but never drove the live path — my miss.
+
+**Evidence-based re-diagnosis (not theorized):**
+- **Partial WS deltas can't bootstrap a base-less device** — `crates/tesela-sync/tests/partial_delta_needs_base.rs` (PASSES): `export_doc_update(note, Some(pre_vv))` into an empty doc → renders "" (pending). The first fix bootstrapped on the WRITE path, so a receive-only device never got the base.
+- **iOS display = HTTP refresh, not the engine.** Inbound WS events only TRIGGER `applyRemoteChange()` → full-note `refresh()` + `refreshLoadedPages()`. So each inbound edit = a full-note re-fetch; a burst → refresh storm → freeze → refreshes never visibly land = "never updated".
+- **`RUST_LOG=info` made it worse** — Loro logged ~10 lines per snapshot export, making server snapshot responses ~500ms (vs 12ms at `loro=warn`). FIXED: server restarted `RUST_LOG="info,loro=warn,loro_internal=warn"`.
+- Server data ended intact (no dup bids) — revert was live LWW ping-pong + frozen UI, not disk corruption.
+
+**Corrected plan: `phases/2026-05-31-multidevice-delivery-redesign-spec.md`. SIM self-QA gate held** (user approved "fix it properly now, sim-verified").
+- [x] **T1 #151** server request logging (`TraceLayer`, `dad4cc2`).
+- [x] **T2 #152** iOS bootstrap-on-OPEN via `mosaic.onNoteOpened` (`53afae6`).
+- [x] **T4 #153** iOS refresh coalescing — 300ms debounce in `MockMosaicService.scheduleRemoteRefresh` (`29a5528`). **SIM-VERIFIED:** 5-edit burst → exactly 1 sim refresh (was a storm), responsive, web→sim works.
+- [x] **T6 #155** ⭐ **THE DOMINANT BUG was WEB-side** (`68d64f3`): web used `invalidateQueries(["notes"])` — a PREFIX match → every mounted notes query refetched per save-echo (~14/edit storm), and the stale daily-list reseeded the editor body → "web edits clear on refresh". Fix: `web/src/lib/ws-refresh-coordinator.ts` (300ms coalesce + 1.5s own-echo suppression) + `api-client` records local saves + `+layout` routes through it. **PLAYWRIGHT-VERIFIED:** 5-edit burst → 1 coalesced refetch pass (~7 reqs, was ~35-70); a typed web edit PERSISTED across a full reload, NO revert. svelte-check clean, 146 unit tests pass.
+- [ ] **T3 #150** iOS DELTAS-not-snapshots (real `sinceVv`) — DEFERRED: the iOS storm was already killed by T4 coalescing; deltas are now just a frame-size/perf nicety, not correctness.
+- [ ] **T5 #154 / device round-trip (USER)** — the dominant fixes are verified in-hand (web persist/no-revert + sim no-storm). Remaining: full multi-device (web + iPhone + iPad) concurrent test on real devices.
+
+**⚠ Roshar still runs the MORNING build** (engine fix only — NO T2/T4 coalescing). Before a valid multi-device device test, rebuild+reinstall Roshar (clean sandbox) with the T2/T4 build, and clean-install Sel (was paired-not-connected). **Web is already fixed + live** (Vite HMR'd `68d64f3`) — the user can test web editing now by reloading `localhost:5173/g`.
+
+**Current safe state:** server fixed-binary live + quiet + request-logging (`/tmp/tesela-server-fix.log`); web fix live + verified; engine fix (dedup/heal/bootstrap/relay-gate) committed. Web editing should no longer revert.
+
+---
+
+## 2026-05-31 (AM) — [SUPERSEDED claim] Multi-device REVERT engine-fix (correct at engine level; live path regressed — see PM section)
 
 **Symptom (user):** with iPhone (Roshar) + iPad (Sel) both open, web edits stopped persisting — refresh "cleared them away". Worked a while, then broke.
 
