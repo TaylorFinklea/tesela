@@ -98,6 +98,21 @@ struct GrAppShell: View {
                     // direct refresh raced the editor. Mirrors onNoteChange.
                     Task { await mosaic?.applyRemoteChange() }
                 }
+                // Bootstrap the server's note doc as a base when a note
+                // becomes visible (daily on refresh, any opened page) —
+                // so a receive-only device holds the base for live deltas
+                // and produces converging pushes, not only when it first
+                // edits (delivery-layer redesign 2026-05-31, T2).
+                // Idempotent (resident-check), so firing on every open is
+                // safe-but-cheap. Mirrors onLocalWrite/onAppliedChanges.
+                mosaic.onNoteOpened = { [weak relayTicker] slug in
+                    Task { await relayTicker?.bootstrapNoteIfNeeded(slug: slug) }
+                }
+                // The initial `mosaic.refresh(...)` above ran before
+                // `onNoteOpened` was wired, so explicitly bootstrap the
+                // currently-visible daily once now (T2). Covers a pure
+                // receive-only device that never edits or backgrounds.
+                await relayTicker.bootstrapNoteIfNeeded(slug: mosaic.todayDailySlug)
                 // Live WS push (mirrors AppShell.activateMosaic): instant
                 // re-pull on Mac-originated note changes, routed through
                 // applyRemoteChange() so it defers while editing.

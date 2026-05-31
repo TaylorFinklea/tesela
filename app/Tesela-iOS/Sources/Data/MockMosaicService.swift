@@ -136,6 +136,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Args: (slug, title, fullContent, createdAtMillis).
     var onLocalWrite: ((String, String, String, Int64) -> Void)? = nil
 
+    /// Callback fired whenever a note becomes visible/loaded (the daily
+    /// on refresh, any opened page). Wired in both shells to
+    /// `relayTicker.bootstrapNoteIfNeeded(slug:)` so a device that's only
+    /// RECEIVING imports the server's note doc as a current base — not
+    /// just when it first AUTHORS an edit (delivery-layer redesign
+    /// 2026-05-31, T2). Without this, a receive-only device never holds
+    /// the base, so partial WS deltas can't materialize (they stay
+    /// pending) and the device never produces converging pushes.
+    /// `bootstrapNoteIfNeeded` is idempotent (resident-check), so firing
+    /// on every open is safe-but-cheap. Arg: the note slug.
+    var onNoteOpened: ((String) -> Void)? = nil
+
     private let session = URLSession(configuration: .default)
     private let iso = ISO8601DateFormatter()
     private var serverDailyId: String = ""
@@ -759,6 +771,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
             loadedLinks[id] = []
             pageLoadStates[id] = .ready
         case .http(let baseURL):
+            // The page is becoming visible — import the server's note
+            // doc as a base so live deltas for it materialize and our
+            // pushes converge (T2). Idempotent; fires regardless of
+            // whether the local-first render or the HTTP freshen wins.
+            onNoteOpened?(id)
             // Local-first: if we have a materialized file, show it
             // immediately so the user sees the page right away,
             // even on a slow / down network. Then fire HTTP in the
@@ -882,6 +899,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
             resetToSeed()
             connection = .idle
         case .http(let baseURL):
+            // Today's daily is the always-visible note on launch +
+            // every refresh — import the server's doc as a base so its
+            // live deltas materialize and our pushes converge (T2).
+            // Idempotent; cheap (resident-check) once bootstrapped.
+            onNoteOpened?(dailyId(daysAgo: 0))
             // Step 1: render local immediately. Cheap (filesystem
             // walks the iOS sandbox), so we always do it before
             // touching the network. After this point the UI is
@@ -1684,6 +1706,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
         }
         connection = .failed(humanizeError(error, host: host))
     }
+
+    /// `YYYY-MM-DD` slug of today's daily — the note that's always
+    /// visible on launch. Exposed so the shells can explicitly bootstrap
+    /// its base on first connect (the initial `refresh` runs before
+    /// `onNoteOpened` is wired, so a receive-only device that never
+    /// edits or backgrounds would otherwise miss the daily bootstrap;
+    /// delivery-layer redesign 2026-05-31, T2).
+    var todayDailySlug: String { dailyId(daysAgo: 0) }
 
     /// `YYYY-MM-DD` id of the daily note `daysAgo` days before today.
     private func dailyId(daysAgo: Int) -> String {
