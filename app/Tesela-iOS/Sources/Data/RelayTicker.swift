@@ -43,6 +43,30 @@ final class RelayTicker: ObservableObject {
     /// the next `start()`.
     @Published private(set) var isRunning: Bool = false
 
+    /// Hub-mode gate (multi-device convergence spec, Part E2). When the
+    /// app is talking to a Mac server over the live `/ws` WebSocket, that
+    /// socket is the sync hub. The relay coordinator loop (driven by the
+    /// cached pairing code) shares the SAME engine handle as the WS path,
+    /// so leaving it running injects stale foreign-history ops into the
+    /// same Loro docs and mints duplicate TreeIDs. While `hubMode` is true
+    /// the relay coordinator is gated off: `tickOnce()` no-ops and
+    /// `recordAndPush` skips the coordinator build+tick (local durability
+    /// via `recordNoteDiff` is preserved; the WS push runs in the caller).
+    ///
+    /// Reversible (invariant 5): this does NOT clear the cached pairing
+    /// code, so setting `hubMode=false` rebuilds the coordinator from the
+    /// cache on the next tick with no Mac HTTP fetch. On the transition to
+    /// `true` we `dropCoordinator()` so any already-built/in-flight
+    /// coordinator is torn down (R7) — otherwise an in-flight tick could
+    /// still fire after the gate closes.
+    var hubMode: Bool = false {
+        didSet {
+            if hubMode && !oldValue {
+                dropCoordinator()
+            }
+        }
+    }
+
     // Owned FFI handles. nil until the first successful `ensure()`;
     // dropped on tick error so the next tick rebuilds. Caching keeps
     // the HTTP-to-Mac fetch (for the pairing code) to once per app
@@ -185,12 +209,19 @@ final class RelayTicker: ObservableObject {
             lastError = error.localizedDescription
             return
         }
-        // Engine durability is now guaranteed. Best-effort push: if the
-        // coordinator is ready (i.e. we've paired with the Mac at least
-        // once), drain the op to the relay immediately so the other
-        // side sees it without waiting a full tick. If pairing hasn't
-        // happened or the network is down, the regular tick loop will
-        // catch up later.
+        // Engine durability is now guaranteed. In hub mode the live `/ws`
+        // socket owns delivery (the caller pushes a delta via
+        // `produceDeltaFrame`/`sendDelta` after this returns), so the
+        // relay coordinator must NOT also drain this op — doing so would
+        // re-inject the same edit through the cached-pairing relay path
+        // into the shared engine. Return BEFORE the coordinator block;
+        // local durability above is intact (Part E2).
+        if hubMode { return }
+        // Best-effort push: if the coordinator is ready (i.e. we've paired
+        // with the Mac at least once), drain the op to the relay
+        // immediately so the other side sees it without waiting a full
+        // tick. If pairing hasn't happened or the network is down, the
+        // regular tick loop will catch up later.
         if coordinator == nil {
             try? await ensureCoordinator()
         }
@@ -296,6 +327,10 @@ final class RelayTicker: ObservableObject {
     /// Single tick: ensure coordinator → outbound → inbound. Any
     /// thrown error drops the coordinator + surfaces via `lastError`.
     private func tickOnce() async {
+        // Hub mode: the live `/ws` socket is the sync hub; the relay poll
+        // loop is gated off (Part E2). The runLoop keeps sleeping/waking;
+        // each wake is a no-op until `hubMode` flips back to false.
+        guard !hubMode else { return }
         do {
             if coordinator == nil {
                 try await ensureCoordinator()

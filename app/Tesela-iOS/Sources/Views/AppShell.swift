@@ -45,6 +45,17 @@ struct AppShell: View {
                         // is up. connect() is idempotent so re-runs
                         // (e.g. on mosaic switch) don't churn.
                         relayTicker.connect(mosaic: mosaic)
+                        // Hub mode (Part E2): when the backend is an HTTP
+                        // Mac server, the live `/ws` socket (connected in
+                        // `activateMosaic`) is the sync hub. Gate the relay
+                        // coordinator loop off so it can't inject stale
+                        // foreign-history ops into the same Loro docs the
+                        // WS path drives. Mirrors how `liveSync.connect` is
+                        // gated on `.http`. Reversible — the cached pairing
+                        // code is kept.
+                        if case .http = backend.backend {
+                            relayTicker.hubMode = true
+                        }
                         // Open the local sync engine eagerly — purely
                         // local, no network, so this succeeds even on
                         // an offline cold launch. Writes that happen

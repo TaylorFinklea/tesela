@@ -59,6 +59,15 @@ struct GrAppShell: View {
                 mosaic.attach(backend: backend.backend)
                 await mosaic.refresh(from: backend.backend)
                 relayTicker.connect(mosaic: mosaic)
+                // Hub mode (Part E2): when the backend is an HTTP Mac
+                // server, the live `/ws` socket below is the sync hub.
+                // Gate the relay coordinator loop off so it can't inject
+                // stale foreign-history ops into the same Loro docs the WS
+                // path drives. Mirrors how `liveSync.connect` is gated on
+                // `.http`. Reversible — the cached pairing code is kept.
+                if case .http = backend.backend {
+                    relayTicker.hubMode = true
+                }
                 do { try await relayTicker.openEngineIfNeeded() }
                 catch { /* surfaced via relayTicker.lastError */ }
                 mosaic.onLocalWrite = { [weak relayTicker, weak liveSync] slug, title, content, createdAt in
