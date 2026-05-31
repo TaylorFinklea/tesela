@@ -22,6 +22,8 @@ use axum::{
 };
 use serde_json::json;
 use tower_http::cors::CorsLayer;
+use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
+use tracing::Level;
 
 use crate::state::AppState;
 
@@ -157,6 +159,15 @@ pub fn build(state: AppState) -> Router {
         .layer(axum::extract::DefaultBodyLimit::max(200 * 1024 * 1024))
         .route("/ws", get(ws::ws_handler))
         .layer(CorsLayer::permissive())
+        // Request/response tracing for live sync-delivery visibility.
+        // make_span at INFO emits method+uri; on_response at INFO emits
+        // status+latency under that span — one INFO line per request at
+        // our default RUST_LOG=info.
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(DefaultOnResponse::new().level(Level::INFO)),
+        )
         .with_state(Arc::new(state))
 }
 
