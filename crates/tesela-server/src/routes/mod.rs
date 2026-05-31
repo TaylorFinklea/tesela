@@ -41,6 +41,10 @@ pub fn build(state: AppState) -> Router {
             axum::routing::delete(notes::delete_block),
         )
         .route("/loro/index", get(notes::get_loro_index))
+        .route(
+            "/loro/notes/{id}/snapshot",
+            get(notes::get_loro_snapshot),
+        )
         .route("/notes/{id}/backlinks", get(notes::get_backlinks))
         .route("/notes/{id}/links", get(notes::get_forward_links))
         .route("/notes/{id}/unlinked", get(notes::get_unlinked))

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
+    response::IntoResponse,
     Json,
 };
 use serde::Deserialize;
@@ -121,6 +122,28 @@ pub async fn get_loro_index(
         })
         .collect();
     Ok(Json(entries))
+}
+
+/// `GET /api/loro/notes/{id}/snapshot` — the full Loro snapshot for a
+/// single note's doc, as raw bytes. A fresh device imports this as a
+/// **shared base** before it authors locally, so its `BlockUpsert`s
+/// resolve to the server's existing tree nodes instead of minting rival
+/// TreeIDs (multi-device convergence — Part D). 404 when the doc isn't
+/// resident.
+pub async fn get_loro_snapshot(
+    Path(id): Path<String>,
+    State(s): State<Arc<AppState>>,
+) -> AppResult<impl IntoResponse> {
+    let note_id = stable_uuid_from_slug(&id);
+    let bytes = s
+        .sync_engine
+        .export_doc_update(note_id, None)
+        .await
+        .ok_or_else(|| AppError::NotFound(format!("Loro doc not found: {}", id)))?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+        bytes,
+    ))
 }
 
 #[derive(Deserialize)]
