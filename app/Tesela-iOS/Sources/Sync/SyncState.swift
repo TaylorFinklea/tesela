@@ -106,6 +106,10 @@ final class LiveSyncSocket: ObservableObject {
         generation += 1
         let myGeneration = generation
         let task = session.webSocketTask(with: url)
+        // Raise the WS receive cap so large inbound Loro frames (full
+        // snapshots of big notes) aren't dropped by the default 1 MiB
+        // limit (multi-device convergence spec, Part B).
+        task.maximumMessageSize = 64 * 1024 * 1024
         self.task = task
         task.resume()
         connected = true
