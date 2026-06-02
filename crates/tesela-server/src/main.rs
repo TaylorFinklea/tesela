@@ -1136,4 +1136,266 @@ mod tests {
         let rendered = server_engine_handle.render_note(note_id).await.unwrap();
         assert!(rendered.contains("live edit from A"), "server converged: {rendered:?}");
     }
+
+    /// End-to-end real-socket regression for the WS-push clobber (the final
+    /// data-loss vector, Part C / commit 6623441): a device cold-launches and
+    /// pushes a WHOLE-NOTE Loro SNAPSHOT over `/ws` carrying its STALE value
+    /// for a block another peer (the server, via an HTTP block edit) just
+    /// changed. On a RAW merge the device's stale, disjoint-lineage twin of
+    /// that block could WIN the dedup and REVERT the server's edit. Part C's
+    /// protected inbound apply (`apply_relay_updates` → `import_doc_update`)
+    /// must apply ONLY the blocks the peer GENUINELY re-authored.
+    ///
+    /// This drives the GENUINE `apply_inbound_delta` handler over a live
+    /// `tokio_tungstenite` WS client — the path the engine-level unit test
+    /// (`ws_apply_stale_snapshot_does_not_revert_peer_edit` in
+    /// `tesela_sync::engine::loro_engine`) couldn't exercise. That engine test
+    /// proved the FAILING direction (raw import reverts A without the fix);
+    /// this one proves the fix holds end-to-end through the real socket.
+    ///
+    /// Stale-op-wins reproduction (mirrors the engine test's `seed_disjoint`):
+    /// the server and the device each author blocks A/B INDEPENDENTLY (no
+    /// shared Loro import), so each mints its OWN `TreeID` for the same
+    /// `block_id` — the residual disjoint lineage the incident's daily blocks
+    /// carried. The server then HTTP-edits A → "Awesome sweet"; the device,
+    /// holding its stale A="Awesome" twin, re-asserts A AND genuinely edits
+    /// B → "Bee device", then ships a FULL SNAPSHOT (the cold-launch first
+    /// push). A raw `doc.import` would union the rival A-twins and the
+    /// non-causal dedup could keep the STALE one → revert. Protected: A stays
+    /// "Awesome sweet", B becomes "Bee device".
+    #[tokio::test]
+    async fn ws_stale_snapshot_does_not_clobber_http_edit_over_real_socket() {
+        use futures::{SinkExt, StreamExt};
+        use tesela_sync::{DeviceId, Hlc, LoroDocUpdate, LoroEngine, OpPayload, SyncEngine};
+        use tokio_tungstenite::tungstenite::Message as TMessage;
+
+        // Fixed block ids — A and B. The DISJOINT-lineage seed (below) makes
+        // each engine mint its own TreeID for these, which is the whole point.
+        const A_BID: &str = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+        const B_BID: &str = "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b";
+        const A_BID_BYTES: [u8; 16] = [0x0a; 16];
+        const B_BID_BYTES: [u8; 16] = [0x0b; 16];
+
+        // ── Build a full AppState over a tempdir (mirrors the sibling test) ──
+        let tmp = tempfile::tempdir().unwrap();
+        let mosaic = tmp.path().to_path_buf();
+        let notes_dir = mosaic.join("notes");
+        std::fs::create_dir_all(&notes_dir).unwrap();
+        std::fs::create_dir_all(mosaic.join(".tesela")).unwrap();
+
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server_engine = LoroEngine::with_dirs(
+            sdev,
+            Arc::new(Hlc::new(sdev)),
+            mosaic.join(".tesela").join("loro"),
+            Some(notes_dir.clone()),
+        )
+        .await
+        .unwrap();
+
+        // Slug "clobber" → note_id (matches notes.rs::stable_uuid_from_slug,
+        // the blake3-of-slug derivation), so the materialized file is
+        // clobber.md and the WsEvent re-read / HTTP GET resolve. (A neutral
+        // slug — "daily" collides with the special `/notes/daily` route.)
+        let note_id = {
+            let h = blake3::hash(b"clobber");
+            let mut out = [0u8; 16];
+            out.copy_from_slice(&h.as_bytes()[..16]);
+            out
+        };
+
+        // ── DISJOINT base: server AND device each author the same note body
+        // INDEPENDENTLY (no shared import) → rival TreeIDs for A/B. This is the
+        // residual disjoint lineage that lets the device's stale A-twin compete
+        // with (and, raw, revert) the server's edit. ───────────────────────
+        // Device peer id is numerically SMALLER than the server's (0x5e), so on
+        // a raw merge the min-`TreeID` twin dedup keeps the DEVICE's twin for
+        // each shared block_id — meaning the device's STALE A="Awesome" twin
+        // would WIN and REVERT the server's "Awesome sweet" (Case a, the
+        // clobber). This is exactly the stale-op-wins condition: without Part
+        // C's heal, A reverts. (Verified: with the heal disabled, A renders as
+        // the stale "Awesome".)
+        let ddev = DeviceId::from_bytes([0x11; 16]);
+        let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
+        let base_content =
+            format!("- Awesome <!-- bid:{A_BID} -->\n- Bee <!-- bid:{B_BID} -->\n");
+        for engine in [&server_engine, &device] {
+            engine
+                .record_local(OpPayload::NoteUpsert {
+                    note_id,
+                    display_alias: Some("clobber".into()),
+                    title: "Clobber".into(),
+                    content: base_content.clone(),
+                    created_at_millis: 1,
+                })
+                .await
+                .unwrap();
+        }
+
+        // ── The "web HTTP edit" on the SERVER's authoritative doc: A → "Awesome
+        // sweet" (the protected, correct value). Applied BEFORE moving the
+        // engine into AppState. ─────────────────────────────────────────────
+        server_engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "Awesome sweet".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+
+        // ── The DEVICE (stale: never saw the server edit) re-asserts its stale
+        // A="Awesome" AND genuinely edits B → "Bee device", then exports a FULL
+        // SNAPSHOT — the cold-launch first-push frame from the incident. ─────
+        device
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "Awesome".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        device
+            .record_local(OpPayload::BlockUpsert {
+                block_id: B_BID_BYTES,
+                note_id,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "Bee device".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        let snapshot = device.export_doc_update(note_id, None).await.unwrap();
+        let frame = tesela_sync::encode_loro_relay_payload(&[LoroDocUpdate {
+            doc: note_id,
+            update_bytes: snapshot,
+        }])
+        .unwrap();
+
+        // ── Assemble AppState; keep a cloned engine handle for post-apply
+        // rendering (the engine is moved into the Arc<dyn SyncEngine>). ──────
+        let store = Arc::new(FsNoteStore::new(
+            mosaic.clone(),
+            tesela_core::config::StorageConfig::default(),
+        ));
+        let index = Arc::new(
+            SqliteIndex::open(&mosaic.join(".tesela").join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let (ws_tx, _) = broadcast::channel::<WsEvent>(64);
+        let (ws_delta_tx, _) = broadcast::channel::<state::WsDelta>(64);
+        let group_identity = Arc::new(RwLock::new(tesela_sync::GroupIdentity {
+            group_id: tesela_sync::GroupId::new_random(),
+            group_key: tesela_sync::GroupKey::random(),
+        }));
+        let app_state = AppState {
+            mosaic_root: mosaic.clone(),
+            store,
+            index,
+            ws_tx,
+            ws_delta_tx,
+            ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
+            type_registry: tesela_core::types::TypeRegistry::load(&mosaic),
+            auto_sync: Arc::new(reminders::auto::AutoSync::new()),
+            sync_engine: Arc::new(server_engine) as Arc<dyn tesela_sync::SyncEngine>,
+            lan_discovery: None,
+            group_identity,
+            display_name: "test".into(),
+            public_url: "http://127.0.0.1:0".into(),
+            relay_url: None,
+            relay: None,
+        };
+        let server_engine_handle = Arc::clone(&app_state.sync_engine);
+        let router = routes::build(app_state);
+
+        // Sanity: the server's authoritative doc holds the HTTP edit BEFORE the
+        // device's stale push — proves A is genuinely at risk of reversion.
+        let pre = server_engine_handle.render_note(note_id).await.unwrap();
+        assert!(
+            pre.contains("Awesome sweet"),
+            "precondition: server holds the HTTP edit before the stale push: {pre:?}"
+        );
+
+        // ── Serve on an ephemeral port ──────────────────────────────────────
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        // ── Connect two real WS clients: `pusher` ships the stale snapshot,
+        // `watcher` awaits the NoteUpdated text frame so we know the server
+        // finished applying. ────────────────────────────────────────────────
+        let url = format!("ws://{}/ws", addr);
+        let (mut watcher, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut pusher, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // Pusher sends the device's full STALE snapshot as a binary frame.
+        pusher
+            .send(TMessage::Binary(frame.clone().into()))
+            .await
+            .unwrap();
+
+        // Wait for the server to process: the watcher receives a NoteUpdated
+        // text event once the inbound delta is applied + re-indexed.
+        let mut got_event = false;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !got_event && tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), watcher.next()).await {
+                Ok(Some(Ok(TMessage::Text(t)))) if t.contains("note_updated") => {
+                    got_event = true;
+                }
+                Ok(Some(Ok(_))) => {}
+                _ => break,
+            }
+        }
+        assert!(
+            got_event,
+            "watcher received the NoteUpdated event (server finished applying the inbound delta)"
+        );
+
+        // ── ASSERT on the server's authoritative render: the clobber is closed.
+        let rendered = server_engine_handle.render_note(note_id).await.unwrap();
+        assert!(
+            rendered.contains("Awesome sweet"),
+            "A must NOT be reverted by the device's stale snapshot (got {rendered:?})"
+        );
+        assert!(
+            !rendered.contains("- Awesome <!--"),
+            "the stale A=\"Awesome\" twin must not resurface (got {rendered:?})"
+        );
+        assert!(
+            rendered.contains("Bee device"),
+            "B (the device's genuine edit) must apply (got {rendered:?})"
+        );
+
+        // ── End-to-end HTTP coverage: the materialized note served via
+        // `GET /notes/clobber` shows the same merged state. ──────────────────
+        let body = reqwest::get(format!("http://{}/notes/clobber", addr))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            body.contains("Awesome sweet"),
+            "HTTP GET shows the protected HTTP edit: {body}"
+        );
+        assert!(
+            body.contains("Bee device"),
+            "HTTP GET shows the device's genuine B edit: {body}"
+        );
+    }
 }
