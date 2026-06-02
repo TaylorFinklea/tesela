@@ -61,6 +61,74 @@ test("own-echo window expires", async () => {
   assert.equal(isOwnEcho("never-saved"), false);
 });
 
+test("own-echo re-settle: deferred id refetches AFTER the window closes", () => {
+  const batches = setup();
+  recordLocalSave("self");
+  // Server echoes our own PUT back; a peer's concurrent edit merged into the
+  // same converged file before the echo. The targeted refetch is suppressed
+  // (mid-save), but the id is DEFERRED, not dropped.
+  scheduleNoteRefresh("self", true);
+  flushNoteRefreshNow();
+  assert.equal(batches.length, 1, "first pass: broad only");
+  assert.deepEqual(batches[0].noteIds, [], "self suppressed from the first pass");
+  assert.equal(batches[0].broad, true);
+  assert.equal(__test.hasDeferred("self"), true, "self is deferred, not dropped");
+
+  // Window closes; the trailing flush re-settles the deferred id.
+  __test.expireOwnEcho("self");
+  __test.flushDeferredNow();
+  flushNoteRefreshNow();
+  assert.equal(batches.length, 2, "a trailing pass fires after the window");
+  assert.deepEqual(batches[1].noteIds, ["self"], "self re-settled (targeted)");
+  assert.equal(batches[1].broad, false, "re-settle is targeted only, no broad");
+  assert.equal(__test.hasDeferred("self"), false, "deferred set cleared");
+});
+
+test("own-echo re-settle: no double-fire — one targeted pass only", () => {
+  const batches = setup();
+  recordLocalSave("self");
+  scheduleNoteRefresh("self", true);
+  flushNoteRefreshNow();
+  __test.expireOwnEcho("self");
+  __test.flushDeferredNow();
+  flushNoteRefreshNow();
+  // Flushing the (now-empty) deferred set again must not re-enqueue anything.
+  __test.flushDeferredNow();
+  flushNoteRefreshNow();
+  const targeted = batches.flatMap((b) => b.noteIds);
+  assert.deepEqual(targeted, ["self"], "self re-settled exactly once");
+});
+
+test("own-echo re-settle: a fresh save before flush re-defers (no clobber)", () => {
+  const batches = setup();
+  recordLocalSave("self");
+  scheduleNoteRefresh("self", true);
+  flushNoteRefreshNow();
+  // User edits again before the window closed → window extends. The deferred
+  // flush must NOT re-settle while still suppressed (would reseed mid-typing);
+  // it keeps deferring.
+  recordLocalSave("self");
+  assert.equal(isOwnEcho("self"), true);
+  __test.flushDeferredNow();
+  flushNoteRefreshNow();
+  assert.equal(
+    batches.flatMap((b) => b.noteIds).length,
+    0,
+    "no targeted refetch while still inside the (extended) window",
+  );
+  assert.equal(__test.hasDeferred("self"), true, "still deferred");
+
+  // Once the user stops and the window finally closes, it converges.
+  __test.expireOwnEcho("self");
+  __test.flushDeferredNow();
+  flushNoteRefreshNow();
+  assert.deepEqual(
+    batches.flatMap((b) => b.noteIds),
+    ["self"],
+    "converges once suppression finally lifts",
+  );
+});
+
 test("broad-only event still flushes a pass with no targeted ids", () => {
   const batches = setup();
   scheduleNoteRefresh(null, true);

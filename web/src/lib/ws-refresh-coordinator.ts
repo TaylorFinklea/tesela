@@ -25,6 +25,16 @@
  *     refetch of their own `["note", id]` query, so the optimistic
  *     `setQueryData` the editor already wrote is not clobbered by a stale
  *     refetch. List queries still refresh on the coalesced pass.
+ *  3. **Own-echo re-settle** — suppressing the targeted refetch is correct
+ *     mid-save, but an own-echo `note_updated` can ALSO carry a peer's
+ *     concurrently-merged block (the server converged both edits before
+ *     echoing). Dropping the echo outright leaves the editing client split
+ *     until it edits again. So instead of dropping it we DEFER the id and
+ *     re-enqueue its targeted `["note", id]` refetch once the own-echo
+ *     window closes (mirrors iOS `MockMosaicService.pendingRemoteRefresh` +
+ *     `scheduleSuppressionFlush`). By firing only after the window — when the
+ *     client is no longer mid-save — and only the targeted id, the re-settle
+ *     cannot reintroduce the mid-typing reseed this module exists to prevent.
  *
  * The per-note editor (`BlockOutliner`) keeps its own mid-typing clobber
  * guard (the 1200ms reparse cooldown + local-only-id protection); this module
@@ -67,6 +77,19 @@ export function isOwnEcho(noteId: string): boolean {
   return true;
 }
 
+/**
+ * Wall-clock ms at which the own-echo window for `noteId` closes, or `null`
+ * when there is no open window (never saved, or already expired). Used to
+ * schedule the deferred re-settle flush exactly when suppression lifts.
+ */
+function ownEchoExpiryAt(noteId: string): number | null {
+  const t = recentSaves.get(noteId);
+  if (t === undefined) return null;
+  const expiry = t + OWN_ECHO_WINDOW_MS;
+  if (expiry <= Date.now()) return null;
+  return expiry;
+}
+
 // ── Coalesced refetch scheduling ───────────────────────────────────────────
 
 let coalesceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -78,6 +101,16 @@ const pendingNoteIds = new Set<string>();
  *  (`["notes"]`, `["typed-blocks"]`, `["agenda"]`, `["widget","inbox"]`). */
 let pendingBroad = false;
 let flushCb: ((batch: { noteIds: string[]; broad: boolean }) => void) | null = null;
+
+/** Note ids whose targeted `["note", id]` refetch was suppressed as an
+ *  own-echo but must be re-settled once the own-echo window closes — the echo
+ *  may have carried a peer's concurrently-merged block. Analog of iOS
+ *  `pendingRemoteRefresh`. */
+const deferredNoteIds = new Set<string>();
+/** Single trailing-flush timer for the deferred set (mirrors iOS's lone
+ *  `suppressionFlush` task). Scheduled to fire just after the earliest open
+ *  own-echo window closes; re-armed if a still-suppressed id remains. */
+let deferredTimer: ReturnType<typeof setTimeout> | null = null;
 
 /**
  * Register the function that performs the actual `invalidateQueries` fan-out.
@@ -98,15 +131,80 @@ export function setRefreshCallback(
  * `broad` requests the list/ambient fan-out (always true for these events
  * today, but kept explicit for callers that only want a targeted refresh).
  *
- * Own-echo note ids are dropped from the targeted set here, but `broad` still
- * fires on the coalesced pass so lists/ambients stay fresh — they don't feed
- * the actively-edited buffer, so refreshing them can't clobber an edit.
+ * Own-echo note ids are held back from the targeted set here (so a mid-save
+ * echo can't reseed the editor over the user's in-flight body), but `broad`
+ * still fires on the coalesced pass so lists/ambients stay fresh — they don't
+ * feed the actively-edited buffer, so refreshing them can't clobber an edit.
+ * A suppressed id is DEFERRED (not dropped): the same echo may carry a peer's
+ * concurrently-merged block, so once the own-echo window closes the id is
+ * re-enqueued for its targeted refetch (see `armDeferredFlush`).
  */
 export function scheduleNoteRefresh(noteId: string | null, broad: boolean): void {
-  if (noteId && !isOwnEcho(noteId)) pendingNoteIds.add(noteId);
+  if (noteId) {
+    if (isOwnEcho(noteId)) {
+      // Defer the targeted refetch until the own-echo window closes; the echo
+      // may have merged a peer edit the editing client must eventually see.
+      deferredNoteIds.add(noteId);
+      armDeferredFlush();
+    } else {
+      pendingNoteIds.add(noteId);
+    }
+  }
   if (broad) pendingBroad = true;
   if (coalesceTimer !== null) return;
   coalesceTimer = setTimeout(flushPending, COALESCE_MS);
+}
+
+/**
+ * Ensure a single trailing flush is scheduled to re-settle deferred own-echo
+ * ids once their suppression windows close. Mirrors iOS's lone
+ * `scheduleSuppressionFlush`: at most one timer is armed at a time, set to the
+ * earliest still-open window's expiry. When it fires (`flushDeferred`) it
+ * re-checks each id — a fresh `recordLocalSave` may have extended the window,
+ * in which case that id is re-deferred and the timer re-armed for the new
+ * expiry, so the client always converges without an infinite spin (every
+ * re-arm waits out a real, finite window).
+ */
+function armDeferredFlush(): void {
+  if (deferredTimer !== null) return;
+  let earliest: number | null = null;
+  for (const id of deferredNoteIds) {
+    const expiry = ownEchoExpiryAt(id);
+    if (expiry === null) continue; // window already closed; flush picks it up
+    if (earliest === null || expiry < earliest) earliest = expiry;
+  }
+  // +1ms so the timer fires strictly AFTER the window closes (isOwnEcho false).
+  const delay = earliest === null ? 0 : Math.max(0, earliest - Date.now()) + 1;
+  deferredTimer = setTimeout(flushDeferred, delay);
+}
+
+/**
+ * Re-enqueue targeted `["note", id]` refetches for deferred ids whose own-echo
+ * window has closed. Ids still inside an (extended) window are re-deferred and
+ * a fresh timer is armed for them. Routes each ready id back through
+ * `scheduleNoteRefresh(id, false)`: that re-checks `isOwnEcho` (now false, so
+ * the id lands in the targeted set, no broad) and folds into the normal
+ * coalesced pass — no double-fire, since a still-suppressed id never reaches
+ * `pendingNoteIds`.
+ */
+function flushDeferred(): void {
+  deferredTimer = null;
+  if (deferredNoteIds.size === 0) return;
+  const ready: string[] = [];
+  const stillSuppressed: string[] = [];
+  for (const id of deferredNoteIds) {
+    if (isOwnEcho(id)) stillSuppressed.push(id);
+    else ready.push(id);
+  }
+  deferredNoteIds.clear();
+  for (const id of ready) scheduleNoteRefresh(id, false);
+  // A fresh local save extended the window for these — keep deferring them and
+  // re-arm the timer for the new (finite) expiry. Eventually the user stops
+  // saving and the window closes, so this terminates.
+  if (stillSuppressed.length > 0) {
+    for (const id of stillSuppressed) deferredNoteIds.add(id);
+    armDeferredFlush();
+  }
 }
 
 /**
@@ -139,10 +237,33 @@ export const __test = {
     recentSaves.clear();
     pendingNoteIds.clear();
     pendingBroad = false;
+    deferredNoteIds.clear();
     if (coalesceTimer !== null) {
       clearTimeout(coalesceTimer);
       coalesceTimer = null;
     }
+    if (deferredTimer !== null) {
+      clearTimeout(deferredTimer);
+      deferredTimer = null;
+    }
     flushCb = null;
+  },
+  /** Drain ready deferred ids synchronously (test-only): mirrors what the
+   *  trailing timer does, without waiting out a real timer in unit tests. */
+  flushDeferredNow() {
+    if (deferredTimer !== null) {
+      clearTimeout(deferredTimer);
+      deferredTimer = null;
+    }
+    flushDeferred();
+  },
+  hasDeferred(id: string) {
+    return deferredNoteIds.has(id);
+  },
+  /** Backdate `id`'s own-echo timestamp so its suppression window is already
+   *  closed (test-only): lets a test exercise the post-expiry re-settle
+   *  without waiting out the real 1500ms window. */
+  expireOwnEcho(id: string) {
+    recentSaves.set(id, Date.now() - OWN_ECHO_WINDOW_MS - 1);
   },
 };
