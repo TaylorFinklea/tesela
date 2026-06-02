@@ -798,9 +798,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 seconds: 3
             )
             if let note = httpResult {
-                let pick = preferLocalIfNewer(serverNote: note)
-                loadedPageBlocks[id] = parseBlocks(from: pick.body, noteId: id)
-                loadedPageFrontmatter[id] = extractFrontmatter(from: pick.content)
+                // Engine-render: prefer the engine-materialized local file
+                // (the merged Loro output) over the HTTP body for a resident
+                // page; fall back to the server body only when the engine
+                // hasn't materialized this note yet (first view). See the
+                // daily path in `refresh(from:)` for the full rationale.
+                let pageRender = readLocalNote(id: id) ?? note
+                loadedPageBlocks[id] = parseBlocks(from: pageRender.body, noteId: id)
+                loadedPageFrontmatter[id] = extractFrontmatter(from: pageRender.content)
                 inMemoryLoadedAt[id] = Date()
                 pageLoadStates[id] = .ready
             } else if pageLoadStates[id] != .ready {
@@ -932,13 +937,24 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 let serverTagNames: [String] = (try? await httpGet("/tags", baseURL: baseURL)) ?? []
 
                 serverDailyId = daily.id
-                // Per-note "use whichever is fresher" — local wins
-                // when iOS authored an edit since the server's last
-                // write, server wins otherwise.
-                let localDaily = preferLocalIfNewer(serverNote: daily)
-                todayBlocks = parseBlocks(from: localDaily.body, noteId: localDaily.id)
+                // Engine-render: the iOS engine materializes each note to
+                // <sandbox>/notes/<id>.md on every apply, so the local file
+                // IS the engine's merged output. If the engine has resident
+                // (materialized) state for today, render its body from the
+                // file — NOT the HTTP body — so block-level Loro merges win
+                // and a whole-body mtime pick never defeats them. The local
+                // file already holds any offline iOS edit (it's in the
+                // engine), so this also preserves an unshipped edit across a
+                // stale HTTP refresh without any mtime override. Only when
+                // the engine has NOT yet materialized today's note (never
+                // opened / first view) do we fall back to the server body;
+                // `onNoteOpened` above fires the catch-up so the engine takes
+                // over on the next pass. Server metadata (id, tags,
+                // serverDailyId) still comes from `daily`.
+                let dailyRender = readLocalNote(id: daily.id) ?? daily
+                todayBlocks = parseBlocks(from: dailyRender.body, noteId: daily.id)
                 todayLoadedAt = Date()
-                loadedDailyFrontmatter = extractFrontmatter(from: localDaily.content)
+                loadedDailyFrontmatter = extractFrontmatter(from: dailyRender.content)
                 pages = notes
                     .filter { $0.id != daily.id }
                     .map { mapPage($0) }
@@ -1500,8 +1516,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// is *newer* than the server's `modified_at`. That file
     /// represents an iOS-authored edit the server hasn't seen yet;
     /// stomping it here would cause exactly the offline-edit-loss bug
-    /// this whole rewrite is fixing. The mtime check is the same one
-    /// `preferLocalIfNewer` uses.
+    /// this whole rewrite is fixing. The mtime guard protects the
+    /// engine-materialized file (the merged Loro output) from being
+    /// overwritten by a staler server snapshot.
     private func snapshotNotesToSandbox(_ notes: [APINote]) async {
         // Move the file I/O off the @MainActor — writing hundreds of
         // notes synchronously on the main actor froze the UI for 9 s+
@@ -1536,38 +1553,6 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 try? note.content.write(to: path, atomically: true, encoding: .utf8)
             }
         }.value
-    }
-
-    /// If the engine-materialized local file for `serverNote.id` has a
-    /// strictly newer mtime than the server's reported `modified_at`,
-    /// return a synthesized `APINote` carrying the local file's body
-    /// instead of the server's. Otherwise return `serverNote`.
-    ///
-    /// Why this matters: when iOS edits a note while offline (or while
-    /// the Mac is unreachable on cellular), the sync engine writes the
-    /// new content to the local sandbox immediately but the outbound
-    /// relay tick may not have shipped the op yet. A subsequent HTTP
-    /// refresh then fetches the Mac's *pre-edit* view of the note and
-    /// would clobber the iOS-authored edit in memory. Comparing
-    /// mtimes catches that race: any time the local file is newer
-    /// than the server's claim, the local file represents an edit the
-    /// server hasn't yet learned about, so we keep what we have.
-    private func preferLocalIfNewer(serverNote: APINote) -> APINote {
-        guard let localMtime = localNoteMTime(id: serverNote.id) else {
-            return serverNote
-        }
-        let serverMtime = ISO8601DateFormatter().date(from: serverNote.modified_at)
-            ?? .distantPast
-        // Strict greater-than: equal mtimes mean the engine just
-        // materialized the same content (e.g. apply tick handed us
-        // the round-trip of a Mac edit). Either source has the same
-        // bytes; prefer HTTP because it carries server-side metadata
-        // we'd otherwise have to re-derive (note_type, tags, etc.).
-        guard localMtime > serverMtime else { return serverNote }
-        guard let local = readLocalNote(id: serverNote.id) else {
-            return serverNote
-        }
-        return local
     }
 
     /// File mtime of the local sandbox copy of a note, or nil when
