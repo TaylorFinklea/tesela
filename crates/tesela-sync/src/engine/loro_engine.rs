@@ -3729,6 +3729,96 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn since_vv_delta_is_smaller_than_snapshot_and_converges() {
+        // iOS #150 (block-granular-writes spec, Stage 4): the live WS frame
+        // ships a DELTA relative to the last-pushed VV, not a full snapshot
+        // every keystroke. This proves the two properties the iOS change
+        // relies on: (1) `export_doc_update(note, Some(vv_before_edit))` after
+        // a single edit is byte-SMALLER than the full snapshot, and (2) a peer
+        // that already holds `vv_before_edit` converges after importing only
+        // that delta. Together: the steady-state WS frame shrinks AND stays
+        // loss-free.
+        let author = LoroEngine::new(
+            DeviceId::from_bytes([0xe1; 16]),
+            Arc::new(Hlc::new(DeviceId::from_bytes([0xe1; 16]))),
+        );
+        let note = [0x91; 16];
+
+        // Seed a multi-block base so the snapshot has real heft.
+        author
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("shared".into()),
+                title: "Shared".into(),
+                content: "- alpha <!-- bid:01010101-0101-0101-0101-010101010101 -->\n\
+                          - beta <!-- bid:02020202-0202-0202-0202-020202020202 -->\n\
+                          - gamma <!-- bid:03030303-0303-0303-0303-030303030303 -->\n"
+                    .into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // A peer bootstraps from the full snapshot — this is the base the
+        // delta will be relative to (mirrors iOS's `lastPushedVV[slug]`
+        // tracking the VV as of the last push the peer received).
+        let peer = LoroEngine::new(
+            DeviceId::from_bytes([0xf2; 16]),
+            Arc::new(Hlc::new(DeviceId::from_bytes([0xf2; 16]))),
+        );
+        let snapshot = author.export_doc_update(note, None).await.unwrap();
+        peer.import_doc_update(note, &snapshot).await.unwrap();
+        assert_eq!(
+            author.render_note(note).await,
+            peer.render_note(note).await,
+            "peer bootstrapped to the same base"
+        );
+
+        // Capture the VV AS OF the last push (the value iOS records as
+        // `lastPushedVV[slug]` after `recordAndPush`), then author one edit.
+        let vv_before_edit = author.doc_version(note).await.expect("vv before edit");
+        author
+            .record_local(OpPayload::BlockUpsert {
+                block_id: [0x02; 16],
+                note_id: note,
+                parent_block_id: None,
+                order_key: "b".into(),
+                indent_level: 0,
+                text: "beta EDITED".into(),
+            })
+            .await
+            .unwrap();
+
+        // The steady-state WS frame (delta) vs. the full snapshot iOS used to
+        // ship every keystroke.
+        let delta = author
+            .export_doc_update(note, Some(&vv_before_edit))
+            .await
+            .expect("delta export");
+        let full_snapshot = author.export_doc_update(note, None).await.expect("snapshot");
+        assert!(
+            delta.len() < full_snapshot.len(),
+            "since_vv delta ({} bytes) must be smaller than the full snapshot ({} bytes)",
+            delta.len(),
+            full_snapshot.len(),
+        );
+
+        // The peer holding `vv_before_edit` applies ONLY the delta and
+        // converges — no full-snapshot resend needed (loss-free).
+        peer.import_doc_update(note, &delta).await.unwrap();
+        let rendered = peer.render_note(note).await.unwrap();
+        assert!(
+            rendered.contains("beta EDITED"),
+            "peer converges from the delta alone; got: {rendered:?}"
+        );
+        assert_eq!(
+            author.render_note(note).await,
+            peer.render_note(note).await,
+            "author + peer converge after the delta-only exchange"
+        );
+    }
+
     fn blake3_note_id(slug: &str) -> [u8; 16] {
         let h = blake3::hash(slug.as_bytes());
         let mut id = [0u8; 16];

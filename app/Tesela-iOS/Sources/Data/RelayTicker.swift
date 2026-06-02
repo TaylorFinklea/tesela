@@ -77,6 +77,28 @@ final class RelayTicker: ObservableObject {
 
     private var loopTask: Task<Void, Never>? = nil
 
+    /// Per-note encoded version vector (Loro VV bytes from `noteVersion`) as
+    /// of our most recent WS delta for that note (#150). `produceDeltaFrame`
+    /// passes this as `sinceVv` so steady-state frames carry only the ops
+    /// authored since the last push — a true DELTA — instead of re-shipping a
+    /// full snapshot every keystroke. No entry ⇒ this is the FIRST push for
+    /// the note this session: `produceDeltaFrame` ships a full snapshot (the
+    /// peer needs the base before any partial delta can materialize, per
+    /// `partial_delta_needs_base.rs`), then records the post-edit VV here so
+    /// the NEXT frame is a delta relative to it.
+    ///
+    /// Dropped-delta backstop: `sendDelta` (SyncState) is best-effort and
+    /// silently no-ops when the socket is down, so a frame can be dropped
+    /// after we advance this VV. The peer is then behind the VV our next
+    /// delta assumes → a gap that Loro buffers as pending (it never
+    /// materializes). `bootstrapNoteIfNeeded` (the shipped snapshot catch-up
+    /// on note-open) heals this: it re-imports the full server snapshot,
+    /// which carries the missing base. A peer that STAYS open and misses a
+    /// delta won't self-heal until it re-opens the note — accepted for v1
+    /// (the relay tick remains an independent fallback delivery path for the
+    /// author's own ops, and any note re-open closes the gap).
+    private var lastPushedVV: [String: Data] = [:]
+
     /// Last successful/attempted catch-up time per slug, for the resident
     /// catch-up debounce in `bootstrapNoteIfNeeded`. Keeps the resident
     /// snapshot re-fetch to at most once per `catchupMinInterval` per slug
@@ -355,9 +377,18 @@ final class RelayTicker: ObservableObject {
     /// spec, Phase C). Reads the engine state AS-IS — it does NOT record
     /// the edit; the caller must have already recorded it (via
     /// `recordAndPush`) so the engine holds the change before this exports
-    /// it. `since_vv = nil` exports the full-state snapshot (bidirectional
-    /// VV catch-up is Phase D). Returns `nil` when the doc isn't resident
-    /// (nothing to send) or the engine can't open.
+    /// it. Returns `nil` when the doc isn't resident (nothing to send) or
+    /// the engine can't open.
+    ///
+    /// #150 — steady-state ships a DELTA, not a full snapshot:
+    /// `sinceVv = lastPushedVV[slug]` exports only the ops authored since our
+    /// last push (`export_doc_update(note, Some(vv))` = `ExportMode::updates`).
+    /// The FIRST push for a note this session has no entry ⇒ `sinceVv = nil`
+    /// ⇒ full snapshot, so the peer acquires the base a later partial delta
+    /// depends on (`partial_delta_needs_base.rs`). After a successful produce
+    /// we advance `lastPushedVV[slug]` to the post-edit VV so the NEXT frame
+    /// is a delta relative to this one. See the `lastPushedVV` doc comment
+    /// for the dropped-frame backstop (`bootstrapNoteIfNeeded` on re-open).
     func produceDeltaFrame(slug: String) async -> Data? {
         do {
             try await openEngineIfNeeded()
@@ -366,12 +397,23 @@ final class RelayTicker: ObservableObject {
             return nil
         }
         guard let engine else { return nil }
+        let sinceVv = lastPushedVV[slug]
+        let frame: Data?
         do {
-            return try await engine.produceNoteDelta(slug: slug, sinceVv: nil)
+            frame = try await engine.produceNoteDelta(slug: slug, sinceVv: sinceVv)
         } catch {
             lastError = error.localizedDescription
             return nil
         }
+        // Doc resident + a frame produced ⇒ advance the baseline so the next
+        // delta is relative to this push. We read the post-edit VV from the
+        // engine (the caller recorded the edit before calling us) rather than
+        // reusing `sinceVv`, so a dropped frame doesn't permanently freeze the
+        // baseline at a stale VV — the next produce still moves forward.
+        if frame != nil, let vv = await engine.noteVersion(slug: slug) {
+            lastPushedVV[slug] = vv
+        }
+        return frame
     }
 
     func start() {
