@@ -160,6 +160,32 @@ export function mergeOpsForBackspace(
 }
 
 /**
+ * Build the `delete` op batch for a pure block deletion (backspace into an
+ * empty block, `dd`, or a visual-mode multi-block delete). Emits ONE
+ * `{ kind:"delete", bid }` op per removed block that the server has actually
+ * seen — i.e. that carries a server-canonical `bid` AND is not a brand-new
+ * local-only insert (`:new-`/`:paste-`). A never-round-tripped local-only
+ * block has no server row, so dropping it from the editor IS the whole
+ * deletion; no op is emitted for it (mirrors how `mergeOpsForBackspace` omits
+ * the delete for a local-only absorbed block).
+ *
+ * Returns `[]` when every removed block was local-only — the caller treats an
+ * empty batch as "nothing to send; local removal is the whole delete" and does
+ * NOT fall back to a whole-body PUT (which would re-assert every surviving
+ * block, reintroducing the clobber). `deletedBlocks` are the `ParsedBlock`s as
+ * they existed before removal (so their `bid`/`id` are still readable).
+ */
+export function deleteOpsFor(deletedBlocks: ParsedBlock[]): BlockOp[] {
+  const ops: BlockOp[] = [];
+  for (const block of deletedBlocks) {
+    if (!block) continue;
+    if (isLocalOnlyId(block.id) || !block.bid) continue;
+    ops.push({ kind: "delete", bid: block.bid });
+  }
+  return ops;
+}
+
+/**
  * Build the `move` ops for an indent/outdent that changed the `indent_level`
  * of the blocks in `changedIds`. Returns ONE entry per affected block in
  * document order: a `move` op when the block is a block-op candidate

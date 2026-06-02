@@ -38,6 +38,7 @@
     upsertOpForStructuralBlock,
     mergeOpsForBackspace,
     moveOpsForIds,
+    deleteOpsFor,
     type BlockOp,
   } from "$lib/block-ops";
   import { BlockOpsSaver } from "$lib/block-ops-saver";
@@ -892,6 +893,39 @@
     blockOpsSaver.enqueue(targetNoteId, concrete);
   }
 
+  /** Block-granular delete path (sync redesign 2026-06-02, S4 — closes the
+   *  LAST whole-body-PUT clobber path). A pure deletion (backspace into an
+   *  empty block, `dd`, visual-mode multi-delete) used to PUT the entire note
+   *  body (re-asserting every surviving block — stale, clobber-prone) AND fire
+   *  a separate `api.deleteBlock`. This sends ONLY `{kind:"delete", bid}` ops
+   *  for the removed blocks the server has seen, so no surviving block is
+   *  re-asserted — a concurrent peer edit to one of them survives.
+   *
+   *  `updated` is the post-removal block tree (advances the own-echo dirty-
+   *  guard baseline, exactly like `saveBlocksViaOps`). `deleted` is the set of
+   *  `ParsedBlock`s removed by this op (their `bid`/`id` are read to build the
+   *  delete ops). A removed block that was never round-tripped (local-only id
+   *  or no `bid`) yields NO op — dropping it locally is the whole deletion —
+   *  and when EVERY removed block is local-only the batch is empty, in which
+   *  case nothing is sent server-side and (critically) we do NOT fall back to
+   *  the whole-body PUT. One path per save: delete ops flow through the same
+   *  coalescing saver as text/indent edits (`recordLocalSave` fires inside
+   *  `api.upsertBlocks`). */
+  function saveDeletesViaOps(updated: ParsedBlock[], deleted: ParsedBlock[]) {
+    // Advance the dirty-guard baseline to the post-delete body so the server's
+    // echo of this write is recognised as our own and applies cleanly.
+    const { bodyOnly } = buildFullContent(updated);
+    lastSentBody = bodyOnly;
+    const targetNoteId = noteId;
+    const ops = deleteOpsFor(deleted);
+    // Every removed block was local-only (never on the server): the local
+    // removal IS the whole deletion. Sending nothing — and NOT a whole-body
+    // PUT — is correct; a PUT would re-assert every surviving block.
+    if (ops.length === 0) return;
+    // Coalesce with any pending same-note edits into one trailing-edge POST.
+    blockOpsSaver.enqueue(targetNoteId, ops);
+  }
+
   /** One coalescing saver per outliner instance. The flush POSTs the latest
    *  coalesced ops to `api.upsertBlocks(noteId, ops, signal)`; on a genuine
    *  (non-abort) failure it PUTs the latest body via `saveBlocks` so the edit
@@ -1219,20 +1253,13 @@
     if (!block || block.raw_text !== "" || blocks.length <= 1) return;
     pushUndo();
     blocks = blocks.filter(b => b.id !== block.id);
-    saveBlocks(blocks);
+    // Block-granular delete: emit a single `{kind:"delete", bid}` op for the
+    // removed block (no whole-body PUT, which would re-assert every surviving
+    // block). A local-only block (never round-tripped) yields no op — the
+    // local removal is the whole deletion. Replaces the old `saveBlocks` PUT +
+    // separate `api.deleteBlock` pair. One path per save.
+    saveDeletesViaOps(blocks, [block]);
     if (focusedIndex !== null && focusedIndex > 0) focusedIndex = focusedIndex - 1;
-    // Explicit BlockDelete (Phase 2.2). See `handleDeleteBlock` for
-    // the why; same shape: skip local-only ids.
-    if (!isLocalOnlyId(block.id)) {
-      // Prefer the canonical bid when surfaced — eliminates the race
-      // window where another edit shifts line numbers between web
-      // identifying the block and server processing the DELETE. Fall
-      // back to the line-based composite id for blocks the server
-      // hasn't stamped yet.
-      api.deleteBlock(noteId, block.bid ?? block.id).catch((err) => {
-        console.warn("deleteBlock failed for", block.id, err);
-      });
-    }
   }
 
   function handleBackspaceMerge(vi: number, currentText: string) {
@@ -1316,25 +1343,14 @@
     // subsequent p pastes the deleted block.
     blockClipboard = [{ ...block }];
     blocks = blocks.filter(b => b.id !== block.id);
-    saveBlocks(blocks);
-    // Phase 2.2 (sync redesign 2026-05-27): explicit delete intent.
-    // Server-side PUT diff no longer infers BlockDelete from "absent
-    // in body" (it would stomp peer-added blocks the client hadn't
-    // fetched), so user-initiated deletes ping the dedicated endpoint
-    // to record an explicit BlockDelete op. Skip the call for local-
-    // only ids (`:new-` / `:paste-` infix) — those blocks were never
-    // round-tripped through the server, dropping them locally is the
-    // whole deletion.
-    if (!isLocalOnlyId(block.id)) {
-      // Prefer the canonical bid when surfaced — eliminates the race
-      // window where another edit shifts line numbers between web
-      // identifying the block and server processing the DELETE. Fall
-      // back to the line-based composite id for blocks the server
-      // hasn't stamped yet.
-      api.deleteBlock(noteId, block.bid ?? block.id).catch((err) => {
-        console.warn("deleteBlock failed for", block.id, err);
-      });
-    }
+    // Block-granular delete (sync redesign 2026-06-02, S4): emit a single
+    // `{kind:"delete", bid}` op instead of the old whole-body PUT
+    // (`saveBlocks`) + separate `api.deleteBlock` pair. The PUT re-asserted
+    // every surviving block from a possibly-stale view, clobbering concurrent
+    // peer edits; the delete op touches only the removed block. A local-only
+    // block (never round-tripped) yields no op — the local removal is the
+    // whole deletion. One path per save.
+    saveDeletesViaOps(blocks, [block]);
     // The deleted block's BlockEditor unmounts, firing a blur that
     // (synchronously) nulls focusedIndex via the per-row handler. Defer the
     // refocus to a microtask so it lands AFTER the unmount blur. Also clamp
@@ -1436,8 +1452,17 @@
     // Vim convention: visual-mode delete also yanks to the register.
     blockClipboard = sorted.map(vi => ({ ...visibleBlocks[vi]! })).filter(b => b.id);
     const newFocus = Math.min(sorted[0]!, visibleBlocks.length - 1 - sorted.length);
+    // Capture the removed blocks (with their bids) BEFORE filtering so the
+    // block-granular delete batch can read them.
+    const deleted = blocks.filter(b => ids.has(b.id));
     blocks = blocks.filter(b => !ids.has(b.id));
-    saveBlocks(blocks);
+    // Block-granular multi-delete (sync redesign 2026-06-02, S4): one
+    // `{kind:"delete", bid}` op per removed server-known block, batched into a
+    // single POST /blocks call — replaces the old whole-body PUT (`saveBlocks`)
+    // that re-asserted every surviving block from a stale view. Local-only
+    // removed blocks contribute no op (their local removal is the whole
+    // deletion). One path per save.
+    saveDeletesViaOps(blocks, deleted);
     focusedIndex = Math.max(0, newFocus);
     exitBlockVisualMode();
   }

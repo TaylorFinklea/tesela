@@ -21,6 +21,11 @@ function upsert(bid, text, indent_level = 0, parent_bid = null) {
   return { kind: "upsert", bid, text, parent_bid, indent_level };
 }
 
+/** Build a concrete delete op for a given bid. */
+function del(bid) {
+  return { kind: "delete", bid };
+}
+
 /** A controllable upsert spy: records every call and lets the test resolve /
  *  reject each POST's promise, and observe whether its signal aborted. */
 function makeUpsertSpy() {
@@ -77,6 +82,49 @@ test("coalesce: N rapid enqueues for the same block within the window → ONE PO
     "only the latest op for the block survives",
   );
   assert.equal(fallback.mock.callCount(), 0, "no PUT fallback on success");
+});
+
+test("delete: a single delete op flushes as one POST (no PUT fallback) — S4", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const fallback = t.mock.fn();
+  const saver = new BlockOpsSaver(spy.fn, fallback);
+
+  saver.enqueue("noteA", [del("dead-1")]);
+  t.mock.timers.tick(500);
+
+  assert.equal(spy.calls.length, 1, "the delete POSTs once");
+  assert.deepEqual(spy.calls[0].ops, [del("dead-1")]);
+  assert.equal(fallback.mock.callCount(), 0, "a delete never triggers the whole-body PUT");
+});
+
+test("delete: a multi-block delete batches into one POST keyed by bid — S4", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
+
+  saver.enqueue("noteA", [del("a"), del("b"), del("c")]);
+  t.mock.timers.tick(500);
+
+  assert.equal(spy.calls.length, 1);
+  const bids = spy.calls[0].ops.map((o) => o.bid).sort();
+  assert.deepEqual(bids, ["a", "b", "c"], "all three deletes ride in one POST");
+  assert.ok(spy.calls[0].ops.every((o) => o.kind === "delete"));
+});
+
+test("delete: a delete coalesces alongside a pending text edit to another block — S4", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
+
+  // A pending text edit, then a delete of a different block in the same window.
+  saver.enqueue("noteA", [upsert("keep", "edited")]);
+  saver.enqueue("noteA", [del("gone")]);
+  t.mock.timers.tick(500);
+
+  assert.equal(spy.calls.length, 1, "both ride one trailing-edge POST");
+  const byBid = Object.fromEntries(spy.calls[0].ops.map((o) => [o.bid, o.kind]));
+  assert.deepEqual(byBid, { keep: "upsert", gone: "delete" });
 });
 
 test("coalesce: edits to different blocks in one window → one POST with one op per block", (t) => {

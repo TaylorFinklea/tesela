@@ -16,6 +16,7 @@ import {
   upsertOpForStructuralBlock,
   mergeOpsForBackspace,
   moveOpsForIds,
+  deleteOpsFor,
   isLocalOnlyId,
 } from "../../src/lib/block-ops.ts";
 
@@ -265,4 +266,59 @@ test("mergeOpsForBackspace: survivor upsert + absorbed delete, in that order", (
 test("mergeOpsForBackspace: survivor has no bid → null (PUT fallback)", () => {
   const blocks = [blk("note:merged-1", { bid: null, raw_text: "x" })];
   assert.equal(mergeOpsForBackspace(blocks, "note:merged-1", "current-bid"), null);
+});
+
+// ----- Pure-delete op builder (S4: backspace-into-empty / dd / visual delete) -----
+
+test("deleteOpsFor: a single server-known block → one delete op (no PUT)", () => {
+  const removed = [
+    blk("note:3", { bid: "dead-beef-2222-3333-4444-555555555555", raw_text: "gone" }),
+  ];
+  assert.deepEqual(deleteOpsFor(removed), [
+    { kind: "delete", bid: "dead-beef-2222-3333-4444-555555555555" },
+  ]);
+});
+
+test("deleteOpsFor: multiple server-known blocks → a batch of delete ops in order", () => {
+  const removed = [
+    blk("note:1", { bid: "aaaa-1111", raw_text: "a" }),
+    blk("note:2", { bid: "bbbb-2222", raw_text: "b" }),
+    blk("note:3", { bid: "cccc-3333", raw_text: "c" }),
+  ];
+  assert.deepEqual(deleteOpsFor(removed), [
+    { kind: "delete", bid: "aaaa-1111" },
+    { kind: "delete", bid: "bbbb-2222" },
+    { kind: "delete", bid: "cccc-3333" },
+  ]);
+});
+
+test("deleteOpsFor: a local-only removed block → no op (local removal IS the delete)", () => {
+  const removed = [blk("note:new-99", { bid: "fresh-bid", raw_text: "x" })];
+  assert.deepEqual(deleteOpsFor(removed), []);
+});
+
+test("deleteOpsFor: a paste-only removed block → no op", () => {
+  const removed = [blk("note:paste-7", { bid: "paste-bid", raw_text: "x" })];
+  assert.deepEqual(deleteOpsFor(removed), []);
+});
+
+test("deleteOpsFor: a removed block with no bid → no op (server never saw it)", () => {
+  const removed = [blk("note:2", { bid: null, raw_text: "x" })];
+  assert.deepEqual(deleteOpsFor(removed), []);
+});
+
+test("deleteOpsFor: mixed batch → ops only for the server-known blocks", () => {
+  const removed = [
+    blk("note:1", { bid: "real-1", raw_text: "real" }),
+    blk("note:new-2", { bid: "fresh", raw_text: "local-only" }),
+    blk("note:3", { bid: "real-3", raw_text: "real2" }),
+  ];
+  assert.deepEqual(deleteOpsFor(removed), [
+    { kind: "delete", bid: "real-1" },
+    { kind: "delete", bid: "real-3" },
+  ]);
+});
+
+test("deleteOpsFor: empty input → empty batch (no PUT, no op)", () => {
+  assert.deepEqual(deleteOpsFor([]), []);
 });
