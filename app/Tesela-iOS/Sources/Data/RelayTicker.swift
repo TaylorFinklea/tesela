@@ -81,11 +81,18 @@ final class RelayTicker: ObservableObject {
     /// of our most recent WS delta for that note (#150). `produceDeltaFrame`
     /// passes this as `sinceVv` so steady-state frames carry only the ops
     /// authored since the last push — a true DELTA — instead of re-shipping a
-    /// full snapshot every keystroke. No entry ⇒ this is the FIRST push for
-    /// the note this session: `produceDeltaFrame` ships a full snapshot (the
-    /// peer needs the base before any partial delta can materialize, per
-    /// `partial_delta_needs_base.rs`), then records the post-edit VV here so
-    /// the NEXT frame is a delta relative to it.
+    /// full snapshot every keystroke.
+    ///
+    /// Part A (WS-push clobber, 2026-06-02): this is now SEEDED before the
+    /// first push of a note, not left empty. `bootstrapNoteIfNeeded` captures
+    /// the imported base VV here (first-view + resident catch-up), and
+    /// `recordAndPush` captures a pre-edit VV floor when bootstrap couldn't
+    /// (resident note, debounced/failed catch-up). Both seeds are taken BEFORE
+    /// `recordNoteDiff` records the edit, so the edit is strictly past the
+    /// baseline and IS included in the next delta (no under-send), while the
+    /// first frame is a bounded delta — NOT a whole-note snapshot that could
+    /// re-assert iOS's stale copy of a peer-edited block. The baseline then
+    /// advances via `commitPushedDelta` after each confirmed send.
     ///
     /// Dropped-delta handling: this VV is advanced (via `commitPushedDelta`)
     /// ONLY after `sendDelta` confirms the frame reached a connected socket.
@@ -257,6 +264,26 @@ final class RelayTicker: ObservableObject {
                 return  // server has no doc for this slug yet (404)
             }
             try await engine.importNoteSnapshot(slug: slug, bytes: bytes)
+            // Part A (WS-push clobber, 2026-06-02): seed the per-note push
+            // baseline from the freshly-imported server base, so the FIRST
+            // `produceDeltaFrame` for this note exports `updates(baseVV)` =
+            // ONLY the ops iOS authors AFTER the base — never a full snapshot
+            // that re-asserts iOS's (possibly stale) copy of blocks a peer
+            // edited. `bootstrapNoteIfNeeded` always runs BEFORE
+            // `recordNoteDiff` in `recordAndPush`, so the VV captured here is
+            // strictly the base (pre-edit); the iOS edit that follows is past
+            // it and is therefore INCLUDED in the next delta — no under-send.
+            //
+            // Seed only when ABSENT: an existing entry was set either by a
+            // prior bootstrap this session or by `commitPushedDelta` after a
+            // confirmed send. Both are valid floors at-or-ahead of this base;
+            // overwriting with the (older) base VV could REGRESS a baseline
+            // that `commitPushedDelta` advanced, re-shipping already-confirmed
+            // ops — exactly the re-assertion we're eliminating. So leave any
+            // existing entry alone (commitPushedDelta keeps it advancing).
+            if lastPushedVV[slug] == nil {
+                lastPushedVV[slug] = await engine.noteVersion(slug: slug)
+            }
         } catch {
             // Graceful degradation: keep working without the base/catch-up.
             // Clear the debounce stamp so the next open retries promptly
@@ -294,6 +321,22 @@ final class RelayTicker: ObservableObject {
         // existing tree nodes (no rival TreeIDs / duplicate bullets). No-op
         // once the doc is resident; best-effort otherwise.
         await bootstrapNoteIfNeeded(slug: slug)
+        // Part A (WS-push clobber, 2026-06-02): if the note is resident from a
+        // PRIOR session's local edits, `bootstrapNoteIfNeeded` early-returns
+        // on the resident debounce (or its catch-up fetch failed), so it never
+        // imported a base and never seeded `lastPushedVV[slug]`. Without a
+        // baseline the FIRST `produceDeltaFrame` below would ship a FULL
+        // SNAPSHOT of this device's (possibly stale) state — the clobber bug.
+        // Capture the engine's CURRENT version vector as the push floor NOW,
+        // BEFORE `recordNoteDiff` records this edit. Because the edit is
+        // recorded after this point, it is strictly past the floor, so the
+        // next `produceDeltaFrame` exports `updates(floor)` = this edit (and
+        // any later ones) — the genuine edit is NEVER excluded (no under-send),
+        // while the pre-existing resident state is NOT re-asserted. Seed only
+        // when absent so we don't regress a baseline bootstrap already set.
+        if lastPushedVV[slug] == nil {
+            lastPushedVV[slug] = await engine.noteVersion(slug: slug)
+        }
         do {
             // Phase 2 (sync redesign 2026-05-26): use the block-granular
             // diff path instead of `recordNoteUpsertBySlug`. The engine
@@ -384,9 +427,20 @@ final class RelayTicker: ObservableObject {
     /// #150 — steady-state ships a DELTA, not a full snapshot:
     /// `sinceVv = lastPushedVV[slug]` exports only the ops authored since our
     /// last push (`export_doc_update(note, Some(vv))` = `ExportMode::updates`).
-    /// The FIRST push for a note this session has no entry ⇒ `sinceVv = nil`
-    /// ⇒ full snapshot, so the peer acquires the base a later partial delta
-    /// depends on (`partial_delta_needs_base.rs`).
+    ///
+    /// Part A (WS-push clobber, 2026-06-02): `recordAndPush` now ALWAYS seeds
+    /// `lastPushedVV[slug]` BEFORE recording the edit — from the bootstrap base
+    /// (first-view / resident catch-up) or, failing that, from the engine's
+    /// pre-edit VV floor. So by the time the host calls this method after a
+    /// `recordAndPush`, `sinceVv` is non-nil and the frame is a bounded DELTA
+    /// (only iOS's own ops since the base), NEVER a whole-note snapshot that
+    /// re-asserts a stale copy of a block a peer just edited. A `nil` here can
+    /// now arise only on a push path that did NOT go through `recordAndPush`
+    /// (none today): rather than risk EXCLUDING a genuine edit by seeding the
+    /// post-edit VV, we fall back to the full-snapshot export — correct (the
+    /// peer still needs a base) and guarded by the server's Part C WS-apply
+    /// protection. The peer also acquires its base via this path
+    /// (`partial_delta_needs_base.rs`).
     ///
     /// **The baseline is NOT advanced here.** Because a snapshot is no longer
     /// re-sent every keystroke, a dropped WS frame would never be re-included
