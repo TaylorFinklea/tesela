@@ -1737,7 +1737,16 @@
       // outliner, focus didn't really leave us; keep `hasFocus` true.
       const next = ev.relatedTarget;
       if (next instanceof Node && rootEl?.contains(next)) return;
-      outlinerHasFocus = false;
+      // `focusout` fires during Svelte effect teardown on every structural
+      // delete/split (the destroyed block node blurs), so a synchronous
+      // `$state` write here throws `state_unsafe_mutation` (Svelte 5.55).
+      // Defer to a microtask and re-check live activeElement so we self-
+      // correct if focus actually stayed inside (e.g. the split's new
+      // BlockEditor grabs focus on remount). Mirrors the queueMicrotask
+      // idiom used for the focusedIndex refocus in handleDeleteBlock.
+      queueMicrotask(() => {
+        if (!rootEl || !rootEl.contains(document.activeElement)) outlinerHasFocus = false;
+      });
       // Focus genuinely left this outliner — land any pending coalesced
       // block-ops write now instead of waiting on the debounce timer.
       flushBlockOpsOnBlur();
