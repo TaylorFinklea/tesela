@@ -341,6 +341,180 @@ async fn put_without_base_still_clobbers() {
     );
 }
 
+/// Spin up a server and create a note with frontmatter + alpha/beta blocks
+/// (explicit bids). NO peer edit. Returns (mosaic, server, base url, note id,
+/// the seed body that was POSTed). The seed body carries a `title` + `tags`
+/// frontmatter so a bundled PUT can change both a block AND the frontmatter.
+async fn setup_with_frontmatter(
+    temp: &TempDir,
+    client: &reqwest::Client,
+) -> (PathBuf, ServerGuard, String, String, String) {
+    let mosaic = temp.path().join("mosaic");
+    make_fixture_mosaic(&mosaic).unwrap();
+
+    let port = pick_free_port();
+    let addr = format!("127.0.0.1:{}", port);
+    let base = format!("http://{}", addr);
+    let server = spawn_server(&mosaic, &addr);
+
+    assert!(
+        wait_for_port(&addr, Duration::from_secs(15)),
+        "server never bound to {}",
+        addr
+    );
+
+    let seed_body = format!(
+        "---\ntitle: \"Old Title\"\ntags: [a]\n---\n\
+         - alpha <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n"
+    );
+    let created: serde_json::Value = client
+        .post(format!("{}/notes", base))
+        .json(&serde_json::json!({
+            "title": "Bundled Note",
+            "content": seed_body,
+            "tags": [],
+        }))
+        .send()
+        .await
+        .expect("POST /notes")
+        .error_for_status()
+        .expect("note created")
+        .json()
+        .await
+        .expect("create json");
+    let note_id = created["id"].as_str().expect("note id").to_string();
+
+    (mosaic, server, base, note_id, seed_body)
+}
+
+/// THE REGRESSION TEST: a single PUT that changes BOTH a block's text AND a
+/// frontmatter field must land BOTH. Before the fix the non-empty block diff
+/// short-circuited and the bundled frontmatter change was silently dropped.
+#[tokio::test(flavor = "current_thread")]
+async fn bundled_block_and_frontmatter_put_lands_both() {
+    let temp = TempDir::new().unwrap();
+    let client = reqwest::Client::new();
+    let (mosaic, _server, base, note_id, seed_body) =
+        setup_with_frontmatter(&temp, &client).await;
+
+    // ONE PUT: change alpha's text AND the frontmatter (title + tags),
+    // carrying `base_content` = the original seed so the diff is base→new.
+    let new_body = format!(
+        "---\ntitle: \"New Title\"\ntags: [a, b]\n---\n\
+         - alpha CHANGED <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n"
+    );
+    let after: serde_json::Value = client
+        .put(format!("{}/notes/{}", base, note_id))
+        .json(&serde_json::json!({
+            "content": new_body,
+            "base_content": seed_body,
+        }))
+        .send()
+        .await
+        .expect("PUT /notes (bundled)")
+        .error_for_status()
+        .expect("PUT ok")
+        .json()
+        .await
+        .expect("PUT json");
+
+    let render = after["content"].as_str().expect("content in response");
+    assert!(
+        render.contains("alpha CHANGED"),
+        "the block change must land; got:\n{render}"
+    );
+    assert!(
+        render.contains("New Title"),
+        "the bundled frontmatter title change must land (was silently dropped \
+         before the fix); got:\n{render}"
+    );
+    assert!(
+        render.contains("a, b") || render.contains("a,b"),
+        "the bundled frontmatter tags change must land; got:\n{render}"
+    );
+
+    // Materialized file on disk shows BOTH the block AND the frontmatter edit.
+    let file = read_note_file_containing(&mosaic, "alpha CHANGED")
+        .expect("a notes/*.md should hold 'alpha CHANGED'");
+    assert!(
+        file.contains("alpha CHANGED"),
+        "materialized file must hold the block edit; got:\n{file}"
+    );
+    assert!(
+        file.contains("New Title"),
+        "materialized file must hold the frontmatter edit; got:\n{file}"
+    );
+}
+
+/// CONCURRENT-SAFETY VARIANT: a peer edited a DIFFERENT block (beta) first;
+/// the author then PUTs a bundled change (alpha block + frontmatter) carrying
+/// its pre-peer base. The bundled frontmatter NoteUpsert must be
+/// body-preserving — it applies AFTER the alpha block op over the server's
+/// CURRENT (post-peer, post-alpha) blocks — so the peer's "beta PEER"
+/// survives, alpha lands, and the frontmatter lands.
+#[tokio::test(flavor = "current_thread")]
+async fn bundled_block_and_frontmatter_put_preserves_peer_block_edit() {
+    let temp = TempDir::new().unwrap();
+    let client = reqwest::Client::new();
+    let (mosaic, _server, base, note_id, _seed_body) =
+        setup_with_peer_beta_edit(&temp, &client).await;
+
+    // The author's base: frontmatter + the two blocks, beta still the OLD
+    // pre-peer text (the author never saw "beta PEER").
+    let base_with_fm = format!(
+        "---\ntitle: \"Old Title\"\n---\n\
+         - alpha <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n"
+    );
+    // The author changes alpha's text AND the frontmatter title in one PUT,
+    // but carries the stale beta. base→new block diff = alpha only; the
+    // frontmatter change is bundled alongside it.
+    let new_with_fm = format!(
+        "---\ntitle: \"New Title\"\n---\n\
+         - alpha CHANGED <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n"
+    );
+    let after: serde_json::Value = client
+        .put(format!("{}/notes/{}", base, note_id))
+        .json(&serde_json::json!({
+            "content": new_with_fm,
+            "base_content": base_with_fm,
+        }))
+        .send()
+        .await
+        .expect("PUT /notes (bundled + concurrent)")
+        .error_for_status()
+        .expect("PUT ok")
+        .json()
+        .await
+        .expect("PUT json");
+
+    let render = after["content"].as_str().expect("content in response");
+    assert!(
+        render.contains("alpha CHANGED"),
+        "author's alpha block edit must land; got:\n{render}"
+    );
+    assert!(
+        render.contains("New Title"),
+        "bundled frontmatter change must land; got:\n{render}"
+    );
+    assert!(
+        render.contains("beta PEER"),
+        "peer's concurrent beta block edit MUST survive the bundled \
+         frontmatter NoteUpsert (no body reseed clobber); got:\n{render}"
+    );
+    assert_no_stale_beta(render);
+
+    // Materialized file holds all three: alpha edit, frontmatter, peer beta.
+    let file = read_note_file_containing(&mosaic, "alpha CHANGED")
+        .expect("a notes/*.md should hold 'alpha CHANGED'");
+    assert!(
+        file.contains("alpha CHANGED")
+            && file.contains("New Title")
+            && file.contains("beta PEER"),
+        "materialized file must hold the block edit, frontmatter edit, AND \
+         the peer's beta edit; got:\n{file}"
+    );
+}
+
 /// Assert no stale pre-peer-edit `beta` bullet remains (only "beta PEER").
 fn assert_no_stale_beta(render: &str) {
     let stale_beta = render

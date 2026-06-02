@@ -1251,6 +1251,16 @@ async fn record_sync_create(s: &Arc<AppState>, note: &Note) {
 /// from the engine), so `tree_matches_blocks` stays true and the body is
 /// never reseeded. Without a base (legacy client) we keep the historical
 /// full-content NoteUpsert, which remains last-writer-wins on the body.
+///
+/// ## Bundled frontmatter + block change (block ops are NON-empty)
+/// A single PUT can change BOTH a block AND the frontmatter/page-properties.
+/// The block diff only touches block-tree nodes; frontmatter reaches the doc
+/// ONLY via a NoteUpsert apply. So after applying the block ops we ALSO
+/// detect whether the frontmatter or page-properties changed (independent of
+/// the block ops) and, if so, emit a body-preserving NoteUpsert — applied
+/// AFTER the block ops so it carries the author's NEW frontmatter over the
+/// server's POST-block-op blocks (no reseed). Both edits survive. Guarded on
+/// the change check so a pure block edit never emits a redundant NoteUpsert.
 async fn record_sync_update(
     s: &Arc<AppState>,
     prev_content: &str,
@@ -1316,6 +1326,40 @@ async fn record_sync_update(
         if let Err(e) = s.sync_engine.record_local(op).await {
             tracing::warn!(
                 "sync: record_local Block op failed for {}: {}",
+                note.id,
+                e
+            );
+        }
+    }
+
+    // A single PUT can change BOTH a block AND the frontmatter /
+    // page-properties. The block diff above only touches block-tree nodes;
+    // frontmatter + page-properties reach the doc ONLY via a NoteUpsert
+    // apply. Historically the non-empty-ops branch returned here, silently
+    // DROPPING any frontmatter/page-property change bundled in the same PUT.
+    // Detect that change (independent of the block ops) and, if present,
+    // emit a body-preserving NoteUpsert so the frontmatter lands WITHOUT
+    // reseeding the blocks we just applied. Order matters: the block ops are
+    // applied FIRST (above), so the engine's current body already includes
+    // them; `body_preserving_noteupsert_content` then reads that updated
+    // body via `render_note`, so `tree_matches_blocks` stays true and the
+    // NoteUpsert carries the author's NEW frontmatter over the SERVER's
+    // post-block-op blocks — no reseed, both edits survive. Guard on the
+    // change check so a pure block edit never emits a redundant NoteUpsert.
+    if old_tree.frontmatter != new_tree.frontmatter
+        || old_tree.page_properties != new_tree.page_properties
+    {
+        let content = body_preserving_noteupsert_content(s, note_id, &note.content).await;
+        let payload = OpPayload::NoteUpsert {
+            note_id,
+            display_alias: Some(note.id.as_str().to_string()),
+            title: note.title.clone(),
+            content,
+            created_at_millis: note.created_at.timestamp_millis(),
+        };
+        if let Err(e) = s.sync_engine.record_local(payload).await {
+            tracing::warn!(
+                "sync: record_local NoteUpsert (bundled frontmatter) failed for {}: {}",
                 note.id,
                 e
             );
