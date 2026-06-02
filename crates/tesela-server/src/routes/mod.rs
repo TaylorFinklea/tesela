@@ -38,6 +38,7 @@ pub fn build(state: AppState) -> Router {
                 .put(notes::update_note)
                 .delete(notes::delete_note),
         )
+        .route("/notes/{id}/blocks", post(notes::upsert_blocks))
         .route(
             "/notes/{id}/blocks/{bid}",
             axum::routing::delete(notes::delete_block),

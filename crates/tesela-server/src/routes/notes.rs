@@ -70,6 +70,59 @@ pub struct UpdateNoteReq {
     pub content: String,
 }
 
+/// A single block-granular mutation for `POST /notes/{id}/blocks`.
+///
+/// Block-granular writes (2026-06-02 spec) let a client submit ONLY the
+/// block ops it actually changed instead of the whole note body. The
+/// whole-body `PUT /notes/{id}` path manufactures stale `BlockUpsert`s
+/// from a server-vs-client diff, re-asserting blocks the client never
+/// touched and clobbering concurrent peer edits
+/// (`concurrent_whole_body_clobber.rs`). Submitting one op per edited
+/// block makes that clobber structurally impossible: no op for a block
+/// means no re-assertion of its text.
+///
+/// Each variant maps 1:1 onto an `OpPayload` block op. `bid` is the
+/// canonical dashed-UUID block id stamped into the on-disk
+/// `<!-- bid:UUID -->` marker (web's `ParsedBlock.bid` IS this value).
+/// `parent_bid` maps to `OpPayload`'s `parent_block_id`; `None` = top-level.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BlockOp {
+    /// Create-or-update a block's text + indent in place. The engine
+    /// resolves the bid to an existing node (updating it) or appends a
+    /// new node at document end (it ignores `order_key` for placement —
+    /// mid-note inserts land at the end in v1; see the spec's
+    /// new-block-in-middle caveat).
+    Upsert {
+        bid: String,
+        text: String,
+        #[serde(default)]
+        parent_bid: Option<String>,
+        indent_level: u16,
+    },
+    /// Recompute a block's parent/indent. `BlockMove` only recomputes
+    /// indent/parent today (never reorders rows); indent/outdent is safe,
+    /// true row-reorder is a deferred follow-up.
+    Move {
+        bid: String,
+        #[serde(default)]
+        parent_bid: Option<String>,
+        /// Accepted on the wire per the spec, but the engine recomputes a
+        /// moved block's indent from its new parent's indent (see the
+        /// `BlockMove` apply); `parent_bid` carries the structure. Kept so
+        /// the client request shape is stable if the engine later honors it.
+        #[allow(dead_code)]
+        indent_level: u16,
+    },
+    /// Delete a block by id.
+    Delete { bid: String },
+}
+
+#[derive(Deserialize)]
+pub struct UpsertBlocksReq {
+    pub ops: Vec<BlockOp>,
+}
+
 pub async fn list_notes(
     Query(q): Query<ListQuery>,
     State(s): State<Arc<AppState>>,
@@ -350,6 +403,176 @@ pub async fn update_note(
         );
     }
     Ok(Json(updated))
+}
+
+/// `POST /notes/{id}/blocks` — block-granular write. The client submits
+/// ONLY the block ops it actually changed (`UpsertBlocksReq.ops`), each
+/// of which maps 1:1 onto an engine `OpPayload` block op recorded via
+/// `record_local`. This is the structural fix for the concurrent-edit
+/// CLOBBER (`concurrent_whole_body_clobber.rs`): the whole-body
+/// `PUT /notes/{id}` path diffs the server-authoritative file against the
+/// client's (possibly stale) full body and emits a `BlockUpsert`
+/// re-asserting the stale text of blocks the client never touched,
+/// clobbering concurrent peer edits. Here, a block with no submitted op
+/// is simply never re-asserted, so a concurrent peer edit to it survives.
+///
+/// Mirrors `update_note`'s post-write tail verbatim (re-read → reindex →
+/// update_links → record_version → ensure_tag_pages → `WsEvent::NoteUpdated`
+/// → cursor-free WS delta) so peers converge identically to the PUT path.
+/// The note must already exist (404 otherwise); brand-new notes are
+/// created via the existing `POST /notes` create path first — see the
+/// spec's brand-new-note risk. No `NoteUpsert` is seeded here.
+pub async fn upsert_blocks(
+    Path(id): Path<String>,
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<UpsertBlocksReq>,
+) -> AppResult<Json<Note>> {
+    let note_id = NoteId::new(&id);
+    // Require the note to exist (mirror update_note). Brand-new notes
+    // must be materialized via the create path first; a block-granular
+    // op against an absent doc would not materialize a `<slug>.md`.
+    let note = s
+        .store
+        .get(&note_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Note not found: {}", id)))?;
+    let prev_content = note.content.clone();
+
+    // Address the note's Loro doc exactly as the PUT path + the
+    // producer paths (`record_sync_create`/`record_sync_update`) do:
+    // blake3-truncate the slug. This is the note-id space every
+    // `OpPayload` block op carries, so the ops land on the same doc the
+    // file materializes from.
+    let delta_note_id = stable_uuid_from_slug(note.id.as_str());
+    // Instant-multidevice (Phase A): capture this note's Loro version
+    // BEFORE applying the ops so we can export the cursor-free delta for
+    // just-these-changes afterward. `None` when the doc isn't resident.
+    let pre_vv = s.sync_engine.doc_version(delta_note_id).await;
+
+    // Map each request op to an `OpPayload` and record it locally. Each
+    // `record_local` materializes the file via the engine's apply path
+    // (the engine ignores `order_key` for placement — it appends new
+    // blocks at document end and updates existing ones in place). The
+    // batch is NOT transactional: a mid-batch failure leaves a partial
+    // apply already materialized + broadcast (acceptable v1).
+    for op in req.ops {
+        let payload = match op {
+            BlockOp::Upsert {
+                bid,
+                text,
+                parent_bid,
+                indent_level,
+            } => OpPayload::BlockUpsert {
+                block_id: parse_bid(&bid)?,
+                note_id: delta_note_id,
+                parent_block_id: parse_opt_bid(parent_bid.as_deref())?,
+                // The engine ignores `order_key` for placement; pass the
+                // same benign zero key the diff path emits for a first
+                // sibling. Position is render = document/creation order.
+                order_key: "00000000".to_string(),
+                indent_level,
+                text,
+            },
+            BlockOp::Move {
+                bid,
+                parent_bid,
+                // `BlockMove` carries no indent field — the engine
+                // recomputes indent from the new parent's indent
+                // (parent.indent + 1, or 0 for top-level). The request's
+                // `indent_level` is the client's intent; `parent_bid` is
+                // what actually carries the structure.
+                indent_level: _,
+            } => OpPayload::BlockMove {
+                block_id: parse_bid(&bid)?,
+                new_parent: parse_opt_bid(parent_bid.as_deref())?,
+                new_order_key: "00000000".to_string(),
+            },
+            BlockOp::Delete { bid } => OpPayload::BlockDelete {
+                block_id: parse_bid(&bid)?,
+            },
+        };
+        if let Err(e) = s.sync_engine.record_local(payload).await {
+            tracing::warn!("sync: record_local block op failed for {id}: {e}");
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Failed to record block op: {e}"
+            )));
+        }
+    }
+
+    // Re-read to get fresh parsed metadata + checksum from the file the
+    // engine just wrote (the engine's serialization is canonical).
+    let updated = s
+        .store
+        .get(&note_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Note not found after block write: {}", id)))?;
+    s.index.reindex(&updated).await?;
+    // Refresh the link graph for this note (same as the PUT path).
+    {
+        use tesela_core::link::extract_wiki_links;
+        use tesela_core::traits::link_graph::LinkGraph;
+        let links = extract_wiki_links(&updated.content);
+        if let Err(e) = s.index.update_links(&note_id, &links).await {
+            tracing::warn!(
+                "Failed to update links on block write for {:?}: {}",
+                note_id,
+                e
+            );
+        }
+    }
+    // Append a version row. Best-effort; cap at 200.
+    if updated.content != prev_content {
+        if let Err(e) = s
+            .index
+            .record_version(&note_id, Some(&prev_content), &updated.content, 200)
+            .await
+        {
+            tracing::warn!("Failed to record note version on block write: {}", e);
+        }
+    }
+    // Parity with the PUT path: new `#tags` still spawn tag pages.
+    ensure_tag_pages(&s, &updated).await;
+    let _ = s.ws_tx.send(WsEvent::NoteUpdated {
+        note: updated.clone(),
+    });
+    // Instant-multidevice (Phase A): export the cursor-free delta for the
+    // ops just applied and push it to live WS clients as a binary frame,
+    // so peer devices converge in <1s. `origin: None` — an HTTP edit fans
+    // out to every connected socket. Best-effort.
+    if let Some(delta) = s
+        .sync_engine
+        .export_doc_update(delta_note_id, pre_vv.as_deref())
+        .await
+    {
+        match tesela_sync::encode_loro_relay_payload(&[tesela_sync::LoroDocUpdate {
+            doc: delta_note_id,
+            update_bytes: delta,
+        }]) {
+            Ok(frame) => {
+                let _ = s.ws_delta_tx.send(crate::state::WsDelta {
+                    origin: None,
+                    frame,
+                });
+            }
+            Err(e) => tracing::warn!("ws: encode live delta for {} failed: {}", id, e),
+        }
+    }
+    Ok(Json(updated))
+}
+
+/// Parse a dashed-UUID block id string into the 16-byte form `OpPayload`
+/// block ops carry. Mirrors `delete_block`'s `uuid::Uuid::parse_str`.
+fn parse_bid(bid: &str) -> AppResult<[u8; 16]> {
+    uuid::Uuid::parse_str(bid)
+        .map(|u| *u.as_bytes())
+        .map_err(|_| AppError::Validation(format!("Invalid block id: {bid}")))
+}
+
+fn parse_opt_bid(bid: Option<&str>) -> AppResult<Option<[u8; 16]>> {
+    match bid {
+        Some(b) => Ok(Some(parse_bid(b)?)),
+        None => Ok(None),
+    }
 }
 
 pub async fn delete_note(
