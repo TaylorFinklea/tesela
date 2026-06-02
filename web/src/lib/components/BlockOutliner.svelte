@@ -1145,6 +1145,11 @@
     const inserted: ParsedBlock[] = tplBlocks.map((tb, i) => ({
       ...tb,
       id: `${noteId}:tmpl-${Date.now()}-${i}`,
+      // Fresh bid so each inserted block is a distinct row on the server side.
+      // Without this they'd inherit the template note's own bids and collide
+      // with the template's rows as the same logical block. Mirrors the fresh
+      // bid mint in `handlePasteBlock`.
+      bid: crypto.randomUUID(),
       note_id: noteId,
       // Re-base indent so the template's outermost blocks become children of
       // the current block. Preserves relative nesting within the template.
@@ -1155,7 +1160,16 @@
       ...inserted,
       ...blocks.slice(parentIdx + 1),
     ];
-    saveBlocks(blocks);
+    // Block-granular path: upsert one op per inserted block by its fresh
+    // client-minted bid — NOT a whole-body PUT that re-asserts every block and
+    // clobbers concurrent peer edits. MID-note inserts land at the document END
+    // on peers in v1 (engine ignores order_key — see `handleEnter`'s caveat);
+    // loss-free is the invariant, position is the documented follow-up. One
+    // path per save.
+    saveBlocksViaOps(
+      blocks,
+      inserted.map((b) => upsertOpForStructuralBlock(blocks, b.id)),
+    );
   }
 
   function handleEnter(vi: number, textAfterCursor: string = "") {
@@ -1502,7 +1516,16 @@
         properties: props,
       };
     });
-    saveBlocks(blocks);
+    // Block-granular path: a status cycle changes ONLY the affected blocks'
+    // text (the status marker), so emit one `upsert` op per selected block —
+    // NOT a whole-body PUT that re-asserts every surviving block and clobbers
+    // concurrent peer edits. If any selected block isn't a block-op candidate
+    // (no server bid / brand-new local insert), `saveBlocksViaOps` falls back
+    // to the whole-body PUT for the entire batch. One path per save.
+    saveBlocksViaOps(
+      blocks,
+      [...ids].map((id) => upsertOpForBlock(blocks, id)),
+    );
     // Stay in visual mode so the user can fire again.
   }
 
@@ -1545,6 +1568,11 @@
       const b = visibleBlocks[vi];
       return b && getBlockTags(b.raw_text).some((t) => t.toLowerCase() === lower);
     });
+    // Track which blocks actually changed so we emit a `move`-free upsert op
+    // ONLY for them — a block skipped by the add/remove-bias guard below keeps
+    // its old text and must not be re-asserted (that would clobber a peer's
+    // concurrent edit to it).
+    const changedIds = new Set<string>();
     blocks = blocks.map((b) => {
       if (!ids.has(b.id)) return b;
       const has = getBlockTags(b.raw_text).some((t) => t.toLowerCase() === lower);
@@ -1554,6 +1582,7 @@
       const newRaw = toggleBlockTag(b.raw_text, tagName, fillNames);
       const props = parseProperties(newRaw);
       delete props.tags;
+      changedIds.add(b.id);
       return {
         ...b,
         raw_text: newRaw,
@@ -1562,7 +1591,17 @@
         properties: props,
       };
     });
-    saveBlocks(blocks);
+    // Block-granular path: a tag toggle changes ONLY the text of the blocks it
+    // actually flipped, so emit one `upsert` op per changed block instead of a
+    // whole-body PUT that re-asserts every surviving block and clobbers
+    // concurrent peer edits. If no block changed, there is nothing to save. Any
+    // non-candidate block (no server bid / brand-new local insert) makes
+    // `saveBlocksViaOps` fall back to the whole-body PUT. One path per save.
+    if (changedIds.size === 0) return;
+    saveBlocksViaOps(
+      blocks,
+      [...changedIds].map((id) => upsertOpForBlock(blocks, id)),
+    );
   }
 
   // Listen for "leader → Y" → copy focused block's raw_text to OS clipboard.

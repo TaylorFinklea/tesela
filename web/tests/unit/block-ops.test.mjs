@@ -322,3 +322,132 @@ test("deleteOpsFor: mixed batch → ops only for the server-known blocks", () =>
 test("deleteOpsFor: empty input → empty batch (no PUT, no op)", () => {
   assert.deepEqual(deleteOpsFor([]), []);
 });
+
+// ----- Bulk visual-mode status/tag + template-insert batch emission -----
+//
+// These mirror exactly what `BlockOutliner`'s `bulkCycleStatus` /
+// `bulkToggleTag` / `insertTemplateAfter` build: a single coalesced batch of
+// upsert ops, ONE per affected block (status/tag change a block's text;
+// template insert adds brand-new blocks). The component's `saveBlocksViaOps`
+// then POSTs them in one call, or falls back to the whole-body PUT if the
+// batch carries a `null` (a non-candidate block). The op-construction is the
+// load-bearing, testable part, so assert it against the same builders the
+// handlers call.
+
+test("bulk status/tag: N changed blocks → N upsert ops in one batch, correct bid+text", () => {
+  // After a bulk status cycle the editor mutated three blocks' raw_text in
+  // place; the handler emits `[...changedIds].map((id) => upsertOpForBlock(...))`.
+  const blocks = [
+    blk("note:0", {
+      bid: "aaaaaaaa-0000-0000-0000-000000000000",
+      raw_text: "DONE alpha <!-- bid:aaaaaaaa-0000-0000-0000-000000000000 -->",
+      indent_level: 0,
+    }),
+    blk("note:1", {
+      bid: "bbbbbbbb-0000-0000-0000-000000000000",
+      raw_text: "DONE beta <!-- bid:bbbbbbbb-0000-0000-0000-000000000000 -->",
+      indent_level: 0,
+    }),
+    blk("note:2", {
+      bid: "cccccccc-0000-0000-0000-000000000000",
+      raw_text: "DONE gamma <!-- bid:cccccccc-0000-0000-0000-000000000000 -->",
+      indent_level: 0,
+    }),
+  ];
+  const changedIds = ["note:0", "note:1", "note:2"];
+  const ops = changedIds.map((id) => upsertOpForBlock(blocks, id));
+  assert.equal(ops.length, 3);
+  assert.ok(ops.every((o) => o !== null));
+  assert.deepEqual(ops, [
+    { kind: "upsert", bid: "aaaaaaaa-0000-0000-0000-000000000000", text: "DONE alpha", parent_bid: null, indent_level: 0 },
+    { kind: "upsert", bid: "bbbbbbbb-0000-0000-0000-000000000000", text: "DONE beta", parent_bid: null, indent_level: 0 },
+    { kind: "upsert", bid: "cccccccc-0000-0000-0000-000000000000", text: "DONE gamma", parent_bid: null, indent_level: 0 },
+  ]);
+});
+
+test("bulk tag toggle: only the flipped blocks are upserted, an unchanged one is NOT re-asserted", () => {
+  // `bulkToggleTag` builds `changedIds` from ONLY the blocks it actually
+  // flipped (the add/remove-bias guard skips some); a skipped block keeps its
+  // old text and must not appear in the batch (re-asserting it would clobber a
+  // concurrent peer edit).
+  const blocks = [
+    blk("note:0", {
+      bid: "11111111-0000-0000-0000-000000000000",
+      raw_text: "alpha #Task <!-- bid:11111111-0000-0000-0000-000000000000 -->",
+      indent_level: 0,
+    }),
+    blk("note:1", {
+      bid: "22222222-0000-0000-0000-000000000000",
+      raw_text: "beta (already had it, skipped) <!-- bid:22222222-0000-0000-0000-000000000000 -->",
+      indent_level: 0,
+    }),
+  ];
+  // Only note:0 was flipped this round.
+  const changedIds = ["note:0"];
+  const ops = changedIds.map((id) => upsertOpForBlock(blocks, id));
+  assert.deepEqual(ops, [
+    { kind: "upsert", bid: "11111111-0000-0000-0000-000000000000", text: "alpha #Task", parent_bid: null, indent_level: 0 },
+  ]);
+  // note:1 (skipped) is absent — not re-asserted.
+  assert.ok(!ops.some((o) => o.bid === "22222222-0000-0000-0000-000000000000"));
+});
+
+test("bulk status/tag: a non-candidate (local-only / no-bid) block yields a null in the batch → PUT fallback", () => {
+  // If a selected block has no server bid yet, its op is null; the handler's
+  // `saveBlocksViaOps` sees the null and falls back to the whole-body PUT for
+  // the entire batch (one path per save).
+  const blocks = [
+    blk("note:0", { bid: "real-0", raw_text: "DOING a", indent_level: 0 }),
+    blk("note:new-9", { bid: "fresh", raw_text: "DOING b", indent_level: 0 }),
+  ];
+  const ops = ["note:0", "note:new-9"].map((id) => upsertOpForBlock(blocks, id));
+  assert.equal(ops.length, 2);
+  assert.deepEqual(ops[0], {
+    kind: "upsert",
+    bid: "real-0",
+    text: "DOING a",
+    parent_bid: null,
+    indent_level: 0,
+  });
+  // local-only insert → null → forces the whole-body PUT for the batch.
+  assert.equal(ops[1], null);
+});
+
+test("template insert: each inserted block → one structural upsert (fresh bid, re-based indent)", () => {
+  // `insertTemplateAfter` mints a fresh bid per inserted block (like paste) and
+  // re-bases indents so the template's outermost blocks nest under the parent;
+  // it then emits `inserted.map((b) => upsertOpForStructuralBlock(...))`.
+  const blocks = [
+    blk("note:0", { bid: "parent-bid", raw_text: "parent", indent_level: 0 }),
+    blk("note:tmpl-100-0", {
+      bid: "tmpl-bid-1",
+      raw_text: "heading",
+      indent_level: 1,
+    }),
+    blk("note:tmpl-100-1", {
+      bid: "tmpl-bid-2",
+      raw_text: "nested item",
+      indent_level: 2,
+    }),
+    blk("note:tail", { bid: "tail-bid", raw_text: "tail", indent_level: 0 }),
+  ];
+  const inserted = [blocks[1], blocks[2]];
+  const ops = inserted.map((b) => upsertOpForStructuralBlock(blocks, b.id));
+  assert.equal(ops.length, 2);
+  assert.deepEqual(ops, [
+    { kind: "upsert", bid: "tmpl-bid-1", text: "heading", parent_bid: "parent-bid", indent_level: 1 },
+    { kind: "upsert", bid: "tmpl-bid-2", text: "nested item", parent_bid: "tmpl-bid-1", indent_level: 2 },
+  ]);
+});
+
+test("template insert: a bid-less inserted block → null (would force PUT fallback)", () => {
+  // Defensive: if a template block somehow lacks a bid, the structural builder
+  // returns null so the handler's `saveBlocksViaOps` falls back rather than
+  // emitting a partial batch the server would re-stamp.
+  const blocks = [
+    blk("note:0", { bid: "p", raw_text: "parent", indent_level: 0 }),
+    blk("note:tmpl-1-0", { bid: null, raw_text: "no bid", indent_level: 1 }),
+  ];
+  const ops = [blocks[1]].map((b) => upsertOpForStructuralBlock(blocks, b.id));
+  assert.deepEqual(ops, [null]);
+});
