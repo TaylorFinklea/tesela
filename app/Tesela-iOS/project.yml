@@ -109,6 +109,9 @@ targets:
         CODE_SIGN_STYLE: "Automatic"
         DEVELOPMENT_TEAM: "K7CBQW6MPG"
         TARGETED_DEVICE_FAMILY: "1,2"
+    scheme:
+      testTargets:
+        - TeselaTests
     info:
       path: Info.plist
       properties:

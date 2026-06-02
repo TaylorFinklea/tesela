@@ -19,6 +19,7 @@ struct GrDailyView: View {
 
     @Environment(\.theme) private var theme
     @Environment(\.captureContext) private var captureContext
+    @Environment(\.openSettings) private var openSettings
 
     @State private var editingBlockId: String? = nil
     @State private var navigationPath = NavigationPath()
@@ -30,6 +31,7 @@ struct GrDailyView: View {
             VStack(spacing: 0) {
                 GrHeader(title: mosaic.todayLongLabel, subtitle: "JOURNAL") {
                     GrButton(icon: "calendar") { showDatePicker = true }
+                    GrButton(icon: "settings") { openSettings() }
                 }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {

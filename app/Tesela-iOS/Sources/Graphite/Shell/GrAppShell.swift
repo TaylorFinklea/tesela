@@ -37,9 +37,15 @@ struct GrAppShell: View {
     /// recreating the bar — mirrors AppShell.
     @StateObject private var composer = CaptureComposer()
     @StateObject private var transcription = TranscriptionStore()
+    /// Multi-profile server registry — drives the Graphite Settings
+    /// Mosaics list + add/switch. Mirrors how `AppShell` owns its own
+    /// `MosaicRegistry`. Was DEFERRED here until the Graphite Settings
+    /// page (task #156) gave it a home.
+    @StateObject private var mosaicRegistry = MosaicRegistry()
 
     @State private var activeTab: AppTab = .daily
     @State private var captureContext: CaptureContext = .init()
+    @State private var showSettings: Bool = false
 
     @Environment(\.scenePhase) private var scenePhase
 
@@ -213,6 +219,33 @@ struct GrAppShell: View {
         }
         .environment(\.captureContext, captureContext)
         .environment(\.openSearch, { activeTab = .search })
+        .environment(\.openSettings, { showSettings = true })
+        .sheet(isPresented: $showSettings) {
+            GrSettingsView(
+                mosaic: mosaic,
+                backend: backend,
+                relayTicker: relayTicker,
+                registry: mosaicRegistry,
+                transcription: transcription
+            )
+            .environment(\.theme, .graphite)
+            .preferredColorScheme(.dark)
+        }
+    }
+}
+
+// MARK: - Settings action environment value
+
+/// Opens the Graphite Settings sheet from any content view's header
+/// (mirrors `openSearch`). The Daily header's gear button calls it.
+private struct OpenSettingsKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+extension EnvironmentValues {
+    var openSettings: () -> Void {
+        get { self[OpenSettingsKey.self] }
+        set { self[OpenSettingsKey.self] = newValue }
     }
 }
 
