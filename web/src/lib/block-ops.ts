@@ -103,6 +103,63 @@ export function upsertOpForBlock(
 }
 
 /**
+ * Build the `upsert` op for a STRUCTURAL block — a brand-new block just
+ * minted by Enter / new-block-above / paste, or the edited-original half of
+ * an Enter split. Unlike `upsertOpForBlock` (the in-place text-edit path),
+ * this does NOT reject a local-only id: structural inserts mint a canonical
+ * `bid` client-side (`crypto.randomUUID`) up front, so the op carries that
+ * stable bid even though the block's editor-`id` is still a `:new-`/`:paste-`
+ * /`:split-` placeholder until the server's echo round-trips. The engine's
+ * `BlockUpsert` creates-if-absent (appending at document END — see the spec's
+ * mid-insert ordering caveat) or updates in place.
+ *
+ * Returns `null` only when the block is missing or has no `bid` (which would
+ * force a server re-stamp); the caller treats `null` as "fall back to the
+ * whole-body PUT for this save" so nothing is silently dropped.
+ */
+export function upsertOpForStructuralBlock(
+  blocks: ParsedBlock[],
+  blockId: string,
+): BlockOp | null {
+  const index = blocks.findIndex((b) => b.id === blockId);
+  if (index < 0) return null;
+  const block = blocks[index];
+  if (!block.bid) return null;
+  return {
+    kind: "upsert",
+    bid: block.bid,
+    text: stripBid(block.raw_text),
+    parent_bid: parentBidFor(blocks, index),
+    indent_level: block.indent_level,
+  };
+}
+
+/**
+ * Build the converged op batch for a backspace-merge: the SURVIVING (previous)
+ * block absorbs the current block's text, and the current block is removed.
+ * Emits the survivor `upsert` and the absorbed-block `delete` together so the
+ * server applies BOTH in one `POST /notes/{id}/blocks` call — the file
+ * materializes (and the single WS fan-out fires) only after both ops land, so
+ * there is no half-applied window where the merge is visible with the absorbed
+ * block still present.
+ *
+ * `survivorId` is the merged block's editor id (its `bid` is the previous
+ * block's existing, canonical bid — carried through the merge). `absorbedBid`
+ * is the canonical bid of the block being merged away. Returns `null` when the
+ * survivor can't be expressed as an upsert (missing / no bid) so the caller
+ * falls back to the whole-body PUT for the whole merge — one path per save.
+ */
+export function mergeOpsForBackspace(
+  blocks: ParsedBlock[],
+  survivorId: string,
+  absorbedBid: string,
+): BlockOp[] | null {
+  const survivor = upsertOpForStructuralBlock(blocks, survivorId);
+  if (survivor === null) return null;
+  return [survivor, { kind: "delete", bid: absorbedBid }];
+}
+
+/**
  * Build the `move` ops for an indent/outdent that changed the `indent_level`
  * of the blocks in `changedIds`. Returns ONE entry per affected block in
  * document order: a `move` op when the block is a block-op candidate

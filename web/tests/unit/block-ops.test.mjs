@@ -13,6 +13,8 @@ import {
   stripBid,
   parentBidFor,
   upsertOpForBlock,
+  upsertOpForStructuralBlock,
+  mergeOpsForBackspace,
   moveOpsForIds,
   isLocalOnlyId,
 } from "../../src/lib/block-ops.ts";
@@ -166,4 +168,101 @@ test("moveOpsForIds: indented block with unresolvable parent → null (PUT fallb
   ];
   const ops = moveOpsForIds(blocks, new Set(["note:1"]));
   assert.deepEqual(ops, [null]);
+});
+
+// ----- Structural-edit op builders (Stage 3: insert / split / paste / merge) -----
+
+test("upsertOpForStructuralBlock: a brand-new local-only block IS upserted (its client-minted bid carries)", () => {
+  // Enter on the last block: the new block has a `:new-` id but a real bid.
+  // Unlike the in-place path's `upsertOpForBlock`, the structural builder must
+  // NOT reject it — the bid is canonical and the engine creates-if-absent.
+  const blocks = [
+    blk("note:0", { bid: "first", raw_text: "first", indent_level: 0 }),
+    blk("note:new-123", {
+      bid: "11111111-2222-3333-4444-555555555555",
+      raw_text: "fresh line",
+      indent_level: 0,
+    }),
+  ];
+  const op = upsertOpForStructuralBlock(blocks, "note:new-123");
+  assert.deepEqual(op, {
+    kind: "upsert",
+    bid: "11111111-2222-3333-4444-555555555555",
+    text: "fresh line",
+    parent_bid: null,
+    indent_level: 0,
+  });
+});
+
+test("upsertOpForStructuralBlock: split-original (changed id, inherited bid) strips its marker + derives parent", () => {
+  // After an Enter split the original block keeps its bid (spread) but gets a
+  // `:split-` id and its text shrinks to the pre-cursor portion.
+  const blocks = [
+    blk("note:0", { bid: "p", raw_text: "parent", indent_level: 0 }),
+    blk("note:split-9", {
+      bid: "aaaaaaaa-2222-3333-4444-555555555555",
+      raw_text: "before <!-- bid:aaaaaaaa-2222-3333-4444-555555555555 -->",
+      indent_level: 1,
+    }),
+  ];
+  const op = upsertOpForStructuralBlock(blocks, "note:split-9");
+  assert.deepEqual(op, {
+    kind: "upsert",
+    bid: "aaaaaaaa-2222-3333-4444-555555555555",
+    text: "before",
+    parent_bid: "p",
+    indent_level: 1,
+  });
+});
+
+test("upsertOpForStructuralBlock: a child new-block nests under its (local-only but bid-carrying) parent", () => {
+  // A freshly-created parent (local-only id, real bid) with a child created
+  // under it: the child's parent_bid resolves to the parent's client-minted
+  // bid, so the nesting survives the upsert.
+  const blocks = [
+    blk("note:new-1", { bid: "parent-bid", raw_text: "p", indent_level: 0 }),
+    blk("note:new-2", { bid: "child-bid", raw_text: "c", indent_level: 1 }),
+  ];
+  const op = upsertOpForStructuralBlock(blocks, "note:new-2");
+  assert.equal(op.parent_bid, "parent-bid");
+  assert.equal(op.indent_level, 1);
+});
+
+test("upsertOpForStructuralBlock: no bid → null (PUT fallback / server would re-stamp)", () => {
+  const blocks = [blk("note:new-1", { bid: null, raw_text: "x" })];
+  assert.equal(upsertOpForStructuralBlock(blocks, "note:new-1"), null);
+});
+
+test("upsertOpForStructuralBlock: unknown id → null", () => {
+  const blocks = [blk("note:0", { bid: "a" })];
+  assert.equal(upsertOpForStructuralBlock(blocks, "note:nope"), null);
+});
+
+test("mergeOpsForBackspace: survivor upsert + absorbed delete, in that order", () => {
+  // prev absorbs current's text; merged block keeps prev's bid (new `:merged-`
+  // id). The absorbed block's canonical bid is deleted.
+  const blocks = [
+    blk("note:merged-1", {
+      bid: "prev-bid",
+      raw_text: "prevtext-and-currenttext",
+      indent_level: 0,
+    }),
+    blk("note:1", { bid: "tail", raw_text: "tail", indent_level: 0 }),
+  ];
+  const ops = mergeOpsForBackspace(blocks, "note:merged-1", "current-bid");
+  assert.deepEqual(ops, [
+    {
+      kind: "upsert",
+      bid: "prev-bid",
+      text: "prevtext-and-currenttext",
+      parent_bid: null,
+      indent_level: 0,
+    },
+    { kind: "delete", bid: "current-bid" },
+  ]);
+});
+
+test("mergeOpsForBackspace: survivor has no bid → null (PUT fallback)", () => {
+  const blocks = [blk("note:merged-1", { bid: null, raw_text: "x" })];
+  assert.equal(mergeOpsForBackspace(blocks, "note:merged-1", "current-bid"), null);
 });

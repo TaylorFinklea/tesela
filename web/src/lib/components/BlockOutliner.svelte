@@ -33,7 +33,13 @@
   import { parseBlocks } from "$lib/block-parser";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
   import { api } from "$lib/api-client";
-  import { upsertOpForBlock, moveOpsForIds, type BlockOp } from "$lib/block-ops";
+  import {
+    upsertOpForBlock,
+    upsertOpForStructuralBlock,
+    mergeOpsForBackspace,
+    moveOpsForIds,
+    type BlockOp,
+  } from "$lib/block-ops";
   import { BlockOpsSaver } from "$lib/block-ops-saver";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { Note } from "$lib/types/Note";
@@ -850,6 +856,24 @@
     // (drill / Esc-back) before a debounced flush fires, so the coalesced POST
     // must target the note that was current when the edit happened.
     const targetNoteId = noteId;
+    // **Brand-new-note guard (Stage 3).** `POST /notes/{id}/blocks` 404s when
+    // the note has no file on disk yet — a synthetic daily the user just typed
+    // into hasn't been materialized. The whole-body PUT path is the ONLY one
+    // that creates the note (JournalView's `needsCreate` lazy-create, keyed off
+    // the per-day `isSynthetic` closure on `onContentChange`). A note that has
+    // never round-tripped carries ZERO server-canonical block ids: the parser
+    // mints `${noteId}:${lineNumber}` ids (numeric trailing segment), whereas
+    // every client-side insert id (`:new-`/`:paste-`/`:split-`/`:merged-`/
+    // `:tmpl-`/seed) has a non-numeric trailing segment. (`isLocalOnlyId` only
+    // covers `:new-`/`:paste-`, so a split/merge on a brand-new note would slip
+    // past it — hence the stricter numeric-id check here.) If NO block is
+    // canonical, force the whole-body PUT so the note is created first; the next
+    // structural edit (once the refetch reseeds line-based ids) flows block-
+    // granularly.
+    if (!updated.some((b) => /:\d+$/.test(b.id))) {
+      saveBlocks(updated);
+      return;
+    }
     if (ops.length === 0 || ops.some((o) => o === null)) {
       // Not fully block-granular (no eligible op, or a mixed batch containing
       // a not-yet-saved local block). Use the whole-body PUT for the whole
@@ -1128,16 +1152,31 @@
       note_id: noteId,
       parent_note_type: null,
     };
+    let structuralIds: string[];
     if (textAfterCursor) {
       // Split: current keeps its existing bid (inherited via spread);
       // newBlock got its own above. Both blocks are now stable.
       const updatedCurrent: ParsedBlock = { ...current, id: `${noteId}:split-${Date.now() + 1}` };
       mountHint = { blockId: newBlock.id, pos: 0, startInInsert: true };
       blocks = [...blocks.slice(0, fullIdx), updatedCurrent, newBlock, ...blocks.slice(fullIdx + 1)];
+      // A split changes TWO blocks: the original's text shrank to the pre-
+      // cursor portion, and the new block carries the post-cursor portion.
+      // Upsert BOTH so the original's new (shorter) text persists.
+      structuralIds = [updatedCurrent.id, newBlock.id];
     } else {
       blocks = [...blocks.slice(0, fullIdx + 1), newBlock, ...blocks.slice(fullIdx + 1)];
+      structuralIds = [newBlock.id];
     }
-    saveBlocks(blocks);
+    // Block-granular path: a new block (and, for a split, the edited original)
+    // is upserted by its client-minted bid — NOT a whole-body PUT that would
+    // re-assert every block and clobber concurrent peer edits. MID-note inserts
+    // land at the document END on peers in v1 (engine ignores order_key — see
+    // the spec's new-block-in-middle caveat); loss-free is the invariant,
+    // position is the documented follow-up. One path per save.
+    saveBlocksViaOps(
+      blocks,
+      structuralIds.map((sid) => upsertOpForStructuralBlock(blocks, sid)),
+    );
     focusedIndex = vi + 1;
     autoFocused = false;
     restoredFocus = false;
@@ -1220,15 +1259,30 @@
       mergedBlock,
       ...blocks.slice(fullCurrIdx + 1),
     ];
-    saveBlocks(blocks);
     focusedIndex = vi - 1;
-    // The `current` block was effectively deleted (merged into prev).
-    // Tell the server explicitly so the BlockDelete op propagates.
-    // Skip for local-only ids.
-    if (!isLocalOnlyId(current.id)) {
-      api.deleteBlock(noteId, current.bid ?? current.id).catch((err) => {
-        console.warn("deleteBlock (merge) failed for", current.id, err);
-      });
+    // Block-granular path: a merge is the survivor's text changing PLUS the
+    // absorbed block being deleted. Send BOTH ops in one converged POST so the
+    // server applies them together — the file materializes (and the single WS
+    // fan-out fires) only after both land, so there's no half-applied window
+    // where the survivor's new text is visible with the absorbed block still
+    // present. The absorbed `delete` is included only when `current` was a
+    // server-known (non-local-only) block; a never-round-tripped local-only
+    // block has no server row, so upserting the survivor alone IS the whole
+    // merge. If the survivor can't be expressed as an upsert (no bid),
+    // `mergeOpsForBackspace`/`upsertOpForStructuralBlock` returns null →
+    // `saveBlocksViaOps` falls back to the whole-body PUT. One path per save.
+    if (!isLocalOnlyId(current.id) && current.bid) {
+      // `mergeOpsForBackspace` returns null when the survivor isn't a clean
+      // upsert; map that to a `[null]` batch so `saveBlocksViaOps` takes its
+      // whole-body-PUT fallback rather than POSTing a half-batch.
+      saveBlocksViaOps(
+        blocks,
+        mergeOpsForBackspace(blocks, mergedBlock.id, current.bid) ?? [null],
+      );
+    } else {
+      saveBlocksViaOps(blocks, [
+        upsertOpForStructuralBlock(blocks, mergedBlock.id),
+      ]);
     }
   }
 
@@ -1313,7 +1367,13 @@
       bid: crypto.randomUUID(),
     }));
     blocks = [...blocks.slice(0, fullIdx + 1), ...pasted, ...blocks.slice(fullIdx + 1)];
-    saveBlocks(blocks);
+    // Block-granular path: upsert one op per pasted block by its fresh client-
+    // minted bid (see `handleEnter` for the mid-insert ordering caveat). One
+    // path per save.
+    saveBlocksViaOps(
+      blocks,
+      pasted.map((p) => upsertOpForStructuralBlock(blocks, p.id)),
+    );
     focusedIndex = vi + pasted.length;
   }
 
@@ -1339,7 +1399,9 @@
       parent_note_type: null,
     };
     blocks = [...blocks.slice(0, fullIdx), newBlock, ...blocks.slice(fullIdx)];
-    saveBlocks(blocks);
+    // Block-granular path: upsert just the new block by its client-minted bid
+    // (see `handleEnter` for the mid-insert ordering caveat). One path per save.
+    saveBlocksViaOps(blocks, [upsertOpForStructuralBlock(blocks, newBlock.id)]);
     focusedIndex = vi;
     autoFocused = false;
     restoredFocus = false;
