@@ -80,6 +80,7 @@ async fn run_disjoint_merge(note_id: [u8; 16]) -> String {
             order_key: "a0".into(),
             indent_level: 0,
             text: "alpha EDITED".into(),
+            after_block_id: None,
         })
         .await
         .expect("server BlockUpsert alpha");
@@ -93,6 +94,7 @@ async fn run_disjoint_merge(note_id: [u8; 16]) -> String {
             order_key: "a1".into(),
             indent_level: 0,
             text: "beta from device".into(),
+            after_block_id: None,
         })
         .await
         .expect("device BlockUpsert beta");
@@ -204,6 +206,7 @@ async fn shared_base_converges_with_correct_text() {
             order_key: "a1".into(),
             indent_level: 0,
             text: "beta from device".into(),
+            after_block_id: None,
         })
         .await
         .expect("device BlockUpsert beta");
@@ -227,6 +230,7 @@ async fn shared_base_converges_with_correct_text() {
             order_key: "a0".into(),
             indent_level: 0,
             text: "alpha EDITED".into(),
+            after_block_id: None,
         })
         .await
         .expect("server BlockUpsert alpha");

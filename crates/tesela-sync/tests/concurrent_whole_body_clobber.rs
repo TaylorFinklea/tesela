@@ -87,6 +87,7 @@ async fn server_with_peer_edit() -> LoroEngine {
             order_key: "00000001".into(),
             indent_level: 0,
             text: "beta EDITED BY PEER".into(),
+            after_block_id: None,
         })
         .await
         .expect("peer BlockUpsert beta");
@@ -192,6 +193,7 @@ async fn block_granular_write_preserves_both_edits() {
             order_key: "00000000".into(),
             indent_level: 0,
             text: "alpha CHANGED".into(),
+            after_block_id: None,
         })
         .await
         .expect("granular BlockUpsert alpha");

@@ -1473,6 +1473,66 @@ fn find_node_by_block_id(tree: &LoroTree, target_hex: &str) -> Option<TreeID> {
     None
 }
 
+/// Create a fresh `blocks`-tree node under root, honoring an optional
+/// positional `after_block_id` hint.
+///
+/// - `None` hint → `tree.create(Root)`: append at document end (the
+///   historical behavior; what every receive-only path and every pre-hint
+///   producer relies on).
+/// - `Some(pred)` whose hex resolves to a LIVE root child → insert the new
+///   node IMMEDIATELY AFTER it via `tree.create_at(Root, idx + 1)`, where
+///   `idx` is the predecessor's position in `tree.children(Root)` (the same
+///   live-child list `create_at` indexes into). This makes a mid-note
+///   split's new half render adjacent to its sibling.
+/// - `Some(pred)` that ISN'T a live node (already deleted, or never seen
+///   on this replica) → fall back to append. Loss-free: the block is still
+///   created and rendered; only its position degrades to end-of-document,
+///   which is exactly today's behavior.
+///
+/// Determinism: `create_at` is a Loro movable-tree op. Two replicas that
+/// apply the same `BlockUpsert` resolve `pred` to the same index (the tree
+/// state is shared CRDT state) and call the same `create_at`, and Loro
+/// merges two concurrent adjacent positional inserts to the same order on
+/// every replica (verified by `positional_insert_*` tests). Fractional
+/// index is enabled by default on a Loro tree (jitter 0), so `create_at`
+/// needs no explicit `enable_fractional_index` call.
+fn create_block_node_positioned(
+    tree: &LoroTree,
+    after_block_id: Option<&[u8; 16]>,
+) -> SyncResult<TreeID> {
+    let append = |tree: &LoroTree| {
+        tree.create(TreeParentId::Root)
+            .map_err(|e| SyncError::Storage(format!("loro tree create: {e}")))
+    };
+    let Some(pred_bytes) = after_block_id else {
+        return append(tree);
+    };
+    let pred_hex = hex_id(pred_bytes);
+    // Index of the predecessor among the LIVE root children — the same list
+    // `create_at` indexes into (it counts live children). A tombstoned or
+    // unknown predecessor yields `None` → append.
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+        .collect();
+    let pred_idx = live
+        .iter()
+        .position(|n| read_meta_str(tree, *n, "block_id").as_deref() == Some(pred_hex.as_str()));
+    match pred_idx {
+        Some(idx) => {
+            // Insert immediately after the predecessor. `idx + 1` is in
+            // bounds: idx < live.len(), and create_at accepts index ==
+            // children_num (append). Should the count race (it can't here —
+            // single-threaded apply under the doc lock), fall back to append.
+            tree.create_at(TreeParentId::Root, idx + 1)
+                .or_else(|_| append(tree))
+        }
+        None => append(tree),
+    }
+}
+
 /// Collapse duplicate-`block_id` twins to a single canonical node, returning
 /// the survivors in their original `nodes` walk order.
 ///
@@ -1853,26 +1913,39 @@ impl LoroEngine {
                 order_key: _,
                 indent_level,
                 text,
+                after_block_id,
             } => {
                 // Flat model: every block is a direct child of root in
-                // creation order. `indent_level` (from the op) carries
-                // the visual hierarchy; `order_key` is ignored for
-                // placement because SqliteEngine ignores it too — it
-                // appends new blocks at the end of the document and
-                // renders by document-order + indent. New blocks
-                // `create` under root (append); existing blocks update
-                // text/indent in place without moving. `parent_block_id`
-                // is recorded in meta (NOT used for tree placement) so
-                // BlockDelete can reparent a deleted block's direct
-                // children, matching SqliteEngine (review finding [1]).
+                // document (render) order. `indent_level` (from the op)
+                // carries the visual hierarchy; `order_key` is ignored for
+                // placement. Existing blocks update text/indent in place
+                // WITHOUT moving (an upsert never reorders).
+                //
+                // New blocks: when the op carries an `after_block_id`
+                // positional hint, the new node is created IMMEDIATELY
+                // AFTER that predecessor via `create_at(Root, idx + 1)`, so
+                // a mid-note split's new half lands adjacent to its sibling
+                // instead of at document end (the historical
+                // append-at-end behavior that scattered mid-note inserts
+                // and stranded trailing empties). `after_block_id == None`,
+                // or a predecessor that isn't a live node, falls back to
+                // `create(Root)` (append) — exactly the old behavior, so
+                // every pre-hint producer and every receive-only path is
+                // unchanged. `create_at` is a Loro movable-tree op: two
+                // devices applying the same positional insert (and two
+                // concurrent adjacent inserts) merge to the same
+                // deterministic order on every replica.
+                //
+                // `parent_block_id` is recorded in meta (NOT used for tree
+                // placement) so BlockDelete can reparent a deleted block's
+                // direct children, matching SqliteEngine (review finding
+                // [1]).
                 let doc = self.doc_for_note_mut(*note_id).await;
                 let tree = doc.get_tree("blocks");
                 let block_hex = hex_id(block_id);
                 let node = match find_node_by_block_id(&tree, &block_hex) {
                     Some(existing) => existing,
-                    None => tree
-                        .create(TreeParentId::Root)
-                        .map_err(|e| SyncError::Storage(format!("loro tree create: {e}")))?,
+                    None => create_block_node_positioned(&tree, after_block_id.as_ref())?,
                 };
                 let meta = tree
                     .get_meta(node)
@@ -2055,6 +2128,7 @@ mod tests {
                 order_key: "a0".into(),
                 indent_level: 0,
                 text: "root block".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -2066,6 +2140,7 @@ mod tests {
                 order_key: "a0a".into(),
                 indent_level: 1,
                 text: "child block".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -2076,6 +2151,177 @@ mod tests {
             "- root block <!-- bid:0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a -->\n  \
              - child block <!-- bid:0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b -->\n"
         );
+    }
+
+    /// Helper: record a top-level BlockUpsert with an optional positional
+    /// hint. Returns nothing — the caller renders to assert order.
+    async fn upsert_block(
+        engine: &LoroEngine,
+        note_id: [u8; 16],
+        block_id: [u8; 16],
+        text: &str,
+        after_block_id: Option<[u8; 16]>,
+    ) {
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id,
+                note_id,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: text.into(),
+                after_block_id,
+            })
+            .await
+            .unwrap();
+    }
+
+    /// Render a note's blocks as their texts in document (render) order —
+    /// strips the bid markers so order is the only thing under test.
+    async fn block_texts(engine: &LoroEngine, note_id: [u8; 16]) -> Vec<String> {
+        let rendered = engine.render_note(note_id).await.unwrap();
+        rendered
+            .lines()
+            .filter_map(|l| {
+                let t = l.trim_start().trim_start_matches("- ");
+                let t = t.split(" <!-- bid:").next().unwrap_or(t).trim();
+                (!t.is_empty()).then(|| t.to_string())
+            })
+            .collect()
+    }
+
+    // A new block with an `after_block_id` hint lands ADJACENT to its
+    // predecessor (between it and the old next block), NOT at document end.
+    // This is the headline fix: a mid-note split's new half renders in
+    // place instead of scattering to the bottom.
+    #[tokio::test]
+    async fn positional_insert_lands_adjacent() {
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [40u8; 16];
+        let a = [41u8; 16];
+        let c = [42u8; 16];
+        let b = [43u8; 16];
+
+        // Seed A, C (append).
+        upsert_block(&engine, note_id, a, "A", None).await;
+        upsert_block(&engine, note_id, c, "C", None).await;
+        assert_eq!(block_texts(&engine, note_id).await, vec!["A", "C"]);
+
+        // Insert B AFTER A → expect A, B, C (not A, C, B).
+        upsert_block(&engine, note_id, b, "B", Some(a)).await;
+        assert_eq!(
+            block_texts(&engine, note_id).await,
+            vec!["A", "B", "C"],
+            "new block with after-hint must land adjacent, not at end"
+        );
+    }
+
+    // Backward compatibility: a BlockUpsert with NO positional hint appends
+    // at document end — exactly today's behavior. Receive-only devices and
+    // pre-hint producers depend on this.
+    #[tokio::test]
+    async fn positional_insert_no_hint_appends() {
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [44u8; 16];
+        let a = [45u8; 16];
+        let c = [46u8; 16];
+        let b = [47u8; 16];
+
+        upsert_block(&engine, note_id, a, "A", None).await;
+        upsert_block(&engine, note_id, c, "C", None).await;
+        // No hint → append at end.
+        upsert_block(&engine, note_id, b, "B", None).await;
+        assert_eq!(block_texts(&engine, note_id).await, vec!["A", "C", "B"]);
+    }
+
+    // An `after_block_id` that doesn't resolve to a live node (the engine
+    // never saw the predecessor, or it was deleted) falls back to append.
+    // Loss-free: the block is still created and rendered; only its position
+    // degrades to end-of-document (today's behavior).
+    #[tokio::test]
+    async fn positional_insert_unknown_predecessor_appends() {
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [48u8; 16];
+        let a = [49u8; 16];
+        let b = [50u8; 16];
+        let ghost = [99u8; 16]; // never created
+
+        upsert_block(&engine, note_id, a, "A", None).await;
+        upsert_block(&engine, note_id, b, "B", Some(ghost)).await;
+        // Ghost predecessor → append; B still present, at end.
+        assert_eq!(block_texts(&engine, note_id).await, vec!["A", "B"]);
+    }
+
+    // Insert-at-top: `after_block_id == None` appends, but a hint pointing
+    // at the FIRST block puts the new block second. (Top-of-document insert
+    // is exercised by the diff path's pos==0 → None = append for a fresh
+    // note; an explicit top insert in an existing note is rare and falls to
+    // append, which is loss-free.)
+    #[tokio::test]
+    async fn positional_insert_after_first_is_second() {
+        let hlc = Arc::new(Hlc::new(test_device()));
+        let engine = LoroEngine::new(test_device(), hlc);
+        let note_id = [51u8; 16];
+        let a = [52u8; 16];
+        let b = [53u8; 16];
+        let x = [54u8; 16];
+
+        upsert_block(&engine, note_id, a, "A", None).await;
+        upsert_block(&engine, note_id, b, "B", None).await;
+        upsert_block(&engine, note_id, x, "X", Some(a)).await; // after A
+        assert_eq!(block_texts(&engine, note_id).await, vec!["A", "X", "B"]);
+    }
+
+    // CONVERGENCE: two engines that share a base (A, C) each insert a
+    // DIFFERENT new block at the SAME adjacent position (after A),
+    // concurrently. Cross-importing their updates must converge to the SAME
+    // deterministic order on BOTH engines — no divergence, no panic. This
+    // is the load-bearing CRDT invariant for `create_at`.
+    #[tokio::test]
+    async fn positional_insert_concurrent_converges() {
+        let note_id = [55u8; 16];
+        let a = [56u8; 16];
+        let c = [57u8; 16];
+        let b1 = [58u8; 16];
+        let b2 = [59u8; 16];
+
+        // Engine 1 builds the shared base A, C.
+        let dev1 = DeviceId::from_bytes([0xd1; 16]);
+        let e1 = LoroEngine::new(dev1, Arc::new(Hlc::new(dev1)));
+        upsert_block(&e1, note_id, a, "A", None).await;
+        upsert_block(&e1, note_id, c, "C", None).await;
+
+        // Engine 2 imports the base so both share history (same TreeIDs for
+        // A and C — the convergence precondition the cutover relies on).
+        let dev2 = DeviceId::from_bytes([0xd2; 16]);
+        let e2 = LoroEngine::new(dev2, Arc::new(Hlc::new(dev2)));
+        let base = e1.export_doc_update(note_id, None).await.unwrap();
+        e2.import_doc_update(note_id, &base).await.unwrap();
+        assert_eq!(block_texts(&e2, note_id).await, vec!["A", "C"]);
+
+        // Concurrent adjacent inserts: e1 inserts B1 after A, e2 inserts B2
+        // after A — neither has seen the other yet.
+        upsert_block(&e1, note_id, b1, "B1", Some(a)).await;
+        upsert_block(&e2, note_id, b2, "B2", Some(a)).await;
+
+        // Cross-import both directions.
+        let u1 = e1.export_doc_update(note_id, None).await.unwrap();
+        let u2 = e2.export_doc_update(note_id, None).await.unwrap();
+        e2.import_doc_update(note_id, &u1).await.unwrap();
+        e1.import_doc_update(note_id, &u2).await.unwrap();
+
+        let t1 = block_texts(&e1, note_id).await;
+        let t2 = block_texts(&e2, note_id).await;
+        assert_eq!(t1, t2, "engines diverged after concurrent positional insert");
+        // Both new blocks survive, A first and C last (the inserts went
+        // between them).
+        assert_eq!(t1.first().map(String::as_str), Some("A"));
+        assert_eq!(t1.last().map(String::as_str), Some("C"));
+        assert!(t1.contains(&"B1".to_string()) && t1.contains(&"B2".to_string()));
+        assert_eq!(t1.len(), 4);
     }
 
     #[tokio::test]
@@ -2101,6 +2347,7 @@ mod tests {
                     order_key: "a0".into(),
                     indent_level: indent,
                     text: text.into(),
+                    after_block_id: None,
                 })
                 .await
                 .unwrap();
@@ -2141,6 +2388,7 @@ mod tests {
                     order_key: "a0".into(),
                     indent_level: 0,
                     text: text.into(),
+                    after_block_id: None,
                 })
                 .await
                 .unwrap();
@@ -2203,6 +2451,7 @@ mod tests {
                     order_key: order.into(),
                     indent_level: 0,
                     text: text.into(),
+                    after_block_id: None,
                 })
                 .await
                 .unwrap();
@@ -2239,6 +2488,7 @@ mod tests {
                     order_key: "x".into(),
                     indent_level: 0,
                     text: text.into(),
+                    after_block_id: None,
                 })
                 .await
                 .unwrap();
@@ -2279,6 +2529,7 @@ mod tests {
                 order_key: "a0".into(),
                 indent_level: 0,
                 text: "before".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -2297,6 +2548,7 @@ mod tests {
                 order_key: "a0".into(),
                 indent_level: 0,
                 text: "after".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -2329,6 +2581,7 @@ mod tests {
                 order_key: "a0".into(),
                 indent_level: 0,
                 text: "persisted".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -2436,6 +2689,7 @@ mod tests {
                 order_key: "a0".into(),
                 indent_level: 0,
                 text: "still works".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -2810,14 +3064,17 @@ mod tests {
         a.record_local(OpPayload::BlockUpsert {
             block_id: [0xaa; 16], note_id: note, parent_block_id: None,
             order_key: "a".into(), indent_level: 0, text: "A edit".into(),
+            after_block_id: None,
         }).await.unwrap();
         b.record_local(OpPayload::BlockUpsert {
             block_id: [0xbb; 16], note_id: note, parent_block_id: None,
             order_key: "b".into(), indent_level: 0, text: "B edit".into(),
+            after_block_id: None,
         }).await.unwrap();
         c.record_local(OpPayload::BlockUpsert {
             block_id: [0xcc; 16], note_id: note, parent_block_id: None,
             order_key: "c".into(), indent_level: 0, text: "C edit".into(),
+            after_block_id: None,
         }).await.unwrap();
 
         // A couple of relay rounds to fully propagate.
@@ -2898,6 +3155,7 @@ mod tests {
             .record_local(OpPayload::BlockUpsert {
                 block_id: [0xca; 16], note_id: note, parent_block_id: None,
                 order_key: "a".into(), indent_level: 0, text: "from A".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -2905,6 +3163,7 @@ mod tests {
             .record_local(OpPayload::BlockUpsert {
                 block_id: [0xcb; 16], note_id: note, parent_block_id: None,
                 order_key: "b".into(), indent_level: 0, text: "from B".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -2954,10 +3213,12 @@ mod tests {
         a.record_local(OpPayload::BlockUpsert {
             block_id: [0xaa; 16], note_id: note, parent_block_id: None,
             order_key: "a".into(), indent_level: 0, text: "from A".into(),
+            after_block_id: None,
         }).await.unwrap();
         b.record_local(OpPayload::BlockUpsert {
             block_id: [0xbb; 16], note_id: note, parent_block_id: None,
             order_key: "b".into(), indent_level: 0, text: "from B".into(),
+            after_block_id: None,
         }).await.unwrap();
 
         // Exchange updates both ways (two relay ticks), using each peer's
@@ -3032,6 +3293,7 @@ mod tests {
             .record_local(OpPayload::BlockUpsert {
                 block_id: a, note_id, parent_block_id: None,
                 order_key: "a".into(), indent_level: 0, text: "A".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -3039,6 +3301,7 @@ mod tests {
             .record_local(OpPayload::BlockUpsert {
                 block_id: b, note_id, parent_block_id: Some(a),
                 order_key: "b".into(), indent_level: 1, text: "B".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -3046,6 +3309,7 @@ mod tests {
             .record_local(OpPayload::BlockUpsert {
                 block_id: c, note_id, parent_block_id: Some(b),
                 order_key: "c".into(), indent_level: 2, text: "C".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -3336,6 +3600,7 @@ mod tests {
                 order_key: "a0".into(),
                 indent_level: 0,
                 text: "first".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -3347,6 +3612,7 @@ mod tests {
                 order_key: "a0".into(),
                 indent_level: 0,
                 text: "second".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -3400,6 +3666,7 @@ mod tests {
                 order_key: "b".into(),
                 indent_level: 0,
                 text: "two".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -3610,6 +3877,7 @@ mod tests {
             order_key: "a".into(),
             indent_level: 0,
             text: "from A".into(),
+            after_block_id: None,
         })
         .await
         .unwrap();
@@ -3620,6 +3888,7 @@ mod tests {
             order_key: "b".into(),
             indent_level: 0,
             text: "from B".into(),
+            after_block_id: None,
         })
         .await
         .unwrap();
@@ -3786,6 +4055,7 @@ mod tests {
                 order_key: "b".into(),
                 indent_level: 0,
                 text: "beta EDITED".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();

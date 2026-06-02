@@ -1295,10 +1295,10 @@
     }
     // Block-granular path: a new block (and, for a split, the edited original)
     // is upserted by its client-minted bid — NOT a whole-body PUT that would
-    // re-assert every block and clobber concurrent peer edits. MID-note inserts
-    // land at the document END on peers in v1 (engine ignores order_key — see
-    // the spec's new-block-in-middle caveat); loss-free is the invariant,
-    // position is the documented follow-up. One path per save.
+    // re-assert every block and clobber concurrent peer edits. The structural
+    // upsert carries an `after_bid` predecessor hint, so a mid-note split's
+    // new half lands ADJACENT to its sibling on peers (engine `create_at`),
+    // not at document end. One path per save.
     saveBlocksViaOps(
       blocks,
       structuralIds.map((sid) => upsertOpForStructuralBlock(blocks, sid)),

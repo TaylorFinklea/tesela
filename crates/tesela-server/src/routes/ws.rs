@@ -389,6 +389,7 @@ mod tests {
                 order_key: "a".into(),
                 indent_level: 0,
                 text: "A edit".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
@@ -400,6 +401,7 @@ mod tests {
                 order_key: "c".into(),
                 indent_level: 0,
                 text: "C edit".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();

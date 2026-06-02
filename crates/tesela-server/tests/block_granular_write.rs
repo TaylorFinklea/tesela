@@ -246,3 +246,91 @@ async fn post_blocks_preserves_concurrent_peer_edit() {
     // Touch the tempdir so the compiler keeps it alive until here.
     let _ = temp.path();
 }
+
+/// HTTP-level proof of the positional-insert hint: a `POST /blocks` upsert
+/// carrying `after_bid` inserts the new block IMMEDIATELY AFTER its
+/// predecessor instead of appending at document end. This is the
+/// mid-note-split fix (engine `create_at`) exercised through the real
+/// router → handler → engine → materialization.
+#[tokio::test(flavor = "current_thread")]
+async fn post_blocks_after_bid_inserts_adjacent() {
+    const A_BID: &str = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+    const C_BID: &str = "0c0c0c0c-0c0c-0c0c-0c0c-0c0c0c0c0c0c";
+    const B_BID: &str = "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b";
+
+    let temp = TempDir::new().unwrap();
+    let mosaic = temp.path().join("mosaic");
+    make_fixture_mosaic(&mosaic).unwrap();
+
+    let port = pick_free_port();
+    let addr = format!("127.0.0.1:{}", port);
+    let base = format!("http://{}", addr);
+    let _server = spawn_server(&mosaic, &addr);
+    assert!(
+        wait_for_port(&addr, Duration::from_secs(15)),
+        "server never bound to {addr}"
+    );
+
+    let client = reqwest::Client::new();
+
+    // Seed a note with A, C (two top-level bullets).
+    let seed_body = format!("- A <!-- bid:{A_BID} -->\n- C <!-- bid:{C_BID} -->\n");
+    let created: serde_json::Value = client
+        .post(format!("{}/notes", base))
+        .json(&serde_json::json!({
+            "title": "Positional Insert Note",
+            "content": seed_body,
+            "tags": [],
+        }))
+        .send()
+        .await
+        .expect("POST /notes")
+        .error_for_status()
+        .expect("note created")
+        .json()
+        .await
+        .expect("create json");
+    let note_id = created["id"].as_str().expect("note id").to_string();
+
+    // Insert a NEW block B AFTER A via after_bid. Expect A, B, C — NOT A, C, B.
+    let after: serde_json::Value = client
+        .post(format!("{}/notes/{}/blocks", base, note_id))
+        .json(&serde_json::json!({
+            "ops": [
+                {
+                    "kind": "upsert",
+                    "bid": B_BID,
+                    "text": "B",
+                    "parent_bid": null,
+                    "indent_level": 0,
+                    "after_bid": A_BID,
+                }
+            ]
+        }))
+        .send()
+        .await
+        .expect("POST /blocks (insert B after A)")
+        .error_for_status()
+        .expect("insert ok")
+        .json()
+        .await
+        .expect("insert json");
+
+    let render = after["content"].as_str().expect("content");
+    // Extract the order of the single-letter bullets.
+    let order: Vec<&str> = render
+        .lines()
+        .filter_map(|l| {
+            let t = l.trim_start_matches([' ', '\t', '-']).trim();
+            let t = t.split(" <!-- bid:").next().unwrap_or(t).trim();
+            (t == "A" || t == "B" || t == "C").then_some(t)
+        })
+        .collect();
+    assert_eq!(
+        order,
+        vec!["A", "B", "C"],
+        "B must land adjacent to A (after_bid), not at document end; got render:\n{render}"
+    );
+
+    let _ = temp.path();
+}

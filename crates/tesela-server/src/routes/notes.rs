@@ -99,17 +99,24 @@ pub struct UpdateNoteReq {
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BlockOp {
-    /// Create-or-update a block's text + indent in place. The engine
-    /// resolves the bid to an existing node (updating it) or appends a
-    /// new node at document end (it ignores `order_key` for placement —
-    /// mid-note inserts land at the end in v1; see the spec's
-    /// new-block-in-middle caveat).
+    /// Create-or-update a block's text + indent. The engine resolves the
+    /// bid to an existing node (updating its text/indent in place, never
+    /// moving it) or creates a new node. When `after_bid` is present, a
+    /// NEW node is inserted immediately AFTER that predecessor block so a
+    /// mid-note split's new half lands adjacent to its sibling; absent (or
+    /// a predecessor the engine hasn't seen), the new node appends at
+    /// document end (the historical behavior). `order_key` is still
+    /// ignored for placement.
     Upsert {
         bid: String,
         text: String,
         #[serde(default)]
         parent_bid: Option<String>,
         indent_level: u16,
+        /// Predecessor block id: insert a NEW block immediately after this
+        /// one. `None` = append at document end (backward compatible).
+        #[serde(default)]
+        after_bid: Option<String>,
     },
     /// Recompute a block's parent/indent. `BlockMove` only recomputes
     /// indent/parent today (never reorders rows); indent/outdent is safe,
@@ -482,16 +489,22 @@ pub async fn upsert_blocks(
                 text,
                 parent_bid,
                 indent_level,
+                after_bid,
             } => OpPayload::BlockUpsert {
                 block_id: parse_bid(&bid)?,
                 note_id: delta_note_id,
                 parent_block_id: parse_opt_bid(parent_bid.as_deref())?,
                 // The engine ignores `order_key` for placement; pass the
                 // same benign zero key the diff path emits for a first
-                // sibling. Position is render = document/creation order.
+                // sibling. Positioning of a NEW block is carried by
+                // `after_block_id` (the predecessor hint); existing blocks
+                // update in place.
                 order_key: "00000000".to_string(),
                 indent_level,
                 text,
+                // Positional-insert hint: place a new block immediately
+                // after this predecessor. `None` → append (backward compat).
+                after_block_id: parse_opt_bid(after_bid.as_deref())?,
             },
             BlockOp::Move {
                 bid,

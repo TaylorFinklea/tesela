@@ -95,6 +95,20 @@ pub enum OpPayload {
         indent_level: u16,
         /// Block text.
         text: String,
+        /// Positional-insert hint: when this op CREATES a new node, place
+        /// it immediately AFTER the live block whose id is this value, so
+        /// a mid-note split's new half lands adjacent to its sibling
+        /// instead of at document end. `None` means "no hint" — append at
+        /// the end (the historical behavior; what every pre-hint producer
+        /// and every receive-only path falls back to). Ignored when the op
+        /// UPDATES an existing block (position is never moved by an
+        /// upsert). Resolution is deterministic across devices: both apply
+        /// the same `create_at(Root, predecessor_index + 1)`, and Loro's
+        /// movable-tree merges two concurrent positional inserts to the
+        /// same order on every replica. A predecessor id that isn't a live
+        /// node falls back to append.
+        #[serde(default)]
+        after_block_id: Option<[u8; 16]>,
     },
     /// Move a block to a new parent or order position.
     BlockMove {

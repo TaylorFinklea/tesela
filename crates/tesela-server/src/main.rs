@@ -1025,6 +1025,7 @@ mod tests {
                 order_key: "z".into(),
                 indent_level: 0,
                 text: "live edit from A".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();

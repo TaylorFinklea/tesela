@@ -94,12 +94,22 @@ pub fn diff_note_trees_with_options(
         let new_view = BlockView::from(block, new.blocks.as_slice(), pos);
         match old_index.get(&block.id) {
             None => {
-                ops.push(make_block_upsert(note_id, block.id, &new_view));
+                // New block: carry a positional hint so the engine inserts
+                // it ADJACENT to the block it follows in document order
+                // (its predecessor), instead of appending at document end.
+                // The predecessor is the block at `pos - 1`; `None` at the
+                // top (`pos == 0`) means append, which is correct for a
+                // brand-new note seeded in order. The hint is only honored
+                // on CREATE — an update-in-place ignores it.
+                let after = pos.checked_sub(1).map(|p| new.blocks[p].id);
+                ops.push(make_block_upsert(note_id, block.id, &new_view, after));
             }
             Some(old_view) => {
                 if block.text != old_view.text {
-                    // Text changed; full upsert covers position too.
-                    ops.push(make_block_upsert(note_id, block.id, &new_view));
+                    // Text changed; full upsert covers position too. No
+                    // positional hint — an existing block is updated in
+                    // place and never moved by an upsert.
+                    ops.push(make_block_upsert(note_id, block.id, &new_view, None));
                 } else if old_view.parent != new_view.parent
                     || old_view.order_key != new_view.order_key
                 {
@@ -118,7 +128,12 @@ pub fn diff_note_trees_with_options(
     ops
 }
 
-fn make_block_upsert(note_id: [u8; 16], block_id: Uuid, view: &BlockView) -> OpPayload {
+fn make_block_upsert(
+    note_id: [u8; 16],
+    block_id: Uuid,
+    view: &BlockView,
+    after_block_id: Option<Uuid>,
+) -> OpPayload {
     OpPayload::BlockUpsert {
         block_id: uuid_to_bytes(block_id),
         note_id,
@@ -126,6 +141,7 @@ fn make_block_upsert(note_id: [u8; 16], block_id: Uuid, view: &BlockView) -> OpP
         order_key: view.order_key.clone(),
         indent_level: view.indent,
         text: view.text.clone(),
+        after_block_id: after_block_id.map(uuid_to_bytes),
     }
 }
 
@@ -210,6 +226,82 @@ mod tests {
                     assert!(text == "One" || text == "Two");
                 }
                 _ => panic!("expected BlockUpsert, got {:?}", op),
+            }
+        }
+    }
+
+    #[test]
+    fn new_block_in_middle_carries_predecessor_hint() {
+        // Old: A, C. New: A, B, C. B is the inserted block; its
+        // `after_block_id` hint must point at A (its predecessor in
+        // document order) so the engine inserts it adjacent, not at end.
+        let initial = parse("- A\n- C\n");
+        let a_id = initial.blocks[0].id;
+        let b_id = Uuid::now_v7();
+        let c_id = initial.blocks[1].id;
+        let new = NoteTree {
+            frontmatter: None,
+            page_properties: vec![],
+            blocks: vec![
+                FlatBlock { id: a_id, parent: None, indent: 0, text: "A".into() },
+                FlatBlock { id: b_id, parent: None, indent: 0, text: "B".into() },
+                FlatBlock { id: c_id, parent: None, indent: 0, text: "C".into() },
+            ],
+            stamped_any: false,
+        };
+        let ops = diff_note_trees(note(7), &initial, &new);
+        let mut saw_b_hint = false;
+        for op in &ops {
+            if let OpPayload::BlockUpsert {
+                block_id,
+                after_block_id,
+                ..
+            } = op
+            {
+                if *block_id == *b_id.as_bytes() {
+                    assert_eq!(
+                        *after_block_id,
+                        Some(*a_id.as_bytes()),
+                        "inserted block B must point its after-hint at predecessor A"
+                    );
+                    saw_b_hint = true;
+                }
+            }
+        }
+        assert!(saw_b_hint, "expected a BlockUpsert for B, got {:?}", ops);
+    }
+
+    #[test]
+    fn first_new_block_has_no_predecessor_hint() {
+        // A brand-new note: every block is new. The FIRST block has no
+        // predecessor, so its hint is None (append is correct for an
+        // in-order seed); the SECOND block points at the first.
+        let new = parse("- One\n- Two\n");
+        let old = NoteTree {
+            frontmatter: None,
+            page_properties: vec![],
+            blocks: vec![],
+            stamped_any: false,
+        };
+        let one_id = new.blocks[0].id;
+        let ops = diff_note_trees(note(8), &old, &new);
+        for op in &ops {
+            if let OpPayload::BlockUpsert {
+                text,
+                after_block_id,
+                ..
+            } = op
+            {
+                if text == "One" {
+                    assert_eq!(*after_block_id, None, "first block has no predecessor");
+                }
+                if text == "Two" {
+                    assert_eq!(
+                        *after_block_id,
+                        Some(*one_id.as_bytes()),
+                        "second block points at the first"
+                    );
+                }
             }
         }
     }

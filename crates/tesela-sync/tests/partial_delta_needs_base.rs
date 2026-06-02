@@ -43,6 +43,7 @@ async fn partial_delta_into_empty_doc_does_not_apply() {
             order_key: "a0".into(),
             indent_level: 0,
             text: "alpha EDITED".into(),
+            after_block_id: None,
         })
         .await
         .expect("edit");

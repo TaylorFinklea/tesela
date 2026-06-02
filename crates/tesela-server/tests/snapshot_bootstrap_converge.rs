@@ -109,6 +109,7 @@ async fn snapshot_bootstrap_converges_without_twins() {
             order_key: "a1".into(),
             indent_level: 0,
             text: "beta from device".into(),
+            after_block_id: None,
         })
         .await
         .expect("device BlockUpsert beta");
@@ -132,6 +133,7 @@ async fn snapshot_bootstrap_converges_without_twins() {
             order_key: "a0".into(),
             indent_level: 0,
             text: "alpha EDITED".into(),
+            after_block_id: None,
         })
         .await
         .expect("server BlockUpsert alpha");

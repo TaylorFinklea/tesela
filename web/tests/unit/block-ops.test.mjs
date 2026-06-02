@@ -12,6 +12,7 @@ import { strict as assert } from "node:assert";
 import {
   stripBid,
   parentBidFor,
+  afterBidFor,
   upsertOpForBlock,
   upsertOpForStructuralBlock,
   mergeOpsForBackspace,
@@ -193,6 +194,8 @@ test("upsertOpForStructuralBlock: a brand-new local-only block IS upserted (its 
     text: "fresh line",
     parent_bid: null,
     indent_level: 0,
+    // New block follows "first" → positional hint lands it adjacent.
+    after_bid: "first",
   });
 });
 
@@ -214,6 +217,9 @@ test("upsertOpForStructuralBlock: split-original (changed id, inherited bid) str
     text: "before",
     parent_bid: "p",
     indent_level: 1,
+    // Predecessor is the parent block ("p"); a new structural block lands
+    // immediately after it.
+    after_bid: "p",
   });
 });
 
@@ -228,6 +234,46 @@ test("upsertOpForStructuralBlock: a child new-block nests under its (local-only 
   const op = upsertOpForStructuralBlock(blocks, "note:new-2");
   assert.equal(op.parent_bid, "parent-bid");
   assert.equal(op.indent_level, 1);
+});
+
+test("afterBidFor: top-of-document block has no predecessor hint", () => {
+  const blocks = [blk("note:0", { bid: "a", indent_level: 0 })];
+  assert.equal(afterBidFor(blocks, 0), undefined);
+});
+
+test("afterBidFor: predecessor's bid is the hint", () => {
+  const blocks = [
+    blk("note:0", { bid: "a", indent_level: 0 }),
+    blk("note:1", { bid: "b", indent_level: 0 }),
+  ];
+  assert.equal(afterBidFor(blocks, 1), "a");
+});
+
+test("afterBidFor: a bid-less predecessor → undefined (append fallback)", () => {
+  const blocks = [
+    blk("note:new-0", { bid: null, indent_level: 0 }),
+    blk("note:1", { bid: "b", indent_level: 0 }),
+  ];
+  assert.equal(afterBidFor(blocks, 1), undefined);
+});
+
+test("upsertOpForStructuralBlock: a new block after a sibling carries after_bid", () => {
+  // Enter-split scenario: A exists, the new block lands right after it.
+  const blocks = [
+    blk("note:0", { bid: "a-bid", raw_text: "A", indent_level: 0 }),
+    blk("note:new-1", { bid: "b-bid", raw_text: "B", indent_level: 0 }),
+    blk("note:2", { bid: "c-bid", raw_text: "C", indent_level: 0 }),
+  ];
+  const op = upsertOpForStructuralBlock(blocks, "note:new-1");
+  assert.equal(op.after_bid, "a-bid", "B's predecessor is A");
+});
+
+test("upsertOpForStructuralBlock: a new top-of-document block omits after_bid", () => {
+  const blocks = [
+    blk("note:new-0", { bid: "first-bid", raw_text: "first", indent_level: 0 }),
+  ];
+  const op = upsertOpForStructuralBlock(blocks, "note:new-0");
+  assert.equal("after_bid" in op, false, "no predecessor → omit hint → server appends");
 });
 
 test("upsertOpForStructuralBlock: no bid → null (PUT fallback / server would re-stamp)", () => {
@@ -436,8 +482,8 @@ test("template insert: each inserted block → one structural upsert (fresh bid,
   const ops = inserted.map((b) => upsertOpForStructuralBlock(blocks, b.id));
   assert.equal(ops.length, 2);
   assert.deepEqual(ops, [
-    { kind: "upsert", bid: "tmpl-bid-1", text: "heading", parent_bid: "parent-bid", indent_level: 1 },
-    { kind: "upsert", bid: "tmpl-bid-2", text: "nested item", parent_bid: "tmpl-bid-1", indent_level: 2 },
+    { kind: "upsert", bid: "tmpl-bid-1", text: "heading", parent_bid: "parent-bid", indent_level: 1, after_bid: "parent-bid" },
+    { kind: "upsert", bid: "tmpl-bid-2", text: "nested item", parent_bid: "tmpl-bid-1", indent_level: 2, after_bid: "tmpl-bid-1" },
   ]);
 });
 
@@ -483,7 +529,9 @@ test("diffOpsForSnapshot: a block the restore brings back → upsert", () => {
   ];
   const ops = diffOpsForSnapshot(prev, next);
   assert.deepEqual(ops, [
-    { kind: "upsert", bid: "b", text: "beta", parent_bid: null, indent_level: 0 },
+    // "beta" is re-created at index 1; its predecessor "a" carries the
+    // positional hint so it lands adjacent.
+    { kind: "upsert", bid: "b", text: "beta", parent_bid: null, indent_level: 0, after_bid: "a" },
   ]);
 });
 

@@ -34,6 +34,15 @@ export type BlockOp =
       text: string;
       parent_bid: string | null;
       indent_level: number;
+      /** Predecessor block id: when this upsert CREATES a new block on the
+       *  server, insert it immediately AFTER this block (so a mid-note
+       *  split's new half lands adjacent, not at document end). Omitted
+       *  (undefined) for an in-place text edit of an existing block — the
+       *  engine never moves an existing block on upsert — and at the top of
+       *  the document (no predecessor). Mirrors the server `BlockOp::Upsert`
+       *  `after_bid` field; `undefined` serializes as omitted = append
+       *  (backward compatible). */
+      after_bid?: string;
     }
   | {
       kind: "move";
@@ -75,6 +84,20 @@ export function parentBidFor(blocks: ParsedBlock[], index: number): string | nul
     }
   }
   return null;
+}
+
+/**
+ * Derive the `after_bid` positional hint for the block at `index`: the
+ * `bid` of the immediately PRECEDING block in document order. Returns
+ * `undefined` at the top of the document (no predecessor) or when the
+ * predecessor hasn't been stamped with a `bid` yet (a brand-new local-only
+ * block) — in both cases the new block appends at document end, which is
+ * the loss-free fallback. The engine inserts a NEW block right after this
+ * predecessor; an existing block updated in place ignores the hint.
+ */
+export function afterBidFor(blocks: ParsedBlock[], index: number): string | undefined {
+  if (index <= 0) return undefined;
+  return blocks[index - 1]?.bid ?? undefined;
 }
 
 /**
@@ -125,12 +148,20 @@ export function upsertOpForStructuralBlock(
   if (index < 0) return null;
   const block = blocks[index];
   if (!block.bid) return null;
+  // Positional hint: a structural insert (Enter split / new-block-above /
+  // paste) should land ADJACENT to the block it follows, so peers render it
+  // in place instead of at document end. The predecessor is the block one
+  // position earlier; `undefined` at the top means append. The engine only
+  // honors the hint when this op CREATES the block — re-upserting the
+  // edited-original half of a split (an existing block) ignores it.
+  const after_bid = afterBidFor(blocks, index);
   return {
     kind: "upsert",
     bid: block.bid,
     text: stripBid(block.raw_text),
     parent_bid: parentBidFor(blocks, index),
     indent_level: block.indent_level,
+    ...(after_bid !== undefined ? { after_bid } : {}),
   };
 }
 
@@ -281,12 +312,17 @@ export function diffOpsForSnapshot(
     ) {
       continue; // unchanged — no op, so a concurrent peer edit to it survives.
     }
+    // For a block the restore RE-CREATES (absent in prev), carry the
+    // positional hint so it lands adjacent to its predecessor in the
+    // restored tree; an existing block being updated ignores it.
+    const after_bid = before ? undefined : afterBidFor(next, i);
     ops.push({
       kind: "upsert",
       bid: b.bid!,
       text,
       parent_bid,
       indent_level: b.indent_level,
+      ...(after_bid !== undefined ? { after_bid } : {}),
     });
   }
   // Deletes for blocks the restore removed.

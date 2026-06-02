@@ -63,6 +63,7 @@ async fn snapshot_import_into_resident_doc_keeps_local_only_block() {
             order_key: "z9".into(),
             indent_level: 0,
             text: "ios local block".into(),
+            after_block_id: None,
         })
         .await
         .expect("local-only block");
@@ -77,6 +78,7 @@ async fn snapshot_import_into_resident_doc_keeps_local_only_block() {
             order_key: "m5".into(),
             indent_level: 0,
             text: "web new block".into(),
+            after_block_id: None,
         })
         .await
         .expect("server new block");

@@ -189,6 +189,7 @@ async fn two_authoritative_engines_converge_over_real_relay() {
         order_key: "a".into(),
         indent_level: 0,
         text: "from A".into(),
+        after_block_id: None,
     })
     .await
     .unwrap();
@@ -199,6 +200,7 @@ async fn two_authoritative_engines_converge_over_real_relay() {
         order_key: "b".into(),
         indent_level: 0,
         text: "from B".into(),
+        after_block_id: None,
     })
     .await
     .unwrap();

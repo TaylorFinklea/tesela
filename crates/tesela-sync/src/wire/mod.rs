@@ -172,6 +172,7 @@ mod tests {
             order_key: "a3".to_string(),
             indent_level: 2,
             text: "First child block".to_string(),
+            after_block_id: None,
         };
         let op = EncodedOp::new(hlc, 1, payload, None).unwrap();
         let bytes = encode_op(&op).unwrap();
