@@ -28,12 +28,13 @@
 </script>
 
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { parseBlocks } from "$lib/block-parser";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
   import { api } from "$lib/api-client";
   import { upsertOpForBlock, moveOpsForIds, type BlockOp } from "$lib/block-ops";
+  import { BlockOpsSaver } from "$lib/block-ops-saver";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { Note } from "$lib/types/Note";
   import BlockEditor from "./BlockEditor.svelte";
@@ -649,6 +650,11 @@
   $effect(() => {
     const noteChanged = noteId !== lastBodyNoteId;
     if (!noteChanged && body === lastExternalBody) return;
+    // The outliner is about to switch notes (drill / Esc-back within the same
+    // instance) and discard the old note's block state. Flush its pending
+    // coalesced block-ops first so an un-fired debounce timer doesn't lose the
+    // last edit to the note we're leaving.
+    if (noteChanged) blockOpsSaver.flush(lastBodyNoteId);
     lastBodyNoteId = noteId;
     if (noteChanged) {
       lastExternalBody = body;
@@ -799,7 +805,14 @@
   function saveBlocks(updated: ParsedBlock[]) {
     const { full, bodyOnly } = buildFullContent(updated);
     lastSentBody = bodyOnly;
-    onContentChange?.(full);
+    // Any direct whole-body PUT (structural edits: backspace-delete/merge,
+    // Enter-split, paste, dd) SUPERSEDES a pending coalesced block-ops batch
+    // for this note: the PUT body is built from the same accumulated `blocks`,
+    // so it already carries the queued text edits. Cancel the pending ops
+    // (timer + any in-flight POST, no flush) so we don't double-send — one
+    // path per save. `supersedeWithBody` is a no-op cancel when nothing is
+    // pending, so the common (no prior typing) case is unaffected.
+    blockOpsSaver.supersedeWithBody(noteId, () => onContentChange?.(full));
   }
 
   /** Block-granular save path (sync redesign 2026-06-02). Sends ONLY the
@@ -833,21 +846,63 @@
     // the ops path and the PUT fallback below converge to this same body.
     const { bodyOnly } = buildFullContent(updated);
     lastSentBody = bodyOnly;
+    // Capture the note this save belongs to: `noteId` can change under us
+    // (drill / Esc-back) before a debounced flush fires, so the coalesced POST
+    // must target the note that was current when the edit happened.
+    const targetNoteId = noteId;
     if (ops.length === 0 || ops.some((o) => o === null)) {
       // Not fully block-granular (no eligible op, or a mixed batch containing
       // a not-yet-saved local block). Use the whole-body PUT for the whole
-      // edit so nothing is dropped. One path per save.
+      // edit so nothing is dropped. `saveBlocks` itself supersedes any pending
+      // coalesced block-ops batch (cancels its timer + in-flight POST) so we
+      // never double-send. One path per save.
       saveBlocks(updated);
       return;
     }
     const concrete = ops as BlockOp[];
-    api.upsertBlocks(noteId, concrete).catch((err) => {
-      console.warn("upsertBlocks failed; falling back to whole-body PUT", err);
-      // Loss-avoidance fallback: if the block-op write fails (e.g. the note
-      // doesn't exist on disk yet), PUT the whole body so the edit persists.
-      saveBlocks(updated);
-    });
+    // Coalesce rapid same-note edits into one trailing-edge POST; abort the
+    // superseded in-flight POST. The flush passes the controller's signal to
+    // `api.upsertBlocks` and swallows the resulting AbortError (expected, not
+    // a failure — no PUT fallback on abort, which would double-write). The
+    // genuine-failure fallback PUTs the latest accumulated body.
+    blockOpsSaver.enqueue(targetNoteId, concrete);
   }
+
+  /** One coalescing saver per outliner instance. The flush POSTs the latest
+   *  coalesced ops to `api.upsertBlocks(noteId, ops, signal)`; on a genuine
+   *  (non-abort) failure it PUTs the latest body via `saveBlocks` so the edit
+   *  still persists. `lastSentBody` already tracks the latest post-edit body
+   *  (advanced on every `saveBlocksViaOps` call), so the fallback re-PUTs the
+   *  current `blocks` — the same converged state the ops would have produced. */
+  const blockOpsSaver = new BlockOpsSaver(
+    (targetNoteId, ops, signal) => api.upsertBlocks(targetNoteId, ops, signal),
+    (targetNoteId) => {
+      // Loss-avoidance fallback for a genuine (non-abort) POST failure. Only
+      // PUT when the failed note is still the one on screen — `blocks` holds
+      // the current note's body, so PUTting it after the outliner has switched
+      // notes would write the wrong note. (A stale note's failed flush is rare
+      // — it would need a note switch to race a network error — and the
+      // server's converged state plus the next edit reconcile it.)
+      if (targetNoteId !== noteId) {
+        console.warn("upsertBlocks failed for a note no longer on screen; skipping PUT fallback");
+        return;
+      }
+      console.warn("upsertBlocks failed; falling back to whole-body PUT");
+      saveBlocks(blocks);
+    },
+  );
+
+  // Flush any pending coalesced block-ops immediately when the user leaves
+  // this outliner (focus moves out) — a save MUST land when the user leaves
+  // the block, not wait on an un-fired debounce timer. Mirrors the
+  // outlinerHasFocus focusout handler below.
+  function flushBlockOpsOnBlur() {
+    blockOpsSaver.flush(noteId);
+  }
+
+  // Flush on teardown so a destroyed outliner (page nav away, pane close)
+  // never loses the last edit to a debounce timer that never fired.
+  onDestroy(() => blockOpsSaver.flushAll());
 
   /** Like `saveBlocks` but bypasses the debounce — used by `applySnapshot`
    *  so an outliner-undo cancels any in-flight pre-undo PUT and immediately
@@ -1479,6 +1534,9 @@
       const next = ev.relatedTarget;
       if (next instanceof Node && rootEl?.contains(next)) return;
       outlinerHasFocus = false;
+      // Focus genuinely left this outliner — land any pending coalesced
+      // block-ops write now instead of waiting on the debounce timer.
+      flushBlockOpsOnBlur();
     };
     rootEl.addEventListener("focusin", onIn);
     rootEl.addEventListener("focusout", onOut);
