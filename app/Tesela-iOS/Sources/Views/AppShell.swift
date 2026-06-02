@@ -83,10 +83,14 @@ struct AppShell: View {
                                 // 2) Produce the cursor-free delta from the
                                 //    now-recorded engine state and push it
                                 //    over the live WS for sub-second
-                                //    delivery (Phase C) — alongside the
-                                //    relay push, not instead of it.
+                                //    delivery (Phase C). The delta baseline
+                                //    advances only on a confirmed send
+                                //    (commitPushedDelta) so a dropped frame
+                                //    re-ships next time.
                                 if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
-                                    liveSync?.sendDelta(frame)
+                                    if liveSync?.sendDelta(frame) == true {
+                                        await relayTicker?.commitPushedDelta(slug: slug)
+                                    }
                                 }
                             }
                         }

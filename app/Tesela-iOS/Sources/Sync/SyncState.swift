@@ -160,17 +160,24 @@ final class LiveSyncSocket: ObservableObject {
     }
 
     /// Push a TLR2-framed Loro delta to the hub as a binary WS frame.
-    /// No-op when the socket isn't connected — the relay tick remains
-    /// the fallback delivery path, and a reconnect catch-up (Phase D)
-    /// will reconcile anything dropped here. The bytes are produced by
-    /// the engine owner (`RelayTicker.produceDeltaFrame(slug:)`); this
-    /// type never touches the engine.
-    func sendDelta(_ frame: Data) {
-        guard connected, let task else { return }
+    /// Returns `true` when the frame was handed to a connected socket,
+    /// `false` when the socket isn't connected (the caller must NOT advance
+    /// its per-note `lastPushedVV` baseline in that case, so the dropped ops
+    /// are re-included in the next delta — otherwise a since_vv delta would
+    /// skip them, since a snapshot is no longer re-sent every keystroke).
+    /// The bytes are produced by the engine owner
+    /// (`RelayTicker.produceDeltaFrame(slug:)`); this type never touches the
+    /// engine. `true` is best-effort: a queued send that later fails surfaces
+    /// as the next receive failure → reconnect/backoff, and the reconnect
+    /// catch-up (`bootstrapNoteIfNeeded`) reconciles a continuously-open peer.
+    @discardableResult
+    func sendDelta(_ frame: Data) -> Bool {
+        guard connected, let task else { return false }
         task.send(.data(frame)) { _ in
             // Best-effort: a send failure surfaces as the next receive
             // failure, which drives the existing reconnect/backoff path.
         }
+        return true
     }
 
     private func scheduleReconnect() {

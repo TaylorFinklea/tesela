@@ -87,16 +87,17 @@ final class RelayTicker: ObservableObject {
     /// `partial_delta_needs_base.rs`), then records the post-edit VV here so
     /// the NEXT frame is a delta relative to it.
     ///
-    /// Dropped-delta backstop: `sendDelta` (SyncState) is best-effort and
-    /// silently no-ops when the socket is down, so a frame can be dropped
-    /// after we advance this VV. The peer is then behind the VV our next
-    /// delta assumes → a gap that Loro buffers as pending (it never
-    /// materializes). `bootstrapNoteIfNeeded` (the shipped snapshot catch-up
-    /// on note-open) heals this: it re-imports the full server snapshot,
-    /// which carries the missing base. A peer that STAYS open and misses a
-    /// delta won't self-heal until it re-opens the note — accepted for v1
-    /// (the relay tick remains an independent fallback delivery path for the
-    /// author's own ops, and any note re-open closes the gap).
+    /// Dropped-delta handling: this VV is advanced (via `commitPushedDelta`)
+    /// ONLY after `sendDelta` confirms the frame reached a connected socket.
+    /// A dropped send leaves the baseline back, so the next `produceDeltaFrame`
+    /// re-includes the dropped ops — restoring the self-heal that a
+    /// full-snapshot-per-keystroke gave for free before #150. (In hub mode the
+    /// WS is the SOLE author→hub delivery path — `hubMode` gates the relay tick
+    /// off and the iOS HTTP-PUT write path was removed — so we cannot rely on a
+    /// relay fallback to re-deliver a dropped frame; the keep-the-VV-back
+    /// behavior is what guarantees redelivery.) A continuously-open PEER that
+    /// misses a frame still self-heals on note re-open via
+    /// `bootstrapNoteIfNeeded` (full server-snapshot catch-up).
     private var lastPushedVV: [String: Data] = [:]
 
     /// Last successful/attempted catch-up time per slug, for the resident
@@ -385,10 +386,16 @@ final class RelayTicker: ObservableObject {
     /// last push (`export_doc_update(note, Some(vv))` = `ExportMode::updates`).
     /// The FIRST push for a note this session has no entry ⇒ `sinceVv = nil`
     /// ⇒ full snapshot, so the peer acquires the base a later partial delta
-    /// depends on (`partial_delta_needs_base.rs`). After a successful produce
-    /// we advance `lastPushedVV[slug]` to the post-edit VV so the NEXT frame
-    /// is a delta relative to this one. See the `lastPushedVV` doc comment
-    /// for the dropped-frame backstop (`bootstrapNoteIfNeeded` on re-open).
+    /// depends on (`partial_delta_needs_base.rs`).
+    ///
+    /// **The baseline is NOT advanced here.** Because a snapshot is no longer
+    /// re-sent every keystroke, a dropped WS frame would never be re-included
+    /// if we advanced the VV optimistically — the next delta would start past
+    /// the dropped ops. So the caller MUST call [`commitPushedDelta(slug:)`]
+    /// only AFTER the frame is confirmed handed to a connected socket
+    /// (`LiveSyncSocket.sendDelta` returns `true`). A dropped send leaves the
+    /// baseline back, so the next produce re-includes the dropped ops — that's
+    /// the dropped-frame self-heal that full snapshots used to give for free.
     func produceDeltaFrame(slug: String) async -> Data? {
         do {
             try await openEngineIfNeeded()
@@ -398,22 +405,25 @@ final class RelayTicker: ObservableObject {
         }
         guard let engine else { return nil }
         let sinceVv = lastPushedVV[slug]
-        let frame: Data?
         do {
-            frame = try await engine.produceNoteDelta(slug: slug, sinceVv: sinceVv)
+            return try await engine.produceNoteDelta(slug: slug, sinceVv: sinceVv)
         } catch {
             lastError = error.localizedDescription
             return nil
         }
-        // Doc resident + a frame produced ⇒ advance the baseline so the next
-        // delta is relative to this push. We read the post-edit VV from the
-        // engine (the caller recorded the edit before calling us) rather than
-        // reusing `sinceVv`, so a dropped frame doesn't permanently freeze the
-        // baseline at a stale VV — the next produce still moves forward.
-        if frame != nil, let vv = await engine.noteVersion(slug: slug) {
+    }
+
+    /// Advance the per-note delta baseline AFTER a frame produced by
+    /// [`produceDeltaFrame(slug:)`] was confirmed sent over the live WS.
+    /// Reads the post-edit VV fresh from the engine (the caller recorded the
+    /// edit before producing), so the NEXT frame is a delta relative to this
+    /// confirmed push. Call this ONLY when `sendDelta` returned `true`; if the
+    /// send was dropped, do NOT call it, so the dropped ops re-ship next time.
+    func commitPushedDelta(slug: String) async {
+        guard let engine else { return }
+        if let vv = await engine.noteVersion(slug: slug) {
             lastPushedVV[slug] = vv
         }
-        return frame
     }
 
     func start() {

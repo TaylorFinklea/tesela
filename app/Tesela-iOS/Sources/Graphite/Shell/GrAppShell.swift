@@ -82,10 +82,14 @@ struct GrAppShell: View {
                         )
                         // 2) Produce the cursor-free delta from the
                         //    now-recorded engine state and send it over the
-                        //    live WS for sub-second delivery (Phase C). This
-                        //    runs alongside the relay push, not instead of it.
+                        //    live WS for sub-second delivery (Phase C). The
+                        //    delta baseline only advances when the send is
+                        //    confirmed (commitPushedDelta) — a dropped frame
+                        //    keeps the VV back so the next delta re-includes it.
                         if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
-                            liveSync?.sendDelta(frame)
+                            if liveSync?.sendDelta(frame) == true {
+                                await relayTicker?.commitPushedDelta(slug: slug)
+                            }
                         }
                     }
                 }
