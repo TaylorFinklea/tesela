@@ -38,7 +38,9 @@ use crate::hlc::Hlc;
 use crate::oplog::op::{ContentHash, EncodedOp, OpPayload};
 use crate::oplog::parked::ParkReason;
 use async_trait::async_trait;
-use loro::{ExportMode, LoroDoc, LoroTree, TreeID, TreeParentId, VersionVector};
+use loro::{
+    ContainerTrait, ExportMode, LoroDoc, LoroTree, TreeID, TreeParentId, VersionVector,
+};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -391,17 +393,73 @@ impl LoroEngine {
         }
     }
 
-    /// Import a peer's Loro update bytes into the addressed note's doc
-    /// (creating it — stamped with this engine's PeerID — if absent),
-    /// then refresh derived state (block_index + index entry) and
-    /// persist the snapshot. Loro merge is commutative + idempotent, so
-    /// duplicate / out-of-order imports are safe. (Phase 4.)
+    /// Apply a peer's Loro update bytes into the addressed note's doc —
+    /// **the protected WS-apply path** (2026-06-02 clobber fix).
+    ///
+    /// A raw `doc.import` of a peer's WHOLE-NOTE SNAPSHOT is unsafe: the
+    /// frame re-asserts the peer's value for EVERY block, and a stale value
+    /// for a block another peer (the server, via HTTP) just edited can win
+    /// the merge — Loro's LWW register *or*, in the disjoint-lineage case,
+    /// the non-causal min-`TreeID` twin dedup — and REVERT the server's
+    /// edit. That is the final data-loss vector, proven on the wire.
+    ///
+    /// The fix has two halves when the server already holds this note:
+    ///
+    /// 1. **Plan (before mutating):** fork the auth doc, import the frame into
+    ///    the fork, and ask the discriminator ([`peer_genuine_block_changes`])
+    ///    which blocks the peer GENUINELY changed — a value the server has
+    ///    never held for that block — vs a stale re-assertion. Also snapshot
+    ///    the server's current per-block text.
+    /// 2. **Raw-import + heal:** raw-import the frame so genuinely-NEW blocks
+    ///    arrive with Loro's native, convergent ordering (the multi-engine
+    ///    relay path depends on this — re-authoring new blocks under the
+    ///    server's peer would diverge across devices), then HEAL the existing
+    ///    blocks the merge got wrong: restore the server's value where a stale
+    ///    re-assertion clobbered it, and force the peer's value where a genuine
+    ///    edit landed on a discarded disjoint twin. A SHARED-register block
+    ///    defers entirely to Loro's LWW.
+    ///
+    /// Bootstrap (the server has no doc for this note yet) is a plain raw
+    /// import: there's nothing to clobber, and the peer's full state is exactly
+    /// what the server should adopt.
+    ///
+    /// Idempotent + commutative: a re-applied frame finds every block's value
+    /// already current → no heal. A decode/fork failure logs + falls back to a
+    /// plain raw import (never panics).
     pub async fn import_doc_update(
         &self,
         note_id: [u8; 16],
         bytes: &[u8],
     ) -> SyncResult<()> {
+        let already_resident = self.inner.docs.read().await.contains_key(&note_id);
         let doc = self.doc_for_note_mut(note_id).await;
+
+        // Compute the protection plan BEFORE mutating the auth doc: which
+        // existing-block values the peer GENUINELY changed, and the server's
+        // current value for every block (to detect + heal a clobber after the
+        // raw merge). Skipped on bootstrap (nothing to protect) and on a
+        // decode/fork failure (graceful: raw-import, never panic).
+        let plan = if already_resident {
+            match peer_genuine_block_changes(&doc, bytes) {
+                Ok(changes) => Some((current_block_texts(&doc), changes)),
+                Err(e) => {
+                    tracing::warn!(
+                        "tesela-sync/loro: WS-apply discriminator failed for {} ({e}); \
+                         raw-importing without per-block protection",
+                        hex_id(&note_id)
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Raw-import the frame. This brings in genuinely-new blocks with their
+        // native, convergent ordering (the multi-engine relay path relies on
+        // Loro's own concurrent-insert merge — re-emitting new blocks under
+        // the server's peer would diverge across devices). The clobber it can
+        // cause on EXISTING blocks is healed below.
         doc.import(bytes)
             .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
         // A peer's snapshot can union same-bid twins minted on a disjoint
@@ -410,6 +468,76 @@ impl LoroEngine {
         // doc carries exactly one node per bid and later block-diff saves
         // can't update a ghost. Idempotent: a re-import finds nothing to drop.
         tombstone_duplicate_twins(&doc, note_id);
+
+        // ── Clobber heal (the protection) ────────────────────────────────
+        // The raw import + twin dedup can leave the SURVIVING node for an
+        // existing block carrying the wrong text. Two cases, healed via
+        // record_local (server peer/lamport) so the surviving node holds the
+        // correct value:
+        //
+        //   (a) STALE re-assertion clobber (the data-loss bug): the import
+        //       changed an existing block to a value the peer didn't genuinely
+        //       author → RESTORE the server's pre-import value.
+        //   (b) Disjoint-twin lost edit: the peer GENUINELY edited an existing
+        //       block but the non-causal min-`TreeID` dedup kept the server's
+        //       twin, so the import left the value UNCHANGED (post == pre) and
+        //       the peer's genuine edit was dropped → FORCE the peer value.
+        //
+        // Case (b) fires ONLY when post == pre, so when the blocks SHARE a Loro
+        // lineage (one register) we defer to Loro's own LWW result (the import
+        // already moved the value) and do NOT override it — preserving the
+        // convergent shared-register semantics the cutover relies on.
+        if let Some((pre_texts, changes)) = plan {
+            use std::collections::HashSet;
+            let post_texts = current_block_texts(&doc);
+            let genuine: HashSet<String> = changes
+                .iter()
+                .filter(|c| !c.is_new)
+                .map(|c| hex_id(&c.block_id))
+                .collect();
+            let mut heals: Vec<(String, String, u16)> = Vec::new();
+            // (b) Force the peer value only for genuine existing-block edits on
+            // a DISJOINT TWIN that the dedup discarded (post == pre = server
+            // twin survived). A shared-register block (`!is_twin`) defers to
+            // Loro's LWW — the import already resolved it; never override.
+            for c in changes.iter().filter(|c| !c.is_new && c.is_twin) {
+                let bid_hex = hex_id(&c.block_id);
+                let pre = pre_texts.get(&bid_hex).map(|s| s.as_str());
+                let post = post_texts.get(&bid_hex).map(|s| s.as_str());
+                if post == pre {
+                    heals.push((bid_hex, c.text.clone(), c.indent));
+                }
+            }
+            // (a) Restore the server's value where the import clobbered an
+            // existing block with a non-genuine (stale) re-assertion.
+            for (bid_hex, pre) in &pre_texts {
+                if genuine.contains(bid_hex) {
+                    continue;
+                }
+                if post_texts.get(bid_hex).map(|s| s.as_str()) != Some(pre.as_str()) {
+                    let indent = server_current_indent(&doc, bid_hex).unwrap_or(0);
+                    heals.push((bid_hex.clone(), pre.clone(), indent));
+                }
+            }
+            // Drop the auth-doc handle's borrow expectations: record_local
+            // re-acquires the docs lock + re-fetches the doc. Apply heals.
+            for (bid_hex, text, indent) in heals {
+                let Some(block_id) = parse_note_id_from_hex(&bid_hex) else {
+                    continue;
+                };
+                self.record_local(OpPayload::BlockUpsert {
+                    block_id,
+                    note_id,
+                    parent_block_id: None,
+                    order_key: "00000000".to_string(),
+                    indent_level: indent,
+                    text,
+                    after_block_id: None,
+                })
+                .await?;
+            }
+        }
+
         self.refresh_note_derived(note_id, &doc).await;
         if let Some(dir) = self.inner.snapshot_dir.as_ref() {
             self.save_snapshot(dir, note_id).await;
@@ -1628,6 +1756,285 @@ fn tombstone_duplicate_twins(doc: &LoroDoc, _note_id: [u8; 16]) -> bool {
         doc.commit();
     }
     deleted_any
+}
+
+/// A block the peer GENUINELY authored a change to (a value the server has
+/// never held for that block — not a stale re-assertion).
+///
+/// - `is_new`: the server doesn't have the block at all (a brand-new peer
+///   block); such blocks ride the raw import for convergent ordering and are
+///   NOT re-emitted.
+/// - `is_twin`: the imported frame leaves >1 live node for this block_id (a
+///   DISJOINT lineage — the peer's edit landed on a separate twin the min-
+///   `TreeID` dedup may discard). Only disjoint-twin genuine edits are force-
+///   healed onto the surviving node; a SHARED-register block (single node)
+///   defers entirely to Loro's own LWW so a legitimately-newer server edit is
+///   never overridden.
+struct PeerBlockChange {
+    block_id: [u8; 16],
+    text: String,
+    indent: u16,
+    is_new: bool,
+    is_twin: bool,
+}
+
+/// Pull a `LoroValue::String` out of a json map-insert value.
+fn json_str(v: &loro::LoroValue) -> Option<String> {
+    match v {
+        loro::LoroValue::String(s) => Some((**s).to_string()),
+        _ => None,
+    }
+}
+
+/// **The clobber discriminator** (2026-06-02). Given the server's current
+/// authoritative doc + a peer's frame bytes, return ONLY the blocks the peer
+/// GENUINELY changed — never a stale re-assertion of a block the server has
+/// since moved past.
+///
+/// ## Why a plain fork-and-diff is wrong
+/// In the proven incident the peer's stale value WON the merge (Loro LWW on a
+/// shared register, or the non-causal min-`TreeID` twin dedup on a disjoint
+/// lineage). So the fork's *rendered* value for the clobbered block already
+/// shows the STALE text — a fork-vs-server text diff would "see a change" and
+/// re-emit the stale value, re-clobbering. The discriminator must instead ask,
+/// per block: *did the peer's frame change this block to a value the server has
+/// NEVER held?* — not *does the merged fork differ?*
+///
+/// ## The discriminator (provably correct for the LWW-/dedup-winning stale case)
+/// 1. `server_vv = auth.oplog_vv()`. Fork the auth doc, import the frame into
+///    the fork. The genuinely-new peer ops are exactly `fork_vv \ server_vv`;
+///    `export_json_updates(server_vv, fork_vv)` yields them with their target
+///    container ids — so we read the peer's AUTHORED value for each block
+///    DIRECTLY from its frame ops, NOT from the dedup-tainted merged tree.
+/// 2. Build the server's per-`block_id` text HISTORY (every value the server
+///    ever wrote for that block, across its own oplog) from
+///    `export_json_updates(∅, server_vv)`. A value the server's history
+///    contains is a value the server already authored and possibly moved
+///    past — a re-assertion, not a new authorship.
+/// 3. For each block the peer's new ops write:
+///    - peer value == server's CURRENT value → no change → **skip**.
+///    - server has no such block (`server_current == None`) → new block →
+///      **apply** (positioned from the fork's live order).
+///    - peer value ∈ server's history for that block → stale re-assertion the
+///      server moved past → **skip** (keep the server's current value).
+///    - else (a value the server never held for this block) → genuine peer
+///      authorship → **apply**.
+///
+/// This KEEPS the server's edit when the peer re-asserts a value the server
+/// already had (the clobber case — A: peer "Awesome", server moved A to
+/// "Awesome sweet", "Awesome" ∈ history → skip) while still APPLYING a true
+/// peer edit to a different block (B: peer "B device", never a server value →
+/// apply). It is conservative by construction: if a peer legitimately re-types
+/// a block's *old* value, we keep the server's current value — the safe choice
+/// for a data-loss guard. Idempotent: after applying, the peer value equals the
+/// server's current value, so a re-applied frame yields no changes.
+fn peer_genuine_block_changes(
+    auth: &LoroDoc,
+    frame: &[u8],
+) -> SyncResult<Vec<PeerBlockChange>> {
+    let server_vv = auth.oplog_vv();
+    // Fork (full-history clone) so the import + diff never touch the auth doc.
+    let fork = auth.fork();
+    fork.import(frame)
+        .map_err(|e| SyncError::Storage(format!("fork import: {e}")))?;
+    let fork_vv = fork.oplog_vv();
+    // Nothing causally new from the peer → idempotent no-op.
+    if fork_vv == server_vv {
+        return Ok(Vec::new());
+    }
+
+    // Map every live meta-map container in the FORK → its block_id. A block's
+    // `block_id` meta is written ONCE at creation, so an incremental delta
+    // (shared lineage) carries only a `text` op with NO `block_id` in the new
+    // ops — we must resolve the container→block_id from the fork's tree, which
+    // holds the stable meta-map `ContainerID` for every node.
+    let container_block = fork_container_to_block(&fork);
+
+    // (1) Peer's AUTHORED value per block, from the genuinely-new frame ops.
+    // For each touched meta-map container, collect the latest text/indent the
+    // new ops wrote — the peer's intended value, untainted by twin dedup.
+    let new_ops = fork.export_json_updates_without_peer_compression(&server_vv, &fork_vv);
+    let mut container_text: HashMap<String, String> = HashMap::new();
+    let mut container_indent: HashMap<String, u16> = HashMap::new();
+    for change in &new_ops.changes {
+        for op in &change.ops {
+            if let loro::JsonOpContent::Map(loro::JsonMapOp::Insert { key, value }) = &op.content {
+                let cid = op.container.to_string();
+                match key.as_str() {
+                    "text" => {
+                        if let Some(s) = json_str(value) {
+                            container_text.insert(cid, s);
+                        }
+                    }
+                    "indent_level" => {
+                        if let loro::LoroValue::I64(n) = value {
+                            container_indent.insert(cid, *n as u16);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // (2) Server's per-block text HISTORY (every value it ever authored).
+    let server_ops =
+        auth.export_json_updates_without_peer_compression(&VersionVector::new(), &server_vv);
+    let mut srv_container_block: HashMap<String, String> = HashMap::new();
+    let mut server_history: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    // First pass: container → block_id (a container's block_id is stable).
+    for change in &server_ops.changes {
+        for op in &change.ops {
+            if let loro::JsonOpContent::Map(loro::JsonMapOp::Insert { key, value }) = &op.content {
+                if key == "block_id" {
+                    if let Some(s) = json_str(value) {
+                        srv_container_block.insert(op.container.to_string(), s);
+                    }
+                }
+            }
+        }
+    }
+    for change in &server_ops.changes {
+        for op in &change.ops {
+            if let loro::JsonOpContent::Map(loro::JsonMapOp::Insert { key, value }) = &op.content {
+                if key == "text" {
+                    if let (Some(bid), Some(text)) =
+                        (srv_container_block.get(&op.container.to_string()), json_str(value))
+                    {
+                        server_history.entry(bid.clone()).or_default().insert(text);
+                    }
+                }
+            }
+        }
+    }
+
+    // Server's CURRENT value per block_id (the live tree, post-dedup).
+    let server_current = current_block_texts(auth);
+    // block_ids that have >1 live node in the imported fork = DISJOINT twins
+    // (the peer authored on a separate lineage). Only these are force-healed.
+    let twin_bids = duplicate_block_ids(&fork);
+
+    // (3) Decide per peer block. Iterate the containers the NEW ops actually
+    // wrote text to (the peer's genuine writes this frame), resolving each to
+    // its block_id via the fork's tree.
+    let mut out: Vec<PeerBlockChange> = Vec::new();
+    for (cid, text) in &container_text {
+        let Some(bid_hex) = container_block.get(cid) else {
+            continue; // container with no resolvable block_id (tombstoned) → skip
+        };
+        let indent = container_indent.get(cid).copied().unwrap_or_else(|| {
+            // Incremental delta that only rewrote text: keep the fork's indent
+            // for this block (don't force 0).
+            server_current_indent(&fork, bid_hex).unwrap_or(0)
+        });
+        let bid = match parse_note_id_from_hex(bid_hex) {
+            Some(b) => b,
+            None => continue,
+        };
+        match server_current.get(bid_hex) {
+            // Already the server's current value → no change.
+            Some(cur) if cur == text => continue,
+            // Server has the block but with a different value.
+            Some(_) => {
+                if server_history
+                    .get(bid_hex)
+                    .is_some_and(|h| h.contains(text))
+                {
+                    // Stale re-assertion the server already moved past → skip.
+                    continue;
+                }
+                // A value the server never held for this block → genuine edit.
+                out.push(PeerBlockChange {
+                    block_id: bid,
+                    text: text.clone(),
+                    indent,
+                    is_new: false,
+                    is_twin: twin_bids.contains(bid_hex),
+                });
+            }
+            // Server doesn't have this block at all → genuine new block.
+            None => {
+                out.push(PeerBlockChange {
+                    block_id: bid,
+                    text: text.clone(),
+                    indent,
+                    is_new: true,
+                    is_twin: twin_bids.contains(bid_hex),
+                });
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The set of block_ids (hex) that have MORE THAN ONE live node in a doc's
+/// `blocks` tree — disjoint-lineage twins. A block_id with a single live node
+/// is a SHARED Loro register whose value Loro's LWW resolves authoritatively.
+fn duplicate_block_ids(doc: &LoroDoc) -> std::collections::HashSet<String> {
+    let tree = doc.get_tree("blocks");
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for node in tree.children(TreeParentId::Root).unwrap_or_default() {
+        if matches!(tree.is_node_deleted(&node), Ok(true)) {
+            continue;
+        }
+        if let Some(bid) = read_meta_str(&tree, node, "block_id") {
+            *counts.entry(bid).or_insert(0) += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .filter(|(_, n)| *n > 1)
+        .map(|(b, _)| b)
+        .collect()
+}
+
+/// Map each live block_id (hex) in a doc's `blocks` tree to its current text,
+/// applying the same twin dedup the renderer uses so a corrupted-on-disk doc
+/// still reports one value per block.
+fn current_block_texts(doc: &LoroDoc) -> HashMap<String, String> {
+    let tree = doc.get_tree("blocks");
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+        .collect();
+    let mut out = HashMap::new();
+    for node in dedup_twins_by_block_id(&tree, live) {
+        if let Some(bid) = read_meta_str(&tree, node, "block_id") {
+            let text = read_meta_str(&tree, node, "text").unwrap_or_default();
+            out.insert(bid, text);
+        }
+    }
+    out
+}
+
+/// Map every live tree node's meta-map `ContainerID` (as a string, matching
+/// `JsonOp.container.to_string()`) → its `block_id` hex. Lets the discriminator
+/// resolve a new text op's container to a block even when the delta carries no
+/// `block_id` write (the shared-lineage incremental case — `block_id` is set
+/// once at creation, before the server's VV).
+fn fork_container_to_block(doc: &LoroDoc) -> HashMap<String, String> {
+    let tree = doc.get_tree("blocks");
+    let mut out = HashMap::new();
+    for node in tree.nodes() {
+        if matches!(tree.is_node_deleted(&node), Ok(true)) {
+            continue;
+        }
+        if let Ok(meta) = tree.get_meta(node) {
+            if let Some(bid) = read_meta_str(&tree, node, "block_id") {
+                out.insert(meta.id().to_string(), bid);
+            }
+        }
+    }
+    out
+}
+
+/// The current indent of a block (hex) in a doc's live tree, or None.
+fn server_current_indent(doc: &LoroDoc, block_hex: &str) -> Option<u16> {
+    let tree = doc.get_tree("blocks");
+    let node = find_node_by_block_id(&tree, block_hex)?;
+    read_indent_level(&tree, node)
 }
 
 #[async_trait]
@@ -4094,5 +4501,303 @@ mod tests {
         let mut id = [0u8; 16];
         id.copy_from_slice(&h.as_bytes()[..16]);
         id
+    }
+
+    // ── WS-push clobber guard (2026-06-02) ───────────────────────────
+    //
+    // The FINAL data-loss vector: a device ships a WHOLE-NOTE SNAPSHOT
+    // carrying its STALE value for a block another peer (the server, via
+    // HTTP) just edited. The stale op is CONCURRENT with the server's
+    // edit and WINS the LWW tiebreak → a raw `doc.import` reverts the
+    // server's edit on the authoritative doc. `import_doc_update` must
+    // apply ONLY the blocks the peer GENUINELY (causally) re-authored,
+    // never a stale re-assertion the peer merely re-shipped.
+
+    /// Read a single block's current text off a note's tree by block_id
+    /// bytes (matching the dashless hex the engine stores in meta).
+    async fn block_text(engine: &LoroEngine, note_id: [u8; 16], block: [u8; 16]) -> Option<String> {
+        let docs = engine.inner.docs.read().await;
+        let doc = docs.get(&note_id)?;
+        let tree = doc.get_tree("blocks");
+        let node = find_node_by_block_id(&tree, &hex_id(&block))?;
+        read_meta_str(&tree, node, "text")
+    }
+
+    /// Construct the EXACT wire incident (the wire-captured DISJOINT-lineage
+    /// case): the server and the device each author block_id A / B
+    /// INDEPENDENTLY (no shared Loro import), so each mints its OWN `TreeID`
+    /// for the same `block_id` — the residual disjoint lineage these daily
+    /// blocks carry (pre-shared-base, or `recordNoteDiff` re-authoring from
+    /// stale markdown). The server then edits A→"Awesome sweet" via HTTP. The
+    /// device, holding its own stale A="Awesome" twin, genuinely edits B→"B
+    /// device" and exports a FULL SNAPSHOT. On a raw `doc.import` the device's
+    /// A-twin unions with the server's, and the non-causal min-`TreeID` dedup
+    /// can keep the STALE twin → the server's edit reverts. The protected
+    /// path must keep "Awesome sweet" (A) AND apply "B device" (B).
+    const A_BID: &str = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+    const B_BID: &str = "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b";
+    const A_BID_BYTES: [u8; 16] = [0x0a; 16];
+    const B_BID_BYTES: [u8; 16] = [0x0b; 16];
+
+    async fn seed_disjoint(server: &LoroEngine, device: &LoroEngine, note: [u8; 16]) {
+        // BOTH author the same note body independently — disjoint Loro
+        // lineages (distinct TreeIDs for the same block_ids).
+        let content =
+            format!("- Awesome <!-- bid:{A_BID} -->\n- B base <!-- bid:{B_BID} -->\n");
+        for e in [server, device] {
+            e.record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("daily".into()),
+                title: "Daily".into(),
+                content: content.clone(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn ws_apply_stale_snapshot_does_not_revert_peer_edit() {
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server = LoroEngine::new(sdev, Arc::new(Hlc::new(sdev)));
+        let ddev = DeviceId::from_bytes([0x7f; 16]);
+        let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
+        let note = blake3_note_id("daily");
+
+        seed_disjoint(&server, &device, note).await;
+
+        // Server edits A via HTTP-style block op (the protected, correct value).
+        server
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "Awesome sweet".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+
+        // Device (stale: never saw the server edit) re-authors A back to the
+        // stale value AND genuinely edits B. Then exports a FULL SNAPSHOT —
+        // the cold-launch first-push frame that triggered the incident.
+        device
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "Awesome".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        device
+            .record_local(OpPayload::BlockUpsert {
+                block_id: B_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "B device".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        let snapshot = device.export_doc_update(note, None).await.unwrap();
+
+        // Server applies the device's stale snapshot via the WS-apply path.
+        server.import_doc_update(note, &snapshot).await.unwrap();
+
+        let a = block_text(&server, note, A_BID_BYTES).await.unwrap_or_default();
+        let b = block_text(&server, note, B_BID_BYTES).await.unwrap_or_default();
+        assert_eq!(
+            a, "Awesome sweet",
+            "A must NOT be reverted by the device's stale snapshot (got {a:?})"
+        );
+        assert_eq!(
+            b, "B device",
+            "B (the device's genuine edit) must apply (got {b:?})"
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_apply_genuine_edit_applies() {
+        // No competing server edit on B: the device's genuine B edit must
+        // land on the server (don't invert the bug into "always keep server").
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server = LoroEngine::new(sdev, Arc::new(Hlc::new(sdev)));
+        let ddev = DeviceId::from_bytes([0x7f; 16]);
+        let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
+        let note = blake3_note_id("daily");
+
+        seed_disjoint(&server, &device, note).await;
+
+        device
+            .record_local(OpPayload::BlockUpsert {
+                block_id: B_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "B device".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        // Device ships a since_vv DELTA of just B (the steady-state frame).
+        let delta = device.export_doc_update(note, None).await.unwrap();
+        server.import_doc_update(note, &delta).await.unwrap();
+
+        assert_eq!(
+            block_text(&server, note, A_BID_BYTES).await.as_deref(),
+            Some("Awesome"),
+            "A unchanged"
+        );
+        assert_eq!(
+            block_text(&server, note, B_BID_BYTES).await.as_deref(),
+            Some("B device"),
+            "genuine B edit applied"
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_apply_stale_snapshot_is_idempotent() {
+        // Applying the same stale snapshot twice must not corrupt state; the
+        // second apply is a no-op (A kept, B applied, both stable).
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server = LoroEngine::new(sdev, Arc::new(Hlc::new(sdev)));
+        let ddev = DeviceId::from_bytes([0x7f; 16]);
+        let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
+        let note = blake3_note_id("daily");
+
+        seed_disjoint(&server, &device, note).await;
+
+        server
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "Awesome sweet".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        device
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "Awesome".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        device
+            .record_local(OpPayload::BlockUpsert {
+                block_id: B_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "B device".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        let snapshot = device.export_doc_update(note, None).await.unwrap();
+
+        server.import_doc_update(note, &snapshot).await.unwrap();
+        let a1 = block_text(&server, note, A_BID_BYTES).await.unwrap_or_default();
+        let b1 = block_text(&server, note, B_BID_BYTES).await.unwrap_or_default();
+        // Second apply of the identical frame.
+        server.import_doc_update(note, &snapshot).await.unwrap();
+        let a2 = block_text(&server, note, A_BID_BYTES).await.unwrap_or_default();
+        let b2 = block_text(&server, note, B_BID_BYTES).await.unwrap_or_default();
+
+        assert_eq!(a1, "Awesome sweet");
+        assert_eq!(b1, "B device");
+        assert_eq!(a1, a2, "A stable across re-apply");
+        assert_eq!(b1, b2, "B stable across re-apply");
+    }
+
+    #[tokio::test]
+    async fn ws_apply_shared_register_concurrent_edit_defers_to_loro_lww() {
+        // GUARD against inverting the fix into "peer always wins": when the
+        // server + device SHARE the Loro lineage for a block (one register)
+        // and BOTH edit it concurrently, the protected apply must DEFER to
+        // Loro's own deterministic LWW — not force the peer's value. Both
+        // sides must converge to the SAME value and stay stable (no
+        // oscillation, no override of a legitimately-newer server edit).
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server = LoroEngine::new(sdev, Arc::new(Hlc::new(sdev)));
+        let ddev = DeviceId::from_bytes([0x7f; 16]);
+        let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
+        let note = blake3_note_id("daily");
+
+        // SHARED base: device imports the server's snapshot (same TreeIDs).
+        server
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("daily".into()),
+                title: "Daily".into(),
+                content: format!("- base <!-- bid:{A_BID} -->\n"),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let base = server.export_doc_update(note, None).await.unwrap();
+        device.import_doc_update(note, &base).await.unwrap();
+
+        // Capture the device's pre-edit VV so it can ship a true since-vv
+        // DELTA of just its own concurrent edit on the SHARED register.
+        let dev_vv = device.doc_version(note).await;
+        // Concurrent edits to the SAME shared block.
+        server
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES, note_id: note, parent_block_id: None,
+                order_key: "00000000".into(), indent_level: 0,
+                text: "server edit".into(), after_block_id: None,
+            })
+            .await
+            .unwrap();
+        device
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES, note_id: note, parent_block_id: None,
+                order_key: "00000000".into(), indent_level: 0,
+                text: "device edit".into(), after_block_id: None,
+            })
+            .await
+            .unwrap();
+        let delta = device.export_doc_update(note, dev_vv.as_deref()).await.unwrap();
+
+        // Server applies the device's delta. Whatever Loro's LWW picks, BOTH
+        // engines must agree — and re-applying must be stable.
+        server.import_doc_update(note, &delta).await.unwrap();
+        // Round-trip the server's state back to the device to converge.
+        let dev_vv2 = device.doc_version(note).await;
+        let srv_delta = server.export_doc_update(note, dev_vv2.as_deref()).await.unwrap();
+        device.import_doc_update(note, &srv_delta).await.unwrap();
+
+        let sa = block_text(&server, note, A_BID_BYTES).await.unwrap_or_default();
+        let da = block_text(&device, note, A_BID_BYTES).await.unwrap_or_default();
+        assert_eq!(sa, da, "shared-register concurrent edit converges on both sides");
+        assert!(
+            sa == "server edit" || sa == "device edit",
+            "winner is one of the two genuine edits (not corrupted): {sa:?}"
+        );
+
+        // Stable: re-applying the same delta does not flip the value.
+        server.import_doc_update(note, &delta).await.unwrap();
+        let sa2 = block_text(&server, note, A_BID_BYTES).await.unwrap_or_default();
+        assert_eq!(sa, sa2, "no oscillation on re-apply");
     }
 }
