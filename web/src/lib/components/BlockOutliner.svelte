@@ -33,6 +33,7 @@
   import { parseBlocks } from "$lib/block-parser";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
   import { api } from "$lib/api-client";
+  import { upsertOpForBlock, moveOpsForIds, type BlockOp } from "$lib/block-ops";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { Note } from "$lib/types/Note";
   import BlockEditor from "./BlockEditor.svelte";
@@ -801,6 +802,53 @@
     onContentChange?.(full);
   }
 
+  /** Block-granular save path (sync redesign 2026-06-02). Sends ONLY the
+   *  supplied ops to `POST /notes/{id}/blocks`, which never re-asserts blocks
+   *  the user didn't touch — the structural fix for the whole-body clobber.
+   *
+   *  **Dual-write-path invariant.** This path is mutually exclusive with the
+   *  whole-body PUT (`saveBlocks` → `onContentChange` → parent debounce): it
+   *  deliberately does NOT call `onContentChange`, so a text/indent edit never
+   *  also enqueues a body PUT for the same note+window. It DOES advance
+   *  `lastSentBody` to the post-edit body so the own-echo dirty-guard
+   *  (`applyExternalReparse`'s `targetBody === lastSentBody` fast-path) still
+   *  recognises the server's echo of THIS write and converges cleanly — the
+   *  same contract `saveBlocks` upholds. Both paths call `recordLocalSave`
+   *  (inside `api.upsertBlocks` / `api.updateNote`).
+   *
+   *  `ops` may contain `null` entries (a block with no server bid, or a
+   *  brand-new local-only insert that isn't a block-op candidate yet). If ANY
+   *  entry is `null` the operation can't be fully expressed block-granularly,
+   *  so — to keep one-path-per-save and never silently drop a sub-edit — the
+   *  ENTIRE save falls back to the whole-body PUT (`saveBlocks`). The common
+   *  case (a real on-disk block) sends a clean ops batch and never PUTs.
+   *
+   *  Synthetic (not-yet-on-disk) days are caught by the same gate: their seed
+   *  block is local-only, so its first edit yields a `null` op → whole-body
+   *  create/PUT path materialises the file, after which subsequent in-place
+   *  edits carry a canonical id and flow block-granularly. */
+  function saveBlocksViaOps(updated: ParsedBlock[], ops: (BlockOp | null)[]) {
+    // Advance the dirty-guard baseline to the post-edit body so the server's
+    // echo of this write is recognised as our own and applies cleanly. Both
+    // the ops path and the PUT fallback below converge to this same body.
+    const { bodyOnly } = buildFullContent(updated);
+    lastSentBody = bodyOnly;
+    if (ops.length === 0 || ops.some((o) => o === null)) {
+      // Not fully block-granular (no eligible op, or a mixed batch containing
+      // a not-yet-saved local block). Use the whole-body PUT for the whole
+      // edit so nothing is dropped. One path per save.
+      saveBlocks(updated);
+      return;
+    }
+    const concrete = ops as BlockOp[];
+    api.upsertBlocks(noteId, concrete).catch((err) => {
+      console.warn("upsertBlocks failed; falling back to whole-body PUT", err);
+      // Loss-avoidance fallback: if the block-op write fails (e.g. the note
+      // doesn't exist on disk yet), PUT the whole body so the edit persists.
+      saveBlocks(updated);
+    });
+  }
+
   /** Like `saveBlocks` but bypasses the debounce — used by `applySnapshot`
    *  so an outliner-undo cancels any in-flight pre-undo PUT and immediately
    *  PUTs the restored body. Falls through to the debounced path if the
@@ -840,7 +888,13 @@
           }
         : b,
     );
-    saveBlocks(blocks);
+    // Block-granular path: an in-place text edit touches exactly ONE block, so
+    // emit a single `upsert` op rather than PUTting the whole body (which
+    // re-asserts — and clobbers — concurrent peer edits to other blocks).
+    // `upsertOpForBlock` returns null when the block has no server bid yet (a
+    // brand-new local insert), in which case `saveBlocksViaOps` falls back to
+    // the whole-body PUT so the edit still persists. One path per save.
+    saveBlocksViaOps(blocks, [upsertOpForBlock(blocks, blockId)]);
   }
 
   function removeBlockTag(block: ParsedBlock, tagName: string) {
@@ -1059,7 +1113,10 @@
     const delta = direction === "indent" ? 1 : -1;
     const ids = subtreeIds(block);
     blocks = blocks.map(b => ids.has(b.id) ? { ...b, indent_level: Math.max(0, b.indent_level + delta) } : b);
-    saveBlocks(blocks);
+    // Block-granular path: an indent/outdent changes only `indent_level` (and
+    // thus parent) on a known set of block ids → one `move` op each, NOT a
+    // whole-body PUT. One path per save.
+    saveBlocksViaOps(blocks, moveOpsForIds(blocks, ids));
   }
 
   function handleBackspace(vi: number) {
@@ -1325,7 +1382,9 @@
     pushUndo();
     const delta = direction === "indent" ? 1 : -1;
     blocks = blocks.map((b) => ids.has(b.id) ? { ...b, indent_level: Math.max(0, b.indent_level + delta) } : b);
-    saveBlocks(blocks);
+    // Block-granular path: same as `handleIndent` but for the visual
+    // selection's subtrees → one `move` op per affected block. One path/save.
+    saveBlocksViaOps(blocks, moveOpsForIds(blocks, ids));
   }
 
   /**

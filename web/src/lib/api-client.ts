@@ -13,6 +13,7 @@ import type { CalendarMarks } from "$lib/types/CalendarMarks";
 import type { NoteVersion } from "$lib/types/NoteVersion";
 import type { AgendaRow } from "$lib/types/AgendaRow";
 import { recordLocalSave } from "$lib/ws-refresh-coordinator";
+import type { BlockOp } from "$lib/block-ops";
 
 // Same-origin path; vite dev server proxies `/api/*` → tesela-server at
 // 127.0.0.1:7474. Relative URL means the LAN client (phone) hits whatever
@@ -37,12 +38,13 @@ async function get<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-async function post<T>(path: string, body: unknown): Promise<T> {
+async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const url = `${BASE_URL}${path}`;
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) throw new ApiError(res.status, await res.text(), url);
   return (await res.json()) as T;
@@ -78,6 +80,26 @@ export const api = {
     // the canonical id differs.
     recordLocalSave(id);
     return put<Note>(`/notes/${encodeURIComponent(id)}`, { content }, signal).then(
+      (note) => {
+        recordLocalSave(note.id);
+        return note;
+      },
+    );
+  },
+  /** Block-granular write (sync redesign 2026-06-02). Submits ONLY the
+   *  block ops the user actually changed (in-place text edit, indent/
+   *  outdent move) to `POST /notes/{id}/blocks`, instead of PUTting the
+   *  whole note body. A block with no op is never re-asserted server-side,
+   *  so a concurrent peer edit to it survives — this is the structural fix
+   *  for the whole-body clobber (`concurrent_whole_body_clobber.rs`).
+   *
+   *  Opens the own-echo suppression window BEFORE the POST (mirroring
+   *  `updateNote`) so the server's `note_updated` echo for this id is
+   *  recognised as ours, then re-records on the response in case the
+   *  canonical id differs. Returns the updated Note. */
+  upsertBlocks: (noteId: string, ops: BlockOp[], signal?: AbortSignal) => {
+    recordLocalSave(noteId);
+    return post<Note>(`/notes/${encodeURIComponent(noteId)}/blocks`, { ops }, signal).then(
       (note) => {
         recordLocalSave(note.id);
         return note;
