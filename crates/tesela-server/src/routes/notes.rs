@@ -68,6 +68,17 @@ pub struct CleanupTagReq {
 pub struct UpdateNoteReq {
     /// Full note content (including frontmatter). The store writes this directly to disk.
     pub content: String,
+    /// The full note body the client last loaded/sent — its edit BASE
+    /// (the version it started THIS edit from). Optional for backward
+    /// compatibility: older clients omit it. When present, the server
+    /// diffs `base_content → content` (the author's REAL changes) instead
+    /// of `server_file → content`, so a block the author never touched is
+    /// identical base→new = NO op = a concurrent peer edit to that block
+    /// survives. When absent, the server falls back to the historical
+    /// `server_file → content` diff (no regression). See the base-diff
+    /// spec (2026-06-02) and `concurrent_whole_body_clobber.rs`.
+    #[serde(default)]
+    pub base_content: Option<String>,
 }
 
 /// A single block-granular mutation for `POST /notes/{id}/blocks`.
@@ -320,7 +331,16 @@ pub async fn update_note(
     // functions. The HTTP handler becomes a thin op-submission
     // wrapper around the engine. See
     // `.docs/ai/phases/2026-05-26-sync-architecture-redesign.md`.
-    record_sync_update(&s, &prev_content, &note).await;
+    // Base-diff (2026-06-02): when the client sends its edit BASE (the
+    // body it started this edit from), diff base→new so we emit ops ONLY
+    // for blocks the AUTHOR actually changed. A block untouched by the
+    // author is identical base→new = no op = a concurrent peer edit to it
+    // survives (the engine already holds the peer's edit; Loro merges).
+    // Stamp the base the same way `content` is stamped so block ids line
+    // up across the diff. `None` (older client / true whole-note rewrite
+    // like create) falls back to the historical server-file→new diff.
+    let stamped_base = req.base_content.as_deref().map(stamp_block_ids);
+    record_sync_update(&s, &prev_content, stamped_base.as_deref(), &note).await;
     // Re-read to get fresh parsed metadata and checksum from the
     // file the engine just wrote. The engine's serialization is the
     // canonical form; downstream indexing should index THAT, not the
@@ -1018,7 +1038,10 @@ pub async fn rename_tag(
         };
         s.store.update(&updated_note).await?;
         s.index.reindex(&updated_note).await?;
-        record_sync_update(&s, &note.content, &updated_note).await;
+        // Server-internal rewrite: `note.content` IS the base (no stale
+        // client view), so the historical prev→new diff is correct. Pass
+        // `None` to keep that path exactly.
+        record_sync_update(&s, &note.content, None, &updated_note).await;
         let _ = s.ws_tx.send(WsEvent::NoteUpdated {
             note: updated_note,
         });
@@ -1113,7 +1136,9 @@ pub async fn cleanup_tag_references(
         };
         s.store.update(&updated_note).await?;
         s.index.reindex(&updated_note).await?;
-        record_sync_update(&s, &note.content, &updated_note).await;
+        // Server-internal rewrite: `note.content` IS the base. Pass `None`
+        // to keep the historical prev→new diff (see the tag-rename twin).
+        record_sync_update(&s, &note.content, None, &updated_note).await;
         let _ = s.ws_tx.send(WsEvent::NoteUpdated {
             note: updated_note,
         });
@@ -1178,33 +1203,64 @@ async fn record_sync_create(s: &Arc<AppState>, note: &Note) {
     }
 }
 
-/// Producer path for note updates. Diffs the prior on-disk content
-/// against the new content and emits BlockUpsert / BlockMove /
-/// BlockDelete ops. Avoids emitting a NoteUpsert: when two peers edit
+/// Producer path for note updates. Emits BlockUpsert / BlockMove /
+/// BlockDelete ops describing what the author actually changed. Avoids
+/// emitting a NoteUpsert when blocks changed: when two peers edit
 /// different blocks of the same note concurrently, NoteUpsert's
 /// last-writer-wins on the whole blob would stomp the loser's edit,
 /// whereas block-level ops converge correctly per [[plan/block-level-sync.md]].
 ///
-/// Falls back to emitting a NoteUpsert blob when the diff is empty but
-/// the content actually changed (e.g. frontmatter-only edits like a
-/// title change, which the block parser does not currently surface).
-/// The fallback is data-lossy under concurrent edits to the same note,
-/// matching Phase 1.5 behavior; it is recorded as a known limitation
-/// in the block-level-sync plan.
-async fn record_sync_update(s: &Arc<AppState>, prev_content: &str, note: &Note) {
+/// ## Base-diff (2026-06-02) — the diff baseline
+/// When `base_content` is `Some`, it is the AUTHOR's edit base (the body
+/// the client started this edit from). The diff is `base → new`, so the
+/// ops are ONLY the blocks the author truly changed. A block the author
+/// never touched is identical base→new = no op = a concurrent peer edit
+/// to it is never re-asserted = it survives. This closes the last
+/// concurrent-edit data-loss vector (`concurrent_whole_body_clobber.rs`):
+/// the historical `server_file → new` diff would see an untouched block's
+/// text differ from a peer's NEWER server text and emit a stale
+/// re-assertion. When `base_content` is `None` (older client, or a true
+/// server-internal rewrite where `prev_content` IS the base), the diff
+/// falls back to `prev_content → new` exactly as before — no regression.
+///
+/// ## Frontmatter-only fallback (the subtle clobber)
+/// When the block diff is empty but the raw content changed (a
+/// frontmatter / page-property / title-only edit), we fall back to a
+/// NoteUpsert. The engine's NoteUpsert apply RESEEDS the block tree from
+/// `content` whenever the body doesn't already match the live tree
+/// (`loro_engine::tree_matches_blocks` → `clear_block_tree` +
+/// `seed_tree_from_flatblocks`). A STALE frontmatter-only PUT therefore
+/// carries the author's stale body and would reseed the tree OVER a peer's
+/// concurrent block edit — a whole-body clobber in disguise (spec
+/// invariant 2). To prevent that, when a base is present we make the
+/// NoteUpsert BODY-PRESERVING: its `content` carries the author's NEW
+/// frontmatter + page-properties but the SERVER's CURRENT blocks (rendered
+/// from the engine), so `tree_matches_blocks` stays true and the body is
+/// never reseeded. Without a base (legacy client) we keep the historical
+/// full-content NoteUpsert, which remains last-writer-wins on the body.
+async fn record_sync_update(
+    s: &Arc<AppState>,
+    prev_content: &str,
+    base_content: Option<&str>,
+    note: &Note,
+) {
     let note_id = stable_uuid_from_slug(note.id.as_str());
-    let old_tree = parse_note(prev_content);
+    // Base-diff: when the author sent its edit base, diff base→new (the
+    // author's real changes). Otherwise diff prev_content→new (today's
+    // behavior; `prev_content` IS the base for server-internal rewrites).
+    let diff_base = base_content.unwrap_or(prev_content);
+    let old_tree = parse_note(diff_base);
     let new_tree = parse_note(&note.content);
     // Phase 2.2 (sync redesign 2026-05-27): suppress inferred
-    // `BlockDelete` emission. The server diffs Mac's authoritative
-    // file against the client's PUT body, but the client may have a
-    // stale view (e.g. typed locally while a peer's edit landed via
-    // WS but hasn't yet been merged into the client's local state).
-    // Treating "absent from PUT body" as "user deleted this block"
-    // then stomps the peer's edit on the receiver — exactly the data-
-    // loss class Daisy hit ("iOS's fella was cleared in favor of web's
-    // dude"). User-intent deletes now go through the explicit
-    // `DELETE /notes/<id>/blocks/<bid>` endpoint instead.
+    // `BlockDelete` emission. With a trustworthy author base, "present in
+    // base, absent in new" IS a genuine delete — but per the spec we keep
+    // `emit_deletes:false` for v1 and route user-intent deletes through
+    // the explicit `DELETE /notes/<id>/blocks/<bid>` endpoint, staying
+    // consistent with the block-ops delete path. The original rationale:
+    // the server diffs Mac's authoritative file against the client's PUT
+    // body, but a stale client view (typed locally while a peer's edit
+    // landed via WS but hasn't merged into local state) would make
+    // "absent from PUT body" look like a delete and stomp the peer's edit.
     let ops = tesela_sync::diff::diff_note_trees_with_options(
         note_id,
         &old_tree,
@@ -1216,14 +1272,21 @@ async fn record_sync_update(s: &Arc<AppState>, prev_content: &str, note: &Note) 
         if prev_content == note.content {
             return;
         }
-        // Body parses identical (or both empty) but raw content
-        // differs: frontmatter or non-bullet content changed. Fall
-        // back to NoteUpsert.
+        // Body parses identical (or both empty) but raw content differs:
+        // frontmatter / page-property / non-bullet content changed. Fall
+        // back to NoteUpsert. With a base present, make it body-preserving
+        // so a stale frontmatter-only edit can't reseed the block tree
+        // over a peer's concurrent block edit (spec invariant 2). Without
+        // a base, keep the historical full-content NoteUpsert.
+        let content = match base_content {
+            Some(_) => body_preserving_noteupsert_content(s, note_id, &note.content).await,
+            None => note.content.clone(),
+        };
         let payload = OpPayload::NoteUpsert {
             note_id,
             display_alias: Some(note.id.as_str().to_string()),
             title: note.title.clone(),
-            content: note.content.clone(),
+            content,
             created_at_millis: note.created_at.timestamp_millis(),
         };
         if let Err(e) = s.sync_engine.record_local(payload).await {
@@ -1244,6 +1307,38 @@ async fn record_sync_update(s: &Arc<AppState>, prev_content: &str, note: &Note) 
                 e
             );
         }
+    }
+}
+
+/// Build a NoteUpsert `content` that carries the author's NEW frontmatter
+/// and page-properties but the SERVER's CURRENT block body, so the engine's
+/// NoteUpsert apply does NOT reseed the block tree (its
+/// `tree_matches_blocks` fast path stays true) and a concurrent peer block
+/// edit survives. Used on the base-aware frontmatter-only path.
+///
+/// Falls back to the author's `new_content` verbatim when the engine has
+/// no resident body for this note (e.g. a note not yet seeded), which is
+/// the safe default — there is no peer body to preserve.
+async fn body_preserving_noteupsert_content(
+    s: &Arc<AppState>,
+    note_id: [u8; 16],
+    new_content: &str,
+) -> String {
+    let new_tree = parse_note(new_content);
+    match s.sync_engine.render_note(note_id).await {
+        Some(server_body) => {
+            // `render_note` is body-only (blocks, no frontmatter); its
+            // blocks are the engine's CURRENT tree (peer edits included).
+            let server_tree = parse_note(&server_body);
+            let merged = tesela_core::note_tree::NoteTree {
+                frontmatter: new_tree.frontmatter,
+                page_properties: new_tree.page_properties,
+                blocks: server_tree.blocks,
+                stamped_any: false,
+            };
+            serialize_note(&merged)
+        }
+        None => new_content.to_string(),
     }
 }
 
@@ -1597,7 +1692,9 @@ pub async fn set_block_property(
         }
     }
 
-    record_sync_update(&s, &prev_content, &updated).await;
+    // Server-internal set-property rewrite: `prev_content` IS the base.
+    // Pass `None` to keep the historical prev→new diff.
+    record_sync_update(&s, &prev_content, None, &updated).await;
     let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated });
 
     for info in bumps {
