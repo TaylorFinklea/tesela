@@ -235,13 +235,36 @@ export const api = {
     ),
   /** Agenda interactions — upsert a single `key:: value` property on a block.
    *  The server loads the note, rewrites the property, and saves (triggering
-   *  `apply_post_save_bumps` so recurring tasks auto-advance on done). */
-  setBlockProperty: (blockId: string, key: string, value: string) =>
-    post<{ ok: boolean }>("/blocks/set-property", {
+   *  `apply_post_save_bumps` so recurring tasks auto-advance on done).
+   *
+   *  Block-granular: only this one block's property is rewritten server-side,
+   *  so a concurrent peer edit to a sibling block survives (no whole-note PUT).
+   *  Opens the own-echo suppression window via `recordLocalSave(noteId)`
+   *  BEFORE the POST — matching the block-ops path (`upsertBlocks`) — so the
+   *  server's `note_updated` echo for this note isn't mistaken for a remote
+   *  change and doesn't trigger a self-clobber refetch. The block_id is
+   *  `<note_id>:<line>`, so the note id is the prefix before the last colon. */
+  setBlockProperty: (blockId: string, key: string, value: string) => {
+    const noteId = blockId.slice(0, blockId.lastIndexOf(":"));
+    if (noteId) recordLocalSave(noteId);
+    return post<{ ok: boolean }>("/blocks/set-property", {
       block_id: blockId,
       key,
       value,
-    }),
+    });
+  },
+  /** Clear a single `key:: value` property line from a block. Block-granular
+   *  counterpart of `setBlockProperty` for the "unset" case — only this block
+   *  is rewritten server-side, so a concurrent peer edit survives. Records the
+   *  own-echo suppression window before the POST, same as `setBlockProperty`. */
+  clearBlockProperty: (blockId: string, key: string) => {
+    const noteId = blockId.slice(0, blockId.lastIndexOf(":"));
+    if (noteId) recordLocalSave(noteId);
+    return post<{ ok: boolean }>("/blocks/clear-property", {
+      block_id: blockId,
+      key,
+    });
+  },
   /** Phase 12.1 — Apple Reminders sync (macOS only). The combined
    *  `remindersSync` is what the "Sync now" UI button hits. */
   remindersPush: () => post<RemindersPushOutcome>("/sync/reminders/push", {}),

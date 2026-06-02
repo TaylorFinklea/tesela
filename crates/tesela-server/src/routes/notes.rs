@@ -1608,6 +1608,14 @@ pub struct SetBlockPropertyReq {
     pub value: String,
 }
 
+#[derive(Deserialize)]
+pub struct ClearBlockPropertyReq {
+    /// Block id in `<note_id>:<line>` format (matches `ParsedBlock.id`).
+    pub block_id: String,
+    /// Property key to remove (e.g. `"status"`, `"priority"`).
+    pub key: String,
+}
+
 /// Upsert a single `key:: value` property on a block and persist, triggering
 /// the same `apply_post_save_bumps` path that a full note PUT does.  This
 /// means:
@@ -1723,6 +1731,106 @@ pub async fn set_block_property(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// Remove a single `key:: value` property line from a block and persist.
+/// Block-granular counterpart of `set_block_property` for the *clear* case
+/// (TagTable / KanbanBoard "unset"), so clearing a property no longer requires
+/// a whole-note PUT that re-asserts every other block (clobber-prone for
+/// concurrent peer edits).
+///
+/// Mirrors `set_block_property`'s persist tail exactly — same reindex, link
+/// update, version record, sync-update record, and WS fan-out — but removes
+/// the property instead of upserting it. Absent key is a no-op (content
+/// unchanged); the WS echo / version record are gated on actual change.
+pub async fn clear_block_property(
+    State(s): State<Arc<AppState>>,
+    Json(req): Json<ClearBlockPropertyReq>,
+) -> AppResult<Json<serde_json::Value>> {
+    let (note_id_str, line_str) = match req.block_id.rsplit_once(':') {
+        Some(pair) => pair,
+        None => {
+            return Err(AppError::Validation(format!(
+                "invalid block_id '{}': expected '<note_id>:<line>'",
+                req.block_id
+            )))
+        }
+    };
+    let line_num: usize = line_str.parse().map_err(|_| {
+        AppError::Validation(format!(
+            "invalid block_id '{}': line suffix is not a number",
+            req.block_id
+        ))
+    })?;
+
+    let key = req.key.trim().to_lowercase();
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(AppError::Validation(format!(
+            "invalid property key '{}'",
+            req.key
+        )));
+    }
+
+    let note_id = NoteId::new(note_id_str);
+    let note = s
+        .store
+        .get(&note_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Note not found: {}", note_id_str)))?;
+
+    let prev_content = note.content.clone();
+
+    // Locate the block in the body and remove the property line (no-op if absent).
+    let new_content =
+        remove_block_property_in_note(&prev_content, note_id_str, line_num, &key)
+            .ok_or_else(|| {
+                AppError::NotFound(format!(
+                    "block '{}' not found in note '{}'",
+                    req.block_id, note_id_str
+                ))
+            })?;
+
+    let stamped = stamp_block_ids(&new_content);
+    let mut updated_note = note.clone();
+    updated_note.content = stamped;
+    s.store.update(&updated_note).await?;
+
+    let updated = s
+        .store
+        .get(&note_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Note not found after clear-property: {}", note_id_str)))?;
+
+    s.index.reindex(&updated).await?;
+    {
+        use tesela_core::link::extract_wiki_links;
+        use tesela_core::traits::link_graph::LinkGraph;
+        let links = extract_wiki_links(&updated.content);
+        if let Err(e) = s.index.update_links(&note_id, &links).await {
+            tracing::warn!("Failed to update links on clear-property for {:?}: {}", note_id, e);
+        }
+    }
+    if updated.content != prev_content {
+        if let Err(e) = s
+            .index
+            .record_version(&note_id, Some(&prev_content), &updated.content, 200)
+            .await
+        {
+            tracing::warn!("Failed to record version on clear-property: {}", e);
+        }
+    }
+
+    // Server-internal clear-property rewrite: `prev_content` IS the base.
+    // Pass `None` to keep the historical prev→new diff.
+    record_sync_update(&s, &prev_content, None, &updated).await;
+    let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated });
+
+    tracing::info!("clear-property: {}::{}", req.block_id, key);
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 /// Locate block `line_num` in the note's body and upsert `key:: value` on it.
 /// Returns `None` if the block is not found at that line.
 ///
@@ -1773,6 +1881,56 @@ fn upsert_property_in_body(body: &str, bullet_line: usize, key: &str, value: &st
     }
 
     Some(join_lines(lines, trailing_newline))
+}
+
+/// Remove the `key:: value` continuation line from the block whose bullet
+/// header is on `bullet_line` in `body`. Returns the rewritten body with the
+/// matching line deleted, or the body unchanged (cloned) if the key is absent.
+/// Returns `None` only if `bullet_line` is out of bounds or not a bullet.
+///
+/// Sibling of `upsert_property_in_body`: same locate logic (`block_range` +
+/// `property_kv`), but deletes instead of upserting.
+fn remove_property_in_body(body: &str, bullet_line: usize, key: &str) -> Option<String> {
+    let trailing_newline = body.ends_with('\n');
+    let (mut lines, end, _cont_indent) = block_range(body, bullet_line)?;
+
+    // Walk continuation lines looking for an existing `key::` entry.
+    let mut found_idx: Option<usize> = None;
+    for i in (bullet_line + 1)..end {
+        if let Some((k, _)) = property_kv(&lines[i]) {
+            if k == key {
+                found_idx = Some(i);
+                break;
+            }
+        }
+    }
+
+    if let Some(idx) = found_idx {
+        lines.remove(idx);
+    }
+
+    Some(join_lines(lines, trailing_newline))
+}
+
+/// Locate block `line_num` in the note's body and remove its `key:: value`
+/// continuation line. Returns `None` if the block is not found at that line;
+/// otherwise returns the rewritten content (unchanged if the key was absent).
+///
+/// Sibling of `upsert_block_property_in_note` for the clear path.
+pub fn remove_block_property_in_note(
+    content: &str,
+    note_id_str: &str,
+    line_num: usize,
+    key: &str,
+) -> Option<String> {
+    let (_meta, body) = parse_frontmatter(content).ok()?;
+    let blocks = parse_blocks(note_id_str, &body);
+    // Confirm the block exists at this line.
+    let block_id = format!("{}:{}", note_id_str, line_num);
+    let _block = blocks.iter().find(|b| b.id == block_id)?;
+
+    let new_body = remove_property_in_body(&body, line_num, key)?;
+    Some(reassemble_content(content, &body, &new_body))
 }
 
 /// Pure helper. Returns `Some((new_content, next_deadline_iso))` if `block_id`
@@ -2892,6 +3050,45 @@ mod recurrence_tests {
         let content = make_note(&[]);
         // Line 999 does not exist → should return None.
         let result = upsert_block_property_in_note(&content, "note", 999, "status", "done");
+        assert!(result.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests for remove_block_property_in_note (clear-property endpoint)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn clear_property_removes_existing_key() {
+        let content = make_note(&[]);
+        // The block has `status:: todo`; clearing it should drop that line.
+        let new_content =
+            remove_block_property_in_note(&content, "note", 0, "status").expect("should return Some");
+        assert_eq!(get_prop(&new_content, BLOCK_ID, "status"), None);
+        // Other properties must survive unchanged.
+        assert_eq!(
+            get_prop(&new_content, BLOCK_ID, "deadline").as_deref(),
+            Some("[[2026-05-07]]")
+        );
+        assert_eq!(
+            get_prop(&new_content, BLOCK_ID, "scheduled").as_deref(),
+            Some("[[2026-05-06]]")
+        );
+    }
+
+    #[test]
+    fn clear_property_absent_key_is_noop() {
+        let content = make_note(&[]);
+        // `priority` does not exist on the block → content unchanged.
+        let new_content =
+            remove_block_property_in_note(&content, "note", 0, "priority").expect("should return Some");
+        assert_eq!(new_content, content);
+    }
+
+    #[test]
+    fn clear_property_returns_none_for_invalid_line() {
+        let content = make_note(&[]);
+        // Line 999 does not exist → should return None.
+        let result = remove_block_property_in_note(&content, "note", 999, "status");
         assert!(result.is_none());
     }
 }

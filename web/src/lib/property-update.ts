@@ -7,8 +7,13 @@ import type { ParsedBlock } from "$lib/types/ParsedBlock";
 import type { QueryClient } from "@tanstack/svelte-query";
 
 /**
- * Find a block in note content by matching its first line,
- * then update or insert a property line.
+ * Upsert a single `key:: value` property on a block via the block-granular
+ * `/blocks/set-property` endpoint. The server locates the block by its
+ * `<note_id>:<line>` id and rewrites only that one property line — no
+ * whole-note PUT, so a concurrent peer edit to a sibling block survives.
+ *
+ * `block.id` is `<note_id>:<line>` (per `ParsedBlock`), which is exactly the
+ * `block_id` the endpoint expects.
  */
 export async function updateBlockProperty(params: {
   block: ParsedBlock;
@@ -20,49 +25,15 @@ export async function updateBlockProperty(params: {
   const { block, propKey, value, tagName, queryClient } = params;
   const key = propKey.toLowerCase();
 
-  const note = await api.getNote(block.note_id);
-  const lines = note.content.split("\n");
-  let updated = false;
-
-  const blockText = block.raw_text.split("\n")[0] ?? "";
-  let inBlock = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-
-    if (trimmed.startsWith("- ") && trimmed.slice(2).startsWith(blockText.split("\n")[0])) {
-      inBlock = true;
-      continue;
-    }
-
-    if (inBlock) {
-      if (trimmed.startsWith("- ") || (trimmed === "" && i > 0)) {
-        const blockIndent = lines[i - 1] ? lines[i - 1].length - lines[i - 1].trimStart().length : 2;
-        lines.splice(i, 0, " ".repeat(blockIndent) + `${key}:: ${value}`);
-        updated = true;
-        break;
-      }
-      const propMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)$/);
-      if (propMatch && propMatch[1].toLowerCase() === key) {
-        const indent = lines[i].length - lines[i].trimStart().length;
-        lines[i] = " ".repeat(indent) + `${propMatch[1]}:: ${value}`;
-        updated = true;
-        break;
-      }
-    }
-  }
-
-  if (!updated && inBlock) {
-    lines.push(`  ${key}:: ${value}`);
-  }
-
-  await api.updateNote(block.note_id, lines.join("\n"));
+  await api.setBlockProperty(block.id, key, value);
   queryClient.invalidateQueries({ queryKey: ["typed-blocks", tagName] });
   queryClient.invalidateQueries({ queryKey: ["note", block.note_id] });
 }
 
 /**
- * Remove a property line from a block (for clearing/unsetting a value).
+ * Remove a property line from a block (for clearing/unsetting a value) via the
+ * block-granular `/blocks/clear-property` endpoint. Same single-block rewrite
+ * as `updateBlockProperty` — no whole-note PUT.
  */
 export async function clearBlockProperty(params: {
   block: ParsedBlock;
@@ -73,33 +44,7 @@ export async function clearBlockProperty(params: {
   const { block, propKey, tagName, queryClient } = params;
   const key = propKey.toLowerCase();
 
-  const note = await api.getNote(block.note_id);
-  const lines = note.content.split("\n");
-
-  const blockText = block.raw_text.split("\n")[0] ?? "";
-  let inBlock = false;
-
-  for (let i = 0; i < lines.length; i++) {
-    const trimmed = lines[i].trim();
-
-    if (trimmed.startsWith("- ") && trimmed.slice(2).startsWith(blockText.split("\n")[0])) {
-      inBlock = true;
-      continue;
-    }
-
-    if (inBlock) {
-      if (trimmed.startsWith("- ") || (trimmed === "" && i > 0)) {
-        break; // property not found in this block
-      }
-      const propMatch = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)$/);
-      if (propMatch && propMatch[1].toLowerCase() === key) {
-        lines.splice(i, 1);
-        break;
-      }
-    }
-  }
-
-  await api.updateNote(block.note_id, lines.join("\n"));
+  await api.clearBlockProperty(block.id, key);
   queryClient.invalidateQueries({ queryKey: ["typed-blocks", tagName] });
   queryClient.invalidateQueries({ queryKey: ["note", block.note_id] });
 }
