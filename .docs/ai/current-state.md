@@ -195,3 +195,17 @@ Spec `phases/2026-06-02-block-granular-writes-spec.md`. The last data-loss bug (
 **Server now: main-tree binary (has the block endpoint) on :7474, log /tmp/tesela-srv.log** (replaced the old sync-live-debug worktree build). Web has S1/S2 via HMR. iPad (Sel) on T7 build connected; iPhone (Roshar) taken by user.
 
 REMAINING: S3 #161 (web structural insert/merge → block ops; mid-insert ordering caveat — engine appends at end, do NOT re-canonicalize via stale PUT) → fully kills the root class; S4 #162 (iOS produceDeltaFrame real sinceVv — perf, FFI regen). Follow-up: BlockOutliner.svelte:1952 onOut state_unsafe_mutation warning on block teardown (reactivity hygiene, non-blocking).
+
+## 2026-06-02 (night) — Block-granular writes COMPLETE (S0-S4 + delete path + dropped-frame fix)
+
+All 5 stages of `phases/2026-06-02-block-granular-writes-spec.md` landed + reviewed. The concurrent-edit clobber (the last data-loss bug) is killed at the root: NO web edit except frontmatter/title uses the whole-body PUT anymore.
+- **S3 #161** (`44b53ee`): web structural edits (handleEnter/NewBlockAbove/PasteBlock→upsert; handleBackspaceMerge→survivor-upsert+absorbed-delete in ONE POST). Mid-note insert = end-append v1 (loss-free, position imperfect; NO re-canonicalizing PUT). 182 tests.
+- **delete path** (`547da7d`): handleBackspace/handleDeleteBlock/deleteVisualBlocks → pure {kind:delete} ops, dropped the whole-body PUT + separate DELETE. Local-only deletes send nothing. 192 tests.
+- **S4 #162** (`186b03c`): iOS produceDeltaFrame uses real sinceVv (lastPushedVV) → ships delta not full snapshot. Swift-only (FFI already had since_vv). Rust test: delta smaller + converges.
+- **S4 review fix** (`16debef`): review caught a dropped-frame self-heal REGRESSION — in hub mode the WS is the SOLE author→hub path (relay tick gated off, HTTP-PUT removed), so optimistically advancing the VV permanently skipped a dropped frame's ops. Fix: sendDelta returns sent?; lastPushedVV advances (commitPushedDelta) ONLY on confirmed send → dropped frame re-ships next produce. Corrected the false "relay tick is a fallback" doc comment. Build SUCCEEDED.
+
+Final review (S3+delete+S4): PASS on all correctness invariants (no double-write, split/merge atomicity, first-push-full-snapshot, builders match wire). cargo test -p tesela-sync -p tesela-server ALL GREEN; web 192 tests; xcodebuild SUCCEEDED.
+
+**iOS NOT yet rebuilt/reinstalled on devices with S4** (Sel still on T7 build; Roshar with user). Web has S1/S2/S3/delete via HMR; server on main-tree binary (:7474, log /tmp/tesela-srv.log). To device-test S4: rebuild+reinstall Sel.
+
+OPEN FOLLOW-UPS: #163 (BlockOutliner:1952 onOut teardown warning), #164 (template-insert + bulk status/tag-cycle still whole-body PUT — residual clobber on bulk multi-block ops), mid-insert engine ordering (order_key/anchor so peers render mid-inserts in place). #156 (Graphite has no backend Settings UI — device builds bake the Mac IP). NONE are data-loss for the common single-block edit path.
