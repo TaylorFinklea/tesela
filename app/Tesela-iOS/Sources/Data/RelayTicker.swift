@@ -77,6 +77,17 @@ final class RelayTicker: ObservableObject {
 
     private var loopTask: Task<Void, Never>? = nil
 
+    /// Last successful/attempted catch-up time per slug, for the resident
+    /// catch-up debounce in `bootstrapNoteIfNeeded`. Keeps the resident
+    /// snapshot re-fetch to at most once per `catchupMinInterval` per slug
+    /// so the catch-up doesn't fire on every keystroke / refresh tick.
+    private var lastCatchupAt: [String: Date] = [:]
+    /// Minimum interval between resident catch-up snapshot fetches for the
+    /// SAME slug. ~3s — long enough that a typing burst or a storm of
+    /// `onNoteOpened`/refresh callbacks collapses to one fetch, short enough
+    /// that a freshly web-authored block lands on the next open.
+    private static let catchupMinInterval: TimeInterval = 3.0
+
     /// Pull source — same MockMosaicService used by the rest of the
     /// app. Set via [`connect(mosaic:)`] after the SwiftUI shell has
     /// constructed its @StateObjects (the ticker is itself a
@@ -179,27 +190,63 @@ final class RelayTicker: ObservableObject {
     /// tree nodes instead of minting rival TreeIDs, so concurrent edits
     /// converge instead of duplicating (multi-device convergence — Part D).
     ///
-    /// Skips when the doc is already resident (`noteVersion(slug:)`
-    /// non-nil), so an already-bootstrapped note pays no network cost.
+    /// First-view: import the server snapshot to establish the base.
+    /// Resident: perform a CATCH-UP — re-fetch the server snapshot and
+    /// re-import so the engine learns any server-side ops (e.g. a web-
+    /// authored new block) it hasn't yet seen. `importNoteSnapshot`
+    /// MERGES (Loro import is commutative + idempotent), so importing a
+    /// full snapshot into a resident doc never clobbers a local-only op;
+    /// it only adds what the engine lacks. This is the fix for "iOS never
+    /// updates" — a resident-but-divergent daily previously skipped catch-up
+    /// entirely and stayed locally stale.
+    ///
+    /// Catch-up is **debounced per slug** (`catchupMinInterval`) so the
+    /// resident path doesn't fetch a full snapshot on every keystroke,
+    /// refresh tick, or `onNoteOpened` callback — at most once per window
+    /// per slug. The first-view (non-resident) import is NEVER debounced:
+    /// a brand-new note must get its base immediately or live deltas can't
+    /// materialize.
+    ///
     /// Best-effort: any network/non-200 failure returns silently — the
-    /// device keeps working without the base (graceful degradation), and a
-    /// later edit retries. The fetch+import is CRDT-safe under R3/R4: the
-    /// import is idempotent and merges commutatively, so a bootstrap that
-    /// races a concurrent edit or imports a snapshot captured mid-edit
-    /// never loses data.
+    /// device keeps working without the catch-up (graceful degradation), and
+    /// a later open/edit retries. The fetch+import is CRDT-safe under R3/R4:
+    /// the import is idempotent and merges commutatively, so a catch-up that
+    /// races a concurrent edit or imports a snapshot captured mid-edit never
+    /// loses data — even mid-typing, the user's in-engine edit survives the
+    /// merge.
     func bootstrapNoteIfNeeded(slug: String) async {
         guard let engine else { return }
-        // Already resident → nothing to bootstrap.
-        if await engine.noteVersion(slug: slug) != nil { return }
         guard let mosaic else { return }
+        let resident = await engine.noteVersion(slug: slug) != nil
+        if resident {
+            // Resident → catch-up, but debounced so we don't fetch a full
+            // snapshot on every open/refresh/keystroke. Only the visible
+            // note hits this path (callers pass the opened/daily slug).
+            let now = Date()
+            if let last = lastCatchupAt[slug],
+               now.timeIntervalSince(last) < Self.catchupMinInterval {
+                return
+            }
+            lastCatchupAt[slug] = now
+        }
         do {
             guard let bytes = try await mosaic.fetchLoroSnapshot(slug: slug) else {
                 return  // server has no doc for this slug yet (404)
             }
             try await engine.importNoteSnapshot(slug: slug, bytes: bytes)
         } catch {
-            // Graceful degradation: keep working without the base.
+            // Graceful degradation: keep working without the base/catch-up.
+            // Clear the debounce stamp so the next open retries promptly
+            // rather than waiting out the full window after a failure.
+            if resident { lastCatchupAt[slug] = nil }
             return
+        }
+        if resident {
+            // The import re-materialized the note's file (engine side effect),
+            // so nudge the UI to re-read it — same seam an inbound WS delta
+            // uses. First-view import is followed by the caller's own refresh
+            // path, so it doesn't need this.
+            onAppliedChanges?()
         }
     }
 
