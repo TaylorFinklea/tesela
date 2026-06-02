@@ -22,6 +22,7 @@
   import BlockOutliner, { markNextFocusAsCrossNav } from "$lib/components/BlockOutliner.svelte";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
   import { setFocusedBlock } from "$lib/stores/current-block.svelte";
+  import { bodyHasTrailingEmpty, appendTrailingEmpty } from "$lib/ensure-trailing-empty";
   import type { Note } from "$lib/types/Note";
 
   let { anchorDate }: { anchorDate: string } = $props();
@@ -94,29 +95,26 @@
   });
 
   /**
-   * Append a `- ` empty bullet block at end of today's body if the body
-   * doesn't already end with one. Returns true when disk was modified so
-   * the caller can invalidate the notes query.
+   * Append a bid-stamped empty bullet block at end of today's body unless the
+   * body already contains a focusable trailing-style empty bullet. Returns
+   * true when disk was modified so the caller can invalidate the notes query.
    *
-   * "Trailing empty bullet" detection: the LAST non-blank line of the body
-   * is `-` or `- ` (whitespace only after the dash). This keeps us from
-   * pinging disk every page load when the user already left a trailing
-   * empty block from a previous session.
+   * Position-aware detection (see `bodyHasTrailingEmpty`): we scan EVERY
+   * bullet line, not just the last one. The engine can append a fresh end
+   * node after a previously-trailing empty, stranding that empty mid-body —
+   * a last-line-only check would miss it and accrete a new empty on every
+   * mount. Any existing empty bullet means the user already has a focusable
+   * line, so we suppress.
+   *
+   * The appended empty is bid-stamped (`- <!-- bid:UUID -->`) so the server
+   * doesn't mint a fresh UUID + re-append a new end node each mount; on the
+   * next mount the stamped empty bid-strips back to `- ` and the scan matches.
    */
   async function ensureTrailingEmpty(noteId: string): Promise<boolean> {
     const note = await api.getNote(noteId);
     const body = (note.body ?? "").replace(/\n+$/, "");
-    const lastLine = body.split("\n").pop() ?? "";
-    // An empty bullet materializes WITH a stamped bid marker
-    // (`- <!-- bid:UUID -->`). Strip a trailing bid comment before the
-    // empty-bullet test, else the regex never matches a real trailing
-    // empty and we append a fresh one on every mount (accumulation).
-    const lastLineNoBid = lastLine.replace(/<!--\s*bid:[^>]*-->\s*$/, "").trimEnd();
-    if (/^\s*-\s*$/.test(lastLineNoBid)) return false;
-    const newBody = (body.length > 0 ? body + "\n" : "") + "- \n";
-    const fmEnd = note.content.startsWith("---") ? note.content.indexOf("---", 3) : -1;
-    const splitAt = fmEnd >= 0 ? fmEnd + 3 + (note.content[fmEnd + 3] === "\n" ? 1 : 0) : 0;
-    const newContent = note.content.slice(0, splitAt) + newBody;
+    if (bodyHasTrailingEmpty(body)) return false;
+    const newContent = appendTrailingEmpty(note.content, body);
     // Base = the freshly-fetched server body this edit started from, so the
     // server base-diffs (we only append one empty bullet) and a concurrent
     // peer edit to an existing block survives.
