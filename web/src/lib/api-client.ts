@@ -14,6 +14,7 @@ import type { NoteVersion } from "$lib/types/NoteVersion";
 import type { AgendaRow } from "$lib/types/AgendaRow";
 import { recordLocalSave } from "$lib/ws-refresh-coordinator";
 import type { BlockOp } from "$lib/block-ops";
+import { buildUpdateNoteBody } from "$lib/api-request-bodies";
 
 // Same-origin path; vite dev server proxies `/api/*` → tesela-server at
 // 127.0.0.1:7474. Relative URL means the LAN client (phone) hits whatever
@@ -73,13 +74,33 @@ export const api = {
     return get<Note[]>(`/notes${qs ? `?${qs}` : ""}`);
   },
   getNote: (id: string) => get<Note>(`/notes/${encodeURIComponent(id)}`),
-  updateNote: (id: string, content: string, signal?: AbortSignal) => {
+  /** Whole-note PUT. After the base-diff fix (2026-06-02), the web PUT is
+   *  used ONLY for true whole-note writes (frontmatter/title/create + the
+   *  remaining loss-avoidance fallbacks). When `baseContent` is supplied it
+   *  is the full note body the client last loaded for this note — its edit
+   *  BASE — and is sent as `base_content` so the server diffs `base → content`
+   *  (the author's REAL changes) instead of `server_file → content`. A block
+   *  the author never touched is then identical base→new = NO op = a
+   *  concurrent peer edit to it survives. Omitting `baseContent` is backward-
+   *  compatible: the server falls back to the historical server-file diff.
+   *  See the base-diff spec (2026-06-02) and `UpdateNoteReq.base_content`. */
+  updateNote: (
+    id: string,
+    content: string,
+    baseContent?: string,
+    signal?: AbortSignal,
+  ) => {
     // Open the own-echo suppression window BEFORE the PUT round-trips, so the
     // server's `note_updated` echo for this id is recognised as ours even if
     // it races back ahead of the response. Re-record on the response in case
     // the canonical id differs.
     recordLocalSave(id);
-    return put<Note>(`/notes/${encodeURIComponent(id)}`, { content }, signal).then(
+    // Only include `base_content` when a base is supplied — older callers (and
+    // true whole-note creates, which have no base) omit it and the server
+    // diffs server-file → content as before. Body construction lives in
+    // `buildUpdateNoteBody` so the wire shape is unit-tested.
+    const reqBody = buildUpdateNoteBody(content, baseContent);
+    return put<Note>(`/notes/${encodeURIComponent(id)}`, reqBody, signal).then(
       (note) => {
         recordLocalSave(note.id);
         return note;

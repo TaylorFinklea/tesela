@@ -12,14 +12,17 @@
   let saveTimer: number | null = null;
   let inflight: AbortController | null = null;
 
-  function handleContentChange(fullContent: string) {
+  function handleContentChange(fullContent: string, baseContent?: string) {
     if (!pin) return;
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = window.setTimeout(async () => {
       inflight?.abort();
       inflight = new AbortController();
       try {
-        const updated = await api.updateNote(pin!.noteId, fullContent, inflight.signal);
+        // `baseContent` (the body the outliner last reseeded from) is sent as
+        // `base_content` so the server diffs the author's real changes and a
+        // concurrent peer edit to an untouched block survives.
+        const updated = await api.updateNote(pin!.noteId, fullContent, baseContent, inflight.signal);
         queryClient.setQueryData(["note", pin!.noteId], updated);
       } catch (e) {
         if ((e as Error).name !== "AbortError") console.error("Save failed", e);
@@ -27,12 +30,12 @@
     }, 400);
   }
 
-  function handleCancelAndFlush(fullContent: string) {
+  function handleCancelAndFlush(fullContent: string, baseContent?: string) {
     if (!pin) return;
     if (saveTimer) clearTimeout(saveTimer);
     inflight?.abort();
     inflight = new AbortController();
-    void api.updateNote(pin!.noteId, fullContent, inflight.signal).then((updated) => {
+    void api.updateNote(pin!.noteId, fullContent, baseContent, inflight.signal).then((updated) => {
       queryClient.setQueryData(["note", pin!.noteId], updated);
     });
   }

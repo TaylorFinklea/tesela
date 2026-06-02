@@ -117,7 +117,10 @@
     const fmEnd = note.content.startsWith("---") ? note.content.indexOf("---", 3) : -1;
     const splitAt = fmEnd >= 0 ? fmEnd + 3 + (note.content[fmEnd + 3] === "\n" ? 1 : 0) : 0;
     const newContent = note.content.slice(0, splitAt) + newBody;
-    await api.updateNote(noteId, newContent);
+    // Base = the freshly-fetched server body this edit started from, so the
+    // server base-diffs (we only append one empty bullet) and a concurrent
+    // peer edit to an existing block survives.
+    await api.updateNote(noteId, newContent, note.content);
     return true;
   }
 
@@ -302,6 +305,13 @@
   type SaveState = {
     timer: ReturnType<typeof setTimeout> | null;
     pending: string | null;
+    // The edit BASE for the pending save — the body the outliner last reseeded
+    // from. Sent as `base_content` so the server diffs the author's real
+    // changes (base→new) and an untouched block is never re-asserted over a
+    // concurrent peer edit. Captured from the FIRST change in the debounce
+    // window (base doesn't shift mid-burst — the outliner defers external
+    // reseeds while typing); cleared on flush.
+    base: string | undefined;
     inFlight: AbortController | null;
     // True when the note has no file on disk yet (a synthetic day the user
     // just typed into) and must be CREATED before/instead of updated. PUT
@@ -313,15 +323,24 @@
   function getState(noteId: string): SaveState {
     let s = saveStates.get(noteId);
     if (!s) {
-      s = { timer: null, pending: null, inFlight: null, needsCreate: false };
+      s = { timer: null, pending: null, base: undefined, inFlight: null, needsCreate: false };
       saveStates.set(noteId, s);
     }
     return s;
   }
 
-  function handleContentChange(noteId: string, fullContent: string, isSynthetic = false) {
+  function handleContentChange(
+    noteId: string,
+    fullContent: string,
+    isSynthetic = false,
+    baseContent?: string,
+  ) {
     const s = getState(noteId);
     s.pending = fullContent;
+    // Keep the FIRST base of the window (don't overwrite with a later change's
+    // base — they're the same during a typing burst, but first-wins is the
+    // safe choice if an external reseed ever lands mid-window).
+    if (s.base === undefined) s.base = baseContent;
     if (isSynthetic) s.needsCreate = true;
     if (s.timer) clearTimeout(s.timer);
     setSaving();
@@ -334,6 +353,8 @@
     if (s.pending === null) return;
     const content = s.pending;
     s.pending = null;
+    const base = s.base;
+    s.base = undefined;
     if (s.inFlight) s.inFlight.abort();
     const controller = new AbortController();
     s.inFlight = controller;
@@ -358,7 +379,7 @@
           console.warn(`Daily lazy-create fell back to update for ${noteId}:`, createErr);
         }
       }
-      const updated = await api.updateNote(noteId, content, controller.signal);
+      const updated = await api.updateNote(noteId, content, base, controller.signal);
       if (controller.signal.aborted) return;
       queryClient.setQueryData(["note", noteId], updated);
       setSaved();
@@ -372,9 +393,10 @@
     }
   }
 
-  function cancelAndFlush(noteId: string, fullContent: string) {
+  function cancelAndFlush(noteId: string, fullContent: string, baseContent?: string) {
     const s = getState(noteId);
     s.pending = fullContent;
+    if (baseContent !== undefined) s.base = baseContent;
     if (s.timer) { clearTimeout(s.timer); s.timer = null; }
     if (s.inFlight) { s.inFlight.abort(); s.inFlight = null; }
     void flushSave(noteId);
@@ -615,8 +637,8 @@
             noteId={note.id}
             body={split.body}
             frontmatter={split.frontmatter}
-            onContentChange={(content) => handleContentChange(note.id, content, isSynthetic)}
-            onCancelAndFlush={(content) => cancelAndFlush(note.id, content)}
+            onContentChange={(content, base) => handleContentChange(note.id, content, isSynthetic, base)}
+            onCancelAndFlush={(content, base) => cancelAndFlush(note.id, content, base)}
             onleader={() => document.dispatchEvent(new CustomEvent("tesela:leader"))}
             onfocusedblockchange={(b) => setFocusedBlock(b)}
           />

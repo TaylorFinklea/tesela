@@ -228,3 +228,70 @@ export function moveOpsForIds(
   }
   return ops;
 }
+
+/**
+ * Diff a `prev` block tree against a `next` block tree (an undo/redo restore)
+ * into the block ops that transform prev → next. Used to migrate the
+ * `saveSnapshotRestore` (undo/redo) path off the whole-body PUT: instead of
+ * re-asserting EVERY surviving block from a possibly-stale view (the clobber),
+ * emit only the blocks the restore actually changed.
+ *
+ *  - A block present in `next` but absent in `prev` (by `bid`) → `upsert`
+ *    (re-create the block the restore brings back).
+ *  - A block present in both whose `raw_text`, `indent_level`, or computed
+ *    `parent_bid` differ → `upsert` (apply the restored text/structure).
+ *  - A block present in `prev` but absent in `next` → `delete` (remove the
+ *    block the restore took away).
+ *
+ * Blocks are keyed by `bid` (the stable server/client-minted id), so re-
+ * ordering alone is invisible to the diff — v1 doesn't reorder server-side
+ * (the engine ignores order_key), matching the rest of the block-ops paths.
+ *
+ * Returns `null` when ANY block on EITHER side lacks a `bid` (a brand-new
+ * local-only insert the server has never stamped). Such a block can't be
+ * expressed as a stable op, so the caller must fall back to the whole-body
+ * PUT (with a base) for the whole restore — one path per save, nothing
+ * silently dropped. The common case (undo/redo over blocks that have all
+ * round-tripped) returns a clean op batch and never PUTs.
+ */
+export function diffOpsForSnapshot(
+  prev: ParsedBlock[],
+  next: ParsedBlock[],
+): BlockOp[] | null {
+  // Any bid-less block on either side ⇒ not fully expressible block-granularly.
+  if (prev.some((b) => !b.bid) || next.some((b) => !b.bid)) return null;
+  const prevByBid = new Map<string, ParsedBlock>();
+  for (const b of prev) prevByBid.set(b.bid!, b);
+  const nextByBid = new Map<string, ParsedBlock>();
+  for (const b of next) nextByBid.set(b.bid!, b);
+
+  const ops: BlockOp[] = [];
+  // Upserts for added or changed blocks (walk `next` in document order so the
+  // `parent_bid` lookups read the restored tree).
+  for (let i = 0; i < next.length; i++) {
+    const b = next[i];
+    const parent_bid = parentBidFor(next, i);
+    const before = prevByBid.get(b.bid!);
+    const text = stripBid(b.raw_text);
+    if (
+      before &&
+      stripBid(before.raw_text) === text &&
+      before.indent_level === b.indent_level &&
+      parentBidFor(prev, prev.indexOf(before)) === parent_bid
+    ) {
+      continue; // unchanged — no op, so a concurrent peer edit to it survives.
+    }
+    ops.push({
+      kind: "upsert",
+      bid: b.bid!,
+      text,
+      parent_bid,
+      indent_level: b.indent_level,
+    });
+  }
+  // Deletes for blocks the restore removed.
+  for (const b of prev) {
+    if (!nextByBid.has(b.bid!)) ops.push({ kind: "delete", bid: b.bid! });
+  }
+  return ops;
+}

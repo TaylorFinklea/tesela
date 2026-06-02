@@ -17,6 +17,7 @@ import {
   mergeOpsForBackspace,
   moveOpsForIds,
   deleteOpsFor,
+  diffOpsForSnapshot,
   isLocalOnlyId,
 } from "../../src/lib/block-ops.ts";
 
@@ -450,4 +451,100 @@ test("template insert: a bid-less inserted block → null (would force PUT fallb
   ];
   const ops = [blocks[1]].map((b) => upsertOpForStructuralBlock(blocks, b.id));
   assert.deepEqual(ops, [null]);
+});
+
+// ─── diffOpsForSnapshot — undo/redo migration off the whole-body PUT ───────
+// An outliner undo/redo restore used to PUT the whole body (re-asserting every
+// surviving block from a possibly-stale view — the last clobber vector). The
+// diff emits ONLY the blocks the restore actually changed, so an untouched
+// block gets no op and a concurrent peer edit to it survives. Returns null
+// (→ PUT-with-base fallback) when a bid-less local-only block is on either side.
+
+test("diffOpsForSnapshot: a single changed block → one upsert, untouched block emits nothing", () => {
+  const prev = [
+    blk("note:0", { bid: "a", raw_text: "alpha", indent_level: 0 }),
+    blk("note:1", { bid: "b", raw_text: "beta", indent_level: 0 }),
+  ];
+  const next = [
+    blk("note:0", { bid: "a", raw_text: "alpha CHANGED", indent_level: 0 }),
+    blk("note:1", { bid: "b", raw_text: "beta", indent_level: 0 }),
+  ];
+  const ops = diffOpsForSnapshot(prev, next);
+  assert.deepEqual(ops, [
+    { kind: "upsert", bid: "a", text: "alpha CHANGED", parent_bid: null, indent_level: 0 },
+  ]);
+});
+
+test("diffOpsForSnapshot: a block the restore brings back → upsert", () => {
+  const prev = [blk("note:0", { bid: "a", raw_text: "alpha", indent_level: 0 })];
+  const next = [
+    blk("note:0", { bid: "a", raw_text: "alpha", indent_level: 0 }),
+    blk("note:1", { bid: "b", raw_text: "beta", indent_level: 0 }),
+  ];
+  const ops = diffOpsForSnapshot(prev, next);
+  assert.deepEqual(ops, [
+    { kind: "upsert", bid: "b", text: "beta", parent_bid: null, indent_level: 0 },
+  ]);
+});
+
+test("diffOpsForSnapshot: a block the restore removes → delete", () => {
+  const prev = [
+    blk("note:0", { bid: "a", raw_text: "alpha", indent_level: 0 }),
+    blk("note:1", { bid: "b", raw_text: "beta", indent_level: 0 }),
+  ];
+  const next = [blk("note:0", { bid: "a", raw_text: "alpha", indent_level: 0 })];
+  const ops = diffOpsForSnapshot(prev, next);
+  assert.deepEqual(ops, [{ kind: "delete", bid: "b" }]);
+});
+
+test("diffOpsForSnapshot: an indent change → upsert with the new parent_bid + indent", () => {
+  const prev = [
+    blk("note:0", { bid: "a", raw_text: "parent", indent_level: 0 }),
+    blk("note:1", { bid: "b", raw_text: "child", indent_level: 0 }),
+  ];
+  const next = [
+    blk("note:0", { bid: "a", raw_text: "parent", indent_level: 0 }),
+    blk("note:1", { bid: "b", raw_text: "child", indent_level: 1 }),
+  ];
+  const ops = diffOpsForSnapshot(prev, next);
+  assert.deepEqual(ops, [
+    { kind: "upsert", bid: "b", text: "child", parent_bid: "a", indent_level: 1 },
+  ]);
+});
+
+test("diffOpsForSnapshot: identical trees → empty batch (no-op restore)", () => {
+  const tree = [
+    blk("note:0", { bid: "a", raw_text: "alpha", indent_level: 0 }),
+    blk("note:1", { bid: "b", raw_text: "beta", indent_level: 0 }),
+  ];
+  const next = tree.map((b) => ({ ...b }));
+  assert.deepEqual(diffOpsForSnapshot(tree, next), []);
+});
+
+test("diffOpsForSnapshot: a bid-less block on either side → null (PUT-with-base fallback)", () => {
+  const withBid = [blk("note:0", { bid: "a", raw_text: "alpha", indent_level: 0 })];
+  const localOnly = [
+    blk("note:0", { bid: "a", raw_text: "alpha", indent_level: 0 }),
+    blk("note:new-1", { bid: null, raw_text: "fresh", indent_level: 0 }),
+  ];
+  assert.equal(diffOpsForSnapshot(localOnly, withBid), null, "bid-less in prev → null");
+  assert.equal(diffOpsForSnapshot(withBid, localOnly), null, "bid-less in next → null");
+});
+
+test("diffOpsForSnapshot: combined add + change + delete in one restore", () => {
+  const prev = [
+    blk("note:0", { bid: "a", raw_text: "alpha", indent_level: 0 }),
+    blk("note:1", { bid: "b", raw_text: "beta", indent_level: 0 }),
+    blk("note:2", { bid: "c", raw_text: "gamma", indent_level: 0 }),
+  ];
+  const next = [
+    blk("note:0", { bid: "a", raw_text: "alpha NEW", indent_level: 0 }), // changed
+    blk("note:1", { bid: "b", raw_text: "beta", indent_level: 0 }), // unchanged → no op
+    blk("note:3", { bid: "d", raw_text: "delta", indent_level: 0 }), // added; c removed
+  ];
+  const ops = diffOpsForSnapshot(prev, next);
+  const byKind = ops.map((o) => `${o.kind}:${o.bid}`).sort();
+  assert.deepEqual(byKind, ["delete:c", "upsert:a", "upsert:d"]);
+  // The unchanged block "b" must NOT be re-asserted (peer-edit survival).
+  assert.equal(ops.some((o) => o.bid === "b"), false);
 });

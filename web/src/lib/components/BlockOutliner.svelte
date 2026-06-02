@@ -39,6 +39,7 @@
     mergeOpsForBackspace,
     moveOpsForIds,
     deleteOpsFor,
+    diffOpsForSnapshot,
     type BlockOp,
   } from "$lib/block-ops";
   import { BlockOpsSaver } from "$lib/block-ops-saver";
@@ -84,12 +85,20 @@
     noteId: string;
     body: string;
     frontmatter: string;
-    onContentChange?: (fullContent: string) => void;
+    /** Whole-note save callback (the debounced parent PUT). `baseContent` is
+     *  the body the editor last reseeded from for this note — the author's
+     *  edit BASE — threaded so the parent can send `base_content` on the PUT
+     *  and the server diffs the author's REAL changes (base→new), never re-
+     *  asserting an untouched block over a concurrent peer edit. Always passed
+     *  by this component; older parents that ignore it stay correct (just
+     *  base-less, i.e. today's behaviour). */
+    onContentChange?: (fullContent: string, baseContent?: string) => void;
     /** Cancel any pending/in-flight save and PUT immediately. Called from
      *  `applySnapshot` so undo/redo restored bodies win the race against any
      *  in-flight pre-undo PUT. Falls back to the debounced `onContentChange`
-     *  path if the parent didn't wire it. */
-    onCancelAndFlush?: (fullContent: string) => void;
+     *  path if the parent didn't wire it. `baseContent` is the edit BASE (see
+     *  `onContentChange`). */
+    onCancelAndFlush?: (fullContent: string, baseContent?: string) => void;
     onleader?: () => void;
     onfocusedblockchange?: (block: ParsedBlock | null) => void;
     drillBlockId?: string;
@@ -399,17 +408,22 @@
   }
 
   function applySnapshot(s: OutlinerSnapshot): void {
+    // Capture the pre-restore tree BEFORE reassigning `blocks` so the
+    // undo/redo save can diff prev→restored into block ops (and avoid the
+    // whole-body PUT that would re-assert every surviving block).
+    const prevBlocks = blocks;
     blocks = s.blocks.map((b) => ({ ...b }));
     focusedIndex = s.focusedIndex;
     // Suppress the empty-block→Insert remount heuristic for the next render
     // tick so a redo/undo that lands on an empty block stays in Normal.
     restoredFocus = true;
     collapsedBlocks = new Set(s.collapsedBlocks);
-    // Cancel any in-flight pre-undo PUT and flush the restored body
-    // immediately so the server's WS echo carries the restored state
-    // (not the pre-undo state). Falls through to debounced save if the
-    // parent didn't wire onCancelAndFlush.
-    saveBlocksImmediate(blocks);
+    // Cancel any in-flight pre-undo PUT and persist the restored state. Prefer
+    // a block-ops diff (prev→restored) so only the blocks the restore actually
+    // changed are touched — a concurrent peer edit to an untouched block then
+    // survives. Falls back to an immediate whole-body PUT (WITH base) only when
+    // the diff can't be expressed (a local-only block on either side).
+    saveSnapshotRestore(prevBlocks, blocks);
     persistFold();
   }
 
@@ -809,8 +823,32 @@
     return { full: `${frontmatter}${bodyLines}\n`, bodyOnly: `${bodyLines}\n` };
   }
 
+  /** The full-note edit BASE for a whole-body PUT's `base_content`: the
+   *  current `frontmatter` plus the body the editor last reseeded from
+   *  (`lastExternalBody`). Mirrors how `buildFullContent` prefixes the
+   *  frontmatter so `base_content` and `content` are diffed on the same
+   *  whole-note shape server-side (frontmatter identical in both → only the
+   *  author's real block-text changes are emitted). `lastExternalBody` is the
+   *  ONLY body-state set exclusively from a server-canonical reparse — never
+   *  optimistically to the new local body — so it is genuinely "what the
+   *  author started this edit from", the correct base for the author-change
+   *  diff. Returns `undefined` only before any body has been seeded (defensive;
+   *  in practice `lastExternalBody` is initialised to the `body` prop). */
+  function baseForPut(): string | undefined {
+    if (lastExternalBody === undefined || lastExternalBody === null) return undefined;
+    return `${frontmatter}${lastExternalBody}`;
+  }
+
   function saveBlocks(updated: ParsedBlock[]) {
     const { full, bodyOnly } = buildFullContent(updated);
+    // Capture the edit BASE (the body we last reseeded from) BEFORE advancing
+    // `lastSentBody` to the new body. `lastExternalBody` is the only state set
+    // exclusively from a server-canonical body (`applyExternalReparse` /
+    // noteId change) and never optimistically to the local new body — so it is
+    // genuinely "what the author started this edit from". The parent forwards
+    // it as `base_content` so the server base-diffs the author's real changes,
+    // never re-asserting an untouched block over a concurrent peer edit.
+    const base = baseForPut();
     lastSentBody = bodyOnly;
     // Any direct whole-body PUT (structural edits: backspace-delete/merge,
     // Enter-split, paste, dd) SUPERSEDES a pending coalesced block-ops batch
@@ -819,7 +857,7 @@
     // (timer + any in-flight POST, no flush) so we don't double-send — one
     // path per save. `supersedeWithBody` is a no-op cancel when nothing is
     // pending, so the common (no prior typing) case is unaffected.
-    blockOpsSaver.supersedeWithBody(noteId, () => onContentChange?.(full));
+    blockOpsSaver.supersedeWithBody(noteId, () => onContentChange?.(full, base));
   }
 
   /** Block-granular save path (sync redesign 2026-06-02). Sends ONLY the
@@ -876,11 +914,14 @@
       return;
     }
     if (ops.length === 0 || ops.some((o) => o === null)) {
-      // Not fully block-granular (no eligible op, or a mixed batch containing
-      // a not-yet-saved local block). Use the whole-body PUT for the whole
-      // edit so nothing is dropped. `saveBlocks` itself supersedes any pending
-      // coalesced block-ops batch (cancels its timer + in-flight POST) so we
-      // never double-send. One path per save.
+      // Not fully block-granular (no eligible op, or a mixed batch containing a
+      // not-yet-saved local block). Use the whole-body PUT for the whole edit so
+      // nothing is dropped — but now WITH the edit base (`saveBlocks` →
+      // `onContentChange(full, base)`), so even this fallback diffs the author's
+      // real changes server-side and never re-asserts an untouched block over a
+      // concurrent peer edit. `saveBlocks` supersedes any pending coalesced
+      // block-ops batch (cancels its timer + in-flight POST) so we never double-
+      // send. One path per save.
       saveBlocks(updated);
       return;
     }
@@ -931,7 +972,10 @@
    *  (non-abort) failure it PUTs the latest body via `saveBlocks` so the edit
    *  still persists. `lastSentBody` already tracks the latest post-edit body
    *  (advanced on every `saveBlocksViaOps` call), so the fallback re-PUTs the
-   *  current `blocks` — the same converged state the ops would have produced. */
+   *  current `blocks` — the same converged state the ops would have produced.
+   *  The PUT now carries the edit base (`saveBlocks` → `onContentChange(full,
+   *  base)`), so a retry after a failed POST diffs the author's real changes
+   *  and can't clobber a concurrent peer edit. */
   const blockOpsSaver = new BlockOpsSaver(
     (targetNoteId, ops, signal) => api.upsertBlocks(targetNoteId, ops, signal),
     (targetNoteId) => {
@@ -962,15 +1006,49 @@
   // never loses the last edit to a debounce timer that never fired.
   onDestroy(() => blockOpsSaver.flushAll());
 
-  /** Like `saveBlocks` but bypasses the debounce — used by `applySnapshot`
-   *  so an outliner-undo cancels any in-flight pre-undo PUT and immediately
-   *  PUTs the restored body. Falls through to the debounced path if the
-   *  parent didn't wire `onCancelAndFlush`. */
-  function saveBlocksImmediate(updated: ParsedBlock[]) {
-    const { full, bodyOnly } = buildFullContent(updated);
+  /** Persist an outliner undo/redo restore (`applySnapshot`). Prefer a block-
+   *  ops diff of `prev → restored` so ONLY the blocks the restore actually
+   *  changed are written — a concurrent peer edit to an untouched block then
+   *  survives (the whole-body PUT this replaces re-asserted every surviving
+   *  block from a possibly-stale view, the last clobber vector). Both the ops
+   *  path and the PUT fallback advance `lastSentBody` to the restored body so
+   *  the server's own-echo of this write applies cleanly.
+   *
+   *  Falls back to an immediate whole-body PUT (WITH base, so even the fallback
+   *  can't clobber) only when the diff can't be expressed block-granularly — a
+   *  brand-new local-only block (no server bid) on either side, or a brand-new
+   *  note with no canonical block ids yet. The PUT goes through
+   *  `onCancelAndFlush` (cancel any in-flight pre-undo PUT, write immediately)
+   *  so the restored state wins the WS-echo race; it falls through to the
+   *  debounced `onContentChange` when the parent didn't wire `onCancelAndFlush`.
+   *  One path per save: either ops OR the PUT, never both. */
+  function saveSnapshotRestore(prevBlocks: ParsedBlock[], restored: ParsedBlock[]) {
+    const { full, bodyOnly } = buildFullContent(restored);
+    // Capture the base BEFORE advancing `lastSentBody` (see `saveBlocks`).
+    const base = baseForPut();
     lastSentBody = bodyOnly;
-    if (onCancelAndFlush) onCancelAndFlush(full);
-    else onContentChange?.(full);
+    // Brand-new note (no canonical block id) can't take block ops — POST
+    // /blocks 404s until the file exists. Force the whole-body PUT (a create
+    // has no peer to clobber; base is sent regardless and harmless).
+    const hasCanonical = restored.some((b) => /:\d+$/.test(b.id)) ||
+      prevBlocks.some((b) => /:\d+$/.test(b.id));
+    const ops = hasCanonical ? diffOpsForSnapshot(prevBlocks, restored) : null;
+    if (ops === null) {
+      // Not fully block-granular — PUT the whole restored body (with base).
+      if (onCancelAndFlush) onCancelAndFlush(full, base);
+      else onContentChange?.(full, base);
+      return;
+    }
+    if (ops.length === 0) return; // restore was a no-op (e.g. only fold state).
+    // Cancel any pending/in-flight block-ops batch for this note so the
+    // restore's ops aren't double-sent alongside a stale coalesced batch, then
+    // enqueue the restore diff and flush it immediately (undo/redo must win the
+    // WS-echo race against any in-flight pre-undo write, mirroring the old
+    // `onCancelAndFlush` immediacy). One path per save.
+    blockOpsSaver.supersedeWithBody(noteId, () => {
+      blockOpsSaver.enqueue(noteId, ops);
+      blockOpsSaver.flush(noteId);
+    });
   }
 
   function handleBlockChange(blockId: string, newRawText: string) {

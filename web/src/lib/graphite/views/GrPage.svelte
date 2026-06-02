@@ -79,9 +79,15 @@
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let inFlight: AbortController | null = null;
   let pending: string | null = null;
+  // Edit BASE for the pending save (body the outliner last reseeded from),
+  // sent as `base_content` so the server diffs the author's real changes and
+  // never re-asserts an untouched block over a concurrent peer edit. First
+  // base of the window wins; cleared on flush.
+  let pendingBase: string | undefined = undefined;
 
-  function handleContentChange(fullContent: string) {
+  function handleContentChange(fullContent: string, baseContent?: string) {
     pending = fullContent;
+    if (pendingBase === undefined) pendingBase = baseContent;
     setSaving();
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => void flushSave(), 500);
@@ -95,12 +101,14 @@
     if (pending === null || !pageId) return;
     const content = pending;
     pending = null;
+    const base = pendingBase;
+    pendingBase = undefined;
     if (inFlight) inFlight.abort();
     const controller = new AbortController();
     inFlight = controller;
     if (note) queryClient.setQueryData(["note", pageId], { ...note, content });
     try {
-      const updated = await api.updateNote(pageId, content, controller.signal);
+      const updated = await api.updateNote(pageId, content, base, controller.signal);
       if (controller.signal.aborted) return;
       queryClient.setQueryData(["note", pageId], updated);
       setSaved();
@@ -118,8 +126,9 @@
     }
   }
 
-  async function cancelAndFlush(fullContent: string) {
+  async function cancelAndFlush(fullContent: string, baseContent?: string) {
     pending = fullContent;
+    if (baseContent !== undefined) pendingBase = baseContent;
     await flushSave();
   }
 
