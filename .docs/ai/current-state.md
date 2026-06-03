@@ -1,5 +1,19 @@
 # Current State
 
+## 2026-06-03 — Fresh-install live-sync bug: GrAppShell didn't re-establish WS/hubMode on a runtime backend change
+
+**Symptom (user, devices):** after a fresh install + setting the server URL in Settings, HTTP refresh worked but **live sync was dead both ways** (web→device needed a hard refresh; device edits reached nothing) + SYNC card showed `FfiSyncError.Other("Mac has no relay configured")`, Last tick "never", 0 ops.
+
+**Root cause (confirmed by code + live server log):** `GrAppShell` wired `liveSync.connect` + `relayTicker.hubMode` ONLY in `.task` at launch. `backend.mode` defaults to `"mock"`, so a fresh install launches in mock mode (no WS, no hub mode). `GrSettingsView.save()` then sets the URL/mode + re-attaches HTTP **but never reconnects the WS or sets hubMode**, and there was no `onChange` to react. So the relay coordinator kept spinning (the `/sync/peer/pairing-code` loop + "no relay" error in `/tmp/tesela-srv.log`; the Mac is relay-`configured:false` by design — hub-WS architecture). **Same root cause as the earlier "switching mosaics wasn't working."**
+
+**Fix (`<commit>` GrAppShell):** extracted the backend-dependent bring-up into `activateBackend()` (attach/refresh/`hubMode` set BOTH ways/`liveSync.connect`/daily bootstrap/`start`), called once from `.task` AND re-run via `.onChange(of: backendToken)` (mode|serverURL) on a runtime backend change. Mirrors the old `AppShell.activateMosaic` re-run pattern. `LiveSyncSocket.connect` is re-entrant; the rest idempotent.
+
+**Verified:** sim build SUCCEEDED; adversarial review APPROVE (traced the SwiftUI reactivity chain + re-entrancy + no lost wiring); **runtime sim check** — launching `.http` connects a NEW `/ws` (10→11), refreshes, fetches the daily `/loro` snapshot (bootstrap), and does NOT spin the relay pairing-code loop (hubMode gated). **Reinstalled on Roshar + Sel** (graphite flip, reverted; tree clean). Workaround that also works: force-quit + reopen (the `.task` re-reads the persisted `.http`).
+
+**[ ] USER:** open the app on each device (now no relaunch needed after a Settings change) → live web↔iPhone↔iPad sync should work both ways. **Note:** the old `AppShell` has the same one-directional `hubMode` bug (only ever set true) — out of scope, candidate for the same `else { hubMode = false }` fix if that path ever needs runtime mock switching.
+
+---
+
 ## 2026-06-02 (PM) — Block text is now a real CRDT (LoroText) — the 4th & deepest data-loss vector closed
 
 **The bug (wire-proven on devices):** a block's text was a Loro LWW **map register** (`meta.insert("text", ...)`). Two peers editing the SAME block concurrently → higher-(lamport,peer) whole-text write wins, the other side's typing silently lost. This is distinct from the three prior clobbers (disjoint-history twins / stale whole-body PUT / WS snapshot push) — all of those protected WHICH blocks apply; none addressed how one block's concurrent text combines.
