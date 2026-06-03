@@ -14,7 +14,7 @@
  * editor binding and WebSocket splice plumbing land in later C2 steps.
  */
 import { browser } from "$app/environment";
-import type { LoroDoc } from "loro-crdt";
+import type { LoroDoc, LoroText } from "loro-crdt";
 
 /** The lazily-resolved `loro-crdt` module, cached after first browser load. */
 type LoroModule = typeof import("loro-crdt");
@@ -34,7 +34,10 @@ export function loadLoro(): Promise<LoroModule> {
     );
   }
   if (!modulePromise) {
-    modulePromise = import("loro-crdt");
+    modulePromise = import("loro-crdt").then((m) => {
+      loadedModule = m;
+      return m;
+    });
   }
   return modulePromise;
 }
@@ -43,6 +46,22 @@ export function loadLoro(): Promise<LoroModule> {
 export async function createLoroDoc(): Promise<LoroDoc> {
   const { LoroDoc } = await loadLoro();
   return new LoroDoc();
+}
+
+/** The `loro-crdt` module once it has finished loading, else null. Cached on
+ *  first successful {@link loadLoro}; lets synchronous code (e.g. a CM6
+ *  updateListener that must run in the same tick as the edit) construct a
+ *  `LoroText` without re-awaiting. Callers must have already `await`ed a load
+ *  (e.g. via {@link createLoroDoc}) — it's null until then. */
+let loadedModule: LoroModule | null = null;
+
+/** Construct a detached `LoroText` synchronously. Returns null if the wasm
+ *  module hasn't loaded yet (caller must have opened a doc first). Used by
+ *  `NoteDoc.spliceBlock` to seed a `text_seq` container via
+ *  `getOrCreateContainer`, mirroring the Rust engine's `LoroText::new()`. */
+export function newLoroTextSync(): LoroText | null {
+  if (!loadedModule) return null;
+  return new loadedModule.LoroText();
 }
 
 /**

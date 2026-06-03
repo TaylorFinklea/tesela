@@ -21,10 +21,10 @@
  *       - `text_seq`    — a nested `LoroText` holding the block's whole text
  *         (the LWW `text` register is the legacy fallback for old snapshots)
  */
-import { createLoroDoc, importInto } from "./loro-client";
-import { noteIdHex } from "./note-id";
+import { createLoroDoc, importInto, newLoroTextSync } from "./loro-client";
+import { noteId, noteIdHex } from "./note-id";
 import type { LoroDocUpdate } from "./tlr2";
-import type { LoroDoc, LoroTreeNode } from "loro-crdt";
+import type { LoroDoc, LoroText, LoroTreeNode, VersionVector } from "loro-crdt";
 
 /** Base URL for the tesela-server REST/Loro endpoints. Same-origin in the
  *  browser (vite dev proxies `/loro` + `/notes` → 127.0.0.1:7474); the node
@@ -60,6 +60,9 @@ export class NoteDoc {
   slug: string | null = null;
   /** 16-byte doc id (dashless hex) for {@link slug}; used to filter deltas. */
   noteIdHex: string | null = null;
+  /** Raw 16-byte doc id for {@link slug}; the `doc` key on outbound TLR2
+   *  frames. Null before the first {@link open}. */
+  noteId16: Uint8Array | null = null;
 
   #doc: LoroDoc | null = null;
   #base: string;
@@ -92,6 +95,7 @@ export class NoteDoc {
     const gen = ++this.#generation;
     this.slug = slug;
     this.noteIdHex = noteIdHex(slug);
+    this.noteId16 = noteId(slug);
 
     const doc = await createLoroDoc();
     // A newer open() (or a close()) raced ahead while wasm/loro initialized —
@@ -186,6 +190,109 @@ export class NoteDoc {
   }
 
   /**
+   * Return the canonical `text_seq` `LoroText` container handle for the block
+   * whose id === `bid` (dashed or dashless), or null if no live block matches
+   * / no doc is open. This is the SAME container {@link blockTextByBid} reads
+   * and the Rust engine's `splice_block_text` mutates: it's resolved via
+   * `node.data.getOrCreateContainer("text_seq", new LoroText())`, exactly like
+   * the server, so seed / whole-text upsert / splice all converge on ONE
+   * sequence CRDT. C2.3's editor binding uses the returned handle to subscribe
+   * to remote text events. Returns null if the wasm module isn't loaded yet.
+   */
+  blockTextContainer(bid: string): LoroText | null {
+    const node = this.#nodeForBid(bid);
+    if (!node) return null;
+    const seed = newLoroTextSync();
+    if (!seed) return null;
+    try {
+      // get_or_create_container returns the EXISTING attached container when
+      // `text_seq` is already present (the common case after bootstrap), and
+      // attaches `seed` only for a brand-new block. Mirrors the Rust path.
+      return node.data.getOrCreateContainer("text_seq", seed);
+    } catch (e) {
+      console.debug("[note-doc] blockTextContainer failed", e);
+      return null;
+    }
+  }
+
+  /**
+   * Splice the block's `text_seq` (UTF-16 index space): delete `utf16DeleteLen`
+   * units at `utf16Offset`, then insert `insert` at the same offset — a
+   * delete-then-insert replace, mirroring the Rust engine's
+   * `splice_block_text` (which uses `delete_utf16`/`insert_utf16`). Commits the
+   * doc so the change is observable + exportable. Returns true if it ran.
+   *
+   * NOTE on index space: the `loro-crdt` JS `LoroText.insert`/`delete` are
+   * UTF-16 indexed (verified against 1.12.3 — inserting/deleting at a UTF-16
+   * offset that splits a surrogate pair throws). CodeMirror offsets are also
+   * UTF-16, so the editor binding passes CM offsets straight through with NO
+   * `convertPos`. (This is the inverse of an earlier spec assumption that the
+   * JS API was unicode-only; the verified behaviour governs.)
+   */
+  spliceBlock(
+    bid: string,
+    utf16Offset: number,
+    utf16DeleteLen: number,
+    insert: string,
+  ): boolean {
+    const doc = this.#doc;
+    if (!doc) return false;
+    const text = this.blockTextContainer(bid);
+    if (!text) return false;
+    try {
+      if (utf16DeleteLen > 0) text.delete(utf16Offset, utf16DeleteLen);
+      if (insert.length > 0) text.insert(utf16Offset, insert);
+      doc.commit();
+      return true;
+    } catch (e) {
+      console.debug("[note-doc] spliceBlock failed", e);
+      return false;
+    }
+  }
+
+  /** The doc's current oplog version vector — the cursor for the next
+   *  {@link exportSince}. Capture this AFTER {@link spliceBlock} commits and
+   *  the delta is sent, so the following export only carries newer ops. Null
+   *  if no doc is open. */
+  currentVersion(): VersionVector | null {
+    return this.#doc?.oplogVersion() ?? null;
+  }
+
+  /**
+   * Export the doc's update bytes since `since` (a previously-captured
+   * {@link currentVersion}), or the whole update history when `since` is null.
+   * These bytes go into a TLR2 frame (one {@link LoroDocUpdate} keyed by this
+   * note's 16-byte id) and out over the WS. Returns an empty array when no doc
+   * is open or there's nothing new. The caller advances its last-sent VV to
+   * {@link currentVersion} after sending.
+   */
+  exportSince(since: VersionVector | null): Uint8Array {
+    const doc = this.#doc;
+    if (!doc) return new Uint8Array();
+    try {
+      return since
+        ? doc.export({ mode: "update", from: since })
+        : doc.export({ mode: "update" });
+    } catch (e) {
+      console.debug("[note-doc] exportSince failed", e);
+      return new Uint8Array();
+    }
+  }
+
+  /** Find the live root block node whose `block_id` meta === `bid` (normalized
+   *  dashless). Shared by the container + text read helpers. */
+  #nodeForBid(bid: string): LoroTreeNode | null {
+    const doc = this.#doc;
+    if (!doc) return null;
+    const want = normalizeBid(bid);
+    for (const node of liveRootNodes(doc)) {
+      const meta = readNodeMeta(node);
+      if (meta && meta.bid === want) return node;
+    }
+    return null;
+  }
+
+  /**
    * Register a callback fired whenever the doc changes (local import OR remote
    * delta). C2.3 uses this to reconcile the editor with remote edits. Returns
    * an unsubscribe fn. Safe to call before {@link open}; the registration
@@ -212,6 +319,7 @@ export class NoteDoc {
     this.#doc = null;
     this.slug = null;
     this.noteIdHex = null;
+    this.noteId16 = null;
   }
 
   /** Wire `doc.subscribe(...)` → fan out to external subscribers. The loro

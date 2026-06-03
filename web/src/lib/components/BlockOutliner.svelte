@@ -1088,6 +1088,38 @@
     saveBlocksViaOps(blocks, [upsertOpForBlock(blocks, blockId)]);
   }
 
+  /** C2.3 — a text edit that went through the block's LoroText binding (local
+   *  splice broadcast over the WS, OR a remote splice applied into the editor),
+   *  NOT the whole-text HTTP path. Update the block's ParsedBlock state so
+   *  structure/display/tags stay consistent with the live text, but DO NOT save
+   *  (the Loro delta is the persistence/sync path for bound text edits). Mirrors
+   *  `handleBlockChange`'s state-only update — minus `saveBlocksViaOps` and the
+   *  insert-session undo promotion (Loro owns text history for bound blocks). */
+  function handleLoroText(blockId: string, newRawText: string) {
+    // Mark "actively editing" so the body-sync effect still defers an unrelated
+    // server reparse while the user types into a bound block.
+    lastLocalEditAt = Date.now();
+    const parsedTags = getBlockTags(newRawText);
+    const props = parseProperties(newRawText);
+    delete props.tags;
+    blocks = blocks.map((b) =>
+      b.id === blockId
+        ? {
+            ...b,
+            raw_text: newRawText,
+            text: (newRawText.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
+            tags: parsedTags,
+            properties: props,
+          }
+        : b,
+    );
+    // Advance the own-echo dirty-guard baseline so the server's WS echo of the
+    // CHANGED note body (the relay re-materializes + broadcasts note_updated for
+    // bound splices too) is recognised as our own and doesn't reseed/clobber.
+    const { bodyOnly } = buildFullContent(blocks);
+    lastSentBody = bodyOnly;
+  }
+
   function removeBlockTag(block: ParsedBlock, tagName: string) {
     pushUndo();
     handleBlockChange(block.id, toggleBlockTag(block.raw_text, tagName));
@@ -1967,6 +1999,8 @@
               if (!isPinnedTab) setLastActiveOutliner(rootEl ?? null);
             }}
             onchange={(text) => handleBlockChange(block.id, text)}
+            bid={block.bid ?? undefined}
+            onlorotext={(text) => handleLoroText(block.id, text)}
             onnavigate={handleNavigate}
             onescape={() => {}}
             onenter={(textAfter: string) => handleEnter(vi, textAfter)}

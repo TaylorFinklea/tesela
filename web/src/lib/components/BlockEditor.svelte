@@ -337,6 +337,20 @@
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
   import DatePicker from "./DatePicker.svelte";
   import { prefs } from "$lib/preferences.svelte";
+  import { browser } from "$app/environment";
+  import {
+    getActiveNoteDoc,
+    spliceActiveBlock,
+  } from "$lib/loro/active-note-doc.svelte";
+  import type { LoroText, LoroEventBatch } from "loro-crdt";
+
+  // C2.3 own-echo guard — true while a REMOTE Loro text event is being applied
+  // into this view. The updateListener checks it so the synthetic CM change it
+  // dispatches isn't mistaken for a local edit and re-spliced back into Loro
+  // (which would loop). Distinct from the `externalSync` annotation, which the
+  // listener also honors; this flag additionally covers the brief window the
+  // dispatch is in flight.
+  let localApplyInProgress = false;
 
   let {
     initialText,
@@ -386,6 +400,8 @@
     propertyDefs,
     onInsertTemplate,
     isPinnedTab = false,
+    bid,
+    onlorotext: onLoroText,
   }: {
     initialText: string;
     onblur: () => void;
@@ -451,6 +467,21 @@
     /** When true, this editor is inside a pinned drawer tab. Enables gt/gT
      *  vim actions for cycling drawer tabs from within the editor. */
     isPinnedTab?: boolean;
+    /** C2.3 — the block's dashed-UUID id. When present AND the active Loro
+     *  NoteDoc holds this block, the editor binds bidirectionally to the
+     *  block's `text_seq` LoroText: local typing emits character splices over
+     *  the WS (via `spliceActiveBlock`) instead of the whole-text HTTP block-op
+     *  POST, and remote splices apply live into this view. Absent (or block not
+     *  yet in the doc — e.g. a brand-new local block) → the editor falls back to
+     *  the existing `onchange` whole-text path. */
+    bid?: string;
+    /** C2.3 — called instead of `onchange` for a LOCAL text edit that was
+     *  successfully spliced into the block's LoroText (so it went out over the
+     *  WS, NOT the whole-text HTTP path). The parent updates its ParsedBlock
+     *  structure/display from `text` but MUST NOT route it to the whole-text
+     *  block-op save (that path is for structural ops + the non-bound
+     *  fallback). */
+    onlorotext?: (text: string) => void;
   } = $props();
 
   const hiddenKeysCompartment = new Compartment();
@@ -1083,21 +1114,36 @@
   // Sync external prop changes (outliner-undo, WS reparse) into cm6's doc.
   // During normal typing the prop already matches cm6's doc by the time
   // this effect runs, so the equality guard prevents redundant transactions.
+  //
+  // C2.3 — when this block is bound to a LoroText, that text is the TRUTH; the
+  // `initialText` prop (block.raw_text) is a lagging mirror updated via
+  // `onLoroText`. A remote splice updates cm6 directly (read path) BEFORE the
+  // prop catches up, so a naive `initialText !== cm.doc` reseed would briefly
+  // revert the remote edit. Guard it: when bound and cm6 already matches the
+  // live Loro text, cm6 is authoritative — skip the whole-doc reseed. We still
+  // reseed when cm6 has drifted from the Loro text (a genuine structural/
+  // external change the Loro doc reflects, or no binding at all).
   $effect(() => {
     const v = view;
     if (!v) return;
-    if (initialText !== v.state.doc.toString()) {
-      v.dispatch({
-        changes: { from: 0, to: v.state.doc.length, insert: initialText },
-        // `addToHistory: false` excludes this transaction from cm6's per-block
-        // history — so after `u` rewrites the doc, a subsequent local `Cmd+Z`
-        // can't walk back through the just-undone state.
-        annotations: [
-          externalSync.of(true),
-          Transaction.addToHistory.of(false),
-        ],
-      });
+    const cmText = v.state.doc.toString();
+    if (initialText === cmText) return;
+    const container = loroTextContainer();
+    if (container && cmText === container.toString()) {
+      // cm6 is in lock-step with the bound LoroText (e.g. just took a remote
+      // splice); the prop is merely lagging. Don't clobber the live text.
+      return;
     }
+    v.dispatch({
+      changes: { from: 0, to: v.state.doc.length, insert: initialText },
+      // `addToHistory: false` excludes this transaction from cm6's per-block
+      // history — so after `u` rewrites the doc, a subsequent local `Cmd+Z`
+      // can't walk back through the just-undone state.
+      annotations: [
+        externalSync.of(true),
+        Transaction.addToHistory.of(false),
+      ],
+    });
   });
 
   // Keep the global vim context pointing to whichever block is currently
@@ -1143,6 +1189,93 @@
   }
   function clearVimCtxIfMine() {
     if (vimCtx.view === view) vimCtx.view = null;
+  }
+
+  /** Resolve this block's `text_seq` LoroText handle off the active NoteDoc, or
+   *  null when not bound (no `bid`, no active doc, doc closed, or the block
+   *  isn't in the doc yet). Browser-only. */
+  function loroTextContainer(): LoroText | null {
+    if (!browser || !bid) return null;
+    return getActiveNoteDoc()?.blockTextContainer(bid) ?? null;
+  }
+
+  /** C2.3 write path. Translate every change region in a LOCAL CM update into a
+   *  UTF-16 delete-then-insert splice on the block's LoroText (which broadcasts
+   *  the delta over the WS via `spliceActiveBlock`). Returns true iff this block
+   *  is bound AND at least one splice was applied — the caller then SKIPS the
+   *  whole-text HTTP save for this edit. Returns false (→ whole-text fallback)
+   *  when unbound or no splice ran.
+   *
+   *  `iterChanges(fromA,toA,fromB,toB,inserted)` walks regions in ASCENDING
+   *  document order. Applying them in that order would shift later original-doc
+   *  offsets (`fromA`/`toA`) by earlier edits, so we COLLECT first and apply in
+   *  DESCENDING order — each splice then leaves the still-unprocessed lower
+   *  offsets valid. CM `fromA`/`toA` are UTF-16 offsets into the PRE-change doc,
+   *  matching LoroText's UTF-16 index space exactly. */
+  function applyLocalSplicesToLoro(update: { changes: { iterChanges: (f: (fromA: number, toA: number, fromB: number, toB: number, inserted: { toString(): string }) => void) => void } }): boolean {
+    if (!bid || !loroTextContainer()) return false;
+    const edits: Array<{ from: number; delLen: number; insert: string }> = [];
+    update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+      edits.push({ from: fromA, delLen: toA - fromA, insert: inserted.toString() });
+    });
+    if (edits.length === 0) return false;
+    let any = false;
+    for (let i = edits.length - 1; i >= 0; i--) {
+      const e = edits[i];
+      if (spliceActiveBlock(bid, e.from, e.delLen, e.insert)) any = true;
+    }
+    return any;
+  }
+
+  /** C2.3 read path. Apply a REMOTE block-text event to this view as a minimal
+   *  CM ChangeSet so CM auto-remaps the caret (no hand-rolled cursor math). The
+   *  Loro TextDiff is a quill delta (retain/insert/delete) in UTF-16 index space
+   *  — the SAME space as CM offsets — so positions pass straight through. The
+   *  dispatch is annotated `externalSync` + `addToHistory:false` (so it doesn't
+   *  loop through the write path or pollute per-block undo) and wrapped in the
+   *  `localApplyInProgress` guard. After applying, `onLoroText` syncs the
+   *  parent's ParsedBlock without re-saving. Ignores local-origin events. */
+  function applyRemoteTextEvent(batch: LoroEventBatch): void {
+    const v = view;
+    if (!v) return;
+    // `by: "local"` events are our own splices — already in the editor.
+    if (batch.by === "local") return;
+    const changes: Array<{ from: number; to: number; insert: string }> = [];
+    let pos = 0;
+    for (const ev of batch.events) {
+      const diff = ev.diff;
+      if (diff.type !== "text") continue;
+      for (const op of diff.diff) {
+        if (typeof op.retain === "number") {
+          pos += op.retain;
+        } else if (typeof op.insert === "string") {
+          changes.push({ from: pos, to: pos, insert: op.insert });
+          pos += op.insert.length;
+        } else if (typeof op.delete === "number") {
+          changes.push({ from: pos, to: pos + op.delete, insert: "" });
+          // A delete consumes original-doc length but inserts nothing, so the
+          // running position does NOT advance past the deleted span.
+        }
+      }
+    }
+    if (changes.length === 0) return;
+    // Clamp to the current doc length defensively — the CM doc and LoroText
+    // should be in lock-step, but a clamp avoids a dispatch throw if a race
+    // ever leaves them briefly divergent.
+    const docLen = v.state.doc.length;
+    const safe = changes
+      .map((c) => ({ from: Math.min(c.from, docLen), to: Math.min(c.to, docLen), insert: c.insert }))
+      .filter((c) => c.from <= c.to);
+    localApplyInProgress = true;
+    try {
+      v.dispatch({
+        changes: safe,
+        annotations: [externalSync.of(true), Transaction.addToHistory.of(false)],
+      });
+    } finally {
+      localApplyInProgress = false;
+    }
+    onLoroText?.(v.state.doc.toString());
   }
 
   onMount(() => {
@@ -1450,9 +1583,29 @@
       if (update.docChanged) {
         // Skip echoing back outliner-undo restores — they already wrote the
         // canonical block.body, so re-firing onChange would corrupt history.
-        if (update.transactions.some((tr) => tr.annotation(externalSync) === true)) return;
+        // Also skip while a remote Loro splice is being applied into this view
+        // (the read path dispatches with `externalSync`, but guard the in-flight
+        // window too) so we never re-splice a remote edit back into Loro.
+        if (
+          localApplyInProgress ||
+          update.transactions.some((tr) => tr.annotation(externalSync) === true)
+        ) {
+          return;
+        }
         const doc = update.state.doc.toString();
-        onChange(doc);
+        // C2.3 write path: a genuine LOCAL text edit. If this block is bound to
+        // the active Loro doc, translate each CM change region into a UTF-16
+        // splice on the block's `text_seq` (CM offsets ARE LoroText UTF-16
+        // offsets — no convertPos) and broadcast the delta over the WS. The
+        // whole-text HTTP save is then SKIPPED for this edit (`onLoroText`
+        // updates ParsedBlock without saving). If the splice can't run (no
+        // active doc, block not yet in the doc — e.g. a brand-new local block,
+        // or no `bid`), fall back to the existing whole-text `onChange` path.
+        if (applyLocalSplicesToLoro(update)) {
+          onLoroText?.(doc);
+        } else {
+          onChange(doc);
+        }
         const cursorPos = update.state.selection.main.head;
         // Phase 10.3 — chord menu doesn't have a filter to update. We
         // still close the menu if the cursor backs up past the `/` (e.g.
@@ -1566,8 +1719,34 @@
       });
     }
 
+    // C2.3 read path — subscribe to this block's `text_seq` LoroText so remote
+    // splices apply live into the editor. The container may not exist at mount
+    // (the snapshot bootstrap is async, or this is a brand-new local block), so
+    // we retry on a short backoff until it resolves (or the editor unmounts).
+    // Once subscribed we hold the unsubscribe handle for teardown.
+    let loroUnsub: (() => void) | null = null;
+    let subRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let loroSubscribed = false;
+    function trySubscribeLoro(attemptsLeft: number) {
+      if (loroSubscribed || !view) return;
+      const container = loroTextContainer();
+      if (container) {
+        loroUnsub = container.subscribe((batch) => applyRemoteTextEvent(batch));
+        loroSubscribed = true;
+        return;
+      }
+      if (attemptsLeft <= 0) return;
+      subRetryTimer = setTimeout(() => {
+        subRetryTimer = null;
+        trySubscribeLoro(attemptsLeft - 1);
+      }, 200);
+    }
+    if (browser && bid) trySubscribeLoro(15); // ~3s of retries for slow bootstraps
+
     return () => {
       vimModeOff?.();
+      if (subRetryTimer) clearTimeout(subRetryTimer);
+      try { loroUnsub?.(); } catch { /* best-effort unsubscribe */ }
       view?.destroy();
       view = null;
     };

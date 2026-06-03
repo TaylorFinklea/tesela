@@ -19,11 +19,21 @@
  */
 import { browser } from "$app/environment";
 import { NoteDoc } from "./note-doc";
-import type { LoroDocUpdate } from "./tlr2";
+import { encodeTlr2, type LoroDocUpdate } from "./tlr2";
+import { sendBinary } from "$lib/ws-client.svelte";
+import type { VersionVector } from "loro-crdt";
 
 let active: NoteDoc | null = null;
 /** Slug the singleton is currently open on, to dedupe redundant opens. */
 let activeSlug: string | null = null;
+/** Per-doc cursor: the doc version vector at the last outbound delta send.
+ *  `exportSince(lastSentVV)` ships only ops newer than this — the next splice
+ *  doesn't re-send the whole history. Reset to null on every (re)open so a new
+ *  note starts from a clean cursor. */
+let lastSentVV: VersionVector | null = null;
+/** Coalesce many tiny splices in one frame (a burst of keystrokes) into a
+ *  single export+send on the next animation frame. */
+let flushHandle: ReturnType<typeof requestAnimationFrame> | null = null;
 
 function ensure(): NoteDoc {
   if (!active) active = new NoteDoc();
@@ -43,11 +53,23 @@ export function openActiveNoteDoc(slug: string | null): Promise<void> {
       active.close();
       activeSlug = null;
     }
+    resetOutbound();
     return Promise.resolve();
   }
   if (slug === activeSlug && active?.slug === slug) return Promise.resolve();
   activeSlug = slug;
+  resetOutbound();
   return ensure().open(slug);
+}
+
+/** Drop the outbound send cursor + any pending flush. Called on every open so
+ *  a delta for the previous note can't leak into the new one's cursor. */
+function resetOutbound(): void {
+  lastSentVV = null;
+  if (flushHandle !== null) {
+    cancelAnimationFrame(flushHandle);
+    flushHandle = null;
+  }
 }
 
 /** Feed inbound TLR2 deltas to the active doc (no-op if none open / SSR). */
@@ -59,4 +81,54 @@ export function applyInboundToActive(updates: LoroDocUpdate[]): void {
 /** The active NoteDoc, or null when nothing is open. C2.3 reads through this. */
 export function getActiveNoteDoc(): NoteDoc | null {
   return active;
+}
+
+/**
+ * Apply a local character splice (UTF-16 index space, CM offsets pass straight
+ * through) to block `bid`'s `text_seq` on the active doc, then schedule a
+ * coalesced delta broadcast. Returns false (no-op) when no doc is open, the
+ * block isn't in the doc, or the splice fails — the caller keeps its existing
+ * whole-text fallback intact in that case. Browser-only.
+ */
+export function spliceActiveBlock(
+  bid: string,
+  utf16Offset: number,
+  utf16DeleteLen: number,
+  insert: string,
+): boolean {
+  if (!browser || !active) return false;
+  const ok = active.spliceBlock(bid, utf16Offset, utf16DeleteLen, insert);
+  if (ok) scheduleOutboundFlush();
+  return ok;
+}
+
+/** Schedule (or keep) a single outbound flush on the next animation frame.
+ *  Multiple splices in the same frame collapse into one export+send. */
+function scheduleOutboundFlush(): void {
+  if (!browser) return;
+  if (flushHandle !== null) return;
+  flushHandle = requestAnimationFrame(() => {
+    flushHandle = null;
+    flushActiveOutbound();
+  });
+}
+
+/**
+ * Export the active doc's delta since the last send, frame it as TLR2 (one
+ * update keyed by the note's 16-byte id), and ship it over the WS. Advances
+ * the last-sent cursor only after a non-empty export so a failed/no-op send
+ * doesn't strand newer ops. Public so a flush-before-navigate can force it.
+ */
+export function flushActiveOutbound(): void {
+  if (!browser || !active) return;
+  const noteId16 = active.noteId16;
+  if (!noteId16) return;
+  const bytes = active.exportSince(lastSentVV);
+  if (bytes.length === 0) return;
+  const frame = encodeTlr2([{ doc: noteId16, updateBytes: bytes }]);
+  sendBinary(frame);
+  // Advance the cursor to the version we just exported so the next export
+  // only carries newer ops.
+  const v = active.currentVersion();
+  if (v) lastSentVV = v;
 }
