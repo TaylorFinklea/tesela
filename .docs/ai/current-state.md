@@ -6,7 +6,7 @@
 
 **Collab-editing milestone status (approach c, spec `2026-06-03-collab-editing-spec.md`):**
 - C1 splice FFI (`e939da1`) ✓ · C1 outbound CollabTextView (`d7180e3`) ✓ (iOS sends splices → no longer deletes a peer's chars; editor sim-smoke OK) · **C1 inbound (live-apply + caret remap) NOT built.**
-- C2.0 de-risk (`92a8e52`) ✓ · **C2.1 (WS binary frames in `ws-client`), C2.2 (per-note Loro doc + snapshot bootstrap), C2.3 (bind each block's CM6 to its `text_seq` — splices out / transactions in / cursor remap; stop whole-text HTTP for text) NOT built.**
+- C2.0 de-risk (`92a8e52`) ✓ · C2.1 TLR2 codec + binary WS (`f20f3f5`) ✓ — JS decoded a REAL server TLR2 frame + `LoroDoc.import`'d the update (added `fflate`; `ws-client` now fires `onBinaryDelta` + has `sendBinary`). · C2.2 (per-note Loro doc + snapshot bootstrap + inbound apply) IN PROGRESS · **C2.3 (bind each block's CM6 to its `text_seq` — splices out / transactions in / cursor remap; stop whole-text HTTP for text) NOT built.**
 - C3 (iOS↔web same-block wire-verify + remove DIAG) NOT built.
 - **Net:** dominant multi-device bugs FIXED + live (LoroText/live-sync/re-base — different-block + take-turns editing works on devices). Same-LINE simultaneous typing: iOS outbound done + web-peer feasibility proven; remaining = C1-inbound + C2.1-2.3 + C3 (multi-increment iOS+web build). DIAG diagnostics reverted in source; server running clean.
 
