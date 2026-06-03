@@ -1312,6 +1312,31 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      */
     func recordNoteUpsertBySlug(slug: String, title: String, content: String, createdAtMillis: Int64) async throws  -> String
     
+    /**
+     * Apply a single CHARACTER-LEVEL splice to one block's text — the
+     * outbound foundation for cursor-accurate collaborative editing. Instead
+     * of re-authoring the WHOLE block text via [`Self::record_note_diff`]
+     * (whose Myers-diff turns a concurrent peer's characters into DELETEs →
+     * clobber), a client sends the user's actual keystroke: "delete
+     * `utf16_delete_len` UTF-16 code units at `utf16_offset`, then insert
+     * `insert`" (the two at the same offset = a replace).
+     *
+     * `utf16_offset` / `utf16_delete_len` are **UTF-16 code units**, matching
+     * iOS `NSRange` and JavaScript string indices, so the editor passes its
+     * native offset with no conversion. The splice goes through the block's
+     * `text_seq` LoroText sequence CRDT, so two devices splicing the SAME
+     * block concurrently INTERLEAVE — neither side's characters are lost.
+     *
+     * `slug` → note id with the same `stable_uuid_from_slug` blake3-truncation
+     * the rest of this bridge uses. `block_id_hex` is the block's id as a
+     * 32-char dashless hex string OR a 36-char dashed UUID (both accepted);
+     * an unparseable id is a `FfiSyncError`.
+     *
+     * Returns `1` when the splice applied, `0` when the block isn't found (a
+     * splice is an in-place edit — the block must already exist).
+     */
+    func spliceBlockText(slug: String, blockIdHex: String, utf16Offset: UInt32, utf16DeleteLen: UInt32, insert: String) async throws  -> UInt32
+    
 }
 /**
  * Handle to the authoritative Loro sync engine. Created with
@@ -1654,6 +1679,46 @@ open func recordNoteUpsertBySlug(slug: String, title: String, content: String, c
             completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Apply a single CHARACTER-LEVEL splice to one block's text — the
+     * outbound foundation for cursor-accurate collaborative editing. Instead
+     * of re-authoring the WHOLE block text via [`Self::record_note_diff`]
+     * (whose Myers-diff turns a concurrent peer's characters into DELETEs →
+     * clobber), a client sends the user's actual keystroke: "delete
+     * `utf16_delete_len` UTF-16 code units at `utf16_offset`, then insert
+     * `insert`" (the two at the same offset = a replace).
+     *
+     * `utf16_offset` / `utf16_delete_len` are **UTF-16 code units**, matching
+     * iOS `NSRange` and JavaScript string indices, so the editor passes its
+     * native offset with no conversion. The splice goes through the block's
+     * `text_seq` LoroText sequence CRDT, so two devices splicing the SAME
+     * block concurrently INTERLEAVE — neither side's characters are lost.
+     *
+     * `slug` → note id with the same `stable_uuid_from_slug` blake3-truncation
+     * the rest of this bridge uses. `block_id_hex` is the block's id as a
+     * 32-char dashless hex string OR a 36-char dashed UUID (both accepted);
+     * an unparseable id is a `FfiSyncError`.
+     *
+     * Returns `1` when the splice applied, `0` when the block isn't found (a
+     * splice is an in-place edit — the block must already exist).
+     */
+open func spliceBlockText(slug: String, blockIdHex: String, utf16Offset: UInt32, utf16DeleteLen: UInt32, insert: String)async throws  -> UInt32  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_splice_block_text(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug),FfiConverterString.lower(blockIdHex),FfiConverterUInt32.lower(utf16Offset),FfiConverterUInt32.lower(utf16DeleteLen),FfiConverterString.lower(insert)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u32,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u32,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u32,
+            liftFunc: FfiConverterUInt32.lift,
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
@@ -2643,6 +2708,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_upsert_by_slug() != 28447) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_splice_block_text() != 6907) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_constructor_relayclienthandle_new() != 60933) {

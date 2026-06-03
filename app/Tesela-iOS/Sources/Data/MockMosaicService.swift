@@ -136,6 +136,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Args: (slug, title, fullContent, createdAtMillis).
     var onLocalWrite: ((String, String, String, Int64) -> Void)? = nil
 
+    /// Collab editing C1 outbound: fired for a single in-block CHARACTER
+    /// SPLICE (one keystroke) instead of a whole-text re-author. Wired in
+    /// `GrAppShell` to `relayTicker.spliceAndPush(...)`, which applies the
+    /// splice to the block's per-block Loro `LoroText` (`text_seq`) and
+    /// pushes the resulting delta. Because the CRDT merges splices, a
+    /// peer's concurrent same-block edit is no longer clobbered (the old
+    /// whole-text path emitted DELETEs of the peer's characters).
+    /// Args: (slug, blockIdHex, utf16Offset, utf16DeleteLen, insert).
+    var onLocalSplice: ((String, String, Int, Int, String) -> Void)? = nil
+
     /// Callback fired whenever a note becomes visible/loaded (the daily
     /// on refresh, any opened page). Wired in both shells to
     /// `relayTicker.bootstrapNoteIfNeeded(slug:)` so a device that's only
@@ -277,6 +287,101 @@ final class MockMosaicService: ObservableObject, MosaicService {
         todayBlocks[idx].rawText = body
         todayBlocks[idx].tags = tags
         scheduleWriteback()
+    }
+
+    /// Collab editing C1 outbound: apply ONE character splice (the user's
+    /// actual keystroke) to a today block, routed to the engine's
+    /// per-block `LoroText` (`text_seq`) so a concurrent same-block edit
+    /// merges instead of being clobbered. Does NOT run the whole-text
+    /// writeback (`scheduleWriteback`/`editTodayBlock`) — that path
+    /// re-authors the block and emits DELETEs of a peer's chars, and its
+    /// space-collapsing / tag-restructuring normalization would diverge
+    /// the engine text from the editor and misalign future splice offsets.
+    ///
+    /// The in-memory model is updated by splicing the ENGINE-EXACT block
+    /// text (body with inline tags — the materialized line's visible
+    /// content) and re-deriving `text`/`rawText`/`tags` for display. The
+    /// re-derivation is a display projection only, NOT a storage
+    /// transformation: the engine receives the raw UTF-16 splice.
+    ///
+    /// `utf16Offset` / `utf16DeleteLen` are UTF-16 code units (the
+    /// editor's native `NSRange`), exactly what `spliceBlockText` wants.
+    func spliceTodayBlock(id: String, utf16Offset: Int, utf16DeleteLen: Int, insert: String) {
+        guard let idx = todayBlocks.firstIndex(where: { $0.id == id }) else { return }
+        // Reconstruct the engine-exact string (the editor's loaded value),
+        // apply the SAME UTF-16 splice the editor just applied to it on an
+        // NSString (UTF-16 semantics, matching the engine + NSRange), and
+        // keep the result FAITHFUL — no space-collapsing or tag-stripping
+        // normalization, which would diverge the in-memory text from the
+        // editor + engine and misalign future splice offsets. Tags are
+        // re-DERIVED for the chip display only (a projection, not a
+        // storage transform).
+        let before = Self.engineExactText(of: todayBlocks[idx])
+        let ns = NSMutableString(string: before)
+        let len = ns.length
+        let clampedOffset = max(0, min(utf16Offset, len))
+        let clampedDelete = max(0, min(utf16DeleteLen, len - clampedOffset))
+        ns.replaceCharacters(
+            in: NSRange(location: clampedOffset, length: clampedDelete),
+            with: insert
+        )
+        let after = ns as String
+        // Faithful display update: split off ONLY the trailing tag cluster
+        // (matching `renderBody`/the parser's trailing-tag convention)
+        // without collapsing interior spacing, so the next reconstruction
+        // round-trips to the same string.
+        let (body, tags) = Self.splitTrailingTags(after)
+        todayBlocks[idx].text = body.components(separatedBy: "\n").first ?? body
+        todayBlocks[idx].rawText = body
+        todayBlocks[idx].tags = tags
+        // Route the raw splice to the engine with the ORIGINAL editor
+        // offset (the authoritative UTF-16 position from the UITextView).
+        // Open the local-write suppression window so the echo of our own
+        // delta can't revert the splice (mirrors `scheduleWriteback`).
+        guard case .http = currentBackend, !serverDailyId.isEmpty else { return }
+        beginLocalWriteSuppression()
+        onLocalSplice?(serverDailyId, id, clampedOffset, clampedDelete, insert)
+    }
+
+    /// The engine-exact stored text for a block: the materialized line's
+    /// VISIBLE content — `displayText` (body, possibly multi-line) with
+    /// the block's `tags` re-inlined as a trailing ` #tag …` cluster. This
+    /// mirrors `renderBody`'s line construction (sans the `- ` bullet and
+    /// the `<!-- bid:… -->` comment, neither of which is part of the Loro
+    /// `text_seq`) and equals what `BlockRow.combinedEditableText()` loads
+    /// into the editor — so splice offsets land 1:1 on the engine.
+    static func engineExactText(of block: Block) -> String {
+        let body = block.displayText
+        guard !block.tags.isEmpty else { return body }
+        let tagCluster = block.tags.joined(separator: " ")
+        if body.isEmpty { return tagCluster }
+        return body + " " + tagCluster
+    }
+
+    /// Split a faithful block string into (body, trailingTags) by peeling
+    /// the trailing `#tag` cluster off the LAST line WITHOUT collapsing
+    /// interior whitespace — the non-destructive counterpart of
+    /// `splitInlineTags` (which collapses spaces + pulls tags from
+    /// anywhere). Used by the splice path so the chip display stays in
+    /// sync while the stored body remains a faithful 1:1 view of the
+    /// engine's `text_seq` (offset alignment). Tags keep their `#` prefix.
+    static func splitTrailingTags(_ raw: String) -> (body: String, tags: [String]) {
+        var lines = raw.components(separatedBy: "\n")
+        guard let last = lines.last else { return (raw, []) }
+        var tokens = last.split(separator: " ", omittingEmptySubsequences: false).map(String.init)
+        var tags: [String] = []
+        let tagPattern = "^#[A-Za-z0-9_-]+$"
+        while let token = tokens.last,
+              token.range(of: tagPattern, options: .regularExpression) != nil {
+            tags.insert(token, at: 0)
+            tokens.removeLast()
+            // Also drop a single separating space we implicitly consumed.
+            if tokens.last == "" { tokens.removeLast() }
+        }
+        guard !tags.isEmpty else { return (raw, []) }
+        lines[lines.count - 1] = tokens.joined(separator: " ")
+        let body = lines.joined(separator: "\n")
+        return (body, tags)
     }
 
     /// Pull `#tag` tokens out of `raw` and return (bodyWithoutTags, tags).

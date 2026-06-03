@@ -111,16 +111,32 @@ struct GrDailyView: View {
                 isEditing: editingBlockId == block.id,
                 onToggleTask: { mosaic.toggleTask(id: block.id) },
                 onTap: { editingBlockId = block.id },
-                onCommitEdit: { newText in
-                    mosaic.editTodayBlock(id: block.id, text: newText)
+                onCommitEdit: { _ in
+                    // Collab (splice) path: the block text was already
+                    // persisted keystroke-by-keystroke via splices, so
+                    // commit must NOT re-author the whole text (that would
+                    // Myers-diff against the engine and could re-clobber a
+                    // peer's concurrent chars). Just finalize the edit.
                     editingBlockId = nil
                 },
-                onTextChanged: { newText in
-                    mosaic.editTodayBlock(id: block.id, text: newText)
+                onTextSplice: { offset, deleteLen, insert in
+                    // Collab editing C1 outbound: route the user's actual
+                    // keystroke to the engine's per-block LoroText so a
+                    // concurrent same-block edit merges instead of being
+                    // clobbered.
+                    mosaic.spliceTodayBlock(
+                        id: block.id,
+                        utf16Offset: offset,
+                        utf16DeleteLen: deleteLen,
+                        insert: insert
+                    )
                 },
                 onMenuAction: { action in handleTodayAction(action, on: block) },
-                onSplitToNewBlock: { committedText in
-                    mosaic.editTodayBlock(id: block.id, text: committedText)
+                onSplitToNewBlock: { _ in
+                    // The current block's text (incl. the trailing-newline
+                    // trim) was already persisted via splices, so do NOT
+                    // re-author it here — just append a new sibling and
+                    // move focus, mirroring the old split's tail.
                     let newId = mosaic.appendTodayBlock(kind: .note)
                     editingBlockId = newId
                 },

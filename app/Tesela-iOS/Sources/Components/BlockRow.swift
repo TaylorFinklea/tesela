@@ -30,6 +30,15 @@ struct BlockRow: View {
     /// route this to a writeback so other devices see typing in
     /// progress without waiting for the block to be committed.
     var onTextChanged: ((String) -> Void)? = nil
+    /// One local keystroke as a UTF-16 character splice (collab editing
+    /// C1 outbound): delete `utf16DeleteLen` code units at `utf16Offset`,
+    /// then insert `insert`. When wired, the editor uses `CollabTextView`
+    /// and routes typing through this seam (→ engine `spliceBlockText`)
+    /// instead of the whole-text `onTextChanged` re-author, so a peer's
+    /// concurrent same-block edit is no longer clobbered. Owners that
+    /// don't wire it fall back to the legacy `TextField`/`onTextChanged`
+    /// path unchanged.
+    var onTextSplice: ((_ utf16Offset: Int, _ utf16DeleteLen: Int, _ insert: String) -> Void)? = nil
     var onCancelEdit: (() -> Void)? = nil
     var onMenuAction: ((BlockAction) -> Void)? = nil
     /// Commit current text and append a new sibling block immediately
@@ -68,6 +77,15 @@ struct BlockRow: View {
     @State private var editBuffer: String = ""
     @State private var livePushTask: Task<Void, Never>? = nil
     @FocusState private var editFocused: Bool
+    /// Drives the `CollabTextView`'s first-responder state (the
+    /// `UITextView`-backed splice editor replaces `@FocusState` for the
+    /// collab path). Set true on appear; the coordinator flips it false
+    /// on blur, which triggers the same commit the legacy editor did.
+    @State private var collabFocused: Bool = false
+    /// Imperative seam so the keyboard toolbar's text-inserting buttons
+    /// insert at the live caret through the splice path. Recreated per
+    /// row; bound to the concrete `UITextView` in `CollabTextView`.
+    @State private var inserter = CollabTextInserter()
 
     @AppStorage("keyboardToolbarItems") private var keyboardToolbarRaw: String = defaultKeyboardToolbarItemsRaw
     @AppStorage("bareDateField") private var bareDateFieldRaw: String = "scheduled"
@@ -214,7 +232,58 @@ struct BlockRow: View {
             .fixedSize(horizontal: false, vertical: true)
     }
 
+    @ViewBuilder
     private var editField: some View {
+        if onTextSplice != nil {
+            collabEditField
+        } else {
+            legacyEditField
+        }
+    }
+
+    /// Collab editing C1 outbound: a `UITextView`-backed editor that
+    /// emits character splices on each keystroke (→ engine
+    /// `spliceBlockText`) instead of re-authoring the whole block. This
+    /// is what stops a peer's concurrent same-block edit from being
+    /// clobbered. Used when the owner wires `onTextSplice` (today's
+    /// daily). `editBuffer` is loaded as the ENGINE-EXACT block text
+    /// (body + inline tags, see `combinedEditableText`) so splice offsets
+    /// land correctly on the engine's `text_seq`; the toolbar keeps the
+    /// SAME `.toolbar { keyboardAccessory }` wiring, with its
+    /// text-inserting buttons routed through `inserter` (the splice path)
+    /// so they don't desync.
+    private var collabEditField: some View {
+        CollabTextView(
+            text: $editBuffer,
+            isFocused: $collabFocused,
+            textColor: theme.fgDefault,
+            tintColor: theme.accentPrimary,
+            onSplice: { offset, deleteLen, insert in
+                onTextSplice?(offset, deleteLen, insert)
+            },
+            onCommit: { final in
+                commitEditCollab(final)
+            },
+            onSplitToNewBlock: { stripped in
+                onSplitToNewBlock?(stripped)
+            },
+            inserter: inserter
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            editBuffer = combinedEditableText()
+            collabFocused = true
+        }
+        .toolbar {
+            if isEditing {
+                ToolbarItemGroup(placement: .keyboard) {
+                    keyboardAccessory
+                }
+            }
+        }
+    }
+
+    private var legacyEditField: some View {
         TextField("Block text", text: $editBuffer, axis: .vertical)
             .font(.system(size: 15))
             .foregroundStyle(theme.fgDefault)
@@ -306,20 +375,35 @@ struct BlockRow: View {
     }
 
     private func handleToolbarAction(_ item: KeyboardToolbarItem) {
+        // On the collab (UITextView) path, text-inserting buttons go
+        // through the splice seam at the live caret so the editor and the
+        // engine's `text_seq` stay aligned. The legacy `TextField` path
+        // (no `onTextSplice`) keeps appending to `editBuffer`.
+        let collab = onTextSplice != nil
         switch item {
         case .hideKeyboard:
-            editFocused = false
+            if collab { collabFocused = false } else { editFocused = false }
         case .slashCommand:
-            if !editBuffer.hasSuffix("/") { editBuffer += "/" }
+            if collab {
+                inserter.insertAtCaret("/")
+            } else if !editBuffer.hasSuffix("/") {
+                editBuffer += "/"
+            }
         case .backlink:
             // Insert an empty wikilink so the user types straight into
-            // the link target. SwiftUI's TextField doesn't expose a
-            // cursor offset, so we append at the end — caret lands
-            // there naturally on next keystroke.
-            let spacer = (editBuffer.hasSuffix(" ") || editBuffer.isEmpty) ? "" : " "
-            editBuffer += spacer + "[[]]"
+            // the link target. On collab, insert at the caret via the
+            // splice path; on the legacy TextField (no cursor offset)
+            // append at the end — caret lands there on next keystroke.
+            if collab {
+                inserter.insertAtCaret("[[]]")
+            } else {
+                let spacer = (editBuffer.hasSuffix(" ") || editBuffer.isEmpty) ? "" : " "
+                editBuffer += spacer + "[[]]"
+            }
         case .tags:
-            if !editBuffer.hasSuffix("#") {
+            if collab {
+                inserter.insertAtCaret("#")
+            } else if !editBuffer.hasSuffix("#") {
                 editBuffer += (editBuffer.hasSuffix(" ") || editBuffer.isEmpty ? "" : " ") + "#"
             }
         case .dedent:
@@ -341,6 +425,20 @@ struct BlockRow: View {
         // live push so it can't land after (and revert) the commit.
         livePushTask?.cancel()
         let trimmed = editBuffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        onCommitEdit?(trimmed)
+    }
+
+    /// Commit for the collab (splice) path. The block's text was already
+    /// persisted keystroke-by-keystroke via splices, so this does NOT
+    /// re-author the whole text — it just finalizes the edit (clears the
+    /// editing state via `onCommitEdit`). Re-running a whole-text
+    /// writeback here would Myers-diff against the engine and could
+    /// re-clobber a peer's concurrent chars that arrived mid-edit, which
+    /// is exactly what the splice path exists to prevent. The owner's
+    /// `onCommitEdit` on this path must therefore only clear state, not
+    /// call `editTodayBlock`.
+    private func commitEditCollab(_ final: String) {
+        let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
         onCommitEdit?(trimmed)
     }
 

@@ -388,6 +388,78 @@ final class RelayTicker: ObservableObject {
         }
     }
 
+    /// Collab editing C1 outbound: record ONE in-block CHARACTER SPLICE
+    /// (the user's actual keystroke) into the engine's per-block
+    /// `LoroText` and drain it, mirroring `recordAndPush` but calling
+    /// `engine.spliceBlockText(...)` instead of `recordNoteDiff(...)`.
+    /// Because the splice goes through the `text_seq` sequence CRDT, two
+    /// devices splicing the SAME block concurrently INTERLEAVE — the
+    /// whole-text re-author path emitted DELETEs of the peer's chars.
+    ///
+    /// Same bootstrap-before-edit + push-floor sequence as `recordAndPush`
+    /// (so the next `produceDeltaFrame` exports only this edit, never a
+    /// full snapshot re-asserting stale state), and the same hub-mode gate
+    /// (the live `/ws` socket owns delivery; the caller pushes the delta
+    /// after this returns). The actual `produceDeltaFrame` → `sendDelta`
+    /// → `commitPushedDelta` tail lives in `GrAppShell.onLocalSplice`,
+    /// mirroring `onLocalWrite`.
+    func spliceAndPush(
+        slug: String,
+        blockIdHex: String,
+        utf16Offset: Int,
+        utf16DeleteLen: Int,
+        insert: String
+    ) async {
+        do {
+            try await openEngineIfNeeded()
+        } catch {
+            lastError = error.localizedDescription
+            return
+        }
+        guard let engine else { return }
+        // Part D: pull the server's doc as a shared base before the first
+        // local edit so this note's blocks resolve to the server's tree
+        // nodes. No-op once resident; best-effort otherwise. (A splice is
+        // an in-place edit — the block node must already exist, which the
+        // base guarantees for a note the user can see.)
+        await bootstrapNoteIfNeeded(slug: slug)
+        // Part A: seed the per-note push floor BEFORE recording this edit
+        // so the first delta exports `updates(floor)` = this edit only,
+        // not a full snapshot. Seed only when absent (don't regress a
+        // baseline a prior bootstrap/commit already advanced).
+        if lastPushedVV[slug] == nil {
+            lastPushedVV[slug] = await engine.noteVersion(slug: slug)
+        }
+        do {
+            _ = try await engine.spliceBlockText(
+                slug: slug,
+                blockIdHex: blockIdHex,
+                utf16Offset: UInt32(max(0, utf16Offset)),
+                utf16DeleteLen: UInt32(max(0, utf16DeleteLen)),
+                insert: insert
+            )
+        } catch {
+            lastError = error.localizedDescription
+            return
+        }
+        // Engine durability is guaranteed. In hub mode the live `/ws`
+        // socket owns delivery (the caller pushes a delta after this
+        // returns), so the relay coordinator must NOT also drain this op.
+        if hubMode { return }
+        if coordinator == nil {
+            try? await ensureCoordinator()
+        }
+        guard let coordinator else { return }
+        do {
+            let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
+            lastSent = outcome.opsSent
+            lastTickAt = Date()
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     /// Apply a TLR2-framed Loro delta that arrived over the live WS
     /// (instant-multidevice spec, Phase C). Mediates the engine the
     /// `LiveSyncSocket` deliberately does not own: ensure the engine is

@@ -89,6 +89,29 @@ struct GrAppShell: View {
                         }
                     }
                 }
+                // Collab editing C1 outbound: a single in-block character
+                // splice (the user's actual keystroke). Mirrors
+                // onLocalWrite but records via `spliceBlockText` (text_seq
+                // sequence CRDT) instead of a whole-text re-author, so a
+                // peer's concurrent same-block edit merges instead of
+                // being clobbered. Same record → produce → send → commit
+                // tail so the splice reaches peers sub-second over /ws.
+                mosaic.onLocalSplice = { [weak relayTicker, weak liveSync] slug, blockIdHex, offset, deleteLen, insert in
+                    Task { @MainActor [weak relayTicker, weak liveSync] in
+                        await relayTicker?.spliceAndPush(
+                            slug: slug,
+                            blockIdHex: blockIdHex,
+                            utf16Offset: offset,
+                            utf16DeleteLen: deleteLen,
+                            insert: insert
+                        )
+                        if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
+                            if liveSync?.sendDelta(frame) == true {
+                                await relayTicker?.commitPushedDelta(slug: slug)
+                            }
+                        }
+                    }
+                }
                 relayTicker.onAppliedChanges = { [weak mosaic] in
                     // Route through applyRemoteChange() — NOT a direct
                     // refresh() — so the isEditingBlock + post-local-write
