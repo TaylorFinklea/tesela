@@ -1,5 +1,18 @@
 # Current State
 
+## 2026-06-03 (PM2) — web↔device disjoint-lineage fix LANDED + deployed (authoritative re-base)
+
+**The real fix shipped** (root cause in the PM entry below). Devices on a disjoint Loro lineage now deterministically RE-BASE onto the server's lineage, so live web deltas apply + the device stops clobbering web.
+- `461293b` engine/FFI: `import_authoritative_snapshot` (server-wins re-base — keep the snapshot-origin node per twinned block_id, tombstone the device's; min-TreeID fallback) + `rebase_twins_onto_snapshot`; `apply_doc_update_status` surfaces loro `ImportStatus.pending`; FFI `apply_delta_frame` → `DeltaApplyOutcome{applied, needs_catchup, note_ids_hex}`; `import_note_snapshot` rerouted to the authoritative path. `import_doc_update` UNCHANGED. Trait default impls forward for non-Loro engines.
+- `633b4df` iOS: `applyInboundDelta` — on `needsCatchup` (a delta loro left PENDING ⇒ disjoint/gap), force a full-snapshot authoritative re-base of the visible note (bypass the per-slug debounce; in-flight guard collapses a burst to one fetch). Bindings regenerated for `DeltaApplyOutcome`.
+- New test `disjoint_device_authoritative_rebase_then_converges`: after re-base the device has ONE node for the block AND a subsequent device edit + concurrent web edit MERGE (shared lineage) — proves the re-base, not just a text patch.
+
+**Verified:** `cargo test -p tesela-sync` 113 + integration (incl. the 3 disjoint tests, ws_apply_*, snapshot_bootstrap_converge, concurrent_whole_body_clobber, loro_cutover_spike) + `-p tesela-sync-ffi` 7 — all green. Adversarial review **APPROVE** (data-loss-safe: only disjoint twins discarded, never shared-lineage/server data). FFI `.a` rebuilt (device + sim). Sim build SUCCEEDED; **clean-path web→sim live delivery still works** (curl edit appeared live). **Reinstalled on Roshar + Sel.** Server unchanged (the fix is iOS-engine-side; `import_doc_update` + wire format untouched) — no server restart needed.
+
+**[ ] USER device round-trip:** open the app on Roshar + Sel (HTTP, `http://100.112.34.59:7474`). A disjoint device self-heals on the first inbound web delta (force re-base). Then web↔iPhone↔iPad should sync live both ways, no clobber. A fresh install also works (clean bootstrap). Tradeoff (accepted): the re-base discards a device's UN-SYNCED disjoint-twin edits — fine since you're not relying on local data yet.
+
+---
+
 ## 2026-06-03 (PM) — web↔device sync ROOT-CAUSED: disjoint Loro lineage; live deltas can't apply (PROVEN, fix pending)
 
 **Symptom (user, devices):** device↔device WS sync works, but web HTTP edits don't reach devices LIVE (only after a hard refresh) + web edits get clobbered.
