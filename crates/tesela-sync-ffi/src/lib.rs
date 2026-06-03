@@ -86,6 +86,24 @@ pub fn generate_group_identity() -> GroupIdentityRecord {
     }
 }
 
+/// Outcome of [`SyncEngineHandle::apply_delta_frame`]. Beyond the count of
+/// per-note updates applied, it reports whether ANY update was left PENDING by
+/// Loro (a causal gap — the device is on a disjoint lineage / missing deps) and
+/// the note id(s) the frame carried, so the caller can trigger an
+/// authoritative-snapshot catch-up for exactly those notes.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct DeltaApplyOutcome {
+    /// Number of per-note updates decoded + applied from the frame.
+    pub applied: u32,
+    /// `true` when at least one update was left PENDING (missing
+    /// dependencies) — the signal to catch up the affected note(s) via
+    /// [`SyncEngineHandle::import_note_snapshot`].
+    pub needs_catchup: bool,
+    /// Hex (32-char) note ids carried by the frame, so the caller knows
+    /// which note(s) to request a snapshot for.
+    pub note_ids_hex: Vec<String>,
+}
+
 /// Group identity in a Swift-friendly shape: two hex strings.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct GroupIdentityRecord {
@@ -512,22 +530,44 @@ impl SyncEngineHandle {
     /// per-note updates applied.
     ///
     /// A frame that lacks the TLR2 magic (a legacy v1 payload or foreign
-    /// data) decodes to `None`; we return `Ok(0)` rather than erroring so
-    /// the caller can skip it. A genuine decode failure (corrupt TLR2 body)
-    /// surfaces as `FfiSyncError`.
-    pub async fn apply_delta_frame(&self, frame: Vec<u8>) -> Result<u32, FfiSyncError> {
+    /// data) decodes to `None`; we return an empty outcome rather than
+    /// erroring so the caller can skip it. A genuine decode failure (corrupt
+    /// TLR2 body) surfaces as `FfiSyncError`.
+    ///
+    /// Returns a [`DeltaApplyOutcome`]: the count applied, whether ANY update
+    /// was left PENDING by Loro (`needs_catchup` — a causal gap signalling a
+    /// disjoint lineage), and the note ids the frame carried, so the caller can
+    /// request an authoritative snapshot for exactly those notes when a live
+    /// delta couldn't fully integrate.
+    pub async fn apply_delta_frame(
+        &self,
+        frame: Vec<u8>,
+    ) -> Result<DeltaApplyOutcome, FfiSyncError> {
         let Some(updates) = decode_loro_relay_payload(&frame).map_err(FfiSyncError::from)? else {
-            return Ok(0);
+            return Ok(DeltaApplyOutcome {
+                applied: 0,
+                needs_catchup: false,
+                note_ids_hex: Vec::new(),
+            });
         };
         let mut applied = 0u32;
+        let mut needs_catchup = false;
+        let mut note_ids_hex = Vec::with_capacity(updates.len());
         for u in updates {
-            self.inner
-                .import_doc_update(u.doc, &u.update_bytes)
+            note_ids_hex.push(hex_encode(&u.doc));
+            let pending = self
+                .inner
+                .apply_doc_update_status(u.doc, &u.update_bytes)
                 .await
                 .map_err(FfiSyncError::from)?;
+            needs_catchup |= pending;
             applied += 1;
         }
-        Ok(applied)
+        Ok(DeltaApplyOutcome {
+            applied,
+            needs_catchup,
+            note_ids_hex,
+        })
     }
 
     /// Encoded version vector of a note's current Loro doc, for the
@@ -540,23 +580,31 @@ impl SyncEngineHandle {
         self.inner.doc_version(stable_uuid_from_slug(&slug)).await
     }
 
-    /// Import the server's full Loro snapshot for a note as a **shared
-    /// base**, before this device authors locally. With the base resident,
-    /// a later `recordNoteDiff` BlockUpsert resolves to the server's
-    /// existing tree nodes instead of minting rival TreeIDs, so concurrent
-    /// edits converge instead of duplicating (multi-device convergence —
-    /// Part D). Computes the note id with the same `stable_uuid_from_slug`
-    /// blake3-truncation the rest of this bridge uses; the engine import is
-    /// commutative + idempotent, so a re-import or a snapshot captured
-    /// mid-edit is safe (no data loss).
+    /// Import the server's full Loro snapshot for a note as an **authoritative
+    /// re-base**. Used both as a pre-author shared base (a later `recordNoteDiff`
+    /// BlockUpsert resolves to the server's tree nodes instead of minting rival
+    /// TreeIDs) AND as the disjoint-device catch-up: if the device ALREADY
+    /// authored this note on its own lineage, the re-base tombstones the
+    /// device's stale same-bid twins and keeps the snapshot's nodes, so the
+    /// device truly adopts the server's lineage (server-wins) instead of the
+    /// non-authoritative min-`TreeID` dedup keeping its own twin. Computes the
+    /// note id with the same `stable_uuid_from_slug` blake3-truncation the rest
+    /// of this bridge uses; the engine import is commutative + idempotent, so a
+    /// re-import or a snapshot captured mid-edit is safe (no data loss).
     pub async fn import_note_snapshot(
         &self,
         slug: String,
         bytes: Vec<u8>,
     ) -> Result<(), FfiSyncError> {
         let note_id = stable_uuid_from_slug(&slug);
+        // AUTHORITATIVE re-base: a disjoint device that already authored this
+        // note adopts the server's lineage (its stale same-bid twins are
+        // tombstoned, the snapshot's nodes kept) instead of the non-authoritative
+        // min-`TreeID` dedup keeping the device's own twin. This is what makes
+        // the catch-up actually CONVERGE a disjoint device rather than patching
+        // text while leaving it on its own lineage.
         self.inner
-            .import_doc_update(note_id, &bytes)
+            .import_authoritative_snapshot(note_id, &bytes)
             .await
             .map_err(FfiSyncError::from)
     }
@@ -1057,8 +1105,8 @@ mod tests {
             .expect("resident doc yields a bootstrap frame");
         assert_eq!(&bootstrap[..4], &tesela_sync::LORO_RELAY_MAGIC, "TLR2 framed");
 
-        let applied = b.apply_delta_frame(bootstrap).await.unwrap();
-        assert_eq!(applied, 1, "one per-note update applied");
+        let outcome = b.apply_delta_frame(bootstrap).await.unwrap();
+        assert_eq!(outcome.applied, 1, "one per-note update applied");
         assert_eq!(
             a.inner.render_note(note_id).await,
             b.inner.render_note(note_id).await,
@@ -1126,10 +1174,16 @@ mod tests {
     #[tokio::test]
     async fn apply_delta_frame_ignores_non_tlr2_frame() {
         // A frame without the TLR2 magic (legacy/foreign) must be skipped
-        // (Ok(0)), not error.
+        // (empty outcome — applied 0, no catch-up), not error.
         let dir = tempfile::tempdir().unwrap();
         let h = open_handle(dir.path(), &generate_device_id_hex()).await;
-        assert_eq!(h.apply_delta_frame(b"not a tlr2 frame".to_vec()).await.unwrap(), 0);
-        assert_eq!(h.apply_delta_frame(Vec::new()).await.unwrap(), 0);
+        let o1 = h.apply_delta_frame(b"not a tlr2 frame".to_vec()).await.unwrap();
+        assert_eq!(o1.applied, 0);
+        assert!(!o1.needs_catchup);
+        assert!(o1.note_ids_hex.is_empty());
+        let o2 = h.apply_delta_frame(Vec::new()).await.unwrap();
+        assert_eq!(o2.applied, 0);
+        assert!(!o2.needs_catchup);
+        assert!(o2.note_ids_hex.is_empty());
     }
 }

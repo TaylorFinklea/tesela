@@ -531,6 +531,148 @@ impl LoroEngine {
         Ok(())
     }
 
+    /// Apply the server's FULL snapshot as an AUTHORITATIVE re-base — the
+    /// disjoint-device catch-up that `import_doc_update` can't do.
+    ///
+    /// A device that authored a note WITHOUT first importing the server's
+    /// snapshot is on a DISJOINT Loro lineage: it minted its own `TreeID` for
+    /// each block_id. Raw-importing the server snapshot UNIONS the lineages into
+    /// same-bid twins, but [`tombstone_duplicate_twins`]'s min-`TreeID` dedup
+    /// resolves the survivor by peer id, NOT by authority — so the device often
+    /// KEEPS its own twin and stays on its disjoint lineage, never re-basing
+    /// (its edits then keep clobbering the server's).
+    ///
+    /// This path re-bases SERVER-WINS instead: it identifies the device's
+    /// pre-existing nodes BEFORE importing, then for each twin KEEPS the node
+    /// that arrived FROM the snapshot (the server's lineage) and TOMBSTONES the
+    /// device's stale node. After this the device's surviving node for each
+    /// shared block_id is the server's — a shared lineage — so later concurrent
+    /// edits MERGE through the block's `LoroText` instead of forking new twins.
+    ///
+    /// Block_ids the device has but the snapshot does NOT are KEPT untouched —
+    /// those are the device's genuine unsynced new blocks.
+    ///
+    /// Otherwise mirrors [`import_doc_update`]'s tail: refresh derived
+    /// projections, persist the snapshot, materialize the note to disk.
+    pub async fn import_authoritative_snapshot(
+        &self,
+        note_id: [u8; 16],
+        bytes: &[u8],
+    ) -> SyncResult<()> {
+        let doc = self.doc_for_note_mut(note_id).await;
+
+        // Snapshot the device's pre-existing live nodes BEFORE importing, so we
+        // can later tell a snapshot-origin node (server lineage) from a device
+        // node (these). A `TreeID` not in this set after the import arrived from
+        // the snapshot.
+        let pre_nodes: std::collections::HashSet<TreeID> = {
+            let tree = doc.get_tree("blocks");
+            tree.children(TreeParentId::Root)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+                .collect()
+        };
+
+        // Raw-import the server snapshot. This unions the disjoint lineages into
+        // same-bid twins; the re-base below resolves each toward the server's.
+        doc.import(bytes)
+            .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
+
+        rebase_twins_onto_snapshot(&doc, &pre_nodes);
+
+        self.refresh_note_derived(note_id, &doc).await;
+        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+            self.save_snapshot(dir, note_id).await;
+        }
+        if self.inner.materialize_dir.is_some() {
+            self.materialize_note(note_id).await;
+        }
+        Ok(())
+    }
+
+    /// Like [`import_doc_update`](Self::import_doc_update) but RETURNS whether
+    /// the imported update was left PENDING by Loro — i.e. it referenced ops the
+    /// doc is missing (a causal gap / disjoint-lineage signal). `import_doc_update`
+    /// discards loro's `ImportStatus`; this surfaces it so a caller (the iOS
+    /// delta path) can trigger an authoritative-snapshot catch-up when a live
+    /// delta can't fully integrate.
+    ///
+    /// Returns `Ok(true)` when `ImportStatus.pending` is non-empty. The apply
+    /// itself runs the SAME protected path as `import_doc_update` (twin
+    /// tombstone + disjoint-twin heal + derived refresh + persist), so behavior
+    /// is identical; only the pending bool is additionally reported.
+    pub async fn apply_doc_update_status(
+        &self,
+        note_id: [u8; 16],
+        bytes: &[u8],
+    ) -> SyncResult<bool> {
+        let already_resident = self.inner.docs.read().await.contains_key(&note_id);
+        let doc = self.doc_for_note_mut(note_id).await;
+
+        let plan = if already_resident {
+            match peer_genuine_block_changes(&doc, bytes) {
+                Ok(changes) => Some(changes),
+                Err(e) => {
+                    tracing::warn!(
+                        "tesela-sync/loro: WS-apply discriminator failed for {} ({e}); \
+                         raw-importing without per-block protection",
+                        hex_id(&note_id)
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let status = doc
+            .import(bytes)
+            .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
+        let pending = status
+            .pending
+            .as_ref()
+            .map(|p| !p.is_empty())
+            .unwrap_or(false);
+
+        tombstone_duplicate_twins(&doc, note_id);
+
+        if let Some(changes) = plan {
+            let post_texts = current_block_texts(&doc);
+            let mut heals: Vec<(String, String, u16)> = Vec::new();
+            for c in &changes {
+                let bid_hex = hex_id(&c.block_id);
+                if post_texts.get(&bid_hex).map(|s| s.as_str()) != Some(c.text.as_str()) {
+                    heals.push((bid_hex, c.text.clone(), c.indent));
+                }
+            }
+            for (bid_hex, text, indent) in heals {
+                let Some(block_id) = parse_note_id_from_hex(&bid_hex) else {
+                    continue;
+                };
+                self.record_local(OpPayload::BlockUpsert {
+                    block_id,
+                    note_id,
+                    parent_block_id: None,
+                    order_key: "00000000".to_string(),
+                    indent_level: indent,
+                    text,
+                    after_block_id: None,
+                })
+                .await?;
+            }
+        }
+
+        self.refresh_note_derived(note_id, &doc).await;
+        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+            self.save_snapshot(dir, note_id).await;
+        }
+        if self.inner.materialize_dir.is_some() {
+            self.materialize_note(note_id).await;
+        }
+        Ok(pending)
+    }
+
     /// Compute the per-note Loro updates to broadcast on a relay tick:
     /// for every note that has accrued ops since its last broadcast,
     /// export the delta. Returns `(note_id, update_bytes, captured_vv)`
@@ -1785,6 +1927,71 @@ fn tombstone_duplicate_twins(doc: &LoroDoc, _note_id: [u8; 16]) -> bool {
     deleted_any
 }
 
+/// Re-base same-bid twins onto the SERVER's lineage after an authoritative
+/// snapshot import (the disjoint-device catch-up). Unlike
+/// [`tombstone_duplicate_twins`], which resolves a twin by min-`TreeID` (peer
+/// id, NOT authority), this KEEPS the twin that arrived FROM the snapshot — a
+/// `TreeID` NOT in `pre_nodes`, the device's pre-import node set — and
+/// TOMBSTONES the device's stale node, so the device truly re-bases onto the
+/// server's lineage instead of clinging to its own.
+///
+/// Per twin block_id:
+/// - keep the snapshot-origin node (min-`TreeID` among the nodes absent from
+///   `pre_nodes`, if more than one arrived);
+/// - if a twin bid has ONLY pre-existing nodes (the snapshot didn't include it,
+///   so there's nothing to re-base onto), fall back to keeping the min-`TreeID`
+///   among them (matching the dedup's deterministic survivor).
+///
+/// Block_ids with a single live node are untouched (no twin); block_ids only
+/// the device has (no snapshot-origin node and no twin) are likewise untouched —
+/// the device's genuine unsynced new blocks. Commits if anything was deleted.
+fn rebase_twins_onto_snapshot(doc: &LoroDoc, pre_nodes: &std::collections::HashSet<TreeID>) {
+    let tree = doc.get_tree("blocks");
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+        .collect();
+
+    // Group live nodes by block_id.
+    let mut by_bid: HashMap<String, Vec<TreeID>> = HashMap::new();
+    for node in &live {
+        if let Some(hex) = read_meta_str(&tree, *node, "block_id") {
+            by_bid.entry(hex).or_default().push(*node);
+        }
+    }
+
+    let mut deleted_any = false;
+    for (_bid, nodes) in by_bid {
+        if nodes.len() < 2 {
+            continue; // not a twin → nothing to re-base.
+        }
+        // Snapshot-origin nodes = those NOT present pre-import.
+        let snapshot_origin: Vec<TreeID> = nodes
+            .iter()
+            .copied()
+            .filter(|n| !pre_nodes.contains(n))
+            .collect();
+        let keep = if let Some(min) = snapshot_origin.iter().min().copied() {
+            // Re-base onto the server's lineage: keep the snapshot-origin node.
+            min
+        } else {
+            // No snapshot-origin node (snapshot didn't carry this bid): fall
+            // back to the deterministic min-`TreeID` survivor.
+            nodes.iter().min().copied().expect("len >= 2")
+        };
+        for node in nodes {
+            if node != keep && tree.delete(node).is_ok() {
+                deleted_any = true;
+            }
+        }
+    }
+    if deleted_any {
+        doc.commit();
+    }
+}
+
 /// A DISJOINT-twin block whose surviving node the import heal must force to a
 /// resolved `text`, because the non-causal min-`TreeID` dedup can otherwise
 /// keep the wrong twin. `text` is the RESOLVED correct value:
@@ -2117,6 +2324,27 @@ impl SyncEngine for LoroEngine {
     /// `LoroEngine::import_doc_update` — applies one received delta.
     async fn import_doc_update(&self, note_id: [u8; 16], bytes: &[u8]) -> SyncResult<()> {
         LoroEngine::import_doc_update(self, note_id, bytes).await
+    }
+
+    /// Trait-level override forwarding to the inherent
+    /// `LoroEngine::import_authoritative_snapshot` — the server-wins re-base.
+    async fn import_authoritative_snapshot(
+        &self,
+        note_id: [u8; 16],
+        bytes: &[u8],
+    ) -> SyncResult<()> {
+        LoroEngine::import_authoritative_snapshot(self, note_id, bytes).await
+    }
+
+    /// Trait-level override forwarding to the inherent
+    /// `LoroEngine::apply_doc_update_status` — applies one received delta and
+    /// reports whether Loro left it pending (causal gap).
+    async fn apply_doc_update_status(
+        &self,
+        note_id: [u8; 16],
+        bytes: &[u8],
+    ) -> SyncResult<bool> {
+        LoroEngine::apply_doc_update_status(self, note_id, bytes).await
     }
 
     async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {

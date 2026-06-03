@@ -149,6 +149,36 @@ pub trait SyncEngine: Send + Sync {
         Ok(())
     }
 
+    /// Apply the server's FULL snapshot as an AUTHORITATIVE re-base: a
+    /// disjoint device adopts the server's lineage by tombstoning its own
+    /// same-bid twin nodes and keeping the snapshot-origin ones, so later
+    /// concurrent edits MERGE instead of forking new twins. Unlike
+    /// [`import_doc_update`](Self::import_doc_update)'s min-`TreeID` dedup, this
+    /// resolves twins SERVER-WINS. The iOS catch-up path routes here. Default
+    /// forwards to `import_doc_update`; LoroEngine overrides with the re-base.
+    async fn import_authoritative_snapshot(
+        &self,
+        note_id: [u8; 16],
+        bytes: &[u8],
+    ) -> SyncResult<()> {
+        self.import_doc_update(note_id, bytes).await
+    }
+
+    /// Like [`import_doc_update`](Self::import_doc_update) but RETURNS whether
+    /// Loro left the imported update PENDING — i.e. it referenced ops the doc
+    /// is missing (a causal gap / disjoint-lineage signal a caller can use to
+    /// trigger an authoritative-snapshot catch-up). Default forwards to
+    /// `import_doc_update` and reports `false`; LoroEngine overrides to surface
+    /// the real `ImportStatus.pending`.
+    async fn apply_doc_update_status(
+        &self,
+        note_id: [u8; 16],
+        bytes: &[u8],
+    ) -> SyncResult<bool> {
+        self.import_doc_update(note_id, bytes).await?;
+        Ok(false)
+    }
+
     /// Enumerate every note id the engine tracks. Default empty.
     /// `DualEngine` overrides to return the shadow's tracked notes;
     /// `SqliteEngine` returns empty because oplog enumeration would be
