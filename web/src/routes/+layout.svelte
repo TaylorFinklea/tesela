@@ -117,6 +117,20 @@
         queryClient.invalidateQueries({ queryKey: ["note"] });
         flushNoteRefreshNow();
       },
+      onBinaryDelta: (updates) => {
+        // C2.1 STUB: the server now broadcasts TLR2 Loro-delta frames on every
+        // edit and web decodes them here. We do NOT apply them to any Loro doc
+        // yet — that's C2.2/C2.3. For now just log that a frame arrived + the
+        // first doc id (hex) so the binary path is observable in the console.
+        const firstDocHex = updates[0]
+          ? Array.from(updates[0].doc)
+              .map((b) => b.toString(16).padStart(2, "0"))
+              .join("")
+          : "(none)";
+        console.debug(
+          `[ws] TLR2 binary delta: ${updates.length} update(s), first doc=${firstDocHex}`,
+        );
+      },
     });
 
     void ensureSystemWidgets(api);

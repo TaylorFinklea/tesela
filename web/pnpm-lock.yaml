@@ -38,6 +38,9 @@ importers:
       bits-ui:
         specifier: ^2.17.3
         version: 2.17.3(@internationalized/date@3.12.0)(@sveltejs/kit@2.57.1(@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.55.3)(vite@8.0.8(@types/node@25.6.2)(jiti@2.6.1)))(svelte@5.55.3)(typescript@6.0.2)(vite@8.0.8(@types/node@25.6.2)(jiti@2.6.1)))(svelte@5.55.3)
+      fflate:
+        specifier: ^0.8.3
+        version: 0.8.3
       loro-crdt:
         specifier: 1.12.3
         version: 1.12.3
@@ -539,6 +542,9 @@ packages:
     peerDependenciesMeta:
       picomatch:
         optional: true
+
+  fflate@0.8.3:
+    resolution: {integrity: sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA==}
 
   fsevents@2.3.2:
     resolution: {integrity: sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==}
@@ -1282,6 +1288,8 @@ snapshots:
   fdir@6.5.0(picomatch@4.0.4):
     optionalDependencies:
       picomatch: 4.0.4
+
+  fflate@0.8.3: {}
 
   fsevents@2.3.2:
     optional: true

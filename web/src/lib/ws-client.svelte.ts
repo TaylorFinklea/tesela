@@ -5,6 +5,7 @@
  * Ported from the React version (originally from Swift WebSocketClient).
  */
 import type { Note } from "$lib/types/Note";
+import { decodeTlr2, type LoroDocUpdate } from "$lib/loro/tlr2";
 
 export type DeadlineApproachingEvent = {
   event: "deadline_approaching";
@@ -74,6 +75,13 @@ let onRecurringRolled: ((e: RecurringRolledEvent) => void) | null = null;
 /// arrives at the server during the reconnect-backoff window stays
 /// invisible until the user manually refreshes the page.
 let onReconnected: (() => void) | null = null;
+/// Fires when an inbound BINARY WS frame decodes as a TLR2 Loro-delta
+/// payload (`crates/tesela-sync` protocol v2). C2.1 infrastructure: the
+/// server already broadcasts these on every edit; web now decodes them.
+/// The decoded per-doc updates are NOT applied to any Loro doc yet — that
+/// wiring lands in C2.2/C2.3. Foreign/short binary frames (non-TLR2) are
+/// dropped silently and never reach this handler.
+let onBinaryDelta: ((updates: LoroDocUpdate[]) => void) | null = null;
 /// Set true once the first connect succeeds. After that, every
 /// subsequent open is a "reconnect" and fires `onReconnected`.
 let hasEverConnected = false;
@@ -86,6 +94,7 @@ export function setHandlers(handlers: {
   onScheduledFires?: (e: ScheduledFiresEvent) => void;
   onRecurringRolled?: (e: RecurringRolledEvent) => void;
   onReconnected?: () => void;
+  onBinaryDelta?: (updates: LoroDocUpdate[]) => void;
 }) {
   onNoteCreated = handlers.onNoteCreated ?? null;
   onNoteUpdated = handlers.onNoteUpdated ?? null;
@@ -94,6 +103,7 @@ export function setHandlers(handlers: {
   onScheduledFires = handlers.onScheduledFires ?? null;
   onRecurringRolled = handlers.onRecurringRolled ?? null;
   onReconnected = handlers.onReconnected ?? null;
+  onBinaryDelta = handlers.onBinaryDelta ?? null;
 }
 
 export function connect() {
@@ -123,6 +133,9 @@ function openConnection() {
     onSocketClosed(myId);
     return;
   }
+  // Receive binary TLR2 frames as ArrayBuffer (not Blob) so `handleMessage`
+  // can decode them synchronously without an async Blob read.
+  ws.binaryType = "arraybuffer";
   socket = ws;
 
   ws.addEventListener("open", () => {
@@ -175,6 +188,22 @@ function cancelReconnectTimer() {
 }
 
 function handleMessage(raw: unknown) {
+  // Binary frames are TLR2 Loro-delta payloads (protocol v2). The server may
+  // deliver them as an ArrayBuffer (we set `binaryType = "arraybuffer"`) or,
+  // defensively, as a Blob. ArrayBuffer is handled synchronously here; a Blob
+  // is read async then re-dispatched. Anything else falls through to the
+  // text-JSON path below, preserving all existing event handling exactly.
+  if (raw instanceof ArrayBuffer) {
+    handleBinaryFrame(new Uint8Array(raw));
+    return;
+  }
+  if (typeof Blob !== "undefined" && raw instanceof Blob) {
+    void raw
+      .arrayBuffer()
+      .then((buf) => handleBinaryFrame(new Uint8Array(buf)))
+      .catch(() => {});
+    return;
+  }
   if (typeof raw !== "string") return;
   let event: WsEvent;
   try {
@@ -201,5 +230,34 @@ function handleMessage(raw: unknown) {
     case "recurring_rolled":
       onRecurringRolled?.(event);
       break;
+  }
+}
+
+/// Decode an inbound binary WS frame as TLR2 and, if it's a valid v2 payload,
+/// hand the per-doc updates to `onBinaryDelta`. Non-TLR2 / short frames decode
+/// to `null` and are dropped. A malformed (truncated DEFLATE / postcard) v2
+/// frame throws inside `decodeTlr2`; we swallow it so one bad frame can't tear
+/// down the socket. The updates are NOT applied anywhere yet (C2.1 infra only).
+function handleBinaryFrame(bytes: Uint8Array) {
+  let updates: LoroDocUpdate[] | null;
+  try {
+    updates = decodeTlr2(bytes);
+  } catch {
+    return;
+  }
+  if (updates === null) return;
+  onBinaryDelta?.(updates);
+}
+
+/// Send a pre-framed binary payload (e.g. a TLR2 Loro-delta frame) over the
+/// socket when it's OPEN. No-op if the socket isn't open. Outbound use lands in
+/// C2.3; exposed now so the codec round-trips end-to-end over the wire.
+export function sendBinary(frame: Uint8Array): void {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    // Send the exact frame bytes as a fresh ArrayBuffer. `slice` copies just
+    // the view's range (correct even if `frame` is a subarray) and yields an
+    // ArrayBuffer-backed buffer, which `WebSocket.send` accepts unambiguously
+    // (a generic `Uint8Array<ArrayBufferLike>` is not assignable directly).
+    socket.send(frame.slice().buffer);
   }
 }
