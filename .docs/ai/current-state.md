@@ -1,5 +1,15 @@
 # Current State
 
+## 2026-06-03 (PM3) — Collab-editing milestone (approach c) started: splice FFI foundation landed
+
+User chose approach (c) — true same-block collaborative editing — after the re-base fixed lineage/different-block sync. Spec `.docs/ai/phases/2026-06-03-collab-editing-spec.md` (+ C1 iOS code map). Wire-proven root cause: both iOS + web re-author whole block text from a locked editor → `LoroText.update` deletes the peer's concurrent chars. Fix: editors become live views over the per-block `LoroText` (char splices + live-apply inbound + cursor remap).
+
+**C1 step 1 DONE — `splice_block_text` (commit `e939da1`, main):** engine `LoroEngine::splice_block_text(note_id, block_id, utf16_offset, utf16_delete_len, insert)` (get-or-create the SAME `text_seq` LoroText, `delete_utf16` then `insert_utf16` = replace, then BlockUpsert persist/materialize tail) + `SyncEngine` trait method + FFI `SyncEngineHandle::splice_block_text(slug, block_id_hex, …)` (slug→note_id via `stable_uuid_from_slug`; accepts dashed/dashless bid). Uses Loro's `insert_utf16`/`delete_utf16` so iOS `NSRange` + JS UTF-16 offsets map with no conversion. 4 tests incl. `splice_block_text_concurrent_inserts_interleave` (two concurrent splices to ONE block MERGE) + multibyte/emoji UTF-16 + replace + unknown-block-noop. `cargo test -p tesela-sync` 117 + `-p tesela-sync-ffi` 10 green. NOT yet wired to iOS; bindings NOT regenerated.
+
+**C1 remaining (the big lift, #183):** regen uniffi bindings; rewrite `Components/BlockRow.swift` editor as a `UITextView` (`UIViewRepresentable`) for caret access; emit char splices via `splice_block_text` on `shouldChangeTextIn`; live-apply inbound block-text splices to the active editor + remap `selectedRange`; narrow `isEditingBlock` so other blocks refresh live. Then C2 (web loro-wasm peer, #184), C3 (iOS↔web wire verify, #185).
+
+---
+
 ## 2026-06-03 (PM2) — web↔device disjoint-lineage fix LANDED + deployed (authoritative re-base)
 
 **The real fix shipped** (root cause in the PM entry below). Devices on a disjoint Loro lineage now deterministically RE-BASE onto the server's lineage, so live web deltas apply + the device stops clobbering web.
