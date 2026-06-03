@@ -1398,4 +1398,207 @@ mod tests {
             "HTTP GET shows the device's genuine B edit: {body}"
         );
     }
+
+    /// The LoroText headline (2026-06-02): two peers editing the SAME block on
+    /// a SHARED lineage MERGE character-level instead of one clobbering the
+    /// other. This reproduces the wire-proven incident ("web gets clobbered by
+    /// iOS") end-to-end over a real socket + real HTTP: the server takes the
+    /// "web" edit via `POST /notes/{slug}/blocks` and the "device" pushes its
+    /// concurrent edit to the same block over the WS. Block text being a
+    /// `LoroText`, the two whole-text writes Myers-diff into splices that
+    /// interleave — neither side's words are lost, and the result is NOT the
+    /// LWW whole-string pick. (Pre-LoroText this asserted-FAILS: the map
+    /// register is last-writer-wins, so one whole string vanishes.)
+    #[tokio::test]
+    async fn ws_concurrent_same_block_edit_merges_over_real_socket() {
+        use futures::{SinkExt, StreamExt};
+        use tesela_sync::{DeviceId, Hlc, LoroDocUpdate, LoroEngine, OpPayload, SyncEngine};
+        use tokio_tungstenite::tungstenite::Message as TMessage;
+
+        const A_BID: &str = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+        const A_BID_BYTES: [u8; 16] = [0x0a; 16];
+
+        // ── AppState over a tempdir (mirrors the sibling socket test) ──
+        let tmp = tempfile::tempdir().unwrap();
+        let mosaic = tmp.path().to_path_buf();
+        let notes_dir = mosaic.join("notes");
+        std::fs::create_dir_all(&notes_dir).unwrap();
+        std::fs::create_dir_all(mosaic.join(".tesela")).unwrap();
+
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server_engine = LoroEngine::with_dirs(
+            sdev,
+            Arc::new(Hlc::new(sdev)),
+            mosaic.join(".tesela").join("loro"),
+            Some(notes_dir.clone()),
+        )
+        .await
+        .unwrap();
+
+        let note_id = {
+            let h = blake3::hash(b"merge");
+            let mut out = [0u8; 16];
+            out.copy_from_slice(&h.as_bytes()[..16]);
+            out
+        };
+
+        // ── SHARED base: the server seeds the note, then the device IMPORTS the
+        // server's snapshot — so both hold the SAME TreeID + LoroText lineage
+        // for block A (NOT disjoint twins). This is the post-bootstrap state the
+        // shared-base flow keeps devices in, and the only state where character
+        // merge applies. ────────────────────────────────────────────────────
+        let base_content = format!("- The quick fox <!-- bid:{A_BID} -->\n");
+        server_engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some("merge".into()),
+                title: "Merge".into(),
+                content: base_content.clone(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let base_snap = server_engine.export_doc_update(note_id, None).await.unwrap();
+
+        let ddev = DeviceId::from_bytes([0x11; 16]);
+        let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
+        // Import the server's snapshot via the device's own apply path so it
+        // adopts the server's lineage (shared TreeID for A).
+        device.import_doc_update(note_id, &base_snap).await.unwrap();
+
+        // ── The DEVICE's concurrent edit to A (exported BEFORE the server's web
+        // edit, so the two are causally independent = a true concurrent merge). ─
+        device
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "The quick red fox jumps".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        let dev_snap = device.export_doc_update(note_id, None).await.unwrap();
+        let frame = tesela_sync::encode_loro_relay_payload(&[LoroDocUpdate {
+            doc: note_id,
+            update_bytes: dev_snap,
+        }])
+        .unwrap();
+
+        // ── Assemble AppState; keep a handle for post-apply rendering ──
+        let store = Arc::new(FsNoteStore::new(
+            mosaic.clone(),
+            tesela_core::config::StorageConfig::default(),
+        ));
+        let index = Arc::new(
+            SqliteIndex::open(&mosaic.join(".tesela").join("test.db"))
+                .await
+                .unwrap(),
+        );
+        let (ws_tx, _) = broadcast::channel::<WsEvent>(64);
+        let (ws_delta_tx, _) = broadcast::channel::<state::WsDelta>(64);
+        let group_identity = Arc::new(RwLock::new(tesela_sync::GroupIdentity {
+            group_id: tesela_sync::GroupId::new_random(),
+            group_key: tesela_sync::GroupKey::random(),
+        }));
+        let app_state = AppState {
+            mosaic_root: mosaic.clone(),
+            store,
+            index,
+            ws_tx,
+            ws_delta_tx,
+            ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
+            type_registry: tesela_core::types::TypeRegistry::load(&mosaic),
+            auto_sync: Arc::new(reminders::auto::AutoSync::new()),
+            sync_engine: Arc::new(server_engine) as Arc<dyn tesela_sync::SyncEngine>,
+            lan_discovery: None,
+            group_identity,
+            display_name: "test".into(),
+            public_url: "http://127.0.0.1:0".into(),
+            relay_url: None,
+            relay: None,
+        };
+        let server_engine_handle = Arc::clone(&app_state.sync_engine);
+        let router = routes::build(app_state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let url = format!("ws://{}/ws", addr);
+        let (mut watcher, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        let (mut pusher, _) = tokio_tungstenite::connect_async(&url).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        // ── THE "WEB" EDIT over real HTTP: POST /notes/merge/blocks upserts A →
+        // "The quick brown fox". This is exactly what the web client sends. ───
+        let http = reqwest::Client::new();
+        let resp = http
+            .post(format!("http://{}/notes/merge/blocks", addr))
+            .json(&serde_json::json!({
+                "ops": [{
+                    "kind": "upsert",
+                    "bid": A_BID,
+                    "text": "The quick brown fox",
+                    "indent_level": 0,
+                }]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert!(resp.status().is_success(), "block-op POST ok: {:?}", resp.status());
+
+        // ── THE "DEVICE" EDIT over the real WS: push the concurrent A frame. ──
+        pusher.send(TMessage::Binary(frame.clone().into())).await.unwrap();
+
+        // Drain WS events until the server has applied the inbound delta (the
+        // HTTP edit + the WS apply each emit a note_updated; wait for at least
+        // the post-push one).
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut updates = 0;
+        while updates < 2 && tokio::time::Instant::now() < deadline {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), watcher.next()).await {
+                Ok(Some(Ok(TMessage::Text(t)))) if t.contains("note_updated") => updates += 1,
+                Ok(Some(Ok(_))) => {}
+                _ => break,
+            }
+        }
+        // A short settle so the WS-apply heal/materialize completes.
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // ── ASSERT: A is a CHARACTER-LEVEL MERGE of both edits — neither side's
+        // words lost — and NOT the LWW whole-string pick. ────────────────────
+        let rendered = server_engine_handle.render_note(note_id).await.unwrap();
+        let a_line = rendered
+            .lines()
+            .find(|l| l.contains(A_BID))
+            .unwrap_or("")
+            .to_string();
+        assert!(
+            a_line.contains("brown") && a_line.contains("red") && a_line.contains("jumps"),
+            "block A must MERGE both concurrent edits (web 'brown' + device 'red'/'jumps'), \
+             neither lost: {a_line:?}"
+        );
+        assert!(
+            !a_line.contains("The quick brown fox <!--")
+                && !a_line.contains("The quick red fox jumps <!--"),
+            "the merge must NOT be a whole-string LWW pick of either input: {a_line:?}"
+        );
+
+        // ── End-to-end HTTP: GET /notes/merge shows the same merged text. ──
+        let body = reqwest::get(format!("http://{}/notes/merge", addr))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            body.contains("brown") && body.contains("red") && body.contains("jumps"),
+            "HTTP GET shows the merged A text: {body}"
+        );
+    }
 }
