@@ -112,6 +112,10 @@ final class RelayTicker: ObservableObject {
     /// snapshot re-fetch to at most once per `catchupMinInterval` per slug
     /// so the catch-up doesn't fire on every keystroke / refresh tick.
     private var lastCatchupAt: [String: Date] = [:]
+    /// Slugs with a forced authoritative re-base catch-up currently in flight
+    /// (triggered by a PENDING inbound delta — `applyInboundDelta`). Collapses
+    /// a burst of disjoint frames to ONE snapshot fetch per slug.
+    private var forcedCatchupInFlight: Set<String> = []
     /// Minimum interval between resident catch-up snapshot fetches for the
     /// SAME slug. ~3s — long enough that a typing burst or a storm of
     /// `onNoteOpened`/refresh callbacks collapses to one fetch, short enough
@@ -402,14 +406,44 @@ final class RelayTicker: ObservableObject {
             return false
         }
         guard let engine else { return false }
-        let applied: UInt32
+        let outcome: DeltaApplyOutcome
         do {
-            applied = try await engine.applyDeltaFrame(frame: frame)
+            outcome = try await engine.applyDeltaFrame(frame: frame)
         } catch {
             lastError = error.localizedDescription
             return false
         }
-        guard applied > 0 else { return false }
+        // `needsCatchup` = loro left ops PENDING: the frame referenced tree
+        // nodes this device doesn't have, because we're on a DISJOINT lineage
+        // (or missing a causal predecessor). A delta can NEVER heal that — only
+        // a full-snapshot catch-up can, and `bootstrapNoteIfNeeded` now imports
+        // AUTHORITATIVELY (server-wins re-base), so the device adopts the
+        // server's lineage and subsequent deltas apply. Force it now (bypass the
+        // per-slug catch-up debounce) so live web edits stop silently vanishing.
+        // Self-limiting: once re-based, later frames apply cleanly → no pending →
+        // no further forced catch-up. The note id in the frame can't be reversed
+        // to a slug (it's a blake3 hash), so re-base the visible note(s).
+        if outcome.needsCatchup, let mosaic {
+            // Coalesce a burst: only ONE forced re-base per slug in flight at a
+            // time. The @MainActor serializes these, so concurrent pending
+            // frames arriving while the snapshot fetch is suspended see the
+            // in-flight flag and skip — instead of each clearing the debounce +
+            // firing its own fetch. Once the re-base lands, later frames apply
+            // cleanly → no pending → no further forced catch-up.
+            let slug = mosaic.todayDailySlug
+            if !forcedCatchupInFlight.contains(slug) {
+                forcedCatchupInFlight.insert(slug)
+                lastCatchupAt[slug] = nil
+                await bootstrapNoteIfNeeded(slug: slug)
+                forcedCatchupInFlight.remove(slug)
+            }
+        }
+        guard outcome.applied > 0 else {
+            // A pending-only frame applied nothing locally, but a re-base above
+            // may have changed the engine — nudge the UI through the same seam.
+            if outcome.needsCatchup { onAppliedChanges?() }
+            return false
+        }
         // Same refresh path the relay inbound tick uses — keeps the UI
         // update logic in one place.
         onAppliedChanges?()

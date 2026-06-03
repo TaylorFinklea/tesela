@@ -451,6 +451,30 @@ fileprivate struct FfiConverterInt64: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterBool : FfiConverter {
+    typealias FfiType = Int8
+    typealias SwiftType = Bool
+
+    public static func lift(_ value: Int8) throws -> Bool {
+        return value != 0
+    }
+
+    public static func lower(_ value: Bool) -> Int8 {
+        return value ? 1 : 0
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Bool {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: Bool, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterString: FfiConverter {
     typealias SwiftType = String
     typealias FfiType = RustBuffer
@@ -1158,11 +1182,17 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * per-note updates applied.
      *
      * A frame that lacks the TLR2 magic (a legacy v1 payload or foreign
-     * data) decodes to `None`; we return `Ok(0)` rather than erroring so
-     * the caller can skip it. A genuine decode failure (corrupt TLR2 body)
-     * surfaces as `FfiSyncError`.
+     * data) decodes to `None`; we return an empty outcome rather than
+     * erroring so the caller can skip it. A genuine decode failure (corrupt
+     * TLR2 body) surfaces as `FfiSyncError`.
+     *
+     * Returns a [`DeltaApplyOutcome`]: the count applied, whether ANY update
+     * was left PENDING by Loro (`needs_catchup` — a causal gap signalling a
+     * disjoint lineage), and the note ids the frame carried, so the caller can
+     * request an authoritative snapshot for exactly those notes when a live
+     * delta couldn't fully integrate.
      */
-    func applyDeltaFrame(frame: Data) async throws  -> UInt32
+    func applyDeltaFrame(frame: Data) async throws  -> DeltaApplyOutcome
     
     /**
      * 32-char hex of this engine's device id. The Swift coordinator
@@ -1171,15 +1201,17 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func deviceHex()  -> String
     
     /**
-     * Import the server's full Loro snapshot for a note as a **shared
-     * base**, before this device authors locally. With the base resident,
-     * a later `recordNoteDiff` BlockUpsert resolves to the server's
-     * existing tree nodes instead of minting rival TreeIDs, so concurrent
-     * edits converge instead of duplicating (multi-device convergence —
-     * Part D). Computes the note id with the same `stable_uuid_from_slug`
-     * blake3-truncation the rest of this bridge uses; the engine import is
-     * commutative + idempotent, so a re-import or a snapshot captured
-     * mid-edit is safe (no data loss).
+     * Import the server's full Loro snapshot for a note as an **authoritative
+     * re-base**. Used both as a pre-author shared base (a later `recordNoteDiff`
+     * BlockUpsert resolves to the server's tree nodes instead of minting rival
+     * TreeIDs) AND as the disjoint-device catch-up: if the device ALREADY
+     * authored this note on its own lineage, the re-base tombstones the
+     * device's stale same-bid twins and keeps the snapshot's nodes, so the
+     * device truly adopts the server's lineage (server-wins) instead of the
+     * non-authoritative min-`TreeID` dedup keeping its own twin. Computes the
+     * note id with the same `stable_uuid_from_slug` blake3-truncation the rest
+     * of this bridge uses; the engine import is commutative + idempotent, so a
+     * re-import or a snapshot captured mid-edit is safe (no data loss).
      */
     func importNoteSnapshot(slug: String, bytes: Data) async throws 
     
@@ -1384,11 +1416,17 @@ public static func openLoro(mosaicPath: String, deviceIdHex: String)async throws
      * per-note updates applied.
      *
      * A frame that lacks the TLR2 magic (a legacy v1 payload or foreign
-     * data) decodes to `None`; we return `Ok(0)` rather than erroring so
-     * the caller can skip it. A genuine decode failure (corrupt TLR2 body)
-     * surfaces as `FfiSyncError`.
+     * data) decodes to `None`; we return an empty outcome rather than
+     * erroring so the caller can skip it. A genuine decode failure (corrupt
+     * TLR2 body) surfaces as `FfiSyncError`.
+     *
+     * Returns a [`DeltaApplyOutcome`]: the count applied, whether ANY update
+     * was left PENDING by Loro (`needs_catchup` — a causal gap signalling a
+     * disjoint lineage), and the note ids the frame carried, so the caller can
+     * request an authoritative snapshot for exactly those notes when a live
+     * delta couldn't fully integrate.
      */
-open func applyDeltaFrame(frame: Data)async throws  -> UInt32  {
+open func applyDeltaFrame(frame: Data)async throws  -> DeltaApplyOutcome  {
     return
         try  await uniffiRustCallAsync(
             rustFutureFunc: {
@@ -1397,10 +1435,10 @@ open func applyDeltaFrame(frame: Data)async throws  -> UInt32  {
                     FfiConverterData.lower(frame)
                 )
             },
-            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u32,
-            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u32,
-            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u32,
-            liftFunc: FfiConverterUInt32.lift,
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeDeltaApplyOutcome_lift,
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
@@ -1418,15 +1456,17 @@ open func deviceHex() -> String  {
 }
     
     /**
-     * Import the server's full Loro snapshot for a note as a **shared
-     * base**, before this device authors locally. With the base resident,
-     * a later `recordNoteDiff` BlockUpsert resolves to the server's
-     * existing tree nodes instead of minting rival TreeIDs, so concurrent
-     * edits converge instead of duplicating (multi-device convergence —
-     * Part D). Computes the note id with the same `stable_uuid_from_slug`
-     * blake3-truncation the rest of this bridge uses; the engine import is
-     * commutative + idempotent, so a re-import or a snapshot captured
-     * mid-edit is safe (no data loss).
+     * Import the server's full Loro snapshot for a note as an **authoritative
+     * re-base**. Used both as a pre-author shared base (a later `recordNoteDiff`
+     * BlockUpsert resolves to the server's tree nodes instead of minting rival
+     * TreeIDs) AND as the disjoint-device catch-up: if the device ALREADY
+     * authored this note on its own lineage, the re-base tombstones the
+     * device's stale same-bid twins and keeps the snapshot's nodes, so the
+     * device truly adopts the server's lineage (server-wins) instead of the
+     * non-authoritative min-`TreeID` dedup keeping its own twin. Computes the
+     * note id with the same `stable_uuid_from_slug` blake3-truncation the rest
+     * of this bridge uses; the engine import is commutative + idempotent, so a
+     * re-import or a snapshot captured mid-edit is safe (no data loss).
      */
 open func importNoteSnapshot(slug: String, bytes: Data)async throws   {
     return
@@ -1664,6 +1704,95 @@ public func FfiConverterTypeSyncEngineHandle_lower(_ value: SyncEngineHandle) ->
 }
 
 
+
+
+/**
+ * Outcome of [`SyncEngineHandle::apply_delta_frame`]. Beyond the count of
+ * per-note updates applied, it reports whether ANY update was left PENDING by
+ * Loro (a causal gap — the device is on a disjoint lineage / missing deps) and
+ * the note id(s) the frame carried, so the caller can trigger an
+ * authoritative-snapshot catch-up for exactly those notes.
+ */
+public struct DeltaApplyOutcome: Equatable, Hashable {
+    /**
+     * Number of per-note updates decoded + applied from the frame.
+     */
+    public var applied: UInt32
+    /**
+     * `true` when at least one update was left PENDING (missing
+     * dependencies) — the signal to catch up the affected note(s) via
+     * [`SyncEngineHandle::import_note_snapshot`].
+     */
+    public var needsCatchup: Bool
+    /**
+     * Hex (32-char) note ids carried by the frame, so the caller knows
+     * which note(s) to request a snapshot for.
+     */
+    public var noteIdsHex: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Number of per-note updates decoded + applied from the frame.
+         */applied: UInt32, 
+        /**
+         * `true` when at least one update was left PENDING (missing
+         * dependencies) — the signal to catch up the affected note(s) via
+         * [`SyncEngineHandle::import_note_snapshot`].
+         */needsCatchup: Bool, 
+        /**
+         * Hex (32-char) note ids carried by the frame, so the caller knows
+         * which note(s) to request a snapshot for.
+         */noteIdsHex: [String]) {
+        self.applied = applied
+        self.needsCatchup = needsCatchup
+        self.noteIdsHex = noteIdsHex
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension DeltaApplyOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDeltaApplyOutcome: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DeltaApplyOutcome {
+        return
+            try DeltaApplyOutcome(
+                applied: FfiConverterUInt32.read(from: &buf), 
+                needsCatchup: FfiConverterBool.read(from: &buf), 
+                noteIdsHex: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DeltaApplyOutcome, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.applied, into: &buf)
+        FfiConverterBool.write(value.needsCatchup, into: &buf)
+        FfiConverterSequenceString.write(value.noteIdsHex, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDeltaApplyOutcome_lift(_ buf: RustBuffer) throws -> DeltaApplyOutcome {
+    return try FfiConverterTypeDeltaApplyOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDeltaApplyOutcome_lower(_ value: DeltaApplyOutcome) -> RustBuffer {
+    return FfiConverterTypeDeltaApplyOutcome.lower(value)
+}
 
 
 /**
@@ -2287,6 +2416,31 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
         }
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]
+
+    public static func write(_ value: [String], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterString.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [String]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
 private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
 
@@ -2467,13 +2621,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_tick_outbound() != 26776) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_apply_delta_frame() != 63855) {
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_apply_delta_frame() != 47838) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_device_hex() != 4479) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_import_note_snapshot() != 42561) {
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_import_note_snapshot() != 55621) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_note_version() != 24306) {
