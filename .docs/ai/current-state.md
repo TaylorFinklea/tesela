@@ -1,5 +1,17 @@
 # Current State
 
+## 2026-06-03 (PM4) — C2.0 wire-compat DE-RISK PASSED: web-as-Loro-peer is feasible
+
+**The make-or-break question is answered YES** (commit `92a8e52`): a JS `loro-crdt@1.12.3` peer natively imports the Rust `loro 1.12.0` server's snapshot bytes (`GET /loro/notes/{id}/snapshot`, 12934 bytes) → decodes the `blocks` movable-tree (9 blocks) → reads `block_id` + `text_seq` ("Hey steve"); + JS↔JS concurrent splices converge. Wire format is shared (same loro-dev monorepo, 1.x encoding). So C2 (web as a real Loro delta peer) is sound. Added `loro-crdt@1.12.3` (pnpm) + SSR-safe `web/src/lib/loro/loro-client.ts` (browser-gated dynamic import; no vite/wasm config needed; build green). Wire-check script `web/scripts/loro-wire-check.mjs`. **Finding for C2.3:** JS `LoroText` has `insert(unicodeIndex)` + `insertUtf8`/`deleteUtf8` but NO `insertUtf16` — convert the editor's UTF-16 offsets via `text.convertPos(i, "utf16", "unicode")`.
+
+**Collab-editing milestone status (approach c, spec `2026-06-03-collab-editing-spec.md`):**
+- C1 splice FFI (`e939da1`) ✓ · C1 outbound CollabTextView (`d7180e3`) ✓ (iOS sends splices → no longer deletes a peer's chars; editor sim-smoke OK) · **C1 inbound (live-apply + caret remap) NOT built.**
+- C2.0 de-risk (`92a8e52`) ✓ · **C2.1 (WS binary frames in `ws-client`), C2.2 (per-note Loro doc + snapshot bootstrap), C2.3 (bind each block's CM6 to its `text_seq` — splices out / transactions in / cursor remap; stop whole-text HTTP for text) NOT built.**
+- C3 (iOS↔web same-block wire-verify + remove DIAG) NOT built.
+- **Net:** dominant multi-device bugs FIXED + live (LoroText/live-sync/re-base — different-block + take-turns editing works on devices). Same-LINE simultaneous typing: iOS outbound done + web-peer feasibility proven; remaining = C1-inbound + C2.1-2.3 + C3 (multi-increment iOS+web build). DIAG diagnostics reverted in source; server running clean.
+
+---
+
 ## 2026-06-03 (PM3) — Collab-editing milestone (approach c) started: splice FFI foundation landed
 
 User chose approach (c) — true same-block collaborative editing — after the re-base fixed lineage/different-block sync. Spec `.docs/ai/phases/2026-06-03-collab-editing-spec.md` (+ C1 iOS code map). Wire-proven root cause: both iOS + web re-author whole block text from a locked editor → `LoroText.update` deletes the peer's concurrent chars. Fix: editors become live views over the per-block `LoroText` (char splices + live-apply inbound + cursor remap).
