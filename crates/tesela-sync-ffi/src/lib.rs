@@ -211,6 +211,20 @@ fn parse_hex_16(s: &str) -> Option<[u8; 16]> {
     bytes.try_into().ok()
 }
 
+/// Parse a block id from EITHER a 32-char dashless hex string OR a 36-char
+/// dashed UUID (`019e7a50-4404-...`). Web + iOS block ids are dashed UUIDs,
+/// while the engine stores/`hex_id`s them dashless — so the FFI accepts both
+/// by stripping dashes before the 16-byte hex parse. `None` on any other
+/// shape (wrong length, non-hex chars).
+fn parse_block_id_hex(s: &str) -> Option<[u8; 16]> {
+    if s.contains('-') {
+        let stripped: String = s.chars().filter(|c| *c != '-').collect();
+        parse_hex_16(&stripped)
+    } else {
+        parse_hex_16(s)
+    }
+}
+
 fn parse_hex_32(s: &str) -> Option<[u8; 32]> {
     let bytes = parse_hex(s)?;
     bytes.try_into().ok()
@@ -578,6 +592,45 @@ impl SyncEngineHandle {
     /// [`Self::produce_note_delta`].
     pub async fn note_version(&self, slug: String) -> Option<Vec<u8>> {
         self.inner.doc_version(stable_uuid_from_slug(&slug)).await
+    }
+
+    /// Apply a single CHARACTER-LEVEL splice to one block's text — the
+    /// outbound foundation for cursor-accurate collaborative editing. Instead
+    /// of re-authoring the WHOLE block text via [`Self::record_note_diff`]
+    /// (whose Myers-diff turns a concurrent peer's characters into DELETEs →
+    /// clobber), a client sends the user's actual keystroke: "delete
+    /// `utf16_delete_len` UTF-16 code units at `utf16_offset`, then insert
+    /// `insert`" (the two at the same offset = a replace).
+    ///
+    /// `utf16_offset` / `utf16_delete_len` are **UTF-16 code units**, matching
+    /// iOS `NSRange` and JavaScript string indices, so the editor passes its
+    /// native offset with no conversion. The splice goes through the block's
+    /// `text_seq` LoroText sequence CRDT, so two devices splicing the SAME
+    /// block concurrently INTERLEAVE — neither side's characters are lost.
+    ///
+    /// `slug` → note id with the same `stable_uuid_from_slug` blake3-truncation
+    /// the rest of this bridge uses. `block_id_hex` is the block's id as a
+    /// 32-char dashless hex string OR a 36-char dashed UUID (both accepted);
+    /// an unparseable id is a `FfiSyncError`.
+    ///
+    /// Returns `1` when the splice applied, `0` when the block isn't found (a
+    /// splice is an in-place edit — the block must already exist).
+    pub async fn splice_block_text(
+        &self,
+        slug: String,
+        block_id_hex: String,
+        utf16_offset: u32,
+        utf16_delete_len: u32,
+        insert: String,
+    ) -> Result<u32, FfiSyncError> {
+        let note_id = stable_uuid_from_slug(&slug);
+        let block_id = parse_block_id_hex(&block_id_hex).ok_or_else(|| FfiSyncError::Other {
+            message: "block_id_hex must be 32 hex chars or a dashed UUID".into(),
+        })?;
+        self.inner
+            .splice_block_text(note_id, block_id, utf16_offset, utf16_delete_len, &insert)
+            .await
+            .map_err(FfiSyncError::from)
     }
 
     /// Import the server's full Loro snapshot for a note as an **authoritative
@@ -1185,5 +1238,84 @@ mod tests {
         assert_eq!(o2.applied, 0);
         assert!(!o2.needs_catchup);
         assert!(o2.note_ids_hex.is_empty());
+    }
+
+    #[tokio::test]
+    async fn splice_block_text_through_ffi_applies_and_renders() {
+        // Drive the character-level splice through the real FFI surface: seed
+        // a note with one block, splice an insert via a DASHED-UUID block id
+        // (exercising the parser), and assert the rendered note reflects it.
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let slug = "splice-note".to_string();
+        let block = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+
+        h.record_note_upsert_by_slug(
+            slug.clone(),
+            "Splice".into(),
+            format!("- hello world <!-- bid:{block} -->\n"),
+            1,
+        )
+        .await
+        .unwrap();
+
+        // Insert "there " at UTF-16 offset 6 (after "hello ").
+        let n = h
+            .splice_block_text(slug.clone(), block.to_string(), 6, 0, "there ".into())
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "splice applied");
+
+        let note_id = stable_uuid_from_slug(&slug);
+        let rendered = h.inner.render_note(note_id).await.unwrap_or_default();
+        assert!(
+            rendered.contains("hello there world"),
+            "splice landed in the rendered note: {rendered:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn splice_block_text_unknown_block_returns_zero() {
+        // A splice targeting a block id with no live node is a no-op (Ok(0)).
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let slug = "splice-missing".to_string();
+        h.record_note_upsert_by_slug(
+            slug.clone(),
+            "Splice".into(),
+            "- present <!-- bid:0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a -->\n".into(),
+            1,
+        )
+        .await
+        .unwrap();
+
+        // A block id (dashless this time) that was never created.
+        let n = h
+            .splice_block_text(
+                slug,
+                "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b".into(),
+                0,
+                0,
+                "X".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "missing block → Ok(0)");
+    }
+
+    #[tokio::test]
+    async fn splice_block_text_rejects_bad_block_id() {
+        // An unparseable block id surfaces as an FfiSyncError rather than a
+        // silent no-op.
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let err = h
+            .splice_block_text("any".into(), "not-a-hex-id".into(), 0, 0, "X".into())
+            .await
+            .unwrap_err();
+        match err {
+            FfiSyncError::Other { .. } => {}
+            other => panic!("wrong error variant: {other:?}"),
+        }
     }
 }

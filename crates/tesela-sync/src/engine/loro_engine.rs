@@ -673,6 +673,75 @@ impl LoroEngine {
         Ok(pending)
     }
 
+    /// Apply a single CHARACTER-LEVEL splice to one block's text — the
+    /// outbound foundation for cursor-accurate collaborative editing
+    /// (collab editing C1). Instead of re-authoring the WHOLE block text
+    /// (which a Myers-diff turns into DELETEs of a concurrent peer's
+    /// characters → clobber), a client sends the user's actual keystroke:
+    /// "delete `utf16_delete_len` UTF-16 code units at `utf16_offset`, then
+    /// insert `insert`". The two operations at the same offset form a
+    /// replace.
+    ///
+    /// Offsets are **UTF-16 code units**, matching iOS `NSRange` and
+    /// JavaScript string indices, so a client passes the editor's native
+    /// offset with no conversion. The splice goes through the block's nested
+    /// `text_seq` [`LoroText`] sequence CRDT (`insert_utf16` /
+    /// `delete_utf16`), so two replicas splicing the SAME block concurrently
+    /// INTERLEAVE — neither side's characters are lost.
+    ///
+    /// The block node must already exist (a splice is an in-place edit, not
+    /// a create): if no live node carries `block_id`, this is a no-op and
+    /// returns `Ok(0)`. On a successful splice returns `Ok(1)`.
+    ///
+    /// Mirrors the [`BlockUpsert`](OpPayload::BlockUpsert) write tail so the
+    /// change reaches disk + derived projections identically: `commit`,
+    /// `refresh_note_derived`, persist the snapshot, materialize the note.
+    pub async fn splice_block_text(
+        &self,
+        note_id: [u8; 16],
+        block_id: [u8; 16],
+        utf16_offset: u32,
+        utf16_delete_len: u32,
+        insert: &str,
+    ) -> SyncResult<u32> {
+        let doc = self.doc_for_note_mut(note_id).await;
+        let tree = doc.get_tree("blocks");
+        let block_hex = hex_id(&block_id);
+        let Some(node) = find_node_by_block_id(&tree, &block_hex) else {
+            // The block must already exist — a splice is an in-place edit.
+            return Ok(0);
+        };
+        let meta = tree
+            .get_meta(node)
+            .map_err(|e| SyncError::Storage(format!("loro get_meta: {e}")))?;
+        // Get-or-create the SAME `text_seq` container `write_block_text`
+        // uses, so seed / whole-text upsert / splice all converge on ONE
+        // sequence CRDT (a distinct container at the same key would
+        // overwrite rather than merge).
+        let text: LoroText = meta
+            .get_or_create_container("text_seq", LoroText::new())
+            .map_err(|e| SyncError::Storage(format!("loro text_seq get_or_create: {e}")))?;
+        // Delete THEN insert at the same offset = a replace.
+        if utf16_delete_len > 0 {
+            text.delete_utf16(utf16_offset as usize, utf16_delete_len as usize)
+                .map_err(|e| SyncError::Storage(format!("loro text_seq delete_utf16: {e}")))?;
+        }
+        if !insert.is_empty() {
+            text.insert_utf16(utf16_offset as usize, insert)
+                .map_err(|e| SyncError::Storage(format!("loro text_seq insert_utf16: {e}")))?;
+        }
+        doc.commit();
+        self.register_note_blocks(note_id, &[block_id]).await;
+        self.refresh_note_derived(note_id, &doc).await;
+        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+            self.save_snapshot(dir, note_id).await;
+        }
+        if self.inner.materialize_dir.is_some() {
+            self.materialize_note(note_id).await;
+        }
+        Ok(1)
+    }
+
     /// Compute the per-note Loro updates to broadcast on a relay tick:
     /// for every note that has accrued ops since its last broadcast,
     /// export the delta. Returns `(note_id, update_bytes, captured_vv)`
@@ -2345,6 +2414,28 @@ impl SyncEngine for LoroEngine {
         bytes: &[u8],
     ) -> SyncResult<bool> {
         LoroEngine::apply_doc_update_status(self, note_id, bytes).await
+    }
+
+    /// Trait-level override forwarding to the inherent
+    /// `LoroEngine::splice_block_text` — the character-level splice the FFI
+    /// (holding `Arc<dyn SyncEngine>`) applies to one block's `text_seq`.
+    async fn splice_block_text(
+        &self,
+        note_id: [u8; 16],
+        block_id: [u8; 16],
+        utf16_offset: u32,
+        utf16_delete_len: u32,
+        insert: &str,
+    ) -> SyncResult<u32> {
+        LoroEngine::splice_block_text(
+            self,
+            note_id,
+            block_id,
+            utf16_offset,
+            utf16_delete_len,
+            insert,
+        )
+        .await
     }
 
     async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
@@ -5127,6 +5218,209 @@ mod tests {
         assert!(
             ta.contains("jumps"),
             "B's edit (\"jumps\") must survive the merge: {ta:?}"
+        );
+    }
+
+    // ── Character-level splice API (collab editing C1 foundation) ─────
+    //
+    // `splice_block_text` lets a client send the user's ACTUAL keystroke
+    // (insert at offset / delete a range) instead of re-authoring the whole
+    // block text. Re-authoring Myers-diffs into DELETEs of a concurrent
+    // peer's characters → clobber; a splice is a single insert/delete on the
+    // block's `text_seq` LoroText, so concurrent splices INTERLEAVE.
+
+    /// Seed a shared base for `note` with one block `A_BID_BYTES` holding
+    /// `text`, then return a second replica that has imported the base — so
+    /// both share the SAME `text_seq` lineage (the merge precondition, NOT
+    /// disjoint twins).
+    async fn splice_shared_base(
+        note: [u8; 16],
+        text: &str,
+    ) -> (LoroEngine, LoroEngine) {
+        let dev_a = DeviceId::from_bytes([0xa7; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        a.record_local(OpPayload::BlockUpsert {
+            block_id: A_BID_BYTES,
+            note_id: note,
+            parent_block_id: None,
+            order_key: "00000000".into(),
+            indent_level: 0,
+            text: text.into(),
+            after_block_id: None,
+        })
+        .await
+        .unwrap();
+
+        let dev_b = DeviceId::from_bytes([0xb7; 16]);
+        let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+        let base = a.export_doc_update(note, None).await.unwrap();
+        b.import_doc_update(note, &base).await.unwrap();
+        // `read_block_text` maps empty text → None, so compare against the
+        // expected `None` when seeding an empty block.
+        let expect = if text.is_empty() { None } else { Some(text) };
+        assert_eq!(
+            block_text(&b, note, A_BID_BYTES).await.as_deref(),
+            expect,
+            "shared base seeded on B"
+        );
+        (a, b)
+    }
+
+    #[tokio::test]
+    async fn splice_block_text_concurrent_inserts_interleave() {
+        // Two replicas on a SHARED text_seq lineage each splice an insert at
+        // offset 0 of an EMPTY block concurrently. Cross-importing each
+        // other's since-vv delta must INTERLEAVE both inserts — both replicas
+        // byte-identical, both "AAA" and "BBB" present (neither overwritten).
+        let note = blake3_note_id("splice-interleave");
+        // Start from an empty block so offset 0 is unambiguous on both sides.
+        let (a, b) = splice_shared_base(note, "").await;
+
+        // Capture each replica's pre-edit VV so each ships only its own splice.
+        let a_vv = a.doc_version(note).await;
+        let b_vv = b.doc_version(note).await;
+
+        // Concurrent splices: A inserts "AAA" at 0, B inserts "BBB" at 0.
+        let na = a
+            .splice_block_text(note, A_BID_BYTES, 0, 0, "AAA")
+            .await
+            .unwrap();
+        let nb = b
+            .splice_block_text(note, A_BID_BYTES, 0, 0, "BBB")
+            .await
+            .unwrap();
+        assert_eq!(na, 1, "A's splice applied");
+        assert_eq!(nb, 1, "B's splice applied");
+
+        // Cross-import each replica's delta into the other, then converge.
+        let a_delta = a.export_doc_update(note, a_vv.as_deref()).await.unwrap();
+        let b_delta = b.export_doc_update(note, b_vv.as_deref()).await.unwrap();
+        b.import_doc_update(note, &a_delta).await.unwrap();
+        a.import_doc_update(note, &b_delta).await.unwrap();
+
+        let ta = block_text(&a, note, A_BID_BYTES).await.unwrap_or_default();
+        let tb = block_text(&b, note, A_BID_BYTES).await.unwrap_or_default();
+
+        assert_eq!(ta, tb, "replicas converge to the same merged text");
+        assert!(
+            ta.contains("AAA"),
+            "A's splice (\"AAA\") must survive the interleave: {ta:?}"
+        );
+        assert!(
+            ta.contains("BBB"),
+            "B's splice (\"BBB\") must survive the interleave: {ta:?}"
+        );
+        // A real interleave: both 3-char inserts land, so the merged text is
+        // 6 chars — neither side OVERWROTE the other (that would be 3 chars).
+        assert_eq!(
+            ta.chars().count(),
+            6,
+            "both inserts present, neither overwritten: {ta:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn splice_block_text_utf16_offsets_handle_multibyte() {
+        // The block holds "a😀b". The emoji is 2 UTF-16 code units, so the
+        // offset JUST AFTER it is 3 (a=1, 😀=2 → 1+2). Splicing an insert at
+        // UTF-16 offset 3 must land between 😀 and "b" — proving the offset is
+        // UTF-16, not a Unicode-scalar index (which would be 2) or a byte
+        // index (which would be 5).
+        let note = blake3_note_id("splice-utf16");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "a😀b".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+
+        let n = engine
+            .splice_block_text(note, A_BID_BYTES, 3, 0, "X")
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "splice applied");
+
+        let got = block_text(&engine, note, A_BID_BYTES)
+            .await
+            .unwrap_or_default();
+        assert_eq!(
+            got, "a😀Xb",
+            "insert at UTF-16 offset 3 lands after the 2-unit emoji: {got:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn splice_block_text_delete_then_insert_replaces() {
+        // A single splice with delete_len>0 AND a non-empty insert at the
+        // same offset replaces the range: "hello world" → delete "world"
+        // (offset 6, len 5) + insert "there" → "hello there".
+        let note = blake3_note_id("splice-replace");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "hello world".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+
+        let n = engine
+            .splice_block_text(note, A_BID_BYTES, 6, 5, "there")
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "replace splice applied");
+
+        let got = block_text(&engine, note, A_BID_BYTES)
+            .await
+            .unwrap_or_default();
+        assert_eq!(got, "hello there", "the range was replaced: {got:?}");
+    }
+
+    #[tokio::test]
+    async fn splice_block_text_unknown_block_is_noop() {
+        // A splice targeting a block_id that has no live node is a no-op and
+        // returns Ok(0) — a splice is an in-place edit, the block must exist.
+        let note = blake3_note_id("splice-missing");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "present".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+
+        // B_BID_BYTES was never created in this note.
+        let n = engine
+            .splice_block_text(note, B_BID_BYTES, 0, 0, "X")
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "missing block → no-op Ok(0)");
+        // The existing block is untouched.
+        assert_eq!(
+            block_text(&engine, note, A_BID_BYTES).await.as_deref(),
+            Some("present"),
+            "the present block is unaffected"
         );
     }
 }

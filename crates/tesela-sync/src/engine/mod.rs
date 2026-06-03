@@ -179,6 +179,28 @@ pub trait SyncEngine: Send + Sync {
         Ok(false)
     }
 
+    /// Apply a single CHARACTER-LEVEL splice to one block's text: delete
+    /// `utf16_delete_len` UTF-16 code units at `utf16_offset`, then insert
+    /// `insert` (the two at the same offset = a replace). Offsets are UTF-16
+    /// code units (matching iOS `NSRange` / JS string indices). The
+    /// outbound foundation for cursor-accurate collaborative editing — a
+    /// client sends the user's actual keystroke instead of re-authoring the
+    /// whole block text (which Myers-diffs into DELETEs of a concurrent
+    /// peer's characters → clobber). Routes through the block's `text_seq`
+    /// LoroText, so concurrent splices INTERLEAVE. Returns `Ok(1)` when
+    /// applied, `Ok(0)` when the block isn't found (a splice is an in-place
+    /// edit). Default no-op `Ok(0)`; LoroEngine overrides.
+    async fn splice_block_text(
+        &self,
+        _note_id: [u8; 16],
+        _block_id: [u8; 16],
+        _utf16_offset: u32,
+        _utf16_delete_len: u32,
+        _insert: &str,
+    ) -> SyncResult<u32> {
+        Ok(0)
+    }
+
     /// Enumerate every note id the engine tracks. Default empty.
     /// `DualEngine` overrides to return the shadow's tracked notes;
     /// `SqliteEngine` returns empty because oplog enumeration would be
