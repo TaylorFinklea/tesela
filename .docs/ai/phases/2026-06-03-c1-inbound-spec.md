@@ -26,3 +26,17 @@ iOS cannot recover a remote splice's offsets from the opaque delta, so after `ap
 - `cargo test -p tesela-sync -p tesela-sync-ffi` green.
 - xcodebuild sim build green; install on a sim.
 - Drive web (browser) + iOS (sim) editing the SAME today block concurrently → both contributions interleave/merge live, no clobber, caret stays sane.
+
+## Result (shipped `78c5fe0`)
+Built + VERIFIED web→iOS live-apply on the sim. Three consecutive web prepends (`WEB!`→`OK!`→`GO!`) to the SAME open iOS block all landed live in the focused UITextView, caret correctly remapped (stayed after the user's own "reprotest 2"). Diagnostic logs were conclusive: `inbound delta applied=1` → `reconcile read merged=GO!OK!NOW!LIVE>WEB!reprotest 2 seqOk=true bidOk=true` → `inserter.reconcile`. Rust tests green; iOS build SUCCEEDED.
+
+**Adversarial review (workflow) found + fixed 4 defects before verifying:**
+1. Caret left-gravity at a pure insertion-at-caret → right-gravity (`remap`).
+2. + 4. Async-read mirror-overwrite race (a local keystroke during the engine read → the Task overwrote the mirror with stale merged text) → `localSpliceSeq` + bid + inserter-identity guard; skip + coalesced retry on race.
+3. Stale `openBlockInserter` on fast block-switch → clear it on EVERY editing-block change (re-register on the new block's onAppear).
+
+**Two operational gotchas (now in current-state):**
+- The app defaults to the LEGACY `AppShell`; must launch `-graphite` to exercise `GrAppShell`/`GrDailyView` where the C1 wiring lives. (Cost ~1h of mis-diagnosis: every C1 hook read nil because the legacy shell was running.)
+- uniffi bindgen writes the FFI header to `Generated/`, but the Xcode build's `SWIFT_INCLUDE_PATHS` points at `CFFI/` — the new header must be copied there too or the checksum symbol is "not in scope".
+
+**Not re-verified on the sim:** iOS→web outbound (idb `ui text` injects text without the `UITextView` `shouldChangeTextIn` delegate → no splice emitted). It's device-verified (Roshar) + code-unchanged. Residual robustness in follow-up #187 (async-window misplacement; per-op-diff FFI to match the web's event-based apply rather than whole-text reconcile).
