@@ -33,6 +33,7 @@
 		"@codemirror/search": "^6.6.0",
 		"@codemirror/state": "^6.6.0",
 		"@codemirror/view": "^6.41.0",
+		"@noble/hashes": "^2.2.0",
 		"@replit/codemirror-vim": "^6.3.0",
 		"@tabler/icons-svelte": "^3.41.1",
 		"@tanstack/svelte-query": "^6.1.14",

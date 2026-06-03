@@ -13,7 +13,7 @@
    * status line refactored in Phase 8). Settings and ⌘G overlays still
    * work since they're independent of the buffer kinds.
    */
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import "$lib/v4/tokens.css";
   import {
     getActiveTab,
@@ -67,6 +67,7 @@
   } from "$lib/stores/fullscreen-overlay.svelte";
   import { togglePeek } from "$lib/stores/peek.svelte";
   import { getConnected } from "$lib/ws-client.svelte";
+  import { openActiveNoteDoc } from "$lib/loro/active-note-doc.svelte";
 
   let { children } = $props();
 
@@ -91,6 +92,22 @@
   const focusedPageId = $derived(
     focusedBuffer?.kind === "page" ? focusedBuffer.pageId : undefined,
   );
+
+  // C2.2: maintain the web peer's per-note Loro doc for whatever page is
+  // focused. Opening it bootstraps from the server snapshot; the root layout's
+  // WS `onBinaryDelta` then applies live deltas into it so it converges with
+  // the server in real time. This is the DOC layer only — it is NOT yet wired
+  // to the editor (C2.3). `$effect` runs browser-only; `openActiveNoteDoc`
+  // closes the previous doc + subscription before opening the new slug (and is
+  // a no-op for an unchanged slug), so page navigation never leaks docs. The
+  // doc is dropped on layout teardown via `onDestroy` below.
+  $effect(() => {
+    const slug = focusedPageId ? (focusedPageId as unknown as string) : null;
+    void openActiveNoteDoc(slug);
+  });
+  onDestroy(() => {
+    void openActiveNoteDoc(null);
+  });
 
   const dragRef = $state({ value: false });
 

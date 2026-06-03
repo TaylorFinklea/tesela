@@ -32,6 +32,10 @@
     handleRecurringRolled,
   } from "$lib/notifications";
   import { ensureSystemWidgets } from "$lib/system-widgets";
+  import {
+    applyInboundToActive,
+    getActiveNoteDoc,
+  } from "$lib/loro/active-note-doc.svelte";
   import { api } from "$lib/api-client";
   import { getToast, clearToast } from "$lib/stores/toast.svelte";
   import "../app.css";
@@ -118,17 +122,28 @@
         flushNoteRefreshNow();
       },
       onBinaryDelta: (updates) => {
-        // C2.1 STUB: the server now broadcasts TLR2 Loro-delta frames on every
-        // edit and web decodes them here. We do NOT apply them to any Loro doc
-        // yet — that's C2.2/C2.3. For now just log that a frame arrived + the
-        // first doc id (hex) so the binary path is observable in the console.
+        // C2.2: the server broadcasts TLR2 Loro-delta frames on every edit.
+        // Apply any update that targets the ACTIVE note's doc into the web
+        // peer's Loro doc so it converges with the server in real time. This
+        // is the doc layer only — the converged doc is NOT yet fed into the
+        // editor (that's C2.3). Updates for other docs are ignored inside
+        // `applyInbound`.
+        applyInboundToActive(updates);
         const firstDocHex = updates[0]
           ? Array.from(updates[0].doc)
               .map((b) => b.toString(16).padStart(2, "0"))
               .join("")
           : "(none)";
+        // After applying, log one converged block's text so convergence is
+        // observable in the console (C2.2 visibility; removed when C2.3 wires
+        // the editor). Reads the first live block of the active doc.
+        const nd = getActiveNoteDoc();
+        const first = nd?.liveBlocks()[0];
         console.debug(
-          `[ws] TLR2 binary delta: ${updates.length} update(s), first doc=${firstDocHex}`,
+          `[ws] TLR2 binary delta: ${updates.length} update(s), first doc=${firstDocHex}` +
+            (first
+              ? `; active[${first.bid.slice(0, 8)}]=${JSON.stringify(first.text)}`
+              : ""),
         );
       },
     });
