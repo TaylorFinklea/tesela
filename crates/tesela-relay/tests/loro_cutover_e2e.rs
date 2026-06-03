@@ -237,3 +237,71 @@ async fn two_authoritative_engines_converge_over_real_relay() {
     // is unchanged — that is the no-flashing guarantee.
     let _ = (a_more, b_more);
 }
+
+/// Encrypted-replica spine, Phase 1a — the durable backup → restore path.
+/// Device A authors several notes and pushes them; the relay RETAINS the full
+/// encrypted op log (no ack eviction). A brand-new EMPTY device C (a wiped Mac
+/// / fresh install) registers and polls from `since=0` and rebuilds A's ENTIRE
+/// mosaic from the relay's encrypted backup. This is the off-site-restore the
+/// spine exists for.
+#[tokio::test]
+async fn fresh_device_restores_full_mosaic_from_durable_relay() {
+    let ctx = spawn_relay().await;
+    let (group, key) = fresh_group();
+    let dev_a = DeviceId::from_bytes([0xa1; 16]);
+    let dev_c = DeviceId::from_bytes([0xcc; 16]);
+
+    let client_a = RelayClient::new(ctx.base_url.clone(), group, dev_a, key.clone());
+    client_a.register_or_recover().await.expect("a register");
+    client_a.verify_registration().await.expect("a verify");
+
+    let tmp_a = tempfile::tempdir().unwrap();
+    let (a, _notes_a) = authoritative_engine(&tmp_a, dev_a).await;
+
+    // A authors three notes (distinct ids + block ids).
+    let notes: [([u8; 16], &str, &str, &str); 3] = [
+        ([0x11; 16], "alpha", "Alpha", "11111111-1111-1111-1111-111111111111"),
+        ([0x22; 16], "beta", "Beta", "22222222-2222-2222-2222-222222222222"),
+        ([0x33; 16], "gamma", "Gamma", "33333333-3333-3333-3333-333333333333"),
+    ];
+    for (id, slug, title, bid) in notes {
+        a.record_local(OpPayload::NoteUpsert {
+            note_id: id,
+            display_alias: Some(slug.into()),
+            title: title.into(),
+            content: format!(
+                "---\ntitle: {title}\n---\n\n- body of {slug} <!-- bid:{bid} -->\n"
+            ),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+    }
+    // A deposits the full history into the durable relay.
+    relay_push(&a, &client_a, dev_a, group).await;
+
+    // ── A wiped/fresh device C restores purely from the relay ──
+    let client_c = RelayClient::new(ctx.base_url.clone(), group, dev_c, key);
+    client_c.register_or_recover().await.expect("c register");
+    client_c.verify_registration().await.expect("c verify");
+    let tmp_c = tempfile::tempdir().unwrap();
+    let (c, notes_c) = authoritative_engine(&tmp_c, dev_c).await;
+
+    let mut cur_c = 0i64;
+    let applied = relay_pull(&c, &client_c, &mut cur_c, dev_c).await;
+    assert!(
+        applied >= 3,
+        "C restored A's full op history from since=0 — applied {applied} (>=3 notes)"
+    );
+
+    // C rebuilt the ENTIRE mosaic from the encrypted backup, byte-identically.
+    for (id, slug, _t, _bid) in notes {
+        let rc = c.render_note(id).await;
+        let ra = a.render_note(id).await;
+        assert_eq!(rc, ra, "note '{slug}' restored identically from the relay backup");
+        assert!(
+            notes_c.join(format!("{slug}.md")).exists(),
+            "'{slug}.md' materialized on restore"
+        );
+    }
+}

@@ -395,9 +395,14 @@ async fn test_06_since_filter() {
 }
 
 #[tokio::test]
-async fn test_07_ack_and_gc() {
-    // PUT 2 envelopes; the only known device acks through seq 2;
-    // subsequent GET ?since=0 returns nothing because GC ran.
+async fn test_07_ack_retains_durable_log() {
+    // Durable-replica retention (encrypted-replica spine, Phase 1a): PUT 2
+    // envelopes; the only known device acks through seq 2; the relay is the
+    // off-site encrypted backup, so it RETAINS the ops rather than evicting
+    // them on ack — a subsequent GET ?since=0 still returns BOTH (a wiped
+    // device restores the whole mosaic from this). (Was test_07_ack_and_gc,
+    // which asserted ack-triggered eviction; that GC is removed — compaction
+    // is now snapshot-gated, Phase 1b.)
     let relay = spawn_relay().await;
     let group = fresh_group();
     let device = random_device_id_hex();
@@ -452,9 +457,11 @@ async fn test_07_ack_and_gc() {
         .await
         .unwrap();
     let rows: Vec<serde_json::Value> = r.json().await.unwrap();
-    assert!(
-        rows.is_empty(),
-        "after ACK + GC the GET should be empty, got {:?}",
+    assert_eq!(
+        rows.len(),
+        2,
+        "durable retention: after ACK the relay RETAINS both ops (encrypted \
+         backup + bootstrap source), got {:?}",
         rows
     );
 }

@@ -307,19 +307,15 @@ pub async fn post_ack(
         .touch_device(&group_id, &device_arr, now)
         .await;
 
-    // GC pass — every op acked by every known member can be dropped.
-    let known = state
-        .inner
-        .store
-        .known_members_hex(&group_id, now, KNOWN_MEMBER_TTL_SECS)
-        .await
-        .unwrap_or_default();
-    let _gc = state
-        .inner
-        .store
-        .gc_fully_acked_ops(&group_id, &known)
-        .await
-        .unwrap_or(0);
+    // DURABLE-REPLICA retention (encrypted-replica spine, Phase 1a,
+    // 2026-06-03): the relay now KEEPS the full encrypted op log rather
+    // than evicting acked ops — it is the off-site encrypted backup + the
+    // bootstrap source, so a wiped/new device restores the WHOLE mosaic via
+    // `GET /ops?since=0`. Eviction no longer happens on ack. The ack +
+    // device-seen bookkeeping above is retained for cursor/known-member use
+    // and for the Phase-1b snapshot-gated compaction that will bound the log
+    // (delete ops superseded by a stored encrypted snapshot, not by ack).
+    // See `.docs/ai/phases/2026-06-03-encrypted-replica-spine-spec.md`.
 
     (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
 }

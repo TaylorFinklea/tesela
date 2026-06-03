@@ -123,12 +123,19 @@ async fn two_clients_round_trip_an_envelope_through_the_relay() {
         "AEAD round-trip must recover the original plaintext"
     );
 
-    // Bob acks, GC runs, subsequent poll is empty.
+    // Durable-replica retention (encrypted-replica spine, Phase 1a): both
+    // members ack, but the relay is the off-site encrypted backup, so it
+    // RETAINS the op rather than evicting it — a re-poll from 0 still returns
+    // it (a wiped device restores from this). Ack-triggered GC is removed;
+    // compaction is now snapshot-gated (Phase 1b).
     bob_client.ack(seq).await.expect("bob ack");
-    // Alice also acks so the GC has heard from both known members.
     alice_client.ack(seq).await.expect("alice ack");
-    let rows = bob_client.poll(0).await.expect("bob poll after gc");
-    assert!(rows.is_empty(), "after all known members ack, GC drops the op");
+    let rows = bob_client.poll(0).await.expect("bob poll after ack");
+    assert_eq!(
+        rows.len(),
+        1,
+        "durable retention: the op survives ack (encrypted backup + bootstrap)"
+    );
 }
 
 #[tokio::test]
