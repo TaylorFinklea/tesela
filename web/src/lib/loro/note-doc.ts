@@ -26,11 +26,14 @@ import { noteId, noteIdHex } from "./note-id";
 import type { LoroDocUpdate } from "./tlr2";
 import type { LoroDoc, LoroText, LoroTreeNode, VersionVector } from "loro-crdt";
 
-/** Base URL for the tesela-server REST/Loro endpoints. Same-origin in the
- *  browser (vite dev proxies `/loro` + `/notes` → 127.0.0.1:7474); the node
- *  convergence check passes an absolute base instead. */
+/** Base URL for the tesela-server REST/Loro endpoints. In the browser this is
+ *  the same-origin `/api` prefix the rest of the web client uses (see
+ *  `api-client.ts`); the vite dev server proxies `/api/*` → 127.0.0.1:7474,
+ *  rewriting `/api` off, so `/api/loro/notes/{id}/snapshot` lands on the
+ *  server's `/loro/...` route. The node convergence check passes an absolute
+ *  base (e.g. `http://127.0.0.1:7474`, no `/api`) instead. */
 function defaultBase(): string {
-  return "";
+  return "/api";
 }
 
 /** One live block read off the doc's `"blocks"` tree. */
@@ -240,8 +243,20 @@ export class NoteDoc {
     const text = this.blockTextContainer(bid);
     if (!text) return false;
     try {
-      if (utf16DeleteLen > 0) text.delete(utf16Offset, utf16DeleteLen);
-      if (insert.length > 0) text.insert(utf16Offset, insert);
+      // The editor's CM document can be LONGER than the clean LoroText because
+      // it carries hidden trailing markers (the `<!-- bid:… -->` comment) that
+      // the server-stored text — and thus this LoroText — does not. A CM offset
+      // that lands in that hidden tail (e.g. caret at the document end past the
+      // comment) would otherwise throw "index out of bound" and drop the edit
+      // to the whole-text HTTP fallback. Clamp to the LoroText's UTF-16 bounds
+      // so such an edit degrades to an append at the text end and still rides
+      // the splice/CRDT path. `toString().length` is UTF-16 length — the same
+      // index space as the offsets.
+      const len = text.toString().length;
+      const off = Math.max(0, Math.min(utf16Offset, len));
+      const del = Math.max(0, Math.min(utf16DeleteLen, len - off));
+      if (del > 0) text.delete(off, del);
+      if (insert.length > 0) text.insert(off, insert);
       doc.commit();
       return true;
     } catch (e) {
