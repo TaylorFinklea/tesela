@@ -38,6 +38,9 @@ importers:
       bits-ui:
         specifier: ^2.17.3
         version: 2.17.3(@internationalized/date@3.12.0)(@sveltejs/kit@2.57.1(@sveltejs/vite-plugin-svelte@7.0.0(svelte@5.55.3)(vite@8.0.8(@types/node@25.6.2)(jiti@2.6.1)))(svelte@5.55.3)(typescript@6.0.2)(vite@8.0.8(@types/node@25.6.2)(jiti@2.6.1)))(svelte@5.55.3)
+      loro-crdt:
+        specifier: 1.12.3
+        version: 1.12.3
       lucide-svelte:
         specifier: ^1.0.1
         version: 1.0.1(svelte@5.55.3)
@@ -640,6 +643,9 @@ packages:
 
   locate-character@3.0.0:
     resolution: {integrity: sha512-SW13ws7BjaeJ6p7Q6CO2nchbYEc3X3J6WrmTTDto7yMPqVSZTUyY5Tjbid+Ab8gLnATtygYtiDIJGQRRn2ZOiA==}
+
+  loro-crdt@1.12.3:
+    resolution: {integrity: sha512-ZCeW0e/bo2lP4/zxSlVrJlMrX3hq9tXpeANbBDkdVS0bxoPHYx5Za3yS/A1+aWEFPJpzzI3Eac4K20cL9+BtXw==}
 
   lucide-svelte@1.0.1:
     resolution: {integrity: sha512-WvzZgk0pqzgda+AErLvgWxHkfg/+GgUwqKMRHvzt0IqyMdmyEDzDCk3Z+Wo/3y753oIgx8u9Q4eUbWkghFa8Jg==}
@@ -1345,6 +1351,8 @@ snapshots:
       lightningcss-win32-x64-msvc: 1.32.0
 
   locate-character@3.0.0: {}
+
+  loro-crdt@1.12.3: {}
 
   lucide-svelte@1.0.1(svelte@5.55.3):
     dependencies:
