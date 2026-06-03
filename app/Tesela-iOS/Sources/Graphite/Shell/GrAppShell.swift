@@ -57,25 +57,15 @@ struct GrAppShell: View {
             .environment(\.theme, .graphite)
             .preferredColorScheme(.dark)
             .task {
-                // Mirror AppShell's relay-ticker bring-up: attach the
-                // mosaic, open the local engine eagerly, route iOS writes
-                // through the engine + relay, re-pull on inbound changes,
-                // and start the loop. connect()/openEngineIfNeeded() are
-                // idempotent, so this is safe to re-run.
-                mosaic.attach(backend: backend.backend)
-                await mosaic.refresh(from: backend.backend)
+                // ONE-TIME wiring: bind the ticker to the mosaic and install
+                // the event closures. The BACKEND-dependent bring-up
+                // (attach/refresh/hubMode/WS-connect/bootstrap/start) lives in
+                // `activateBackend()`, called once here and re-run by
+                // `.onChange(of: backendToken)` whenever the user changes the
+                // server URL / mode in Settings — so live sync RE-ESTABLISHES
+                // on a runtime backend switch (notably: setting the server URL
+                // after a fresh install, where the app launched in mock mode).
                 relayTicker.connect(mosaic: mosaic)
-                // Hub mode (Part E2): when the backend is an HTTP Mac
-                // server, the live `/ws` socket below is the sync hub.
-                // Gate the relay coordinator loop off so it can't inject
-                // stale foreign-history ops into the same Loro docs the WS
-                // path drives. Mirrors how `liveSync.connect` is gated on
-                // `.http`. Reversible — the cached pairing code is kept.
-                if case .http = backend.backend {
-                    relayTicker.hubMode = true
-                }
-                do { try await relayTicker.openEngineIfNeeded() }
-                catch { /* surfaced via relayTicker.lastError */ }
                 mosaic.onLocalWrite = { [weak relayTicker, weak liveSync] slug, title, content, createdAt in
                     Task { @MainActor [weak relayTicker, weak liveSync] in
                         // 1) Record the edit into the engine + push to the
@@ -118,11 +108,6 @@ struct GrAppShell: View {
                 mosaic.onNoteOpened = { [weak relayTicker] slug in
                     Task { await relayTicker?.bootstrapNoteIfNeeded(slug: slug) }
                 }
-                // The initial `mosaic.refresh(...)` above ran before
-                // `onNoteOpened` was wired, so explicitly bootstrap the
-                // currently-visible daily once now (T2). Covers a pure
-                // receive-only device that never edits or backgrounds.
-                await relayTicker.bootstrapNoteIfNeeded(slug: mosaic.todayDailySlug)
                 // Live WS push (mirrors AppShell.activateMosaic): instant
                 // re-pull on Mac-originated note changes, routed through
                 // applyRemoteChange() so it defers while editing.
@@ -135,12 +120,18 @@ struct GrAppShell: View {
                 liveSync.onBinaryDelta = { [weak relayTicker] frame in
                     Task { await relayTicker?.applyInboundDelta(frame) }
                 }
-                if case .http = backend.backend {
-                    liveSync.connect(serverURL: backend.serverURL)
-                } else {
-                    liveSync.connect(serverURL: nil)
-                }
-                relayTicker.start()
+                // Backend-dependent bring-up — also re-run on a backend change.
+                await activateBackend()
+            }
+            .onChange(of: backendToken) { _, _ in
+                // The user changed the server URL / mock↔HTTP mode in Settings
+                // — re-establish the live WS + hub mode against the NEW backend
+                // (mirrors AppShell re-running activateMosaic on a profile
+                // switch). Without this, a runtime backend change — notably
+                // setting the server URL after a fresh install — left the WS
+                // disconnected and the relay coordinator spinning ("Mac has no
+                // relay configured"), so no device saw live edits.
+                Task { await activateBackend() }
             }
             .onChange(of: scenePhase) { _, newPhase in
                 switch newPhase {
@@ -165,6 +156,47 @@ struct GrAppShell: View {
                 composer.append(transcript)
                 streamRecorder.lastTranscript = nil
             }
+    }
+
+    /// Identity of the current backend (mode + server URL). Drives the
+    /// `.onChange` that re-establishes live sync when the user reconfigures
+    /// the server in Settings — a plain `String` so SwiftUI can diff it.
+    private var backendToken: String {
+        "\(backend.mode.rawValue)|\(backend.serverURL)"
+    }
+
+    /// Point the mosaic + live-sync transport at the CURRENT backend. Called
+    /// once from `.task` and again whenever `backendToken` changes (the user
+    /// edits the server URL / toggles mock↔HTTP in Settings). Idempotent and
+    /// re-entrant: `liveSync.connect` no-ops on the same URL and tears down +
+    /// repoints on a new one; `hubMode` is set BOTH ways; `openEngineIfNeeded`
+    /// / `bootstrapNoteIfNeeded` / `start` are all safe to re-run.
+    private func activateBackend() async {
+        mosaic.attach(backend: backend.backend)
+        await mosaic.refresh(from: backend.backend)
+        // Hub mode (Part E2): an HTTP Mac backend makes the live `/ws` socket
+        // the sync hub, so gate the relay coordinator loop OFF; mock mode
+        // re-enables it. Set BOTH ways so a runtime switch is correct (the
+        // fresh-install bug: hubMode stayed false because this only ran once
+        // at launch in mock mode).
+        if case .http = backend.backend {
+            relayTicker.hubMode = true
+        } else {
+            relayTicker.hubMode = false
+        }
+        do { try await relayTicker.openEngineIfNeeded() }
+        catch { /* surfaced via relayTicker.lastError */ }
+        // Point the live-sync socket at the active server (or tear it down in
+        // mock mode). Re-entrant — same URL → no-op, new URL → reconnect.
+        if case .http = backend.backend {
+            liveSync.connect(serverURL: backend.serverURL)
+        } else {
+            liveSync.connect(serverURL: nil)
+        }
+        // Bootstrap the currently-visible daily as a shared base (T2), now
+        // that the engine + socket point at this backend.
+        await relayTicker.bootstrapNoteIfNeeded(slug: mosaic.todayDailySlug)
+        relayTicker.start()
     }
 
     /// The native iOS-26 `TabView`. Mirrors AppShell exactly: the four
