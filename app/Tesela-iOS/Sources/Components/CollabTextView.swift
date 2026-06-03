@@ -23,9 +23,13 @@ import UIKit
 /// normalizing writeback runs in between — so the editor's offsets stay
 /// aligned with the engine's `text_seq`. See `BlockRow`/`MockMosaicService`.
 ///
-/// Inbound live-apply of remote splices + cursor remap is DEFERRED to a
-/// later increment; this view is the OUTBOUND half. Inbound refreshes
-/// stay deferred while editing (`isEditingBlock`), unchanged.
+/// Inbound live-apply (collab editing C1-inbound, 2026-06-03): when a
+/// remote peer splices the SAME block while it's open, the engine merges
+/// the edit and `MockMosaicService` reads the merged text and calls
+/// `CollabTextInserter.reconcile(toEngineText:)`, which applies a minimal
+/// diff to the live `UITextView` and remaps the caret — so the peer's
+/// characters appear under the cursor without clobbering in-flight typing.
+/// The non-editing blocks still refresh via the deferred full-note path.
 struct CollabTextView: UIViewRepresentable {
     /// The block's raw text — the engine-exact stored value. Bound so
     /// SwiftUI and the `UITextView` agree on the current string; the
@@ -226,5 +230,64 @@ final class CollabTextInserter {
         // the binding. Caret advances to the end of the inserted text
         // automatically.
         _ = tv
+    }
+
+    /// Inbound live-apply (collab editing C1-inbound): make the live text
+    /// view match the engine's post-apply block text `newText` — the MERGED
+    /// result after a remote peer's concurrent splice landed — with a
+    /// MINIMAL replacement (common UTF-16 prefix/suffix preserved) and a
+    /// caret remap, so the user's cursor stays put relative to their own
+    /// text while the peer's characters appear.
+    ///
+    /// No-op when the field already equals `newText`: this covers the echo
+    /// of our OWN splice (engine + view already agree) and any redundant
+    /// delta, so it's safe to call on every inbound apply. The text is set
+    /// programmatically (NOT through `shouldChangeTextIn`), so it does NOT
+    /// emit an outbound splice; the SwiftUI binding is synced so the block's
+    /// edit buffer + blur-commit reflect the merged text. Skipped while IME
+    /// marked text is active (composition) — the post-blur refresh
+    /// reconciles those.
+    func reconcile(toEngineText newText: String) {
+        guard let tv = textView else { return }
+        if tv.markedTextRange != nil { return }
+        let old = tv.text ?? ""
+        if old == newText { return }
+        let oldU = Array(old.utf16)
+        let newU = Array(newText.utf16)
+        // Common prefix.
+        var pre = 0
+        let cap = min(oldU.count, newU.count)
+        while pre < cap, oldU[pre] == newU[pre] { pre += 1 }
+        // Common suffix (not overlapping the shared prefix on either side).
+        var suf = 0
+        while suf < (oldU.count - pre), suf < (newU.count - pre),
+              oldU[oldU.count - 1 - suf] == newU[newU.count - 1 - suf] { suf += 1 }
+        let removed = oldU.count - pre - suf  // UTF-16 units the remote edit removed
+        let inserted = newU.count - pre - suf  // UTF-16 units it added
+        let delta = inserted - removed
+        let changeEnd = pre + removed
+        // Remap a caret/anchor position through the changed span. A PURE
+        // insertion exactly AT the caret uses right-gravity: the caret
+        // advances PAST the peer's inserted text so the user keeps typing
+        // after it (and concurrent same-spot edits stack in arrival order)
+        // rather than being stranded before it.
+        func remap(_ pos: Int) -> Int {
+            if pos < pre { return pos }                          // strictly before — unchanged
+            if pos == pre, removed == 0 { return pos + inserted } // insertion at caret — advance past it
+            if pos >= changeEnd { return pos + delta }           // after the change — shift by net delta
+            return pre + inserted                                 // inside a replaced span — clamp to its end
+        }
+        let sel = tv.selectedRange
+        let loc = remap(sel.location)
+        let end = remap(sel.location + sel.length)
+        // Apply programmatically — skips `shouldChangeTextIn`, so no echo splice.
+        tv.text = newText
+        let clampedLoc = max(0, min(loc, newU.count))
+        let clampedLen = max(0, min(end - loc, newU.count - clampedLoc))
+        tv.selectedRange = NSRange(location: clampedLoc, length: clampedLen)
+        // Sync the SwiftUI binding so editBuffer / commit-on-blur reflect the
+        // merged text. `updateUIView` won't re-stomp the field: it's gated on
+        // `!isFirstResponder` and the field is focused.
+        coordinator?.parent.text = newText
     }
 }

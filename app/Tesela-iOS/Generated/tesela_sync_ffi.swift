@@ -1252,6 +1252,24 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func produceNoteDelta(slug: String, sinceVv: Data?) async throws  -> Data?
     
     /**
+     * Read a single block's current text — the engine-exact `text_seq`
+     * content — by `slug` + `block_id_hex`. The inbound counterpart of
+     * [`splice_block_text`](Self::splice_block_text): after `apply_delta_frame`
+     * lands a remote splice on the SAME block the user is editing, the iOS
+     * client reads the MERGED text here and reconciles the open `UITextView`
+     * (minimal diff + caret remap). The engine is the source of truth; the
+     * editor matches it. Own-echoes are harmless — the read returns text the
+     * editor already shows, so the reconcile is a no-op.
+     *
+     * `slug` → note id with the same `stable_uuid_from_slug` blake3-truncation
+     * the splice/produce paths use; `block_id_hex` accepts a 32-char dashless
+     * hex string OR a 36-char dashed UUID (both forms the editor may hold).
+     * Returns `None` for an unknown note/block, an empty block, or an
+     * unparseable `block_id_hex`.
+     */
+    func readBlockText(slug: String, blockIdHex: String) async throws  -> String?
+    
+    /**
      * Block-granular variant of `record_note_upsert_by_slug`. Diffs
      * the new body against the engine's last-materialized version of
      * the note (read from `<mosaic>/notes/<slug>.md`) and emits
@@ -1573,6 +1591,39 @@ open func produceNoteDelta(slug: String, sinceVv: Data?)async throws  -> Data?  
             completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterOptionData.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Read a single block's current text — the engine-exact `text_seq`
+     * content — by `slug` + `block_id_hex`. The inbound counterpart of
+     * [`splice_block_text`](Self::splice_block_text): after `apply_delta_frame`
+     * lands a remote splice on the SAME block the user is editing, the iOS
+     * client reads the MERGED text here and reconciles the open `UITextView`
+     * (minimal diff + caret remap). The engine is the source of truth; the
+     * editor matches it. Own-echoes are harmless — the read returns text the
+     * editor already shows, so the reconcile is a no-op.
+     *
+     * `slug` → note id with the same `stable_uuid_from_slug` blake3-truncation
+     * the splice/produce paths use; `block_id_hex` accepts a 32-char dashless
+     * hex string OR a 36-char dashed UUID (both forms the editor may hold).
+     * Returns `None` for an unknown note/block, an empty block, or an
+     * unparseable `block_id_hex`.
+     */
+open func readBlockText(slug: String, blockIdHex: String)async throws  -> String?  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_read_block_text(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug),FfiConverterString.lower(blockIdHex)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterOptionString.lift,
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
@@ -2699,6 +2750,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_produce_note_delta() != 37163) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_read_block_text() != 3885) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_diff() != 20141) {

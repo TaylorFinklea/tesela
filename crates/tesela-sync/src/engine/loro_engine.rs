@@ -742,6 +742,24 @@ impl LoroEngine {
         Ok(1)
     }
 
+    /// Read a single block's current text (the engine-exact `text_seq`
+    /// content, falling back to a legacy `text` register) by note + block id.
+    /// Read-only — the inbound live-apply path calls this AFTER a remote
+    /// splice is applied to reconcile the open editor with the merged text.
+    /// `None` for an unknown note/block or an empty block.
+    pub async fn read_block_text(
+        &self,
+        note_id: [u8; 16],
+        block_id: [u8; 16],
+    ) -> Option<String> {
+        let docs = self.inner.docs.read().await;
+        let doc = docs.get(&note_id)?;
+        let tree = doc.get_tree("blocks");
+        let block_hex = hex_id(&block_id);
+        let node = find_node_by_block_id(&tree, &block_hex)?;
+        read_block_text(&tree, node)
+    }
+
     /// Compute the per-note Loro updates to broadcast on a relay tick:
     /// for every note that has accrued ops since its last broadcast,
     /// export the delta. Returns `(note_id, update_bytes, captured_vv)`
@@ -2436,6 +2454,12 @@ impl SyncEngine for LoroEngine {
             insert,
         )
         .await
+    }
+
+    /// `LoroEngine::read_block_text` — the inbound counterpart the FFI calls
+    /// to read a block's merged text after applying a remote splice.
+    async fn read_block_text(&self, note_id: [u8; 16], block_id: [u8; 16]) -> Option<String> {
+        LoroEngine::read_block_text(self, note_id, block_id).await
     }
 
     async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
@@ -5388,6 +5412,53 @@ mod tests {
             .await
             .unwrap_or_default();
         assert_eq!(got, "hello there", "the range was replaced: {got:?}");
+    }
+
+    #[tokio::test]
+    async fn read_block_text_returns_merged_text_after_splice() {
+        // The inbound live-apply read (C1-inbound): after a splice mutates a
+        // block's text_seq, the public read_block_text(note, block) returns the
+        // current merged text — this is what iOS reads to reconcile the open
+        // editor with a remote peer's concurrent edit. Unknown note/block → None.
+        let note = blake3_note_id("read-block-text");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "hello".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        engine
+            .splice_block_text(note, A_BID_BYTES, 5, 0, " world")
+            .await
+            .unwrap();
+
+        let got = engine.read_block_text(note, A_BID_BYTES).await;
+        assert_eq!(
+            got.as_deref(),
+            Some("hello world"),
+            "reads the merged text_seq content"
+        );
+
+        assert_eq!(
+            engine.read_block_text(note, [0xcc; 16]).await,
+            None,
+            "unknown block → None"
+        );
+        assert_eq!(
+            engine
+                .read_block_text(blake3_note_id("nope"), A_BID_BYTES)
+                .await,
+            None,
+            "unknown note → None"
+        );
     }
 
     #[tokio::test]

@@ -308,6 +308,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// editor's native `NSRange`), exactly what `spliceBlockText` wants.
     func spliceTodayBlock(id: String, utf16Offset: Int, utf16DeleteLen: Int, insert: String) {
         guard let idx = todayBlocks.firstIndex(where: { $0.id == id }) else { return }
+        // A local keystroke changes the editor text; bump so an inbound
+        // live-reconcile whose async read overlaps this edit can detect the
+        // race and skip its now-stale merged text (C1-inbound).
+        localSpliceSeq &+= 1
         // Reconstruct the engine-exact string (the editor's loaded value),
         // apply the SAME UTF-16 splice the editor just applied to it on an
         // NSString (UTF-16 semantics, matching the engine + NSRange), and
@@ -1229,6 +1233,31 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
     private var pendingRemoteRefresh = false
 
+    /// The block currently open in the editor (mirrors `GrDailyView`'s
+    /// `editingBlockId`). The C1-inbound live-apply path uses it to know
+    /// which block's merged text to reconcile when a remote splice lands
+    /// mid-edit. `nil` when nothing is being edited.
+    var editingBlockId: String? = nil
+    /// The open editor's imperative inserter, registered by the focused
+    /// `BlockRow`. Weak: the row's `@State` owns it; a stale ref (a
+    /// torn-down text view) is a harmless no-op since the inserter holds
+    /// the `UITextView` weakly and `reconcile` early-returns.
+    weak var openBlockInserter: CollabTextInserter?
+    /// Reads a block's current engine-exact text — `(slug, blockIdHex) →
+    /// text`. Wired by `GrAppShell` to `RelayTicker.readBlockText` so the
+    /// inbound live-apply path can fetch the MERGED block text after a
+    /// remote splice (the engine is the source of truth).
+    var readEngineBlockText: ((_ slug: String, _ blockIdHex: String) async -> String?)?
+    /// Monotonic counter bumped on every local in-block splice. The inbound
+    /// live-apply path captures it before its async engine read and bails if
+    /// it changed — a keystroke landed during the read, so the merged text it
+    /// got is already stale and applying it would fight the live edit.
+    private var localSpliceSeq: UInt64 = 0
+    /// Coalesced retry for a live reconcile that raced an in-flight keystroke,
+    /// so the remote edit still lands once the typing settles (one pending
+    /// task; fires on a brief idle).
+    private var reconcileRetry: Task<Void, Never>?
+
     /// A local write echoes straight back as a WebSocket event. Remote
     /// refreshes are skipped for a short window after a local write so
     /// the echo of our own edit can't revert a change made right after
@@ -1265,6 +1294,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
         guard case .http = currentBackend else { return }
         if isEditingBlock {
             pendingRemoteRefresh = true
+            // C1-inbound: live-apply a remote splice into the OPEN editor so a
+            // concurrent same-block edit appears under the cursor immediately,
+            // instead of waiting for the blur-time full refresh (which is the
+            // only time a FOCUSED field otherwise updates). The deferred
+            // refresh above still reconciles every other block on blur.
+            reconcileOpenBlockLive()
             return
         }
         if let until = suppressRemoteUntil, until > Date() {
@@ -1274,6 +1309,70 @@ final class MockMosaicService: ObservableObject, MosaicService {
         }
         pendingRemoteRefresh = false
         scheduleRemoteRefresh()
+    }
+
+    /// C1-inbound live-apply: after a remote splice lands in the engine while
+    /// the user is editing, read the MERGED block text and apply it to the
+    /// open editor's `UITextView` (minimal diff + caret remap) — the only
+    /// path that updates a FOCUSED field, since `CollabTextView.updateUIView`
+    /// is gated on `!isFirstResponder`. Safe to call on every inbound apply:
+    /// the reconcile is a no-op when the editor already matches the engine
+    /// (the echo of our OWN splice). Also refreshes the in-memory mirror for
+    /// the block so subsequent local splice offsets and the blur-commit stay
+    /// aligned with the engine. Today-blocks only (the collab editor path);
+    /// the open block's slug is `serverDailyId`.
+    private func reconcileOpenBlockLive() {
+        guard let bid = editingBlockId,
+              let read = readEngineBlockText,
+              let inserter = openBlockInserter,
+              !serverDailyId.isEmpty
+        else { return }
+        let slug = serverDailyId
+        let seqAtStart = localSpliceSeq
+        Task { @MainActor [weak self] in
+            guard let self, let merged = await read(slug, bid) else { return }
+            // Stale-read guard: if the user typed a local splice, or
+            // switched/closed the block (a different inserter is registered),
+            // DURING the async read, this merged text predates their keystroke.
+            // Applying it would fight the live edit and could momentarily drop
+            // the just-typed char from the view. Skip and retry once typing
+            // settles so the remote edit still lands shortly.
+            guard self.editingBlockId == bid,
+                  self.openBlockInserter === inserter,
+                  self.localSpliceSeq == seqAtStart
+            else {
+                self.scheduleReconcileRetry()
+                return
+            }
+            // Atomic on the main actor (no await between) so the in-memory
+            // mirror and the UITextView are updated together and stay in
+            // lockstep — the next local splice's offset (UITextView-relative)
+            // therefore matches the mirror length the clamp uses. Same
+            // projection `spliceTodayBlock` maintains, so a blur-commit/refresh
+            // doesn't revert the merge.
+            if let idx = self.todayBlocks.firstIndex(where: { $0.id == bid }) {
+                let (body, tags) = Self.splitTrailingTags(merged)
+                self.todayBlocks[idx].text = body.components(separatedBy: "\n").first ?? body
+                self.todayBlocks[idx].rawText = body
+                self.todayBlocks[idx].tags = tags
+            }
+            inserter.reconcile(toEngineText: merged)
+        }
+    }
+
+    /// Re-run the live reconcile after a brief idle when a prior attempt raced
+    /// an in-flight keystroke, so the remote edit still appears once the user
+    /// pauses. Coalesced to a single pending retry so continuous typing can't
+    /// pile up tasks; the `isEditingBlock` gate stops it after blur (the
+    /// deferred full refresh then reconciles everything).
+    private func scheduleReconcileRetry() {
+        reconcileRetry?.cancel()
+        reconcileRetry = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            guard let self, !Task.isCancelled else { return }
+            self.reconcileRetry = nil
+            if self.isEditingBlock { self.reconcileOpenBlockLive() }
+        }
     }
 
     /// Cancel any pending debounced refresh and schedule a fresh one

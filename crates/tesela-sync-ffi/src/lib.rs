@@ -633,6 +633,32 @@ impl SyncEngineHandle {
             .map_err(FfiSyncError::from)
     }
 
+    /// Read a single block's current text — the engine-exact `text_seq`
+    /// content — by `slug` + `block_id_hex`. The inbound counterpart of
+    /// [`splice_block_text`](Self::splice_block_text): after `apply_delta_frame`
+    /// lands a remote splice on the SAME block the user is editing, the iOS
+    /// client reads the MERGED text here and reconciles the open `UITextView`
+    /// (minimal diff + caret remap). The engine is the source of truth; the
+    /// editor matches it. Own-echoes are harmless — the read returns text the
+    /// editor already shows, so the reconcile is a no-op.
+    ///
+    /// `slug` → note id with the same `stable_uuid_from_slug` blake3-truncation
+    /// the splice/produce paths use; `block_id_hex` accepts a 32-char dashless
+    /// hex string OR a 36-char dashed UUID (both forms the editor may hold).
+    /// Returns `None` for an unknown note/block, an empty block, or an
+    /// unparseable `block_id_hex`.
+    pub async fn read_block_text(
+        &self,
+        slug: String,
+        block_id_hex: String,
+    ) -> Result<Option<String>, FfiSyncError> {
+        let note_id = stable_uuid_from_slug(&slug);
+        let Some(block_id) = parse_block_id_hex(&block_id_hex) else {
+            return Ok(None);
+        };
+        Ok(self.inner.read_block_text(note_id, block_id).await)
+    }
+
     /// Import the server's full Loro snapshot for a note as an **authoritative
     /// re-base**. Used both as a pre-author shared base (a later `recordNoteDiff`
     /// BlockUpsert resolves to the server's tree nodes instead of minting rival

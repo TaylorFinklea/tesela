@@ -460,6 +460,16 @@ final class RelayTicker: ObservableObject {
         }
     }
 
+    /// Read a block's current engine-exact text (collab editing C1-inbound).
+    /// The engine is the source of truth: after a remote splice lands via
+    /// `applyInboundDelta`, the open editor reads the MERGED block text here
+    /// and reconciles its `UITextView`. Returns nil if no engine is open or
+    /// the note/block is absent.
+    func readBlockText(slug: String, blockIdHex: String) async -> String? {
+        guard let engine else { return nil }
+        return try? await engine.readBlockText(slug: slug, blockIdHex: blockIdHex)
+    }
+
     /// Apply a TLR2-framed Loro delta that arrived over the live WS
     /// (instant-multidevice spec, Phase C). Mediates the engine the
     /// `LiveSyncSocket` deliberately does not own: ensure the engine is

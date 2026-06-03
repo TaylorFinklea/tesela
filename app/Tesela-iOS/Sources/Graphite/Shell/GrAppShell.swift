@@ -121,6 +121,13 @@ struct GrAppShell: View {
                     // direct refresh raced the editor. Mirrors onNoteChange.
                     Task { await mosaic?.applyRemoteChange() }
                 }
+                // Collab editing C1-inbound: let the service read a block's
+                // current engine-exact text (the MERGED result after a remote
+                // splice) so it can live-apply the change into the open editor
+                // with caret remap, instead of waiting for the blur refresh.
+                mosaic.readEngineBlockText = { [weak relayTicker] slug, bid in
+                    await relayTicker?.readBlockText(slug: slug, blockIdHex: bid)
+                }
                 // Bootstrap the server's note doc as a base when a note
                 // becomes visible (daily on refresh, any opened page) —
                 // so a receive-only device holds the base for live deltas

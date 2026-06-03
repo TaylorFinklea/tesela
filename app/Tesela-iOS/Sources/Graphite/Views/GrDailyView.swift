@@ -58,6 +58,16 @@ struct GrDailyView: View {
                 // inbound WS event can't replace text under the cursor —
                 // mirrors DailyView.
                 mosaic.isEditingBlock = (newValue != nil)
+                // C1-inbound: tell the service which block is open so an
+                // inbound remote splice on it can be live-applied to the
+                // editor (the deferred full refresh still covers the rest).
+                mosaic.editingBlockId = newValue
+                // Drop any previously-registered editor inserter on EVERY
+                // change (close OR switch-to-another-block). onChange fires
+                // before the newly-focused block's onAppear re-registers its
+                // own, so a remote splice arriving in that gap finds a nil
+                // inserter (no-op) rather than the wrong block's text view.
+                mosaic.openBlockInserter = nil
                 if let id = newValue,
                    let block = mosaic.todayBlocks.first(where: { $0.id == id })
                     ?? mosaic.yesterdayBlocks.first(where: { $0.id == id })
@@ -130,6 +140,11 @@ struct GrDailyView: View {
                         utf16DeleteLen: deleteLen,
                         insert: insert
                     )
+                },
+                onActiveCollabInserter: { inserter in
+                    // Collab editing C1 inbound: register the open editor's
+                    // inserter so a remote splice on this block live-applies.
+                    mosaic.openBlockInserter = inserter
                 },
                 onMenuAction: { action in handleTodayAction(action, on: block) },
                 onSplitToNewBlock: { _ in

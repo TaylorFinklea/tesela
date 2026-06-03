@@ -201,6 +201,21 @@ pub trait SyncEngine: Send + Sync {
         Ok(0)
     }
 
+    /// Read a single block's current text — the engine-exact `text_seq`
+    /// content (falling back to a legacy `text` register) — by note + block
+    /// id. The inbound counterpart of [`splice_block_text`](Self::splice_block_text):
+    /// after a remote splice is applied, the iOS client reads the MERGED block
+    /// text here to reconcile the open editor (the engine is the source of
+    /// truth; the editor matches it). Returns `None` for an unknown note/block
+    /// or an empty block. Default `None`; LoroEngine overrides.
+    async fn read_block_text(
+        &self,
+        _note_id: [u8; 16],
+        _block_id: [u8; 16],
+    ) -> Option<String> {
+        None
+    }
+
     /// Enumerate every note id the engine tracks. Default empty.
     /// `DualEngine` overrides to return the shadow's tracked notes;
     /// `SqliteEngine` returns empty because oplog enumeration would be

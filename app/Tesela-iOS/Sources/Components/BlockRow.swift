@@ -39,6 +39,15 @@ struct BlockRow: View {
     /// don't wire it fall back to the legacy `TextField`/`onTextChanged`
     /// path unchanged.
     var onTextSplice: ((_ utf16Offset: Int, _ utf16DeleteLen: Int, _ insert: String) -> Void)? = nil
+    /// Collab editing C1-inbound: hand the owner this row's
+    /// `CollabTextInserter` when the splice editor opens, so an inbound
+    /// remote splice on THIS block can be live-applied to the live
+    /// `UITextView` (caret remap) instead of waiting for the blur refresh.
+    /// Fired with the inserter on the editor's `onAppear`. The owner is the
+    /// gatekeeper (it reconciles only the block matching its `editingBlockId`),
+    /// so no unregister-on-blur is needed — a stale inserter no-ops (its text
+    /// view is held weakly).
+    var onActiveCollabInserter: ((CollabTextInserter) -> Void)? = nil
     var onCancelEdit: (() -> Void)? = nil
     var onMenuAction: ((BlockAction) -> Void)? = nil
     /// Commit current text and append a new sibling block immediately
@@ -273,6 +282,9 @@ struct BlockRow: View {
         .onAppear {
             editBuffer = combinedEditableText()
             collabFocused = true
+            // Register this editor's imperative inserter so the owner can
+            // live-apply an inbound remote splice on THIS block (C1-inbound).
+            onActiveCollabInserter?(inserter)
         }
         .toolbar {
             if isEditing {
