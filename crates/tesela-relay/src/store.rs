@@ -53,6 +53,16 @@ pub struct RelayOp {
     pub payload: Vec<u8>,
 }
 
+/// One row from `relay_snapshots`. Returned by `list_snapshots`;
+/// serialised to JSON by the handler. `stream_id` + `payload` are
+/// OPAQUE ciphertext/keys — the relay never interprets them.
+#[derive(Clone)]
+pub struct SnapshotRow {
+    pub stream_id: Vec<u8>,
+    pub snapshot_seq: i64,
+    pub payload: Vec<u8>,
+}
+
 impl Store {
     pub async fn open(path: &Path) -> Result<Self> {
         let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", path.display()))
@@ -189,11 +199,7 @@ impl Store {
 
     /// Return ops in this group with `seq > since`, ordered ascending.
     /// Empty list when the requester is already caught up.
-    pub async fn list_ops_since(
-        &self,
-        group_id: &[u8; 16],
-        since: i64,
-    ) -> Result<Vec<RelayOp>> {
+    pub async fn list_ops_since(&self, group_id: &[u8; 16], since: i64) -> Result<Vec<RelayOp>> {
         let rows = sqlx::query(
             "SELECT seq, from_device, ts, payload FROM relay_ops \
              WHERE group_id = ? AND seq > ? ORDER BY seq ASC",
@@ -236,14 +242,12 @@ impl Store {
         // Fetch each candidate op + current acks, update only when the
         // device isn't already present. Cheaper than json_each for the
         // typical case (few devices per group, few un-acked ops).
-        let rows = sqlx::query(
-            "SELECT seq, acks FROM relay_ops WHERE group_id = ? AND seq <= ?",
-        )
-        .bind(&group_id[..])
-        .bind(applied_seq)
-        .fetch_all(&mut *tx)
-        .await
-        .context("fetch ops for ack")?;
+        let rows = sqlx::query("SELECT seq, acks FROM relay_ops WHERE group_id = ? AND seq <= ?")
+            .bind(&group_id[..])
+            .bind(applied_seq)
+            .fetch_all(&mut *tx)
+            .await
+            .context("fetch ops for ack")?;
 
         let mut touched = 0u64;
         for row in rows {
@@ -294,7 +298,10 @@ impl Store {
             let seq: i64 = row.get("seq");
             let acks_json: String = row.get("acks");
             let acks: Vec<String> = serde_json::from_str(&acks_json).unwrap_or_default();
-            if known_members_hex.iter().all(|m| acks.iter().any(|a| a == m)) {
+            if known_members_hex
+                .iter()
+                .all(|m| acks.iter().any(|a| a == m))
+            {
                 to_delete.push(seq);
             }
         }
@@ -360,6 +367,98 @@ impl Store {
             .map(|r| hex::encode(r.get::<Vec<u8>, _>("device_id")))
             .collect())
     }
+
+    // ── Snapshots + snapshot-gated compaction ─────────────────────
+
+    /// Deposit a full snapshot batch covering relay-seq `covers_seq`
+    /// in ONE transaction: upsert every per-stream snapshot, advance
+    /// the compaction watermark, then GC superseded ops. Returns the
+    /// number of `relay_ops` rows deleted. Consistency matters here —
+    /// a half-applied deposit could GC ops without a snapshot to
+    /// restore them, so all three steps share a transaction.
+    pub async fn deposit_snapshot_batch(
+        &self,
+        group_id: &[u8; 16],
+        covers_seq: i64,
+        snapshots: &[(Vec<u8>, Vec<u8>)],
+        now: i64,
+    ) -> Result<u64> {
+        let mut tx = self.pool.begin().await?;
+        for (stream_id, payload) in snapshots {
+            sqlx::query(
+                "INSERT INTO relay_snapshots(group_id, stream_id, snapshot_seq, payload, created_at) \
+                 VALUES (?, ?, ?, ?, ?) \
+                 ON CONFLICT(group_id, stream_id) DO UPDATE SET \
+                   snapshot_seq = excluded.snapshot_seq, \
+                   payload = excluded.payload, \
+                   created_at = excluded.created_at",
+            )
+            .bind(&group_id[..])
+            .bind(&stream_id[..])
+            .bind(covers_seq)
+            .bind(&payload[..])
+            .bind(now)
+            .execute(&mut *tx)
+            .await
+            .context("upsert snapshot")?;
+        }
+
+        // Advance the watermark (only forward — never regress).
+        sqlx::query(
+            "INSERT INTO relay_group_meta(group_id, compaction_seq) \
+             VALUES (?, ?) \
+             ON CONFLICT(group_id) DO UPDATE SET \
+               compaction_seq = MAX(relay_group_meta.compaction_seq, excluded.compaction_seq)",
+        )
+        .bind(&group_id[..])
+        .bind(covers_seq)
+        .execute(&mut *tx)
+        .await
+        .context("set compaction seq")?;
+
+        // Snapshot-gated compaction: drop ops the snapshot supersedes.
+        let gc = sqlx::query("DELETE FROM relay_ops WHERE group_id = ? AND seq <= ?")
+            .bind(&group_id[..])
+            .bind(covers_seq)
+            .execute(&mut *tx)
+            .await
+            .context("gc superseded ops")?
+            .rows_affected();
+
+        tx.commit().await?;
+        Ok(gc)
+    }
+
+    /// Latest snapshot per opaque stream for a group. Empty when the
+    /// group has never deposited a snapshot.
+    pub async fn list_snapshots(&self, group_id: &[u8; 16]) -> Result<Vec<SnapshotRow>> {
+        let rows = sqlx::query(
+            "SELECT stream_id, snapshot_seq, payload FROM relay_snapshots \
+             WHERE group_id = ? ORDER BY stream_id ASC",
+        )
+        .bind(&group_id[..])
+        .fetch_all(&self.pool)
+        .await
+        .context("list snapshots")?;
+        Ok(rows
+            .into_iter()
+            .map(|r| SnapshotRow {
+                stream_id: r.get::<Vec<u8>, _>("stream_id"),
+                snapshot_seq: r.get::<i64, _>("snapshot_seq"),
+                payload: r.get::<Vec<u8>, _>("payload"),
+            })
+            .collect())
+    }
+
+    /// The group's compaction watermark (0 if no snapshot deposited).
+    pub async fn get_compaction_seq(&self, group_id: &[u8; 16]) -> Result<i64> {
+        let row = sqlx::query("SELECT compaction_seq FROM relay_group_meta WHERE group_id = ?")
+            .bind(&group_id[..])
+            .fetch_optional(&self.pool)
+            .await
+            .context("get compaction seq")?;
+        Ok(row.map(|r| r.get::<i64, _>("compaction_seq")).unwrap_or(0))
+    }
 }
 
 async fn migrate(pool: &SqlitePool) -> Result<()> {
@@ -403,6 +502,31 @@ async fn migrate(pool: &SqlitePool) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_relay_device_seen_group_ts
             ON relay_device_seen(group_id, last_seen_ts);
+
+        -- Latest encrypted snapshot per (group, opaque stream). The
+        -- `stream_id` is the client's per-note key — OPAQUE to the
+        -- relay (it never interprets it). `payload` is AEAD ciphertext.
+        -- A snapshot batch covering relay-seq N is the compaction
+        -- gate: once deposited, ops with seq <= N can be GC'd from
+        -- relay_ops (snapshot-gated compaction, spine Phase 1b-i).
+        CREATE TABLE IF NOT EXISTS relay_snapshots (
+            group_id      BLOB NOT NULL,
+            stream_id     BLOB NOT NULL,
+            snapshot_seq  INTEGER NOT NULL,
+            payload       BLOB NOT NULL,
+            created_at    INTEGER NOT NULL,
+            PRIMARY KEY (group_id, stream_id),
+            FOREIGN KEY (group_id) REFERENCES relay_registrations(group_id) ON DELETE CASCADE
+        );
+
+        -- Per-group compaction watermark: the highest relay-seq that a
+        -- deposited snapshot batch has covered. Ops at or below it are
+        -- GC-eligible because the snapshot supersedes them.
+        CREATE TABLE IF NOT EXISTS relay_group_meta (
+            group_id       BLOB NOT NULL PRIMARY KEY,
+            compaction_seq INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (group_id) REFERENCES relay_registrations(group_id) ON DELETE CASCADE
+        );
         "#,
     )
     .execute(pool)

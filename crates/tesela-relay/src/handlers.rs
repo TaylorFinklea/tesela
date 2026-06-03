@@ -167,7 +167,11 @@ pub async fn put_op(
         return (StatusCode::BAD_REQUEST, "from_device not hex").into_response();
     };
     let Ok(from_device_arr): Result<[u8; 16], _> = from_device_vec.try_into() else {
-        return (StatusCode::BAD_REQUEST, "from_device must be 16 bytes (DeviceId)").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "from_device must be 16 bytes (DeviceId)",
+        )
+            .into_response();
     };
     let b64 = base64::engine::general_purpose::STANDARD;
     let Ok(payload) = b64.decode(&req.payload_b64) else {
@@ -222,7 +226,12 @@ pub async fn get_ops(
     let Some(group_id) = parse_group_id(&group_id_hex) else {
         return (StatusCode::BAD_REQUEST, "invalid group_id hex").into_response();
     };
-    match state.inner.store.list_ops_since(&group_id, query.since).await {
+    match state
+        .inner
+        .store
+        .list_ops_since(&group_id, query.since)
+        .await
+    {
         Ok(rows) => {
             // Touch device-seen if the device header was present —
             // this is the path consumers take (fetch + ack but never
@@ -249,6 +258,123 @@ pub async fn get_ops(
                 })
                 .collect();
             (StatusCode::OK, Json(records)).into_response()
+        }
+        Err(e) => internal_err(&e.to_string()),
+    }
+}
+
+// ─── /snapshot (spine Phase 1b-i) ──────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SnapshotEntry {
+    /// Opaque per-note stream key, base64-encoded. The relay never
+    /// interprets it — it's the client's per-note identifier and is
+    /// only ever compared / stored as bytes.
+    pub stream_id_b64: String,
+    /// Opaque AEAD-sealed full snapshot, base64-encoded. The relay
+    /// stores the ciphertext verbatim; only group-key holders can open
+    /// it.
+    pub payload_b64: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PutSnapshotRequest {
+    /// The relay-seq this snapshot batch covers. After deposit, ops
+    /// with `seq <= covers_seq` are GC'd from the durable log because
+    /// the snapshot supersedes them.
+    pub covers_seq: i64,
+    /// Latest full snapshot per opaque stream.
+    pub snapshots: Vec<SnapshotEntry>,
+}
+
+/// `PUT /groups/{group_id}/snapshot`
+///
+/// Deposit a full set of per-note encrypted snapshots covering
+/// relay-seq `covers_seq`, then snapshot-gate compaction: in one
+/// transaction the relay upserts every snapshot (latest per opaque
+/// stream), advances the group's compaction watermark to `covers_seq`,
+/// and GCs `relay_ops` rows with `seq <= covers_seq`. The relay stays
+/// zero-knowledge — `stream_id` and `payload` are opaque bytes.
+///
+/// Responds `{ "ok": true, "gc": <rows_deleted> }`.
+pub async fn put_snapshot(
+    State(state): State<AppState>,
+    Path(group_id_hex): Path<String>,
+    Json(req): Json<PutSnapshotRequest>,
+) -> Response {
+    let Some(group_id) = parse_group_id(&group_id_hex) else {
+        return (StatusCode::BAD_REQUEST, "invalid group_id hex").into_response();
+    };
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let mut decoded: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(req.snapshots.len());
+    for entry in &req.snapshots {
+        let Ok(stream_id) = b64.decode(&entry.stream_id_b64) else {
+            return (StatusCode::BAD_REQUEST, "stream_id_b64 not base64").into_response();
+        };
+        let Ok(payload) = b64.decode(&entry.payload_b64) else {
+            return (StatusCode::BAD_REQUEST, "payload_b64 not base64").into_response();
+        };
+        decoded.push((stream_id, payload));
+    }
+
+    let now = wall_clock_secs_f64() as i64;
+    match state
+        .inner
+        .store
+        .deposit_snapshot_batch(&group_id, req.covers_seq, &decoded, now)
+        .await
+    {
+        Ok(gc) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "ok": true, "gc": gc })),
+        )
+            .into_response(),
+        Err(e) => internal_err(&e.to_string()),
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct SnapshotRecord {
+    pub stream_id_b64: String,
+    pub snapshot_seq: i64,
+    pub payload_b64: String,
+}
+
+/// `GET /groups/{group_id}/snapshots`
+///
+/// Return the latest encrypted snapshot per opaque stream plus the
+/// group's compaction watermark. A fresh/recovered device bootstraps
+/// from these snapshots, then fetches the tail via `GET /ops?since=`.
+pub async fn get_snapshots(
+    State(state): State<AppState>,
+    Path(group_id_hex): Path<String>,
+) -> Response {
+    let Some(group_id) = parse_group_id(&group_id_hex) else {
+        return (StatusCode::BAD_REQUEST, "invalid group_id hex").into_response();
+    };
+    let compaction_seq = match state.inner.store.get_compaction_seq(&group_id).await {
+        Ok(seq) => seq,
+        Err(e) => return internal_err(&e.to_string()),
+    };
+    match state.inner.store.list_snapshots(&group_id).await {
+        Ok(rows) => {
+            let b64 = base64::engine::general_purpose::STANDARD;
+            let records: Vec<SnapshotRecord> = rows
+                .into_iter()
+                .map(|r| SnapshotRecord {
+                    stream_id_b64: b64.encode(&r.stream_id),
+                    snapshot_seq: r.snapshot_seq,
+                    payload_b64: b64.encode(&r.payload),
+                })
+                .collect();
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({
+                    "compaction_seq": compaction_seq,
+                    "snapshots": records,
+                })),
+            )
+                .into_response()
         }
         Err(e) => internal_err(&e.to_string()),
     }
@@ -289,7 +415,11 @@ pub async fn post_ack(
         return (StatusCode::BAD_REQUEST, "device not hex").into_response();
     };
     let Ok(device_arr): Result<[u8; 16], _> = device_vec.try_into() else {
-        return (StatusCode::BAD_REQUEST, "device must be 16 bytes (DeviceId)").into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            "device must be 16 bytes (DeviceId)",
+        )
+            .into_response();
     };
 
     if let Err(e) = state
@@ -444,7 +574,14 @@ pub async fn mac_gate(
     let method = parts.method.as_str();
     let path_only = parts.uri.path();
     let query = parts.uri.query().unwrap_or("");
-    let canonical = canonical_request(method, path_only, query, nonce, ts, &body_hash_hex(&body_bytes));
+    let canonical = canonical_request(
+        method,
+        path_only,
+        query,
+        nonce,
+        ts,
+        &body_hash_hex(&body_bytes),
+    );
 
     let b64 = base64::engine::general_purpose::STANDARD;
     let Ok(mac_bytes) = b64.decode(mac_b64) else {

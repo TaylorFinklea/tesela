@@ -143,7 +143,10 @@ fn auth_headers(
     let canonical = canonical_request(method, path, query, &nonce, ts, &body_hash_hex(body));
     let mac = compute_request_mac(&group.auth, &canonical);
     let mut h = reqwest::header::HeaderMap::new();
-    h.insert("X-Tesela-Group", hex::encode(group.id.as_bytes()).parse().unwrap());
+    h.insert(
+        "X-Tesela-Group",
+        hex::encode(group.id.as_bytes()).parse().unwrap(),
+    );
     h.insert("X-Tesela-Device", device_id_hex.parse().unwrap());
     h.insert("X-Tesela-Nonce", nonce.parse().unwrap());
     h.insert("X-Tesela-Ts", ts.to_string().parse().unwrap());
@@ -174,7 +177,11 @@ async fn test_01_register_round_trip_and_first_op() {
     let client = reqwest::Client::new();
     // POST /register
     let r = client
-        .post(format!("{}/groups/{}/register", relay.base_url, hex::encode(group.id.as_bytes())))
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
         .json(&body)
         .send()
         .await
@@ -199,7 +206,11 @@ async fn test_01_register_round_trip_and_first_op() {
         .send()
         .await
         .expect("send PUT");
-    assert!(put.status().is_success(), "PUT /ops expected 2xx, got {}", put.status());
+    assert!(
+        put.status().is_success(),
+        "PUT /ops expected 2xx, got {}",
+        put.status()
+    );
 
     // GET ?since=0 returns the envelope
     let headers = auth_headers(&group, &device, "GET", &path, "since=0", &[]);
@@ -230,7 +241,10 @@ async fn test_02_register_idempotent_on_match_conflict_on_differ() {
 
     // Same bytes → idempotent 200.
     let r2 = client.post(&url).json(&body).send().await.unwrap();
-    assert!(r2.status().is_success(), "byte-identical re-register should be 200");
+    assert!(
+        r2.status().is_success(),
+        "byte-identical re-register should be 200"
+    );
 
     // Different auth_key → 409 with stored payload echoed back.
     let mut bad = body.clone();
@@ -250,11 +264,20 @@ async fn test_03_get_registration_returns_stored_record_verbatim() {
     let path = format!("/groups/{}/register", hex::encode(group.id.as_bytes()));
     let client = reqwest::Client::new();
 
-    let r = client.post(format!("{}{}", relay.base_url, path)).json(&body).send().await.unwrap();
+    let r = client
+        .post(format!("{}{}", relay.base_url, path))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
     assert!(r.status().is_success());
 
     let g_path = format!("/groups/{}/registration", hex::encode(group.id.as_bytes()));
-    let g = client.get(format!("{}{}", relay.base_url, g_path)).send().await.unwrap();
+    let g = client
+        .get(format!("{}{}", relay.base_url, g_path))
+        .send()
+        .await
+        .unwrap();
     assert!(g.status().is_success());
     let echoed: serde_json::Value = g.json().await.unwrap();
     assert_eq!(echoed["auth_key_b64"], body["auth_key_b64"]);
@@ -270,7 +293,11 @@ async fn test_04_mac_required_for_non_registration_endpoints() {
     let now = now_secs();
     let client = reqwest::Client::new();
     let _ = client
-        .post(format!("{}/groups/{}/register", relay.base_url, hex::encode(group.id.as_bytes())))
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
         .json(&register_body(&group, now))
         .send()
         .await
@@ -286,7 +313,12 @@ async fn test_04_mac_required_for_non_registration_endpoints() {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 401, "PUT without MAC must 401, got {}", r.status());
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "PUT without MAC must 401, got {}",
+        r.status()
+    );
 
     // Bogus auth key → MAC mismatch → 401.
     let mut wrong = group;
@@ -300,7 +332,11 @@ async fn test_04_mac_required_for_non_registration_endpoints() {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 401, "PUT under wrong auth_key must 401");
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "PUT under wrong auth_key must 401"
+    );
 }
 
 // ─── Tests 5–7 (stage 3c) ──────────────────────────────────────────
@@ -466,6 +502,241 @@ async fn test_07_ack_retains_durable_log() {
     );
 }
 
+// ─── Snapshot store + snapshot-gated compaction (spine Phase 1b-i) ──
+
+#[tokio::test]
+async fn test_snapshot_deposit_compacts_oplog() {
+    // PUT 3 ops (seq 1,2,3); deposit a snapshot batch covering seq 2;
+    // the relay GCs ops with seq <= 2 (gc == 2) and retains seq 3.
+    // GET /snapshots returns the deposited snapshot + compaction_seq 2.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let device = random_device_id_hex();
+    let now = now_secs();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now))
+        .send()
+        .await
+        .unwrap();
+
+    let ops_path = format!("/groups/{}/ops", hex::encode(group.id.as_bytes()));
+    for i in 0..3 {
+        let put_body =
+            json!({ "from_device": device, "payload_b64": b64(format!("op-{i}").as_bytes()) });
+        let body_bytes = serde_json::to_vec(&put_body).unwrap();
+        let headers = auth_headers(&group, &device, "PUT", &ops_path, "", &body_bytes);
+        client
+            .put(format!("{}{}", relay.base_url, ops_path))
+            .headers(headers)
+            .body(body_bytes)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Deposit a snapshot batch covering seq 2.
+    let stream_id = b"note-stream-key-A";
+    let snap_payload = b"opaque-encrypted-snapshot-A";
+    let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
+    let snap_body = json!({
+        "covers_seq": 2,
+        "snapshots": [{ "stream_id_b64": b64(stream_id), "payload_b64": b64(snap_payload) }],
+    });
+    let body_bytes = serde_json::to_vec(&snap_body).unwrap();
+    let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);
+    let dep = client
+        .put(format!("{}{}", relay.base_url, snap_path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        dep.status().is_success(),
+        "snapshot deposit failed: {}",
+        dep.status()
+    );
+    let dep_body: serde_json::Value = dep.json().await.unwrap();
+    assert_eq!(dep_body["ok"], true);
+    assert_eq!(
+        dep_body["gc"].as_u64(),
+        Some(2),
+        "ops seq 1 + 2 must be GC'd"
+    );
+
+    // GET /ops?since=0 must now return ONLY seq 3.
+    let headers = auth_headers(&group, &device, "GET", &ops_path, "since=0", &[]);
+    let r = client
+        .get(format!("{}{}?since=0", relay.base_url, ops_path))
+        .headers(headers)
+        .send()
+        .await
+        .unwrap();
+    let rows: Vec<serde_json::Value> = r.json().await.unwrap();
+    let seqs: Vec<i64> = rows.iter().map(|v| v["seq"].as_i64().unwrap()).collect();
+    assert_eq!(
+        seqs,
+        vec![3],
+        "only the un-superseded op (seq 3) survives compaction"
+    );
+
+    // GET /snapshots returns the deposited snapshot + compaction_seq 2.
+    let snaps_path = format!("/groups/{}/snapshots", hex::encode(group.id.as_bytes()));
+    let headers = auth_headers(&group, &device, "GET", &snaps_path, "", &[]);
+    let r = client
+        .get(format!("{}{}", relay.base_url, snaps_path))
+        .headers(headers)
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success());
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(body["compaction_seq"].as_i64(), Some(2));
+    let snaps = body["snapshots"].as_array().expect("snapshots array");
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0]["stream_id_b64"], b64(stream_id));
+    assert_eq!(snaps[0]["payload_b64"], b64(snap_payload));
+    assert_eq!(snaps[0]["snapshot_seq"].as_i64(), Some(2));
+}
+
+#[tokio::test]
+async fn test_snapshots_roundtrip() {
+    // Deposit two snapshots with distinct stream_ids; GET /snapshots
+    // returns both with byte-identical payloads.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let device = random_device_id_hex();
+    let now = now_secs();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now))
+        .send()
+        .await
+        .unwrap();
+
+    let stream_a = b"stream-A";
+    let payload_a = vec![0xABu8; 64];
+    let stream_b = b"stream-B-different";
+    let payload_b = vec![0xCDu8; 128];
+
+    let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
+    let snap_body = json!({
+        "covers_seq": 0,
+        "snapshots": [
+            { "stream_id_b64": b64(stream_a), "payload_b64": b64(&payload_a) },
+            { "stream_id_b64": b64(stream_b), "payload_b64": b64(&payload_b) },
+        ],
+    });
+    let body_bytes = serde_json::to_vec(&snap_body).unwrap();
+    let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);
+    let dep = client
+        .put(format!("{}{}", relay.base_url, snap_path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        dep.status().is_success(),
+        "deposit failed: {}",
+        dep.status()
+    );
+
+    let snaps_path = format!("/groups/{}/snapshots", hex::encode(group.id.as_bytes()));
+    let headers = auth_headers(&group, &device, "GET", &snaps_path, "", &[]);
+    let r = client
+        .get(format!("{}{}", relay.base_url, snaps_path))
+        .headers(headers)
+        .send()
+        .await
+        .unwrap();
+    let body: serde_json::Value = r.json().await.unwrap();
+    let snaps = body["snapshots"].as_array().expect("snapshots array");
+    assert_eq!(snaps.len(), 2, "both distinct streams must be present");
+
+    // Index by stream_id to assert byte-identical payloads regardless
+    // of ordering.
+    let mut by_stream = std::collections::HashMap::new();
+    for s in snaps {
+        by_stream.insert(
+            s["stream_id_b64"].as_str().unwrap().to_string(),
+            s["payload_b64"].as_str().unwrap().to_string(),
+        );
+    }
+    assert_eq!(by_stream.get(&b64(stream_a)), Some(&b64(&payload_a)));
+    assert_eq!(by_stream.get(&b64(stream_b)), Some(&b64(&payload_b)));
+}
+
+#[tokio::test]
+async fn test_snapshot_requires_auth() {
+    // PUT /snapshot with a missing MAC → 401; with a bogus auth key
+    // (MAC mismatch) → 401. Mirrors test_04's auth assertions.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let device = random_device_id_hex();
+    let now = now_secs();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now))
+        .send()
+        .await
+        .unwrap();
+
+    let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
+    let snap_body = json!({
+        "covers_seq": 0,
+        "snapshots": [{ "stream_id_b64": b64(b"s"), "payload_b64": b64(b"p") }],
+    });
+
+    // No MAC headers → 401.
+    let r = client
+        .put(format!("{}{}", relay.base_url, snap_path))
+        .json(&snap_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "PUT /snapshot without MAC must 401, got {}",
+        r.status()
+    );
+
+    // Bogus auth key → MAC mismatch → 401.
+    let mut wrong = group;
+    wrong.auth = [0u8; 32];
+    let body_bytes = serde_json::to_vec(&snap_body).unwrap();
+    let headers = auth_headers(&wrong, &device, "PUT", &snap_path, "", &body_bytes);
+    let r = client
+        .put(format!("{}{}", relay.base_url, snap_path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "PUT /snapshot under wrong auth_key must 401"
+    );
+}
+
 // ─── Tests 8–13 (stage 3d) ─────────────────────────────────────────
 
 #[tokio::test]
@@ -501,7 +772,12 @@ async fn test_08_body_size_cap() {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 413, "over-cap body must 413, got {}", r.status());
+    assert_eq!(
+        r.status().as_u16(),
+        413,
+        "over-cap body must 413, got {}",
+        r.status()
+    );
 }
 
 #[tokio::test]
@@ -627,10 +903,20 @@ async fn test_11_replay_window() {
     let body_bytes = serde_json::to_vec(&put_body).unwrap();
     let stale_ts = now - 600; // 10 minutes ago
     let nonce = random_nonce_b64();
-    let canonical = canonical_request("PUT", &path, "", &nonce, stale_ts, &body_hash_hex(&body_bytes));
+    let canonical = canonical_request(
+        "PUT",
+        &path,
+        "",
+        &nonce,
+        stale_ts,
+        &body_hash_hex(&body_bytes),
+    );
     let mac = compute_request_mac(&group.auth, &canonical);
     let mut h = reqwest::header::HeaderMap::new();
-    h.insert("X-Tesela-Group", hex::encode(group.id.as_bytes()).parse().unwrap());
+    h.insert(
+        "X-Tesela-Group",
+        hex::encode(group.id.as_bytes()).parse().unwrap(),
+    );
     h.insert("X-Tesela-Device", device.parse().unwrap());
     h.insert("X-Tesela-Nonce", nonce.parse().unwrap());
     h.insert("X-Tesela-Ts", stale_ts.to_string().parse().unwrap());
@@ -643,7 +929,12 @@ async fn test_11_replay_window() {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 400, "stale ts must 400, got {}", r.status());
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "stale ts must 400, got {}",
+        r.status()
+    );
 }
 
 #[tokio::test]
@@ -674,7 +965,10 @@ async fn test_12_nonce_dedupe() {
     let canonical = canonical_request("PUT", &path, "", &nonce, ts, &body_hash_hex(&body_bytes));
     let mac = compute_request_mac(&group.auth, &canonical);
     let mut h = reqwest::header::HeaderMap::new();
-    h.insert("X-Tesela-Group", hex::encode(group.id.as_bytes()).parse().unwrap());
+    h.insert(
+        "X-Tesela-Group",
+        hex::encode(group.id.as_bytes()).parse().unwrap(),
+    );
     h.insert("X-Tesela-Device", device.parse().unwrap());
     h.insert("X-Tesela-Nonce", nonce.parse().unwrap());
     h.insert("X-Tesela-Ts", ts.to_string().parse().unwrap());
@@ -697,7 +991,12 @@ async fn test_12_nonce_dedupe() {
         .send()
         .await
         .unwrap();
-    assert_eq!(r2.status().as_u16(), 400, "replayed nonce must 400, got {}", r2.status());
+    assert_eq!(
+        r2.status().as_u16(),
+        400,
+        "replayed nonce must 400, got {}",
+        r2.status()
+    );
 }
 
 #[tokio::test]
@@ -719,7 +1018,10 @@ async fn test_13_admin_recovery() {
         .await
         .unwrap();
 
-    let admin_path = format!("/admin/groups/{}/register", hex::encode(group.id.as_bytes()));
+    let admin_path = format!(
+        "/admin/groups/{}/register",
+        hex::encode(group.id.as_bytes())
+    );
     // Without token → 401.
     let r = client
         .delete(format!("{}{}", relay.base_url, admin_path))

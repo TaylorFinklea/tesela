@@ -33,20 +33,30 @@ pub use tesela_sync::crypto::relay_auth;
 /// - `PUT  /groups/{id}/ops`                — MAC-gated
 /// - `GET  /groups/{id}/ops`                — MAC-gated
 /// - `POST /groups/{id}/ack`                — MAC-gated
+/// - `PUT  /groups/{id}/snapshot`           — MAC-gated (snapshot deposit + compaction)
+/// - `GET  /groups/{id}/snapshots`          — MAC-gated (bootstrap source)
 /// - `DELETE /admin/groups/{id}/register`   — admin-token-gated (handler checks)
 pub fn router(state: AppState) -> Router {
     // Routes that the MAC middleware gates. Separate sub-router so we
     // can layer the middleware only over endpoints that require it —
     // /register can't MAC-verify (no auth_key stored yet).
     let mac_gated = Router::new()
-        .route("/groups/{group_id}/ops", put(handlers::put_op).get(handlers::get_ops))
+        .route(
+            "/groups/{group_id}/ops",
+            put(handlers::put_op).get(handlers::get_ops),
+        )
         .route("/groups/{group_id}/ack", post(handlers::post_ack))
+        .route("/groups/{group_id}/snapshot", put(handlers::put_snapshot))
+        .route("/groups/{group_id}/snapshots", get(handlers::get_snapshots))
         .layer(from_fn_with_state(state.clone(), handlers::mac_gate));
 
     Router::new()
         .route("/", get(handlers::health))
         .route("/groups/{group_id}/register", post(handlers::register))
-        .route("/groups/{group_id}/registration", get(handlers::get_registration))
+        .route(
+            "/groups/{group_id}/registration",
+            get(handlers::get_registration),
+        )
         .route(
             "/admin/groups/{group_id}/register",
             delete(handlers::admin_delete_registration),
