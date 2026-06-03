@@ -1,5 +1,24 @@
 # Current State
 
+## 2026-06-02 (PM) — Block text is now a real CRDT (LoroText) — the 4th & deepest data-loss vector closed
+
+**The bug (wire-proven on devices):** a block's text was a Loro LWW **map register** (`meta.insert("text", ...)`). Two peers editing the SAME block concurrently → higher-(lamport,peer) whole-text write wins, the other side's typing silently lost. This is distinct from the three prior clobbers (disjoint-history twins / stale whole-body PUT / WS snapshot push) — all of those protected WHICH blocks apply; none addressed how one block's concurrent text combines.
+
+**Fix (engine-only, approach b — zero client/wire change):** block text → nested **`LoroText`** sequence CRDT under a new `"text_seq"` key, written via `get_or_create_container` + `update()` (Myers-diffs whole text → minimal splices that interleave). Clients keep sending whole text; `OpPayload`/diff.rs/FFI/note_tree/relay all UNCHANGED. The WS/relay path merges text deltas automatically once text is a LoroText.
+- `69fadc8` engine: `write_block_text`/`read_block_text` (non-mutating, prefers text_seq, falls back to legacy `text` register for old snapshots — lazy migrate-on-write, no reseed needed). All readers routed through `read_block_text`. Discriminator (`peer_genuine_block_changes`) + WS-apply heal REWRITTEN: the old `JsonMapOp::Insert{key:"text"}` scan went dead; on a SHARED lineage LoroText merge makes raw-import safe (case a obviated), so the heal is now scoped to DISJOINT twins only (gated `twin_bids.is_empty()` early-return; `server_block_text_history` op-replay only runs when a twin exists). Subagent-built, two-stage reviewed (spec ✅ COMPLIANT + quality APPROVE).
+- `43edfee` e2e wire test `ws_concurrent_same_block_edit_merges_over_real_socket` (tesela-server): real socket + real HTTP, shared base, server "web" edit via `POST /notes/merge/blocks` + device WS edit to same block → asserts CHARACTER MERGE (brown+red+jumps, neither lost, NOT LWW). Reproduces the exact "web clobbered by iOS" incident; pre-fix asserts-fail.
+- DIAG diagnostics REMOVED (`TESELA_DIAG_WRITES` write-body middleware + ws.rs before/after logging — they were uncommitted; working tree restored clean, no DIAG in source).
+
+**Verified:** `cargo test -p tesela-sync` 113 lib + all integration green (incl. new `concurrent_same_block_text_merges_not_clobbers`, disjoint/clobber/cutover/base-diff suites); `-p tesela-sync-ffi` 7 green; `-p tesela-server` 31 green (incl. the new e2e). Three independent merge proofs: engine convergence test + FFI delta round-trip + real-socket e2e.
+
+**LIVE NOW:** server REBUILT + RESTARTED on the clean LoroText binary — flag-free `target/debug/tesela-server --mosaic "<real logseq mosaic>"`, `RUST_LOG=info,loro=warn`, log `/tmp/tesela-srv.log`, `/health` 200. **Web is correct immediately** (no local engine → uses the server's LoroText path). iOS-sim FFI `.a` REBUILT (`aarch64-apple-ios-sim`) but the app was NOT reinstalled (e2e test superseded the manual sim drive).
+
+**⚠ MIGRATION HAZARD — physical devices need the new build before resuming cross-device edits.** iOS runs its OWN engine via the FFI. An OLD-FFI device writes the legacy `text` register; once the new server migrates a block to `text_seq` (on any server-side edit), `read_block_text` prefers `text_seq` and the old device's legacy-register edit is shadowed → lost. Web is safe (no engine). Roshar (iPhone) + Sel (iPad) run the OLD FFI → install the new build before cross-device editing real notes. Boot loaded persisted snapshots (no mass migration; existing blocks stay legacy until edited), so the at-rest data is fine.
+
+**Deferred (non-blocking robustness, backlog #177/#178):** LoroText `update_by_line` timeout fallback for >50k-char blocks; bound `server_block_text_history` op-replay on large twinned notes. **Deferred (approach c):** web emits true CodeMirror splice ops for cursor-accurate same-region merges (iOS stays whole-text).
+
+---
+
 ## 2026-05-31 (PM) — First convergence fix REGRESSED the live path; delivery-layer redesign in progress
 
 **The device test FAILED.** The engine-convergence fix (below) was correct at the engine level but the LIVE DELIVERY layer regressed: iOS froze, web edits didn't show on iOS, edits reverted. Engine tests proved convergence-given-a-base but never drove the live path — my miss.

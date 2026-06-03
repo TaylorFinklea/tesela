@@ -4,6 +4,18 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-02 — Block text is a nested LoroText (not a map register); discriminator scoped to disjoint twins
+
+**Decision:** Store each block's text as a nested **`LoroText`** sequence CRDT (key `"text_seq"` on the tree node's meta map), written via `get_or_create_container` + `LoroText::update(whole_text)`. Clients keep sending WHOLE block text; `OpPayload::BlockUpsert.text` stays a `String`; diff.rs / FFI / note_tree / web / iOS / relay are all UNCHANGED. The engine alone converts whole-text → splices via `update()` (Myers diff). Lazy migrate-on-write: a new key, dual-read (`read_block_text` prefers `text_seq`, falls back to the legacy `text` register), legacy register never written again.
+
+**Why:** This was the 4th distinct multi-device data-loss vector — a block's text being a Loro **LWW map register** meant two peers editing the SAME block concurrently lost one side (higher-(lamport,peer) whole-text write wins). A LoroText merges concurrent splices, so the WS/relay path merges text "for free." Approach (b) — engine-only, whole-text→splice server-side — was chosen over (c) (clients emit real character splices) because it sidesteps the hard constraint that iOS `record_note_diff` re-authors whole blocks from markdown and has no per-keystroke delta at the FFI. (c) is deferred for cursor-accurate same-region merges.
+
+**Discriminator scoping (the subtle part):** the WS-apply Part-C discriminator (`peer_genuine_block_changes`) used to scan `JsonMapOp::Insert{key:"text"}` ops — dead once text is a Text container. Key realization: on a SHARED Loro lineage the LoroText merge makes raw-import SAFE (the old "stale re-assertion clobber", case a, is obviated — a peer's frame can't delete the server's newer inserts). So the discriminator + heal are now scoped to **disjoint TreeID twins only** (gated `twin_bids.is_empty()` early-return; the `server_block_text_history` op-replay runs only when a twin exists). Shared-lineage blocks defer entirely to Loro's merge and are never force-healed.
+
+**Necessary-not-sufficient:** true char-merge only holds on a SHARED base lineage. Disjoint twins hold two independent LoroTexts Loro can't merge — so this fix sits on top of the shared-base bootstrap (D/#149). Migration hazard: an OLD-FFI device writing the legacy `text` register is shadowed once the server migrates a block to `text_seq` → devices must update before resuming cross-device edits. Spec: `phases/2026-06-02-block-text-crdt-spec.md`. Built subagent-driven, two-stage reviewed (spec✅+quality-APPROVE), proven by engine convergence + FFI round-trip + e2e real-socket merge tests.
+
+---
+
 ### 2026-05-30 — Defer the HA-relay sync redesign until after Loro/RTC; bypass it locally for now
 
 **Decision:** Do NOT keep patching the current relay path. Park a full sync-relay redesign until the Loro migration + real-time-collab (RTC) work is done — at which point we'll likely need an RTC server/proxy anyway and would redesign the transport regardless. For now, **bypass the relay** so the Graphite redesign can be tested locally: relay disabled in the Mac mosaic's `config.toml` (`[sync.relay]` commented out; backup at `config.toml.relay-bak`), making the Mac a standalone local server. Verified: a PUT persists, survives past the old 5s poll window (no inbound-clobber), and hits disk.
