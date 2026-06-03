@@ -1,5 +1,30 @@
 # Current State
 
+## 2026-06-03 (PM) — web↔device sync ROOT-CAUSED: disjoint Loro lineage; live deltas can't apply (PROVEN, fix pending)
+
+**Symptom (user, devices):** device↔device WS sync works, but web HTTP edits don't reach devices LIVE (only after a hard refresh) + web edits get clobbered.
+
+**PROVEN root cause** (engine tests `crates/tesela-sync/tests/disjoint_device_catchup.rs`, both green; + a live curl→sim repro where a clean sim DID get the web edit live):
+- A device that authored a note WITHOUT first importing the server's snapshot is on a DISJOINT Loro lineage.
+- `disjoint_device_live_delta_does_not_converge`: the LIVE delta the server broadcasts on a web HTTP edit (`notes.rs upsert_blocks` → `export_doc_update(pre_vv)`) CANNOT apply on a disjoint device — the server-lineage ops reference a tree node the device never imported, so Loro buffers them PENDING and the render stays stale.
+- `disjoint_device_catches_up_to_server_lineage`: a FULL-snapshot catch-up (`bootstrapNoteIfNeeded`) DOES heal it (adopts the server text). → why a hard refresh works.
+- iOS display prefers the local engine-materialized file (`MockMosaicService.refresh` ~954 `readLocalNote(id:) ?? daily`), so until the engine heals, the display stays stale even after an HTTP refresh.
+- A clean sim (bootstrapped before authoring) gets web edits LIVE (verified curl→sim) — so the protocol + server are sound; the bug is purely devices being on a disjoint lineage.
+
+**Server already broadcasts web edits as Loro deltas** (`upsert_blocks` captures `pre_vv` before applying, exports the delta, `ws_delta_tx.send(origin:None)` to all sockets) — so the other-session hypothesis "web isn't a Loro peer, so web→device isn't wired" is INCOMPLETE; the path exists, it just can't apply on a disjoint device.
+
+**First fix attempt REVERTED (was ineffective — caught in review):** gating mock-mode authoring (already gated upstream at `MockMosaicService:850/1309`, so redundant) + an `applyInboundDelta` `applied==0` catch-up trigger (DOESN'T fire: `apply_delta_frame` (`tesela-sync-ffi/src/lib.rs:518`) returns the count of decoded ENTRIES, not materialized ops — a disjoint delta returns `applied=1`, and `import_doc_update` returns Ok even with pending ops). Reproduction tests kept (committed).
+
+**THE REAL FIX (pending, milestone-sized):**
+1. **Engine/FFI: report non-convergence.** `import_doc_update`/`apply_delta_frame` should surface whether the import left PENDING ops (Loro `ImportStatus.pending`) — i.e. the delta didn't integrate (disjoint or causal gap).
+2. **iOS: on non-convergence, force a catch-up** for the affected note (bypass the `catchupMinInterval` debounce).
+3. **Engine: make the catch-up AUTHORITATIVELY re-base** — when importing the server snapshot, for any block_id with twins KEEP the server's node and tombstone the device's (deterministic server-wins, not min-TreeID). This adopts the server's lineage so (a) live deltas then apply and (b) the device's own edits stop minting disjoint twins that clobber web. Discards un-synced disjoint local edits — acceptable (server is truth; user not relying on local data).
+4. Verify: extend `disjoint_device_*` so the authoritative re-base → device on server lineage → device edit + web edit MERGE (not clobber). Then FFI rebuild + sim-verify + device deploy.
+
+**Disjoint TRIGGER still unconfirmed** (mock authoring is already gated, so that's NOT it). Candidates: bootstrap failure/404/race in HTTP mode, or pre-fix residual state. The authoritative re-base fixes it regardless of trigger (self-heals any disjoint device), so it's the right robustness fix.
+
+---
+
 ## 2026-06-03 — Fresh-install live-sync bug: GrAppShell didn't re-establish WS/hubMode on a runtime backend change
 
 **Symptom (user, devices):** after a fresh install + setting the server URL in Settings, HTTP refresh worked but **live sync was dead both ways** (web→device needed a hard refresh; device edits reached nothing) + SYNC card showed `FfiSyncError.Other("Mac has no relay configured")`, Last tick "never", 0 ops.
