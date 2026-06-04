@@ -81,6 +81,9 @@ criterion = { workspace = true }
 reqwest = { workspace = true }
 walkdir = { workspace = true }
 tesela-fixtures = { path = "../tesela-fixtures" }
+# Spawn an in-process relay to exercise the live sync_relay::tick snapshot
+# deposit/bootstrap wiring (no cycle: tesela-relay doesn't depend on tesela-server).
+tesela-relay = { path = "../tesela-relay" }
 # Real-socket WS round-trip test (instant-multidevice Phase A). Pinned to
 # the same version axum 0.8 already pulls in, so no new lockfile entry.
 tokio-tungstenite = "0.28"

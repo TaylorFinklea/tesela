@@ -868,6 +868,10 @@ async fn bring_up_relay_if_configured(
         drop(s);
     } else {
         tracing::info!("relay: registered + verified at {}", url);
+        // Fresh / long-offline restore: import the relay's compacted snapshots
+        // before the first poll, so a device whose ops the relay already GC'd
+        // still converges (the subsequent `?since=` poll collects the tail).
+        sync_relay::bootstrap_from_snapshots(&*state.sync_engine, &handle).await;
     }
 
     // Spawn the periodic tick. Single task; runs alongside the LAN

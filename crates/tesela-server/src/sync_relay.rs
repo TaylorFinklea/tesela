@@ -39,6 +39,11 @@ pub struct RelayState {
     /// Most recent error string (if any) from poll/put/register, for
     /// the web UI to surface. Cleared after the next successful tick.
     pub last_error: Option<String>,
+    /// Wall-clock seconds of the last snapshot deposit. Drives the
+    /// snapshot-cadence gate so we deposit per-note snapshots (and let the
+    /// relay compact its retained op log) periodically, not every tick.
+    #[serde(default)]
+    pub last_snapshot_at: Option<i64>,
 }
 
 impl RelayState {
@@ -303,6 +308,37 @@ pub async fn tick(
         }
     }
 
+    // ─── Snapshot-gated compaction cadence ───────────────────────────
+    // Periodically deposit a full per-note snapshot set covering everything
+    // we've applied (`inbound_cursor`), so the relay can GC the encrypted op
+    // log it retains (it stays a durable backup via the snapshots). This is
+    // the live wiring of the Phase-1 mechanism; one depositor (this server)
+    // is enough — deposits are idempotent. Gated by a (test-tunable) interval
+    // so a busy tick loop doesn't re-upload every note's snapshot constantly.
+    let now = now_secs_i64();
+    let due = state
+        .last_snapshot_at
+        .map_or(true, |t| now - t >= snapshot_interval_secs());
+    if due && state.inbound_cursor > 0 {
+        match deposit_snapshots(engine, &handle.client, state.inbound_cursor).await {
+            Ok(gc) => {
+                state.last_snapshot_at = Some(now);
+                if gc > 0 {
+                    tracing::debug!(
+                        "relay snapshot deposit: covers seq {}, relay GC'd {} ops",
+                        state.inbound_cursor,
+                        gc
+                    );
+                }
+            }
+            Err(e) => {
+                let msg = format!("relay snapshot deposit: {e}");
+                tracing::warn!("{msg}");
+                state.last_error = Some(msg);
+            }
+        }
+    }
+
     // Persist whatever progress we made this tick.
     if let Err(e) = state.save(&handle.mosaic_root).await {
         tracing::warn!("relay state save: {e}");
@@ -312,6 +348,87 @@ pub async fn tick(
         sent: sent_total,
         applied_note_ids,
     })
+}
+
+/// Deposit a full per-note snapshot set covering relay-seq `covers_seq`
+/// (every tracked note's full Loro snapshot, keyed by note_id = stream_id).
+/// Returns the number of ops the relay compacted as a result. Idempotent.
+async fn deposit_snapshots(
+    engine: &dyn tesela_sync::SyncEngine,
+    client: &RelayClient,
+    covers_seq: i64,
+) -> Result<u64, String> {
+    let note_ids = engine.tracked_note_ids().await;
+    let mut snapshots: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(note_ids.len());
+    for id in note_ids {
+        // `export_doc_update(id, None)` = the note's full compact snapshot.
+        if let Some(bytes) = engine.export_doc_update(id, None).await {
+            snapshots.push((id.to_vec(), bytes));
+        }
+    }
+    if snapshots.is_empty() {
+        return Ok(0);
+    }
+    client
+        .put_snapshots(covers_seq, snapshots)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Bootstrap a fresh / long-offline device from the relay's compacted
+/// snapshots: if the relay's compaction watermark is ahead of our inbound
+/// cursor, the ops we'd need are already GC'd, so we import the per-note
+/// snapshots and jump the cursor to the watermark. The subsequent `?since=`
+/// poll then collects only the un-compacted tail. Idempotent (Loro merge);
+/// a no-op when we're already caught up past the watermark.
+pub async fn bootstrap_from_snapshots(
+    engine: &dyn tesela_sync::SyncEngine,
+    handle: &RelayHandle,
+) {
+    let (compaction_seq, snaps) = match handle.client.fetch_snapshots().await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("relay snapshot bootstrap fetch: {e}");
+            return;
+        }
+    };
+    let mut state = handle.state.write().await;
+    if compaction_seq <= state.inbound_cursor {
+        return; // already past the watermark — nothing compacted out from under us
+    }
+    let mut imported = 0u32;
+    for (stream_id, _snapshot_seq, plaintext) in snaps {
+        let Ok(note_id) = <[u8; 16]>::try_from(stream_id.as_slice()) else {
+            continue; // v1 stream_id is the 16-byte note_id; skip anything else
+        };
+        if let Err(e) = engine.import_doc_update(note_id, &plaintext).await {
+            tracing::warn!(
+                "relay snapshot bootstrap import {}: {e}",
+                hex::encode(note_id)
+            );
+            continue;
+        }
+        imported += 1;
+    }
+    state.inbound_cursor = compaction_seq;
+    tracing::info!(
+        "relay snapshot bootstrap: imported {} note(s), cursor → {}",
+        imported,
+        compaction_seq
+    );
+    if let Err(e) = state.save(&handle.mosaic_root).await {
+        tracing::warn!("relay state save (post-bootstrap): {e}");
+    }
+}
+
+/// Snapshot-deposit cadence in seconds. Env-tunable
+/// (`TESELA_RELAY_SNAPSHOT_INTERVAL_SECS`) so tests can force every-tick
+/// deposits; defaults to 5 minutes in production.
+fn snapshot_interval_secs() -> i64 {
+    std::env::var("TESELA_RELAY_SNAPSHOT_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+        .unwrap_or(300)
 }
 
 /// One-time bring-up: register on the relay (idempotent / recovery
@@ -349,3 +466,177 @@ fn now_secs_i64() -> i64 {
 
 /// Default poll interval if config doesn't set one.
 pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::RngCore;
+    use std::net::SocketAddr;
+    use tesela_relay::{router, AppState as RelayAppState};
+    use tesela_sync::crypto::keys::GroupKey;
+    use tesela_sync::device::DeviceId;
+    use tesela_sync::group::GroupId;
+    use tesela_sync::{Hlc, LoroEngine, OpPayload, SyncEngine};
+
+    async fn spawn_relay() -> (reqwest::Url, tempfile::TempDir, tokio::task::JoinHandle<()>) {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let db = tmp.path().join("relay.sqlite");
+        let state = RelayAppState::open(&db, 4_194_304, Some("admin".into()))
+            .await
+            .expect("relay state");
+        let app = router(state);
+        let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await;
+        });
+        (
+            reqwest::Url::parse(&format!("http://{}", addr)).unwrap(),
+            tmp,
+            server,
+        )
+    }
+
+    fn fresh_group() -> (GroupId, GroupKey) {
+        let mut gid = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut gid);
+        let mut gk = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut gk);
+        (GroupId::from_bytes(gid), GroupKey::from_bytes(gk))
+    }
+
+    async fn engine_in(tmp: &tempfile::TempDir, device: DeviceId) -> LoroEngine {
+        LoroEngine::with_dirs(
+            device,
+            Arc::new(Hlc::new(device)),
+            tmp.path().join("loro"),
+            Some(tmp.path().join("notes")),
+        )
+        .await
+        .expect("loro engine")
+    }
+
+    fn handle_for(
+        base_url: &reqwest::Url,
+        group: GroupId,
+        device: DeviceId,
+        key: GroupKey,
+        mosaic_root: std::path::PathBuf,
+    ) -> RelayHandle {
+        RelayHandle {
+            url: base_url.to_string(),
+            client: Arc::new(RelayClient::new(base_url.clone(), group, device, key)),
+            state: Arc::new(RwLock::new(RelayState::default())),
+            mosaic_root,
+        }
+    }
+
+    /// The live `tick` deposits per-note snapshots → the relay compacts its op
+    /// log → a fresh device restores PURELY from those snapshots via
+    /// `bootstrap_from_snapshots`. Exercises the actual 1b-iii wiring (not the
+    /// RelayClient methods in isolation).
+    #[tokio::test]
+    async fn tick_deposits_snapshots_then_fresh_device_bootstraps() {
+        // Force a snapshot deposit on every tick.
+        std::env::set_var("TESELA_RELAY_SNAPSHOT_INTERVAL_SECS", "0");
+
+        let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+        let (group, key) = fresh_group();
+        let ident = GroupIdentity {
+            group_id: group,
+            group_key: key.clone(),
+        };
+
+        const NID_A: [u8; 16] = [0x0a; 16];
+        const NID_B: [u8; 16] = [0x0b; 16];
+
+        // Device A authors two notes.
+        let a_tmp = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let engine_a = engine_in(&a_tmp, dev_a).await;
+        for (nid, slug, body) in [
+            (NID_A, "alpha", "- hello alpha\n"),
+            (NID_B, "beta", "- hello beta\n"),
+        ] {
+            engine_a
+                .record_local(OpPayload::NoteUpsert {
+                    note_id: nid,
+                    display_alias: Some(slug.into()),
+                    title: slug.into(),
+                    content: body.into(),
+                    created_at_millis: 1,
+                })
+                .await
+                .unwrap();
+        }
+
+        let handle_a = handle_for(
+            &base_url,
+            group,
+            dev_a,
+            key.clone(),
+            a_tmp.path().to_path_buf(),
+        );
+        bring_up(&handle_a).await.expect("relay bring-up");
+
+        // Tick 1 PUTs the ops; tick 2 polls its own echoes (advancing the
+        // cursor) then deposits a snapshot batch covering them → relay compacts.
+        tick(&engine_a, &ident, &handle_a).await.unwrap();
+        tick(&engine_a, &ident, &handle_a).await.unwrap();
+
+        // The relay compacted: a fresh probe sees a watermark + both snapshots,
+        // and the raw op log is gone.
+        let probe = RelayClient::new(
+            base_url.clone(),
+            group,
+            DeviceId::from_bytes([0xcc; 16]),
+            key.clone(),
+        );
+        let (comp_seq, snaps) = probe.fetch_snapshots().await.unwrap();
+        assert!(
+            comp_seq > 0,
+            "tick deposited a snapshot batch + advanced the relay watermark"
+        );
+        assert_eq!(snaps.len(), 2, "both notes' snapshots are on the relay");
+        assert!(
+            probe.poll(0).await.unwrap().is_empty(),
+            "ops <= watermark compacted out from under since=0"
+        );
+
+        // Fresh device C restores PURELY from the snapshots (the raw ops are gone).
+        let c_tmp = tempfile::tempdir().unwrap();
+        let dev_c = DeviceId::from_bytes([0xc1; 16]);
+        let engine_c = engine_in(&c_tmp, dev_c).await;
+        let handle_c = handle_for(
+            &base_url,
+            group,
+            dev_c,
+            key.clone(),
+            c_tmp.path().to_path_buf(),
+        );
+        let _ = handle_c.client.register_or_recover().await; // idempotent join
+        bootstrap_from_snapshots(&engine_c, &handle_c).await;
+
+        assert_eq!(
+            engine_c.render_note(NID_A).await,
+            engine_a.render_note(NID_A).await,
+            "C restored note A byte-identically from the snapshot"
+        );
+        assert_eq!(
+            engine_c.render_note(NID_B).await,
+            engine_a.render_note(NID_B).await,
+            "C restored note B byte-identically from the snapshot"
+        );
+        assert_eq!(
+            handle_c.state.read().await.inbound_cursor,
+            comp_seq,
+            "bootstrap jumped C's cursor to the relay watermark"
+        );
+    }
+}
