@@ -35,6 +35,7 @@
   import { openStation } from '$lib/stores/station.svelte';
   import { openLeader } from '$lib/v5/leader-tree.svelte';
   import { openColonMode } from '$lib/stores/colon-mode.svelte';
+  import ColonCommandLine from '$lib/components/v4/ColonCommandLine.svelte';
 
   const focusedBuffer = $derived(getFocusedBuffer());
   const focusedLeafId = $derived(getFocusedLeafId());
@@ -219,6 +220,7 @@
 
   <GrCommandPalette />
   <GrLeaderOverlay />
+  <ColonCommandLine />
 </div>
 
 <style>

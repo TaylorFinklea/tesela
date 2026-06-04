@@ -1288,6 +1288,23 @@
   onMount(() => {
     const theme = EditorView.theme({
       "&": { backgroundColor: "transparent", color: "var(--foreground)", fontSize: "14.5px", fontFamily: "var(--theme-font-sans)", lineHeight: "1.7" },
+      // cm-vim's status / macro-recording / ex panel (the "recording @a" bar).
+      // The package's base theme renders an unstyled white strip; match Graphite.
+      ".cm-vim-panel": {
+        backgroundColor: "var(--surface-2)",
+        color: "var(--muted-foreground)",
+        fontFamily: "var(--theme-font-mono, var(--v4-mono))",
+        fontSize: "0.82em",
+        padding: "2px 8px",
+        borderTop: "1px solid color-mix(in srgb, var(--foreground) 10%, transparent)",
+      },
+      ".cm-vim-panel input": {
+        backgroundColor: "transparent",
+        color: "var(--foreground)",
+        fontFamily: "var(--theme-font-mono, var(--v4-mono))",
+        caretColor: "var(--primary)",
+        outline: "none",
+      },
       ".cm-content": { caretColor: "var(--primary)", padding: "0" },
       ".cm-line": { padding: "2px 0" },
       ".cm-cursor, .cm-fat-cursor": { display: "none" },
