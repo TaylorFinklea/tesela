@@ -24,7 +24,7 @@ use base64::Engine;
 use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::aead::{open as aead_open, seal as aead_seal, envelope_aad};
+use crate::crypto::aead::{envelope_aad, open as aead_open, seal as aead_seal};
 use crate::crypto::keys::GroupKey;
 use crate::crypto::relay_auth::{
     body_hash_hex, canonical_request, compute_request_mac, derive_relay_auth_key, intent_msg,
@@ -72,12 +72,7 @@ impl RelayClient {
     /// Build a new client. Does no I/O — call `register()` /
     /// `verify_registration()` explicitly so callers control error
     /// reporting + retry policy.
-    pub fn new(
-        base_url: Url,
-        group_id: GroupId,
-        device_id: DeviceId,
-        group_key: GroupKey,
-    ) -> Self {
+    pub fn new(base_url: Url, group_id: GroupId, device_id: DeviceId, group_key: GroupKey) -> Self {
         let auth_key = derive_relay_auth_key(&group_key, &group_id);
         let http = Client::builder()
             .timeout(std::time::Duration::from_secs(15))
@@ -137,8 +132,7 @@ impl RelayClient {
                 let stored = self.fetch_registration().await?.ok_or_else(|| {
                     SyncError::Crypto("relay 409 but /registration returned 404".into())
                 })?;
-                let intent_text =
-                    intent_msg(&self.group_id, &self.auth_key, stored.registered_at);
+                let intent_text = intent_msg(&self.group_id, &self.auth_key, stored.registered_at);
                 if !verify_intent(&self.group_key, &intent_text, &stored.intent) {
                     return Err(SyncError::Crypto(
                         "relay registration is hijacked: stored intent does not verify under \
@@ -224,8 +218,8 @@ impl RelayClient {
             "from_device": hex::encode(self.device_id.as_bytes()),
             "payload_b64": base64_std(&outer_bytes),
         });
-        let body_bytes = serde_json::to_vec(&body)
-            .map_err(|e| SyncError::Other(format!("json body: {e}")))?;
+        let body_bytes =
+            serde_json::to_vec(&body).map_err(|e| SyncError::Other(format!("json body: {e}")))?;
         let path = format!("/groups/{}/ops", hex::encode(self.group_id.as_bytes()));
         let url = self
             .base_url
@@ -233,8 +227,14 @@ impl RelayClient {
             .map_err(|e| SyncError::Other(format!("url join: {e}")))?;
         let nonce_b64 = self.fresh_nonce_b64();
         let ts = now_secs_i64();
-        let canonical =
-            canonical_request("PUT", &path, "", &nonce_b64, ts, &body_hash_hex(&body_bytes));
+        let canonical = canonical_request(
+            "PUT",
+            &path,
+            "",
+            &nonce_b64,
+            ts,
+            &body_hash_hex(&body_bytes),
+        );
         let mac = compute_request_mac(&self.auth_key, &canonical);
         let resp = self
             .http
@@ -289,7 +289,10 @@ impl RelayClient {
             .await
             .map_err(net_err("poll"))?;
         if !resp.status().is_success() {
-            return Err(SyncError::Crypto(format!("poll: relay returned {}", resp.status())));
+            return Err(SyncError::Crypto(format!(
+                "poll: relay returned {}",
+                resp.status()
+            )));
         }
         let rows: Vec<RelayOpWire> = resp.json().await.map_err(net_err("poll response body"))?;
         let mut out = Vec::with_capacity(rows.len());
@@ -317,6 +320,160 @@ impl RelayClient {
         Ok(out)
     }
 
+    /// Deposit a full set of per-stream encrypted snapshots covering
+    /// relay-seq `covers_seq`, snapshot-gating compaction on the relay.
+    ///
+    /// Each entry is `(stream_id, plaintext_snapshot_bytes)`. The
+    /// plaintext is AEAD-sealed with the group key (SAME scheme as
+    /// [`put_envelope`](Self::put_envelope)) so the relay only ever sees
+    /// ciphertext; the `stream_id` is sent verbatim (opaque to the
+    /// relay). The relay upserts each snapshot, advances its compaction
+    /// watermark to `covers_seq`, and GCs `relay_ops` rows with
+    /// `seq <= covers_seq`. Returns the number of ops the relay
+    /// compacted away.
+    ///
+    /// v1 uses `stream_id = note_id` (16 bytes). The relay treats it as
+    /// opaque bytes, so a later privacy hardening can swap in an
+    /// HMAC-derived opaque stream key without touching the relay.
+    // TODO(privacy): derive `stream_id` as an HMAC of `note_id` under a
+    // per-group stream key so the relay can't correlate snapshots to
+    // stable note identifiers across pushes. Out of scope for Phase
+    // 1b-ii (v1 ships `stream_id = note_id`).
+    pub async fn put_snapshots(
+        &self,
+        covers_seq: i64,
+        snapshots: Vec<(Vec<u8>, Vec<u8>)>,
+    ) -> SyncResult<u64> {
+        // Snapshots are sealed under a GROUP-only AAD (not the per-device
+        // envelope AAD): unlike `/ops`, the `/snapshots` GET response does
+        // not echo a depositing-device field, so the opener can't
+        // reconstruct a per-device AAD. Binding only the group id lets any
+        // group member open any member's deposited snapshot, while still
+        // authenticating the ciphertext to this group's key.
+        let aad = snapshot_aad(self.group_id.as_bytes());
+        let mut entries = Vec::with_capacity(snapshots.len());
+        for (stream_id, plaintext) in &snapshots {
+            let sealed = aead_seal(&self.group_key, plaintext, &aad)?;
+            let outer = OuterPayload {
+                nonce: sealed.nonce,
+                ciphertext: sealed.ciphertext,
+            };
+            let outer_bytes = postcard::to_allocvec(&outer)
+                .map_err(|e| SyncError::Other(format!("postcard serialize outer: {e}")))?;
+            entries.push(serde_json::json!({
+                "stream_id_b64": base64_std(stream_id),
+                "payload_b64": base64_std(&outer_bytes),
+            }));
+        }
+        let body = serde_json::json!({
+            "covers_seq": covers_seq,
+            "snapshots": entries,
+        });
+        let body_bytes =
+            serde_json::to_vec(&body).map_err(|e| SyncError::Other(format!("json body: {e}")))?;
+        let path = format!("/groups/{}/snapshot", hex::encode(self.group_id.as_bytes()));
+        let url = self
+            .base_url
+            .join(&path)
+            .map_err(|e| SyncError::Other(format!("url join: {e}")))?;
+        let nonce_b64 = self.fresh_nonce_b64();
+        let ts = now_secs_i64();
+        let canonical = canonical_request(
+            "PUT",
+            &path,
+            "",
+            &nonce_b64,
+            ts,
+            &body_hash_hex(&body_bytes),
+        );
+        let mac = compute_request_mac(&self.auth_key, &canonical);
+        let resp = self
+            .http
+            .put(url)
+            .header("Content-Type", "application/json")
+            .header("X-Tesela-Group", hex::encode(self.group_id.as_bytes()))
+            .header("X-Tesela-Device", hex::encode(self.device_id.as_bytes()))
+            .header("X-Tesela-Nonce", &nonce_b64)
+            .header("X-Tesela-Ts", ts.to_string())
+            .header("X-Tesela-Mac", base64_std(&mac))
+            .body(body_bytes)
+            .send()
+            .await
+            .map_err(net_err("put_snapshots"))?;
+        if !resp.status().is_success() {
+            return Err(SyncError::Crypto(format!(
+                "put_snapshots: relay returned {}",
+                resp.status()
+            )));
+        }
+        let ack: PutSnapshotResponse = resp
+            .json()
+            .await
+            .map_err(net_err("put_snapshots response body"))?;
+        Ok(ack.gc)
+    }
+
+    /// Fetch the latest encrypted snapshot per opaque stream plus the
+    /// relay's compaction watermark. A fresh/recovered device bootstraps
+    /// from these (open + import each), then polls `?since=` for the
+    /// tail. Each returned tuple is `(stream_id, snapshot_seq,
+    /// plaintext_snapshot_bytes)` — the payload is `aead_open`-ed back to
+    /// the original snapshot plaintext with the group key.
+    pub async fn fetch_snapshots(&self) -> SyncResult<(i64, Vec<(Vec<u8>, i64, Vec<u8>)>)> {
+        let path = format!(
+            "/groups/{}/snapshots",
+            hex::encode(self.group_id.as_bytes())
+        );
+        let url = self
+            .base_url
+            .join(&path)
+            .map_err(|e| SyncError::Other(format!("url join: {e}")))?;
+        let nonce_b64 = self.fresh_nonce_b64();
+        let ts = now_secs_i64();
+        let canonical = canonical_request("GET", &path, "", &nonce_b64, ts, "");
+        let mac = compute_request_mac(&self.auth_key, &canonical);
+        let resp = self
+            .http
+            .get(url)
+            .header("X-Tesela-Group", hex::encode(self.group_id.as_bytes()))
+            .header("X-Tesela-Device", hex::encode(self.device_id.as_bytes()))
+            .header("X-Tesela-Nonce", &nonce_b64)
+            .header("X-Tesela-Ts", ts.to_string())
+            .header("X-Tesela-Mac", base64_std(&mac))
+            .send()
+            .await
+            .map_err(net_err("fetch_snapshots"))?;
+        if !resp.status().is_success() {
+            return Err(SyncError::Crypto(format!(
+                "fetch_snapshots: relay returned {}",
+                resp.status()
+            )));
+        }
+        let wire: SnapshotsWire = resp
+            .json()
+            .await
+            .map_err(net_err("fetch_snapshots response body"))?;
+        // Snapshots are sealed under the GROUP-only AAD by `put_snapshots`
+        // (the GET response carries no depositing-device field), so any
+        // group member opens them with the same group-bound AAD.
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let mut out = Vec::with_capacity(wire.snapshots.len());
+        for entry in wire.snapshots {
+            let stream_id = b64
+                .decode(&entry.stream_id_b64)
+                .map_err(|e| SyncError::Other(format!("stream_id base64: {e}")))?;
+            let outer_bytes = b64
+                .decode(&entry.payload_b64)
+                .map_err(|e| SyncError::Other(format!("payload base64: {e}")))?;
+            let outer: OuterPayload = postcard::from_bytes(&outer_bytes)
+                .map_err(|e| SyncError::Other(format!("postcard outer: {e}")))?;
+            let aad = snapshot_aad(self.group_id.as_bytes());
+            let plaintext = aead_open(&self.group_key, &outer.nonce, &outer.ciphertext, &aad)?;
+            out.push((stream_id, entry.snapshot_seq, plaintext));
+        }
+        Ok((wire.compaction_seq, out))
+    }
+
     /// Tell the relay "this device has applied every op up to and
     /// including `applied_seq`". Drives server-side GC.
     pub async fn ack(&self, applied_seq: i64) -> SyncResult<()> {
@@ -324,8 +481,8 @@ impl RelayClient {
             "device": hex::encode(self.device_id.as_bytes()),
             "applied_seq": applied_seq,
         });
-        let body_bytes = serde_json::to_vec(&body)
-            .map_err(|e| SyncError::Other(format!("json body: {e}")))?;
+        let body_bytes =
+            serde_json::to_vec(&body).map_err(|e| SyncError::Other(format!("json body: {e}")))?;
         let path = format!("/groups/{}/ack", hex::encode(self.group_id.as_bytes()));
         let url = self
             .base_url
@@ -333,8 +490,14 @@ impl RelayClient {
             .map_err(|e| SyncError::Other(format!("url join: {e}")))?;
         let nonce_b64 = self.fresh_nonce_b64();
         let ts = now_secs_i64();
-        let canonical =
-            canonical_request("POST", &path, "", &nonce_b64, ts, &body_hash_hex(&body_bytes));
+        let canonical = canonical_request(
+            "POST",
+            &path,
+            "",
+            &nonce_b64,
+            ts,
+            &body_hash_hex(&body_bytes),
+        );
         let mac = compute_request_mac(&self.auth_key, &canonical);
         let resp = self
             .http
@@ -350,7 +513,10 @@ impl RelayClient {
             .await
             .map_err(net_err("ack"))?;
         if !resp.status().is_success() {
-            return Err(SyncError::Crypto(format!("ack: relay returned {}", resp.status())));
+            return Err(SyncError::Crypto(format!(
+                "ack: relay returned {}",
+                resp.status()
+            )));
         }
         Ok(())
     }
@@ -358,7 +524,11 @@ impl RelayClient {
     // ── Helpers ────────────────────────────────────────────────────
 
     fn group_url(&self, suffix: &str) -> Url {
-        let path = format!("/groups/{}{}", hex::encode(self.group_id.as_bytes()), suffix);
+        let path = format!(
+            "/groups/{}{}",
+            hex::encode(self.group_id.as_bytes()),
+            suffix
+        );
         self.base_url
             .join(&path)
             .expect("group_url is always a valid path append")
@@ -402,6 +572,24 @@ struct PutResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct PutSnapshotResponse {
+    gc: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotsWire {
+    compaction_seq: i64,
+    snapshots: Vec<SnapshotEntryWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SnapshotEntryWire {
+    stream_id_b64: String,
+    snapshot_seq: i64,
+    payload_b64: String,
+}
+
+#[derive(Debug, Deserialize)]
 struct RelayOpWire {
     seq: i64,
     from_device: String,
@@ -420,6 +608,21 @@ struct OuterPayload {
 
 fn base64_std(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// AAD for AEAD-sealed full-note snapshots pushed via `put_snapshots`.
+///
+/// Distinct from [`envelope_aad`]: snapshots bind the GROUP id only (no
+/// depositing-device field), because the `/snapshots` GET response does
+/// not echo the depositing device, so the opener has no device id to
+/// reconstruct a per-device AAD with. A domain-separation prefix keeps
+/// snapshot ciphertext from being interchangeable with an envelope sealed
+/// under `envelope_aad(device == "tesela-snap-v1"[..16], group)`.
+fn snapshot_aad(group_id: &[u8; 16]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[..16].copy_from_slice(b"tesela-snap-v1\0\0");
+    out[16..].copy_from_slice(group_id);
+    out
 }
 
 fn now_secs_i64() -> i64 {

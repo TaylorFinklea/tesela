@@ -24,8 +24,8 @@ use tesela_sync::group::GroupId;
 use tesela_sync::transport::relay::RelayClient;
 use tesela_sync::wire::envelope::SyncEnvelope;
 use tesela_sync::{
-    decode_loro_relay_payload, encode_loro_relay_payload, Hlc, LoroDocUpdate, LoroEngine, OpPayload,
-    SyncEngine,
+    decode_loro_relay_payload, encode_loro_relay_payload, Hlc, LoroDocUpdate, LoroEngine,
+    OpPayload, SyncEngine,
 };
 
 struct Ctx {
@@ -110,15 +110,22 @@ async fn relay_push(engine: &LoroEngine, client: &RelayClient, from: DeviceId, g
 
 /// Mirror of `tick`'s inbound Loro branch: poll, skip own echoes, decode
 /// the v2 payload, apply, advance + ack the relay seq.
-async fn relay_pull(engine: &LoroEngine, client: &RelayClient, cursor: &mut i64, self_dev: DeviceId) -> usize {
+async fn relay_pull(
+    engine: &LoroEngine,
+    client: &RelayClient,
+    cursor: &mut i64,
+    self_dev: DeviceId,
+) -> usize {
     let rows = client.poll(*cursor).await.expect("poll");
     let mut applied = 0;
     let mut max_seq = *cursor;
     for (seq, env) in rows {
         if env.from_device != self_dev {
             if let Ok(Some(updates)) = decode_loro_relay_payload(&env.ciphertext) {
-                let pairs: Vec<([u8; 16], Vec<u8>)> =
-                    updates.into_iter().map(|u| (u.doc, u.update_bytes)).collect();
+                let pairs: Vec<([u8; 16], Vec<u8>)> = updates
+                    .into_iter()
+                    .map(|u| (u.doc, u.update_bytes))
+                    .collect();
                 applied += engine.apply_relay_updates(&pairs).await;
             }
         }
@@ -161,7 +168,9 @@ async fn two_authoritative_engines_converge_over_real_relay() {
         note_id: note,
         display_alias: Some("shared".into()),
         title: "Shared".into(),
-        content: "---\ntitle: Shared\n---\n\n- base <!-- bid:70707070-7070-7070-7070-707070707070 -->\n".into(),
+        content:
+            "---\ntitle: Shared\n---\n\n- base <!-- bid:70707070-7070-7070-7070-707070707070 -->\n"
+                .into(),
         created_at_millis: 1,
     })
     .await
@@ -215,7 +224,10 @@ async fn two_authoritative_engines_converge_over_real_relay() {
 
     let ra = a.render_note(note).await.unwrap();
     let rb = b.render_note(note).await.unwrap();
-    assert_eq!(ra, rb, "engines converge through the real relay — no flashing");
+    assert_eq!(
+        ra, rb,
+        "engines converge through the real relay — no flashing"
+    );
     assert!(
         ra.contains("base") && ra.contains("from A") && ra.contains("from B"),
         "all three concurrent blocks present: {ra:?}"
@@ -260,18 +272,31 @@ async fn fresh_device_restores_full_mosaic_from_durable_relay() {
 
     // A authors three notes (distinct ids + block ids).
     let notes: [([u8; 16], &str, &str, &str); 3] = [
-        ([0x11; 16], "alpha", "Alpha", "11111111-1111-1111-1111-111111111111"),
-        ([0x22; 16], "beta", "Beta", "22222222-2222-2222-2222-222222222222"),
-        ([0x33; 16], "gamma", "Gamma", "33333333-3333-3333-3333-333333333333"),
+        (
+            [0x11; 16],
+            "alpha",
+            "Alpha",
+            "11111111-1111-1111-1111-111111111111",
+        ),
+        (
+            [0x22; 16],
+            "beta",
+            "Beta",
+            "22222222-2222-2222-2222-222222222222",
+        ),
+        (
+            [0x33; 16],
+            "gamma",
+            "Gamma",
+            "33333333-3333-3333-3333-333333333333",
+        ),
     ];
     for (id, slug, title, bid) in notes {
         a.record_local(OpPayload::NoteUpsert {
             note_id: id,
             display_alias: Some(slug.into()),
             title: title.into(),
-            content: format!(
-                "---\ntitle: {title}\n---\n\n- body of {slug} <!-- bid:{bid} -->\n"
-            ),
+            content: format!("---\ntitle: {title}\n---\n\n- body of {slug} <!-- bid:{bid} -->\n"),
             created_at_millis: 1,
         })
         .await
@@ -298,10 +323,173 @@ async fn fresh_device_restores_full_mosaic_from_durable_relay() {
     for (id, slug, _t, _bid) in notes {
         let rc = c.render_note(id).await;
         let ra = a.render_note(id).await;
-        assert_eq!(rc, ra, "note '{slug}' restored identically from the relay backup");
+        assert_eq!(
+            rc, ra,
+            "note '{slug}' restored identically from the relay backup"
+        );
         assert!(
             notes_c.join(format!("{slug}.md")).exists(),
             "'{slug}.md' materialized on restore"
+        );
+    }
+}
+
+/// Encrypted-replica spine, Phase 1b-ii — the snapshot-gated compaction +
+/// bootstrap-from-snapshots path. Device A authors three notes and pushes the
+/// deltas (they land in `relay_ops`). A then exports a fresh full snapshot per
+/// note and `put_snapshots(covers_seq, ...)` — the relay upserts the encrypted
+/// snapshots, advances its compaction watermark, and GCs the superseded deltas.
+/// A brand-new EMPTY device C (the deltas are GONE) registers, `fetch_snapshots`,
+/// imports each snapshot, and reconstructs A's WHOLE mosaic purely from the
+/// compacted snapshot set. This proves compaction never loses data: the
+/// snapshots are a complete, self-sufficient replica.
+#[tokio::test]
+async fn snapshot_compaction_then_fresh_device_bootstraps_from_snapshots() {
+    let ctx = spawn_relay().await;
+    let (group, key) = fresh_group();
+    let dev_a = DeviceId::from_bytes([0xa1; 16]);
+    let dev_c = DeviceId::from_bytes([0xcc; 16]);
+
+    let client_a = RelayClient::new(ctx.base_url.clone(), group, dev_a, key.clone());
+    client_a.register_or_recover().await.expect("a register");
+    client_a.verify_registration().await.expect("a verify");
+
+    let tmp_a = tempfile::tempdir().unwrap();
+    let (a, _notes_a) = authoritative_engine(&tmp_a, dev_a).await;
+
+    // A authors three notes (distinct ids + block ids).
+    let notes: [([u8; 16], &str, &str, &str); 3] = [
+        (
+            [0x11; 16],
+            "alpha",
+            "Alpha",
+            "11111111-1111-1111-1111-111111111111",
+        ),
+        (
+            [0x22; 16],
+            "beta",
+            "Beta",
+            "22222222-2222-2222-2222-222222222222",
+        ),
+        (
+            [0x33; 16],
+            "gamma",
+            "Gamma",
+            "33333333-3333-3333-3333-333333333333",
+        ),
+    ];
+    for (id, slug, title, bid) in notes {
+        a.record_local(OpPayload::NoteUpsert {
+            note_id: id,
+            display_alias: Some(slug.into()),
+            title: title.into(),
+            content: format!("---\ntitle: {title}\n---\n\n- body of {slug} <!-- bid:{bid} -->\n"),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+    }
+
+    // A pushes the deltas into the durable relay, capturing the assigned seq so
+    // it can scope compaction to "everything up to and including this push".
+    let updates = a.produce_relay_updates().await;
+    assert!(!updates.is_empty(), "A has deltas to push");
+    let payload: Vec<LoroDocUpdate> = updates
+        .iter()
+        .map(|(doc, update_bytes, _vv)| LoroDocUpdate {
+            doc: *doc,
+            update_bytes: update_bytes.clone(),
+        })
+        .collect();
+    let committed: Vec<([u8; 16], Vec<u8>)> =
+        updates.into_iter().map(|(doc, _b, vv)| (doc, vv)).collect();
+    let ciphertext = encode_loro_relay_payload(&payload).expect("encode v2");
+    let env = SyncEnvelope {
+        from_device: dev_a,
+        to_group: group,
+        nonce: [0u8; 24],
+        ciphertext,
+    };
+    let (covers_seq, _ts) = client_a.put_envelope(env).await.expect("put envelope");
+    a.commit_broadcast_cursors(&committed).await;
+    assert!(covers_seq > 0, "relay assigned a positive seq");
+
+    // The deltas are durably in `relay_ops` right now.
+    let pre = client_a.poll(0).await.expect("poll pre-snapshot");
+    assert!(!pre.is_empty(), "deltas present before compaction");
+
+    // A exports a full snapshot per note (ExportMode::Snapshot via
+    // export_doc_update(.., None)) and deposits the encrypted snapshot set,
+    // gating compaction at `covers_seq`. stream_id = note_id (v1).
+    let mut snapshots: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    for (id, slug, _t, _bid) in notes {
+        let snap = a
+            .export_doc_update(id, None)
+            .await
+            .unwrap_or_else(|| panic!("snapshot for '{slug}'"));
+        snapshots.push((id.to_vec(), snap));
+    }
+    let gc = client_a
+        .put_snapshots(covers_seq, snapshots)
+        .await
+        .expect("put snapshots");
+    assert!(
+        gc > 0,
+        "snapshot deposit compacted superseded deltas (gc={gc})"
+    );
+
+    // Post-compaction the pre-snapshot deltas are gone from the relay log.
+    let post = client_a.poll(0).await.expect("poll post-snapshot");
+    assert!(
+        post.len() < pre.len(),
+        "compaction dropped deltas: {} -> {}",
+        pre.len(),
+        post.len()
+    );
+    assert!(
+        post.is_empty(),
+        "covers_seq covered the whole push — relay log empty after compaction"
+    );
+
+    // ── A brand-new EMPTY device C bootstraps PURELY from the snapshots ──
+    let client_c = RelayClient::new(ctx.base_url.clone(), group, dev_c, key);
+    client_c.register_or_recover().await.expect("c register");
+    client_c.verify_registration().await.expect("c verify");
+    let tmp_c = tempfile::tempdir().unwrap();
+    let (c, notes_c) = authoritative_engine(&tmp_c, dev_c).await;
+
+    let (compaction_seq, fetched) = client_c.fetch_snapshots().await.expect("fetch snapshots");
+    assert_eq!(
+        compaction_seq, covers_seq,
+        "watermark advanced to the push seq"
+    );
+    assert_eq!(fetched.len(), 3, "one snapshot per note");
+    for (stream_id, _snapshot_seq, snap_bytes) in &fetched {
+        let id: [u8; 16] = stream_id
+            .as_slice()
+            .try_into()
+            .expect("stream_id is 16 bytes");
+        c.import_doc_update(id, snap_bytes)
+            .await
+            .expect("import snapshot");
+    }
+
+    // Any tail past the snapshot watermark (none here — covers_seq covered it).
+    let mut cur_c = compaction_seq;
+    let _ = relay_pull(&c, &client_c, &mut cur_c, dev_c).await;
+
+    // C reconstructed the ENTIRE mosaic from the compacted snapshot set,
+    // byte-identically — the deltas it never saw are fully captured.
+    for (id, slug, _t, _bid) in notes {
+        let rc = c.render_note(id).await;
+        let ra = a.render_note(id).await;
+        assert_eq!(
+            rc, ra,
+            "note '{slug}' restored identically from the snapshot set"
+        );
+        assert!(
+            notes_c.join(format!("{slug}.md")).exists(),
+            "'{slug}.md' materialized on snapshot bootstrap"
         );
     }
 }
