@@ -40,18 +40,36 @@ fn workspace_root() -> PathBuf {
 }
 
 /// Locate the `tesela-server` binary. `TESELA_SERVER_BIN` overrides; otherwise
-/// the dev build under `target/debug/`. (A bundled release will ship it as a
-/// Tauri sidecar resource — that's a packaging follow-up.)
+/// pick whichever of `target/release/` or `target/debug/` was built MOST
+/// RECENTLY. (A bundled release will ship it as a Tauri sidecar resource —
+/// that's a packaging follow-up.)
+///
+/// Newest-by-mtime, not release-preferred: a stale release binary built before
+/// a server feature landed must never shadow a fresher debug build. That exact
+/// mismatch — a release `tesela-server` predating `TESELA_STATIC_DIR` support —
+/// served a static-less server to the desktop, so `/g` 404'd and the window
+/// rendered blank. mtime tracks "what I last compiled," which is what should run.
 fn tesela_server_bin() -> PathBuf {
     if let Ok(p) = std::env::var("TESELA_SERVER_BIN") {
         return PathBuf::from(p);
     }
     let root = workspace_root();
     let release = root.join("target").join("release").join("tesela-server");
-    if release.exists() {
-        return release;
+    let debug = root.join("target").join("debug").join("tesela-server");
+    let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    match (mtime(&release), mtime(&debug)) {
+        (Some(r), Some(d)) => {
+            if r >= d {
+                release
+            } else {
+                debug
+            }
+        }
+        (Some(_), None) => release,
+        // Neither present → return the debug path so the spawn error names a
+        // concrete build target.
+        (None, _) => debug,
     }
-    root.join("target").join("debug").join("tesela-server")
 }
 
 /// Resolve the mosaic the embedded server should open. `TESELA_MOSAIC` wins;
