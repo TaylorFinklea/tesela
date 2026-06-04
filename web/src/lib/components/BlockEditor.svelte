@@ -1324,7 +1324,10 @@
               const s = mm.index ?? -1;
               if (s >= 0 && p >= s && p <= s + mm[0].length) {
                 const url = mm[2].trim();
-                if (url) {
+                // Only open safe external schemes. A note is untrusted content
+                // (shared mosaics, paired peers), so `[x](javascript:…)` /
+                // `data:` / `file:` / `vbscript:` must NEVER be opened.
+                if (url && /^(https?|mailto):/i.test(url)) {
                   e.preventDefault();
                   e.stopPropagation();
                   window.open(url, "_blank", "noopener,noreferrer");
