@@ -1,5 +1,25 @@
 # Current State
 
+## 2026-06-04 — Desktop app (Tauri) — DECISION LOCKED + MVP WORKING on the real mosaic
+
+**Decision (locked, two-Claude + Taylor's own usage all agreed): Tauri-wrap the `/g` web UI, NOT a fresh SwiftUI Mac app.** Reasoning in `decisions.md` 2026-06-03 + the spec `.docs/ai/phases/2026-06-03-tauri-desktop-spec.md`. Short version: `/g` is the most mature surface (CodeMirror+vim, ⌘K, leader, Loro collab); reuse it 100% → step-3 features build ONCE for web+desktop. SwiftUI would rebuild it all, starting from the iOS app which is *behind* `/g`. Native-feel cost ≈ 0 for a vim user in a controlled CM editor. Reversible (FFI/iOS path intact; SwiftUI Mac shelved as a possible premium tier).
+
+**Architecture (built): a native window + a child `tesela-server` bound to LOOPBACK that serves BOTH the API and the static `/g` UI** → the webview loads `http://127.0.0.1:<port>/g`, same-origin, no CORS, the existing host-derived WS just works. **The embedded server is a loopback Loro-replica NODE, not a hub** (127.0.0.1 only, mDNS off) — cross-device sync will flow through the spine (relay/LAN), same as iOS. Do NOT let it bind 0.0.0.0 / become a hub.
+
+**MVP VERIFIED WORKING (2026-06-04) on the real 100-note mosaic.** The native window loaded the full `/g` SPA from the embedded loopback child and exercised the real product: `/g` + `_app/*` chunks, the live-sync `/ws` connected, the rail + daily view pulled real data (`/notes/dailies`, `/notes/tasks`, `/notes?tag=daily&limit=60`, …), and the Loro collab doc bootstrapped (`/loro/notes/2026-06-03/snapshot`). Bind confirmed `127.0.0.1:<port>` only.
+
+**What landed (uncommitted at this writing — committing after the adversarial review):**
+- **T1** `tesela-server`: optional `TESELA_STATIC_DIR` → tower-http `ServeDir` SPA fallback after the API routes (`routes/mod.rs`); `fs` feature added to workspace tower-http. Unset = today's behavior.
+- **T2** web: `adapter-static` (SPA, `fallback: index.html`; root layout already `ssr=false`); new `web/src/lib/runtime-base.ts` `apiBase()` = `window.__TESELA_API_BASE__ ?? "/api"`; wired into `api-client.ts` BASE_URL + loro `note-doc.defaultBase`. WS already host-derived. `pnpm build` → `web/build`.
+- **T3** new `src-tauri/` crate (Tauri 2): picks a free loopback port, spawns the `tesela-server` child (`TESELA_SERVER_BIND`, `TESELA_STATIC_DIR`, `TESELA_DISABLE_MDNS=1`, `TESELA_EXIT_WITH_PARENT=1`), waits for `/health`, opens the window at `…/g`, injects `window.__TESELA_API_BASE__=""`, reaps the child on exit (SIGTERM→graceful, SIGKILL backstop).
+- **Lifecycle hardening (data-safety):** a hard SIGKILL of the shell would orphan the child (verified) → an orphan = a 2nd writer on the mosaic. Fixed: `tesela-server` `spawn_parent_death_watchdog` (opt-in `TESELA_EXIT_WITH_PARENT`) exits when `getppid()` changes → `raise(SIGTERM)` on self for graceful shutdown. **Re-tested: SIGKILL the shell → child self-terminates in ~1s, no orphan, port freed.**
+
+**Run:** `cargo build -p tesela-server -p tesela-desktop && cd web && pnpm build && cd .. && TESELA_MOSAIC="$HOME/Library/Application Support/tesela/logseq" ./target/debug/tesela-desktop`. (Don't run a standalone `tesela-server` on the SAME mosaic at the same time — two-writer.)
+
+**NEXT (desktop follow-ups):** bundle a real `.app` (`tauri build`) + codesign/notarize; native menus/tray/auto-update; lib-embed `tesela_server::serve()` (one process vs child — architecturally identical purification); then step-3 feature maturation (markdown render, code blocks, vim polish, properties/types, widgets) which now lands on web+desktop together. Then circle back to the relay live-tick (1b-iii) + the desktop's sync-via-spine.
+
+---
+
 ## 2026-06-03 (late) — Phase 2: the Cloudflare Worker relay is WIRE-CONFORMANT (something real)
 
 **The always-on cloud relay exists and is proven byte-identical to the Rust relay** — the encrypted-replica spine now has its cloud endpoint. Built + proven locally without touching Taylor's CF account; production is just the final `wrangler deploy`.

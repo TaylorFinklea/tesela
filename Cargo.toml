@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins", "crates/tesela-server", "crates/tesela-backup", "crates/tesela-fixtures", "crates/tesela-fixtures-cli", "crates/tesela-sync", "crates/tesela-sync-ffi", "crates/tesela-relay", "crates/tesela-loro-spike"]
+members = ["crates/tesela-core", "crates/tesela-cli", "crates/tesela-tui", "crates/tesela-mcp", "crates/tesela-plugins", "crates/tesela-server", "crates/tesela-backup", "crates/tesela-fixtures", "crates/tesela-fixtures-cli", "crates/tesela-sync", "crates/tesela-sync-ffi", "crates/tesela-relay", "crates/tesela-loro-spike", "src-tauri"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -56,7 +56,7 @@ mlua = { version = "0.10", features = ["lua54", "vendored", "send"] }
 
 # HTTP server
 axum = { version = "0.8", features = ["ws", "macros", "multipart"] }
-tower-http = { version = "0.6", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
 
 # Encryption + Keychain (used by tesela-backup)
 age = "0.11"

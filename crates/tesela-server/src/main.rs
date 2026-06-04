@@ -47,6 +47,11 @@ async fn main() -> Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
+    // Desktop embed: exit if our parent (the Tauri shell) disappears, so an
+    // embedded server never lingers as an orphan — which would risk a second
+    // writer on the same mosaic. No-op unless TESELA_EXIT_WITH_PARENT is set.
+    spawn_parent_death_watchdog();
+
     let args = Args::parse();
 
     // One-shot config migration: older builds wrote config to
@@ -68,6 +73,23 @@ async fn main() -> Result<()> {
             p
         }
         None => find_mosaic()?,
+    };
+
+    // Single-writer guard: only ONE tesela-server may write a mosaic at a time.
+    // Held for the whole process lifetime (dropped on return / released by the
+    // OS on exit). A second server — a double-launched desktop app, or a
+    // standalone server racing the embedded one — fails fast here instead of
+    // becoming a second writer and corrupting the Loro state.
+    let _mosaic_lock = match acquire_mosaic_lock(&mosaic) {
+        Ok(lock) => lock,
+        Err(e) => {
+            anyhow::bail!(
+                "could not acquire the single-writer lock on {}: {e}. \
+                 Another tesela-server (the desktop app, or a standalone server) \
+                 is already using this mosaic — close it first.",
+                mosaic.display()
+            );
+        }
     };
 
     // Idempotent system-widget backfill: every mosaic startup ensures
@@ -297,7 +319,9 @@ async fn main() -> Result<()> {
 
     // Phase 1.5 — background sync daemon. Every 5 seconds, pull from each
     // paired peer. Symmetric: both peers pull, so both converge.
-    {
+    // Skipped in the desktop embed (TESELA_DISABLE_PEER_SYNC) — a loopback node
+    // must not also participate as a LAN peer alongside a standalone server.
+    if std::env::var_os("TESELA_DISABLE_PEER_SYNC").is_none() {
         let mosaic_clone = mosaic_for_shutdown.clone();
         let engine_clone = Arc::clone(&sync_engine);
         let ws_tx_clone = ws_tx.clone();
@@ -589,6 +613,65 @@ async fn read_peers_for_daemon(mosaic: &Path) -> Vec<routes::peer_sync::Peer> {
     }
 }
 
+/// Acquire an exclusive advisory lock on `<mosaic>/.tesela/server.lock`, held
+/// for the process lifetime, so only one tesela-server ever writes a given
+/// mosaic. `flock(LOCK_EX | LOCK_NB)` returns an error if another process holds
+/// it; the OS releases the lock when this process exits (even on SIGKILL), so
+/// there is no stale-lock hazard. Mirrors tesela-backup's lock. The returned
+/// `File` must be kept alive (closing it drops the lock).
+fn acquire_mosaic_lock(mosaic: &Path) -> Result<std::fs::File> {
+    use std::os::unix::io::AsRawFd;
+    let tesela_dir = mosaic.join(".tesela");
+    std::fs::create_dir_all(&tesela_dir)?;
+    let lock_path = tesela_dir.join("server.lock");
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)?;
+    let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+    if rc != 0 {
+        anyhow::bail!("lock held (EWOULDBLOCK)");
+    }
+    Ok(file)
+}
+
+/// When `TESELA_EXIT_WITH_PARENT` is set (the desktop / Tauri embed sets it),
+/// exit this server promptly if its parent process disappears. The OS reparents
+/// an orphan — its `getppid()` changes (→ launchd / init) — so we poll for that
+/// and then raise `SIGTERM` on ourselves to run the normal graceful shutdown
+/// (drain + backup), hard-exiting as a backstop if that stalls. Without the env
+/// var this is a no-op, so the standalone server is unaffected.
+fn spawn_parent_death_watchdog() {
+    if std::env::var_os("TESELA_EXIT_WITH_PARENT").is_none() {
+        return;
+    }
+    // Prefer the explicit `TESELA_PARENT_PID` the shell passes: if the parent
+    // died DURING our spawn (before we could observe its ppid), `getppid()` is
+    // already reparented (→ 1) at startup and a getppid-change check would never
+    // fire. Keying off the known pid + a `kill(pid, 0) == ESRCH` liveness probe
+    // closes that race. Falls back to the observed ppid if unset.
+    let expected: i32 = std::env::var("TESELA_PARENT_PID")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or_else(|| unsafe { libc::getppid() });
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        let reparented = unsafe { libc::getppid() } != expected;
+        let gone = unsafe { libc::kill(expected, 0) } != 0
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        if reparented || gone {
+            warn!("parent process {} gone; shutting down embedded server", expected);
+            unsafe {
+                libc::raise(libc::SIGTERM);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            std::process::exit(0);
+        }
+    });
+}
+
 /// Resolves when the OS asks us to shut down (SIGINT or SIGTERM). On
 /// non-Unix only ctrl_c is wired; SIGTERM-equivalent handling would
 /// need platform-specific code we don't ship.
@@ -702,10 +785,13 @@ async fn auto_backup_on_quit(
 /// 2. `[server] bind` in the global config (`~/.config/tesela/config.toml`).
 /// 3. `127.0.0.1:7474` — loopback-only default.
 ///
-/// Step 2 is the load-bearing one: `/server/restart` re-execs the
-/// binary without inheriting the environment, so a bind set only via
-/// the env var would silently revert to loopback after a mosaic-switch
-/// restart — exactly when a remote client (the iOS app) is mid-use.
+/// `/server/restart` (`routes::data_ops::restart_server`) re-execs the binary
+/// and DOES inherit the current environment (it does not `env_clear`), so a
+/// `TESELA_SERVER_BIND` set by the launcher survives a restart. Do NOT add
+/// `env_clear()` to the restart: the desktop embed relies on the inherited
+/// `TESELA_SERVER_BIND=127.0.0.1:<port>` to stay loopback — clearing it would
+/// fall back to step 2 / step 3 and could silently bind `0.0.0.0` from a global
+/// config, exposing the embedded API on the LAN.
 fn resolve_bind_addr() -> String {
     if let Ok(env) = std::env::var("TESELA_SERVER_BIND") {
         let trimmed = env.trim();
@@ -738,6 +824,13 @@ async fn bring_up_relay_if_configured(
     mut state: state::AppState,
     mosaic: &std::path::Path,
 ) -> state::AppState {
+    // The desktop embed is a LOOPBACK Loro-replica node, not a relay
+    // participant — it must not register/tick the relay, or it becomes a second
+    // writer under the shared `device_id` (HLC + cursor races) the instant relay
+    // config is enabled in the shared mosaic. The shell sets TESELA_DISABLE_RELAY.
+    if std::env::var_os("TESELA_DISABLE_RELAY").is_some() {
+        return state;
+    }
     let Some(url) = state.relay_url.clone() else {
         return state;
     };

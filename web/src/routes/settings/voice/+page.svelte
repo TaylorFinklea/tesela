@@ -6,6 +6,7 @@
    * mark one active for the voice-capture subsystem.
    */
   import { onMount } from "svelte";
+  import { apiBase } from "$lib/runtime-base";
 
   type ModelStatus = {
     id: string;
@@ -31,7 +32,7 @@
     loading = true;
     error = null;
     try {
-      const r = await fetch("/api/transcription/models");
+      const r = await fetch(`${apiBase()}/transcription/models`);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       models = await r.json();
     } catch (e: unknown) {
@@ -44,7 +45,7 @@
   async function downloadModel(m: ModelStatus) {
     busy[m.id] = "download";
     try {
-      const r = await fetch(`/api/transcription/models/${m.id}/download`, {
+      const r = await fetch(`${apiBase()}/transcription/models/${m.id}/download`, {
         method: "POST",
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -62,7 +63,7 @@
     }
     busy[m.id] = "delete";
     try {
-      const r = await fetch(`/api/transcription/models/${m.id}`, {
+      const r = await fetch(`${apiBase()}/transcription/models/${m.id}`, {
         method: "DELETE",
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -75,7 +76,7 @@
   async function activateModel(m: ModelStatus) {
     busy[m.id] = "activate";
     try {
-      const r = await fetch(`/api/transcription/models/${m.id}/activate`, {
+      const r = await fetch(`${apiBase()}/transcription/models/${m.id}/activate`, {
         method: "POST",
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);

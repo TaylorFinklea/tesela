@@ -1,0 +1,17 @@
+[package]
+name = "tesela-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Tesela desktop app — native shell around the /g web UI with an embedded loopback tesela-server."
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

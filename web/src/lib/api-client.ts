@@ -15,11 +15,14 @@ import type { AgendaRow } from "$lib/types/AgendaRow";
 import { recordLocalSave } from "$lib/ws-refresh-coordinator";
 import type { BlockOp } from "$lib/block-ops";
 import { buildUpdateNoteBody } from "$lib/api-request-bodies";
+import { apiBase } from "$lib/runtime-base";
 
-// Same-origin path; vite dev server proxies `/api/*` → tesela-server at
-// 127.0.0.1:7474. Relative URL means the LAN client (phone) hits whatever
-// host is serving the page, which avoids exposing the Rust API directly.
-const BASE_URL = "/api";
+// `/api` in vite-dev / hosted web (proxy strips `/api` → server root); `""`
+// (same-origin root) in the desktop Tauri shell, whose embedded tesela-server
+// serves both the API and this UI on one loopback origin. See runtime-base.ts.
+// Resolved once at import — the Tauri init script sets the global before this
+// bundle evaluates.
+const BASE_URL = apiBase();
 
 export class ApiError extends Error {
   constructor(

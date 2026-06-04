@@ -1,4 +1,4 @@
-import adapter from '@sveltejs/adapter-auto';
+import adapter from '@sveltejs/adapter-static';
 
 /** @type {import('@sveltejs/kit').Config} */
 const config = {
@@ -7,10 +7,12 @@ const config = {
 		runes: ({ filename }) => (filename.split(/[/\\]/).includes('node_modules') ? undefined : true)
 	},
 	kit: {
-		// adapter-auto only supports some environments, see https://svelte.dev/docs/kit/adapter-auto for a list.
-		// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
-		// See https://svelte.dev/docs/kit/adapters for more information about adapters.
-		adapter: adapter()
+		// Static SPA build (the app is client-rendered — `ssr = false` in the
+		// root +layout, zero server routes). `fallback` makes every unmatched
+		// path serve index.html so client-side routing (/g, /p/..) works. This
+		// is the artifact the desktop (Tauri) shell's embedded tesela-server
+		// serves; the hosted web can use the same build behind any static host.
+		adapter: adapter({ fallback: 'index.html' })
 	}
 };
 

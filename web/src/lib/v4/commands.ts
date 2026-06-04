@@ -7,6 +7,7 @@
  */
 
 import { api } from "$lib/api-client";
+import { apiBase } from "$lib/runtime-base";
 import { getAppQueryClient } from "$lib/app-query-client.svelte";
 import { getFocusedBlock } from "$lib/stores/current-block.svelte";
 import { toast } from "$lib/stores/toast.svelte";
@@ -198,7 +199,7 @@ async function deleteFocusedTag() {
     }
   }
 
-  await fetch(`/api/notes/${encodeURIComponent(buffer.pageId)}`, {
+  await fetch(`${apiBase()}/notes/${encodeURIComponent(buffer.pageId)}`, {
     method: "DELETE",
   });
   const qc = getAppQueryClient();

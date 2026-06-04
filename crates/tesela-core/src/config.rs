@@ -189,9 +189,10 @@ pub struct ServerConfig {
     /// Address:port the HTTP server binds to. `127.0.0.1:7474` keeps
     /// the server loopback-only (the safe default); `0.0.0.0:7474`
     /// exposes it on every interface so other devices on the LAN — the
-    /// iOS app, a second machine — can reach it. `/server/restart`
-    /// re-execs without inheriting env vars, so this config value (not
-    /// `TESELA_SERVER_BIND`) is what survives a mosaic-switch restart.
+    /// iOS app, a second machine — can reach it. Resolution precedence is
+    /// `TESELA_SERVER_BIND` env → this config value → loopback default;
+    /// `/server/restart` re-execs WITH the inherited environment, so an env
+    /// override survives a restart (this config is the fallback).
     pub bind: String,
 }
 

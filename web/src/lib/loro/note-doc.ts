@@ -23,17 +23,17 @@
  */
 import { createLoroDoc, importInto, newLoroTextSync } from "./loro-client";
 import { noteId, noteIdHex } from "./note-id";
+import { apiBase } from "$lib/runtime-base";
 import type { LoroDocUpdate } from "./tlr2";
 import type { LoroDoc, LoroText, LoroTreeNode, VersionVector } from "loro-crdt";
 
-/** Base URL for the tesela-server REST/Loro endpoints. In the browser this is
- *  the same-origin `/api` prefix the rest of the web client uses (see
- *  `api-client.ts`); the vite dev server proxies `/api/*` → 127.0.0.1:7474,
- *  rewriting `/api` off, so `/api/loro/notes/{id}/snapshot` lands on the
- *  server's `/loro/...` route. The node convergence check passes an absolute
- *  base (e.g. `http://127.0.0.1:7474`, no `/api`) instead. */
+/** Base URL for the tesela-server REST/Loro endpoints — shared with
+ *  `api-client.ts` via `runtime-base.ts`: `/api` in vite-dev / hosted web
+ *  (proxy strips `/api` → the server's `/loro/...`), `""` same-origin root in
+ *  the desktop Tauri shell (embedded server serves API + UI on one origin).
+ *  The node convergence check passes an absolute base instead. */
 function defaultBase(): string {
-  return "/api";
+  return apiBase();
 }
 
 /** One live block read off the doc's `"blocks"` tree. */

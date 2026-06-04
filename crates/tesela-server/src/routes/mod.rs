@@ -28,7 +28,7 @@ use tracing::Level;
 use crate::state::AppState;
 
 pub fn build(state: AppState) -> Router {
-    Router::new()
+    let app = Router::new()
         .route("/health", get(health))
         .route("/notes", get(notes::list_notes).post(notes::create_note))
         .route("/notes/daily", get(notes::get_daily_note))
@@ -159,8 +159,40 @@ pub fn build(state: AppState) -> Router {
         .route("/transcription/active", get(transcription::get_active))
         .route("/transcription/transcribe", post(transcription::transcribe))
         .layer(axum::extract::DefaultBodyLimit::max(200 * 1024 * 1024))
-        .route("/ws", get(ws::ws_handler))
-        .layer(CorsLayer::permissive())
+        .route("/ws", get(ws::ws_handler));
+
+    // Optional static-file serving for the desktop (Tauri) shell: when
+    // TESELA_STATIC_DIR points at a built SvelteKit `/g` bundle, serve it
+    // as a FALLBACK (after every API route), with an index.html SPA
+    // fallback for client-side routes (`/g`, `/p/..`). Unset — the
+    // standalone server + vite-dev case — keeps today's behavior (no
+    // static serving). Because the embedded server then serves BOTH the
+    // API and the UI on the same loopback origin, the desktop webview
+    // needs no CORS handling and the existing same-origin WS URL works.
+    let app = match std::env::var("TESELA_STATIC_DIR") {
+        Ok(dir) if !dir.trim().is_empty() => {
+            let dir = dir.trim().to_string();
+            let index = std::path::PathBuf::from(&dir).join("index.html");
+            app.fallback_service(
+                tower_http::services::ServeDir::new(&dir)
+                    .fallback(tower_http::services::ServeFile::new(index)),
+            )
+        }
+        _ => app,
+    };
+
+    // CORS only for the standalone / dev server. The desktop embed serves API +
+    // UI on ONE origin, so it needs no CORS — and permissive `*` on an
+    // unauthenticated loopback API is the textbook DNS-rebinding target (any
+    // site could read JSON from 127.0.0.1:<port>). `TESELA_STATIC_DIR` set ⇒
+    // embedded ⇒ skip it.
+    let app = if std::env::var_os("TESELA_STATIC_DIR").is_none() {
+        app.layer(CorsLayer::permissive())
+    } else {
+        app
+    };
+
+    app
         // Request/response tracing for live sync-delivery visibility.
         // make_span at INFO emits method+uri; on_response at INFO emits
         // status+latency under that span — one INFO line per request at

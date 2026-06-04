@@ -9,6 +9,7 @@
    */
   import { onDestroy } from "svelte";
   import { api } from "$lib/api-client";
+  import { apiBase } from "$lib/runtime-base";
 
   let recording = $state(false);
   let transcribing = $state(false);
@@ -92,7 +93,7 @@
   async function uploadAndTranscribe(audio: Blob): Promise<string> {
     const form = new FormData();
     form.append("audio", audio, "recording.wav");
-    const r = await fetch("/api/transcription/transcribe", {
+    const r = await fetch(`${apiBase()}/transcription/transcribe`, {
       method: "POST",
       body: form,
     });
