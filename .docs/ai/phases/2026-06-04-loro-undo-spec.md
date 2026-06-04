@@ -78,6 +78,20 @@ by `addToHistory:false` on synced dispatches).
   pause lands on its own step. But typing-then-operating with NO pause merges
   into one step (undo reverts both). Increment 2 = semantic boundaries
   (checkpoint on insert-leave / per normal-mode op).
+  - **Increment-2 ATTEMPTED + reverted (2026-06-04).** Loro `UndoManager` has
+    `groupStart()`/`groupEnd()`; wired them to vim insert-enter/leave via the
+    existing `vim-mode-change` `modeListener` (+ a balance guard in
+    active-note-doc, reset on note switch). Mechanically sound, but BLOCKED by
+    the live-collab echo: the outbound flush (`scheduleOutboundFlush` per
+    splice) makes the server echo the delta back as an inbound `import`, and a
+    remote import INSIDE a group auto-ends it (loro's documented behavior) →
+    slow typing across a flush still split into 2 steps; cross-block got an
+    extra phantom step. So increment 2 first needs ONE of: (a) confirm/fix that
+    the web never re-imports its OWN deltas (self-echo suppression on the WS
+    path — verify `applyInboundToActive`/the server's per-conn-id echo gate for
+    the binary-delta channel), or (b) defer the outbound flush out of the active
+    insert group WITHOUT breaking live same-keystroke collab. Reverted to keep
+    increment 1 clean; this is a focused WS-echo investigation, not a quick tweak.
 - **Text-first routing** means a structural op done AFTER a text edit, then `u`,
   undoes the text first. Increment 3 = a global text/struct timeline.
 
