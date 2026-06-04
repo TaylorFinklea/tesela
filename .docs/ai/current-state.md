@@ -1,5 +1,11 @@
 # Current State
 
+## 2026-06-04 — Step 3 daily win: markdown live-renders in the outliner (web + desktop)
+
+**`**bold**`, `*italic*`, `` `code` ``, `~~strike~~`, and `#..######` headings now RENDER in the block outliner** (`22b04de`), lands on web AND desktop (same `/g` code — the Tauri payoff). Extended `web/src/lib/cm-decorations.ts` `buildDecorations` (the existing live-preview decoration system that already did `#tags`/`[[links]]`/`key::`/fenced-code): style the content + hide the markers when the block editor is NOT focused; **pure raw markdown on focus** (per-block toggle, rebuilt on `focusChanged`). No atomic-range complexity (unfocused = no cursor). Suppressed inside fenced/inline code; bold-before-italic with a `lastIndex=from+1` rewind so a `**bold**` boundary can't swallow the adjacent `*italic*`. **Self-QA'd via Chrome DevTools** on a throwaway mosaic: all five render with markers hidden, raw-on-focus confirmed, other blocks stay rendered, 0 console errors (+ a screenshot). Follow-up polish (deferred): ordered/bullet sub-markdown, links `[md](url)`, blockquotes, per-line (vs per-block) reveal.
+
+---
+
 ## 2026-06-04 — Spine 1b-iii (server): snapshot cadence + bootstrap wired into the LIVE relay tick
 
 **The Phase-1 spine mechanism now runs in the live server code, not just the e2e harness** (`a845dbf`). `sync_relay::tick` periodically deposits per-note snapshots covering the applied cursor (env `TESELA_RELAY_SNAPSHOT_INTERVAL_SECS`, default 300s) → the relay compacts its retained op log; and bring-up now `bootstrap_from_snapshots`: if the relay's compaction watermark is ahead of our cursor, import each snapshot + jump the cursor (fresh + long-offline restore), then poll the tail. `RelayState` gained `last_snapshot_at`. Unit test (added `tesela-relay` dev-dep): the LIVE `tick` deposits → relay compacts → a fresh engine restores byte-identically from snapshots alone. **42 tesela-server tests green.**
