@@ -21,11 +21,11 @@
  *       - `text_seq`    — a nested `LoroText` holding the block's whole text
  *         (the LWW `text` register is the legacy fallback for old snapshots)
  */
-import { createLoroDoc, importInto, newLoroTextSync } from "./loro-client";
+import { createLoroDoc, importInto, newLoroTextSync, newUndoManagerSync } from "./loro-client";
 import { noteId, noteIdHex } from "./note-id";
 import { apiBase } from "$lib/runtime-base";
 import type { LoroDocUpdate } from "./tlr2";
-import type { LoroDoc, LoroText, LoroTreeNode, VersionVector } from "loro-crdt";
+import type { LoroDoc, LoroText, LoroTreeNode, UndoManager, VersionVector } from "loro-crdt";
 
 /** Base URL for the tesela-server REST/Loro endpoints — shared with
  *  `api-client.ts` via `runtime-base.ts`: `/api` in vite-dev / hosted web
@@ -68,6 +68,10 @@ export class NoteDoc {
   noteId16: Uint8Array | null = null;
 
   #doc: LoroDoc | null = null;
+  /** CRDT-native undo for the local peer's text edits on this doc (vim #12).
+   *  Records only LOCAL commits (spliceBlock); inbound imports aren't recorded,
+   *  so undo never reverts a remote peer's edit. Null until {@link open}. */
+  #undo: UndoManager | null = null;
   #base: string;
   /** Loro doc-subscription unsubscribe handles + external change callbacks. */
   #docUnsub: (() => void) | null = null;
@@ -105,6 +109,14 @@ export class NoteDoc {
     // drop this now-stale doc instead of installing it.
     if (gen !== this.#generation) return;
     this.#doc = doc;
+    // Bind the undo manager BEFORE bootstrap. Imports (the bootstrap snapshot,
+    // later inbound deltas) are remote ops and are never recorded as undo
+    // steps; only the local peer's commits (text splices) are. mergeInterval
+    // groups a burst of keystrokes into one undo step (insert-session-ish);
+    // 500ms keeps fast typing together while letting a deliberate operation
+    // that follows a brief pause land on its own step. (Exact per-vim-change
+    // boundaries are a follow-up — see the loro-undo spec, increment 2.)
+    this.#undo = newUndoManagerSync(doc, { mergeInterval: 500, maxUndoSteps: 200 });
     this.#installSubscription(doc);
 
     await this.#bootstrap(slug, doc, gen);
@@ -265,6 +277,46 @@ export class NoteDoc {
     }
   }
 
+  /** Undo the local peer's last text edit on this doc (CRDT-native, cross-block
+   *  within the note). Returns true if something was undone. The inverse ops
+   *  land as LOCAL commits whose `by: "local"` events the editor binding applies
+   *  (gated on the undo-applying flag) and whose deltas the caller flushes to
+   *  the server. No-op (false) if no undo manager / nothing to undo. */
+  undo(): boolean {
+    try {
+      return this.#undo?.undo() ?? false;
+    } catch (e) {
+      console.debug("[note-doc] undo failed", e);
+      return false;
+    }
+  }
+
+  /** Redo the last undone text edit. See {@link undo}. */
+  redo(): boolean {
+    try {
+      return this.#undo?.redo() ?? false;
+    } catch (e) {
+      console.debug("[note-doc] redo failed", e);
+      return false;
+    }
+  }
+
+  /** Whether there's a local text edit to undo / redo. */
+  canUndo(): boolean {
+    try {
+      return this.#undo?.canUndo() ?? false;
+    } catch {
+      return false;
+    }
+  }
+  canRedo(): boolean {
+    try {
+      return this.#undo?.canRedo() ?? false;
+    } catch {
+      return false;
+    }
+  }
+
   /** The doc's current oplog version vector — the cursor for the next
    *  {@link exportSince}. Capture this AFTER {@link spliceBlock} commits and
    *  the delta is sent, so the following export only carries newer ops. Null
@@ -331,6 +383,12 @@ export class NoteDoc {
       }
       this.#docUnsub = null;
     }
+    try {
+      this.#undo?.free();
+    } catch {
+      // best-effort wasm free
+    }
+    this.#undo = null;
     this.#doc = null;
     this.slug = null;
     this.noteIdHex = null;

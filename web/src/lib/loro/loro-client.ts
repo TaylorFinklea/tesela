@@ -14,7 +14,15 @@
  * editor binding and WebSocket splice plumbing land in later C2 steps.
  */
 import { browser } from "$app/environment";
-import type { LoroDoc, LoroText } from "loro-crdt";
+import type { LoroDoc, LoroText, UndoManager } from "loro-crdt";
+
+/** Subset of loro's `UndoConfig` we use. Kept structural so we don't depend on
+ *  the name being re-exported from the package root. */
+export type UndoManagerConfig = {
+  mergeInterval?: number;
+  maxUndoSteps?: number;
+  excludeOriginPrefixes?: string[];
+};
 
 /** The lazily-resolved `loro-crdt` module, cached after first browser load. */
 type LoroModule = typeof import("loro-crdt");
@@ -62,6 +70,19 @@ let loadedModule: LoroModule | null = null;
 export function newLoroTextSync(): LoroText | null {
   if (!loadedModule) return null;
   return new loadedModule.LoroText();
+}
+
+/** Construct a Loro `UndoManager` for `doc` synchronously. Returns null if the
+ *  wasm module hasn't loaded yet (caller must have opened a doc first, which
+ *  awaits {@link loadLoro}). Records the local peer's commits as undo steps;
+ *  inbound imports (remote ops) are never recorded, so undo only reverts the
+ *  local user's own edits — Savanne-safe by construction. */
+export function newUndoManagerSync(
+  doc: LoroDoc,
+  config: UndoManagerConfig,
+): UndoManager | null {
+  if (!loadedModule) return null;
+  return new loadedModule.UndoManager(doc, config);
 }
 
 /**

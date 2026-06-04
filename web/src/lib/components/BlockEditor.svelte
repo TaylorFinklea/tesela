@@ -2,6 +2,7 @@
   import { EditorView } from "@codemirror/view";
   import { Vim } from "@replit/codemirror-vim";
   import { gotoNote as moduleGotoNote } from "$lib/stores/active-pane-nav.svelte";
+  import { undoActiveDoc, redoActiveDoc } from "$lib/loro/active-note-doc.svelte";
 
   // Shared context always pointing to the currently focused block editor.
   // Vim actions are registered ONCE globally (Vim.defineAction is a singleton
@@ -185,10 +186,13 @@
     const toClipboard = (text: string) => {
       try {
         if (text && typeof navigator !== "undefined" && navigator.clipboard) {
-          void navigator.clipboard.writeText(text);
+          // writeText rejects (not throws) when the document lacks clipboard
+          // permission / focus — swallow the async rejection too, the register
+          // is still set either way.
+          void navigator.clipboard.writeText(text).catch(() => {});
         }
       } catch {
-        /* clipboard unavailable (focus/permission) — register is still set */
+        /* clipboard unavailable — register is still set */
       }
     };
     // A block-level (linewise) cut/copy. The real (sub)tree lives in the
@@ -332,14 +336,21 @@
     // The fall-through means `u` always does *something* in normal mode,
     // which matches user expectation across both kinds of changes.
     Vim.defineAction("undoBlockOp", (cm: any) => {
-      const handled = vimCtx.undoOutliner?.() ?? false;
-      if (!handled) cm?.execCommand?.("undo");
+      // CRDT-native text undo FIRST (cross-block, survives navigation, ciw):
+      // the active note doc's Loro UndoManager reverts the local peer's last
+      // text edit. Then the structural snapshot stack (block delete/indent/…),
+      // then cm-editor's own history as a last resort. Text-first matches the
+      // common create-then-type flow (undo reverses text → structure).
+      if (undoActiveDoc()) return;
+      if (vimCtx.undoOutliner?.()) return;
+      cm?.execCommand?.("undo");
     });
     Vim.mapCommand("u", "action", "undoBlockOp", {}, { context: "normal" });
 
     Vim.defineAction("redoBlockOp", (cm: any) => {
-      const handled = vimCtx.redoOutliner?.() ?? false;
-      if (!handled) cm?.execCommand?.("redo");
+      if (redoActiveDoc()) return;
+      if (vimCtx.redoOutliner?.()) return;
+      cm?.execCommand?.("redo");
     });
     Vim.mapCommand("<C-r>", "action", "redoBlockOp", {}, { context: "normal" });
 
@@ -417,6 +428,7 @@
   import {
     getActiveNoteDoc,
     spliceActiveBlock,
+    isLoroUndoApplying,
   } from "$lib/loro/active-note-doc.svelte";
   import type { LoroText, LoroEventBatch } from "loro-crdt";
 
@@ -1321,8 +1333,11 @@
   function applyRemoteTextEvent(batch: LoroEventBatch): void {
     const v = view;
     if (!v) return;
-    // `by: "local"` events are our own splices — already in the editor.
-    if (batch.by === "local") return;
+    // `by: "local"` events are our own splices — already in the editor — EXCEPT
+    // when a Loro undo/redo is applying: its inverse ops are also `by: "local"`
+    // but the editor does NOT have them yet, so they must be applied here. That
+    // window is flagged by the active-note-doc undo wrapper.
+    if (batch.by === "local" && !isLoroUndoApplying()) return;
     const changes: Array<{ from: number; to: number; insert: string }> = [];
     let pos = 0;
     for (const ev of batch.events) {

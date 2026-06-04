@@ -83,6 +83,57 @@ export function getActiveNoteDoc(): NoteDoc | null {
   return active;
 }
 
+/** True while a Loro undo/redo is applying its inverse ops to the active doc.
+ *  The editor binding skips `by: "local"` text events (its own splices, already
+ *  in CM) — but undo's inverse ops are ALSO `by: "local"`, and the editor does
+ *  NOT have them yet, so the binding must apply them WHILE this flag is set. */
+let undoApplying = false;
+export function isLoroUndoApplying(): boolean {
+  return undoApplying;
+}
+
+/** Undo the last local text edit on the active note doc (vim #12). Sets the
+ *  apply-flag so the editor binding renders the inverse ops, flushes them to
+ *  the server, and clears the flag after the change events drain. Returns true
+ *  if something was undone (so the caller can stop before structural undo). */
+export function undoActiveDoc(): boolean {
+  return runUndoLike(() => active!.undo());
+}
+
+/** Redo the last undone text edit on the active note doc. See {@link undoActiveDoc}. */
+export function redoActiveDoc(): boolean {
+  return runUndoLike(() => active!.redo());
+}
+
+/** Whether the active doc has a local text edit to undo / redo. */
+export function canUndoActiveDoc(): boolean {
+  return (browser && active?.canUndo()) ?? false;
+}
+export function canRedoActiveDoc(): boolean {
+  return (browser && active?.canRedo()) ?? false;
+}
+
+function runUndoLike(op: () => boolean): boolean {
+  if (!browser || !active) return false;
+  undoApplying = true;
+  let did = false;
+  try {
+    did = op();
+  } finally {
+    // Clear AFTER the loro change events (which the inverse-op commit fires)
+    // have been delivered. queueMicrotask runs after any microtask the commit
+    // enqueued during this synchronous call, so the binding still sees the flag.
+    queueMicrotask(() => {
+      undoApplying = false;
+    });
+  }
+  // Sync the inverse ops to the server/peers immediately so the persisted note
+  // reflects the undo (and other devices converge) even if the user navigates
+  // away right after.
+  if (did) flushActiveOutbound();
+  return did;
+}
+
 /**
  * Apply a local character splice (UTF-16 index space, CM offsets pass straight
  * through) to block `bid`'s `text_seq` on the active doc, then schedule a
