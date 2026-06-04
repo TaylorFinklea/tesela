@@ -96,6 +96,35 @@ const PROPERTY_RE = /^([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)$/gm;
 // the editor via display:none on the line.
 const TAGS_LINE_RE = /^tags:: .+$/gm;
 
+// ── Markdown inline/line formatting (rendered when the block is NOT focused;
+// raw when focused, for editing). Hand-rolled regexes, consistent with the
+// tag/wiki/property matchers above. Bold is matched before italic so a `**`
+// pair isn't mis-read as two `*` italics. `\n` is excluded so a span can't
+// straddle lines within a multi-line block.
+const MD_BOLD_RE = /\*\*([^*\n]+?)\*\*|__([^_\n]+?)__/g;
+const MD_ITALIC_RE = /\*([^*\n]+?)\*/g;
+const MD_CODE_RE = /`([^`\n]+?)`/g;
+const MD_STRIKE_RE = /~~([^~\n]+?)~~/g;
+const MD_HEADING_RE = /^(#{1,6})([ \t]+)(.*)$/gm;
+
+const mdBoldMark = Decoration.mark({ class: "cm-tesela-md-bold" });
+const mdItalicMark = Decoration.mark({ class: "cm-tesela-md-italic" });
+const mdCodeMark = Decoration.mark({ class: "cm-tesela-md-code" });
+const mdStrikeMark = Decoration.mark({ class: "cm-tesela-md-strike" });
+// Zero-width replace that removes a marker (`**`, `` ` ``, `### `) from the
+// rendered (unfocused) view entirely.
+const mdMarkerHide = Decoration.replace({});
+// Heading line decorations (size/weight by level), cached by class.
+const headingLineCache = new Map<number, Decoration>();
+function headingLineDeco(level: number): Decoration {
+  let deco = headingLineCache.get(level);
+  if (!deco) {
+    deco = Decoration.line({ attributes: { class: `cm-tesela-md-heading cm-tesela-md-h${level}` } });
+    headingLineCache.set(level, deco);
+  }
+  return deco;
+}
+
 /**
  * Per-block configuration for which property keys to hide in the editor.
  * Population: the parent (BlockOutliner) computes this set from the block's
@@ -405,6 +434,95 @@ function buildDecorations(view: EditorView): Built {
     }
   }
 
+  // ── Markdown formatting — RENDERED only when this block is NOT focused.
+  // When the editor has focus the user is editing it, so we show pure raw
+  // markdown (skip all of this — no atomic ranges to fight with, because an
+  // unfocused editor has no cursor). Markers are hidden in render mode; the
+  // content carries the style class. Suppressed inside fenced ``` code.
+  if (!view.hasFocus) {
+    const hideMarker = (from: number, to: number) => {
+      if (to > from) decos.push({ from, to, decoration: mdMarkerHide });
+    };
+
+    // Inline `code` spans first — their content is literal, so other inline
+    // markup inside them is left untouched.
+    const codeSpanRanges: Array<[number, number]> = [];
+    MD_CODE_RE.lastIndex = 0;
+    while ((m = MD_CODE_RE.exec(doc)) !== null) {
+      const from = m.index;
+      const to = m.index + m[0].length;
+      if (insideCode(from)) {
+        MD_CODE_RE.lastIndex = from + 1;
+        continue;
+      }
+      codeSpanRanges.push([from, to]);
+      hideMarker(from, from + 1);
+      hideMarker(to - 1, to);
+      if (to - 1 > from + 1) decos.push({ from: from + 1, to: to - 1, decoration: mdCodeMark });
+    }
+    const literal = (i: number): boolean =>
+      insideCode(i) || codeSpanRanges.some(([a, b]) => i >= a && i < b);
+
+    // Bold (`**` / `__`). Record ranges so italic can't re-match the inner `*`.
+    const boldRanges: Array<[number, number]> = [];
+    MD_BOLD_RE.lastIndex = 0;
+    while ((m = MD_BOLD_RE.exec(doc)) !== null) {
+      const from = m.index;
+      const to = m.index + m[0].length;
+      if (literal(from)) {
+        MD_BOLD_RE.lastIndex = from + 1;
+        continue;
+      }
+      boldRanges.push([from, to]);
+      hideMarker(from, from + 2);
+      hideMarker(to - 2, to);
+      if (to - 2 > from + 2) decos.push({ from: from + 2, to: to - 2, decoration: mdBoldMark });
+    }
+    const insideBold = (i: number): boolean => boldRanges.some(([a, b]) => i >= a && i < b);
+
+    // Italic (`*…*`) — skip code spans + the inner text of bold runs.
+    MD_ITALIC_RE.lastIndex = 0;
+    while ((m = MD_ITALIC_RE.exec(doc)) !== null) {
+      const from = m.index;
+      const to = m.index + m[0].length;
+      // Rewind to just past the start on a skip: a spurious match across a
+      // `**bold**` boundary must not consume the real italic's opening `*`.
+      if (literal(from) || insideBold(from)) {
+        MD_ITALIC_RE.lastIndex = from + 1;
+        continue;
+      }
+      hideMarker(from, from + 1);
+      hideMarker(to - 1, to);
+      if (to - 1 > from + 1) decos.push({ from: from + 1, to: to - 1, decoration: mdItalicMark });
+    }
+
+    // Strikethrough (`~~…~~`).
+    MD_STRIKE_RE.lastIndex = 0;
+    while ((m = MD_STRIKE_RE.exec(doc)) !== null) {
+      const from = m.index;
+      const to = m.index + m[0].length;
+      if (literal(from)) {
+        MD_STRIKE_RE.lastIndex = from + 1;
+        continue;
+      }
+      hideMarker(from, from + 2);
+      hideMarker(to - 2, to);
+      if (to - 2 > from + 2) decos.push({ from: from + 2, to: to - 2, decoration: mdStrikeMark });
+    }
+
+    // ATX headings (`# …` through `###### …`) — line-level size/weight, the
+    // `### ` prefix hidden.
+    MD_HEADING_RE.lastIndex = 0;
+    while ((m = MD_HEADING_RE.exec(doc)) !== null) {
+      if (literal(m.index)) continue;
+      const level = m[1].length;
+      const markerEnd = m.index + m[1].length + m[2].length; // through `### `
+      const line = view.state.doc.lineAt(m.index);
+      decos.push({ from: line.from, to: line.from, decoration: headingLineDeco(level) });
+      hideMarker(m.index, markerEnd);
+    }
+  }
+
   decos.sort((a, b) => a.from - b.from || a.to - b.to);
   for (const d of decos) {
     builder.add(d.from, d.to, d.decoration);
@@ -429,7 +547,13 @@ export const teselaDecorations = ViewPlugin.fromClass(
       const primaryChanged =
         update.startState.facet(primaryTagFacet) !==
         update.state.facet(primaryTagFacet);
-      if (update.docChanged || update.viewportChanged || hiddenChanged || primaryChanged) {
+      if (
+        update.docChanged ||
+        update.viewportChanged ||
+        update.focusChanged ||
+        hiddenChanged ||
+        primaryChanged
+      ) {
         const built = buildDecorations(update.view);
         this.decorations = built.decorations;
         this.atomicTags = built.atomicTags;
@@ -679,4 +803,27 @@ export const teselaDecorationTheme = EditorView.theme({
     // recede so the code body reads as the content.
     color: "var(--muted-foreground)",
   },
+
+  // ── Markdown formatting (rendered when the block is not focused) ──────────
+  ".cm-tesela-md-bold": { fontWeight: "700" },
+  ".cm-tesela-md-italic": { fontStyle: "italic" },
+  ".cm-tesela-md-strike": {
+    textDecoration: "line-through",
+    textDecorationColor: "var(--muted-foreground)",
+  },
+  ".cm-tesela-md-code": {
+    fontFamily: "var(--theme-font-mono, var(--v4-mono))",
+    fontSize: "0.88em",
+    background: "var(--surface-2)",
+    border: "1px solid color-mix(in srgb, var(--foreground) 8%, transparent)",
+    borderRadius: "4px",
+    padding: "0.05em 0.32em",
+  },
+  ".cm-tesela-md-heading": { fontWeight: "600", lineHeight: "1.3" },
+  ".cm-tesela-md-h1": { fontSize: "1.6em" },
+  ".cm-tesela-md-h2": { fontSize: "1.4em" },
+  ".cm-tesela-md-h3": { fontSize: "1.2em" },
+  ".cm-tesela-md-h4": { fontSize: "1.08em" },
+  ".cm-tesela-md-h5": { fontSize: "1em", opacity: "0.92" },
+  ".cm-tesela-md-h6": { fontSize: "0.92em", opacity: "0.82" },
 });
