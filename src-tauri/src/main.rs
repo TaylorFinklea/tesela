@@ -46,10 +46,25 @@ fn tesela_server_bin() -> PathBuf {
     if let Ok(p) = std::env::var("TESELA_SERVER_BIN") {
         return PathBuf::from(p);
     }
-    workspace_root()
-        .join("target")
-        .join("debug")
-        .join("tesela-server")
+    let root = workspace_root();
+    let release = root.join("target").join("release").join("tesela-server");
+    if release.exists() {
+        return release;
+    }
+    root.join("target").join("debug").join("tesela-server")
+}
+
+/// Resolve the mosaic the embedded server should open. `TESELA_MOSAIC` wins;
+/// otherwise, when launched from Finder (no env), default to the user's primary
+/// mosaic so the bundled app opens real notes instead of auto-initializing a
+/// blank one. Returns None to let the server's own `find_mosaic` decide.
+fn resolve_mosaic() -> Option<PathBuf> {
+    if let Ok(m) = std::env::var("TESELA_MOSAIC") {
+        return Some(PathBuf::from(m));
+    }
+    let home = std::env::var_os("HOME")?;
+    let primary = PathBuf::from(home).join("Library/Application Support/tesela/logseq");
+    primary.join(".tesela").exists().then_some(primary)
 }
 
 /// The built static `/g` bundle the embedded server serves. `TESELA_STATIC_DIR`
@@ -95,9 +110,9 @@ fn spawn_server(bind: &str) -> std::io::Result<Child> {
             "RUST_LOG",
             std::env::var("RUST_LOG").unwrap_or_else(|_| "info,loro=warn".to_string()),
         );
-    // Optional explicit mosaic; otherwise the server resolves it itself
-    // (config default_mosaic / per-OS data dir).
-    if let Ok(mosaic) = std::env::var("TESELA_MOSAIC") {
+    // Explicit `TESELA_MOSAIC`, else the user's primary mosaic when launched
+    // from Finder, else let the server's find_mosaic decide.
+    if let Some(mosaic) = resolve_mosaic() {
         cmd.env("TESELA_DEFAULT_MOSAIC", mosaic);
     }
     cmd.spawn()
