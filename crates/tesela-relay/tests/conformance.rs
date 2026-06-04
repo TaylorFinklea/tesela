@@ -49,6 +49,24 @@ struct TestRelay {
 }
 
 async fn spawn_relay() -> TestRelay {
+    // External-target mode: when `TESELA_RELAY_CONFORMANCE_URL` is set,
+    // run this same black-box suite against an already-running relay
+    // (e.g. the Cloudflare Worker via `wrangler dev`) instead of an
+    // in-process Rust spawn. Every test here is pure HTTP against
+    // `base_url`, so only the URL + admin token differ — this is the
+    // "one suite, both implementations" gate the file header promised.
+    if let Ok(url) = std::env::var("TESELA_RELAY_CONFORMANCE_URL") {
+        let base_url = url.trim_end_matches('/').to_string();
+        let admin_token = std::env::var("TESELA_RELAY_CONFORMANCE_ADMIN_TOKEN")
+            .unwrap_or_else(|_| "test-admin-token-please-rotate".to_string());
+        return TestRelay {
+            base_url,
+            admin_token,
+            _tmp: tempfile::tempdir().expect("tmp dir"),
+            _server: tokio::spawn(async {}),
+        };
+    }
+
     let tmp = tempfile::tempdir().expect("tmp dir");
     let db = tmp.path().join("relay.sqlite");
     let admin_token = "test-admin-token-please-rotate".to_string();

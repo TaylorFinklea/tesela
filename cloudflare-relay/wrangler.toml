@@ -21,5 +21,15 @@ new_sqlite_classes = ["GroupDO"]
 
 # Optional knobs
 [vars]
-TESELA_RELAY_MAX_BODY = "5242880"        # 5 MB per PUT
+# 1 MiB per request — matches the Rust self-host's default + the
+# conformance harness cap. For a real deployment that stores large
+# per-note Loro snapshots, override to 16 MiB
+# (`TESELA_RELAY_MAX_BODY = "16777216"`), exactly as the Rust relay is
+# run in production (see the relay-413 fix).
+TESELA_RELAY_MAX_BODY = "1048576"
 TESELA_RELAY_REPLAY_WINDOW_SECS = "300"  # ±5 min for X-Tesela-Ts
+
+# TESELA_RELAY_ADMIN_TOKEN is NOT set here (no secrets in git). For a
+# real deploy: `wrangler secret put TESELA_RELAY_ADMIN_TOKEN`. For local
+# `wrangler dev` + the conformance suite it's read from `.dev.vars`
+# (gitignored) — see that file.

@@ -13,7 +13,16 @@
  * namespace from Node's `exec`.
  */
 
-import { handleRegister, handleGetRegistration, handlePutOp, handleGetOps, handlePostAck, handleAdminDelete } from "./handlers";
+import {
+  handleRegister,
+  handleGetRegistration,
+  handlePutOp,
+  handleGetOps,
+  handlePostAck,
+  handleAdminDelete,
+  handlePutSnapshot,
+  handleGetSnapshots,
+} from "./handlers";
 
 export interface Env {
   GROUP_DO: DurableObjectNamespace;
@@ -22,13 +31,22 @@ export interface Env {
   TESELA_RELAY_REPLAY_WINDOW_SECS?: string;
 }
 
-const KNOWN_MEMBER_TTL_SECS = 30 * 24 * 60 * 60; // 30 days
+/** Per-IP request cap, mirroring the Rust self-host's sliding window
+ *  (`state.rs` RATE_LIMIT_MAX / window). Bursts above this in a window
+ *  get 429'd. Per-DO + per-IP: each group's DO tracks its own callers. */
+const RATE_LIMIT_MAX = 1000;
+const RATE_LIMIT_WINDOW_MS = 10_000;
 
 export class GroupDO implements DurableObject {
   /** Nonce → expiration epoch (ms). Anything older gets sweeped on lookup. */
   private nonces = new Map<string, number>();
   /** 5-minute nonce TTL — matches the Rust LRU window. */
   private static readonly NONCE_TTL_MS = 5 * 60 * 1000;
+
+  /** Per-IP request timestamps (ms) for the sliding-window rate limit.
+   *  In-memory in the DO — the same caller for a group always lands on
+   *  this DO instance, so the window is accurate per (group, IP). */
+  private ipHits = new Map<string, number[]>();
 
   constructor(
     public state: DurableObjectState,
@@ -42,6 +60,17 @@ export class GroupDO implements DurableObject {
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
+
+    // Per-IP rate limit runs first so even pre-auth scan traffic gets
+    // throttled (mirrors the Rust `rate_gate` layered over everything).
+    const ip =
+      req.headers.get("cf-connecting-ip") ??
+      req.headers.get("x-forwarded-for") ??
+      "0.0.0.0";
+    if (!this.checkIpRate(ip)) {
+      return new Response("rate limit exceeded", { status: 429 });
+    }
+
     try {
       switch (`${req.method} ${path}`) {
         case "POST /register":
@@ -54,6 +83,10 @@ export class GroupDO implements DurableObject {
           return await handleGetOps(this, req);
         case "POST /ack":
           return await handlePostAck(this, req);
+        case "PUT /snapshot":
+          return await handlePutSnapshot(this, req);
+        case "GET /snapshots":
+          return await handleGetSnapshots(this, req);
         case "DELETE /admin/registration":
           return await handleAdminDelete(this, req);
         default:
@@ -85,15 +118,39 @@ export class GroupDO implements DurableObject {
         last_seen_ts INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS ops_seq_idx ON ops(seq);
+
+      -- Latest encrypted snapshot per opaque stream (the client's
+      -- per-note key). stream_id + payload are OPAQUE — the relay never
+      -- interprets them. A snapshot batch covering relay-seq N is the
+      -- compaction gate: once deposited, ops with seq <= N are GC'd
+      -- (snapshot-gated compaction, spine Phase 1b).
+      CREATE TABLE IF NOT EXISTS snapshots (
+        stream_id BLOB PRIMARY KEY,
+        snapshot_seq INTEGER NOT NULL,
+        payload BLOB NOT NULL,
+        created_at INTEGER NOT NULL
+      );
+
+      -- Single-row compaction watermark: highest relay-seq a deposited
+      -- snapshot batch has covered. Ops at/below it are GC-eligible.
+      CREATE TABLE IF NOT EXISTS group_meta (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        compaction_seq INTEGER NOT NULL DEFAULT 0
+      );
     `);
   }
 
   getRegistration(): { auth_key: Uint8Array; registered_at: number; intent: Uint8Array } | null {
-    const row = this.state.storage.sql
+    // NB: DO SQLite's cursor `.one()` THROWS on zero rows, so an
+    // unregistered group must be read with `.toArray()` + a length
+    // check — otherwise GET /registration on an absent group would 500
+    // instead of 404.
+    const rows = this.state.storage.sql
       .exec<{ auth_key: ArrayBuffer; registered_at: number; intent: ArrayBuffer }>(
         "SELECT auth_key, registered_at, intent FROM registration WHERE id = 1",
       )
-      .one();
+      .toArray();
+    const row = rows[0];
     if (!row) return null;
     return {
       auth_key: new Uint8Array(row.auth_key),
@@ -130,6 +187,8 @@ export class GroupDO implements DurableObject {
     this.state.storage.sql.exec("DELETE FROM registration");
     this.state.storage.sql.exec("DELETE FROM ops");
     this.state.storage.sql.exec("DELETE FROM device_seen");
+    this.state.storage.sql.exec("DELETE FROM snapshots");
+    this.state.storage.sql.exec("DELETE FROM group_meta");
   }
 
   insertOp(from_device: Uint8Array, ts: number, payload: Uint8Array): { seq: number; ts: number } {
@@ -176,34 +235,73 @@ export class GroupDO implements DurableObject {
         r.seq,
       );
     }
-    this.gcFullyAckedOps();
+    // DURABLE-REPLICA retention (encrypted-replica spine, Phase 1a): the
+    // relay KEEPS the full encrypted op log rather than evicting acked
+    // ops — it is the off-site backup + bootstrap source, so a wiped
+    // device restores the WHOLE mosaic via GET /ops?since=0. Eviction is
+    // no longer ack-gated; compaction is snapshot-gated (see
+    // depositSnapshotBatch). The ack_devices bookkeeping above is kept
+    // for cursor/known-member use. Mirrors the Rust `post_ack` change.
   }
 
-  private gcFullyAckedOps(): void {
+  // ── Snapshots + snapshot-gated compaction (spine Phase 1b) ─────────
+
+  /** Deposit a full snapshot batch covering relay-seq `coversSeq`, then
+   *  compact: upsert each per-stream snapshot, advance the watermark
+   *  (forward-only), and GC ops with seq <= coversSeq. Returns the
+   *  number of ops deleted. The DO serializes access so the three steps
+   *  are effectively atomic. Mirrors Rust `store::deposit_snapshot_batch`. */
+  depositSnapshotBatch(
+    coversSeq: number,
+    snapshots: Array<{ stream_id: Uint8Array; payload: Uint8Array }>,
+  ): number {
     const now = Math.floor(Date.now() / 1000);
-    const cutoff = now - KNOWN_MEMBER_TTL_SECS;
-    const knownRows = this.state.storage.sql.exec<{ device_id: ArrayBuffer }>(
-      "SELECT device_id FROM device_seen WHERE last_seen_ts > ?",
-      cutoff,
-    );
-    const known = new Set<string>([...knownRows].map((r) => bytesToHex(new Uint8Array(r.device_id))));
-    if (known.size === 0) return;
-    const opRows = this.state.storage.sql.exec<{ seq: number; ack_devices: string }>(
-      "SELECT seq, ack_devices FROM ops",
-    );
-    for (const r of opRows) {
-      const acked = new Set<string>(JSON.parse(r.ack_devices) as string[]);
-      let allAcked = true;
-      for (const k of known) {
-        if (!acked.has(k)) {
-          allAcked = false;
-          break;
-        }
-      }
-      if (allAcked) {
-        this.state.storage.sql.exec("DELETE FROM ops WHERE seq = ?", r.seq);
-      }
+    for (const s of snapshots) {
+      this.state.storage.sql.exec(
+        "INSERT INTO snapshots (stream_id, snapshot_seq, payload, created_at) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT (stream_id) DO UPDATE SET " +
+          "snapshot_seq = excluded.snapshot_seq, payload = excluded.payload, created_at = excluded.created_at",
+        s.stream_id.buffer,
+        coversSeq,
+        s.payload.buffer,
+        now,
+      );
     }
+    // Advance the compaction watermark (never regress).
+    this.state.storage.sql.exec(
+      "INSERT INTO group_meta (id, compaction_seq) VALUES (1, ?) " +
+        "ON CONFLICT (id) DO UPDATE SET compaction_seq = MAX(group_meta.compaction_seq, excluded.compaction_seq)",
+      coversSeq,
+    );
+    // Count then delete the superseded ops (COUNT is robust regardless
+    // of the DO cursor's rows-written semantics).
+    const cnt = this.state.storage.sql
+      .exec<{ n: number }>("SELECT COUNT(*) AS n FROM ops WHERE seq <= ?", coversSeq)
+      .one()!;
+    this.state.storage.sql.exec("DELETE FROM ops WHERE seq <= ?", coversSeq);
+    return Number(cnt.n);
+  }
+
+  /** Latest snapshot per opaque stream, ordered by stream_id. */
+  listSnapshots(): Array<{ stream_id: Uint8Array; snapshot_seq: number; payload: Uint8Array }> {
+    const rows = this.state.storage.sql.exec<{
+      stream_id: ArrayBuffer;
+      snapshot_seq: number;
+      payload: ArrayBuffer;
+    }>("SELECT stream_id, snapshot_seq, payload FROM snapshots ORDER BY stream_id ASC");
+    return [...rows].map((r) => ({
+      stream_id: new Uint8Array(r.stream_id),
+      snapshot_seq: Number(r.snapshot_seq),
+      payload: new Uint8Array(r.payload),
+    }));
+  }
+
+  /** Group's compaction watermark (0 if no snapshot deposited). */
+  getCompactionSeq(): number {
+    const rows = this.state.storage.sql
+      .exec<{ compaction_seq: number }>("SELECT compaction_seq FROM group_meta WHERE id = 1")
+      .toArray();
+    return rows[0] ? Number(rows[0].compaction_seq) : 0;
   }
 
   touchDevice(device: Uint8Array, ts: number): void {
@@ -225,6 +323,21 @@ export class GroupDO implements DurableObject {
     const existing = this.nonces.get(nonce);
     if (existing !== undefined && existing > now) return false;
     this.nonces.set(nonce, now + GroupDO.NONCE_TTL_MS);
+    return true;
+  }
+
+  /** Sliding-window per-IP rate limit. Returns false once an IP exceeds
+   *  RATE_LIMIT_MAX requests inside RATE_LIMIT_WINDOW_MS. */
+  checkIpRate(ip: string): boolean {
+    const now = Date.now();
+    const cutoff = now - RATE_LIMIT_WINDOW_MS;
+    const hits = (this.ipHits.get(ip) ?? []).filter((t) => t > cutoff);
+    if (hits.length >= RATE_LIMIT_MAX) {
+      this.ipHits.set(ip, hits);
+      return false;
+    }
+    hits.push(now);
+    this.ipHits.set(ip, hits);
     return true;
   }
 }

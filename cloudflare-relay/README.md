@@ -29,12 +29,25 @@ self-host.
 
 ## Status
 
-This is a **port of the Rust relay's wire surface** that has not yet
-been deployed against by a real client end-to-end. The protocol
-matches the design doc + the Rust implementation; the conformance
-test vectors from `crates/tesela-relay/tests/conformance.rs` should
-pass against this Worker once someone wires them up. Treat as
-beta until that happens.
+**Wire-conformant and proven against the Rust relay's own test suite.**
+The shared conformance harness in
+`crates/tesela-relay/tests/conformance.rs` runs against any base URL
+(set `TESELA_RELAY_CONFORMANCE_URL`); pointed at this Worker via
+`wrangler dev`, all 17 tests pass — identical coverage to the Rust
+self-host:
+
+```sh
+cd cloudflare-relay && npx wrangler dev --port 8787 &   # one terminal
+TESELA_RELAY_CONFORMANCE_URL=http://127.0.0.1:8787 \
+  cargo test -p tesela-relay --test conformance          # → 17 passed
+```
+
+That's registration/TOFU, MAC auth + replay window + nonce dedupe,
+monotonic ops, durable retention, snapshot-gated compaction, per-IP
+rate limiting, body-size cap, cross-group isolation, and admin
+recovery — all byte-identical on the wire to the Rust relay. Not yet
+deployed to a production Cloudflare account (that's the remaining
+`wrangler deploy` + free-tier-fit step).
 
 ## Architecture
 
@@ -47,8 +60,10 @@ beta until that happens.
                             │  ┌──────────────────────────┐│
                             │  │ Durable Object: group X  ││
                             │  │  - SQLite (registration, ││
-                            │  │    ops, device_seen)     ││
+                            │  │    ops, device_seen,     ││
+                            │  │    snapshots, group_meta)││
                             │  │  - in-memory nonce LRU   ││
+                            │  │  - in-memory IP ratelimit││
                             │  │  - MAC verify + replay   ││
                             │  └──────────────────────────┘│
                             └─────────────────────────────┘
@@ -113,34 +128,42 @@ the group_key client-side so the relay sees only opaque bytes.
 
 ## Conformance against the Rust self-host
 
-Both implementations were written against the same protocol doc, and
-the Rust side has a 13-test conformance harness at
-[`crates/tesela-relay/tests/conformance.rs`](../crates/tesela-relay/tests/conformance.rs).
-A future TODO is to port those tests to run against an arbitrary
-relay URL (Rust dev binary OR `wrangler dev`) so we can prove the two
-implementations are byte-identical on the wire.
+Both implementations are proven byte-identical on the wire by the SAME
+test suite. `crates/tesela-relay/tests/conformance.rs` honors a
+`TESELA_RELAY_CONFORMANCE_URL` env var: unset, it spawns the in-process
+Rust relay; set, it runs every (pure-HTTP) test against that URL. So
+the one suite gates both deployments — point it at `wrangler dev` and
+all 17 tests pass (see [Status](#status) for the command).
 
-Until that runs green here, treat the Worker as "should be correct,
-but not yet proven against the same test vectors."
+This is the "one suite, both implementations" guarantee: a client
+written against either relay works against both, because the MAC
+canonical-request format, body-hash, status codes, and JSON shapes are
+verified identical by the Rust client driving both servers.
 
 ## Storage limits
 
-Durable Object SQLite storage is currently 1 GB per DO. At realistic
-op sizes (~5 KB per envelope) that's room for ~200k unsent ops per
-group before the relay refuses inserts. Since the relay GCs ops once
-every known group member has acked, real-world usage stays nowhere
-near this — a single group typically has < 100 pending ops at any
-moment.
+Durable Object SQLite storage is currently 1 GB per DO. The relay is a
+**durable encrypted replica** — it RETAINS the full encrypted op log
+(it's the off-site backup + the fresh-device bootstrap source), so the
+log is bounded by **snapshot-gated compaction**, not by acks: when a
+device deposits a per-note snapshot batch via `PUT /snapshot` covering
+relay-seq N, the relay GCs ops with `seq <= N` (the snapshot supersedes
+them). A fresh/wiped device restores the whole mosaic from
+`GET /snapshots` + the `GET /ops?since=N` tail. Steady-state storage is
+~one compacted snapshot per note plus the un-compacted tail.
 
 ## What this Worker does NOT do
 
 - **Push notifications.** When a new op arrives, the Worker doesn't
   notify peers. Devices poll on their own cadence (the iOS RelayTicker
   polls every 5s). APNs / WebPush is its own (deferred) project.
-- **Rate limiting beyond the body-size cap.** CF's free tier enforces
-  request counts at the platform level; the Worker itself just lets
-  every request through. The Rust self-host has an explicit per-IP
-  sliding window which we don't replicate here.
+- **Global / cross-group rate limiting.** The Worker replicates the
+  Rust self-host's per-IP sliding window (1000 req / 10s → 429), but
+  *per Durable Object* (i.e. per group) rather than globally, since DO
+  state is per-group. An attacker spreading load across many group IDs
+  isn't globally throttled by this — CF's platform-level DDoS / rate
+  protection (and the native Rate Limiting binding) is the backstop for
+  that. Tightening to a global limit is a deploy-hardening follow-up.
 - **Compression.** Payloads are stored as-is. Envelopes are typically
   already compressed (postcard + AEAD ciphertext); double-compressing
   wouldn't help.

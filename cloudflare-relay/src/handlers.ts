@@ -130,7 +130,7 @@ interface PutOpBody {
 }
 
 export async function handlePutOp(self: GroupDO, req: Request): Promise<Response> {
-  const max = Number(self.env.TESELA_RELAY_MAX_BODY ?? "5242880");
+  const max = Number(self.env.TESELA_RELAY_MAX_BODY ?? "1048576");
   const raw = new Uint8Array(await req.arrayBuffer());
   if (raw.length > max) return json({ error: "body too large" }, 413);
 
@@ -184,14 +184,63 @@ export async function handlePostAck(self: GroupDO, req: Request): Promise<Respon
   const device = fromHex(body.device);
   if (device.length !== 16) return json({ error: "device must be 16 bytes" }, 400);
   self.ackOps(device, body.applied_seq);
+  self.touchDevice(device, Date.now() / 1000);
   return json({ status: "ok" });
+}
+
+// ─── /snapshot (PUT) + /snapshots (GET) — spine Phase 1b ───────────
+
+interface SnapshotEntry {
+  stream_id_b64: string;
+  payload_b64: string;
+}
+
+interface PutSnapshotBody {
+  covers_seq: number;
+  snapshots: SnapshotEntry[];
+}
+
+export async function handlePutSnapshot(self: GroupDO, req: Request): Promise<Response> {
+  const max = Number(self.env.TESELA_RELAY_MAX_BODY ?? "1048576");
+  const raw = new Uint8Array(await req.arrayBuffer());
+  if (raw.length > max) return json({ error: "body too large" }, 413);
+
+  const macCheck = await verifyMac(self, req, raw);
+  if (macCheck instanceof Response) return macCheck;
+
+  const body = JSON.parse(new TextDecoder().decode(raw)) as PutSnapshotBody;
+  if (!Array.isArray(body.snapshots)) return json({ error: "snapshots must be an array" }, 400);
+  // stream_id + payload are OPAQUE to the relay — decode b64 to bytes
+  // for storage, never interpret.
+  const decoded = body.snapshots.map((s) => ({
+    stream_id: fromB64(s.stream_id_b64),
+    payload: fromB64(s.payload_b64),
+  }));
+
+  const gc = self.depositSnapshotBatch(body.covers_seq, decoded);
+  return json({ ok: true, gc });
+}
+
+export async function handleGetSnapshots(self: GroupDO, req: Request): Promise<Response> {
+  const macCheck = await verifyMac(self, req, new Uint8Array());
+  if (macCheck instanceof Response) return macCheck;
+
+  const compaction_seq = self.getCompactionSeq();
+  const snapshots = self.listSnapshots().map((s) => ({
+    stream_id_b64: toB64(s.stream_id),
+    snapshot_seq: s.snapshot_seq,
+    payload_b64: toB64(s.payload),
+  }));
+  return json({ compaction_seq, snapshots });
 }
 
 // ─── /admin/registration (DELETE) ─────────────────────────────────
 
 export async function handleAdminDelete(self: GroupDO, req: Request): Promise<Response> {
+  // Admin endpoints are DISABLED (404) when no admin token is configured
+  // — matches the Rust handler's "admin endpoints disabled" 404.
   const expected = self.env.TESELA_RELAY_ADMIN_TOKEN;
-  if (!expected) return json({ error: "admin not configured" }, 503);
+  if (!expected) return new Response("admin endpoints disabled", { status: 404 });
   const auth = req.headers.get("authorization") ?? "";
   const expectedHeader = `Bearer ${expected}`;
   // Constant-time string compare (Web Crypto doesn't have one).
@@ -200,8 +249,12 @@ export async function handleAdminDelete(self: GroupDO, req: Request): Promise<Re
   for (let i = 0; i < auth.length; i++) diff |= auth.charCodeAt(i) ^ expectedHeader.charCodeAt(i);
   if (diff !== 0) return json({ error: "unauthorized" }, 401);
 
+  // 204 on a real delete, 404 if the group wasn't registered — mirrors
+  // the Rust `delete_registration` rows-affected check.
+  const existed = self.getRegistration() !== null;
   self.deleteRegistration();
-  return json({ status: "deleted" });
+  if (!existed) return new Response("group not registered", { status: 404 });
+  return new Response(null, { status: 204 });
 }
 
 // ─── helpers ──────────────────────────────────────────────────────
