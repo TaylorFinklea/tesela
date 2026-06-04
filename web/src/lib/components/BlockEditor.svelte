@@ -174,27 +174,90 @@
     // mode tracker reports "VISUAL" because it sees a multi-char selection.
     // Returning `oldAnchor` (the original cursor before line-expansion) is
     // the standard collapse signal.
+    // ── Register / clipboard helpers (vim #5/#6) ─────────────────────────
+    // Char-wise yank/delete must populate vim's GLOBAL register controller:
+    // each block is its own cm-vim instance, so any per-instance memory is
+    // lost the moment the cursor crosses into another block. The global
+    // controller is the only register state that survives `yw` here → `p`
+    // there. We also mirror to the OS clipboard, matching the nvim
+    // `clipboard=unnamedplus` muscle memory the user expects.
+    const rc = () => Vim.getRegisterController();
+    const toClipboard = (text: string) => {
+      try {
+        if (text && typeof navigator !== "undefined" && navigator.clipboard) {
+          void navigator.clipboard.writeText(text);
+        }
+      } catch {
+        /* clipboard unavailable (focus/permission) — register is still set */
+      }
+    };
+    // A block-level (linewise) cut/copy. The real (sub)tree lives in the
+    // outliner's blockClipboard; we only stamp the GLOBAL register linewise so
+    // a later `p` chooses whole-block paste over inline paste — and so a prior
+    // char-wise yank can't make `p` inline-paste stale text after a `yy`.
+    const markBlockRegister = (
+      cm: any,
+      args: any,
+      anchor: any,
+      op: "yank" | "delete",
+    ) => {
+      let line = "";
+      try {
+        line = cm?.getLine?.(anchor?.line ?? 0) ?? "";
+      } catch {
+        line = "";
+      }
+      rc().pushText(args?.registerName, op, line, true, false);
+      if (line) toClipboard(line);
+    };
+    // Inline char-wise paste at the cursor (vim `p` pastes AFTER the cursor).
+    // Blocks are single-line, so register text is newline-free here.
+    const pasteCharwise = (cm: any, text: string, repeat: number) => {
+      const body = text.repeat(Math.max(1, repeat || 1));
+      const cur = cm.getCursor();
+      const lineLen = cm.getLine(cur.line).length;
+      const ch = lineLen === 0 ? 0 : Math.min(cur.ch + 1, lineLen);
+      const at = { line: cur.line, ch };
+      cm.replaceRange(body, at, at);
+      cm.setCursor({ line: at.line, ch: at.ch + body.length - 1 });
+    };
+
     Vim.defineOperator("delete", (cm: any, args: any, ranges: any, oldAnchor: any) => {
       if (args?.linewise) {
         if (vimCtx.visualMode) vimCtx.visualDelete?.();
         else vimCtx.deleteBlock?.();
+        markBlockRegister(cm, args, oldAnchor, "delete");
         return oldAnchor;
       }
+      // Char-wise (dw, d$, dt<x>, …): capture the cut text → register +
+      // clipboard BEFORE deleting, so `p` / `"ap` can paste it back.
+      let text = "";
+      for (let i = 0; i < ranges.length; i++) {
+        text += cm.getRange(ranges[i].anchor, ranges[i].head);
+      }
+      rc().pushText(args?.registerName, "delete", text, false, false);
+      toClipboard(text);
       for (let i = ranges.length - 1; i >= 0; i--) {
         cm.replaceRange("", ranges[i].anchor, ranges[i].head);
       }
       return oldAnchor;
     });
 
-    Vim.defineOperator("yank", (_cm: any, args: any, _ranges: any, oldAnchor: any) => {
+    Vim.defineOperator("yank", (cm: any, args: any, ranges: any, oldAnchor: any) => {
       if (args?.linewise) {
         if (vimCtx.visualMode) vimCtx.visualYank?.();
         else vimCtx.yankBlock?.();
+        markBlockRegister(cm, args, oldAnchor, "yank");
         return oldAnchor;
       }
-      // Non-linewise yank is a no-op here — we don't have access to vim's
-      // register controller from this scope. Users wanting partial-line yank
-      // can use OS clipboard.
+      // Char-wise yank (yw, yiw, y$, …): the motion already expanded `ranges`
+      // to the yanked span — capture it → register + clipboard.
+      let text = "";
+      for (let i = 0; i < ranges.length; i++) {
+        text += cm.getRange(ranges[i].anchor, ranges[i].head);
+      }
+      rc().pushText(args?.registerName, "yank", text, false, false);
+      toClipboard(text);
       return oldAnchor;
     });
 
@@ -210,7 +273,19 @@
       return oldAnchor;
     });
 
-    Vim.defineAction("pasteBlock", () => { vimCtx.pasteBlock?.(); });
+    // `p` is register-aware: char-wise register content (dw/yw/"ayw → p)
+    // pastes INLINE after the cursor; linewise or empty registers fall through
+    // to the outliner's whole-block paste (yy/dd/Y → p). The active register
+    // ("a etc.) rides in on actionArgs.registerName.
+    Vim.defineAction("pasteBlock", (cm: any, actionArgs: any) => {
+      const reg = rc().getRegister(actionArgs?.registerName);
+      const text = reg ? reg.toString() : "";
+      if (text && !reg.linewise) {
+        pasteCharwise(cm, text, actionArgs?.repeat ?? 1);
+      } else {
+        vimCtx.pasteBlock?.();
+      }
+    });
     Vim.mapCommand("p", "action", "pasteBlock", {}, { context: "normal" });
 
     Vim.defineAction("newBlockBelow", () => { vimCtx.newBlockBelow?.(); });
@@ -222,9 +297,10 @@
     // `Y` defaults to operatorMotion (yank to line). Our user mapping is
     // unshifted to the front of the keymap so it wins the iteration. Routes
     // through yankBlock action which respects block-visual mode.
-    Vim.defineAction("yankBlockSingle", () => {
+    Vim.defineAction("yankBlockSingle", (cm: any) => {
       if (vimCtx.visualMode) vimCtx.visualYank?.();
       else vimCtx.yankBlock?.();
+      markBlockRegister(cm, {}, cm?.getCursor?.() ?? { line: 0, ch: 0 }, "yank");
     });
     Vim.mapCommand("Y", "action", "yankBlockSingle", {}, { context: "normal" });
 
