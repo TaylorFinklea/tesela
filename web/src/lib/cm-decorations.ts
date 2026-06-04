@@ -106,11 +106,21 @@ const MD_ITALIC_RE = /\*([^*\n]+?)\*/g;
 const MD_CODE_RE = /`([^`\n]+?)`/g;
 const MD_STRIKE_RE = /~~([^~\n]+?)~~/g;
 const MD_HEADING_RE = /^(#{1,6})([ \t]+)(.*)$/gm;
+// `[text](url)` — the `[[wiki]]` form never matches (it has no `](`), so the
+// two link syntaxes don't collide.
+const MD_LINK_RE = /\[([^\]\n]+)\]\(([^)\n]+)\)/g;
+// `> quote` (one optional space after `>`).
+const MD_QUOTE_RE = /^(>[ \t]?)(.*)$/gm;
 
 const mdBoldMark = Decoration.mark({ class: "cm-tesela-md-bold" });
 const mdItalicMark = Decoration.mark({ class: "cm-tesela-md-italic" });
 const mdCodeMark = Decoration.mark({ class: "cm-tesela-md-code" });
 const mdStrikeMark = Decoration.mark({ class: "cm-tesela-md-strike" });
+const mdLinkMark = Decoration.mark({ class: "cm-tesela-md-link" });
+const mdQuoteLineDeco = Decoration.line({ attributes: { class: "cm-tesela-md-quote" } });
+// Hides a ``` fence delimiter line entirely (display:none) so a fenced block
+// reads as a clean code surface when the block isn't being edited.
+const mdCodeFenceHideLine = Decoration.line({ attributes: { class: "cm-tesela-md-code-fence-hidden" } });
 // Zero-width replace that removes a marker (`**`, `` ` ``, `### `) from the
 // rendered (unfocused) view entirely.
 const mdMarkerHide = Decoration.replace({});
@@ -521,6 +531,44 @@ function buildDecorations(view: EditorView): Built {
       decos.push({ from: line.from, to: line.from, decoration: headingLineDeco(level) });
       hideMarker(m.index, markerEnd);
     }
+
+    // `[text](url)` links — style the text, hide the `[` and `](url)`. (Click
+    // currently just focuses the block → raw; open-in-browser is a follow-up.)
+    MD_LINK_RE.lastIndex = 0;
+    while ((m = MD_LINK_RE.exec(doc)) !== null) {
+      const from = m.index;
+      const to = m.index + m[0].length;
+      if (literal(from)) {
+        MD_LINK_RE.lastIndex = from + 1;
+        continue;
+      }
+      const textEnd = from + 1 + m[1].length;
+      hideMarker(from, from + 1); // `[`
+      hideMarker(textEnd, to); // `](url)`
+      if (textEnd > from + 1) decos.push({ from: from + 1, to: textEnd, decoration: mdLinkMark });
+    }
+
+    // `> ` blockquotes — line styling + hide the marker.
+    MD_QUOTE_RE.lastIndex = 0;
+    while ((m = MD_QUOTE_RE.exec(doc)) !== null) {
+      if (literal(m.index)) continue;
+      const line = view.state.doc.lineAt(m.index);
+      decos.push({ from: line.from, to: line.from, decoration: mdQuoteLineDeco });
+      hideMarker(m.index, m.index + m[1].length);
+    }
+
+    // Fenced ``` blocks: hide the delimiter lines so the block reads as a
+    // clean code surface (the content lines keep their painted background from
+    // the always-on pass above). Closed fences hide both ends; an unclosed one
+    // hides only the opener.
+    for (const region of codeRanges) {
+      const openLine = view.state.doc.lineAt(region.from);
+      decos.push({ from: openLine.from, to: openLine.from, decoration: mdCodeFenceHideLine });
+      if (region.closed) {
+        const closeLine = view.state.doc.lineAt(region.to);
+        decos.push({ from: closeLine.from, to: closeLine.from, decoration: mdCodeFenceHideLine });
+      }
+    }
   }
 
   decos.sort((a, b) => a.from - b.from || a.to - b.to);
@@ -826,4 +874,21 @@ export const teselaDecorationTheme = EditorView.theme({
   ".cm-tesela-md-h4": { fontSize: "1.08em" },
   ".cm-tesela-md-h5": { fontSize: "1em", opacity: "0.92" },
   ".cm-tesela-md-h6": { fontSize: "0.92em", opacity: "0.82" },
+  ".cm-tesela-md-link": {
+    color: "var(--primary)",
+    textDecoration: "underline",
+    textDecorationColor: "color-mix(in srgb, var(--primary) 30%, transparent)",
+    textUnderlineOffset: "3px",
+    textDecorationThickness: "1px",
+    cursor: "pointer",
+  },
+  ".cm-tesela-md-quote": {
+    borderLeft: "3px solid color-mix(in srgb, var(--foreground) 18%, transparent)",
+    paddingLeft: "10px",
+    color: "var(--muted-foreground)",
+    fontStyle: "italic",
+  },
+  ".cm-tesela-md-code-fence-hidden": {
+    display: "none",
+  },
 });
