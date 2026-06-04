@@ -1134,8 +1134,15 @@
       // splice); the prop is merely lagging. Don't clobber the live text.
       return;
     }
+    // Preserve the cursor at its current offset (clamped to the new length).
+    // A full-doc replace with no `selection` collapses the cursor to 0 — the
+    // "cursor randomly jumps to the start of the block" bug when an external
+    // reseed (refresh / own-echo / remote update) lands while editing.
+    const sel = v.state.selection.main;
+    const len = initialText.length;
     v.dispatch({
       changes: { from: 0, to: v.state.doc.length, insert: initialText },
+      selection: { anchor: Math.min(sel.anchor, len), head: Math.min(sel.head, len) },
       // `addToHistory: false` excludes this transaction from cm6's per-block
       // history — so after `u` rewrites the doc, a subsequent local `Cmd+Z`
       // can't walk back through the just-undone state.

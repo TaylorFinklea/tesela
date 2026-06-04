@@ -1361,6 +1361,14 @@
     // Outdent at root is a no-op; otherwise the parent and all descendants
     // shift uniformly so subtree relationships are preserved.
     if (direction === "outdent" && block.indent_level === 0) return;
+    // Logseq rule: a block can only indent to become a child of the block
+    // directly above it — at most ONE level deeper than that predecessor. No
+    // predecessor (vi 0), or already at predecessor-depth + 1 → no-op (this is
+    // what stops indenting a block past a valid parent-child relationship).
+    if (direction === "indent") {
+      const prev = visibleBlocks[vi - 1];
+      if (!prev || block.indent_level > prev.indent_level) return;
+    }
     pushUndo();
     const delta = direction === "indent" ? 1 : -1;
     const ids = subtreeIds(block);
@@ -1654,6 +1662,14 @@
       for (const id of subtreeIds(b)) ids.add(id);
     }
     if (ids.size === 0) return;
+    // Depth cap (mirrors handleIndent): the topmost selected block can only
+    // indent to predecessor-depth + 1; if it can't, no-op the whole bulk shift.
+    if (direction === "indent") {
+      const minVi = Math.min(...visualRange);
+      const top = visibleBlocks[minVi];
+      const prev = visibleBlocks[minVi - 1];
+      if (!top || !prev || top.indent_level > prev.indent_level) return;
+    }
     pushUndo();
     const delta = direction === "indent" ? 1 : -1;
     blocks = blocks.map((b) => ids.has(b.id) ? { ...b, indent_level: Math.max(0, b.indent_level + delta) } : b);
