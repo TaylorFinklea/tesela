@@ -10,7 +10,7 @@
   // when a block unmounts). Actions read from this ctx at call time instead.
   const vimCtx: {
     view: EditorView | null;
-    navigate: ((dir: "up" | "down") => void) | null;
+    navigate: ((dir: "up" | "down", count?: number) => void) | null;
     pageJump: ((dir: "up" | "down") => void) | null;
     /** Jump to the previous / next top-level (indent_level === 0) block.
      *  Lets `[` / `]` skip past nested sub-blocks the way vim's `{` / `}`
@@ -101,17 +101,25 @@
       return false;
     }
 
-    Vim.defineAction("moveDownOrNextBlock", () => {
+    Vim.defineAction("moveDownOrNextBlock", (_cm: any, actionArgs: any) => {
       if (vimCtx.visualMode) { vimCtx.visualNav?.("down"); return; }
+      // `3j` → jump 3 blocks down (counts, vim #2). A count skips the
+      // visual-line step (which only makes sense for a single `j` inside a
+      // wrapped block); the outliner's navigate clamps focusedIndex+count.
+      const count = Math.max(1, Number(actionArgs?.repeat) || 1);
+      if (count > 1) { vimCtx.navigate?.("down", count); return; }
       if (!visualLineMove(true)) vimCtx.navigate?.("down");
     });
     Vim.mapCommand("j", "action", "moveDownOrNextBlock", {}, { context: "normal" });
 
-    Vim.defineAction("moveUpOrPrevBlock", () => {
+    Vim.defineAction("moveUpOrPrevBlock", (_cm: any, actionArgs: any) => {
       if (vimCtx.visualMode) { vimCtx.visualNav?.("up"); return; }
+      const count = Math.max(1, Number(actionArgs?.repeat) || 1);
+      if (count > 1) { vimCtx.navigate?.("up", count); return; }
       if (!visualLineMove(false)) vimCtx.navigate?.("up");
     });
     Vim.mapCommand("k", "action", "moveUpOrPrevBlock", {}, { context: "normal" });
+
 
     Vim.defineAction("openLeaderMenu", () => { vimCtx.leader?.(); });
     Vim.mapCommand("<Space>", "action", "openLeaderMenu", {}, { context: "normal" });
