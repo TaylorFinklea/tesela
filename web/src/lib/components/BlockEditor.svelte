@@ -1311,6 +1311,30 @@
         if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return false;
         if (e.button !== 0) return false;
         const tgt = e.target as HTMLElement;
+        // Markdown link → open the URL in a new tab. The `[text](url)` decoration
+        // only renders when the block is UNFOCUSED, so a click here is a click on
+        // a rendered link (not an edit); preventDefault keeps the editor from
+        // focusing into raw mode. (Opening externally on the Tauri desktop wants
+        // the opener plugin — a follow-up; window.open is correct on web.)
+        if (tgt.closest?.(".cm-tesela-md-link")) {
+          const p = v.posAtCoords({ x: e.clientX, y: e.clientY });
+          if (p !== null) {
+            const d = v.state.doc.toString();
+            for (const mm of d.matchAll(/\[([^\]\n]+)\]\(([^)\n]+)\)/g)) {
+              const s = mm.index ?? -1;
+              if (s >= 0 && p >= s && p <= s + mm[0].length) {
+                const url = mm[2].trim();
+                if (url) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  window.open(url, "_blank", "noopener,noreferrer");
+                  return true;
+                }
+                break;
+              }
+            }
+          }
+        }
         const linkEl = tgt.closest?.(".cm-tesela-wikilink, .cm-tesela-wikilink-bracket");
         if (!linkEl) return false;
         if (getVimMode() !== "NORMAL") return false;

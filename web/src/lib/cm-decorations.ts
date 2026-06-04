@@ -53,6 +53,43 @@ class TagChipWidget extends WidgetType {
   ignoreEvent() { return false; }
 }
 
+/** Inline image rendered from `![alt](url)` (markdown render, unfocused). */
+class ImageWidget extends WidgetType {
+  readonly src: string;
+  readonly alt: string;
+  constructor(src: string, alt: string) {
+    super();
+    this.src = src;
+    this.alt = alt;
+  }
+  toDOM() {
+    const img = document.createElement("img");
+    img.src = this.src;
+    img.alt = this.alt;
+    img.className = "cm-tesela-md-image";
+    img.loading = "lazy";
+    return img;
+  }
+  eq(other: ImageWidget) {
+    return other.src === this.src && other.alt === this.alt;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
+
+/** Thematic break rendered from a `---` / `***` / `___` line. */
+class HrWidget extends WidgetType {
+  toDOM() {
+    const el = document.createElement("hr");
+    el.className = "cm-tesela-md-hr";
+    return el;
+  }
+  eq() {
+    return true;
+  }
+}
+
 // Phase 9.4's inline KindBadgeWidget (the all-caps red TASK / URGENT chip
 // prepended to block-line 0) was removed in 9.7 — the right-side tag pill
 // is the canonical kind indicator now, freeing the left edge of the editor
@@ -106,16 +143,25 @@ const MD_ITALIC_RE = /\*([^*\n]+?)\*/g;
 const MD_CODE_RE = /`([^`\n]+?)`/g;
 const MD_STRIKE_RE = /~~([^~\n]+?)~~/g;
 const MD_HEADING_RE = /^(#{1,6})([ \t]+)(.*)$/gm;
+// `![alt](url)` images — matched BEFORE links (the `[alt](url)` tail would
+// otherwise be read as a plain link).
+const MD_IMAGE_RE = /!\[([^\]\n]*)\]\(([^)\n]+)\)/g;
 // `[text](url)` — the `[[wiki]]` form never matches (it has no `](`), so the
 // two link syntaxes don't collide.
 const MD_LINK_RE = /\[([^\]\n]+)\]\(([^)\n]+)\)/g;
 // `> quote` (one optional space after `>`).
 const MD_QUOTE_RE = /^(>[ \t]?)(.*)$/gm;
+// `==highlight==`.
+const MD_HIGHLIGHT_RE = /==([^=\n]+?)==/g;
+// A line of 3+ `-`/`*`/`_` (optionally space-separated) → a thematic break.
+const MD_HR_RE = /^[ \t]*([-*_])(?:[ \t]*\1){2,}[ \t]*$/gm;
 
 const mdBoldMark = Decoration.mark({ class: "cm-tesela-md-bold" });
 const mdItalicMark = Decoration.mark({ class: "cm-tesela-md-italic" });
 const mdCodeMark = Decoration.mark({ class: "cm-tesela-md-code" });
 const mdStrikeMark = Decoration.mark({ class: "cm-tesela-md-strike" });
+const mdHighlightMark = Decoration.mark({ class: "cm-tesela-md-highlight" });
+const mdHrReplace = Decoration.replace({ widget: new HrWidget() });
 const mdLinkMark = Decoration.mark({ class: "cm-tesela-md-link" });
 const mdQuoteLineDeco = Decoration.line({ attributes: { class: "cm-tesela-md-quote" } });
 // Hides a ``` fence delimiter line entirely (display:none) so a fenced block
@@ -454,14 +500,33 @@ function buildDecorations(view: EditorView): Built {
       if (to > from) decos.push({ from, to, decoration: mdMarkerHide });
     };
 
-    // Inline `code` spans first — their content is literal, so other inline
+    // Images `![alt](url)` — replace with an inline <img> (http(s) only in v1;
+    // relative/attachment paths stay raw until there's an attachments HTTP
+    // route). Matched FIRST + recorded so the `[alt](url)` tail isn't also read
+    // as a plain link, and so inline markup inside doesn't fire.
+    const imageRanges: Array<[number, number]> = [];
+    MD_IMAGE_RE.lastIndex = 0;
+    while ((m = MD_IMAGE_RE.exec(doc)) !== null) {
+      const from = m.index;
+      const to = m.index + m[0].length;
+      if (insideCode(from)) {
+        MD_IMAGE_RE.lastIndex = from + 1;
+        continue;
+      }
+      const url = m[2].trim();
+      if (!/^https?:\/\//i.test(url)) continue; // only external for now
+      imageRanges.push([from, to]);
+      decos.push({ from, to, decoration: Decoration.replace({ widget: new ImageWidget(url, m[1]) }) });
+    }
+
+    // Inline `code` spans next — their content is literal, so other inline
     // markup inside them is left untouched.
     const codeSpanRanges: Array<[number, number]> = [];
     MD_CODE_RE.lastIndex = 0;
     while ((m = MD_CODE_RE.exec(doc)) !== null) {
       const from = m.index;
       const to = m.index + m[0].length;
-      if (insideCode(from)) {
+      if (insideCode(from) || imageRanges.some(([a, b]) => from >= a && from < b)) {
         MD_CODE_RE.lastIndex = from + 1;
         continue;
       }
@@ -471,7 +536,9 @@ function buildDecorations(view: EditorView): Built {
       if (to - 1 > from + 1) decos.push({ from: from + 1, to: to - 1, decoration: mdCodeMark });
     }
     const literal = (i: number): boolean =>
-      insideCode(i) || codeSpanRanges.some(([a, b]) => i >= a && i < b);
+      insideCode(i) ||
+      codeSpanRanges.some(([a, b]) => i >= a && i < b) ||
+      imageRanges.some(([a, b]) => i >= a && i < b);
 
     // Bold (`**` / `__`). Record ranges so italic can't re-match the inner `*`.
     const boldRanges: Array<[number, number]> = [];
@@ -520,6 +587,20 @@ function buildDecorations(view: EditorView): Built {
       if (to - 2 > from + 2) decos.push({ from: from + 2, to: to - 2, decoration: mdStrikeMark });
     }
 
+    // Highlight (`==…==`).
+    MD_HIGHLIGHT_RE.lastIndex = 0;
+    while ((m = MD_HIGHLIGHT_RE.exec(doc)) !== null) {
+      const from = m.index;
+      const to = m.index + m[0].length;
+      if (literal(from)) {
+        MD_HIGHLIGHT_RE.lastIndex = from + 1;
+        continue;
+      }
+      hideMarker(from, from + 2);
+      hideMarker(to - 2, to);
+      if (to - 2 > from + 2) decos.push({ from: from + 2, to: to - 2, decoration: mdHighlightMark });
+    }
+
     // ATX headings (`# …` through `###### …`) — line-level size/weight, the
     // `### ` prefix hidden.
     MD_HEADING_RE.lastIndex = 0;
@@ -555,6 +636,16 @@ function buildDecorations(view: EditorView): Built {
       const line = view.state.doc.lineAt(m.index);
       decos.push({ from: line.from, to: line.from, decoration: mdQuoteLineDeco });
       hideMarker(m.index, m.index + m[1].length);
+    }
+
+    // Horizontal rules (`---` / `***` / `___` alone on a line) → an <hr>.
+    MD_HR_RE.lastIndex = 0;
+    while ((m = MD_HR_RE.exec(doc)) !== null) {
+      if (literal(m.index)) continue;
+      const line = view.state.doc.lineAt(m.index);
+      if (line.to > line.from) {
+        decos.push({ from: line.from, to: line.to, decoration: mdHrReplace });
+      }
     }
 
     // Fenced ``` blocks: hide the delimiter lines so the block reads as a
@@ -890,5 +981,23 @@ export const teselaDecorationTheme = EditorView.theme({
   },
   ".cm-tesela-md-code-fence-hidden": {
     display: "none",
+  },
+  ".cm-tesela-md-highlight": {
+    background: "color-mix(in srgb, #ffd54f 38%, transparent)",
+    borderRadius: "3px",
+    padding: "0.02em 0.18em",
+  },
+  ".cm-tesela-md-image": {
+    maxWidth: "100%",
+    maxHeight: "340px",
+    borderRadius: "6px",
+    margin: "4px 0",
+    display: "block",
+  },
+  "hr.cm-tesela-md-hr": {
+    border: "none",
+    borderTop: "1px solid color-mix(in srgb, var(--foreground) 20%, transparent)",
+    margin: "8px 0",
+    width: "100%",
   },
 });
