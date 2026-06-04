@@ -1,5 +1,22 @@
 # Tesela Roadmap
 
+## Product Roadmap — refined order (2026-06-03, Taylor + agent)
+
+Taylor's proposed order, refined together. Arc = **infra → platform → features → collaboration**. Sync spec: `phases/2026-06-03-encrypted-replica-spine-spec.md`.
+
+1. **Cloud sync from Cloudflare** ← IN PROGRESS (encrypted-replica spine). Phase 1a durable encrypted relay backup + restore ✓ `e936f56`; 1b-i relay snapshot store + snapshot-gated compaction ✓ `e8be948`. Next: 1b-ii (client snapshot-export + bootstrap-from-snapshot) → Phase 2 (CF Worker + DO + R2). **Pull the MINIMUM key/pairing model in here** — cloud sync isn't usable beyond already-paired devices without it (the "user password" of step 4 is part of this same key model).
+2. **Native desktop app.** ⚠ **KEY OPEN DECISION (the hinge of the roadmap): Tauri-wrap the SvelteKit `/g`** (small step 2; step 3 feature work then SHARED by web+desktop) **vs a fresh SwiftUI macOS app** (two UI codebases; step 3 done twice). "Wrapper" implies Tauri — lean that way, confirm before starting. Sync lives in shared Rust `tesela-sync` (FFI) either way.
+3. **Mature apps for daily use** — DECOMPOSE (4+ milestones, sequence by daily-driver pain): (a) editor/render — markdown render, code blocks, vim polish (daily-blocking, interleave early); (b) properties + types system (`project_property_system_vision`); (c) widgets / AnyType rail; (d) whiteboarding = its own BIG bet, defer past Logseq-DB parity. Goal: full Logseq-DB replacement.
+4. **Onboarding + pairing + sync maturity + user-provided encryption password** (passphrase-derived key). Min slice pulled into 1.
+5. **Web: standalone OR connected-to-sync.** ⚠ Question standalone-web (local Loro engine + offline = lots of work for a non-endgame surface). "Web connected to the cloud spine" is nearly free (falls out of 1+2). Likely shrink 5 to that; defer/drop standalone-web.
+6. **P2P mode (iOS/iPad/macOS).** LAN direct device↔device over the same sealed Loro deltas + the Cloud↔Local-only toggle. (Browsers can't LAN-P2P.) Independent of 7.
+7. **Real multi-device — SPLIT:** (7a) presence/remote cursors for YOUR OWN devices — works over any transport, moderate; (7b) TRUE multi-user (accounts, Ed25519 identity, ACL, "see Savanne") — a MASSIVE phase of its own (`project_savanne_collaborator`).
+8. sharing/publishing • app-store distribution + auto-update • history/audit + per-author attribution • AI/agent over your notes (MCP) • monetization/sustainability.
+
+**Cross-cutting (not one step):** backup/restore + DR UX (you now HAVE the encrypted cloud backup → surface "restore" + local export); reliability + observability (sync-status indicator, conflict surfacing, telemetry); public-endpoint security hardening (rate-limit/abuse) + **Ed25519 device identity** (pairing has no identity binding today — mandatory once Savanne/public CF exists); conflict/merge UX for non-text (block delete-vs-edit, multi-value props LWW); import/export (Obsidian/Logseq/Notion); perf + search at scale. **Meta:** infra-first is right (multi-device is the current pain), but Taylor daily-drives this → interleave cheap daily wins (markdown/code render) during 1–2.
+
+---
+
 ## Now / Next / Later
 
 Active items. Trim as completed.
