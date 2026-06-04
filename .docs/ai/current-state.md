@@ -1,5 +1,12 @@
 # Current State
 
+## 2026-06-04 — Spine 1b-iii (server): snapshot cadence + bootstrap wired into the LIVE relay tick
+
+**The Phase-1 spine mechanism now runs in the live server code, not just the e2e harness** (`a845dbf`). `sync_relay::tick` periodically deposits per-note snapshots covering the applied cursor (env `TESELA_RELAY_SNAPSHOT_INTERVAL_SECS`, default 300s) → the relay compacts its retained op log; and bring-up now `bootstrap_from_snapshots`: if the relay's compaction watermark is ahead of our cursor, import each snapshot + jump the cursor (fresh + long-offline restore), then poll the tail. `RelayState` gained `last_snapshot_at`. Unit test (added `tesela-relay` dev-dep): the LIVE `tick` deposits → relay compacts → a fresh engine restores byte-identically from snapshots alone. **42 tesela-server tests green.**
+- **Caveat (by design):** the relay tick is currently DORMANT in prod (`[sync.relay]` bypassed; the live path is the Mac-hub WS). This wires the mechanism so it "just works" when the relay/CF spine is enabled. **Remaining for the spine to go live:** (a) the CF deploy (#189, needs Taylor's account), (b) the iOS `RelayTicker` mirror — needs NEW FFI methods (`put_snapshots`/`fetch_snapshots` aren't exposed through `tesela-sync-ffi` yet), (c) re-point clients at the relay + demote the Mac from hub. Also still open: #195 (Rust relay full-compaction seq reset).
+
+---
+
 ## 2026-06-04 — Desktop app (Tauri) — DECISION LOCKED + MVP WORKING on the real mosaic
 
 **Decision (locked, two-Claude + Taylor's own usage all agreed): Tauri-wrap the `/g` web UI, NOT a fresh SwiftUI Mac app.** Reasoning in `decisions.md` 2026-06-03 + the spec `.docs/ai/phases/2026-06-03-tauri-desktop-spec.md`. Short version: `/g` is the most mature surface (CodeMirror+vim, ⌘K, leader, Loro collab); reuse it 100% → step-3 features build ONCE for web+desktop. SwiftUI would rebuild it all, starting from the iOS app which is *behind* `/g`. Native-feel cost ≈ 0 for a vim user in a controlled CM editor. Reversible (FFI/iOS path intact; SwiftUI Mac shelved as a possible premium tier).
