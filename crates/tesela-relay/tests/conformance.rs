@@ -1078,6 +1078,96 @@ async fn test_13_admin_recovery() {
     assert_eq!(g.status().as_u16(), 404, "registration must be gone");
 }
 
+// ─── Tests 14–15: edge cases both impls must agree on ──────────────
+// (Added after an adversarial review of the Cloudflare Worker port
+// surfaced a silent-zero-device bug + an un-capped /ack body. Both are
+// fixed; these lock the behaviour into the shared suite so neither
+// implementation can regress.)
+
+#[tokio::test]
+async fn test_14_non_hex_device_id_rejected() {
+    // A 32-char-but-non-hex `from_device` must 400 — NOT be silently
+    // coerced to the all-zero device (which would misattribute ops), and
+    // NOT 500. The MAC is valid over the body; only the field is bad.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let device = random_device_id_hex();
+    let now = now_secs();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now))
+        .send()
+        .await
+        .unwrap();
+
+    let path = format!("/groups/{}/ops", hex::encode(group.id.as_bytes()));
+    let bad_device = "z".repeat(32); // even length, passes hex-len, not hex
+    let put_body = json!({ "from_device": bad_device, "payload_b64": b64(b"x") });
+    let body_bytes = serde_json::to_vec(&put_body).unwrap();
+    let headers = auth_headers(&group, &device, "PUT", &path, "", &body_bytes);
+    let r = client
+        .put(format!("{}{}", relay.base_url, path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "non-hex from_device must 400, got {}",
+        r.status()
+    );
+}
+
+#[tokio::test]
+async fn test_15_ack_body_size_cap() {
+    // The body-size cap applies to ALL MAC-gated endpoints, not just
+    // PUT /ops — an over-cap POST /ack must 413 (it's an authenticated
+    // DoS surface otherwise).
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let device = random_device_id_hex();
+    let now = now_secs();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now))
+        .send()
+        .await
+        .unwrap();
+
+    let ack_path = format!("/groups/{}/ack", hex::encode(group.id.as_bytes()));
+    // Pad the JSON past 1 MiB with an ignored field; the cap fires in
+    // the auth gate before the body is even deserialised.
+    let pad = vec![b'x'; 2 * 1024 * 1024];
+    let ack_body = json!({ "device": device, "applied_seq": 1, "_pad": b64(&pad) });
+    let body_bytes = serde_json::to_vec(&ack_body).unwrap();
+    let headers = auth_headers(&group, &device, "POST", &ack_path, "", &body_bytes);
+    let r = client
+        .post(format!("{}{}", relay.base_url, ack_path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        413,
+        "over-cap ack body must 413, got {}",
+        r.status()
+    );
+}
+
 // Suppress "field is never read" while stages 3b–3d wire up endpoints
 // that actually USE the test relay's admin_token field.
 #[allow(dead_code)]

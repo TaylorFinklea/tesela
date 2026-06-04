@@ -313,15 +313,31 @@ export class GroupDO implements DurableObject {
     );
   }
 
+  /** Hard upper bound on remembered nonces per DO — a backstop so a
+   *  sustained burst of distinct nonces can't grow the map without limit
+   *  (the rate limiter already bounds the inflow rate). */
+  private static readonly NONCE_HARD_CAP = 50_000;
+
   recordNonce(nonce: string): boolean {
     const now = Date.now();
-    if (this.nonces.size > 1000) {
-      for (const [k, exp] of this.nonces) {
-        if (exp < now) this.nonces.delete(k);
-      }
-    }
     const existing = this.nonces.get(nonce);
     if (existing !== undefined && existing > now) return false;
+
+    // Sweep expired entries once the map grows past ~1k, then enforce a
+    // hard cap by evicting oldest (Map preserves insertion order) — even
+    // if every remembered nonce is still fresh. Mirrors the bounded LRU
+    // the Rust relay keeps.
+    if (this.nonces.size >= 1000) {
+      for (const [k, exp] of this.nonces) {
+        if (exp <= now) this.nonces.delete(k);
+      }
+      while (this.nonces.size >= GroupDO.NONCE_HARD_CAP) {
+        const oldest = this.nonces.keys().next().value;
+        if (oldest === undefined) break;
+        this.nonces.delete(oldest);
+      }
+    }
+
     this.nonces.set(nonce, now + GroupDO.NONCE_TTL_MS);
     return true;
   }

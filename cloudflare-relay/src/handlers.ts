@@ -16,6 +16,7 @@ import {
   fromB64,
   fromHex,
   hmacSha256,
+  isHex,
   sha256Hex,
   toB64,
   toHex,
@@ -72,27 +73,28 @@ export async function handleGetRegistration(self: GroupDO, _req: Request): Promi
 // ─── MAC gate (everything below) ──────────────────────────────────
 
 interface MacContext {
-  device_id: Uint8Array;
-  /** Verified canonical-request hash; not used after verify but kept
-   *  for debug logging in non-prod. */
+  /** The acking/fetching device, IF a well-formed X-Tesela-Device header
+   *  was supplied. Optional because the Rust MAC gate does NOT require it
+   *  — it's read opportunistically (e.g. for device-seen touch). */
+  device_id?: Uint8Array;
   ok: true;
 }
 
 async function verifyMac(self: GroupDO, req: Request, bodyBytes: Uint8Array): Promise<MacContext | Response> {
-  const reg = self.getRegistration();
-  if (!reg) return json({ error: "group not registered" }, 401);
-
+  // Header presence first (mirrors the Rust gate: only MAC + nonce + ts
+  // are required; X-Tesela-Device / X-Tesela-Group are NOT — requiring
+  // them would 401 a client the Rust relay would accept).
   const ts = req.headers.get("x-tesela-ts");
   const nonce = req.headers.get("x-tesela-nonce");
   const mac = req.headers.get("x-tesela-mac");
-  const deviceHex = req.headers.get("x-tesela-device");
-  const groupHex = req.headers.get("x-tesela-group");
-  if (!ts || !nonce || !mac || !deviceHex || !groupHex) {
-    return json({ error: "missing X-Tesela-* headers" }, 401);
-  }
+  if (!mac) return json({ error: "missing X-Tesela-Mac" }, 401);
+  if (!nonce) return json({ error: "missing X-Tesela-Nonce" }, 401);
+  if (!ts) return json({ error: "missing X-Tesela-Ts" }, 401);
 
-  // Replay window check.
-  const window = Number(self.env.TESELA_RELAY_REPLAY_WINDOW_SECS ?? "300");
+  // Replay window check. Guard the env parse so an empty/garbage value
+  // can't collapse the window to 0s and reject every request.
+  const parsedWindow = Number(self.env.TESELA_RELAY_REPLAY_WINDOW_SECS ?? "300");
+  const window = Number.isFinite(parsedWindow) && parsedWindow > 0 ? parsedWindow : 300;
   const tsNum = Number(ts);
   const now = Math.floor(Date.now() / 1000);
   if (!Number.isFinite(tsNum) || Math.abs(now - tsNum) > window) {
@@ -102,6 +104,9 @@ async function verifyMac(self: GroupDO, req: Request, bodyBytes: Uint8Array): Pr
   if (!self.recordNonce(nonce)) {
     return json({ error: "nonce replay" }, 400);
   }
+
+  const reg = self.getRegistration();
+  if (!reg) return json({ error: "group not registered" }, 401);
 
   // Reconstruct canonical_request from the outer Worker's header-
   // pinned original path + query. Body hash is "" for empty bodies
@@ -117,9 +122,10 @@ async function verifyMac(self: GroupDO, req: Request, bodyBytes: Uint8Array): Pr
     return json({ error: "mac mismatch" }, 401);
   }
 
-  const device = fromHex(deviceHex);
-  if (device.length !== 16) return json({ error: "device_id must be 16 bytes" }, 400);
-  return { device_id: device, ok: true };
+  // Read the device id opportunistically — only if present + well-formed.
+  const deviceHex = req.headers.get("x-tesela-device");
+  const device_id = deviceHex && isHex(deviceHex, 16) ? fromHex(deviceHex) : undefined;
+  return { device_id, ok: true };
 }
 
 // ─── /ops (PUT + GET) ─────────────────────────────────────────────
@@ -138,8 +144,10 @@ export async function handlePutOp(self: GroupDO, req: Request): Promise<Response
   if (macCheck instanceof Response) return macCheck;
 
   const body = JSON.parse(new TextDecoder().decode(raw)) as PutOpBody;
+  if (typeof body.from_device !== "string" || !isHex(body.from_device, 16)) {
+    return json({ error: "from_device must be 16 bytes of hex" }, 400);
+  }
   const from_device = fromHex(body.from_device);
-  if (from_device.length !== 16) return json({ error: "from_device must be 16 bytes" }, 400);
   const payload = fromB64(body.payload_b64);
 
   const ts = Date.now() / 1000;
@@ -155,9 +163,10 @@ export async function handleGetOps(self: GroupDO, req: Request): Promise<Respons
   const url = new URL(req.url);
   const since = Number(url.searchParams.get("since") ?? "0");
   const rows = self.listOpsSince(Number.isFinite(since) ? since : 0);
-  // Touch the device-seen index so consumers count toward known-members
-  // for GC — same as the Rust side.
-  self.touchDevice(macCheck.device_id, Date.now() / 1000);
+  // Touch the device-seen index (only when a device id was supplied) so
+  // consumers count toward known-members — same as the Rust side, which
+  // also skips the touch when the header is absent.
+  if (macCheck.device_id) self.touchDevice(macCheck.device_id, Date.now() / 1000);
 
   const records = rows.map((r) => ({
     seq: r.seq,
@@ -176,13 +185,18 @@ interface AckBody {
 }
 
 export async function handlePostAck(self: GroupDO, req: Request): Promise<Response> {
+  const max = Number(self.env.TESELA_RELAY_MAX_BODY ?? "1048576");
   const raw = new Uint8Array(await req.arrayBuffer());
+  if (raw.length > max) return json({ error: "body too large" }, 413);
+
   const macCheck = await verifyMac(self, req, raw);
   if (macCheck instanceof Response) return macCheck;
 
   const body = JSON.parse(new TextDecoder().decode(raw)) as AckBody;
+  if (typeof body.device !== "string" || !isHex(body.device, 16)) {
+    return json({ error: "device must be 16 bytes of hex" }, 400);
+  }
   const device = fromHex(body.device);
-  if (device.length !== 16) return json({ error: "device must be 16 bytes" }, 400);
   self.ackOps(device, body.applied_seq);
   self.touchDevice(device, Date.now() / 1000);
   return json({ status: "ok" });

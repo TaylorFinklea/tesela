@@ -77,9 +77,20 @@ export function fromHex(hex: string): Uint8Array {
   if (hex.length % 2 !== 0) throw new Error("hex string must be even length");
   const out = new Uint8Array(hex.length / 2);
   for (let i = 0; i < out.length; i++) {
-    out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    const byte = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+    // `parseInt("zz", 16)` → NaN, which a Uint8Array would silently
+    // coerce to 0 — corrupting an invalid device id into the all-zero
+    // device. Reject instead, matching Rust's `hex::decode` erroring.
+    if (Number.isNaN(byte)) throw new Error("invalid hex character");
+    out[i] = byte;
   }
   return out;
+}
+
+/** True iff `s` is exactly `byteLen` bytes of lowercase-or-uppercase hex.
+ *  Used to return a clean 400 (not a thrown 500) for malformed id headers. */
+export function isHex(s: string, byteLen: number): boolean {
+  return s.length === byteLen * 2 && /^[0-9a-fA-F]+$/.test(s);
 }
 
 /** Standard base64 (with padding). Matches Rust's `base64::engine::general_purpose::STANDARD`. */
