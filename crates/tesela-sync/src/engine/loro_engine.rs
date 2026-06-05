@@ -1505,11 +1505,17 @@ fn flatblock_from_node(
         .map(|s| (*s).clone())
         .unwrap_or_default();
     let id_uuid = parse_uuid_from_hex(&id_hex).unwrap_or_else(uuid::Uuid::nil);
+    // Container properties (P1.5): read the block node's `props`/`prop_keys`
+    // NON-MUTATINGLY and materialize them in canonical order. Absent → empty.
+    let properties = prop_containers::read_node_prop_containers(&meta)
+        .map(|(props, prop_keys)| prop_containers::materialize_props(&props, &prop_keys))
+        .unwrap_or_default();
     Some(tesela_core::note_tree::FlatBlock {
         id: id_uuid,
         parent: None,
         indent,
         text,
+        properties,
     })
 }
 
@@ -1621,6 +1627,29 @@ pub(super) fn page_prop_containers(doc: &LoroDoc) -> (loro::LoroMap, loro::LoroL
     (doc.get_map("props"), doc.get_list("prop_keys"))
 }
 
+/// NON-MUTATING read of a block node's `props` + `prop_keys` containers,
+/// returning `None` when either has never been created. The materializer
+/// reads through here — `node_prop_containers` would `get_or_create` the
+/// nested containers and dirty the doc on a pure render (same discipline as
+/// `read_block_text` inspecting `text_seq` via `meta.get`, never minting).
+pub(super) fn read_node_prop_containers(
+    meta: &loro::LoroMap,
+) -> Option<(loro::LoroMap, loro::LoroList)> {
+    let props = meta
+        .get("props")?
+        .into_container()
+        .ok()?
+        .into_map()
+        .ok()?;
+    let prop_keys = meta
+        .get("prop_keys")?
+        .into_container()
+        .ok()?
+        .into_list()
+        .ok()?;
+    Some((props, prop_keys))
+}
+
 /// The keys in `prop_keys` insertion order (raw — the dedup / drop-missing
 /// reconcile shared by the materializer and index lands in P1.3).
 fn prop_keys_ordered(prop_keys: &loro::LoroList) -> Vec<String> {
@@ -1639,7 +1668,6 @@ fn prop_keys_ordered(prop_keys: &loro::LoroList) -> Vec<String> {
 
 /// All keys present in the `props` map (primitive values AND nested
 /// containers), in the map's (unspecified) iteration order.
-#[allow(dead_code)] // consumed by the shared read helper wired in P1.3/P1.5
 fn props_map_keys(props: &loro::LoroMap) -> Vec<String> {
     props.keys().map(|k| k.to_string()).collect()
 }
@@ -1651,7 +1679,6 @@ fn props_map_keys(props: &loro::LoroMap) -> Vec<String> {
 /// from `prop_keys`, in lexicographic (byte) order. `prop_keys` is the sole
 /// ordering authority — the `props` map's iteration order is never trusted for
 /// order, only consulted for membership and for the lexicographic tail.
-#[allow(dead_code)] // the shared materializer/index/chips reader lands in P1.3/P1.5
 fn prop_keys_resolved(props: &loro::LoroMap, prop_keys: &loro::LoroList) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1834,7 +1861,6 @@ pub(super) fn prop_get_scalar(props: &loro::LoroMap, key: &str) -> Option<PropSc
 }
 
 /// Read a text property (nested LoroText); None if absent or not text.
-#[allow(dead_code)] // text-prop reader wired by the materializer in P1.5
 fn prop_get_text(props: &loro::LoroMap, key: &str) -> Option<String> {
     props
         .get(key)?
@@ -1867,7 +1893,6 @@ pub(super) fn prop_get_list(props: &loro::LoroMap, key: &str) -> Vec<PropScalar>
 /// merged list order. A concurrent union-merge across replicas can leave the
 /// same value at more than one position; the materializer/index/chips read
 /// through here so the view is deterministic (same CRDT state → same bytes).
-#[allow(dead_code)] // stable-dedup reader wired by the materializer in P1.5
 fn prop_get_list_dedup(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
     let mut seen: Vec<PropScalar> = Vec::new();
     for v in prop_get_list(props, key) {
@@ -1876,6 +1901,41 @@ fn prop_get_list_dedup(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
         }
     }
     seen
+}
+
+/// Materialize a `(props, prop_keys)` owner into the ordered, canonical
+/// `(key, value)` pairs the `note_tree` serializer renders as `key:: value`
+/// continuation lines. The ONE shared read path for the materializer (block
+/// and page). Walks `prop_keys_resolved` order, rendering each stored kind:
+/// a scalar via `format_scalar`; a multi-value list via stable-dedup
+/// comma-join (the `tags::` convention); free text via the nested LoroText
+/// string. Deterministic: same CRDT state always yields the same bytes.
+pub(super) fn materialize_props(
+    props: &loro::LoroMap,
+    prop_keys: &loro::LoroList,
+) -> Vec<(String, String)> {
+    use tesela_core::property::format_scalar;
+    let mut out: Vec<(String, String)> = Vec::new();
+    for key in prop_keys_resolved(props, prop_keys) {
+        let value = if let Some(scalar) = prop_get_scalar(props, &key) {
+            format_scalar(&scalar)
+        } else if get_list_container(props, &key).is_some() {
+            prop_get_list_dedup(props, &key)
+                .iter()
+                .map(format_scalar)
+                .collect::<Vec<_>>()
+                .join(", ")
+        } else if let Some(text) = prop_get_text(props, &key) {
+            text
+        } else {
+            // A key in `prop_keys` whose `props` entry is absent is already
+            // dropped by `prop_keys_resolved`; an unreadable container is
+            // skipped rather than rendered as an empty line.
+            continue;
+        };
+        out.push((key, value));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -2066,10 +2126,29 @@ fn note_tree_from_doc(
     }
     tesela_core::note_tree::NoteTree {
         frontmatter,
-        page_properties: read_page_properties(doc),
+        page_properties: page_properties_materialized(doc),
         blocks,
         stamped_any: false,
     }
+}
+
+/// Page-level properties for materialization: container `props`/`prop_keys`
+/// at the doc root FIRST (canonical order), then any LEGACY `page_props`
+/// entry whose key the container hasn't already supplied. Container props
+/// and legacy `page_props` are disjoint stores at this stage (P1.5);
+/// migrate-on-write that folds legacy into the container and CLEARS it is
+/// P1.6, so for now we surface both without double-emitting a shared key.
+fn page_properties_materialized(doc: &LoroDoc) -> Vec<(String, String)> {
+    let (props, prop_keys) = prop_containers::page_prop_containers(doc);
+    let mut out = prop_containers::materialize_props(&props, &prop_keys);
+    let seen: std::collections::HashSet<String> =
+        out.iter().map(|(k, _)| k.clone()).collect();
+    for (k, v) in read_page_properties(doc) {
+        if !seen.contains(&k) {
+            out.push((k, v));
+        }
+    }
+    out
 }
 
 /// Read the ordered page properties back out of the "page_props" list.
@@ -6197,5 +6276,222 @@ mod tests {
                  (alongside the shared base value)"
             );
         }
+    }
+
+    // ---- P1.5 container-property materialization ----
+
+    // A scalar block property materializes as a `key:: value` continuation
+    // line AFTER the block's prose in the rendered markdown.
+    #[tokio::test]
+    async fn render_materializes_block_scalar_property() {
+        let note = blake3_note_id("mat-scalar");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        upsert_block(&engine, note, A_BID_BYTES, "Task", None).await;
+
+        engine
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: A_BID_BYTES,
+                key: "status".into(),
+                value: PropOp::SetScalar(PropScalar::Text("doing".into())),
+            })
+            .await
+            .unwrap();
+
+        let full = engine.render_note_full(note).await.unwrap();
+        assert_eq!(
+            full,
+            format!(
+                "- Task <!-- bid:{} -->\n  status:: doing\n",
+                uuid::Uuid::from_bytes(A_BID_BYTES),
+            ),
+            "scalar prop renders as a continuation line after the prose"
+        );
+    }
+
+    // A multi-value (list) property materializes as a single comma-joined
+    // `key:: a, b` line (the `tags::` join convention), stable-deduped.
+    #[tokio::test]
+    async fn render_materializes_block_multi_value_property() {
+        let note = blake3_note_id("mat-multi");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        upsert_block(&engine, note, A_BID_BYTES, "Task", None).await;
+
+        for v in ["Task", "Urgent"] {
+            engine
+                .record_local(OpPayload::BlockPropertySet {
+                    note_id: note,
+                    block_id: A_BID_BYTES,
+                    key: "tags".into(),
+                    value: PropOp::AddToList(PropScalar::Text(v.into())),
+                })
+                .await
+                .unwrap();
+        }
+
+        let full = engine.render_note_full(note).await.unwrap();
+        assert_eq!(
+            full,
+            format!(
+                "- Task <!-- bid:{} -->\n  tags:: Task, Urgent\n",
+                uuid::Uuid::from_bytes(A_BID_BYTES),
+            ),
+            "multi-value prop renders comma-joined in list order"
+        );
+    }
+
+    // A page-level scalar property materializes at the body top, per the
+    // `split_page_properties` convention.
+    #[tokio::test]
+    async fn render_materializes_page_property() {
+        let note = blake3_note_id("mat-page");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        upsert_block(&engine, note, A_BID_BYTES, "Body", None).await;
+
+        engine
+            .record_local(OpPayload::PagePropertySet {
+                note_id: note,
+                key: "type".into(),
+                value: PropOp::SetScalar(PropScalar::Text("Tag".into())),
+            })
+            .await
+            .unwrap();
+
+        let full = engine.render_note_full(note).await.unwrap();
+        assert_eq!(
+            full,
+            format!(
+                "type:: Tag\n- Body <!-- bid:{} -->\n",
+                uuid::Uuid::from_bytes(A_BID_BYTES),
+            ),
+            "page prop renders at the body top before the bullets"
+        );
+    }
+
+    // ⭐ REVIEW-GATE determinism test: the SAME set of property ops applied
+    // in DIFFERENT orders to two FRESH engines, converged via export/import,
+    // must render BYTE-IDENTICAL markdown. Determinism is the whole point of
+    // `prop_keys` + canonical formatting + stable-dedup.
+    #[tokio::test]
+    async fn render_is_byte_identical_regardless_of_prop_op_order() {
+        let note = blake3_note_id("mat-determinism");
+
+        // A shared base both replicas import, so block + list containers
+        // share Loro ids (the union-merge precondition the engine relies on).
+        let dev_seed = DeviceId::from_bytes([0xd0; 16]);
+        let seed = LoroEngine::new(dev_seed, Arc::new(Hlc::new(dev_seed)));
+        upsert_block(&seed, note, A_BID_BYTES, "Task", None).await;
+        // Seed the shared "tags" list (one initial value) so concurrent
+        // AddToList unions instead of minting rival containers.
+        seed.record_local(OpPayload::BlockPropertySet {
+            note_id: note,
+            block_id: A_BID_BYTES,
+            key: "tags".into(),
+            value: PropOp::AddToList(PropScalar::Text("Base".into())),
+        })
+        .await
+        .unwrap();
+        let base = seed.export_doc_update(note, None).await.unwrap();
+
+        // The SAME logical op set, in two different orders.
+        let ops_order_1 = vec![
+            ("status", PropOp::SetScalar(PropScalar::Text("doing".into()))),
+            ("priority", PropOp::SetScalar(PropScalar::Int(3))),
+            ("tags", PropOp::AddToList(PropScalar::Text("Task".into()))),
+            ("tags", PropOp::AddToList(PropScalar::Text("Urgent".into()))),
+            ("note", PropOp::SetText("freeform".into())),
+        ];
+        let ops_order_2 = vec![
+            ("tags", PropOp::AddToList(PropScalar::Text("Urgent".into()))),
+            ("note", PropOp::SetText("freeform".into())),
+            ("priority", PropOp::SetScalar(PropScalar::Int(3))),
+            ("status", PropOp::SetScalar(PropScalar::Text("doing".into()))),
+            ("tags", PropOp::AddToList(PropScalar::Text("Task".into()))),
+        ];
+
+        async fn build(
+            note: [u8; 16],
+            base: &[u8],
+            peer: u8,
+            ops: &[(&str, PropOp)],
+        ) -> LoroEngine {
+            let dev = DeviceId::from_bytes([peer; 16]);
+            let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+            engine.import_doc_update(note, base).await.unwrap();
+            for (key, value) in ops {
+                engine
+                    .record_local(OpPayload::BlockPropertySet {
+                        note_id: note,
+                        block_id: A_BID_BYTES,
+                        key: (*key).into(),
+                        value: value.clone(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            engine
+        }
+
+        let a = build(note, &base, 0xa1, &ops_order_1).await;
+        let b = build(note, &base, 0xb2, &ops_order_2).await;
+
+        // Converge: exchange full updates both ways.
+        let ua = a.export_doc_update(note, None).await.unwrap();
+        let ub = b.export_doc_update(note, None).await.unwrap();
+        b.import_doc_update(note, &ua).await.unwrap();
+        a.import_doc_update(note, &ub).await.unwrap();
+
+        let ra = a.render_note_full(note).await.unwrap();
+        let rb = b.render_note_full(note).await.unwrap();
+        assert_eq!(
+            ra, rb,
+            "converged replicas must render byte-identical markdown \
+             regardless of the order property ops were applied"
+        );
+        // And the rendered form must actually carry every property (guards
+        // against the trivial both-empty pass).
+        for needle in [
+            "status:: doing",
+            "priority:: 3",
+            "tags:: Base, Task, Urgent",
+            "note:: freeform",
+        ] {
+            assert!(ra.contains(needle), "converged render missing {needle}: {ra}");
+        }
+    }
+
+    // A legacy `key:: value` line embedded in a block's TEXT (the pre-P1.6
+    // form, before migrate-on-write lifts it into `props`) round-trips
+    // unchanged — container props and legacy-in-text props are DISJOINT at
+    // this stage, so the materializer must NOT double-emit.
+    #[tokio::test]
+    async fn legacy_in_text_property_round_trips_without_double_emit() {
+        let note = blake3_note_id("mat-legacy");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        let bid = uuid::Uuid::from_bytes(A_BID_BYTES);
+        // The legacy form: the property lives INSIDE the block text (folded
+        // continuation), with NO container `props` set.
+        let content = format!("- Task <!-- bid:{} -->\n  status:: doing\n", bid);
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("legacy".into()),
+                title: "legacy".into(),
+                content: content.clone(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        let full = engine.render_note_full(note).await.unwrap();
+        assert_eq!(
+            full, content,
+            "legacy in-text property round-trips unchanged — no container, no double-emit"
+        );
     }
 }

@@ -77,6 +77,16 @@ pub struct FlatBlock {
     /// NOT including the leading `- `, the indent, or the `<!-- bid -->`
     /// comment.
     pub text: String,
+    /// Ordered container properties materialized as `key:: value`
+    /// continuation lines AFTER the block's prose. Values are already
+    /// canonical-stringified (the materializer formats scalars / joins
+    /// multi-value before populating this). These are SEPARATE from any
+    /// legacy `key:: value` lines folded into `text` — the engine
+    /// populates this from the block's typed `props` container, while
+    /// `parse_note` leaves it empty (the parser still folds in-text
+    /// property continuations into `text`). Empty for ordinary blocks.
+    #[serde(default)]
+    pub properties: Vec<(String, String)>,
 }
 
 /// Format used to render block id comments. Hyphenated 36-char form for
@@ -295,6 +305,17 @@ pub fn serialize_note(tree: &NoteTree) -> String {
             out.push_str(line);
             out.push('\n');
         }
+        // Container property lines: rendered AFTER the prose, in the given
+        // order, one `key:: value` continuation line each (Logseq reflow).
+        // Values are already canonical-stringified by the materializer.
+        for (key, value) in &block.properties {
+            out.push_str(&indent_spaces);
+            out.push_str("  ");
+            out.push_str(key);
+            out.push_str(":: ");
+            out.push_str(value);
+            out.push('\n');
+        }
     }
     out
 }
@@ -405,6 +426,7 @@ fn parse_body_blocks(body: &str) -> (Vec<FlatBlock>, bool) {
             parent,
             indent: rb.indent,
             text: rb.text,
+            properties: Vec::new(),
         });
     }
     (blocks, stamped_any)
@@ -883,5 +905,113 @@ mod tests {
                 kept_id,
             ),
         );
+    }
+
+    // ── container property materialization (P1.5) ────────────────────────
+
+    #[test]
+    fn serialize_emits_block_properties_after_prose() {
+        // A block's container properties render as `key:: value`
+        // continuation lines, in the given order, AFTER the prose line.
+        let id = fixture_uuid(0x50);
+        let block = FlatBlock {
+            id,
+            parent: None,
+            indent: 0,
+            text: "Task".to_string(),
+            properties: vec![
+                ("status".to_string(), "doing".to_string()),
+                ("priority".to_string(), "3".to_string()),
+            ],
+        };
+        let tree = NoteTree {
+            frontmatter: None,
+            page_properties: Vec::new(),
+            blocks: vec![block],
+            stamped_any: false,
+        };
+        assert_eq!(
+            serialize_note(&tree),
+            format!(
+                "- Task <!-- bid:{} -->\n  status:: doing\n  priority:: 3\n",
+                id,
+            ),
+        );
+    }
+
+    #[test]
+    fn serialize_block_properties_respect_indent() {
+        // Continuation property lines indent two spaces deeper than the
+        // owning bullet, matching the prose-continuation convention.
+        let parent = fixture_uuid(0x60);
+        let child = fixture_uuid(0x61);
+        let tree = NoteTree {
+            frontmatter: None,
+            page_properties: Vec::new(),
+            blocks: vec![
+                FlatBlock {
+                    id: parent,
+                    parent: None,
+                    indent: 0,
+                    text: "Parent".to_string(),
+                    properties: Vec::new(),
+                },
+                FlatBlock {
+                    id: child,
+                    parent: Some(parent),
+                    indent: 1,
+                    text: "Child".to_string(),
+                    properties: vec![("status".to_string(), "done".to_string())],
+                },
+            ],
+            stamped_any: false,
+        };
+        assert_eq!(
+            serialize_note(&tree),
+            format!(
+                "- Parent <!-- bid:{} -->\n  - Child <!-- bid:{} -->\n    status:: done\n",
+                parent, child,
+            ),
+        );
+    }
+
+    #[test]
+    fn serialize_block_properties_follow_multiline_prose() {
+        // The property lines come AFTER all prose lines (block text with an
+        // embedded newline keeps its continuation prose first).
+        let id = fixture_uuid(0x70);
+        let tree = NoteTree {
+            frontmatter: None,
+            page_properties: Vec::new(),
+            blocks: vec![FlatBlock {
+                id,
+                parent: None,
+                indent: 0,
+                text: "First line\nsecond line".to_string(),
+                properties: vec![("k".to_string(), "v".to_string())],
+            }],
+            stamped_any: false,
+        };
+        assert_eq!(
+            serialize_note(&tree),
+            format!(
+                "- First line <!-- bid:{} -->\n  second line\n  k:: v\n",
+                id,
+            ),
+        );
+    }
+
+    #[test]
+    fn flatblock_properties_defaults_empty_via_serde() {
+        // The new field is `#[serde(default)]` so older serialized
+        // FlatBlocks (no `properties` key) deserialize cleanly.
+        let id = fixture_uuid(0x80);
+        let json = format!(
+            r#"{{"id":"{}","parent":null,"indent":0,"text":"hi"}}"#,
+            id,
+        );
+        let block: FlatBlock = serde_json::from_str(&json).unwrap();
+        assert!(block.properties.is_empty());
+        assert_eq!(block.text, "hi");
     }
 }
