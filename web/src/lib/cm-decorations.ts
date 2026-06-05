@@ -11,6 +11,7 @@
  */
 import { EditorView, Decoration, WidgetType, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { EditorSelection, EditorState, Facet, RangeSet, RangeSetBuilder, Transaction } from "@codemirror/state";
+import { tokenizeCode } from "./code-highlight";
 
 class EmptyWidget extends WidgetType {
   toDOM() { return document.createElement("span"); }
@@ -117,6 +118,52 @@ function codeLineDeco(cls: string): Decoration {
     codeLineDecoCache.set(cls, deco);
   }
   return deco;
+}
+
+// Syntax-highlight token marks (`hljs-*`, themed in CSS), cached by kind.
+const hljsMarkCache = new Map<string, Decoration>();
+function hljsMark(kind: string): Decoration {
+  let deco = hljsMarkCache.get(kind);
+  if (!deco) {
+    deco = Decoration.mark({ class: `hljs-${kind}` });
+    hljsMarkCache.set(kind, deco);
+  }
+  return deco;
+}
+
+// Floating "copy" button for a fenced code block. Copies the code between the
+// fences. Positioned (CSS) at the top-right of the code surface.
+class CodeCopyWidget extends WidgetType {
+  constructor(readonly code: string) {
+    super();
+  }
+  eq(other: CodeCopyWidget) {
+    return other.code === this.code;
+  }
+  toDOM() {
+    const btn = document.createElement("button");
+    btn.className = "cm-tesela-code-copy";
+    btn.type = "button";
+    btn.textContent = "copy";
+    btn.title = "Copy code";
+    btn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        void navigator.clipboard?.writeText(this.code).catch(() => {});
+      } catch {
+        /* clipboard unavailable */
+      }
+      btn.textContent = "copied";
+      window.setTimeout(() => {
+        btn.textContent = "copy";
+      }, 1200);
+    });
+    return btn;
+  }
+  ignoreEvent() {
+    return true;
+  }
 }
 
 const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
@@ -408,6 +455,22 @@ function buildDecorations(view: EditorView): Built {
       // the fence is actually closed (an unclosed fence has no end line).
       if (isFirst || (isLast && region.closed)) cls += " cm-tesela-code-fence-line";
       decos.push({ from: line.from, to: line.from, decoration: codeLineDeco(cls) });
+    }
+    // Syntax-highlight the content (always-on, so it's highlighted while
+    // editing too) + a floating copy button. Lang = the opening fence's
+    // trailing word (```bash → "bash"). Content = the lines between fences.
+    const lang = view.state.doc.line(firstLine).text.replace(/^\s*`+/, "").trim();
+    const contentLast = region.closed ? lastLine - 1 : lastLine;
+    if (firstLine + 1 <= contentLast) {
+      const contentStart = view.state.doc.line(firstLine + 1).from;
+      const contentEnd = view.state.doc.line(contentLast).to;
+      if (contentEnd > contentStart) {
+        const codeText = view.state.doc.sliceString(contentStart, contentEnd);
+        for (const tk of tokenizeCode(codeText, lang)) {
+          decos.push({ from: contentStart + tk.start, to: contentStart + tk.end, decoration: hljsMark(tk.kind) });
+        }
+        decos.push({ from: contentStart, to: contentStart, decoration: Decoration.widget({ widget: new CodeCopyWidget(codeText), side: -1 }) });
+      }
     }
   }
 
