@@ -2,7 +2,9 @@
 
 ## 2026-06-04 (latest) — Product-test fixes (user's full-app test of the Tauri build)
 
-User ran a real product test on the desktop app + reported 8 issues. **4 fixed:**
+User ran a real product test on the desktop app + reported 8 issues. **6 fixed** (#1/#2/#3-merge/#4/#6/#7):
+- **#4 typed callouts** (`19a1b0d`): `[!info]/[!warning]/[!error]/[!note]/[!tip]/[!success]/[!question]` (+ aliases) render the block as a colored box w/ icon (cm-decorations.ts + graphite-editor.css). Set the type by typing the keyword. Verified via Chrome (4 types, correct color+icon, marker hidden).
+- **#6 desktop Settings menu** (`e0a4e69` + `.app` rebuild): the /g shell never mounted `FullscreenOverlay` (only /v4 did) → the gear/⌘G/leader-`,` set the store but nothing rendered. Mounted it in GraphiteShell (fixes the gear on /g too). Native "Settings…" (⌘,) menu item → evals `dispatchEvent('tesela:open-settings')` → GraphiteShell opens the overlay. Verified gear + event both open settings.
 - **#1 `# Heading` popped the tag autocomplete** (`1771e9e`): the tag popup opened on `#` and stayed through the space. A tag has no spaces → close it when whitespace follows `#`.
 - **#7 `yy` only copied the cursor's line** (`1771e9e`): block yank/delete now captures the WHOLE block (`getValue`, bid stripped); block-visual `yy` writes the whole multi-block selection to the OS clipboard (the per-block markBlockRegister no longer clobbers it). Verified: block-visual `yy` over 3 blocks → clipboard `v0\nv1\nv2`.
 - **#3 (visible corruption) backspace-merge stranded a bid marker mid-text** (`891177d`): `prev.raw_text + currentText` left the previous block's `<!-- bid -->` in the MIDDLE (the hide-decoration only catches a TRAILING bid → `Hey <bid:…> there` junk). Strip both bids, concat clean, re-emit one at the end.
