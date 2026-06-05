@@ -2340,10 +2340,70 @@ fn doc_full_markdown(doc: &LoroDoc) -> String {
 /// `tree.children(Root)` later returns them in that order — matching
 /// SqliteEngine's flat-document-order model. `indent_level` carries the
 /// visual hierarchy; the tree is intentionally flat.
+/// Split a parsed block's `text` into prose-only lines plus the recognized
+/// `key:: value` properties it carries in-text — the SAME conservative
+/// migrate-strip classification the migrate-on-apply path (P1.6) uses, so a
+/// prose-only migrated tree isn't seen as drifted vs an old peer's
+/// in-text-property body.
+///
+/// `parse_note` folds property continuation lines INTO `FlatBlock.text`
+/// (joined by `'\n'`) and leaves `FlatBlock.properties` empty, so the incoming
+/// body's properties live in `text`. We lift a line ONLY when, after a trim, it
+/// is SOLELY `key:: value` (a false-positive mid-prose strip is irreversible
+/// text loss — same conservatism as the migrate path). Keys are lowercased to
+/// match the engine's case-folding-on-write; values are kept verbatim, matching
+/// the canonical string form `materialize_props` renders (a `Text` scalar /
+/// comma-joined list both round-trip their stored string). NON-property lines
+/// (prose, blanks-collapsed-already-by-the-parser) are kept as prose.
+fn classify_block_prose_and_props(text: &str) -> (String, Vec<(String, String)>) {
+    let mut prose: Vec<&str> = Vec::new();
+    let mut props: Vec<(String, String)> = Vec::new();
+    for line in text.lines() {
+        if let Some((key, value)) = solely_property_line(line) {
+            props.push((key, value));
+        } else {
+            prose.push(line);
+        }
+    }
+    (prose.join("\n"), props)
+}
+
+/// If `line` (after trim) is SOLELY a `key:: value` property — key a leading
+/// identifier (`[A-Za-z_][A-Za-z0-9_]*`), then exactly `:: `, then a non-empty
+/// value — return `(lowercased_key, value)`; otherwise `None`. Conservative:
+/// anything that isn't the whole line being a property is left as prose.
+fn solely_property_line(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim();
+    let (key, value) = trimmed.split_once(":: ")?;
+    if value.is_empty() {
+        return None;
+    }
+    let mut chars = key.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some((key.to_ascii_lowercase(), value.to_string()))
+}
+
 /// True if the tree's live blocks (in render order) match `blocks` by
-/// id + text + indent. Used to decide whether a NoteUpsert needs to
-/// reconcile the tree (no-op when they already agree, preserving block
-/// identity on ordinary re-saves).
+/// id + STRIPPED prose + indent. Props are deliberately NOT part of the
+/// comparison. Used to decide whether a NoteUpsert needs to reconcile the
+/// tree (no-op when they already agree, preserving block identity on ordinary
+/// re-saves).
+///
+/// Both sides' prose is compared through the migrate-strip classifier so a
+/// migrated prose-only tree (props in a typed container) and an old peer's
+/// in-text `key:: value` body resolve to the SAME prose and are NOT seen as
+/// drifted — otherwise a property-carrying NoteUpsert would destructively
+/// reseed and collapse the typed container back into block text (P1.8).
+/// Because prop ops are the SOLE writers of `props`, a props-only difference
+/// (id + prose + indent match, props differ) is likewise NEVER drift, so the
+/// classifier's lifted props are discarded — a NoteUpsert must never reseed to
+/// chase a body's in-text props.
 fn tree_matches_blocks(
     tree: &LoroTree,
     blocks: &[tesela_core::note_tree::FlatBlock],
@@ -2360,9 +2420,19 @@ fn tree_matches_blocks(
     for (node, block) in live.iter().zip(blocks.iter()) {
         let id_ok = read_meta_str(tree, *node, "block_id").as_deref()
             == Some(hex::encode(block.id.as_bytes()).as_str());
-        let text_ok = read_block_text(tree, *node).unwrap_or_default() == block.text;
+        // Strip recognized in-text properties from BOTH sides before comparing
+        // prose: the live node's `text_seq` is already prose-only after a
+        // migrate, while the incoming `FlatBlock.text` may still carry in-text
+        // `key:: value` lines (parse_note folds them in). Stripping both yields
+        // the same prose so the old-peer body isn't seen as drifted. A
+        // props-only difference is NEVER drift — prop ops own `props`; a
+        // NoteUpsert must not reseed to chase the body's in-text props.
+        let (tree_prose, _) =
+            classify_block_prose_and_props(&read_block_text(tree, *node).unwrap_or_default());
+        let (body_prose, _) = classify_block_prose_and_props(&block.text);
+        let prose_ok = tree_prose == body_prose;
         let indent_ok = read_indent_level(tree, *node).unwrap_or(0) == block.indent;
-        if !(id_ok && text_ok && indent_ok) {
+        if !(id_ok && prose_ok && indent_ok) {
             return false;
         }
     }
@@ -2418,6 +2488,87 @@ fn seed_tree_from_flatblocks(
                 .unwrap_or_default(),
         )
         .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Snapshot every live block's TYPED props keyed by `block_id` hex, BEFORE a
+/// reseed tombstones the nodes (P1.8). The reseed re-creates blocks from the
+/// body (which carries no typed `props`), so without capturing + replaying
+/// these the surviving blocks' properties vanish — reintroducing the
+/// data-loss class. Typed (`ResolvedValue`) so a list stays a list / text
+/// stays text on replay, not flattened to a scalar string.
+fn snapshot_tree_props(tree: &LoroTree) -> HashMap<String, Vec<(String, ResolvedValue)>> {
+    let mut out: HashMap<String, Vec<(String, ResolvedValue)>> = HashMap::new();
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+        .collect();
+    for node in live {
+        let Some(block_hex) = read_meta_str(tree, node, "block_id") else {
+            continue;
+        };
+        let Ok(meta) = tree.get_meta(node) else {
+            continue;
+        };
+        let Some((props, prop_keys)) = prop_containers::read_node_prop_containers(&meta) else {
+            continue;
+        };
+        let resolved = prop_containers::read_props_typed(&props, &prop_keys);
+        if !resolved.is_empty() {
+            out.insert(block_hex, resolved);
+        }
+    }
+    out
+}
+
+/// Replay a [`snapshot_tree_props`] capture onto a freshly-reseeded tree
+/// (P1.8). For every seeded block whose `block_id` was captured, re-assert
+/// each property via [`apply_prop_op`] — scalar/text as a set, list members
+/// via `AddToList` (union) — mirroring the disjoint-twin heal's re-assert. A
+/// block_id absent from the new body simply has no node to replay onto and is
+/// dropped (the body deleted it).
+fn replay_tree_props(
+    tree: &LoroTree,
+    snapshot: &HashMap<String, Vec<(String, ResolvedValue)>>,
+) -> SyncResult<()> {
+    if snapshot.is_empty() {
+        return Ok(());
+    }
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+        .collect();
+    for node in live {
+        let Some(block_hex) = read_meta_str(tree, node, "block_id") else {
+            continue;
+        };
+        let Some(resolved) = snapshot.get(&block_hex) else {
+            continue;
+        };
+        let meta = tree
+            .get_meta(node)
+            .map_err(|e| SyncError::Storage(format!("replay get_meta: {e}")))?;
+        let (props, prop_keys) = prop_containers::node_prop_containers(&meta)?;
+        for (key, value) in resolved {
+            match value {
+                ResolvedValue::Scalar(s) => {
+                    apply_prop_op(&props, &prop_keys, key, &PropOp::SetScalar(s.clone()))?;
+                }
+                ResolvedValue::Text(t) => {
+                    apply_prop_op(&props, &prop_keys, key, &PropOp::SetText(t.clone()))?;
+                }
+                ResolvedValue::List(members) => {
+                    for m in members {
+                        apply_prop_op(&props, &prop_keys, key, &PropOp::AddToList(m.clone()))?;
+                    }
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -3344,8 +3495,29 @@ impl LoroEngine {
                 // note (review finding [2]).
                 let tree = doc.get_tree("blocks");
                 if !tree_matches_blocks(&tree, &parsed.blocks) {
-                    clear_block_tree(&tree);
-                    seed_tree_from_flatblocks(&tree, &parsed.blocks)?;
+                    // An EMPTY tree is the FIRST-seed path (legacy note / daily
+                    // that only gets a NoteUpsert) — always seed it, on every
+                    // engine. A NON-empty tree that drifts is a destructive
+                    // RESEED: it re-mints block nodes (fresh container ids),
+                    // which on a DEVICE would mint rivals that overwrite
+                    // instead of merge across peers. So the reseed is
+                    // SERVER-ONLY (authoritative writer, materialize_dir set);
+                    // a device leaves the drift to converge via block ops / the
+                    // twin heal (P1.8). Before clearing, snapshot the surviving
+                    // blocks' typed props and replay them after the seed (the
+                    // body carries no typed `props`, so without this the reseed
+                    // would drop them).
+                    let tree_is_empty = tree
+                        .children(TreeParentId::Root)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .all(|n| matches!(tree.is_node_deleted(&n), Ok(true)));
+                    if tree_is_empty || self.inner.materialize_dir.is_some() {
+                        let saved_props = snapshot_tree_props(&tree);
+                        clear_block_tree(&tree);
+                        seed_tree_from_flatblocks(&tree, &parsed.blocks)?;
+                        replay_tree_props(&tree, &saved_props)?;
+                    }
                 }
                 doc.commit();
                 // Register this note's blocks in the block_index.
@@ -4493,8 +4665,17 @@ mod tests {
         // already-populated tree that has drifted from the body, instead
         // of skipping. Simulate drift by injecting a stale extra block,
         // then re-upsert the canonical body and assert the render matches.
-        let hlc = Arc::new(Hlc::new(test_device()));
-        let engine = LoroEngine::new(test_device(), hlc);
+        // Reseed is SERVER-ONLY (P1.8 — a device reseed re-mints rival
+        // container ids), so this runs on an authoritative engine.
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = LoroEngine::with_dirs(
+            test_device(),
+            Arc::new(Hlc::new(test_device())),
+            tmp.path().join("loro"),
+            Some(tmp.path().join("notes")),
+        )
+        .await
+        .unwrap();
         let note_id = [0x55; 16];
         let body = "- one <!-- bid:11111111-1111-1111-1111-111111111111 -->\n- two <!-- bid:22222222-2222-2222-2222-222222222222 -->\n";
         let up = |content: String| OpPayload::NoteUpsert {
@@ -4929,6 +5110,334 @@ mod tests {
             b.render_note(note).await.unwrap(),
             rb,
             "stable after re-exchange"
+        );
+    }
+
+    #[tokio::test]
+    async fn note_upsert_does_not_clobber_concurrent_block_property() {
+        // P1.8: prop ops are the SOLE writers of `props`. After a property
+        // migrates into a typed `props` container (prose-only `text_seq`), an
+        // OLD-PEER full-content NoteUpsert re-injects the property as an
+        // in-text `key:: value` continuation line. `parse_note` folds that
+        // line back into `FlatBlock.text` (and leaves `FlatBlock.properties`
+        // empty), so the incoming block's text is `"buy milk\nstatus:: doing"`
+        // while the live tree's block text is the prose-only `"buy milk"`. The
+        // OLD `tree_matches_blocks` compares raw text → MISMATCH → reseed →
+        // the typed `status` container is destroyed and the property collapses
+        // back into prose text (re-embedded, no longer a mergeable container).
+        //
+        // The fix: strip recognized `key:: value` lines from the incoming body
+        // before comparing prose, AND compare materialized props per block.
+        // Stripped prose (`buy milk`) matches the tree's prose AND the body's
+        // lifted props (`status:: doing`) match the container's materialized
+        // props → NOT drifted → no reseed → the container survives.
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        let note = [0x71; 16];
+        let block: [u8; 16] = [0x07; 16];
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("n".into()),
+                title: "N".into(),
+                content: "- buy milk <!-- bid:07070707-0707-0707-0707-070707070707 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // A property set lands on the block as a typed container (the SOLE
+        // writer of `props`); the block's prose stays prose-only.
+        engine
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: block,
+                key: "status".into(),
+                value: PropOp::SetScalar(crate::PropScalar::Text("doing".into())),
+            })
+            .await
+            .unwrap();
+        assert!(
+            engine.render_note(note).await.unwrap().contains("status:: doing"),
+            "property is set before the re-save"
+        );
+
+        // An OLD-PEER full-content NoteUpsert that carries the property as an
+        // IN-TEXT continuation line (the un-migrated shape). It must be
+        // recognized as the same block (stripped prose + props both match) and
+        // must NOT reseed — leaving the typed container intact.
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("n".into()),
+                title: "N".into(),
+                content: "- buy milk <!-- bid:07070707-0707-0707-0707-070707070707 -->\n  status:: doing\n".into(),
+                created_at_millis: 2,
+            })
+            .await
+            .unwrap();
+
+        let rendered = engine.render_note(note).await.unwrap();
+        assert!(
+            rendered.contains("status:: doing"),
+            "property must survive an old-peer in-text NoteUpsert, got: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("buy milk"),
+            "prose must survive too, got: {rendered:?}"
+        );
+        // The property must remain a TYPED container — the block's prose-only
+        // `text_seq` must NOT have the property re-embedded into it (a reseed
+        // would fold `status:: doing` back into block text).
+        {
+            let doc = engine.doc_for_note_mut(note).await;
+            let tree = doc.get_tree("blocks");
+            let node = find_node_by_block_id(&tree, &hex::encode(block)).unwrap();
+            assert_eq!(
+                read_block_text(&tree, node).as_deref(),
+                Some("buy milk"),
+                "block text stays prose-only — the property is NOT folded back into text"
+            );
+            let meta = tree.get_meta(node).unwrap();
+            let (props, _) = prop_containers::read_node_prop_containers(&meta).unwrap();
+            assert_eq!(
+                prop_containers::prop_get_scalar(&props, "status"),
+                Some(crate::PropScalar::Text("doing".into())),
+                "the typed container survives"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn note_upsert_does_not_clobber_concurrent_block_property_on_server() {
+        // P1.8 — the SERVER variant of the clobber test. This is the actual
+        // TDD proof that the `tree_matches_blocks` prose-strip is load-bearing.
+        //
+        // On a DEVICE engine the reseed gate (`tree_is_empty ||
+        // materialize_dir.is_some()`) skips the reseed entirely, so the typed
+        // container survives an old-peer in-text NoteUpsert no matter what
+        // `tree_matches_blocks` returns — the device variant proves nothing
+        // about the prose-strip. The reseed only fires on the AUTHORITATIVE
+        // writer (materialize_dir set). Here, if the prose-strip is reverted to
+        // the old raw `read_block_text(...) == block.text` compare, the live
+        // tree's prose-only `"buy milk"` won't equal the body's
+        // `"buy milk\nstatus:: doing"` → drift → reseed → the new block is
+        // seeded from the body with the property folded BACK into block text,
+        // so `read_block_text` would return `Some("buy milk\nstatus:: doing")`
+        // and the `block text stays prose-only` assertion below FAILS. The
+        // prose-strip makes the old-peer body NOT count as drift, so the
+        // server never reseeds and the prose stays prose-only.
+        let tmp = tempfile::tempdir().unwrap();
+        let dev = test_device();
+        let engine = LoroEngine::with_dirs(
+            dev,
+            Arc::new(Hlc::new(dev)),
+            tmp.path().join("loro"),
+            Some(tmp.path().join("notes")),
+        )
+        .await
+        .unwrap();
+        let note = blake3_note_id("server-clobber");
+        let block: [u8; 16] = [0x07; 16];
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("n".into()),
+                title: "N".into(),
+                content: "- buy milk <!-- bid:07070707-0707-0707-0707-070707070707 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // A property set lands on the block as a typed container; prose stays
+        // prose-only.
+        engine
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: block,
+                key: "status".into(),
+                value: PropOp::SetScalar(crate::PropScalar::Text("doing".into())),
+            })
+            .await
+            .unwrap();
+        assert!(
+            engine.render_note(note).await.unwrap().contains("status:: doing"),
+            "property is set before the re-save"
+        );
+
+        // An OLD-PEER full-content NoteUpsert carrying the property as an
+        // IN-TEXT continuation line. On the SERVER the reseed gate is open, so
+        // the ONLY thing keeping this from reseeding (and folding the property
+        // back into block text) is the prose-strip in `tree_matches_blocks`.
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("n".into()),
+                title: "N".into(),
+                content: "- buy milk <!-- bid:07070707-0707-0707-0707-070707070707 -->\n  status:: doing\n".into(),
+                created_at_millis: 2,
+            })
+            .await
+            .unwrap();
+
+        let rendered = engine.render_note(note).await.unwrap();
+        assert!(
+            rendered.contains("status:: doing"),
+            "property must survive an old-peer in-text NoteUpsert on the server, got: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("buy milk"),
+            "prose must survive too, got: {rendered:?}"
+        );
+        // The load-bearing assertion: the block's prose-only `text_seq` must
+        // NOT have the property re-embedded. A reseed (which the prose-strip
+        // prevents) would seed the block from the body's
+        // `"buy milk\nstatus:: doing"` and this would be `Some(...status...)`.
+        let doc = engine.doc_for_note_mut(note).await;
+        let tree = doc.get_tree("blocks");
+        let node = find_node_by_block_id(&tree, &hex::encode(block)).unwrap();
+        assert_eq!(
+            read_block_text(&tree, node).as_deref(),
+            Some("buy milk"),
+            "block text stays prose-only — the server did NOT reseed the old-peer in-text body"
+        );
+        let meta = tree.get_meta(node).unwrap();
+        let (props, _) = prop_containers::read_node_prop_containers(&meta).unwrap();
+        assert_eq!(
+            prop_containers::prop_get_scalar(&props, "status"),
+            Some(crate::PropScalar::Text("doing".into())),
+            "the typed container survives on the server path"
+        );
+    }
+
+    #[tokio::test]
+    async fn note_upsert_drift_reseed_preserves_props() {
+        // P1.8: when a reseed is GENUINELY unavoidable (structural drift the
+        // block-granular diff didn't capture — here a brand-new block in the
+        // body), the surviving block_id's materialized props must be
+        // snapshotted before `clear_block_tree` and replayed after the
+        // reseed. Reseed stays SERVER-ONLY (gate on materialize_dir), so this
+        // runs on an authoritative engine. Without the snapshot/replay, the
+        // reseed drops the property (clear_block_tree tombstones the node and
+        // the body never carried the prop).
+        let tmp = tempfile::tempdir().unwrap();
+        let dev = test_device();
+        let engine = LoroEngine::with_dirs(
+            dev,
+            Arc::new(Hlc::new(dev)),
+            tmp.path().join("loro"),
+            Some(tmp.path().join("notes")),
+        )
+        .await
+        .unwrap();
+        let note = blake3_note_id("drift");
+        let block_a: [u8; 16] = [0x07; 16];
+        let body_one = "- one <!-- bid:07070707-0707-0707-0707-070707070707 -->\n";
+
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("drift".into()),
+                title: "Drift".into(),
+                content: body_one.into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        engine
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: block_a,
+                key: "status".into(),
+                value: PropOp::SetScalar(crate::PropScalar::Text("doing".into())),
+            })
+            .await
+            .unwrap();
+        assert!(engine.render_note(note).await.unwrap().contains("status:: doing"));
+
+        // A NoteUpsert whose body has the SAME first block PLUS a brand-new
+        // second block — genuine drift forcing a reseed.
+        let body_two = "- one <!-- bid:07070707-0707-0707-0707-070707070707 -->\n\
+                        - two <!-- bid:08080808-0808-0808-0808-080808080808 -->\n";
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("drift".into()),
+                title: "Drift".into(),
+                content: body_two.into(),
+                created_at_millis: 2,
+            })
+            .await
+            .unwrap();
+
+        let rendered = engine.render_note(note).await.unwrap();
+        assert!(
+            rendered.contains("two"),
+            "the drift body's new block must land, got: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("status:: doing"),
+            "the surviving block's property must be replayed across the reseed, got: {rendered:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reseed_is_server_only() {
+        // P1.8 regression: a reseed re-mints the block tree (fresh node ids),
+        // which on a DEVICE would mint rival container ids that overwrite
+        // instead of merge across peers. So `clear_block_tree` +
+        // `seed_tree_from_flatblocks` must only run on the AUTHORITATIVE
+        // writer (materialize_dir set). A non-authoritative engine that sees a
+        // drifting full-content NoteUpsert must NOT reseed — it leaves the
+        // tree to converge via block ops / the twin heal instead.
+        let dev = test_device();
+        let device_engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        let note = [0x73; 16];
+        let body_one = "- one <!-- bid:07070707-0707-0707-0707-070707070707 -->\n";
+        device_engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("n".into()),
+                title: "N".into(),
+                content: body_one.into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // Drift the shadow tree out of band: append a stale block.
+        {
+            let doc = device_engine.doc_for_note_mut(note).await;
+            let tree = doc.get_tree("blocks");
+            let n = tree.create(TreeParentId::Root).unwrap();
+            let m = tree.get_meta(n).unwrap();
+            m.insert("block_id", "33333333-3333-3333-3333-333333333333").unwrap();
+            write_block_text(&m, "STALE").unwrap();
+            m.insert("indent_level", 0i64).unwrap();
+            doc.commit();
+        }
+        assert!(device_engine.render_note(note).await.unwrap().contains("STALE"));
+
+        // A drifting full-content NoteUpsert on the NON-authoritative engine
+        // must NOT reseed (which would re-mint rival container ids); the stale
+        // block stays until block ops / the twin heal converge it.
+        device_engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("n".into()),
+                title: "N".into(),
+                content: body_one.into(),
+                created_at_millis: 2,
+            })
+            .await
+            .unwrap();
+        assert!(
+            device_engine.render_note(note).await.unwrap().contains("STALE"),
+            "a device (non-authoritative) engine must NOT reseed on drift"
         );
     }
 
