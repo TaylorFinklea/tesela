@@ -16,6 +16,7 @@ use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use tauri::menu::{Menu, MenuItem, Submenu};
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
 
 /// Holds the embedded server child so the app can reap it on exit.
@@ -170,7 +171,27 @@ fn main() {
 
     tauri::Builder::default()
         .manage(ServerChild(Mutex::new(Some(child))))
+        // Cmd+R reloads the webview — the one-keystroke recovery if the page
+        // ever goes blank (a crashed WebKit content process, a transient
+        // asset-load hiccup). `reload()` is native (runs in the app process),
+        // so it works even when the page's own JS is dead.
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == "reload" {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.reload();
+                }
+            }
+        })
         .setup(move |app| {
+            // Default app menu + a View ▸ Reload (Cmd+R) item. The menu is owned
+            // by the (always-alive) app process, so the accelerator fires even
+            // when the webview content process has died and shows white.
+            let reload = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
+            let view = Submenu::with_items(app, "View", true, &[&reload])?;
+            let menu = Menu::default(app.handle())?;
+            menu.append(&view)?;
+            app.set_menu(menu)?;
+
             WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -188,6 +209,17 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while building tesela-desktop")
         .run(|app, event| {
+            // Dock-icon re-open (macOS `applicationShouldHandleReopen`) reloads
+            // the webview. If the window ever went blank, clicking the Dock icon
+            // recovers it — instead of just refocusing a dead page (the trap
+            // where "relaunching does nothing").
+            if let RunEvent::Reopen { .. } = event {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                    let _ = w.reload();
+                }
+            }
             // Reap the embedded server when the app exits so it doesn't outlive
             // the window (and free its loopback port). Prefer SIGTERM so the
             // server runs its graceful shutdown (drain + auto-backup); fall back
