@@ -225,6 +225,27 @@ struct Inner {
     /// in-memory shadow / non-authoritative paths, which never touch disk
     /// beyond their `.bin` snapshots.
     materialize_dir: Option<PathBuf>,
+    /// Migrate-on-apply (P1.6) toggle. When `true`, the `BlockUpsert` apply
+    /// arm lifts recognized in-text `key:: value` continuation lines out of the
+    /// incoming prose into the typed `props`/`prop_keys` container (prose-only
+    /// `text_seq`, one commit, idempotent). DEFAULT-OFF — resolved ONCE at
+    /// construction from `TESELA_LORO_MIGRATE_IN_TEXT` (mirrors how
+    /// `TESELA_LORO_RESEED` is read once at boot). The flag stays off until the
+    /// WHOLE fleet (incl. iOS old FFI) is props-read-capable; an old reader that
+    /// can't read the lifted container would render property-less and could
+    /// re-broadcast a fleet-wide erase. The rendered VIEW keeps emitting
+    /// `key:: value` lines regardless (from `FlatBlock.properties`), so an old
+    /// reader still SEES the property as text.
+    migrate_in_text: bool,
+}
+
+/// Resolve the migrate-on-apply (P1.6) flag from the environment ONCE — mirrors
+/// how `TESELA_LORO_RESEED` is read a single time at boot. DEFAULT-OFF: anything
+/// but a non-empty value leaves migration disabled.
+fn migrate_in_text_from_env() -> bool {
+    std::env::var("TESELA_LORO_MIGRATE_IN_TEXT")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
 }
 
 impl LoroEngine {
@@ -242,6 +263,28 @@ impl LoroEngine {
                 block_index: RwLock::new(HashMap::new()),
                 broadcast_cursor: RwLock::new(HashMap::new()),
                 materialize_dir: None,
+                migrate_in_text: migrate_in_text_from_env(),
+            }),
+        }
+    }
+
+    /// Construct an in-memory engine with the migrate-on-apply (P1.6) flag
+    /// FORCED ON — for tests that exercise the lift path without depending on a
+    /// process-global env var (`TESELA_LORO_MIGRATE_IN_TEXT`), which would race
+    /// across the parallel test runner.
+    #[cfg(test)]
+    fn new_migrating(device: DeviceId, hlc: Arc<Hlc>) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                docs: RwLock::new(HashMap::new()),
+                device,
+                hlc,
+                snapshot_dir: None,
+                index: LoroDoc::new(),
+                block_index: RwLock::new(HashMap::new()),
+                broadcast_cursor: RwLock::new(HashMap::new()),
+                materialize_dir: None,
+                migrate_in_text: true,
             }),
         }
     }
@@ -331,6 +374,7 @@ impl LoroEngine {
                 block_index: RwLock::new(block_index),
                 broadcast_cursor: RwLock::new(broadcast_cursor),
                 materialize_dir,
+                migrate_in_text: migrate_in_text_from_env(),
             }),
         };
         if needs_rebuild {
@@ -3572,13 +3616,44 @@ impl LoroEngine {
                     .map_err(|e| SyncError::Storage(format!("loro get_meta: {e}")))?;
                 meta.insert("block_id", block_hex.as_str())
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
-                write_block_text(&meta, text.as_str())?;
                 // Eager-seed `props`/`prop_keys` (P1.9b) at the SECOND
                 // block-node creation site — mirrors the seed-loop above so a
                 // BlockUpsert-created block also carries the empty containers
                 // into shared history, making concurrent first-property sets
-                // converge on ONE child container instead of rival ones.
-                let _ = prop_containers::node_prop_containers(&meta)?;
+                // converge on ONE child container instead of rival ones. Done
+                // BEFORE the text write so the migrate-on-apply path (P1.6)
+                // folds into the SAME shared map.
+                let (props, prop_keys) = prop_containers::node_prop_containers(&meta)?;
+                // Migrate-on-apply (P1.6, flag DEFAULT-OFF): lift recognized
+                // SOLELY-`key:: value` continuation lines OUT of the incoming
+                // prose into the typed container, so a mixed-fleet old peer's
+                // in-text property doesn't stay text-only (and doesn't
+                // double-emit). Deterministic-shape: same incoming text + same
+                // classification → same prose-strip + same prop ops on every
+                // device, so concurrent migrators converge. Conservative strip
+                // (a false-positive mid-prose strip is irreversible). Idempotent:
+                // already-clean prose classifies to zero props → no-op. The
+                // render keeps emitting `key:: value` lines (dual-read).
+                if self.inner.migrate_in_text {
+                    let (prose_only, lifted) =
+                        classify_block_prose_and_props(text.as_str());
+                    write_block_text(&meta, prose_only.as_str())?;
+                    for (key, value) in &lifted {
+                        // `tags::` is a multi-value key → AddToList (union),
+                        // never a scalar register (which would LWW-clobber a
+                        // concurrent tag). Everything else lands as a text
+                        // scalar — the value round-trips its canonical string
+                        // form (matches what `materialize_props` re-emits).
+                        let op = if key == "tags" {
+                            PropOp::AddToList(PropScalar::Text(value.clone()))
+                        } else {
+                            PropOp::SetScalar(PropScalar::Text(value.clone()))
+                        };
+                        apply_prop_op(&props, &prop_keys, key, &op)?;
+                    }
+                } else {
+                    write_block_text(&meta, text.as_str())?;
+                }
                 meta.insert("indent_level", *indent_level as i64)
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 meta.insert(
@@ -7478,6 +7553,62 @@ mod tests {
         ] {
             assert!(ra.contains(needle), "converged render missing {needle}: {ra}");
         }
+
+        // Migrated-vs-unmigrated byte equality (P1.6 determinism gate): a block
+        // whose `status` arrives as a TYPED scalar prop op (the unmigrated /
+        // already-clean path) and a block whose `status` arrives as an in-text
+        // `status:: doing` line lifted by migrate-on-apply must render
+        // byte-identical markdown. Same CRDT state → same bytes, no matter how
+        // the property got there.
+        let note2 = blake3_note_id("mat-migrate-determinism");
+
+        let dev_clean = DeviceId::from_bytes([0xe1; 16]);
+        let clean = LoroEngine::new(dev_clean, Arc::new(Hlc::new(dev_clean)));
+        upsert_block(&clean, note2, A_BID_BYTES, "buy milk", None).await;
+        clean
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note2,
+                block_id: A_BID_BYTES,
+                key: "status".into(),
+                value: PropOp::SetScalar(PropScalar::Text("doing".into())),
+            })
+            .await
+            .unwrap();
+
+        let dev_mig = DeviceId::from_bytes([0xe2; 16]);
+        let migrating = LoroEngine::new_migrating(dev_mig, Arc::new(Hlc::new(dev_mig)));
+        migrating
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note2,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "buy milk\nstatus:: doing".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            clean.render_note_full(note2).await.unwrap(),
+            migrating.render_note_full(note2).await.unwrap(),
+            "a typed-prop-op block and a migrate-lifted in-text block render \
+             byte-identical markdown"
+        );
+        // The migrating engine must have ACTUALLY lifted the property into a
+        // typed container (prose-only text_seq), not merely left it in-text and
+        // coincidentally rendered the same bytes.
+        assert_eq!(
+            block_text(&migrating, note2, A_BID_BYTES).await.as_deref(),
+            Some("buy milk"),
+            "migrate lifted the property — block text is prose-only"
+        );
+        assert_eq!(
+            block_prop_scalar(&migrating, note2, A_BID_BYTES, "status").await,
+            Some(PropScalar::Text("doing".into())),
+            "migrate produced a typed container value"
+        );
     }
 
     // A legacy `key:: value` line embedded in a block's TEXT (the pre-P1.6
@@ -7510,5 +7641,242 @@ mod tests {
             full, content,
             "legacy in-text property round-trips unchanged — no container, no double-emit"
         );
+    }
+
+    // P1.6 — migrate-on-apply. With the flag ON, a `BlockUpsert` whose incoming
+    // text carries a SOLELY `key:: value` continuation line lifts it OUT of the
+    // prose into the typed `props`/`prop_keys` container: the block's
+    // `text_seq` becomes prose-only and the property reads back as a typed
+    // scalar. Re-applying the SAME (already-clean) BlockUpsert is a no-op (the
+    // prose is already stripped → nothing to lift → no double-set).
+    #[tokio::test]
+    async fn migrate_on_apply_lifts_intext_prop_and_is_idempotent() {
+        let note = blake3_note_id("migrate-lift");
+        let dev = test_device();
+        let engine = LoroEngine::new_migrating(dev, Arc::new(Hlc::new(dev)));
+
+        // A BlockUpsert carrying an in-text property (the un-migrated shape a
+        // mixed-fleet old peer authors): prose line + a solely-`key:: value`
+        // continuation line, joined by '\n' the way `parse_note` folds it.
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "buy milk\nstatus:: doing".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+
+        // The property was LIFTED: prose-only text_seq + a typed container.
+        assert_eq!(
+            block_text(&engine, note, A_BID_BYTES).await.as_deref(),
+            Some("buy milk"),
+            "migrate strips the property line from prose"
+        );
+        assert_eq!(
+            block_prop_scalar(&engine, note, A_BID_BYTES, "status").await,
+            Some(PropScalar::Text("doing".into())),
+            "migrate folds the stripped line into the typed props container"
+        );
+        // The rendered VIEW still emits the property as a `key:: value` line
+        // (dual-read: an old reader still SEES it).
+        let rendered = engine.render_note(note).await.unwrap();
+        assert!(
+            rendered.contains("status:: doing"),
+            "rendered view re-emits the lifted property, got: {rendered:?}"
+        );
+
+        // Idempotent: re-applying the SAME logical block (now already clean
+        // prose, no in-text property) finds nothing to lift and leaves the
+        // container untouched (one value, not a re-set duplicate).
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "buy milk".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            block_text(&engine, note, A_BID_BYTES).await.as_deref(),
+            Some("buy milk"),
+            "re-apply of clean prose leaves text_seq prose-only"
+        );
+        assert_eq!(
+            block_prop_scalar(&engine, note, A_BID_BYTES, "status").await,
+            Some(PropScalar::Text("doing".into())),
+            "re-apply does not disturb the already-lifted property"
+        );
+    }
+
+    // P1.6 — `tags::` routes to AddToList (a list container), NOT a scalar, so a
+    // migrated tags line union-merges across replicas instead of LWW-clobbering.
+    #[tokio::test]
+    async fn migrate_on_apply_routes_tags_to_list() {
+        let note = blake3_note_id("migrate-tags");
+        let dev = test_device();
+        let engine = LoroEngine::new_migrating(dev, Arc::new(Hlc::new(dev)));
+
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "a task\ntags:: urgent".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            block_text(&engine, note, A_BID_BYTES).await.as_deref(),
+            Some("a task"),
+            "tags line stripped from prose"
+        );
+        assert_eq!(
+            block_prop_list(&engine, note, A_BID_BYTES, "tags").await,
+            vec![PropScalar::Text("urgent".into())],
+            "tags:: routes to a list container (AddToList), not a scalar"
+        );
+        // It is NOT a scalar.
+        assert_eq!(
+            block_prop_scalar(&engine, note, A_BID_BYTES, "tags").await,
+            None,
+            "tags must be a list, never a scalar register"
+        );
+    }
+
+    // P1.6 mixed-fleet — an OLD peer that can't read containers re-injects the
+    // property as an in-text `key:: value` line on a NoteUpsert / BlockUpsert.
+    // With migrate ON the line is lifted back into the container; the rendered
+    // view emits the property exactly ONCE (no double-emit from a container
+    // value PLUS a re-injected in-text line). Mirrors
+    // `legacy_in_text_property_round_trips_without_double_emit`.
+    #[tokio::test]
+    async fn mixed_fleet_old_peer_reinjects_no_double_emit() {
+        let note = blake3_note_id("migrate-mixed-fleet");
+        let dev = test_device();
+        let engine = LoroEngine::new_migrating(dev, Arc::new(Hlc::new(dev)));
+
+        // First apply lifts the property into the container.
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "buy milk\nstatus:: doing".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+
+        // An OLD peer re-broadcasts the block with the property STILL in-text
+        // (it never learned to read the container). Migrate lifts it again →
+        // prose-only + one container value, never two.
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "buy milk\nstatus:: doing".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            block_text(&engine, note, A_BID_BYTES).await.as_deref(),
+            Some("buy milk"),
+            "the re-injected in-text property is lifted again, not re-embedded"
+        );
+        let rendered = engine.render_note(note).await.unwrap();
+        // Exactly one `status:: doing` line — the container value emitted once,
+        // NOT a container value plus a lingering in-text line.
+        assert_eq!(
+            rendered.matches("status:: doing").count(),
+            1,
+            "no double-emit: property renders exactly once, got: {rendered:?}"
+        );
+    }
+
+    // P1.6 — two devices on a SHARED lineage each migrate the SAME block's
+    // in-text `status::` property concurrently. Because migrate is
+    // deterministic-shape (same incoming text + same classification → same
+    // prose-strip + same scalar set), both replicas converge to identical props
+    // after exchange (same-key scalar collision = LWW, identical winner).
+    #[tokio::test]
+    async fn concurrent_migrate_same_block_converges() {
+        let note = blake3_note_id("migrate-concurrent");
+
+        // Shared base: a block with prose only, on a shared Loro lineage so the
+        // `props` map container is in shared history before peers diverge (the
+        // eager-seed precondition from P1.9b).
+        let dev_seed = DeviceId::from_bytes([0xc0; 16]);
+        let seed = LoroEngine::new(dev_seed, Arc::new(Hlc::new(dev_seed)));
+        upsert_block(&seed, note, A_BID_BYTES, "buy milk", None).await;
+        let base = seed.export_doc_update(note, None).await.unwrap();
+
+        // Two migrating replicas import the shared base.
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let a = LoroEngine::new_migrating(dev_a, Arc::new(Hlc::new(dev_a)));
+        a.import_doc_update(note, &base).await.unwrap();
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let b = LoroEngine::new_migrating(dev_b, Arc::new(Hlc::new(dev_b)));
+        b.import_doc_update(note, &base).await.unwrap();
+
+        // Each concurrently applies a BlockUpsert that carries the SAME in-text
+        // property — both migrate it identically.
+        let a_vv = a.doc_version(note).await;
+        let b_vv = b.doc_version(note).await;
+        for engine in [&a, &b] {
+            engine
+                .record_local(OpPayload::BlockUpsert {
+                    block_id: A_BID_BYTES,
+                    note_id: note,
+                    parent_block_id: None,
+                    order_key: "00000000".into(),
+                    indent_level: 0,
+                    text: "buy milk\nstatus:: doing".into(),
+                    after_block_id: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        // Exchange concurrent deltas both ways.
+        let a_delta = a.export_doc_update(note, a_vv.as_deref()).await.unwrap();
+        let b_delta = b.export_doc_update(note, b_vv.as_deref()).await.unwrap();
+        b.import_doc_update(note, &a_delta).await.unwrap();
+        a.import_doc_update(note, &b_delta).await.unwrap();
+
+        // Both replicas converge: identical typed props AND identical rendered
+        // markdown.
+        assert_eq!(
+            block_prop_scalar(&a, note, A_BID_BYTES, "status").await,
+            block_prop_scalar(&b, note, A_BID_BYTES, "status").await,
+            "concurrent migrators converge on the same scalar (LWW winner)"
+        );
+        assert_eq!(
+            block_prop_scalar(&a, note, A_BID_BYTES, "status").await,
+            Some(PropScalar::Text("doing".into())),
+            "the converged scalar is the migrated value"
+        );
+        let ra = a.render_note_full(note).await.unwrap();
+        let rb = b.render_note_full(note).await.unwrap();
+        assert_eq!(ra, rb, "concurrent migrators render byte-identical markdown");
     }
 }
