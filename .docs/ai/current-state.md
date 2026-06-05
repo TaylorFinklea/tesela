@@ -1,5 +1,20 @@
 # Current State
 
+## 2026-06-04 (latest) — Product-test fixes (user's full-app test of the Tauri build)
+
+User ran a real product test on the desktop app + reported 8 issues. **4 fixed:**
+- **#1 `# Heading` popped the tag autocomplete** (`1771e9e`): the tag popup opened on `#` and stayed through the space. A tag has no spaces → close it when whitespace follows `#`.
+- **#7 `yy` only copied the cursor's line** (`1771e9e`): block yank/delete now captures the WHOLE block (`getValue`, bid stripped); block-visual `yy` writes the whole multi-block selection to the OS clipboard (the per-block markBlockRegister no longer clobbers it). Verified: block-visual `yy` over 3 blocks → clipboard `v0\nv1\nv2`.
+- **#3 (visible corruption) backspace-merge stranded a bid marker mid-text** (`891177d`): `prev.raw_text + currentText` left the previous block's `<!-- bid -->` in the MIDDLE (the hide-decoration only catches a TRAILING bid → `Hey <bid:…> there` junk). Strip both bids, concat clean, re-emit one at the end.
+- **#2 code-block syntax highlighting + copy button** (`ee75c74`): dep-free tokenizer `web/src/lib/code-highlight.ts` (comments/strings/numbers/keywords/literals → `hljs-*` marks, lang from the fence) + a floating copy button. Themed in `graphite-editor.css`. Verified via Chrome.
+
+**Deeper / deferred from the test:**
+- **#3 root + #8 (`x` deletes the bid):** the bid marker lives IN the editor text (always display:none, atomic), so `x` past the end / any raw-text op can hit it. The merge patch stops the worst corruption; fully removing the bid from the editor = the block-id-as-property work (deferred). Possible separate multi-line-code-block round-trip bug (the "echo $SHELL duplicated" in image #6) — not reproduced.
+- **#5 iPhone doesn't show the Tauri app's notes:** ARCHITECTURAL. The desktop app's embedded server holds the single-writer mosaic lock → the standalone `:7474` hub the iPhone syncs against can't run at the same time; the relay spine that would bridge them isn't live. = the "always-on sync spine" milestone, not a bug.
+- **#4 callouts** (styling + selectable type info/warning/error/note) + **#6 Tauri settings menu** — queued feature work.
+
+---
+
 ## 2026-06-04 (late) — Desktop blank-screen FIXED + vim parity: register cluster + CRDT undo
 
 **The published `Tesela.app` showed a blank white window — ROOT-CAUSED + fixed (`36a9db8`).** Not vim, not WebKit: `tesela_server_bin()` preferred `target/release/tesela-server` whenever it existed, and a STALE release binary (May 30, pre-`TESELA_STATIC_DIR`) was shadowing the current debug build → the `.app`'s embedded server ignored the static dir → `/g` 404'd → WKWebView blank. Diagnosis: confirmed `/g` serves 200 + warm WebKit (Playwright) renders fine → launched the real `.app`, found its server returns 404 for `/g` with `TESELA_STATIC_DIR` set-but-ignored → `strings` showed the release binary has 0 refs to `TESELA_STATIC_DIR`. **Fix:** rebuilt release `tesela-server` (unblocks the existing `.app` — verified `/g`→200, WKWebView booted with a live `/ws`) + hardened `tesela_server_bin()` to pick the NEWEST of release/debug by mtime. `web/build` serves live, so relaunching the `.app` picks up web fixes with no rebuild.
