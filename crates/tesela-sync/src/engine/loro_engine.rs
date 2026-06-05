@@ -1638,6 +1638,41 @@ fn prop_keys_ordered(prop_keys: &loro::LoroList) -> Vec<String> {
     out
 }
 
+/// All keys present in the `props` map (primitive values AND nested
+/// containers), in the map's (unspecified) iteration order.
+fn props_map_keys(props: &loro::LoroMap) -> Vec<String> {
+    props.keys().map(|k| k.to_string()).collect()
+}
+
+/// The canonical ordered key set shared by the materializer + index + chips.
+///
+/// Walk `prop_keys` keeping the FIRST occurrence of each key and DROPPING any
+/// key absent from `props`; then APPEND any key present in `props` but missing
+/// from `prop_keys`, in lexicographic (byte) order. `prop_keys` is the sole
+/// ordering authority — the `props` map's iteration order is never trusted for
+/// order, only consulted for membership and for the lexicographic tail.
+fn prop_keys_resolved(props: &loro::LoroMap, prop_keys: &loro::LoroList) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for key in prop_keys_ordered(prop_keys) {
+        if seen.contains(&key) {
+            continue;
+        }
+        if props.get(&key).is_none() {
+            continue;
+        }
+        seen.insert(key.clone());
+        out.push(key);
+    }
+    let mut tail: Vec<String> = props_map_keys(props)
+        .into_iter()
+        .filter(|k| !seen.contains(k))
+        .collect();
+    tail.sort();
+    out.extend(tail);
+    out
+}
+
 /// Append `key` to `prop_keys` once (first-seen order); no-op if present.
 fn prop_keys_ensure(prop_keys: &loro::LoroList, key: &str) -> SyncResult<()> {
     if prop_keys_ordered(prop_keys).iter().any(|k| k.as_str() == key) {
@@ -1825,6 +1860,20 @@ fn prop_get_list(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
     out
 }
 
+/// Read a multi-value property with STABLE first-occurrence dedup over the
+/// merged list order. A concurrent union-merge across replicas can leave the
+/// same value at more than one position; the materializer/index/chips read
+/// through here so the view is deterministic (same CRDT state → same bytes).
+fn prop_get_list_dedup(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
+    let mut seen: Vec<PropScalar> = Vec::new();
+    for v in prop_get_list(props, key) {
+        if !seen.contains(&v) {
+            seen.push(v);
+        }
+    }
+    seen
+}
+
 #[cfg(test)]
 mod prop_helper_tests {
     use super::*;
@@ -1880,6 +1929,70 @@ mod prop_helper_tests {
         prop_set_scalar(&props, &prop_keys, "type", &PropScalar::Text("Tag".into())).unwrap();
         assert_eq!(prop_get_scalar(&props, "type"), Some(PropScalar::Text("Tag".into())));
         assert_eq!(prop_keys_ordered(&prop_keys).join(","), "type");
+    }
+
+    #[test]
+    fn prop_keys_resolved_dedups_drops_missing_appends_lexicographically() {
+        let doc = loro::LoroDoc::new();
+        let (props, prop_keys) = page_prop_containers(&doc);
+
+        // props gets three keys via the set helpers (which also push to prop_keys);
+        // then we hand-build a messy prop_keys list to exercise the reconcile:
+        //   - "status"  : present in props, listed
+        //   - "ghost"   : NOT in props, listed (must be DROPPED)
+        //   - "status"  : duplicate (must keep FIRST occurrence only)
+        //   - "priority": present in props, listed
+        // and "zeta" is present in props but absent from prop_keys (must be
+        // APPENDED in lexicographic order relative to other props-only keys).
+        prop_set_scalar(&props, &prop_keys, "status", &PropScalar::Text("doing".into())).unwrap();
+        prop_set_scalar(&props, &prop_keys, "priority", &PropScalar::Int(3)).unwrap();
+        // props-only keys (NOT pushed to prop_keys): inserted directly so they
+        // exercise the lexicographic append. "alpha" sorts before "zeta".
+        props.insert("zeta", "z").unwrap();
+        props.insert("alpha", "a").unwrap();
+
+        // Overwrite prop_keys with the messy ordering described above.
+        prop_keys.delete(0, prop_keys.len()).unwrap();
+        for k in ["status", "ghost", "status", "priority"] {
+            prop_keys.push(k).unwrap();
+        }
+
+        // Expected: listed-and-present in first-seen order (status, priority,
+        // dup status dropped, ghost dropped), then props-only keys appended in
+        // byte order (alpha, zeta).
+        assert_eq!(
+            prop_keys_resolved(&props, &prop_keys),
+            vec![
+                "status".to_string(),
+                "priority".to_string(),
+                "alpha".to_string(),
+                "zeta".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn prop_get_list_dedup_is_stable_first_occurrence() {
+        let doc = loro::LoroDoc::new();
+        let (props, prop_keys) = page_prop_containers(&doc);
+
+        // Simulate a post-merge list where a value appears at more than one
+        // position: [A, B, A, C, B]. The stable dedup keeps the FIRST sighting
+        // of each value, preserving merged order: [A, B, C].
+        let list: loro::LoroList = props.get_or_create_container("tags", loro::LoroList::new()).unwrap();
+        for v in ["A", "B", "A", "C", "B"] {
+            list.push(v).unwrap();
+        }
+        prop_keys.push("tags").unwrap();
+
+        assert_eq!(
+            prop_get_list_dedup(&props, "tags"),
+            vec![
+                PropScalar::Text("A".into()),
+                PropScalar::Text("B".into()),
+                PropScalar::Text("C".into()),
+            ]
+        );
     }
 }
 }
