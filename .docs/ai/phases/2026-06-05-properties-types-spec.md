@@ -145,3 +145,55 @@ Each phase = one or more commits, self-QA'd, with the listed Verify green before
 - `roadmap.md` Now — mark step 3(b) progress per phase; carry per-phase checkboxes in `current-state.md` `## Plan`.
 - Memory — update `project_structured_first_crdt_truth` (multi-value no longer deferred — ships here); add a `project_property_system_milestone` note pointing at this spec; the new-entity guard as a product decision.
 - harness-deck — the design-plan roadmap card (`20260605-properties-design-plan`) is the dashboard record.
+
+---
+
+## Architectural review addendum (2026-06-05)
+
+Adversarial review (workflow `properties-phase1-arch-review`, 7 lenses, all claims code-verified). **This supersedes the Phase-1 op/migration framing above.**
+
+### Resolved decisions
+- **Op shape = DEDICATED PROPERTY OPS** (not a `BlockUpsert.properties` field — a field still rides the stale-base whole-block `text_c.update()` Myers-diff → per-key LWW, defeats multi-value union). Shape:
+  - `BlockPropertySet { note_id:[u8;16], block_id:[u8;16], key:String, value:PropOp }`
+  - `PagePropertySet  { note_id:[u8;16], key:String, value:PropOp }` (note_id on BOTH — `doc_for_note_mut` needs it)
+  - `enum PropOp { SetScalar(PropScalar), SetText(String), AddToList(PropScalar), RemoveFromList(PropScalar), Clear }` where `PropScalar = String|i64|f64|bool` (plain Rust, NOT `loro::LoroValue` — wire must not couple to the CRDT lib version).
+  - Append variants at END of `OpPayload` + an `OpKind` discriminant each. `prop_keys` maintenance lives in the apply arm, not on the wire. `record_local`/`OpPayload` is a LOCAL apply API — never serialized to wire/disk (wire = opaque Loro deltas; persistence = Loro snapshots), so `#[serde(default)]` is wire-irrelevant for these variants (keep it only on FFI request structs).
+- **Container topology = as proposed; `prop_keys` STAYS.** `props` `LoroMap` via `get_or_create_container`; scalar → **primitive** `LoroValue` (`props.insert`, zero sub-containers — snapshot-budget load-bearing, do NOT containerize scalars); text → nested `LoroText`; multi/tags/multi-ref → nested `LoroList`; node-ref single → primitive id string. **Always `get_or_create_container` at a stable key, NEVER `insert_container` at an existing key** (mints a rival container that overwrites instead of merges). Same proven pattern as `text_seq`.
+- **Failure policy = COERCE-AND-KEEP, SURFACE-IN-UI, NEVER REJECT at write/index** (CRDT-is-truth → a reject is unenforceable across opaque-delta peers; validation is a view). Out-of-choices → store verbatim + advisory invalid (recompute lazily at read; do NOT add a stored `valid` column that needs cross-note re-index). Unknown value_type → degrade to text. Dangling extends / missing Property page → keep partial + badge. Malformed `choices_json` → our-bug, error-log + degrade. **Remove "error/reject at index" from the plan.**
+- **Page-props indexing in Phase 1 = NO.** Zero SQLite schema delta; index stays downstream of materialized markdown. Phase-1 index obligation = one golden round-trip test, not new tables.
+
+### Blocking issues folded in (must-fix before/within Phase 1)
+1. **Migrate-on-APPLY, not just read.** On EVERY `BlockUpsert` apply: strip recognized `key:: value` continuation lines from incoming `text`, fold into `props`/`prop_keys`, write `text_seq` prose-only — one atomic commit, idempotent. (Mixed-fleet old peer authors in-text props; without this they re-inject + double-emit.)
+2. **NoteUpsert non-authoritative over props.** `set_page_properties` clears+repushes whole `page_props`; reseed (`clear_block_tree`+`seed_tree_from_flatblocks`) drops props. Make prop ops the SOLE writers of `props`; gate reseed off props-only deltas; reconcile `set_page_properties` so NoteUpsert can't clobber a concurrent `PagePropertySet`.
+3. **Disjoint-twin heal must carry props.** `PeerBlockChange` (loro_engine ~2095) is text-only; dedup tombstones the loser twin → its `props` vanish = reintroduces the data-loss class. Grow `PeerBlockChange` with resolved props; re-assert onto survivor. Acceptance: two disjoint twins each w/ a distinct property → merge → BOTH survive.
+4. **`prune_bare_leaf_blocks` (note_tree.rs:226) deletes property-only blocks** once props leave `text` (`bare = text.trim().is_empty()`). Treat non-empty `props` as non-bare. Regression test.
+5. **Re-point the write path off the text-diff.** `set_block_property` (notes.rs:1675) → `upsert_block_property_in_note` (whole-note rewrite) → re-diff = the clobber path. Route emits `BlockPropertySet` directly (DELETE the rewrite+rediff); `clear_block_property` → `Clear`/`RemoveFromList`.
+6. **Reconcile post-save logic.** `apply_post_save_bumps_with_info` + `apply_dependency_cycles` (notes.rs ~310) read `block.properties` from re-parsed markdown (recurring-roll, dependency unblock) → must read from container / re-materialized view or they regress.
+7. **Canonical materialization = prose lines (text order) THEN property lines (`prop_keys` order), appended after prose** (Logseq-compatible reflow). `FlatBlock` gains ordered `properties: Vec<(String, MaterializedValue)>`; `note_tree` owns the join — do NOT rebuild property lines back into `text` in the engine.
+8. **ONE shared `prop_keys` read helper** (materializer + index + chips): read `prop_keys`, dedup keeping FIRST occurrence, drop keys absent from `props`, append `props`-only keys lexicographically. Never iterate the `props` map for order. `Clear` removes from BOTH.
+9. **Multi-value materialization = STABLE dedup** (first-occurrence over merged list order), comma-joined per existing `tags::` convention.
+10. **Pin canonical scalar→string formatting per value_type** (checkbox→`true`/`false`; number no trailing-zero drift; date ISO) — else byte-determinism breaks despite equal CRDT state.
+11. **Page-prop precedence + legacy teardown.** New reader prefers `props`/`prop_keys`, falls back to `page_props`; migrate-on-write CLEARS the legacy `page_props` entry when it lifts (else it resurfaces on the next old-build NoteUpsert).
+12. **Old-FFI render-asymmetry (highest severity).** Old build imports new containers without error but its materializer can't READ them → renders property-less markdown + may re-broadcast it. Mitigations ALL required: (a) dual-read forever; (b) keep emitting `key:: value` lines in the materialized VIEW during transition; (c) migrate-on-write behind a flag **default-OFF**, flipped only after the WHOLE fleet (incl. iOS old FFI) is read-capable. No relay version negotiation exists. iOS FFI = long pole (rebuild `tesela-sync-ffi`, regen bindings, `xcodebuild`, copy header into BOTH `app/Tesela-iOS/CFFI/` AND `Generated/`).
+13. **Fix stale doc-comment at `engine/loro_engine.rs:17`** claiming a per-block `properties: LoroMap` already exists (it does NOT) — it would make an implementer skip the migration.
+14. **Correct the wire-compat framing** (above section's "decode old oplog" / "`#[serde(default)] properties`" was wrong for the Loro engine — wire is opaque `LoroDocUpdate`, persistence is snapshots). Real compat surface = dual-read + the render-asymmetry hazard.
+
+### Phase-1 build order (TDD, foundation-first; steps 1–9 = the data-loss fix, must be green before the web seam)
+1. value_type enum + `Property` struct + canonical scalar→string formatting (pure data; round-trip test).
+2. Engine `props`/`prop_keys` get-or-create + per-type write/read helpers (mirror `write_block_text`).
+3. The shared `prop_keys` read helper (dedup/order/stable multi-value).
+4. `BlockPropertySet`+`PagePropertySet` ops + apply arms (resolve via `doc_for_note_mut`/`find_node_by_block_id`, `prop_keys` maint, commit, return `Some(note_id)`). Convergence tests: concurrent prose splice + prop set → both survive; concurrent AddToList → union.
+5. Materializer: `FlatBlock.properties` + `serialize_note` join. **REVIEW-GATE determinism test:** same prop ops in different orders on two engines → import/export converge → `render_note_full` byte-identical.
+6. Lazy migrate-on-write on APPLY (strip from text → props, prose-only `text_seq`, one commit; page_props → root props + clear legacy). Dual-read. Behind flag default-OFF.
+7. Pruner fix (non-empty props = non-bare).
+8. NoteUpsert non-authoritative over props (reseed/`set_page_properties` don't clobber).
+9. Disjoint-twin heal extension (`PeerBlockChange` carries props; both survive).
+10. Re-point routes (`set_block_property`/`clear` emit ops; reconcile post-save logic). `cargo test -p tesela-server` green.
+11. FFI surface (mirror `splice_block_text`; regen bindings; build; copy header to BOTH dirs; `xcodebuild`).
+12. Index passthrough golden test (NO schema change; container→materialized→`parse_blocks`→`block_properties` rows == pre-migration).
+13. Web seam (after engine green): outbound detect-strip-emit at line-termination (NOT per-keystroke) via a new `setActiveBlockProperty` on the Loro/WS path — rewrite `applySlash` "property"/"date" + `writePropertyContinuation` + `/s` off the full-doc-replace; a SECOND inbound subscription on `props` (line-replace re-render, not the char-remap path); unify editor + TagTable/Kanban onto the one op.
+
+### Deferred PRODUCT questions (→ harness-deck `20260605-properties-product-qs`; non-blocking for engine steps 1–9)
+1. **Property reflow** confirm — mid-prose properties move to block END on first save (Logseq-compatible, determinism-required; treated pre-authorized per the "not byte-preserving" decision).
+2. **New-entity guard default for out-of-choices values** — "add as new choice" vs "keep as one-off unvalidated (red dot)" (curated-vocab vs frictionless-capture).
+3. **In-editor chip conversion timing** — instant vs render-on-blur (recommend render-on-blur; mirrors markdown-on-unfocus, caret-safe).
