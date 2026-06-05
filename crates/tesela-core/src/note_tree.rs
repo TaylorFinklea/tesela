@@ -220,6 +220,17 @@ fn parse_property_line(line: &str) -> Option<(String, String)> {
 /// for any path that writes a note body — it mirrors the iOS client's
 /// `droppingBareLeafBlocks` so writes from every client converge on the
 /// same on-disk form.
+/// A block is "bare" when it carries neither prose nor any materialized
+/// container property. The property check matters once props leave `text`
+/// and live in the block's typed container (the engine populates
+/// `FlatBlock.properties` from `prop_keys`; `parse_note` leaves it empty).
+/// An eager-seeded but empty props map materializes to an empty Vec, so a
+/// blank bullet stays bare — mirrors iOS `droppingBareLeafBlocks`, which
+/// also checks `properties.isEmpty`.
+fn block_is_bare(block: &FlatBlock) -> bool {
+    block.text.trim().is_empty() && block.properties.is_empty()
+}
+
 pub fn prune_bare_leaf_blocks(content: &str) -> String {
     let mut tree = parse_note(content);
     // Walk back-to-front, tracking the indent of every block we've
@@ -233,7 +244,7 @@ pub fn prune_bare_leaf_blocks(content: &str) -> String {
             .last()
             .map(|next_indent| *next_indent > block.indent)
             .unwrap_or(false);
-        let bare = block.text.trim().is_empty();
+        let bare = block_is_bare(block);
         if bare && !has_deeper_successor {
             keep[idx] = false;
         } else {
@@ -905,6 +916,40 @@ mod tests {
                 kept_id,
             ),
         );
+    }
+
+    #[test]
+    fn prune_keeps_property_only_block() {
+        // A block whose prose is empty but that carries a materialized
+        // container property is NOT bare — it must survive the prune so
+        // its property isn't silently dropped. The pruner operates on
+        // engine-built trees where `FlatBlock.properties` is populated
+        // (the parser never sets it), so exercise the bareness predicate
+        // directly.
+        let block = FlatBlock {
+            id: fixture_uuid(0x60),
+            parent: None,
+            indent: 0,
+            text: "   ".to_string(),
+            properties: vec![("status".to_string(), "doing".to_string())],
+        };
+        assert!(!block_is_bare(&block));
+    }
+
+    #[test]
+    fn prune_drops_block_with_empty_props() {
+        // The empty-seeded-map guard: eager-seeding mints an EMPTY props
+        // map per block, which materializes to an empty `properties` Vec.
+        // Empty text + empty properties stays bare so a blank bullet is
+        // still pruned.
+        let block = FlatBlock {
+            id: fixture_uuid(0x61),
+            parent: None,
+            indent: 0,
+            text: "   ".to_string(),
+            properties: Vec::new(),
+        };
+        assert!(block_is_bare(&block));
     }
 
     // ── container property materialization (P1.5) ────────────────────────
