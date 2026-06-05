@@ -23,7 +23,7 @@ Brainstormed the full milestone w/ Taylor — 4 product calls: full-system (phas
 - [ ] **P1.12** index passthrough golden test (NO schema change; container → materialized → `parse_blocks` → `block_properties` rows == pre-migration). Verify: `cargo test -p tesela-core`.
 - [ ] **P1.13** web seam (outbound detect-strip-emit at line-termination, NOT per-keystroke; inbound `props` subscription line-replace; unify editor + TagTable/Kanban onto the op). Verify: `pnpm --dir web check` + web e2e. (Also: the registry-facing `Property` struct deferred from P1.1 lands with the registry integration.)
 
-**Open (USER, async, non-blocking for P1.2–P1.9):** harness-deck `tesela/20260605-properties-product-qs` — reflow confirm / out-of-choices guard default / chip timing.
+**Resolved (USER, 2026-06-05):** reflow **APPROVED** · out-of-choices guard default = **add-as-new-choice** · in-editor chip = **render-on-blur**. Folded into the spec (→ P1.5 / Phase-2 guard / P1.13). harness-deck `20260605-properties-product-qs` done.
 
 ---
 

@@ -193,7 +193,7 @@ Adversarial review (workflow `properties-phase1-arch-review`, 7 lenses, all clai
 12. Index passthrough golden test (NO schema change; container→materialized→`parse_blocks`→`block_properties` rows == pre-migration).
 13. Web seam (after engine green): outbound detect-strip-emit at line-termination (NOT per-keystroke) via a new `setActiveBlockProperty` on the Loro/WS path — rewrite `applySlash` "property"/"date" + `writePropertyContinuation` + `/s` off the full-doc-replace; a SECOND inbound subscription on `props` (line-replace re-render, not the char-remap path); unify editor + TagTable/Kanban onto the one op.
 
-### Deferred PRODUCT questions (→ harness-deck `20260605-properties-product-qs`; non-blocking for engine steps 1–9)
-1. **Property reflow** confirm — mid-prose properties move to block END on first save (Logseq-compatible, determinism-required; treated pre-authorized per the "not byte-preserving" decision).
-2. **New-entity guard default for out-of-choices values** — "add as new choice" vs "keep as one-off unvalidated (red dot)" (curated-vocab vs frictionless-capture).
-3. **In-editor chip conversion timing** — instant vs render-on-blur (recommend render-on-blur; mirrors markdown-on-unfocus, caret-safe).
+### Resolved PRODUCT decisions (2026-06-05, Taylor via harness-deck `20260605-properties-product-qs`)
+1. **Property reflow = APPROVED.** Mid-prose properties reflow to the block END on first materialize (Logseq-compatible; determinism-required). → P1.5 materializer.
+2. **Out-of-choices guard default = ADD AS NEW CHOICE.** Typing a select value not in `choices` defaults to "add '<value>' as a new choice" (curated vocab grows naturally); "keep as a one-off (unvalidated)" stays available as the secondary action. → Phase-2 new-entity guard.
+3. **In-editor chip timing = RENDER-ON-BLUR.** A committed `key:: value` line stays raw text while the block is focused and renders as a chip on blur (mirrors the existing markdown-on-unfocus behavior; caret-safe). → P1.13 web seam.
