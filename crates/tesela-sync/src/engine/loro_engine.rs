@@ -35,7 +35,7 @@ use crate::engine::{
 };
 use crate::error::{SyncError, SyncResult};
 use crate::hlc::Hlc;
-use crate::oplog::op::{ContentHash, EncodedOp, OpPayload};
+use crate::oplog::op::{ContentHash, EncodedOp, OpPayload, PropOp};
 use crate::oplog::parked::ParkReason;
 use async_trait::async_trait;
 use loro::{
@@ -1601,13 +1601,12 @@ fn read_indent_level(tree: &LoroTree, node: TreeID) -> Option<u16> {
 // first-touch converges on ONE container (same discipline as `write_block_text`).
 // ---------------------------------------------------------------------------
 
-#[allow(dead_code)] // foundational helpers; wired into the property ops in P1.4+
 mod prop_containers {
 use super::*;
 use tesela_core::property::PropScalar;
 
 /// Get-or-create the `props` + `prop_keys` containers on a block node's meta map.
-fn node_prop_containers(meta: &loro::LoroMap) -> SyncResult<(loro::LoroMap, loro::LoroList)> {
+pub(super) fn node_prop_containers(meta: &loro::LoroMap) -> SyncResult<(loro::LoroMap, loro::LoroList)> {
     let props = meta
         .get_or_create_container("props", loro::LoroMap::new())
         .map_err(|e| SyncError::Storage(format!("loro props get_or_create: {e}")))?;
@@ -1618,7 +1617,7 @@ fn node_prop_containers(meta: &loro::LoroMap) -> SyncResult<(loro::LoroMap, loro
 }
 
 /// The page-level `props` + `prop_keys` containers live at the doc root.
-fn page_prop_containers(doc: &LoroDoc) -> (loro::LoroMap, loro::LoroList) {
+pub(super) fn page_prop_containers(doc: &LoroDoc) -> (loro::LoroMap, loro::LoroList) {
     (doc.get_map("props"), doc.get_list("prop_keys"))
 }
 
@@ -1640,6 +1639,7 @@ fn prop_keys_ordered(prop_keys: &loro::LoroList) -> Vec<String> {
 
 /// All keys present in the `props` map (primitive values AND nested
 /// containers), in the map's (unspecified) iteration order.
+#[allow(dead_code)] // consumed by the shared read helper wired in P1.3/P1.5
 fn props_map_keys(props: &loro::LoroMap) -> Vec<String> {
     props.keys().map(|k| k.to_string()).collect()
 }
@@ -1651,6 +1651,7 @@ fn props_map_keys(props: &loro::LoroMap) -> Vec<String> {
 /// from `prop_keys`, in lexicographic (byte) order. `prop_keys` is the sole
 /// ordering authority — the `props` map's iteration order is never trusted for
 /// order, only consulted for membership and for the lexicographic tail.
+#[allow(dead_code)] // the shared materializer/index/chips reader lands in P1.3/P1.5
 fn prop_keys_resolved(props: &loro::LoroMap, prop_keys: &loro::LoroList) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1726,7 +1727,7 @@ fn map_insert_scalar(props: &loro::LoroMap, key: &str, value: &PropScalar) -> Sy
 }
 
 /// Set a single-value scalar property (primitive LoroValue; concurrent set = LWW).
-fn prop_set_scalar(
+pub(super) fn prop_set_scalar(
     props: &loro::LoroMap,
     prop_keys: &loro::LoroList,
     key: &str,
@@ -1737,7 +1738,7 @@ fn prop_set_scalar(
 }
 
 /// Set a free-text property as a nested LoroText (concurrent char-merge).
-fn prop_set_text(
+pub(super) fn prop_set_text(
     props: &loro::LoroMap,
     prop_keys: &loro::LoroList,
     key: &str,
@@ -1784,7 +1785,7 @@ fn get_list_container(props: &loro::LoroMap, key: &str) -> Option<loro::LoroList
 
 /// Add a value to a multi-value property's nested LoroList, union semantics
 /// (a value already present is a no-op).
-fn prop_add_to_list(
+pub(super) fn prop_add_to_list(
     props: &loro::LoroMap,
     prop_keys: &loro::LoroList,
     key: &str,
@@ -1802,7 +1803,7 @@ fn prop_add_to_list(
 /// Remove a value from a multi-value property's list (no-op if absent or the
 /// property isn't a list). `prop_keys` is left intact — an emptied list keeps
 /// its key until an explicit `prop_clear`.
-fn prop_remove_from_list(
+pub(super) fn prop_remove_from_list(
     props: &loro::LoroMap,
     key: &str,
     value: &PropScalar,
@@ -1818,7 +1819,7 @@ fn prop_remove_from_list(
 }
 
 /// Remove a property entirely: from `props` AND `prop_keys`.
-fn prop_clear(props: &loro::LoroMap, prop_keys: &loro::LoroList, key: &str) -> SyncResult<()> {
+pub(super) fn prop_clear(props: &loro::LoroMap, prop_keys: &loro::LoroList, key: &str) -> SyncResult<()> {
     props
         .delete(key)
         .map_err(|e| SyncError::Storage(format!("loro props delete: {e}")))?;
@@ -1826,12 +1827,14 @@ fn prop_clear(props: &loro::LoroMap, prop_keys: &loro::LoroList, key: &str) -> S
 }
 
 /// Read a scalar property (primitive value under `key`); None if absent or a container.
-fn prop_get_scalar(props: &loro::LoroMap, key: &str) -> Option<PropScalar> {
+#[allow(dead_code)] // scalar reader wired by the materializer in P1.5; tests read it now
+pub(super) fn prop_get_scalar(props: &loro::LoroMap, key: &str) -> Option<PropScalar> {
     let val = props.get(key)?.into_value().ok()?;
     loro_value_to_scalar(val)
 }
 
 /// Read a text property (nested LoroText); None if absent or not text.
+#[allow(dead_code)] // text-prop reader wired by the materializer in P1.5
 fn prop_get_text(props: &loro::LoroMap, key: &str) -> Option<String> {
     props
         .get(key)?
@@ -1843,7 +1846,7 @@ fn prop_get_text(props: &loro::LoroMap, key: &str) -> Option<String> {
 }
 
 /// Read a multi-value property as scalars in list order; empty if absent.
-fn prop_get_list(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
+pub(super) fn prop_get_list(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
     let Some(list) = get_list_container(props, key) else {
         return Vec::new();
     };
@@ -1864,6 +1867,7 @@ fn prop_get_list(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
 /// merged list order. A concurrent union-merge across replicas can leave the
 /// same value at more than one position; the materializer/index/chips read
 /// through here so the view is deterministic (same CRDT state → same bytes).
+#[allow(dead_code)] // stable-dedup reader wired by the materializer in P1.5
 fn prop_get_list_dedup(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
     let mut seen: Vec<PropScalar> = Vec::new();
     for v in prop_get_list(props, key) {
@@ -3212,9 +3216,73 @@ impl LoroEngine {
                 // op types are caught by the compiler.
                 None
             }
+            OpPayload::BlockPropertySet {
+                note_id,
+                block_id,
+                key,
+                value,
+            } => {
+                // Dedicated property op: properties live in their OWN `props`
+                // + ordered `prop_keys` containers on the block node's meta,
+                // so they merge INDEPENDENTLY of the block's `text_seq` prose
+                // (a concurrent prose splice and a property set don't clobber
+                // each other). Resolve the per-note doc, find the node; a
+                // property set on a block we've never seen is a SAFE NO-OP
+                // (matches BlockMove/BlockDelete on a missing block —
+                // SqliteEngine carries canonical state and the shadow catches
+                // up when the next BlockUpsert reseeds the block).
+                let doc = self.doc_for_note_mut(*note_id).await;
+                let tree = doc.get_tree("blocks");
+                let block_hex = hex_id(block_id);
+                let Some(node) = find_node_by_block_id(&tree, &block_hex) else {
+                    tracing::debug!(
+                        "tesela-sync/loro: BlockPropertySet for unknown block {block_hex}"
+                    );
+                    return Ok(None);
+                };
+                let meta = tree
+                    .get_meta(node)
+                    .map_err(|e| SyncError::Storage(format!("loro get_meta: {e}")))?;
+                let (props, prop_keys) = prop_containers::node_prop_containers(&meta)?;
+                apply_prop_op(&props, &prop_keys, key, value)?;
+                doc.commit();
+                self.register_note_blocks(*note_id, &[*block_id]).await;
+                Some(*note_id)
+            }
+            OpPayload::PagePropertySet {
+                note_id,
+                key,
+                value,
+            } => {
+                // Page-level property: lives in `props`/`prop_keys` at the doc
+                // ROOT. Same independent-merge guarantee as block props.
+                let doc = self.doc_for_note_mut(*note_id).await;
+                let (props, prop_keys) = prop_containers::page_prop_containers(&doc);
+                apply_prop_op(&props, &prop_keys, key, value)?;
+                doc.commit();
+                Some(*note_id)
+            }
         };
 
         Ok(touched)
+    }
+}
+
+/// Dispatch a [`PropOp`] onto a resolved (`props`, `prop_keys`) container
+/// pair via the `prop_containers` helpers. `prop_keys` maintenance lives in
+/// the helpers (the apply arm, never the wire).
+fn apply_prop_op(
+    props: &loro::LoroMap,
+    prop_keys: &loro::LoroList,
+    key: &str,
+    value: &PropOp,
+) -> SyncResult<()> {
+    match value {
+        PropOp::SetScalar(s) => prop_containers::prop_set_scalar(props, prop_keys, key, s),
+        PropOp::SetText(t) => prop_containers::prop_set_text(props, prop_keys, key, t),
+        PropOp::AddToList(s) => prop_containers::prop_add_to_list(props, prop_keys, key, s),
+        PropOp::RemoveFromList(s) => prop_containers::prop_remove_from_list(props, key, s),
+        PropOp::Clear => prop_containers::prop_clear(props, prop_keys, key),
     }
 }
 
@@ -5903,5 +5971,231 @@ mod tests {
             Some("present"),
             "the present block is unaffected"
         );
+    }
+
+    // ---- P1.4 property ops ----
+
+    use tesela_core::property::PropScalar;
+
+    /// Read a block's `props` scalar by note + block id, navigating the doc
+    /// the way the apply arm writes it. Mirrors `block_text`.
+    async fn block_prop_scalar(
+        engine: &LoroEngine,
+        note_id: [u8; 16],
+        block: [u8; 16],
+        key: &str,
+    ) -> Option<PropScalar> {
+        let docs = engine.inner.docs.read().await;
+        let doc = docs.get(&note_id)?;
+        let tree = doc.get_tree("blocks");
+        let node = find_node_by_block_id(&tree, &hex_id(&block))?;
+        let meta = tree.get_meta(node).ok()?;
+        let (props, _keys) = prop_containers::node_prop_containers(&meta).ok()?;
+        prop_containers::prop_get_scalar(&props, key)
+    }
+
+    /// Read a block's `props` multi-value list by note + block id.
+    async fn block_prop_list(
+        engine: &LoroEngine,
+        note_id: [u8; 16],
+        block: [u8; 16],
+        key: &str,
+    ) -> Vec<PropScalar> {
+        let docs = engine.inner.docs.read().await;
+        let Some(doc) = docs.get(&note_id) else {
+            return Vec::new();
+        };
+        let tree = doc.get_tree("blocks");
+        let Some(node) = find_node_by_block_id(&tree, &hex_id(&block)) else {
+            return Vec::new();
+        };
+        let Ok(meta) = tree.get_meta(node) else {
+            return Vec::new();
+        };
+        let Ok((props, _keys)) = prop_containers::node_prop_containers(&meta) else {
+            return Vec::new();
+        };
+        prop_containers::prop_get_list(&props, key)
+    }
+
+    // (a) BlockPropertySet SetScalar on a block → read it back via the engine.
+    #[tokio::test]
+    async fn block_property_set_scalar_round_trips() {
+        let note = blake3_note_id("prop-scalar");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        upsert_block(&engine, note, A_BID_BYTES, "a block", None).await;
+
+        engine
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: A_BID_BYTES,
+                key: "status".into(),
+                value: PropOp::SetScalar(PropScalar::Text("doing".into())),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            block_prop_scalar(&engine, note, A_BID_BYTES, "status").await,
+            Some(PropScalar::Text("doing".into())),
+            "scalar property reads back after BlockPropertySet"
+        );
+    }
+
+    // A property set on a block that doesn't exist is a safe no-op, NOT a crash.
+    #[tokio::test]
+    async fn block_property_set_on_missing_block_is_noop() {
+        let note = blake3_note_id("prop-missing-block");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        // B_BID_BYTES is never created in this note.
+        engine
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: B_BID_BYTES,
+                key: "status".into(),
+                value: PropOp::SetScalar(PropScalar::Text("doing".into())),
+            })
+            .await
+            .expect("property set on a missing block must not error");
+        assert_eq!(
+            block_prop_scalar(&engine, note, B_BID_BYTES, "status").await,
+            None,
+            "no node was created for the missing block"
+        );
+    }
+
+    // (b) ⭐ Shared base: A splices prose on block X, B sets a property on the
+    // SAME block X. Exchange both ways → BOTH survive (prose carries A's edit
+    // AND the property is set — neither clobbers the other).
+    #[tokio::test]
+    async fn concurrent_prose_splice_and_property_set_both_survive() {
+        let note = blake3_note_id("prose-vs-prop");
+        let block = A_BID_BYTES;
+
+        // Engine A builds the shared base (one block, text "Hello").
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        upsert_block(&a, note, block, "Hello", None).await;
+
+        // Engine B imports the base so both share Loro history (same TreeID).
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+        let base = a.export_doc_update(note, None).await.unwrap();
+        b.import_doc_update(note, &base).await.unwrap();
+        assert_eq!(block_text(&b, note, block).await.as_deref(), Some("Hello"));
+
+        // Concurrent, neither has seen the other:
+        //   A appends " world" to the SAME block's prose.
+        //   B sets a `status` property on the SAME block.
+        a.splice_block_text(note, block, 5, 0, " world").await.unwrap();
+        b.record_local(OpPayload::BlockPropertySet {
+            note_id: note,
+            block_id: block,
+            key: "status".into(),
+            value: PropOp::SetScalar(PropScalar::Text("doing".into())),
+        })
+        .await
+        .unwrap();
+
+        // Exchange updates both ways.
+        let ua = a.export_doc_update(note, None).await.unwrap();
+        let ub = b.export_doc_update(note, None).await.unwrap();
+        b.import_doc_update(note, &ua).await.unwrap();
+        a.import_doc_update(note, &ub).await.unwrap();
+
+        // Both survive on BOTH replicas: the prose carries A's edit AND the
+        // property is set — neither clobbers the other.
+        for (label, e) in [("A", &a), ("B", &b)] {
+            assert_eq!(
+                block_text(e, note, block).await.as_deref(),
+                Some("Hello world"),
+                "{label}: prose edit must survive the concurrent property set"
+            );
+            assert_eq!(
+                block_prop_scalar(e, note, block, "status").await,
+                Some(PropScalar::Text("doing".into())),
+                "{label}: property must survive the concurrent prose edit"
+            );
+        }
+    }
+
+    // (c) AddToList of two DISTINCT values on the same block's "tags" from two
+    // engines on a shared base → union after merge.
+    //
+    // The "tags" LoroList must exist in SHARED history before the two engines
+    // diverge: Loro derives a child container's id from the op that created
+    // it, so two peers each minting the list for the FIRST time concurrently
+    // produce rival containers and one branch is overwritten (documented
+    // "Container ID And Overwrite Hazards"). The realistic product path tags
+    // an EXISTING block, so we seed the list once on the base (one initial
+    // AddToList, imported by B) and THEN add distinct values concurrently —
+    // which unions correctly because both push into the same shared container.
+    #[tokio::test]
+    async fn concurrent_add_to_list_unions() {
+        let note = blake3_note_id("tags-union");
+        let block = A_BID_BYTES;
+
+        let dev_a = DeviceId::from_bytes([0xc1; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        upsert_block(&a, note, block, "a block", None).await;
+        // Seed the shared "tags" list on the base so both replicas share its
+        // container id (see the doc comment above).
+        a.record_local(OpPayload::BlockPropertySet {
+            note_id: note,
+            block_id: block,
+            key: "tags".into(),
+            value: PropOp::AddToList(PropScalar::Text("Base".into())),
+        })
+        .await
+        .unwrap();
+
+        let dev_b = DeviceId::from_bytes([0xc2; 16]);
+        let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+        let base = a.export_doc_update(note, None).await.unwrap();
+        b.import_doc_update(note, &base).await.unwrap();
+
+        // Concurrent AddToList of DISTINCT values to the same (shared) "tags" list.
+        a.record_local(OpPayload::BlockPropertySet {
+            note_id: note,
+            block_id: block,
+            key: "tags".into(),
+            value: PropOp::AddToList(PropScalar::Text("Task".into())),
+        })
+        .await
+        .unwrap();
+        b.record_local(OpPayload::BlockPropertySet {
+            note_id: note,
+            block_id: block,
+            key: "tags".into(),
+            value: PropOp::AddToList(PropScalar::Text("Urgent".into())),
+        })
+        .await
+        .unwrap();
+
+        let ua = a.export_doc_update(note, None).await.unwrap();
+        let ub = b.export_doc_update(note, None).await.unwrap();
+        b.import_doc_update(note, &ua).await.unwrap();
+        a.import_doc_update(note, &ub).await.unwrap();
+
+        // Union on both replicas — both distinct values present.
+        for (label, e) in [("A", &a), ("B", &b)] {
+            let mut tags: Vec<String> = block_prop_list(e, note, block, "tags")
+                .await
+                .into_iter()
+                .map(|s| match s {
+                    PropScalar::Text(t) => t,
+                    other => format!("{other:?}"),
+                })
+                .collect();
+            tags.sort();
+            assert_eq!(
+                tags,
+                vec!["Base".to_string(), "Task".to_string(), "Urgent".to_string()],
+                "{label}: concurrent AddToList must union both distinct values \
+                 (alongside the shared base value)"
+            );
+        }
     }
 }

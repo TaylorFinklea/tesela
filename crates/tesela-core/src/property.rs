@@ -54,7 +54,7 @@ impl ValueType {
 }
 
 /// A single stored scalar property value, mirroring the Loro primitive forms.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum PropScalar {
     Text(String),
     Int(i64),

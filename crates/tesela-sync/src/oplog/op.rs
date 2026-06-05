@@ -43,13 +43,42 @@ pub enum OpKind {
     AttachmentUpsert,
     /// An attachment row was deleted.
     AttachmentDelete,
+    /// A block-level property was set / mutated.
+    BlockPropertySet,
+    /// A page-level property was set / mutated.
+    PagePropertySet,
+}
+
+/// A single mutation applied to one property by a property-set op.
+///
+/// `PropScalar` is plain Rust (`String | i64 | f64 | bool`), deliberately NOT
+/// `loro::LoroValue` — the local apply API must not couple to the CRDT lib
+/// version. The apply path (`loro_engine`) dispatches each variant to its
+/// `prop_containers` helper; `prop_keys` maintenance lives in the apply arm,
+/// never on the wire.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum PropOp {
+    /// Set a single-value scalar property (concurrent set = LWW).
+    SetScalar(crate::PropScalar),
+    /// Set a free-text property (nested LoroText; concurrent char-merge).
+    SetText(String),
+    /// Add a value to a multi-value property's list (union semantics).
+    AddToList(crate::PropScalar),
+    /// Remove a value from a multi-value property's list (no-op if absent).
+    RemoveFromList(crate::PropScalar),
+    /// Remove the property entirely (from both `props` and `prop_keys`).
+    Clear,
 }
 
 /// The body of an op. One variant per canonical table mutation type.
 ///
 /// Phase 1 implements the five Note and Block variants. Attachment variants
 /// are reserved for Phase 2 once the content-addressed blob store lands.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `OpPayload` is NOT `Eq`: the property-set variants embed `PropScalar`,
+/// which carries an `f64` (and `f64` is not `Eq`). Nothing relies on
+/// `OpPayload`/`EncodedOp` being `Eq` (no hashed/sorted container of them).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum OpPayload {
     /// Create or update a note row.
     ///
@@ -147,6 +176,33 @@ pub enum OpPayload {
         /// Attachment being deleted.
         attachment_id: [u8; 16],
     },
+    /// Set / mutate a block-level property.
+    ///
+    /// A dedicated op (not a `BlockUpsert` field): a field would ride the
+    /// stale-base whole-block text update → per-key LWW, defeating
+    /// multi-value union. The apply arm resolves the doc via
+    /// `doc_for_note_mut(note_id)`, finds the node via
+    /// `find_node_by_block_id`, and dispatches `value` to a `prop_containers`
+    /// helper. A property set on a missing block is a safe no-op.
+    BlockPropertySet {
+        /// Note this block belongs to (needed to resolve the per-note doc).
+        note_id: [u8; 16],
+        /// Block whose property is being set.
+        block_id: [u8; 16],
+        /// Property key.
+        key: String,
+        /// The mutation.
+        value: PropOp,
+    },
+    /// Set / mutate a page-level property (lives on the note doc root).
+    PagePropertySet {
+        /// Note whose page property is being set.
+        note_id: [u8; 16],
+        /// Property key.
+        key: String,
+        /// The mutation.
+        value: PropOp,
+    },
 }
 
 impl OpPayload {
@@ -160,6 +216,8 @@ impl OpPayload {
             OpPayload::BlockDelete { .. } => OpKind::BlockDelete,
             OpPayload::AttachmentUpsert { .. } => OpKind::AttachmentUpsert,
             OpPayload::AttachmentDelete { .. } => OpKind::AttachmentDelete,
+            OpPayload::BlockPropertySet { .. } => OpKind::BlockPropertySet,
+            OpPayload::PagePropertySet { .. } => OpKind::PagePropertySet,
         }
     }
 }
@@ -168,7 +226,7 @@ impl OpPayload {
 ///
 /// Carries timestamping, schema version, content hash for dedup, optional
 /// transaction grouping, and the mutation payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EncodedOp {
     /// HLC timestamp authored by the producer device.
     pub hlc: HlcTimestamp,
