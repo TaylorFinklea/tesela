@@ -4,6 +4,16 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-05 (b) — Loro container-overwrite hazard: nested property containers must be seeded into shared history
+
+**Finding (surfaced during P1.4 implementation by an adversarial test that correctly failed first):** Loro derives a child container's id from the op that creates it. Two peers that each create a nested container — a multi-value `LoroList` or a text `LoroText` property, **or** the per-block `props` map / `prop_keys` list itself — at the SAME map key, concurrently, for the FIRST time, mint RIVAL container ids → on merge one branch OVERWRITES the other (the loser's contents are lost). Union / char-merge only holds once the container already exists in SHARED history before the peers diverge.
+
+**Impact:** a genuine multi-device data-loss vector for the exact case this milestone targets — two devices first-adding a tag, first-setting a text property, or first-setting ANY property on the same block before either has synced. Scalar property VALUES are safe as long as the `props` MAP is shared (per-key `insert` is LWW). The architectural review (2026-06-05) assumed nested containers merge; this is the one place that assumption is false.
+
+**Decision (direction, to be finalized in the P1.9b convergence-design pass):** eagerly seed `props` + `prop_keys` on a block node at CREATION (and the page-root containers at note init) so the common path operates on a shared map — fixes the scalar + "any first property" case. The narrower per-key list/text first-touch hazard + the migrate-on-apply case (P1.6 creates props containers on EXISTING blocks → two devices migrating one block concurrently mint rivals) are resolved together: candidates are deterministic/seed-on-define container ids, an authoritative single-writer migration, and/or a rival-container reconcile folded into the disjoint-twin heal (P1.9). **P1.9b gates P1.6.** Until resolved, tests honestly seed the container on a shared base to prove union (they do NOT claim first-touch union).
+
+---
+
 ### 2026-06-05 — Properties + types milestone: structured-first typed property containers
 
 **Product decisions (brainstormed w/ Taylor; spec `phases/2026-06-05-properties-types-spec.md` + arch-review addendum):**
