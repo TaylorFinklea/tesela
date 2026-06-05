@@ -14,12 +14,13 @@ use tesela_core::{
     link::{GraphEdge, Link, LinkType},
     note::NoteId,
     note_tree::{parse_note, serialize_note},
+    property::{parse_scalar, ValueType},
     recurrence::{self, Recurrence},
     storage::markdown::parse_frontmatter,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     Note,
 };
-use tesela_sync::OpPayload;
+use tesela_sync::{OpPayload, PropOp, PropScalar};
 
 use crate::{
     error::{AppError, AppResult},
@@ -1660,9 +1661,8 @@ pub struct ClearBlockPropertyReq {
     pub key: String,
 }
 
-/// Upsert a single `key:: value` property on a block and persist, triggering
-/// the same `apply_post_save_bumps` path that a full note PUT does.  This
-/// means:
+/// Upsert a single property on a block and persist, triggering the same
+/// `apply_post_save_bumps` path that a full note PUT does. This means:
 ///   - marking a task `status:: done` on a recurring block → the server
 ///     auto-bumps its deadline to the next occurrence (same as full PUT).
 ///   - marking a task `status:: done` on a non-recurring block → the block
@@ -1672,6 +1672,25 @@ pub struct ClearBlockPropertyReq {
 ///
 /// The block_id encodes the note id (`note_id_str:line_num`), so no separate
 /// note-id path parameter is needed.
+///
+/// ## P1.10 — write through the engine's typed container
+/// The property is written via `OpPayload::BlockPropertySet` through the sync
+/// engine, NOT the legacy whole-note markdown rewrite
+/// (`upsert_block_property_in_note`) + whole-note re-diff. The property lands
+/// in the block node's `props`/`prop_keys` containers, merging INDEPENDENTLY
+/// of the block's prose `text_seq` — so a concurrent prose edit and a property
+/// set no longer clobber each other (the old text-splice was the clobber
+/// path). The `PropOp` is chosen from the property's registry `value_type`
+/// (`SetText` for free-text, `AddToList` per item for multi-value, otherwise
+/// `SetScalar` via `parse_scalar`); an unknown property degrades to a `Text`
+/// scalar (coerce-and-keep).
+///
+/// The engine materializes the property as a `key:: value` continuation line
+/// in the `<slug>.md` view. The post-save recurring-roll + dependency-unblock
+/// logic then reads block properties from THAT re-materialized view (the
+/// engine container's markdown projection), not a stale separate re-parse, so
+/// recurring tasks + dependencies still fire. Any rewrites they produce are
+/// persisted through the engine via `record_sync_update`.
 pub async fn set_block_property(
     State(s): State<Arc<AppState>>,
     Json(req): Json<SetBlockPropertyReq>,
@@ -1713,25 +1732,117 @@ pub async fn set_block_property(
 
     let prev_content = note.content.clone();
 
-    // Locate the block in the body and upsert the property.
-    let new_content =
-        upsert_block_property_in_note(&prev_content, note_id_str, line_num, &key, &req.value)
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "block '{}' not found in note '{}'",
-                    req.block_id, note_id_str
-                ))
-            })?;
+    // Resolve the target block's canonical bid (the `<!-- bid:UUID -->`
+    // marker) so the property op addresses the engine's node directly. A
+    // block with no bid (locally-created, never round-tripped) has no engine
+    // node yet — surface it as not-found rather than silently no-op.
+    let block_bid = resolve_block_bid(&prev_content, note_id_str, line_num).ok_or_else(|| {
+        AppError::NotFound(format!(
+            "block '{}' not found in note '{}'",
+            req.block_id, note_id_str
+        ))
+    })?;
+    let block_id = parse_bid(&block_bid)?;
+    let doc_note_id = stable_uuid_from_slug(note_id_str);
 
-    // Run post-save bumps (handles recurring blocks marked done).
-    let (new_content, bumps) = apply_post_save_bumps_with_info(&prev_content, &new_content, note_id_str);
-    let (new_content, _unblocked) = apply_dependency_cycles(&prev_content, &new_content, note_id_str);
+    // Migrate-on-write for THIS key only: if the block still carries `key` as
+    // a legacy in-text continuation line (the common case — notes are seeded
+    // from markdown, so block props start life in `text_seq`), strip that one
+    // line from the block's prose first. Otherwise the container value and the
+    // stale in-text line would BOTH materialize, duplicating the property.
+    // Scoped to the single key being written so OTHER in-text props (still
+    // readable by old peers) are untouched — not the fleet-wide P1.6 migrate.
+    if let Some(stripped) = strip_block_intext_prop(&prev_content, &block_bid, &key) {
+        let payload = OpPayload::BlockUpsert {
+            block_id,
+            note_id: doc_note_id,
+            // Preserve the block's real parent (mirrors the seed path at
+            // loro_engine.rs `seed_tree_from_flatblocks`) so the prose-strip
+            // never resets a nested block's `parent` meta to top-level.
+            parent_block_id: stripped.parent.map(|p| *p.as_bytes()),
+            order_key: "00000000".to_string(),
+            indent_level: stripped.indent,
+            text: stripped.text,
+            after_block_id: None,
+        };
+        if let Err(e) = s.sync_engine.record_local(payload).await {
+            tracing::warn!("sync: record_local prose-strip BlockUpsert failed for {}: {e}", req.block_id);
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Failed to strip in-text property: {e}"
+            )));
+        }
+    }
 
-    let stamped = stamp_block_ids(&new_content);
-    let mut updated_note = note.clone();
-    updated_note.content = stamped;
-    s.store.update(&updated_note).await?;
+    // Choose the PropOp from the property's registry value_type, then emit it
+    // through the engine. Multi-value clears then re-adds each item so a
+    // route-driven set replaces the list deterministically.
+    let prop_ops = prop_ops_for_set(&s, &key, &req.value).await;
+    for value in prop_ops {
+        let payload = OpPayload::BlockPropertySet {
+            note_id: doc_note_id,
+            block_id,
+            key: key.clone(),
+            value,
+        };
+        if let Err(e) = s.sync_engine.record_local(payload).await {
+            tracing::warn!("sync: record_local BlockPropertySet failed for {}: {e}", req.block_id);
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Failed to record BlockPropertySet: {e}"
+            )));
+        }
+    }
 
+    // Re-read the engine-materialized note: the property now renders as a
+    // `key:: value` line in the `<slug>.md` view (the container's markdown
+    // projection). This is the post-property-set re-materialized view the
+    // recurring-roll + dependency-unblock logic reads from.
+    let after_prop = s
+        .store
+        .get(&note_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound(format!("Note not found after set-property: {}", note_id_str)))?;
+    let after_prop_content = after_prop.content.clone();
+
+    // Run post-save bumps + dependency cycles against the re-materialized
+    // view (so they see the just-set property). When they rewrite content,
+    // persist that delta through the engine (diff re-materialized → final),
+    // matching the PUT path; a non-recurring block produces no change and we
+    // skip the redundant write.
+    let (rolled_content, bumps) =
+        apply_post_save_bumps_with_info(&prev_content, &after_prop_content, note_id_str);
+    let (rolled_content, _unblocked) =
+        apply_dependency_cycles(&prev_content, &rolled_content, note_id_str);
+
+    if rolled_content != after_prop_content {
+        // The recurring-roll / dependency-unblock rewrote the block's
+        // properties as in-text markdown (deadline/status/last_completed/…).
+        // To keep `key` single-sourced, clear it from the container BEFORE
+        // persisting the rolled markdown — otherwise the container's value
+        // and the rolled in-text line would both materialize, duplicating the
+        // property. The rolled markdown becomes authoritative for `key`.
+        let payload = OpPayload::BlockPropertySet {
+            note_id: doc_note_id,
+            block_id,
+            key: key.clone(),
+            value: PropOp::Clear,
+        };
+        if let Err(e) = s.sync_engine.record_local(payload).await {
+            tracing::warn!("sync: record_local post-roll Clear failed for {}: {e}", req.block_id);
+        }
+        // Re-read AFTER the clear so the diff base reflects the cleared
+        // container (no `key:: value` line), then diff → the rolled content.
+        let cleared = s
+            .store
+            .get(&note_id)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Note not found after set-property: {}", note_id_str)))?;
+        let stamped = stamp_block_ids(&rolled_content);
+        let mut rolled_note = cleared.clone();
+        rolled_note.content = stamped;
+        record_sync_update(&s, &cleared.content, None, &rolled_note).await;
+    }
+
+    // Re-read the final materialized note for indexing + the response echo.
     let updated = s
         .store
         .get(&note_id)
@@ -1757,9 +1868,6 @@ pub async fn set_block_property(
         }
     }
 
-    // Server-internal set-property rewrite: `prev_content` IS the base.
-    // Pass `None` to keep the historical prev→new diff.
-    record_sync_update(&s, &prev_content, None, &updated).await;
     let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated });
 
     for info in bumps {
@@ -1775,16 +1883,115 @@ pub async fn set_block_property(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
-/// Remove a single `key:: value` property line from a block and persist.
-/// Block-granular counterpart of `set_block_property` for the *clear* case
-/// (TagTable / KanbanBoard "unset"), so clearing a property no longer requires
-/// a whole-note PUT that re-asserts every other block (clobber-prone for
-/// concurrent peer edits).
+/// Resolve a block's canonical `<!-- bid:UUID -->` value from `content` by its
+/// body-relative `line_num` (web's `ParsedBlock.id = <note_id>:<line>`).
+/// Returns `None` when the line is not a known block or carries no bid.
+fn resolve_block_bid(content: &str, note_id_str: &str, line_num: usize) -> Option<String> {
+    let (_meta, body) = parse_frontmatter(content).ok()?;
+    let blocks = parse_blocks(note_id_str, &body);
+    let block_id = format!("{}:{}", note_id_str, line_num);
+    let block = blocks.iter().find(|b| b.id == block_id)?;
+    block.bid.clone()
+}
+
+/// A block's bid-stripped multi-line prose (`FlatBlock.text` shape — first
+/// line + continuation lines, no `<!-- bid -->`) plus its indent level and
+/// parent. `parent` is carried so the synthesized prose-strip `BlockUpsert`
+/// preserves the node's real `parent` meta instead of resetting it to
+/// top-level (the meta BlockDelete's child-reparenting keys on).
+struct StrippedBlockProse {
+    text: String,
+    indent: u16,
+    parent: Option<uuid::Uuid>,
+}
+
+/// If the block identified by `block_bid` in `content` carries `key` as an
+/// in-text `key:: value` continuation line, return its prose with THAT line
+/// removed (so the line can be lifted into the typed container without
+/// duplicating). Returns `None` when the block has no such in-text line (so
+/// the caller skips the redundant prose update). Only the target `key`'s line
+/// is stripped — other in-text properties are preserved verbatim.
+fn strip_block_intext_prop(content: &str, block_bid: &str, key: &str) -> Option<StrippedBlockProse> {
+    let tree = parse_note(content);
+    let target = uuid::Uuid::parse_str(block_bid).ok()?;
+    let block = tree.blocks.iter().find(|b| b.id == target)?;
+    let mut kept: Vec<&str> = Vec::new();
+    let mut removed_any = false;
+    for line in block.text.lines() {
+        if let Some((k, _)) = property_kv(line) {
+            if k == key {
+                removed_any = true;
+                continue;
+            }
+        }
+        kept.push(line);
+    }
+    if !removed_any {
+        return None;
+    }
+    Some(StrippedBlockProse {
+        text: kept.join("\n"),
+        indent: block.indent,
+        parent: block.parent,
+    })
+}
+
+/// Choose the [`PropOp`]s a `set-property` request maps to, from the
+/// property's registry `value_type`. Free-text → one `SetText`; multi-value
+/// (`multiselect`, or the `tags` convention) → a `Clear` followed by one
+/// `AddToList` per comma-separated item (so a route-driven set replaces the
+/// list deterministically); any other type → one `SetScalar` coerced via
+/// `parse_scalar`. An unknown property degrades to a `Text` scalar
+/// (coerce-and-keep — the registry is advisory, never a write gate).
+async fn prop_ops_for_set(s: &Arc<AppState>, key: &str, value: &str) -> Vec<PropOp> {
+    let value_type = lookup_value_type(s, key).await;
+    match value_type {
+        ValueType::Text => vec![PropOp::SetText(value.to_string())],
+        ValueType::MultiSelect => list_set_ops(value),
+        // The `tags` convention is multi-value even without a registry entry.
+        _ if key == "tags" => list_set_ops(value),
+        vt => vec![PropOp::SetScalar(parse_scalar(vt, value))],
+    }
+}
+
+/// `Clear` then one `AddToList` per non-empty comma-separated item.
+fn list_set_ops(value: &str) -> Vec<PropOp> {
+    let mut ops = vec![PropOp::Clear];
+    for item in value.split(',') {
+        let item = item.trim();
+        if !item.is_empty() {
+            ops.push(PropOp::AddToList(PropScalar::Text(item.to_string())));
+        }
+    }
+    ops
+}
+
+/// Look up a property's `value_type` from the registry (case-insensitive by
+/// key). Degrades to `Text` for an unknown property — the safe default.
+async fn lookup_value_type(s: &Arc<AppState>, key: &str) -> ValueType {
+    match s.index.get_all_property_defs().await {
+        Ok(defs) => defs
+            .iter()
+            .find(|d| d.name.eq_ignore_ascii_case(key))
+            .map(|d| ValueType::parse(&d.value_type))
+            .unwrap_or(ValueType::Text),
+        Err(e) => {
+            tracing::warn!("set-property: registry lookup for '{key}' failed: {e}");
+            ValueType::Text
+        }
+    }
+}
+
+/// Remove a property from a block and persist. Block-granular counterpart of
+/// `set_block_property` for the *clear* case (TagTable / KanbanBoard "unset").
 ///
-/// Mirrors `set_block_property`'s persist tail exactly — same reindex, link
-/// update, version record, sync-update record, and WS fan-out — but removes
-/// the property instead of upserting it. Absent key is a no-op (content
-/// unchanged); the WS echo / version record are gated on actual change.
+/// ## P1.10 — clear through the engine's typed container
+/// Emits `OpPayload::BlockPropertySet { value: PropOp::Clear }` through the
+/// sync engine, removing the key from the block node's `props`/`prop_keys`
+/// containers (the materializer then drops the `key:: value` line). This
+/// replaces the old whole-note markdown rewrite + re-diff: clearing one
+/// property no longer re-asserts every other block (clobber-prone for
+/// concurrent peer edits). Absent key is a safe no-op in the apply arm.
 pub async fn clear_block_property(
     State(s): State<Arc<AppState>>,
     Json(req): Json<ClearBlockPropertyReq>,
@@ -1826,20 +2033,29 @@ pub async fn clear_block_property(
 
     let prev_content = note.content.clone();
 
-    // Locate the block in the body and remove the property line (no-op if absent).
-    let new_content =
-        remove_block_property_in_note(&prev_content, note_id_str, line_num, &key)
-            .ok_or_else(|| {
-                AppError::NotFound(format!(
-                    "block '{}' not found in note '{}'",
-                    req.block_id, note_id_str
-                ))
-            })?;
+    // Resolve the target block's canonical bid so the clear op addresses the
+    // engine's node directly (mirror `set_block_property`).
+    let block_bid = resolve_block_bid(&prev_content, note_id_str, line_num).ok_or_else(|| {
+        AppError::NotFound(format!(
+            "block '{}' not found in note '{}'",
+            req.block_id, note_id_str
+        ))
+    })?;
+    let block_id = parse_bid(&block_bid)?;
+    let doc_note_id = stable_uuid_from_slug(note_id_str);
 
-    let stamped = stamp_block_ids(&new_content);
-    let mut updated_note = note.clone();
-    updated_note.content = stamped;
-    s.store.update(&updated_note).await?;
+    let payload = OpPayload::BlockPropertySet {
+        note_id: doc_note_id,
+        block_id,
+        key: key.clone(),
+        value: PropOp::Clear,
+    };
+    if let Err(e) = s.sync_engine.record_local(payload).await {
+        tracing::warn!("sync: record_local BlockPropertySet(Clear) failed for {}: {e}", req.block_id);
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "Failed to record BlockPropertySet(Clear): {e}"
+        )));
+    }
 
     let updated = s
         .store
@@ -1866,115 +2082,10 @@ pub async fn clear_block_property(
         }
     }
 
-    // Server-internal clear-property rewrite: `prev_content` IS the base.
-    // Pass `None` to keep the historical prev→new diff.
-    record_sync_update(&s, &prev_content, None, &updated).await;
     let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated });
 
     tracing::info!("clear-property: {}::{}", req.block_id, key);
     Ok(Json(serde_json::json!({ "ok": true })))
-}
-
-/// Locate block `line_num` in the note's body and upsert `key:: value` on it.
-/// Returns `None` if the block is not found at that line.
-///
-/// Mirrors the client-side `upsertBlockProperty` logic:
-/// - walks continuation lines below the bullet header;
-/// - if a matching `key::` line is found, replaces it in place;
-/// - otherwise appends a new continuation line at the end of the block.
-pub fn upsert_block_property_in_note(
-    content: &str,
-    note_id_str: &str,
-    line_num: usize,
-    key: &str,
-    value: &str,
-) -> Option<String> {
-    let (_meta, body) = parse_frontmatter(content).ok()?;
-    let blocks = parse_blocks(note_id_str, &body);
-    // Confirm the block exists at this line.
-    let block_id = format!("{}:{}", note_id_str, line_num);
-    let _block = blocks.iter().find(|b| b.id == block_id)?;
-
-    // Perform the upsert directly on the body lines.
-    let new_body = upsert_property_in_body(&body, line_num, key, value)?;
-    Some(reassemble_content(content, &body, &new_body))
-}
-
-/// Upsert `key:: value` on the block whose bullet header is on `bullet_line`
-/// in `body`. Returns the rewritten body, or `None` if `bullet_line` is out
-/// of bounds or not a bullet.
-fn upsert_property_in_body(body: &str, bullet_line: usize, key: &str, value: &str) -> Option<String> {
-    let trailing_newline = body.ends_with('\n');
-    let (mut lines, end, cont_indent) = block_range(body, bullet_line)?;
-
-    // Walk continuation lines looking for an existing `key::` entry.
-    let mut found_idx: Option<usize> = None;
-    for i in (bullet_line + 1)..end {
-        if let Some((k, _)) = property_kv(&lines[i]) {
-            if k == key {
-                found_idx = Some(i);
-                break;
-            }
-        }
-    }
-
-    if let Some(idx) = found_idx {
-        lines[idx] = format!("{}{}:: {}", cont_indent, key, value);
-    } else {
-        lines.insert(end, format!("{}{}:: {}", cont_indent, key, value));
-    }
-
-    Some(join_lines(lines, trailing_newline))
-}
-
-/// Remove the `key:: value` continuation line from the block whose bullet
-/// header is on `bullet_line` in `body`. Returns the rewritten body with the
-/// matching line deleted, or the body unchanged (cloned) if the key is absent.
-/// Returns `None` only if `bullet_line` is out of bounds or not a bullet.
-///
-/// Sibling of `upsert_property_in_body`: same locate logic (`block_range` +
-/// `property_kv`), but deletes instead of upserting.
-fn remove_property_in_body(body: &str, bullet_line: usize, key: &str) -> Option<String> {
-    let trailing_newline = body.ends_with('\n');
-    let (mut lines, end, _cont_indent) = block_range(body, bullet_line)?;
-
-    // Walk continuation lines looking for an existing `key::` entry.
-    let mut found_idx: Option<usize> = None;
-    for i in (bullet_line + 1)..end {
-        if let Some((k, _)) = property_kv(&lines[i]) {
-            if k == key {
-                found_idx = Some(i);
-                break;
-            }
-        }
-    }
-
-    if let Some(idx) = found_idx {
-        lines.remove(idx);
-    }
-
-    Some(join_lines(lines, trailing_newline))
-}
-
-/// Locate block `line_num` in the note's body and remove its `key:: value`
-/// continuation line. Returns `None` if the block is not found at that line;
-/// otherwise returns the rewritten content (unchanged if the key was absent).
-///
-/// Sibling of `upsert_block_property_in_note` for the clear path.
-pub fn remove_block_property_in_note(
-    content: &str,
-    note_id_str: &str,
-    line_num: usize,
-    key: &str,
-) -> Option<String> {
-    let (_meta, body) = parse_frontmatter(content).ok()?;
-    let blocks = parse_blocks(note_id_str, &body);
-    // Confirm the block exists at this line.
-    let block_id = format!("{}:{}", note_id_str, line_num);
-    let _block = blocks.iter().find(|b| b.id == block_id)?;
-
-    let new_body = remove_property_in_body(&body, line_num, key)?;
-    Some(reassemble_content(content, &body, &new_body))
 }
 
 /// Pure helper. Returns `Some((new_content, next_deadline_iso))` if `block_id`
@@ -3041,98 +3152,60 @@ mod recurrence_tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Tests for upsert_block_property_in_note (set-property endpoint)
-    // -----------------------------------------------------------------------
+}
 
+#[cfg(test)]
+mod strip_block_intext_prop_tests {
+    use super::*;
+
+    /// A nested block carrying an in-text property must surface its real
+    /// `parent` so the synthesized prose-strip `BlockUpsert` preserves the
+    /// node's `parent` meta. Hardcoding `None` here silently reparents the
+    /// block to top-level — invisible in materialized markdown (render is
+    /// indent-based) but it breaks a later parent BlockDelete's child
+    /// reparenting (the reparent loop keys on `parent == deleted_hex`).
     #[test]
-    fn set_property_updates_existing_key_in_place() {
-        let content = make_note(&[]);
-        // Update the existing `status:: todo` to `status:: done`.
-        let new_content =
-            upsert_block_property_in_note(&content, "note", 0, "status", "done")
-                .expect("should return Some");
-        let status = get_prop(&new_content, BLOCK_ID, "status");
-        assert_eq!(status.as_deref(), Some("done"));
-        // Other properties must survive unchanged.
-        assert_eq!(
-            get_prop(&new_content, BLOCK_ID, "deadline").as_deref(),
-            Some("[[2026-05-07]]")
+    fn strip_preserves_nested_block_parent() {
+        let parent_id = uuid::Uuid::now_v7();
+        let child_id = uuid::Uuid::now_v7();
+        let content = format!(
+            "---\ntitle: \"X\"\n---\n\n- parent <!-- bid:{} -->\n  - child <!-- bid:{} -->\n    status:: todo\n",
+            parent_id, child_id
         );
-    }
 
-    #[test]
-    fn set_property_appends_new_key_when_absent() {
-        let content = make_note(&[]);
-        // Append a `priority:: high` property that doesn't exist yet.
-        let new_content =
-            upsert_block_property_in_note(&content, "note", 0, "priority", "high")
-                .expect("should return Some");
-        let priority = get_prop(&new_content, BLOCK_ID, "priority");
-        assert_eq!(priority.as_deref(), Some("high"));
-        // Existing properties must still be intact.
+        // Sanity: parse_note sees the child as a real child of the parent.
+        let tree = parse_note(&content);
+        let child = tree
+            .blocks
+            .iter()
+            .find(|b| b.id == child_id)
+            .expect("child block parsed");
+        assert_eq!(child.parent, Some(parent_id), "child parents to parent");
+
+        let stripped = strip_block_intext_prop(&content, &child_id.to_string(), "status")
+            .expect("status:: line is stripped");
         assert_eq!(
-            get_prop(&new_content, BLOCK_ID, "status").as_deref(),
-            Some("todo")
+            stripped.parent,
+            Some(parent_id),
+            "stripped prose must carry the real parent, not None",
         );
+        assert_eq!(stripped.indent, 1, "nested block keeps its indent");
+        assert_eq!(stripped.text, "child", "status:: line removed from prose");
     }
 
+    /// A top-level block has no parent — the stripped prose reports `None`.
     #[test]
-    fn set_property_scheduled_updates_correctly() {
-        let content = make_note(&[]);
-        let new_content =
-            upsert_block_property_in_note(&content, "note", 0, "scheduled", "[[2026-06-01]]")
-                .expect("should return Some");
-        assert_eq!(
-            get_prop(&new_content, BLOCK_ID, "scheduled").as_deref(),
-            Some("[[2026-06-01]]")
+    fn strip_top_level_block_parent_is_none() {
+        let id = uuid::Uuid::now_v7();
+        let content = format!(
+            "---\ntitle: \"X\"\n---\n\n- task <!-- bid:{} -->\n  status:: todo\n",
+            id
         );
-    }
 
-    #[test]
-    fn set_property_returns_none_for_invalid_line() {
-        let content = make_note(&[]);
-        // Line 999 does not exist → should return None.
-        let result = upsert_block_property_in_note(&content, "note", 999, "status", "done");
-        assert!(result.is_none());
-    }
-
-    // -----------------------------------------------------------------------
-    // Tests for remove_block_property_in_note (clear-property endpoint)
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn clear_property_removes_existing_key() {
-        let content = make_note(&[]);
-        // The block has `status:: todo`; clearing it should drop that line.
-        let new_content =
-            remove_block_property_in_note(&content, "note", 0, "status").expect("should return Some");
-        assert_eq!(get_prop(&new_content, BLOCK_ID, "status"), None);
-        // Other properties must survive unchanged.
-        assert_eq!(
-            get_prop(&new_content, BLOCK_ID, "deadline").as_deref(),
-            Some("[[2026-05-07]]")
-        );
-        assert_eq!(
-            get_prop(&new_content, BLOCK_ID, "scheduled").as_deref(),
-            Some("[[2026-05-06]]")
-        );
-    }
-
-    #[test]
-    fn clear_property_absent_key_is_noop() {
-        let content = make_note(&[]);
-        // `priority` does not exist on the block → content unchanged.
-        let new_content =
-            remove_block_property_in_note(&content, "note", 0, "priority").expect("should return Some");
-        assert_eq!(new_content, content);
-    }
-
-    #[test]
-    fn clear_property_returns_none_for_invalid_line() {
-        let content = make_note(&[]);
-        // Line 999 does not exist → should return None.
-        let result = remove_block_property_in_note(&content, "note", 999, "status");
-        assert!(result.is_none());
+        let stripped = strip_block_intext_prop(&content, &id.to_string(), "status")
+            .expect("status:: line is stripped");
+        assert_eq!(stripped.parent, None, "top-level block has no parent");
+        assert_eq!(stripped.indent, 0);
+        assert_eq!(stripped.text, "task");
     }
 }
