@@ -203,24 +203,34 @@
         /* clipboard unavailable — register is still set */
       }
     };
+    // Strip the hidden `<!-- bid:… -->` marker so it never lands on the OS
+    // clipboard / register.
+    const bidRe = /\s*<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->/g;
+    // The focused block's FULL text (all lines, bid stripped). `yy` on a
+    // multi-line block must copy the whole block, not just the cursor's line.
+    const blockText = (cm: any): string => {
+      try {
+        return (cm?.getValue?.() ?? "").replace(bidRe, "");
+      } catch {
+        return "";
+      }
+    };
     // A block-level (linewise) cut/copy. The real (sub)tree lives in the
-    // outliner's blockClipboard; we only stamp the GLOBAL register linewise so
-    // a later `p` chooses whole-block paste over inline paste — and so a prior
-    // char-wise yank can't make `p` inline-paste stale text after a `yy`.
+    // outliner's blockClipboard; we stamp the GLOBAL register linewise so a
+    // later `p` chooses whole-block paste over inline paste (and a prior
+    // char-wise yank can't make `p` inline-paste stale text after a `yy`).
+    // `writeClipboard` is false for the visual multi-block path — there the
+    // outliner writes the WHOLE selection to the clipboard itself, and this
+    // single-block write would otherwise clobber it with just the focused block.
     const markBlockRegister = (
       cm: any,
       args: any,
-      anchor: any,
       op: "yank" | "delete",
+      writeClipboard = true,
     ) => {
-      let line = "";
-      try {
-        line = cm?.getLine?.(anchor?.line ?? 0) ?? "";
-      } catch {
-        line = "";
-      }
-      rc().pushText(args?.registerName, op, line, true, false);
-      if (line) toClipboard(line);
+      const full = blockText(cm);
+      rc().pushText(args?.registerName, op, full, true, false);
+      if (full && writeClipboard) toClipboard(full);
     };
     // Inline char-wise paste at the cursor (vim `p` pastes AFTER the cursor).
     // Blocks are single-line, so register text is newline-free here.
@@ -236,9 +246,15 @@
 
     Vim.defineOperator("delete", (cm: any, args: any, ranges: any, oldAnchor: any) => {
       if (args?.linewise) {
-        if (vimCtx.visualMode) vimCtx.visualDelete?.();
+        // Capture the block text BEFORE the delete tears the editor down.
+        const wasVisual = !!vimCtx.visualMode;
+        const full = blockText(cm);
+        if (wasVisual) vimCtx.visualDelete?.();
         else vimCtx.deleteBlock?.();
-        markBlockRegister(cm, args, oldAnchor, "delete");
+        rc().pushText(args?.registerName, "delete", full, true, false);
+        // Visual multi-block delete: the outliner owns the full-selection
+        // clipboard; here only the single focused block.
+        if (full && !wasVisual) toClipboard(full);
         return oldAnchor;
       }
       // Char-wise (dw, d$, dt<x>, …): capture the cut text → register +
@@ -257,9 +273,13 @@
 
     Vim.defineOperator("yank", (cm: any, args: any, ranges: any, oldAnchor: any) => {
       if (args?.linewise) {
-        if (vimCtx.visualMode) vimCtx.visualYank?.();
+        const wasVisual = !!vimCtx.visualMode;
+        if (wasVisual) vimCtx.visualYank?.();
         else vimCtx.yankBlock?.();
-        markBlockRegister(cm, args, oldAnchor, "yank");
+        // Mark the register linewise; clipboard = the focused block here, but
+        // the visual path wrote the WHOLE multi-block selection to the OS
+        // clipboard itself — don't clobber it with just one block.
+        markBlockRegister(cm, args, "yank", !wasVisual);
         return oldAnchor;
       }
       // Char-wise yank (yw, yiw, y$, …): the motion already expanded `ranges`
@@ -310,9 +330,10 @@
     // unshifted to the front of the keymap so it wins the iteration. Routes
     // through yankBlock action which respects block-visual mode.
     Vim.defineAction("yankBlockSingle", (cm: any) => {
-      if (vimCtx.visualMode) vimCtx.visualYank?.();
+      const wasVisual = !!vimCtx.visualMode;
+      if (wasVisual) vimCtx.visualYank?.();
       else vimCtx.yankBlock?.();
-      markBlockRegister(cm, {}, cm?.getCursor?.() ?? { line: 0, ch: 0 }, "yank");
+      markBlockRegister(cm, {}, "yank", !wasVisual);
     });
     Vim.mapCommand("Y", "action", "yankBlockSingle", {}, { context: "normal" });
 
@@ -1771,10 +1792,16 @@
           // Skip the trigger characters that come before the filter text:
           // tag: "#" (1), link: "[[" (2), tagmanage: nothing (0)
           const offset = autocompleteType === "tag" ? 1 : autocompleteType === "link" ? 2 : 0;
+          const filterText = doc.slice(autocompleteStartPos + offset, cursorPos);
           if (cursorPos < autocompleteStartPos + offset) {
             showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1;
+          } else if (autocompleteType === "tag" && /\s/.test(filterText)) {
+            // A tag has no spaces, so `# ` (and anything past a space) is a
+            // heading / ended tag — close the "Create tag" popup so it doesn't
+            // hijack `# Heading` typing.
+            showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1;
           } else {
-            autocompleteFilter = doc.slice(autocompleteStartPos + offset, cursorPos);
+            autocompleteFilter = filterText;
           }
         }
       }

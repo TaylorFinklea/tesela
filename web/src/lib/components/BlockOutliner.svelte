@@ -1601,7 +1601,14 @@
 
   function yankVisualBlocks() {
     const sorted = [...visualRange].sort((a, b) => a - b);
-    blockClipboard = sorted.map(vi => ({ ...visibleBlocks[vi]! })).filter(b => b.id);
+    const picked = sorted.map(vi => ({ ...visibleBlocks[vi]! })).filter(b => b.id);
+    blockClipboard = picked;
+    // Put the WHOLE multi-block selection on the OS clipboard — one block per
+    // line, bid marker stripped — not just the focused line (vim product-test).
+    const joined = picked
+      .map(b => (b.raw_text ?? "").replace(/\s*<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->/g, ""))
+      .join("\n");
+    if (joined) void navigator.clipboard?.writeText(joined).catch(() => {});
     exitBlockVisualMode();
   }
 
