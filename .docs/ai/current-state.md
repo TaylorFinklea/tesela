@@ -10,7 +10,7 @@ Brainstormed the full milestone w/ Taylor — 4 product calls: full-system (phas
 
 ### Plan — Phase 1 (Foundation), TDD, foundation-first
 - [x] **P1.1** typed scalar codec (`tesela-core::property`: `ValueType`/`PropScalar`/`parse_scalar`/`format_scalar`). Verify: `cargo test -p tesela-core` ✓ (`ae2fce1`).
-- [ ] **P1.2** engine `props`/`prop_keys` container model + per-type read/write helpers (mirror `write_block_text`; `get_or_create_container` only, never `insert_container`). Verify: `cargo test -p tesela-sync`.
+- [x] **P1.2** engine `props`/`prop_keys` container model + per-type read/write helpers (mirror `write_block_text`; `get_or_create_container` only, never `insert_container`). Verify: `cargo test -p tesela-sync` ✓ (`59a4ddd`; `prop_containers` mod, `#[allow(dead_code)]` until P1.4 wires the ops).
 - [ ] **P1.3** shared `prop_keys` read helper (dedup first-occurrence, drop missing-from-props, append props-only lexicographically; stable multi-value dedup). Verify: `cargo test -p tesela-core`.
 - [ ] **P1.4** `BlockPropertySet`/`PagePropertySet` ops + apply arms (+`OpKind`; resolve via `doc_for_note_mut`/`find_node_by_block_id`; return `Some(note_id)`). Verify: `cargo test -p tesela-sync` (concurrent prose splice + prop set → both survive; `AddToList` on two devices → union).
 - [ ] **P1.5** materializer join (`FlatBlock.properties`; prose lines then property lines in `prop_keys` order). Verify: `cargo test -p tesela-sync` — REVIEW-GATE byte-determinism test (same ops, different orders → byte-identical).
