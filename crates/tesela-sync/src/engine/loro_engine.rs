@@ -37,6 +37,7 @@ use crate::error::{SyncError, SyncResult};
 use crate::hlc::Hlc;
 use crate::oplog::op::{ContentHash, EncodedOp, OpPayload, PropOp};
 use crate::oplog::parked::ParkReason;
+use crate::PropScalar;
 use async_trait::async_trait;
 use loro::{
     ExportMode, LoroDoc, LoroText, LoroTree, TreeID, TreeParentId, UpdateOptions, VersionVector,
@@ -518,6 +519,10 @@ impl LoroEngine {
                 })
                 .await?;
             }
+            // Props half of the heal: re-assert each tombstoned twin's resolved
+            // props (captured from the fork before the tombstone) onto the
+            // survivor — one BlockPropertySet per key, idempotency-guarded.
+            self.reassert_prop_heals(note_id, &changes).await?;
         }
 
         self.refresh_note_derived(note_id, &doc).await;
@@ -661,6 +666,9 @@ impl LoroEngine {
                 })
                 .await?;
             }
+            // Props half of the heal: re-assert each tombstoned twin's resolved
+            // props onto the survivor (per-key, idempotency-guarded).
+            self.reassert_prop_heals(note_id, &changes).await?;
         }
 
         self.refresh_note_derived(note_id, &doc).await;
@@ -671,6 +679,81 @@ impl LoroEngine {
             self.materialize_note(note_id).await;
         }
         Ok(pending)
+    }
+
+    /// Re-assert the disjoint-twin heal's RESOLVED props (captured from the fork
+    /// BEFORE the tombstone) onto each survivor — the props half of the heal.
+    /// Emits ONE [`OpPayload::BlockPropertySet`] PER resolved key, each
+    /// idempotency-guarded against the survivor's CURRENT value:
+    /// - **list** → `AddToList` only the MISSING members (a present value is a
+    ///   no-op via the helper's union), so the winner's list is grown, never
+    ///   replaced wholesale;
+    /// - **scalar / text** → `SetScalar` / `SetText` only when the survivor's
+    ///   current value differs from the target (LWW register — re-asserting an
+    ///   equal value is a no-op skipped here to keep the apply idempotent).
+    ///
+    /// Reads the survivor's current props with the docs lock, then RELEASES it
+    /// before `record_local` (which re-acquires) — same lock discipline as the
+    /// text heal. A `BlockPropertySet` on a block whose survivor went missing is
+    /// itself a safe no-op (the apply arm guards it).
+    async fn reassert_prop_heals(&self, note_id: [u8; 16], changes: &[PeerBlockChange]) -> SyncResult<()> {
+        // Collect the (block_id, key, op) re-asserts while holding the read
+        // lock, then drop it before `record_local` (which re-acquires).
+        let mut block_ops: Vec<([u8; 16], String, PropOp)> = Vec::new();
+        {
+            let docs = self.inner.docs.read().await;
+            let Some(doc) = docs.get(&note_id) else {
+                return Ok(());
+            };
+            let tree = doc.get_tree("blocks");
+            for c in changes {
+                if c.props.is_empty() {
+                    continue;
+                }
+                let bid_hex = hex_id(&c.block_id);
+                let current: Vec<(String, ResolvedValue)> = find_node_by_block_id(&tree, &bid_hex)
+                    .and_then(|node| tree.get_meta(node).ok())
+                    .and_then(|meta| prop_containers::read_node_prop_containers(&meta))
+                    .map(|(props, prop_keys)| prop_containers::read_props_typed(&props, &prop_keys))
+                    .unwrap_or_default();
+                for (key, target) in &c.props {
+                    let cur = current.iter().find(|(k, _)| k == key).map(|(_, v)| v);
+                    match target {
+                        ResolvedValue::Scalar(s) => {
+                            if cur != Some(&ResolvedValue::Scalar(s.clone())) {
+                                block_ops.push((c.block_id, key.clone(), PropOp::SetScalar(s.clone())));
+                            }
+                        }
+                        ResolvedValue::Text(t) => {
+                            if cur != Some(&ResolvedValue::Text(t.clone())) {
+                                block_ops.push((c.block_id, key.clone(), PropOp::SetText(t.clone())));
+                            }
+                        }
+                        ResolvedValue::List(members) => {
+                            let present = match cur {
+                                Some(ResolvedValue::List(have)) => have.clone(),
+                                _ => Vec::new(),
+                            };
+                            for m in members {
+                                if !present.contains(m) {
+                                    block_ops.push((c.block_id, key.clone(), PropOp::AddToList(m.clone())));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        for (block_id, key, value) in block_ops {
+            self.record_local(OpPayload::BlockPropertySet {
+                note_id,
+                block_id,
+                key,
+                value,
+            })
+            .await?;
+        }
+        Ok(())
     }
 
     /// Apply a single CHARACTER-LEVEL splice to one block's text — the
@@ -1938,6 +2021,33 @@ pub(super) fn materialize_props(
     out
 }
 
+/// Read a `(props, prop_keys)` owner into ordered TYPED resolved values — the
+/// twin-heal analog of [`materialize_props`] (which flattens to strings). Walks
+/// `prop_keys_resolved` order, classifying each stored kind the same way the
+/// materializer does: scalar (primitive) → [`ResolvedValue::Scalar`]; nested
+/// list → [`ResolvedValue::List`] (stable-deduped); nested text →
+/// [`ResolvedValue::Text`]. Used by the disjoint-twin heal to capture each
+/// twin's typed props in the fork BEFORE the tombstone drops the loser.
+pub(super) fn read_props_typed(
+    props: &loro::LoroMap,
+    prop_keys: &loro::LoroList,
+) -> Vec<(String, super::ResolvedValue)> {
+    let mut out: Vec<(String, super::ResolvedValue)> = Vec::new();
+    for key in prop_keys_resolved(props, prop_keys) {
+        let value = if let Some(scalar) = prop_get_scalar(props, &key) {
+            super::ResolvedValue::Scalar(scalar)
+        } else if get_list_container(props, &key).is_some() {
+            super::ResolvedValue::List(prop_get_list_dedup(props, &key))
+        } else if let Some(text) = prop_get_text(props, &key) {
+            super::ResolvedValue::Text(text)
+        } else {
+            continue;
+        };
+        out.push((key, value));
+    }
+    out
+}
+
 #[cfg(test)]
 mod prop_helper_tests {
     use super::*;
@@ -2599,6 +2709,23 @@ struct PeerBlockChange {
     block_id: [u8; 16],
     text: String,
     indent: u16,
+    /// The RESOLVED typed property set the surviving node must carry — the
+    /// per-key union across every disjoint twin read in the fork BEFORE the
+    /// tombstone drops the loser (mirror of the `text` capture). Re-asserted
+    /// onto the survivor as one `BlockPropertySet` per key (lists via
+    /// `AddToList` = union; scalars/text idempotency-guarded), so a tombstoned
+    /// twin's props are never lost. See [`reconcile_orphaned_prop_containers`].
+    props: Vec<(String, ResolvedValue)>,
+}
+
+/// A property value resolved from a Loro `props` container into plain Rust —
+/// the typed analog the disjoint-twin heal merges + re-asserts. Decoupled from
+/// `loro::LoroValue` (same discipline as [`PropScalar`] on the wire).
+#[derive(Debug, Clone, PartialEq)]
+enum ResolvedValue {
+    Scalar(PropScalar),
+    Text(String),
+    List(Vec<PropScalar>),
 }
 
 /// The server's per-`block_id` text HISTORY — every value the server ever held
@@ -2644,6 +2771,78 @@ fn server_block_text_history(
         }
     }
     history
+}
+
+/// Read + merge the props of EVERY live twin node for `owner` (a block_id hex)
+/// in `doc` into one resolved typed set — the shared recovery path used by the
+/// disjoint-twin heal (reading twins in the fork BEFORE the tombstone drops a
+/// loser) AND the union re-assert (the apply emits one `BlockPropertySet` per
+/// resolved key onto the survivor). Building ONE reconcile keeps the two halves
+/// from diverging.
+///
+/// Merge semantics per key (matching the §4 design):
+/// - **list** → union all twins' members, first-occurrence-stable dedup
+///   (`prop_get_list_dedup` semantics), so the survivor carries every twin's
+///   adds; the apply re-asserts via `AddToList` (union), never wholesale.
+/// - **scalar** → union distinct KEYS; a same-key value collision is LWW — the
+///   FIRST twin (deterministic node-walk order) wins, no recency analog.
+/// - **text** → the first twin's value (a free-text register collision has no
+///   union primitive; the genuine-edit discrimination lives in the text path,
+///   not here).
+///
+/// A key that appears as different kinds across twins keeps the FIRST kind seen
+/// (deterministic). Idempotent: re-reading a single-twin block returns its props
+/// unchanged.
+fn reconcile_orphaned_prop_containers(
+    doc: &LoroDoc,
+    owner: &str,
+) -> Vec<(String, ResolvedValue)> {
+    let tree = doc.get_tree("blocks");
+    let live: Vec<TreeID> = tree
+        .children(TreeParentId::Root)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+        .collect();
+    // Ordered keys + per-key merged value. A Vec preserves first-seen key order
+    // (deterministic) while we look up by key for the union.
+    let mut order: Vec<String> = Vec::new();
+    let mut merged: HashMap<String, ResolvedValue> = HashMap::new();
+    for node in live {
+        if read_meta_str(&tree, node, "block_id").as_deref() != Some(owner) {
+            continue;
+        }
+        let Ok(meta) = tree.get_meta(node) else {
+            continue;
+        };
+        let Some((props, prop_keys)) = prop_containers::read_node_prop_containers(&meta) else {
+            continue;
+        };
+        for (key, value) in prop_containers::read_props_typed(&props, &prop_keys) {
+            match merged.get_mut(&key) {
+                None => {
+                    order.push(key.clone());
+                    merged.insert(key, value);
+                }
+                // List → union the new members (first-occurrence-stable dedup).
+                Some(ResolvedValue::List(existing)) => {
+                    if let ResolvedValue::List(incoming) = value {
+                        for v in incoming {
+                            if !existing.contains(&v) {
+                                existing.push(v);
+                            }
+                        }
+                    }
+                }
+                // Scalar / text already seen → keep the first (LWW / register).
+                Some(_) => {}
+            }
+        }
+    }
+    order
+        .into_iter()
+        .filter_map(|k| merged.remove(&k).map(|v| (k, v)))
+        .collect()
 }
 
 /// **The disjoint-twin heal discriminator** (2026-06-02, LoroText era). Given
@@ -2773,10 +2972,16 @@ fn peer_genuine_block_changes(
                 (keep, ind)
             }
         };
+        // Reconcile EVERY twin's props (across BOTH lineages — the fork holds
+        // the server's twins AND the peer's) BEFORE the tombstone runs. The
+        // apply re-asserts each resolved key onto the survivor, so a tombstoned
+        // twin's props are never lost.
+        let props = reconcile_orphaned_prop_containers(&fork, &bid_hex);
         out.push(PeerBlockChange {
             block_id: bid,
             text,
             indent,
+            props,
         });
     }
     Ok(out)
@@ -6463,6 +6668,122 @@ mod tests {
                  (alongside the shared base value)"
             );
         }
+    }
+
+    // ---- P1.9 disjoint-twin heal carries props ----
+
+    // ⭐ Two devices each author the SAME block_id INDEPENDENTLY (disjoint Loro
+    // lineages via `seed_disjoint`), and each first-sets a DISTINCT scalar
+    // property on its own twin. When one device's snapshot is applied via the
+    // WS-apply path, `tombstone_duplicate_twins` keeps ONE twin (min-`TreeID`)
+    // and tombstones the loser — so the loser-twin's property would VANISH
+    // without the heal carrying it forward. The heal must read every twin's
+    // props in the fork BEFORE the tombstone, merge per key, and re-assert each
+    // onto the survivor → BOTH distinct properties survive.
+    #[tokio::test]
+    async fn disjoint_twins_each_with_distinct_property_both_survive() {
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server = LoroEngine::new(sdev, Arc::new(Hlc::new(sdev)));
+        let ddev = DeviceId::from_bytes([0x7f; 16]);
+        let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
+        let note = blake3_note_id("daily");
+
+        // Disjoint lineages: server + device each author blocks A and B
+        // independently (distinct TreeIDs for the same block_ids).
+        seed_disjoint(&server, &device, note).await;
+
+        // Each device first-sets a DISTINCT scalar property on block A — on its
+        // OWN twin (each set mints a `props` container on a rival node).
+        server
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: A_BID_BYTES,
+                key: "status".into(),
+                value: PropOp::SetScalar(PropScalar::Text("doing".into())),
+            })
+            .await
+            .unwrap();
+        device
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: A_BID_BYTES,
+                key: "priority".into(),
+                value: PropOp::SetScalar(PropScalar::Int(3)),
+            })
+            .await
+            .unwrap();
+
+        // Device exports a FULL SNAPSHOT; server applies it via the WS path.
+        let snapshot = device.export_doc_update(note, None).await.unwrap();
+        server.import_doc_update(note, &snapshot).await.unwrap();
+
+        // BOTH the server's own property AND the device-twin's property must
+        // survive on the surviving node after the tombstone.
+        assert_eq!(
+            block_prop_scalar(&server, note, A_BID_BYTES, "status").await,
+            Some(PropScalar::Text("doing".into())),
+            "the server's own property must survive the twin dedup"
+        );
+        assert_eq!(
+            block_prop_scalar(&server, note, A_BID_BYTES, "priority").await,
+            Some(PropScalar::Int(3)),
+            "the tombstoned twin's property must be carried onto the survivor"
+        );
+    }
+
+    // ⭐ Two disjoint twins each AddToList a DISTINCT value to the SAME list key.
+    // The heal must UNION the loser-twin's missing members onto the survivor's
+    // list (via per-key AddToList re-assert), never replace the winner's list
+    // wholesale → survivor list = [x, y] deduped.
+    #[tokio::test]
+    async fn disjoint_twins_each_add_to_same_list_key_union() {
+        let sdev = DeviceId::from_bytes([0x5e; 16]);
+        let server = LoroEngine::new(sdev, Arc::new(Hlc::new(sdev)));
+        let ddev = DeviceId::from_bytes([0x7f; 16]);
+        let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
+        let note = blake3_note_id("daily");
+
+        seed_disjoint(&server, &device, note).await;
+
+        // Each twin adds a DISTINCT value to the SAME list key `tags` on block A
+        // — on rival list containers (disjoint lineage, no shared base list).
+        server
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: A_BID_BYTES,
+                key: "tags".into(),
+                value: PropOp::AddToList(PropScalar::Text("x".into())),
+            })
+            .await
+            .unwrap();
+        device
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: A_BID_BYTES,
+                key: "tags".into(),
+                value: PropOp::AddToList(PropScalar::Text("y".into())),
+            })
+            .await
+            .unwrap();
+
+        let snapshot = device.export_doc_update(note, None).await.unwrap();
+        server.import_doc_update(note, &snapshot).await.unwrap();
+
+        let mut tags: Vec<String> = block_prop_list(&server, note, A_BID_BYTES, "tags")
+            .await
+            .into_iter()
+            .map(|s| match s {
+                PropScalar::Text(t) => t,
+                other => format!("{other:?}"),
+            })
+            .collect();
+        tags.sort();
+        assert_eq!(
+            tags,
+            vec!["x".to_string(), "y".to_string()],
+            "the heal must UNION both twins' list members onto the survivor \
+             (deduped), not replace the winner's list wholesale"
+        );
     }
 
     // ---- P1.5 container-property materialization ----
