@@ -1,6 +1,33 @@
 # Current State
 
-## 2026-06-04 (latest) — Product-test fixes (user's full-app test of the Tauri build)
+## 2026-06-05 (latest) — Properties + types milestone: planned, de-risked, Phase-1 started
+
+**Branch:** main. Spec `phases/2026-06-05-properties-types-spec.md` (+ arch-review addendum). Decisions → `decisions.md` 2026-06-05. Dashboard: harness-deck `tesela` cards (editing-model, config-ui, design-plan, product-qs).
+
+Brainstormed the full milestone w/ Taylor — 4 product calls: full-system (phased) / Hybrid editing + new-entity guard / 3 config surfaces / multi-value + node-refs both ship; **foundation-first**. Ran a 9-agent current-state map + a 7-lens architectural review (both code-verified): review locked op-shape (**dedicated `BlockPropertySet`/`PagePropertySet` ops**), container topology (scalars primitive, `prop_keys` mandatory), **coerce-and-keep** failure policy, and caught **14 blocking issues** — the disjoint-twin heal / `prune_bare_leaf_blocks` / NoteUpsert reseed / set-property route would each have re-introduced the data-loss — all folded into the spec. Commits: `bb870e0` spec · `88cbf59` addendum · `ae2fce1` P1.1.
+
+**⚠ Migration landmine:** migrate-on-write is **flag-gated default-OFF**, flip only after the WHOLE fleet (incl. old iOS FFI) is read-capable — an old build imports the new property containers without error but renders them away (highest-severity loss). Keep emitting `key:: value` lines in the materialized view during transition; dual-read forever.
+
+### Plan — Phase 1 (Foundation), TDD, foundation-first
+- [x] **P1.1** typed scalar codec (`tesela-core::property`: `ValueType`/`PropScalar`/`parse_scalar`/`format_scalar`). Verify: `cargo test -p tesela-core` ✓ (`ae2fce1`).
+- [ ] **P1.2** engine `props`/`prop_keys` container model + per-type read/write helpers (mirror `write_block_text`; `get_or_create_container` only, never `insert_container`). Verify: `cargo test -p tesela-sync`.
+- [ ] **P1.3** shared `prop_keys` read helper (dedup first-occurrence, drop missing-from-props, append props-only lexicographically; stable multi-value dedup). Verify: `cargo test -p tesela-core`.
+- [ ] **P1.4** `BlockPropertySet`/`PagePropertySet` ops + apply arms (+`OpKind`; resolve via `doc_for_note_mut`/`find_node_by_block_id`; return `Some(note_id)`). Verify: `cargo test -p tesela-sync` (concurrent prose splice + prop set → both survive; `AddToList` on two devices → union).
+- [ ] **P1.5** materializer join (`FlatBlock.properties`; prose lines then property lines in `prop_keys` order). Verify: `cargo test -p tesela-sync` — REVIEW-GATE byte-determinism test (same ops, different orders → byte-identical).
+- [ ] **P1.6** lazy migrate-on-**APPLY** (strip `key:: value` from incoming `text` → `props`, prose-only `text_seq`, one commit; `page_props` → root `props` + clear legacy; dual-read; flag default-OFF). Verify: `cargo test -p tesela-sync`.
+- [ ] **P1.7** pruner fix — `prune_bare_leaf_blocks` treats non-empty `props` as non-bare. Verify: `cargo test -p tesela-core`.
+- [ ] **P1.8** NoteUpsert non-authoritative over props (reseed / `set_page_properties` don't clobber op-authored props). Verify: `cargo test -p tesela-sync`.
+- [ ] **P1.9** disjoint-twin heal carries props (`PeerBlockChange` + re-assert onto survivor). Verify: `cargo test -p tesela-sync` (two disjoint twins each w/ a distinct prop → both survive).
+- [ ] **P1.10** re-point routes (`set_block_property`/`clear_block_property` emit ops; reconcile `apply_post_save_bumps_with_info` + `apply_dependency_cycles` to read props from container/view). Verify: `cargo test -p tesela-server`.
+- [ ] **P1.11** FFI surface (set/clear block+page property; mirror `splice_block_text`; regen bindings; copy header → BOTH `app/Tesela-iOS/CFFI/` and `Generated/`). Verify: `cargo build -p tesela-sync-ffi` + iOS `xcodebuild`.
+- [ ] **P1.12** index passthrough golden test (NO schema change; container → materialized → `parse_blocks` → `block_properties` rows == pre-migration). Verify: `cargo test -p tesela-core`.
+- [ ] **P1.13** web seam (outbound detect-strip-emit at line-termination, NOT per-keystroke; inbound `props` subscription line-replace; unify editor + TagTable/Kanban onto the op). Verify: `pnpm --dir web check` + web e2e. (Also: the registry-facing `Property` struct deferred from P1.1 lands with the registry integration.)
+
+**Open (USER, async, non-blocking for P1.2–P1.9):** harness-deck `tesela/20260605-properties-product-qs` — reflow confirm / out-of-choices guard default / chip timing.
+
+---
+
+## 2026-06-04 — Product-test fixes (user's full-app test of the Tauri build)
 
 User ran a real product test on the desktop app + reported 8 issues. **6 fixed** (#1/#2/#3-merge/#4/#6/#7):
 - **#4 typed callouts** (`19a1b0d`): `[!info]/[!warning]/[!error]/[!note]/[!tip]/[!success]/[!question]` (+ aliases) render the block as a colored box w/ icon (cm-decorations.ts + graphite-editor.css). Set the type by typing the keyword. Verified via Chrome (4 types, correct color+icon, marker hidden).

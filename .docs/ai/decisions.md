@@ -4,6 +4,25 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-05 — Properties + types milestone: structured-first typed property containers
+
+**Product decisions (brainstormed w/ Taylor; spec `phases/2026-06-05-properties-types-spec.md` + arch-review addendum):**
+- Scope = the full Logseq-DB/AnyType property/type system, phased; **foundation-first** order.
+- Editing = **Hybrid**: properties are CRDT data, edited as `key:: value` text OR chips/`/p` (the text line is a *view* over the container, mirroring block-text↔`text_seq`). Plus a **new-entity confirmation guard** (did-you-mean near-match) so a typo'd Enter / missed autocomplete stops minting junk properties/tags/pages. Globally toggleable.
+- Config UI = all three surfaces (entity page canonical · inline drawer gear · ⌘K modal) over one shared registry foundation.
+- **Multi-value AND node-references both ship** this milestone — supersedes the earlier "defer multi-value" note in `project_structured_first_crdt_truth`; multi-value also fixes the cross-device tag-merge LWW clobber.
+
+**Architectural resolutions (7-lens code-verified review):**
+- **Dedicated property ops** `BlockPropertySet`/`PagePropertySet` (`PropOp = SetScalar|SetText|AddToList|RemoveFromList|Clear`), NOT a `BlockUpsert.properties` field — a field still rides the stale-base whole-block text-diff → per-key LWW, defeating the multi-value union. `PropScalar = String|i64|f64|bool` (plain Rust, not `LoroValue` — the wire stays decoupled from the CRDT lib version).
+- **Container topology:** `props` LoroMap — scalars = **primitive** `LoroValue` (zero sub-containers, snapshot-budget critical); text → nested `LoroText`; multi/node → nested `LoroList` — plus a **mandatory `prop_keys` LoroList** for deterministic materialization (LoroMap key order is unspecified). Always `get_or_create_container`, never `insert_container` at an existing key.
+- **Failure policy = coerce-and-keep, surface-in-UI, NEVER reject** at write/index. Forced by CRDT-is-truth: peers exchange opaque deltas, so a server reject is unenforceable and would desync. Validation is a view.
+- **Migrate-on-APPLY** (not just read): strip `key:: value` from an incoming `BlockUpsert.text` into `props`, write prose-only `text_seq`, one idempotent commit. Flag-gated **default-OFF**, flipped only after the WHOLE fleet (incl. old iOS FFI) is read-capable — an old build imports the new containers without error but renders them away (highest-severity loss). Keep emitting `key:: value` lines in the materialized view during transition; dual-read forever.
+- Page-prop indexing NOT in Phase 1 (index stays downstream of materialized markdown).
+
+**Why it matters:** the review caught that the disjoint-twin heal, the block pruner (`prune_bare_leaf_blocks`), the NoteUpsert reseed, and the set-property route would each have re-introduced the very data-loss this milestone exists to fix — all folded into the spec's 14 blocking issues before any code was written.
+
+---
+
 ### 2026-06-02 — Block text is a nested LoroText (not a map register); discriminator scoped to disjoint twins
 
 **Decision:** Store each block's text as a nested **`LoroText`** sequence CRDT (key `"text_seq"` on the tree node's meta map), written via `get_or_create_container` + `LoroText::update(whole_text)`. Clients keep sending WHOLE block text; `OpPayload::BlockUpsert.text` stays a `String`; diff.rs / FFI / note_tree / web / iOS / relay are all UNCHANGED. The engine alone converts whole-text → splices via `update()` (Myers diff). Lazy migrate-on-write: a new key, dual-read (`read_block_text` prefers `text_seq`, falls back to the legacy `text` register), legacy register never written again.
