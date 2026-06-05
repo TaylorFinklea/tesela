@@ -1587,6 +1587,303 @@ fn read_indent_level(tree: &LoroTree, node: TreeID) -> Option<u16> {
     Some(val.into_i64().ok()? as u16)
 }
 
+// ---------------------------------------------------------------------------
+// Typed property containers (Phase-1 foundation).
+//
+// Each owner (a block node's meta map, or the doc root for page properties)
+// carries a `props` LoroMap keyed by property name plus a sibling `prop_keys`
+// LoroList recording first-seen key order — LoroMap iteration order is NOT
+// guaranteed, so the materializer/index walk `prop_keys`, never the map.
+// Scalars are stored as primitive LoroValues (zero sub-containers); free text
+// as a nested LoroText; multi-value as a nested LoroList (concurrent add/remove
+// union-merges). Every nested write goes through `get_or_create_container` at a
+// stable key — never `insert_container` at an existing key — so concurrent
+// first-touch converges on ONE container (same discipline as `write_block_text`).
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)] // foundational helpers; wired into the property ops in P1.4+
+mod prop_containers {
+use super::*;
+use tesela_core::property::PropScalar;
+
+/// Get-or-create the `props` + `prop_keys` containers on a block node's meta map.
+fn node_prop_containers(meta: &loro::LoroMap) -> SyncResult<(loro::LoroMap, loro::LoroList)> {
+    let props = meta
+        .get_or_create_container("props", loro::LoroMap::new())
+        .map_err(|e| SyncError::Storage(format!("loro props get_or_create: {e}")))?;
+    let prop_keys = meta
+        .get_or_create_container("prop_keys", loro::LoroList::new())
+        .map_err(|e| SyncError::Storage(format!("loro prop_keys get_or_create: {e}")))?;
+    Ok((props, prop_keys))
+}
+
+/// The page-level `props` + `prop_keys` containers live at the doc root.
+fn page_prop_containers(doc: &LoroDoc) -> (loro::LoroMap, loro::LoroList) {
+    (doc.get_map("props"), doc.get_list("prop_keys"))
+}
+
+/// The keys in `prop_keys` insertion order (raw — the dedup / drop-missing
+/// reconcile shared by the materializer and index lands in P1.3).
+fn prop_keys_ordered(prop_keys: &loro::LoroList) -> Vec<String> {
+    let mut out = Vec::new();
+    for i in 0..prop_keys.len() {
+        if let Some(v) = prop_keys.get(i) {
+            if let Ok(val) = v.into_value() {
+                if let Ok(s) = val.into_string() {
+                    out.push(s.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Append `key` to `prop_keys` once (first-seen order); no-op if present.
+fn prop_keys_ensure(prop_keys: &loro::LoroList, key: &str) -> SyncResult<()> {
+    if prop_keys_ordered(prop_keys).iter().any(|k| k.as_str() == key) {
+        return Ok(());
+    }
+    prop_keys
+        .push(key)
+        .map_err(|e| SyncError::Storage(format!("loro prop_keys push: {e}")))
+}
+
+/// Remove every occurrence of `key` from `prop_keys`.
+fn prop_keys_remove(prop_keys: &loro::LoroList, key: &str) -> SyncResult<()> {
+    let mut i = 0;
+    while i < prop_keys.len() {
+        let matches = prop_keys
+            .get(i)
+            .and_then(|v| v.into_value().ok())
+            .and_then(|val| val.into_string().ok())
+            .map(|s| s.as_str() == key)
+            .unwrap_or(false);
+        if matches {
+            prop_keys
+                .delete(i, 1)
+                .map_err(|e| SyncError::Storage(format!("loro prop_keys delete: {e}")))?;
+        } else {
+            i += 1;
+        }
+    }
+    Ok(())
+}
+
+/// Convert a primitive LoroValue back into a `PropScalar` (containers → None).
+fn loro_value_to_scalar(v: loro::LoroValue) -> Option<PropScalar> {
+    match v {
+        loro::LoroValue::String(s) => Some(PropScalar::Text(s.to_string())),
+        loro::LoroValue::I64(i) => Some(PropScalar::Int(i)),
+        loro::LoroValue::Double(f) => Some(PropScalar::Float(f)),
+        loro::LoroValue::Bool(b) => Some(PropScalar::Bool(b)),
+        _ => None,
+    }
+}
+
+fn map_insert_scalar(props: &loro::LoroMap, key: &str, value: &PropScalar) -> SyncResult<()> {
+    let r = match value {
+        PropScalar::Text(s) => props.insert(key, s.as_str()),
+        PropScalar::Int(i) => props.insert(key, *i),
+        PropScalar::Float(f) => props.insert(key, *f),
+        PropScalar::Bool(b) => props.insert(key, *b),
+    };
+    r.map_err(|e| SyncError::Storage(format!("loro props insert: {e}")))
+}
+
+/// Set a single-value scalar property (primitive LoroValue; concurrent set = LWW).
+fn prop_set_scalar(
+    props: &loro::LoroMap,
+    prop_keys: &loro::LoroList,
+    key: &str,
+    value: &PropScalar,
+) -> SyncResult<()> {
+    map_insert_scalar(props, key, value)?;
+    prop_keys_ensure(prop_keys, key)
+}
+
+/// Set a free-text property as a nested LoroText (concurrent char-merge).
+fn prop_set_text(
+    props: &loro::LoroMap,
+    prop_keys: &loro::LoroList,
+    key: &str,
+    text: &str,
+) -> SyncResult<()> {
+    let t: LoroText = props
+        .get_or_create_container(key, LoroText::new())
+        .map_err(|e| SyncError::Storage(format!("loro prop text get_or_create: {e}")))?;
+    t.update(text, UpdateOptions::default())
+        .map_err(|e| SyncError::Storage(format!("loro prop text update: {e}")))?;
+    prop_keys_ensure(prop_keys, key)
+}
+
+fn list_push_scalar(list: &loro::LoroList, value: &PropScalar) -> SyncResult<()> {
+    let r = match value {
+        PropScalar::Text(s) => list.push(s.as_str()),
+        PropScalar::Int(i) => list.push(*i),
+        PropScalar::Float(f) => list.push(*f),
+        PropScalar::Bool(b) => list.push(*b),
+    };
+    r.map_err(|e| SyncError::Storage(format!("loro prop list push: {e}")))
+}
+
+/// Index of `value` in a list, or None.
+fn list_position(list: &loro::LoroList, value: &PropScalar) -> Option<usize> {
+    for i in 0..list.len() {
+        if let Some(v) = list.get(i) {
+            if let Ok(val) = v.into_value() {
+                if loro_value_to_scalar(val).as_ref() == Some(value) {
+                    return Some(i);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn get_list_container(props: &loro::LoroMap, key: &str) -> Option<loro::LoroList> {
+    props
+        .get(key)
+        .and_then(|v| v.into_container().ok())
+        .and_then(|c| c.into_list().ok())
+}
+
+/// Add a value to a multi-value property's nested LoroList, union semantics
+/// (a value already present is a no-op).
+fn prop_add_to_list(
+    props: &loro::LoroMap,
+    prop_keys: &loro::LoroList,
+    key: &str,
+    value: &PropScalar,
+) -> SyncResult<()> {
+    let list: loro::LoroList = props
+        .get_or_create_container(key, loro::LoroList::new())
+        .map_err(|e| SyncError::Storage(format!("loro prop list get_or_create: {e}")))?;
+    if list_position(&list, value).is_none() {
+        list_push_scalar(&list, value)?;
+    }
+    prop_keys_ensure(prop_keys, key)
+}
+
+/// Remove a value from a multi-value property's list (no-op if absent or the
+/// property isn't a list). `prop_keys` is left intact — an emptied list keeps
+/// its key until an explicit `prop_clear`.
+fn prop_remove_from_list(
+    props: &loro::LoroMap,
+    key: &str,
+    value: &PropScalar,
+) -> SyncResult<()> {
+    let Some(list) = get_list_container(props, key) else {
+        return Ok(());
+    };
+    if let Some(i) = list_position(&list, value) {
+        list.delete(i, 1)
+            .map_err(|e| SyncError::Storage(format!("loro prop list delete: {e}")))?;
+    }
+    Ok(())
+}
+
+/// Remove a property entirely: from `props` AND `prop_keys`.
+fn prop_clear(props: &loro::LoroMap, prop_keys: &loro::LoroList, key: &str) -> SyncResult<()> {
+    props
+        .delete(key)
+        .map_err(|e| SyncError::Storage(format!("loro props delete: {e}")))?;
+    prop_keys_remove(prop_keys, key)
+}
+
+/// Read a scalar property (primitive value under `key`); None if absent or a container.
+fn prop_get_scalar(props: &loro::LoroMap, key: &str) -> Option<PropScalar> {
+    let val = props.get(key)?.into_value().ok()?;
+    loro_value_to_scalar(val)
+}
+
+/// Read a text property (nested LoroText); None if absent or not text.
+fn prop_get_text(props: &loro::LoroMap, key: &str) -> Option<String> {
+    props
+        .get(key)?
+        .into_container()
+        .ok()?
+        .into_text()
+        .ok()
+        .map(|t| t.to_string())
+}
+
+/// Read a multi-value property as scalars in list order; empty if absent.
+fn prop_get_list(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
+    let Some(list) = get_list_container(props, key) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for i in 0..list.len() {
+        if let Some(s) = list
+            .get(i)
+            .and_then(|v| v.into_value().ok())
+            .and_then(loro_value_to_scalar)
+        {
+            out.push(s);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod prop_helper_tests {
+    use super::*;
+    use tesela_core::property::PropScalar;
+
+    #[test]
+    fn prop_helpers_set_get_clear_on_block_node() {
+        let doc = loro::LoroDoc::new();
+        let tree = doc.get_tree("blocks");
+        let node = tree.create(loro::TreeParentId::Root).unwrap();
+        let meta = tree.get_meta(node).unwrap();
+        let (props, prop_keys) = node_prop_containers(&meta).unwrap();
+
+        // scalar (string)
+        prop_set_scalar(&props, &prop_keys, "status", &PropScalar::Text("doing".into())).unwrap();
+        assert_eq!(prop_get_scalar(&props, "status"), Some(PropScalar::Text("doing".into())));
+
+        // scalar (int)
+        prop_set_scalar(&props, &prop_keys, "priority", &PropScalar::Int(3)).unwrap();
+        assert_eq!(prop_get_scalar(&props, "priority"), Some(PropScalar::Int(3)));
+
+        // text (nested LoroText)
+        prop_set_text(&props, &prop_keys, "note", "hello world").unwrap();
+        assert_eq!(prop_get_text(&props, "note").as_deref(), Some("hello world"));
+
+        // multi-value: add → union (dup is a no-op), then remove
+        prop_add_to_list(&props, &prop_keys, "tags", &PropScalar::Text("Task".into())).unwrap();
+        prop_add_to_list(&props, &prop_keys, "tags", &PropScalar::Text("Urgent".into())).unwrap();
+        prop_add_to_list(&props, &prop_keys, "tags", &PropScalar::Text("Task".into())).unwrap();
+        assert_eq!(
+            prop_get_list(&props, "tags"),
+            vec![
+                PropScalar::Text("Task".into()),
+                PropScalar::Text("Urgent".into())
+            ]
+        );
+        prop_remove_from_list(&props, "tags", &PropScalar::Text("Task".into())).unwrap();
+        assert_eq!(prop_get_list(&props, "tags"), vec![PropScalar::Text("Urgent".into())]);
+
+        // prop_keys preserves first-seen order
+        assert_eq!(prop_keys_ordered(&prop_keys).join(","), "status,priority,note,tags");
+
+        // clear removes from BOTH props and prop_keys
+        prop_clear(&props, &prop_keys, "priority").unwrap();
+        assert_eq!(prop_get_scalar(&props, "priority"), None);
+        assert_eq!(prop_keys_ordered(&prop_keys).join(","), "status,note,tags");
+    }
+
+    #[test]
+    fn prop_helpers_on_page_root() {
+        let doc = loro::LoroDoc::new();
+        let (props, prop_keys) = page_prop_containers(&doc);
+        prop_set_scalar(&props, &prop_keys, "type", &PropScalar::Text("Tag".into())).unwrap();
+        assert_eq!(prop_get_scalar(&props, "type"), Some(PropScalar::Text("Tag".into())));
+        assert_eq!(prop_keys_ordered(&prop_keys).join(","), "type");
+    }
+}
+}
+
 /// Page-property storage: an ordered `LoroList` named "page_props" on
 /// the note doc, holding key, value, key, value, … (interleaved). Page
 /// properties arrive wholesale via NoteUpsert (full-content reparse),
