@@ -1404,13 +1404,22 @@
     const fullCurrIdx = blocks.findIndex(b => b.id === current.id);
     if (fullPrevIdx < 0 || fullCurrIdx < 0) return;
     pushUndo();
-    const mergePos = prev.raw_text.length;
-    const mergedText = prev.raw_text + currentText;
+    // Both raw_texts carry the hidden `<!-- bid:… -->` marker; a naive
+    // `prev + current` concat would strand the PREVIOUS block's bid in the
+    // MIDDLE of the merged text (showing as `Hey <bid:…> there` and corrupting
+    // the block). Strip both bids, concat the clean text, then re-emit the
+    // survivor's single bid at the end.
+    const bidRe = /\s*<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->/g;
+    const prevClean = prev.raw_text.replace(bidRe, "");
+    const curClean = currentText.replace(bidRe, "");
+    const mergePos = prevClean.length;
+    const bidSuffix = prev.bid ? ` <!-- bid:${prev.bid} -->` : "";
+    const mergedText = prevClean + curClean + bidSuffix;
     const mergedBlock: ParsedBlock = {
       ...prev,
       id: `${noteId}:merged-${Date.now()}`,
       raw_text: mergedText,
-      text: (mergedText.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
+      text: (mergedText.split("\n")[0] ?? "").replace(bidRe, "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
     };
     mountHint = { blockId: mergedBlock.id, pos: mergePos, startInInsert: false };
     blocks = [
