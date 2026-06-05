@@ -35,7 +35,9 @@
   import { openStation } from '$lib/stores/station.svelte';
   import { openLeader } from '$lib/v5/leader-tree.svelte';
   import { openColonMode } from '$lib/stores/colon-mode.svelte';
+  import { openSettingsOverlay } from '$lib/stores/fullscreen-overlay.svelte';
   import ColonCommandLine from '$lib/components/v4/ColonCommandLine.svelte';
+  import FullscreenOverlay from '$lib/components/v4/FullscreenOverlay.svelte';
 
   const focusedBuffer = $derived(getFocusedBuffer());
   const focusedLeafId = $derived(getFocusedLeafId());
@@ -178,9 +180,16 @@
     const onLeaderEvent = () => openLeader();
     document.addEventListener('tesela:leader', onLeaderEvent);
 
+    // The desktop (Tauri) native menu — Settings (⌘,) — dispatches this so the
+    // app's own settings overlay opens. (In the browser, ⌘K / the gear / leader
+    // `,` already open it.)
+    const onOpenSettings = () => openSettingsOverlay('general');
+    document.addEventListener('tesela:open-settings', onOpenSettings);
+
     return () => {
       document.removeEventListener('keydown', onKey, true);
       document.removeEventListener('tesela:leader', onLeaderEvent);
+      document.removeEventListener('tesela:open-settings', onOpenSettings);
     };
   });
 </script>
@@ -221,6 +230,10 @@
   <GrCommandPalette />
   <GrLeaderOverlay />
   <ColonCommandLine />
+  <!-- Settings / graph fullscreen overlays (the gear, ⌘G, leader `,`, and the
+       desktop Settings menu all drive these via the overlay store). Was only
+       mounted on /v4 — so on /g they set the store but never rendered. -->
+  <FullscreenOverlay />
 </div>
 
 <style>

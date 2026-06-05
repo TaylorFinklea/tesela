@@ -175,19 +175,29 @@ fn main() {
         // ever goes blank (a crashed WebKit content process, a transient
         // asset-load hiccup). `reload()` is native (runs in the app process),
         // so it works even when the page's own JS is dead.
-        .on_menu_event(|app, event| {
-            if event.id().as_ref() == "reload" {
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "reload" => {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.reload();
                 }
             }
+            // Settings (⌘,): tell the UI to open its own settings overlay. The
+            // SPA's GraphiteShell listens for this event (same surface ⌘K / the
+            // gear / leader `,` open).
+            "settings" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.eval("document.dispatchEvent(new CustomEvent('tesela:open-settings'))");
+                }
+            }
+            _ => {}
         })
         .setup(move |app| {
-            // Default app menu + a View ▸ Reload (Cmd+R) item. The menu is owned
-            // by the (always-alive) app process, so the accelerator fires even
-            // when the webview content process has died and shows white.
+            // Default app menu + Settings (⌘,) and a View ▸ Reload (Cmd+R) item.
+            // The menu is owned by the (always-alive) app process, so the
+            // accelerators fire even when the webview content process has died.
+            let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
             let reload = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
-            let view = Submenu::with_items(app, "View", true, &[&reload])?;
+            let view = Submenu::with_items(app, "View", true, &[&settings, &reload])?;
             let menu = Menu::default(app.handle())?;
             menu.append(&view)?;
             app.set_menu(menu)?;
