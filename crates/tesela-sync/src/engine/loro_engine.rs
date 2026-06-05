@@ -2288,6 +2288,16 @@ fn seed_tree_from_flatblocks(
         meta.insert("block_id", block_hex.as_str())
             .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
         write_block_text(&meta, block.text.as_str())?;
+        // Eager-seed the empty `props`/`prop_keys` containers (P1.9b) so the
+        // block node carries them into SHARED history before peers diverge.
+        // Without this, each device's FIRST property set mints a RIVAL `props`
+        // map (Loro derives the child id from the creating op) and the rivals
+        // overwrite each other on merge instead of unioning. The handles are
+        // discarded — this is purely the idempotent get-or-create that fixes
+        // the child-id convergence (same discipline as `write_block_text`'s
+        // `text_seq` container). Empty Map+List materialize as no properties,
+        // so a blank bullet stays bare.
+        let _ = prop_containers::node_prop_containers(&meta)?;
         meta.insert("indent_level", block.indent as i64)
             .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
         meta.insert(
@@ -3186,6 +3196,12 @@ impl LoroEngine {
                 meta.insert("block_id", block_hex.as_str())
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 write_block_text(&meta, text.as_str())?;
+                // Eager-seed `props`/`prop_keys` (P1.9b) at the SECOND
+                // block-node creation site — mirrors the seed-loop above so a
+                // BlockUpsert-created block also carries the empty containers
+                // into shared history, making concurrent first-property sets
+                // converge on ONE child container instead of rival ones.
+                let _ = prop_containers::node_prop_containers(&meta)?;
                 meta.insert("indent_level", *indent_level as i64)
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 meta.insert(
@@ -4538,6 +4554,177 @@ mod tests {
         }
         assert_eq!(a.render_note(note).await.unwrap(), ra, "stable after re-exchange");
         assert_eq!(b.render_note(note).await.unwrap(), rb, "stable after re-exchange");
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_property_set_on_shared_block_both_survive() {
+        // P1.9b FOUNDATION: two devices share a base note carrying ONE
+        // propsless block (seeded via NoteUpsert, so the block node reaches
+        // SHARED history before the peers diverge). A first-sets scalar
+        // `status`, B first-sets scalar `priority` — DISTINCT keys —
+        // concurrently. After a bidirectional exchange BOTH keys must be
+        // present on BOTH replicas.
+        //
+        // Without eager-seeding the per-block `props`/`prop_keys` containers
+        // at the shared-base creation site, each device's FIRST property set
+        // MINTS a rival `props` map (Loro derives the child container id from
+        // the creating op). On merge the two rival maps collide at the same
+        // node-meta register and one OVERWRITES the other (LWW, not union),
+        // so one device's property vanishes. Seeding the empty containers
+        // into shared history first makes both get-or-create resolve to the
+        // SAME child id → union.
+        let a = LoroEngine::new(
+            DeviceId::from_bytes([0xa1; 16]),
+            Arc::new(Hlc::new(DeviceId::from_bytes([0xa1; 16]))),
+        );
+        let b = LoroEngine::new(
+            DeviceId::from_bytes([0xb2; 16]),
+            Arc::new(Hlc::new(DeviceId::from_bytes([0xb2; 16]))),
+        );
+        let note = [0x88; 16];
+        // The seeded block's id is the bid in the comment: bytes [0x07; 16].
+        let block: [u8; 16] = [0x07; 16];
+
+        a.record_local(OpPayload::NoteUpsert {
+            note_id: note,
+            display_alias: Some("shared".into()),
+            title: "Shared".into(),
+            content: "- base <!-- bid:07070707-0707-0707-0707-070707070707 -->\n".into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+
+        // B bootstraps from A's full state — the shared base now lives in
+        // both peers' history (the propsless block node included).
+        let bootstrap = a.export_doc_update(note, None).await.unwrap();
+        b.import_doc_update(note, &bootstrap).await.unwrap();
+        assert_eq!(
+            a.render_note(note).await,
+            b.render_note(note).await,
+            "bootstrapped equal"
+        );
+
+        // Concurrent FIRST property sets on the SAME shared block, DISTINCT
+        // keys. Neither device has seen the other's set yet.
+        a.record_local(OpPayload::BlockPropertySet {
+            note_id: note,
+            block_id: block,
+            key: "status".into(),
+            value: PropOp::SetScalar(crate::PropScalar::Text("doing".into())),
+        })
+        .await
+        .unwrap();
+        b.record_local(OpPayload::BlockPropertySet {
+            note_id: note,
+            block_id: block,
+            key: "priority".into(),
+            value: PropOp::SetScalar(crate::PropScalar::Int(3)),
+        })
+        .await
+        .unwrap();
+
+        // Exchange both ways, using each peer's version vector as the cursor.
+        let b_vv = b.doc_version(note).await;
+        let a_upd = a.export_doc_update(note, b_vv.as_deref()).await.unwrap();
+        b.import_doc_update(note, &a_upd).await.unwrap();
+        let a_vv = a.doc_version(note).await;
+        let b_upd = b.export_doc_update(note, a_vv.as_deref()).await.unwrap();
+        a.import_doc_update(note, &b_upd).await.unwrap();
+
+        let ra = a.render_note(note).await.unwrap();
+        let rb = b.render_note(note).await.unwrap();
+        assert_eq!(ra, rb, "replicas converge to identical state");
+        assert!(
+            ra.contains("status:: doing"),
+            "A's property must survive on the merged replica, got: {ra:?}"
+        );
+        assert!(
+            ra.contains("priority:: 3"),
+            "B's property must survive on the merged replica, got: {ra:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_same_key_scalar_set_is_deterministic_lww() {
+        // P1.9b: a same-key concurrent scalar set is LWW-by-HLC (the v1
+        // product decision — a scalar has no union semantics). The invariant
+        // we DO require is that both replicas pick the IDENTICAL winner after
+        // a bidirectional exchange (deterministic, no oscillation), and the
+        // losing key isn't dropped wholesale.
+        let a = LoroEngine::new(
+            DeviceId::from_bytes([0xc1; 16]),
+            Arc::new(Hlc::new(DeviceId::from_bytes([0xc1; 16]))),
+        );
+        let b = LoroEngine::new(
+            DeviceId::from_bytes([0xd2; 16]),
+            Arc::new(Hlc::new(DeviceId::from_bytes([0xd2; 16]))),
+        );
+        let note = [0x99; 16];
+        let block: [u8; 16] = [0x07; 16];
+
+        a.record_local(OpPayload::NoteUpsert {
+            note_id: note,
+            display_alias: Some("shared".into()),
+            title: "Shared".into(),
+            content: "- base <!-- bid:07070707-0707-0707-0707-070707070707 -->\n".into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+        let bootstrap = a.export_doc_update(note, None).await.unwrap();
+        b.import_doc_update(note, &bootstrap).await.unwrap();
+
+        // Same key `status`, conflicting concurrent values.
+        a.record_local(OpPayload::BlockPropertySet {
+            note_id: note,
+            block_id: block,
+            key: "status".into(),
+            value: PropOp::SetScalar(crate::PropScalar::Text("doing".into())),
+        })
+        .await
+        .unwrap();
+        b.record_local(OpPayload::BlockPropertySet {
+            note_id: note,
+            block_id: block,
+            key: "status".into(),
+            value: PropOp::SetScalar(crate::PropScalar::Text("done".into())),
+        })
+        .await
+        .unwrap();
+
+        let b_vv = b.doc_version(note).await;
+        let a_upd = a.export_doc_update(note, b_vv.as_deref()).await.unwrap();
+        b.import_doc_update(note, &a_upd).await.unwrap();
+        let a_vv = a.doc_version(note).await;
+        let b_upd = b.export_doc_update(note, a_vv.as_deref()).await.unwrap();
+        a.import_doc_update(note, &b_upd).await.unwrap();
+
+        let ra = a.render_note(note).await.unwrap();
+        let rb = b.render_note(note).await.unwrap();
+        assert_eq!(ra, rb, "same-key scalar LWW converges to one winner on both");
+        assert!(
+            ra.contains("status:: doing") || ra.contains("status:: done"),
+            "exactly one of the conflicting values must win, got: {ra:?}"
+        );
+
+        // Re-exchange must be a stable no-op (no oscillation between winners).
+        let b_vv2 = b.doc_version(note).await;
+        if let Some(u) = a.export_doc_update(note, b_vv2.as_deref()).await {
+            if !u.is_empty() {
+                b.import_doc_update(note, &u).await.unwrap();
+            }
+        }
+        assert_eq!(
+            a.render_note(note).await.unwrap(),
+            ra,
+            "stable after re-exchange"
+        );
+        assert_eq!(
+            b.render_note(note).await.unwrap(),
+            rb,
+            "stable after re-exchange"
+        );
     }
 
     #[tokio::test]
