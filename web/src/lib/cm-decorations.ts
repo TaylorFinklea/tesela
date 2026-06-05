@@ -211,6 +211,59 @@ const mdHighlightMark = Decoration.mark({ class: "cm-tesela-md-highlight" });
 const mdHrReplace = Decoration.replace({ widget: new HrWidget() });
 const mdLinkMark = Decoration.mark({ class: "cm-tesela-md-link" });
 const mdQuoteLineDeco = Decoration.line({ attributes: { class: "cm-tesela-md-quote" } });
+
+// ── Callouts (`[!type] title`, optionally `> `-prefixed) ────────────────────
+// Obsidian-style admonitions. The whole block renders as a typed box. Type
+// aliases collapse onto a small canonical set with an icon + color (CSS).
+const CALLOUT_ICON: Record<string, string> = {
+  info: "ℹ", warning: "⚠", error: "⛔", note: "✎", tip: "💡", success: "✓", question: "?",
+};
+const CALLOUT_ALIAS: Record<string, string> = {
+  warn: "warning", caution: "warning", attention: "warning",
+  danger: "error", fail: "error", failure: "error", bug: "error", missing: "error",
+  hint: "tip", important: "tip",
+  check: "success", done: "success", todo: "success",
+  abstract: "info", summary: "info", tldr: "info",
+  faq: "question", help: "question",
+  quote: "note", cite: "note", example: "note", abstract2: "note",
+};
+const CALLOUT_RE = /^([ \t]*(?:>[ \t]?)?)\[!([A-Za-z]+)\]([ \t]?)(.*)$/;
+function calloutType(raw: string): string {
+  const t = raw.toLowerCase();
+  const norm = CALLOUT_ALIAS[t] ?? t;
+  return CALLOUT_ICON[norm] ? norm : "note";
+}
+const calloutLineCache = new Map<string, Decoration>();
+function calloutLineDeco(type: string, first: boolean, last: boolean): Decoration {
+  const cls =
+    `cm-tesela-callout cm-tesela-callout-${type}` +
+    (first ? " cm-tesela-callout-first" : "") +
+    (last ? " cm-tesela-callout-last" : "");
+  let deco = calloutLineCache.get(cls);
+  if (!deco) {
+    deco = Decoration.line({ attributes: { class: cls } });
+    calloutLineCache.set(cls, deco);
+  }
+  return deco;
+}
+class CalloutIconWidget extends WidgetType {
+  constructor(readonly type: string) {
+    super();
+  }
+  eq(other: CalloutIconWidget) {
+    return other.type === this.type;
+  }
+  toDOM() {
+    const s = document.createElement("span");
+    s.className = `cm-tesela-callout-icon cm-tesela-callout-icon-${this.type}`;
+    s.textContent = CALLOUT_ICON[this.type] ?? "•";
+    s.setAttribute("aria-hidden", "true");
+    return s;
+  }
+  ignoreEvent() {
+    return true;
+  }
+}
 // Hides a ``` fence delimiter line entirely (display:none) so a fenced block
 // reads as a clean code surface when the block isn't being edited.
 const mdCodeFenceHideLine = Decoration.line({ attributes: { class: "cm-tesela-md-code-fence-hidden" } });
@@ -692,13 +745,34 @@ function buildDecorations(view: EditorView): Built {
       if (textEnd > from + 1) decos.push({ from: from + 1, to: textEnd, decoration: mdLinkMark });
     }
 
-    // `> ` blockquotes — line styling + hide the marker.
+    // `> ` blockquotes — line styling + hide the marker. A `> [!type]` line is
+    // a callout (handled below), not a plain quote.
     MD_QUOTE_RE.lastIndex = 0;
     while ((m = MD_QUOTE_RE.exec(doc)) !== null) {
       if (literal(m.index)) continue;
+      if (/^\[!/.test(m[2] ?? "")) continue;
       const line = view.state.doc.lineAt(m.index);
       decos.push({ from: line.from, to: line.from, decoration: mdQuoteLineDeco });
       hideMarker(m.index, m.index + m[1].length);
+    }
+
+    // Callouts — a block whose FIRST line is `[!type] title` (optionally
+    // `> `-prefixed) renders the WHOLE block as a typed box (info / warning /
+    // error / note / tip / success / question). The `[!type]` marker is hidden
+    // and replaced with the type icon; the title + body keep their text.
+    {
+      const l1 = view.state.doc.line(1);
+      const cm = l1.text.match(CALLOUT_RE);
+      if (cm && !literal(l1.from)) {
+        const type = calloutType(cm[2]);
+        const total = view.state.doc.lines;
+        for (let ln = 1; ln <= total; ln++) {
+          const line = view.state.doc.line(ln);
+          decos.push({ from: line.from, to: line.from, decoration: calloutLineDeco(type, ln === 1, ln === total) });
+        }
+        const markerEnd = l1.from + cm[1].length + 2 + cm[2].length + 1; // `[!type]`
+        decos.push({ from: l1.from, to: markerEnd, decoration: Decoration.replace({ widget: new CalloutIconWidget(type) }) });
+      }
     }
 
     // Horizontal rules (`---` / `***` / `___` alone on a line) → an <hr>.

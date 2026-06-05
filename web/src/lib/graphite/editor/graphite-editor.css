@@ -186,6 +186,29 @@
 .gr-root .hljs-keyword { color: #c678dd; }
 .gr-root .hljs-literal { color: #56b6c2; }
 
+/* Callouts (`[!type] title`) — typed admonition boxes. Color per type via the
+   `--callout-color` custom property set on the type class. */
+.gr-root .cm-tesela-callout {
+  background: color-mix(in srgb, var(--callout-color, #8a8f98) 9%, transparent);
+  border-left: 3px solid var(--callout-color, #8a8f98);
+  padding-left: 10px;
+}
+.gr-root .cm-tesela-callout-first { padding-top: 3px; }
+.gr-root .cm-tesela-callout-last { padding-bottom: 4px; }
+.gr-root .cm-tesela-callout-info     { --callout-color: #4a9eff; }
+.gr-root .cm-tesela-callout-warning  { --callout-color: #e0a64a; }
+.gr-root .cm-tesela-callout-error    { --callout-color: #e05a5a; }
+.gr-root .cm-tesela-callout-note     { --callout-color: #8a8f98; }
+.gr-root .cm-tesela-callout-tip      { --callout-color: #4ac08a; }
+.gr-root .cm-tesela-callout-success  { --callout-color: #4ac08a; }
+.gr-root .cm-tesela-callout-question { --callout-color: #b06ad0; }
+.gr-root .cm-tesela-callout-icon {
+  display: inline-block;
+  margin-right: 7px;
+  font-weight: 700;
+  color: var(--callout-color, #8a8f98);
+}
+
 /* Block bullet / status — let the bullets read against the Graphite canvas.
    BlockOutliner colors bullets via Tailwind (`bg-primary`, `bg-muted-foreground`)
    which already remap above; nothing extra needed for the dot itself. */
