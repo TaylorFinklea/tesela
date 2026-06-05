@@ -361,6 +361,10 @@
   let focusedIndex = $state<number | null>(null);
   let lastExternalBody = $state(body);
   let lastSentBody = $state(body);
+  // P1.13 Hybrid seam — typed-property → container sync (see scheduleBlockPropSync).
+  const propSyncBaseline = new Map<string, Record<string, string>>();
+  const dirtyPropBlocks = new Set<string>();
+  let propSyncTimer: ReturnType<typeof setTimeout> | null = null;
   /** Wall-clock ms of the last local keystroke / structural edit
    *  (new block, indent, etc.). The body-sync effect defers any
    *  incoming server reparse for ~1200ms after this — long enough
@@ -1051,6 +1055,69 @@
     });
   }
 
+  // ── P1.13 Hybrid seam: editor-typed properties also write the CRDT container ──
+  // A `key:: value` line typed in the editor must behave identically to a
+  // chip-set property (which goes through /blocks/set-property → BlockPropertySet
+  // op → typed Loro container). The text path still persists the line; the server
+  // strips-then-rematerializes (P1.6/P1.10), so this dual-write CONVERGES with no
+  // duplicate line. Debounced (per-keystroke would flood); diffs the block's
+  // settled props against a burst-start baseline and emits only net changes.
+
+  function lowerProps(p: Record<string, string>): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(p)) {
+      if (k === "tags") continue;
+      out[k.toLowerCase()] = v;
+    }
+    return out;
+  }
+
+  function scheduleBlockPropSync(blockId: string, priorProps: Record<string, string>) {
+    // Capture the pre-edit props as the diff baseline ONCE per debounce burst,
+    // so a flush emits only the net change over the burst.
+    if (!propSyncBaseline.has(blockId)) {
+      propSyncBaseline.set(blockId, lowerProps(priorProps));
+    }
+    dirtyPropBlocks.add(blockId);
+    if (propSyncTimer) clearTimeout(propSyncTimer);
+    propSyncTimer = setTimeout(() => void flushBlockPropSync(), 600);
+  }
+
+  async function flushBlockPropSync() {
+    propSyncTimer = null;
+    const ids = [...dirtyPropBlocks];
+    dirtyPropBlocks.clear();
+    for (const blockId of ids) {
+      const base = propSyncBaseline.get(blockId) ?? {};
+      propSyncBaseline.delete(blockId);
+      const block = blocks.find((b) => b.id === blockId);
+      if (!block) continue;
+      // Only a block with a server bid can resolve `<note_id>:<line>` → engine
+      // node; a brand-new local block has no bid yet (the text path persists it,
+      // and a later edit syncs the container). Skip to avoid a 404.
+      if (upsertOpForBlock(blocks, blockId) == null) continue;
+      const cur = lowerProps(block.properties);
+      for (const [k, v] of Object.entries(cur)) {
+        if (v !== "" && base[k] !== v) {
+          try {
+            await api.setBlockProperty(blockId, k, v);
+          } catch (e) {
+            console.error("setBlockProperty (editor seam) failed", blockId, k, e);
+          }
+        }
+      }
+      for (const k of Object.keys(base)) {
+        if (!(k in cur) || cur[k] === "") {
+          try {
+            await api.clearBlockProperty(blockId, k);
+          } catch (e) {
+            console.error("clearBlockProperty (editor seam) failed", blockId, k, e);
+          }
+        }
+      }
+    }
+  }
+
   function handleBlockChange(blockId: string, newRawText: string) {
     // Mark "actively editing" so the body-sync effect knows to defer
     // any incoming server reparse until typing settles. See
@@ -1064,6 +1131,9 @@
       history.push(pendingInsertSnapshot);
       pendingInsertSnapshot = null;
     }
+    // P1.13: pre-edit props feed the container-sync diff baseline (capture
+    // BEFORE the blocks.map below overwrites this block's `properties`).
+    const priorProps = blocks.find((b) => b.id === blockId)?.properties ?? {};
     const parsedTags = getBlockTags(newRawText);
     // Properties parser sees tags:: too; strip it so it doesn't double-display
     const props = parseProperties(newRawText);
@@ -1086,6 +1156,7 @@
     // brand-new local insert), in which case `saveBlocksViaOps` falls back to
     // the whole-body PUT so the edit still persists. One path per save.
     saveBlocksViaOps(blocks, [upsertOpForBlock(blocks, blockId)]);
+    scheduleBlockPropSync(blockId, priorProps);
   }
 
   /** C2.3 — a text edit that went through the block's LoroText binding (local
@@ -1099,6 +1170,7 @@
     // Mark "actively editing" so the body-sync effect still defers an unrelated
     // server reparse while the user types into a bound block.
     lastLocalEditAt = Date.now();
+    const priorProps = blocks.find((b) => b.id === blockId)?.properties ?? {};
     const parsedTags = getBlockTags(newRawText);
     const props = parseProperties(newRawText);
     delete props.tags;
@@ -1118,6 +1190,7 @@
     // bound splices too) is recognised as our own and doesn't reseed/clobber.
     const { bodyOnly } = buildFullContent(blocks);
     lastSentBody = bodyOnly;
+    scheduleBlockPropSync(blockId, priorProps);
   }
 
   function removeBlockTag(block: ParsedBlock, tagName: string) {
