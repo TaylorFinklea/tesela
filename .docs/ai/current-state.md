@@ -1,5 +1,22 @@
 # Current State
 
+## 2026-06-06 — Autonomous day (Taylor out; NO user testing until tomorrow)
+
+Self-QA-able / no-input work, priority order. Async product/arch calls → harness-deck. Branch 6 commits ahead of last push (un-pushed).
+
+### Plan (autonomous)
+- [x] **A1 — bid-route regression test** ✓ (`block_bid_from_suffix` extracted + test; 7 notes tests green) (Rust): assert `set_block_property`/`clear_block_property` resolve `note_id:<bid>` (load-bearing for the editor seam `f90eefe`/`699041b` — shipped with NO test). Verify: `cargo test -p tesela-server`.
+- [x] **A2 — priority/deadline/scheduled chips render** ✓ (`d9d30ee`) — `displayChipsFor` now falls back to the tag's `tag_properties` when no `display_chips` is set (seed has the former, not the latter), excluding `status` (dedicated button). Browser-verified: `priority=high` on a #Task block renders a "Priority: high" chip.
+- [ ] **A3 — vsplit/hsplit on /g** (deferred bug) — first confirm /v4 renders inbox/agenda via LayoutTree+BufferShell, then swap GraphiteShell's single-pane `view` conditional (`:207-228`) for `<LayoutTree>` (mirror `routes/v4/+layout.svelte:456-462`). Self-QA EACH view (daily/page/inbox/agenda) + a real split via Chrome DevTools. REVERT if any view regresses.
+- [ ] **A4 — materializer dedup (Slice 6)** — server `serialize_note` drops an in-text `key:: value` line whose key is also a container prop (container wins); + Rust test. Guards the legacy/migration dup.
+- [ ] **A5 — regression tests** for the editor property/tag read model (`ca39efa` preserve + `f90eefe` bound-splice) if the web test harness supports it.
+
+**Today's outcome (autonomous):** A1 ✓ + A2 ✓ — both committed + verified (A1 cargo-tested, A2 browser-verified). A3 (splits — architectural LayoutTree swap), A4 (materializer dedup — core render path), A5 (web editor-flow tests — no component harness) **DEFERRED to fresh context**: each is riskier/infra-heavy and not worth rushing at this session length; all documented for a clean pass. Branch now 6 commits ahead of last push (un-pushed).
+
+### Queued for Taylor (async)
+- Tasks-query: does ANY status make a block a task? (widen `tag:Task OR has:status` vs a one-time #Task backfill).
+- Tag inline-vs-chip on Enter (⌘↵ inline / ↵ chip, Logseq-style) — the redesign direction.
+
 ## 2026-06-05 (latest) — Properties + types milestone: planned, de-risked, Phase-1 started
 
 **Branch:** main. Spec `phases/2026-06-05-properties-types-spec.md` (+ arch-review addendum). Decisions → `decisions.md` 2026-06-05. Dashboard: harness-deck `tesela` cards (editing-model, config-ui, design-plan, product-qs).
