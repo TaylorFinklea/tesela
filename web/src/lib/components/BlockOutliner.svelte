@@ -43,6 +43,7 @@
     type BlockOp,
   } from "$lib/block-ops";
   import { BlockOpsSaver } from "$lib/block-ops-saver";
+  import { spliceActiveBlock } from "$lib/loro/active-note-doc.svelte";
   import type { ParsedBlock } from "$lib/types/ParsedBlock";
   import type { Note } from "$lib/types/Note";
   import BlockEditor from "./BlockEditor.svelte";
@@ -1045,6 +1046,8 @@
       history.push(pendingInsertSnapshot);
       pendingInsertSnapshot = null;
     }
+    const prev = blocks.find((b) => b.id === blockId);
+    const oldText = prev?.raw_text ?? "";
     const parsedTags = getBlockTags(newRawText);
     // P1.13 (Anytype mold): a block's `properties` are STRUCTURED — sourced from
     // the CRDT container (seeded from the materialized text on load, then
@@ -1062,6 +1065,29 @@
           }
         : b,
     );
+    // P1.13: a PROGRAMMATIC text change (status cycle, tag toggle) to a
+    // LoroText-BOUND block must reach the bound editor + persist over the WS, or
+    // the change (e.g. the just-added `tags:: Task` line) never lands in the
+    // editor's document and the next keystroke drops it. Splice the MINIMAL diff
+    // into the block's `text_seq`. `spliceActiveBlock` no-ops + returns false
+    // when the block isn't bound — then we fall back to the whole-text HTTP op.
+    // (User edits on bound blocks arrive via `handleLoroText`, not here; on
+    // unbound blocks the splice no-ops — so only bound programmatic edits change
+    // path.)
+    if (prev?.bid && oldText !== newRawText) {
+      let p = 0;
+      const min = Math.min(oldText.length, newRawText.length);
+      while (p < min && oldText[p] === newRawText[p]) p++;
+      let s = 0;
+      while (s < min - p && oldText[oldText.length - 1 - s] === newRawText[newRawText.length - 1 - s]) s++;
+      const spliced = spliceActiveBlock(
+        prev.bid,
+        p,
+        oldText.length - p - s,
+        newRawText.slice(p, newRawText.length - s),
+      );
+      if (spliced) return;
+    }
     // Block-granular path: an in-place text edit touches exactly ONE block, so
     // emit a single `upsert` op rather than PUTting the whole body (which
     // re-asserts — and clobbers — concurrent peer edits to other blocks).
