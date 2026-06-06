@@ -1190,8 +1190,11 @@
     // reverted dual-write duplicate). The #Task auto-tag stays on the text path
     // (tags are out of scope); its empty Priority/Deadline/Scheduled
     // placeholders carry no value, so they emit no property op.
-    const hasAnyTag = block.tags.length > 0;
-    if (!hasAnyTag && next !== "") {
+    // Auto-tag only when the block isn't ALREADY a Task — a block carrying some
+    // OTHER tag (#urgent etc.) must still get #Task when promoted to tracked
+    // work, or it silently never appears in the Tasks query.
+    const hasTask = block.tags.some((t) => t.toLowerCase() === "task");
+    if (!hasTask && next !== "") {
       // Structured-first: add ONLY the #Task tag — do NOT seed empty `Name::`
       // placeholder lines. Their CAPITALISED keys collide with the lowercase
       // container-materialized lines (the server strip is case-sensitive), and

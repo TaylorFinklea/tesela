@@ -35,6 +35,7 @@
   import { openStation } from '$lib/stores/station.svelte';
   import { openLeader } from '$lib/v5/leader-tree.svelte';
   import { openColonMode } from '$lib/stores/colon-mode.svelte';
+  import { getVimMode } from '$lib/stores/pane-state.svelte';
   import { openSettingsOverlay } from '$lib/stores/fullscreen-overlay.svelte';
   import ColonCommandLine from '$lib/components/v4/ColonCommandLine.svelte';
   import FullscreenOverlay from '$lib/components/v4/FullscreenOverlay.svelte';
@@ -143,7 +144,10 @@
           (t?.tagName === 'INPUT' ||
             t?.tagName === 'TEXTAREA' ||
             !!t?.isContentEditable);
-        if (!inPlainEntry) {
+        // In a cm-editor's INSERT mode, `:` must type a literal colon (so the
+        // user can write `key:: value`); only NORMAL mode opens ex-mode.
+        const inInsertMode = inCmEditor && getVimMode() === 'INSERT';
+        if (!inPlainEntry && !inInsertMode) {
           e.preventDefault();
           e.stopPropagation();
           openColonMode();

@@ -35,6 +35,7 @@
   import { asPageId, type TabId } from "$lib/buffer/types";
   import { makePageBuffer } from "$lib/buffer/tree";
   import { openStation } from "$lib/stores/station.svelte";
+  import { getVimMode } from "$lib/stores/pane-state.svelte";
   import ColonCommandLine from "$lib/components/v4/ColonCommandLine.svelte";
   import FullscreenOverlay from "$lib/components/v4/FullscreenOverlay.svelte";
   import Journey from "$lib/components/v4/Journey.svelte";
@@ -198,7 +199,11 @@
           (t?.tagName === "INPUT" ||
             t?.tagName === "TEXTAREA" ||
             !!t?.isContentEditable);
-        if (!inPlainEntry) {
+        // In a cm-editor's INSERT mode, `:` must type a literal colon (so the
+        // user can write `key:: value`); only NORMAL mode hands `:` to v5
+        // ex-mode. (cm-vim's own ex isn't useful here — see above.)
+        const inInsertMode = inCmEditor && getVimMode() === "INSERT";
+        if (!inPlainEntry && !inInsertMode) {
           e.preventDefault();
           e.stopPropagation();
           openColonMode();
