@@ -4,6 +4,16 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-06 — Tasks query stays tag-strict; existing tasks get a one-time #Task backfill (not a query widen)
+
+**Decision (Taylor, product-tested):** the Tasks query keeps its strict definition `kind:block tag:Task -status:done` (`system-widgets.ts:50`). Do NOT widen it to `tag:Task OR has:status`.
+
+**Why:** widening makes "any block that ever got a status" a task, flooding the Tasks view with blocks never meant as tasks (and depends on `OR`/`has:` query-grammar support that's unverified). Strict + explicit #Task is the cleaner semantic.
+
+**Consequence:** existing status-bearing blocks predating the auto-tag logic lack #Task and won't appear. Remedy = a one-time #Task BACKFILL (scoped in current-state): scan the mosaic, add `tags:: Task` to any block with a `status::` but no Task tag, dry-run first, Taylor runs it on his real mosaic. Going forward, the `hasTask` auto-tag fix (`8d02625`) tags new status-cycles. Separately, `displayChipsFor` now falls back to `tag_properties` (`d9d30ee`) so priority/deadline render as chips without per-tag `display_chips`.
+
+---
+
 ### 2026-06-05 (b) — Loro container-overwrite hazard: nested property containers must be seeded into shared history
 
 **Finding (surfaced during P1.4 implementation by an adversarial test that correctly failed first):** Loro derives a child container's id from the op that creates it. Two peers that each create a nested container — a multi-value `LoroList` or a text `LoroText` property, **or** the per-block `props` map / `prop_keys` list itself — at the SAME map key, concurrently, for the FIRST time, mint RIVAL container ids → on merge one branch OVERWRITES the other (the loser's contents are lost). Union / char-merge only holds once the container already exists in SHARED history before the peers diverge.
