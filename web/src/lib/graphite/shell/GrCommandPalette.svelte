@@ -84,19 +84,29 @@
   // rest of the verbs.
   type Group = { label: string; rows: { row: PaletteRow; idx: number }[] };
   const groups = $derived.by<Group[]>(() => {
-    const jump: { row: PaletteRow; idx: number }[] = [];
-    const actions: { row: PaletteRow; idx: number }[] = [];
-    filteredRows.forEach((row, idx) => {
+    const jumpRaw: PaletteRow[] = [];
+    const actionsRaw: PaletteRow[] = [];
+    for (const row of filteredRows) {
       const isJump =
         row.kind === 'note' ||
         (row.kind === 'cmd' && (row.cmd.category === 'navigate' || row.cmd.category === 'tile'));
-      (isJump ? jump : actions).push({ row, idx });
-    });
+      (isJump ? jumpRaw : actionsRaw).push(row);
+    }
+    // Number rows in DISPLAY order (jump group, then actions) so the ⌘N quick-
+    // select badges, the j/k selection highlight, and ⌘N quick-run all agree
+    // with what's on screen. `displayRows` (below) is this same flat order, and
+    // is the index space `selectedIdx` lives in.
+    let di = 0;
+    const jump = jumpRaw.map((row) => ({ row, idx: di++ }));
+    const actions = actionsRaw.map((row) => ({ row, idx: di++ }));
     const out: Group[] = [];
     if (jump.length) out.push({ label: 'Jump to', rows: jump });
     if (actions.length) out.push({ label: 'Actions', rows: actions });
     return out;
   });
+  // Flat row list in DISPLAY order — the index space `selectedIdx`, the ⌘N
+  // badges, and the keyboard nav all share.
+  const displayRows = $derived(groups.flatMap((g) => g.rows.map((r) => r.row)));
 
   function rowLabel(row: PaletteRow): string {
     return row.kind === 'cmd' ? row.cmd.label : (row.note.title || row.note.id);
@@ -165,7 +175,7 @@
   }
 
   async function runSelected() {
-    const row = filteredRows[selectedIdx];
+    const row = displayRows[selectedIdx];
     if (row) await runRow(row);
   }
 
@@ -181,6 +191,26 @@
       e.preventDefault();
       closeStation();
       requestAnimationFrame(() => restoreFocus());
+      return;
+    }
+    // Ctrl-j / Ctrl-k navigate the list (vim-style), mirroring Arrow Down/Up.
+    if (e.ctrlKey && (e.key === 'j' || e.key === 'k')) {
+      e.preventDefault();
+      selectedIdx =
+        e.key === 'j'
+          ? Math.min(selectedIdx + 1, filteredRows.length - 1)
+          : Math.max(0, selectedIdx - 1);
+      return;
+    }
+    // ⌘1..⌘9 (or Ctrl-1..9) jump to + run the Nth visible row — matches the
+    // quick-select badges. Only active while the palette is open.
+    if ((e.metaKey || e.ctrlKey) && e.key >= '1' && e.key <= '9') {
+      const n = Number(e.key) - 1;
+      if (n < filteredRows.length) {
+        e.preventDefault();
+        selectedIdx = n;
+        void runSelected();
+      }
       return;
     }
     if (e.key === 'ArrowDown') {
@@ -239,6 +269,9 @@
                 {/each}
               </span>
               <span class="rk">
+                {#if idx < 9}
+                  <kbd>⌘{idx + 1}</kbd>
+                {/if}
                 {#if rowShortcut(row)}
                   <kbd>{rowShortcut(row)}</kbd>
                 {/if}
@@ -335,7 +368,6 @@
     color: var(--fg2);
     display: flex;
     align-items: center;
-    gap: 9px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;

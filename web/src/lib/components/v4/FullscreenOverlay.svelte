@@ -19,6 +19,13 @@
   import type { GraphEdge } from "$lib/types/GraphEdge";
   import GraphCanvas from "$lib/components/GraphCanvas.svelte";
   import SettingsOverlay from "$lib/components/v4/SettingsOverlay.svelte";
+  // This overlay + its children style with the v4 design tokens (`--v4-*`),
+  // which `tokens.css` scopes to `.v4-root`. On the Graphite (/g) route only the
+  // graphite tokens are loaded, so `--v4-bg` (and friends) resolve to nothing —
+  // the overlay rendered transparent and the page bled through. Import the v4
+  // tokens here + tag the `.overlay` with `.v4-root` (below) so they resolve
+  // wherever this overlay mounts (v4 OR Graphite).
+  import "$lib/v4/tokens.css";
   import {
     closeOverlay,
     getActiveOverlay,
@@ -63,7 +70,7 @@
 </script>
 
 {#if open && kind === "graph"}
-  <div class="overlay">
+  <div class="overlay v4-root">
     <header class="overlay-head">
       <span class="overlay-label">graph</span>
       <span class="overlay-hint">esc closes · click a node to open it</span>
@@ -81,7 +88,7 @@
     </div>
   </div>
 {:else if open && kind === "settings"}
-  <div class="overlay">
+  <div class="overlay v4-root">
     <SettingsOverlay />
   </div>
 {/if}
