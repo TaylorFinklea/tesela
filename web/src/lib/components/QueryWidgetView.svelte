@@ -21,7 +21,6 @@
     applyTriage,
     attachToProject,
     triageActionForKey,
-    setBlockProperty,
     setBlockText,
     deleteBlock as removeBlockFromContent,
   } from "$lib/triage.svelte";
@@ -126,10 +125,12 @@
     if (!row.blockId || row.kind !== "block") return;
     const next = nextStatus(row.status);
     try {
-      const note = await api.getNote(row.pageId);
-      const updated = setBlockProperty(note.content, row.blockId, "status", next);
-      if (updated === note.content) return;
-      await api.updateNote(row.pageId, updated);
+      // P1.13 structured-first: `status` is a CONTAINER property — set it via
+      // the block-granular endpoint (which strips any in-text `status::` line
+      // and materializes exactly ONE line) instead of rewriting the markdown
+      // with a whole-note PUT. The old PUT left the text `status::` alongside
+      // the container's value → a duplicate `status::` line on materialize.
+      await api.setBlockProperty(row.blockId, "status", next);
       queryClient.invalidateQueries({ queryKey: ["widget", widget.id] });
       queryClient.invalidateQueries({ queryKey: ["note", row.pageId] });
     } catch (e) {
@@ -317,10 +318,13 @@
   async function setRowStatus(row: Row, status: string): Promise<void> {
     if (!row.blockId || row.kind !== "block") return;
     try {
-      const note = await api.getNote(row.pageId);
-      const updated = setBlockProperty(note.content, row.blockId, "status", status);
-      if (updated === note.content) return;
-      await api.updateNote(row.pageId, updated);
+      // P1.13 structured-first: container property, not a whole-note text
+      // rewrite (see cycleRowStatus). Empty value clears the property.
+      if (status === "") {
+        await api.clearBlockProperty(row.blockId, "status");
+      } else {
+        await api.setBlockProperty(row.blockId, "status", status);
+      }
       queryClient.invalidateQueries({ queryKey: ["widget", widget.id] });
       queryClient.invalidateQueries({ queryKey: ["note", row.pageId] });
     } catch (err) {
