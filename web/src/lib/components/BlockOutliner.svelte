@@ -763,14 +763,6 @@
     onfocusedblockchange?.(visibleBlocks[focusedIndex] ?? null);
   });
 
-  function parseProperties(rawText: string): Record<string, string> {
-    const props: Record<string, string> = {};
-    for (const m of rawText.matchAll(/([A-Za-z_][A-Za-z0-9_]*):: (.+)/g)) {
-      props[m[1]] = m[2];
-    }
-    return props;
-  }
-
   function statusChar(s: string): string {
     if (s === "done") return "✓";
     if (s === "doing" || s === "in-review") return "◑";
@@ -1054,9 +1046,12 @@
       pendingInsertSnapshot = null;
     }
     const parsedTags = getBlockTags(newRawText);
-    // Properties parser sees tags:: too; strip it so it doesn't double-display
-    const props = parseProperties(newRawText);
-    delete props.tags;
+    // P1.13 (Anytype mold): a block's `properties` are STRUCTURED — sourced from
+    // the CRDT container (seeded from the materialized text on load, then
+    // maintained by the container write path), NOT re-derived from prose on every
+    // edit. A text edit must leave `properties` untouched, or a container-set
+    // property (status/deadline via chord, not yet echoed back into text) gets
+    // wiped on the next keystroke. So we update only raw_text/text/tags here.
     blocks = blocks.map((b) =>
       b.id === blockId
         ? {
@@ -1064,7 +1059,6 @@
             raw_text: newRawText,
             text: (newRawText.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
             tags: parsedTags,
-            properties: props,
           }
         : b,
     );
@@ -1089,8 +1083,8 @@
     // server reparse while the user types into a bound block.
     lastLocalEditAt = Date.now();
     const parsedTags = getBlockTags(newRawText);
-    const props = parseProperties(newRawText);
-    delete props.tags;
+    // P1.13 (Anytype mold): preserve structured `properties` across prose edits —
+    // see handleBlockChange. Re-derive only tags + text from the live block text.
     blocks = blocks.map((b) =>
       b.id === blockId
         ? {
@@ -1098,7 +1092,6 @@
             raw_text: newRawText,
             text: (newRawText.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
             tags: parsedTags,
-            properties: props,
           }
         : b,
     );
@@ -1741,15 +1734,14 @@
       // anyHas=false → we're adding; skip blocks that already have it.
       if (anyHas !== has) return b;
       const newRaw = toggleBlockTag(b.raw_text, tagName, fillNames);
-      const props = parseProperties(newRaw);
-      delete props.tags;
       changedIds.add(b.id);
       return {
         ...b,
         raw_text: newRaw,
         text: (newRaw.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
         tags: getBlockTags(newRaw),
-        properties: props,
+        // Properties stay structured (see handleBlockChange) — a tag toggle must
+        // not re-derive (and wipe) container properties from prose text.
       };
     });
     // Block-granular path: a tag toggle changes ONLY the text of the blocks it
