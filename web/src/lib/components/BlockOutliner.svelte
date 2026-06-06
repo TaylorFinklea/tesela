@@ -223,11 +223,18 @@
           (n) => n.title.toLowerCase() === ancestor && n.metadata.note_type === "Tag",
         );
         if (!tagPage) continue;
-        const chipsRaw = tagPage.metadata.custom.display_chips;
+        // Curated chip list when the tag pins one; else fall back to ALL the
+        // tag's declared properties, so priority/deadline/scheduled render as
+        // chips by default (not only when an explicit `display_chips` is set —
+        // the seed defines `tag_properties` but no `display_chips`).
+        const chipsRaw = Array.isArray(tagPage.metadata.custom.display_chips)
+          ? (tagPage.metadata.custom.display_chips as string[])
+          : (tagPage.metadata.custom.tag_properties as string[] | undefined);
         if (!Array.isArray(chipsRaw)) continue;
-        for (const rawKey of chipsRaw as string[]) {
+        for (const rawKey of chipsRaw) {
           const k = String(rawKey).toLowerCase();
-          if (seen.has(k)) continue;
+          // `status` has its own dedicated cycle button; system keys are internal.
+          if (k === "status" || SYSTEM_HIDDEN_KEYS.has(k) || seen.has(k)) continue;
           seen.add(k);
           const value = block.properties[k];
           if (!value || !value.trim()) continue;
