@@ -790,17 +790,6 @@
     return "text-muted-foreground/60";
   }
 
-  function setBlockStatus(rawText: string, status: string): string {
-    const hasStatus = /^status:: .+$/m.test(rawText);
-    if (status === "") {
-      return rawText.replace(/\nstatus:: [^\n]+/g, "").replace(/^status:: [^\n]+\n?/gm, "");
-    } else if (hasStatus) {
-      return rawText.replace(/^status:: .+$/m, `status:: ${status}`);
-    } else {
-      return rawText + `\nstatus:: ${status}`;
-    }
-  }
-
   function buildFullContent(updated: ParsedBlock[]): { full: string; bodyOnly: string } {
     const bodyLines = updated
       .map((b) => {
@@ -1684,30 +1673,12 @@
     const current = first.properties.status ?? "";
     const idx = statusCycle.indexOf(current);
     const next = statusCycle[(idx + 1) % statusCycle.length] ?? "";
-    const ids = new Set(sorted.map((vi) => visibleBlocks[vi]?.id).filter(Boolean) as string[]);
-    blocks = blocks.map((b) => {
-      if (!ids.has(b.id)) return b;
-      const newRaw = setBlockStatus(b.raw_text, next);
-      const props = parseProperties(newRaw);
-      delete props.tags;
-      return {
-        ...b,
-        raw_text: newRaw,
-        text: (newRaw.split("\n")[0] ?? "").replace(/#([A-Za-z0-9_/-]+)/g, "").trim(),
-        tags: getBlockTags(newRaw),
-        properties: props,
-      };
-    });
-    // Block-granular path: a status cycle changes ONLY the affected blocks'
-    // text (the status marker), so emit one `upsert` op per selected block —
-    // NOT a whole-body PUT that re-asserts every surviving block and clobbers
-    // concurrent peer edits. If any selected block isn't a block-op candidate
-    // (no server bid / brand-new local insert), `saveBlocksViaOps` falls back
-    // to the whole-body PUT for the entire batch. One path per save.
-    saveBlocksViaOps(
-      blocks,
-      [...ids].map((id) => upsertOpForBlock(blocks, id)),
-    );
+    const ids = sorted.map((vi) => visibleBlocks[vi]?.id).filter(Boolean) as string[];
+    // P1.13 structured-first: status is a CONTAINER property — emit one op per
+    // selected block (each opens its own echo window) with an optimistic
+    // `properties` update inside the funnel; never splice `status::` into block
+    // text. Replaces the old per-block `setBlockStatus` + `saveBlocksViaOps`.
+    for (const id of ids) void setBlockPropertyStructured(id, "status", next);
     // Stay in visual mode so the user can fire again.
   }
 
@@ -2081,6 +2052,7 @@
             onchange={(text) => handleBlockChange(block.id, text)}
             bid={block.bid ?? undefined}
             onlorotext={(text) => handleLoroText(block.id, text)}
+            onsetproperty={(p) => setBlockPropertyStructured(block.id, p.key, p.value)}
             onnavigate={handleNavigate}
             onescape={() => {}}
             onenter={(textAfter: string) => handleEnter(vi, textAfter)}

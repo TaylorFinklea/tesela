@@ -436,7 +436,7 @@
     primaryTagFacet,
     type HiddenKeysConfig,
   } from "$lib/cm-decorations";
-  import { toggleBlockTag, getBlockTags, upsertBlockProperty } from "$lib/block-tags";
+  import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
   import type { PropertyDefinition } from "$lib/property-registry";
   import { assignChords } from "$lib/chord-keys";
 
@@ -519,6 +519,7 @@
     isPinnedTab = false,
     bid,
     onlorotext: onLoroText,
+    onsetproperty: onSetProperty,
   }: {
     initialText: string;
     onblur: () => void;
@@ -599,6 +600,11 @@
      *  block-op save (that path is for structural ops + the non-bound
      *  fallback). */
     onlorotext?: (text: string) => void;
+    /** P1.13 structured-first — emitted when an editor chord (/p, /s, date
+     *  picker) SETS a property. The parent (BlockOutliner) routes it to the
+     *  container op + optimistic update; the editor only strips its trigger
+     *  text and never writes a `key:: value` line. */
+    onsetproperty?: (p: { key: string; value: string }) => void;
   } = $props();
 
   const hiddenKeysCompartment = new Compartment();
@@ -848,12 +854,15 @@
       triggerStart--;
     }
     const cleaned = doc.slice(0, triggerStart) + doc.slice(cursorPos);
-    const next = upsertBlockProperty(cleaned, key, value);
+    // P1.13 structured-first: strip the `/p…` trigger from the text ONLY, then
+    // emit the property as a CONTAINER op (parent → setBlockPropertyStructured).
+    // No `key:: value` line is written — the server materializes it exactly once.
     view.dispatch({
-      changes: { from: 0, to: doc.length, insert: next },
+      changes: { from: 0, to: doc.length, insert: cleaned },
       selection: { anchor: triggerStart },
     });
-    onChange(next);
+    onChange(cleaned);
+    onSetProperty?.({ key, value });
     showSlashMenu = false;
     slashStartPos = -1;
     view.focus();
@@ -1007,9 +1016,14 @@
     const after = doc.slice(cursorPos);
 
     let insert = "";
+    // P1.13 structured-first: a property the slash command SETS (vs. text it
+    // inserts) is collected here and emitted as a container op AFTER the text
+    // dispatch — never written as a `key:: value` line.
+    let pendingProp: { key: string; value: string } | null = null;
     const allStatuses = statusChoices ?? ["todo", "doing", "done"];
     if (allStatuses.includes(command)) {
-      insert = before.trimEnd() + "\nstatus:: " + command + after;
+      insert = before.trimEnd() + after;
+      pendingProp = { key: "status", value: command };
     } else {
       switch (command) {
         case "task": {
@@ -1156,6 +1170,7 @@
       selection: { anchor: insert.length - after.length },
     });
     onChange(insert);
+    if (pendingProp) onSetProperty?.(pendingProp);
     showSlashMenu = false;
     slashStartPos = -1;
     onSlashCommand?.(command);
@@ -1994,15 +2009,12 @@
           // `/p` path passes an explicit property key; the `/date` path resolves
           // the field from the NL keyword, falling back to the user's setting.
           const key = datePickerPropertyKey ?? field ?? prefs.bareDateField;
-          let next = upsertBlockProperty(doc, key, iso);
-          if (recurrence !== null) {
-            next = upsertBlockProperty(next, "recurring", recurrence);
-          }
-          view.dispatch({
-            changes: { from: 0, to: doc.length, insert: next },
-            selection: { anchor: Math.min(datePickerCursor, next.length) },
-          });
-          onChange(next);
+          // P1.13 structured-first: the date(s) go to the CONTAINER via the
+          // parent — no `<key>:: <iso>` text line. `doc` is already
+          // trigger-stripped (the picker opened after the trigger was removed).
+          onChange(doc);
+          onSetProperty?.({ key, value: iso });
+          if (recurrence !== null) onSetProperty?.({ key: "recurring", value: recurrence });
           view.focus();
         }
         showDatePicker = false;
