@@ -1732,18 +1732,12 @@ pub async fn set_block_property(
     // stale the moment the note reflows/prunes server-side, while its bid never
     // moves. Resolve the canonical bid (the `<!-- bid:UUID -->` marker) either
     // way so the property op targets the engine node directly.
-    let block_bid = match id_suffix.parse::<usize>() {
-        Ok(line_num) => resolve_block_bid(&prev_content, note_id_str, line_num).ok_or_else(|| {
-            AppError::NotFound(format!(
-                "block '{}' not found in note '{}'",
-                req.block_id, note_id_str
-            ))
-        })?,
-        // A non-numeric suffix is a bid passed directly (the editor seam's
-        // stable address); use it as-is — the op's apply is a safe no-op if no
-        // live node carries it.
-        Err(_) => id_suffix.to_string(),
-    };
+    let block_bid = block_bid_from_suffix(&prev_content, note_id_str, id_suffix).ok_or_else(|| {
+        AppError::NotFound(format!(
+            "block '{}' not found in note '{}'",
+            req.block_id, note_id_str
+        ))
+    })?;
     let block_id = parse_bid(&block_bid)?;
     let doc_note_id = stable_uuid_from_slug(note_id_str);
 
@@ -1896,6 +1890,60 @@ fn resolve_block_bid(content: &str, note_id_str: &str, line_num: usize) -> Optio
     block.bid.clone()
 }
 
+/// Resolve a block_id's suffix to the target block's canonical bid string. The
+/// suffix is EITHER a `<line>` number (legacy `<note_id>:<line>`, resolved
+/// against the materialized `content`) OR a `<bid>` passed directly — the editor
+/// seam's stale-proof address: the line index moves when a note reflows, the bid
+/// never does. Returns None only when a numeric line doesn't match a block.
+fn block_bid_from_suffix(content: &str, note_id_str: &str, id_suffix: &str) -> Option<String> {
+    match id_suffix.parse::<usize>() {
+        Ok(line_num) => resolve_block_bid(content, note_id_str, line_num),
+        Err(_) => Some(id_suffix.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that block_bid_from_suffix correctly resolves both numeric line
+    /// indices and direct bid strings to the same canonical bid. Regression
+    /// test for the editor-seam addressing (P1.13) — both addressing forms
+    /// must resolve to the same block id (f90eefe/699041b).
+    #[test]
+    fn test_block_bid_from_suffix_resolves_both_forms() {
+        // A simple note with two blocks, both stamped with bids.
+        let content = "---\ntitle: Test\n---\n- First block <!-- bid:11111111-1111-1111-1111-111111111111 -->\n- Second block <!-- bid:22222222-2222-2222-2222-222222222222 -->\n";
+        let note_id = "test-note";
+
+        // Form 1: numeric line index (line 0 in the parsed body).
+        let bid_via_line = block_bid_from_suffix(content, note_id, "0");
+        assert_eq!(
+            bid_via_line,
+            Some("11111111-1111-1111-1111-111111111111".to_string())
+        );
+
+        // Form 2: direct bid passed through.
+        let bid_direct = block_bid_from_suffix(content, note_id, "22222222-2222-2222-2222-222222222222");
+        assert_eq!(
+            bid_direct,
+            Some("22222222-2222-2222-2222-222222222222".to_string())
+        );
+
+        // Both forms should resolve to their respective bids.
+        // Verify line 1 resolves to the second block's bid.
+        let bid_via_line_1 = block_bid_from_suffix(content, note_id, "1");
+        assert_eq!(
+            bid_via_line_1,
+            Some("22222222-2222-2222-2222-222222222222".to_string())
+        );
+
+        // Non-existent line should return None.
+        let bid_out_of_range = block_bid_from_suffix(content, note_id, "99");
+        assert_eq!(bid_out_of_range, None);
+    }
+}
+
 /// A block's bid-stripped multi-line prose (`FlatBlock.text` shape — first
 /// line + continuation lines, no `<!-- bid -->`) plus its indent level and
 /// parent. `parent` is carried so the synthesized prose-strip `BlockUpsert`
@@ -2033,15 +2081,12 @@ pub async fn clear_block_property(
     // engine's node directly (mirror `set_block_property`): a numeric suffix is
     // a `<note_id>:<line>` resolved against the body, a non-numeric one is a
     // stable bid passed directly by the editor seam.
-    let block_bid = match id_suffix.parse::<usize>() {
-        Ok(line_num) => resolve_block_bid(&prev_content, note_id_str, line_num).ok_or_else(|| {
-            AppError::NotFound(format!(
-                "block '{}' not found in note '{}'",
-                req.block_id, note_id_str
-            ))
-        })?,
-        Err(_) => id_suffix.to_string(),
-    };
+    let block_bid = block_bid_from_suffix(&prev_content, note_id_str, id_suffix).ok_or_else(|| {
+        AppError::NotFound(format!(
+            "block '{}' not found in note '{}'",
+            req.block_id, note_id_str
+        ))
+    })?;
     let block_id = parse_bid(&block_bid)?;
     let doc_note_id = stable_uuid_from_slug(note_id_str);
 
@@ -3158,6 +3203,33 @@ mod recurrence_tests {
 #[cfg(test)]
 mod strip_block_intext_prop_tests {
     use super::*;
+
+    /// Block-id resolution accepts BOTH a `<note>:<line>` (resolved against the
+    /// materialized body) AND a `<note>:<bid>` (passed straight through — the
+    /// editor seam's stale-proof address). Regression guard for the editor
+    /// seam fix (f90eefe / 699041b): a non-numeric suffix must be treated as a
+    /// bid, not rejected.
+    #[test]
+    fn block_bid_from_suffix_accepts_line_and_bid() {
+        let bid = "019e9a49-cb5c-76a1-b8c2-540abd2362f2";
+        let content =
+            format!("---\ntitle: \"T\"\ntags: []\n---\n- buy milk <!-- bid:{bid} -->\n");
+        // Numeric suffix → resolved against the body to the block's bid.
+        assert_eq!(
+            block_bid_from_suffix(&content, "T", "0").as_deref(),
+            Some(bid),
+            "a `<note>:<line>` suffix resolves to the block's bid",
+        );
+        // Non-numeric suffix → used directly (the line index goes stale on
+        // reflow; the bid never does).
+        assert_eq!(
+            block_bid_from_suffix(&content, "T", bid).as_deref(),
+            Some(bid),
+            "a `<note>:<bid>` suffix is used directly",
+        );
+        // A line index that matches no block → None (the route surfaces 404).
+        assert!(block_bid_from_suffix(&content, "T", "99").is_none());
+    }
 
     /// A nested block carrying an in-text property must surface its real
     /// `parent` so the synthesized prose-strip `BlockUpsert` preserves the
