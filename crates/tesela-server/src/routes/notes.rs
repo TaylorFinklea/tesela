@@ -1695,21 +1695,15 @@ pub async fn set_block_property(
     State(s): State<Arc<AppState>>,
     Json(req): Json<SetBlockPropertyReq>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let (note_id_str, line_str) = match req.block_id.rsplit_once(':') {
+    let (note_id_str, id_suffix) = match req.block_id.rsplit_once(':') {
         Some(pair) => pair,
         None => {
             return Err(AppError::Validation(format!(
-                "invalid block_id '{}': expected '<note_id>:<line>'",
+                "invalid block_id '{}': expected '<note_id>:<line>' or '<note_id>:<bid>'",
                 req.block_id
             )))
         }
     };
-    let line_num: usize = line_str.parse().map_err(|_| {
-        AppError::Validation(format!(
-            "invalid block_id '{}': line suffix is not a number",
-            req.block_id
-        ))
-    })?;
 
     let key = req.key.trim().to_lowercase();
     if key.is_empty()
@@ -1732,16 +1726,24 @@ pub async fn set_block_property(
 
     let prev_content = note.content.clone();
 
-    // Resolve the target block's canonical bid (the `<!-- bid:UUID -->`
-    // marker) so the property op addresses the engine's node directly. A
-    // block with no bid (locally-created, never round-tripped) has no engine
-    // node yet — surface it as not-found rather than silently no-op.
-    let block_bid = resolve_block_bid(&prev_content, note_id_str, line_num).ok_or_else(|| {
-        AppError::NotFound(format!(
-            "block '{}' not found in note '{}'",
-            req.block_id, note_id_str
-        ))
-    })?;
+    // The id suffix is EITHER a line number (legacy `<note_id>:<line>`, resolved
+    // against the materialized body) OR a stable bid (`<note_id>:<bid>`). The
+    // editor seam (P1.13) addresses by bid because a block's LINE index goes
+    // stale the moment the note reflows/prunes server-side, while its bid never
+    // moves. Resolve the canonical bid (the `<!-- bid:UUID -->` marker) either
+    // way so the property op targets the engine node directly.
+    let block_bid = match id_suffix.parse::<usize>() {
+        Ok(line_num) => resolve_block_bid(&prev_content, note_id_str, line_num).ok_or_else(|| {
+            AppError::NotFound(format!(
+                "block '{}' not found in note '{}'",
+                req.block_id, note_id_str
+            ))
+        })?,
+        // A non-numeric suffix is a bid passed directly (the editor seam's
+        // stable address); use it as-is — the op's apply is a safe no-op if no
+        // live node carries it.
+        Err(_) => id_suffix.to_string(),
+    };
     let block_id = parse_bid(&block_bid)?;
     let doc_note_id = stable_uuid_from_slug(note_id_str);
 
@@ -1996,21 +1998,15 @@ pub async fn clear_block_property(
     State(s): State<Arc<AppState>>,
     Json(req): Json<ClearBlockPropertyReq>,
 ) -> AppResult<Json<serde_json::Value>> {
-    let (note_id_str, line_str) = match req.block_id.rsplit_once(':') {
+    let (note_id_str, id_suffix) = match req.block_id.rsplit_once(':') {
         Some(pair) => pair,
         None => {
             return Err(AppError::Validation(format!(
-                "invalid block_id '{}': expected '<note_id>:<line>'",
+                "invalid block_id '{}': expected '<note_id>:<line>' or '<note_id>:<bid>'",
                 req.block_id
             )))
         }
     };
-    let line_num: usize = line_str.parse().map_err(|_| {
-        AppError::Validation(format!(
-            "invalid block_id '{}': line suffix is not a number",
-            req.block_id
-        ))
-    })?;
 
     let key = req.key.trim().to_lowercase();
     if key.is_empty()
@@ -2034,13 +2030,18 @@ pub async fn clear_block_property(
     let prev_content = note.content.clone();
 
     // Resolve the target block's canonical bid so the clear op addresses the
-    // engine's node directly (mirror `set_block_property`).
-    let block_bid = resolve_block_bid(&prev_content, note_id_str, line_num).ok_or_else(|| {
-        AppError::NotFound(format!(
-            "block '{}' not found in note '{}'",
-            req.block_id, note_id_str
-        ))
-    })?;
+    // engine's node directly (mirror `set_block_property`): a numeric suffix is
+    // a `<note_id>:<line>` resolved against the body, a non-numeric one is a
+    // stable bid passed directly by the editor seam.
+    let block_bid = match id_suffix.parse::<usize>() {
+        Ok(line_num) => resolve_block_bid(&prev_content, note_id_str, line_num).ok_or_else(|| {
+            AppError::NotFound(format!(
+                "block '{}' not found in note '{}'",
+                req.block_id, note_id_str
+            ))
+        })?,
+        Err(_) => id_suffix.to_string(),
+    };
     let block_id = parse_bid(&block_bid)?;
     let doc_note_id = stable_uuid_from_slug(note_id_str);
 
