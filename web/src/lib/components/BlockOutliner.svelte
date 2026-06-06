@@ -1125,6 +1125,46 @@
     handleBlockChange(block.id, toggleBlockTag(block.raw_text, tagName));
   }
 
+  /** P1.13 structured-first: set a block property as a CONTAINER value — emit
+   *  the op (addressed by the STABLE `<note_id>:<bid>`, line-id fallback when no
+   *  bid yet) + OPTIMISTICALLY update the parsed `properties` for instant chip
+   *  render. NEVER writes a `key:: value` line into block text — the server
+   *  materializes exactly one line from the container, so there is no dual-write
+   *  duplicate (the bug that reverted the additive seam). Empty value → clear. */
+  async function setBlockPropertyStructured(blockId: string, key: string, value: string) {
+    const block = blocks.find((b) => b.id === blockId);
+    if (!block) return;
+    const k = key.toLowerCase();
+    const addr = block.bid ? `${block.note_id}:${block.bid}` : block.id;
+    if (value.trim() === "") {
+      if (block.properties[k] === undefined) return;
+      blocks = blocks.map((b) =>
+        b.id === blockId
+          ? {
+              ...b,
+              properties: Object.fromEntries(
+                Object.entries(b.properties).filter(([kk]) => kk !== k),
+              ),
+            }
+          : b,
+      );
+      try {
+        await api.clearBlockProperty(addr, k);
+      } catch (e) {
+        console.error("clearBlockProperty (structured) failed", addr, k, e);
+      }
+      return;
+    }
+    blocks = blocks.map((b) =>
+      b.id === blockId ? { ...b, properties: { ...b.properties, [k]: value } } : b,
+    );
+    try {
+      await api.setBlockProperty(addr, k, value);
+    } catch (e) {
+      console.error("setBlockProperty (structured) failed", addr, k, e);
+    }
+  }
+
   function handleStatusCycle(vi: number) {
     const block = visibleBlocks[vi];
     if (!block) return;
@@ -1137,13 +1177,21 @@
     // status (i.e. promoting it to tracked work), auto-add `tags:: Task` so
     // the block shows up in /p/tasks. Cycling back to empty status leaves
     // the existing tag set alone.
-    let nextRaw = setBlockStatus(block.raw_text, next);
+    // P1.13 structured-first: `status` is a CONTAINER property — emit the op +
+    // optimistic update; never splice `status::` into block text (that was the
+    // reverted dual-write duplicate). The #Task auto-tag stays on the text path
+    // (tags are out of scope); its empty Priority/Deadline/Scheduled
+    // placeholders carry no value, so they emit no property op.
     const hasAnyTag = block.tags.length > 0;
     if (!hasAnyTag && next !== "") {
-      const fillNames = autoFillNamesForTag("Task");
-      nextRaw = toggleBlockTag(nextRaw, "Task", fillNames);
+      // Structured-first: add ONLY the #Task tag — do NOT seed empty `Name::`
+      // placeholder lines. Their CAPITALISED keys collide with the lowercase
+      // container-materialized lines (the server strip is case-sensitive), and
+      // the type's property template belongs in the registry UI, not as empty
+      // text scaffolding. The status itself goes to the container below.
+      handleBlockChange(block.id, toggleBlockTag(block.raw_text, "Task", []));
     }
-    handleBlockChange(block.id, nextRaw);
+    void setBlockPropertyStructured(block.id, "status", next);
   }
 
   function handleNavigate(direction: "up" | "down", count = 1) {
