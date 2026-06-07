@@ -44,8 +44,37 @@ function paletteIndex(name: string): number {
   return Math.abs(h) % PALETTE.length;
 }
 
-export function tagColor(name: string): TagColor {
-  const hex = PALETTE[paletteIndex(name)];
+// A tag PAGE may pin its own color via a `color::` frontmatter value — either a
+// `#rrggbb` hex or one of these friendly names (the palette hues). When set, it
+// overrides the deterministic hash so a tag's color is intentional + consistent.
+const NAMED: Record<string, string> = {
+  rose: "#E8697F", task: "#E8697F",
+  teal: "#62B8CE", event: "#62B8CE",
+  amber: "#E4AE66", note: "#E4AE66",
+  blue: "#7493E8", project: "#7493E8",
+  violet: "#AE90E6", purple: "#AE90E6", person: "#AE90E6",
+  green: "#85BC63", query: "#85BC63",
+  coral: "#FF6B5A", red: "#FF6B5A",
+  pink: "#E093C4",
+  mint: "#6FC3A8",
+  gold: "#C9A24B", yellow: "#C9A24B",
+};
+
+/** Resolve a tag-page `color::` override to a hex, or null if unrecognized. */
+function resolveOverride(color: string): string | null {
+  const s = color.trim();
+  if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(s)) return s;
+  return NAMED[s.toLowerCase()] ?? null;
+}
+
+/**
+ * Color for a tag pill. `override` is the tag page's `color::` value (hex or a
+ * named hue); when present + valid it wins, else the color is a deterministic
+ * function of the tag name.
+ */
+export function tagColor(name: string, override?: string | null): TagColor {
+  const hex =
+    (override ? resolveOverride(override) : null) ?? PALETTE[paletteIndex(name)];
   return {
     dot: hex,
     text: `color-mix(in srgb, ${hex} 72%, white)`,

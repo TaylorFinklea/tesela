@@ -248,6 +248,16 @@
     return out;
   }
 
+  // A tag's pill color: the Tag page's `color::` frontmatter when set
+  // (overrides the deterministic palette in `tagColor`), else null.
+  function tagPageColor(tag: string): string | null {
+    const tp = allNotes?.find(
+      (n) => n.title.toLowerCase() === tag.toLowerCase() && n.metadata.note_type === "Tag",
+    );
+    const c = tp?.metadata.custom?.color;
+    return typeof c === "string" && c.trim() ? c : null;
+  }
+
   /**
    * Phase 10.4 — full property defs for the block's tag chain. Used to drive
    * the in-block `/p` chord submenu (key picker → value entry) so the user
@@ -2169,7 +2179,7 @@
         {#if chipTags(block.raw_text).length > 0}
           <div class="shrink-0 flex items-center gap-1 self-center pr-2 py-1">
             {#each chipTags(block.raw_text) as tag}
-              {@const c = tagColor(tag)}
+              {@const c = tagColor(tag, tagPageColor(tag))}
               <span
                 class="group/tag inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium"
                 style="background:{c.bg};color:{c.text}"

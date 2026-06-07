@@ -18,41 +18,10 @@ class EmptyWidget extends WidgetType {
   eq() { return true; }
 }
 
-/** Trailing-cluster chip widget. Renders a clickable `#name` pill at the
- *  end of the block. Clicking dispatches a `tesela:open-tag` custom event
- *  on document so the host (BlockOutliner / BufferShell) can navigate to
- *  the tag's page. The widget owns the DOM but defers navigation to the
- *  host — same Reference-driven flow as wiki-link clicks. */
-class TagChipWidget extends WidgetType {
-  readonly name: string;
-  constructor(name: string) {
-    super();
-    this.name = name;
-  }
-  toDOM() {
-    const el = document.createElement("button");
-    el.type = "button";
-    el.className = "cm-tesela-tag-chip";
-    el.textContent = `#${this.name}`;
-    el.title = `open ${this.name}`;
-    el.addEventListener("mousedown", (e) => {
-      // Prevent the editor from stealing focus before our click fires.
-      e.preventDefault();
-    });
-    el.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      document.dispatchEvent(
-        new CustomEvent("tesela:open-tag", { detail: { value: this.name } }),
-      );
-    });
-    return el;
-  }
-  eq(other: TagChipWidget) {
-    return other.name === this.name;
-  }
-  ignoreEvent() { return false; }
-}
+// (Removed the trailing-cluster `TagChipWidget` — Model A, 2026-06-07: every
+//  prose `#tag` renders inline; committed tags are the right-edge colored pills.
+//  The position-based chip was dormant anyway — the trailing `<!-- bid -->`
+//  marker keeps a tag off the true trailing edge.)
 
 /** Inline image rendered from `![alt](url)` (markdown render, unfocused). */
 class ImageWidget extends WidgetType {
@@ -527,30 +496,15 @@ function buildDecorations(view: EditorView): Built {
     }
   }
 
-  // Tags: position-aware classification per the tag-system spec.
-  //   - Tokens inside the trailing cluster (one or more `#tag` tokens at
-  //     the end of the doc, separated only by whitespace) render as chip
-  //     widgets (atomic, clickable).
-  //   - All other `#tag` tokens render inline as styled marks (not atomic;
-  //     the cursor can edit them normally).
-  const trailingStart = findTrailingClusterStart(doc);
+  // Tags (Model A, 2026-06-07): every `#tag` in the prose renders inline as a
+  // styled, editable mark. Committed tags live on the `tags::` line and surface
+  // as a right-edge colored pill (BlockOutliner) — there is no in-editor chip
+  // widget. (`tagsLineHide` below keeps the `tags::` line out of the prose.)
   TAG_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = TAG_RE.exec(doc)) !== null) {
-    const from = m.index;
-    const to = m.index + m[0].length;
-    if (insideCode(from)) continue;
-    if (from >= trailingStart) {
-      const name = m[1];
-      decos.push({
-        from,
-        to,
-        decoration: Decoration.replace({ widget: new TagChipWidget(name) }),
-        atomic: true,
-      });
-    } else {
-      decos.push({ from, to, decoration: tagInlineMark });
-    }
+    if (insideCode(m.index)) continue;
+    decos.push({ from: m.index, to: m.index + m[0].length, decoration: tagInlineMark });
   }
 
   // tags:: property lines: hide the whole line (canonical display is the pill UI)
@@ -881,17 +835,9 @@ export function findAtomicCursorRanges(doc: string, config: HiddenKeysConfig): A
   const insideCode = (i: number): boolean =>
     codeRanges.some((r) => i >= r.from && i < r.to);
 
-  // Only `#tag` tokens in the trailing cluster are atomic (they're chip
-  // widgets that can't be entered with the cursor). Inline tokens stay
-  // edit-friendly.
-  const trailingStart = findTrailingClusterStart(doc);
-  TAG_RE.lastIndex = 0;
+  // Model A: no `#tag` is atomic — every prose tag is an editable inline mark.
+  // (Bid comments below stay atomic so the cursor jumps past them.)
   let m: RegExpExecArray | null;
-  while ((m = TAG_RE.exec(doc)) !== null) {
-    if (m.index >= trailingStart && !insideCode(m.index)) {
-      ranges.push([m.index, m.index + m[0].length]);
-    }
-  }
 
   BID_RE.lastIndex = 0;
   while ((m = BID_RE.exec(doc)) !== null) {
