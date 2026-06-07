@@ -1637,6 +1637,15 @@ fn flatblock_from_node(
     let properties = prop_containers::read_node_prop_containers(&meta)
         .map(|(props, prop_keys)| prop_containers::materialize_props(&props, &prop_keys))
         .unwrap_or_default();
+    // A4 render-time dedup: with migrate-on-write flag-OFF, a legacy in-text
+    // `key:: value` line can persist in `text_seq` WHILE a container property
+    // for the same key also exists (e.g. set via the structured path) — the
+    // serializer would then emit BOTH lines. Drop any solely-`key:: value`
+    // prose line whose key matches a container key so the property renders
+    // ONCE, with the container value winning. The in-text key is compared
+    // case-insensitively (`solely_property_line` lowercases it; container keys
+    // are stored verbatim, so we lowercase those for the membership test).
+    let text = dedup_intext_props_against_container(text, &properties);
     Some(tesela_core::note_tree::FlatBlock {
         id: id_uuid,
         parent: None,
@@ -2431,6 +2440,40 @@ fn solely_property_line(line: &str) -> Option<(String, String)> {
         return None;
     }
     Some((key.to_ascii_lowercase(), value.to_string()))
+}
+
+/// A4 render-time dedup: drop legacy in-text `key:: value` lines whose key
+/// matches a container property key, so the materializer emits each property
+/// ONCE (the container value wins). Keys are compared case-insensitively
+/// (`solely_property_line` lowercases the in-text key; container keys are
+/// stored verbatim, so we lowercase those too). Returns `text` byte-for-byte
+/// unchanged when there are no container props OR no line is dropped, so the
+/// common no-duplicate path is untouched.
+fn dedup_intext_props_against_container(
+    text: String,
+    properties: &[(String, String)],
+) -> String {
+    if properties.is_empty() {
+        return text;
+    }
+    let container_keys: std::collections::HashSet<String> = properties
+        .iter()
+        .map(|(k, _)| k.to_ascii_lowercase())
+        .collect();
+    let kept: Vec<&str> = text
+        .lines()
+        .filter(|line| {
+            solely_property_line(line)
+                .map(|(k, _)| !container_keys.contains(&k))
+                .unwrap_or(true)
+        })
+        .collect();
+    if kept.len() == text.lines().count() {
+        // Nothing dropped — preserve the exact original bytes (incl. any
+        // trailing-newline nuance) so non-duplicate blocks are unaffected.
+        return text;
+    }
+    kept.join("\n")
 }
 
 /// True if the tree's live blocks (in render order) match `blocks` by
@@ -7640,6 +7683,94 @@ mod tests {
         assert_eq!(
             full, content,
             "legacy in-text property round-trips unchanged — no container, no double-emit"
+        );
+    }
+
+    // A4 — render-time dedup: when a block carries BOTH a legacy in-text
+    // `status:: a` line (flag OFF, never lifted) AND a container `status`
+    // property, the materializer must emit the property ONCE, with the
+    // CONTAINER value winning. Guards the un-migrated legacy/dual-write dup.
+    #[tokio::test]
+    async fn render_dedups_intext_property_when_container_prop_exists() {
+        let note = blake3_note_id("mat-dedup");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        let bid = uuid::Uuid::from_bytes(A_BID_BYTES);
+        // Legacy in-text `status:: a` lands in text_seq and is NOT lifted
+        // (non-migrating engine).
+        let content = format!("- Task <!-- bid:{} -->\n  status:: a\n", bid);
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("dedup".into()),
+                title: "dedup".into(),
+                content,
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        // A container `status` property for the SAME key, different value.
+        engine
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: A_BID_BYTES,
+                key: "status".into(),
+                value: PropOp::SetScalar(PropScalar::Text("b".into())),
+            })
+            .await
+            .unwrap();
+
+        let full = engine.render_note_full(note).await.unwrap();
+        assert_eq!(
+            full,
+            format!("- Task <!-- bid:{} -->\n  status:: b\n", bid),
+            "container prop wins; the duplicate in-text status line is dropped at render"
+        );
+        assert_eq!(
+            full.matches("status::").count(),
+            1,
+            "exactly one status line"
+        );
+    }
+
+    // A4 case-fold: the in-text key is compared case-insensitively to the
+    // container keys, so an in-text `status:: a` is still deduped when the
+    // container key was set with different case (`Status`). Container wins.
+    #[tokio::test]
+    async fn render_dedups_intext_property_case_insensitively() {
+        let note = blake3_note_id("mat-dedup-case");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        let bid = uuid::Uuid::from_bytes(A_BID_BYTES);
+        let content = format!("- Task <!-- bid:{} -->\n  status:: a\n", bid);
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("dedup-case".into()),
+                title: "dedup-case".into(),
+                content,
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        engine
+            .record_local(OpPayload::BlockPropertySet {
+                note_id: note,
+                block_id: A_BID_BYTES,
+                key: "Status".into(),
+                value: PropOp::SetScalar(PropScalar::Text("b".into())),
+            })
+            .await
+            .unwrap();
+
+        let full = engine.render_note_full(note).await.unwrap();
+        assert!(
+            !full.contains("status:: a"),
+            "the lowercase in-text dup is dropped despite the container key's case: {full:?}"
+        );
+        assert!(
+            full.contains("Status:: b"),
+            "the container value (verbatim key) is kept: {full:?}"
         );
     }
 
