@@ -4,6 +4,18 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-06 — /g splits via a Graphite-native pane renderer (GrLayoutTree), NOT by adopting v5 BufferShell
+
+**Decision (Taylor, presented the fork):** make vsplit/hsplit render on `/g` by building a Graphite-native recursive pane-tree renderer (`graphite/shell/GrLayoutTree.svelte` + `GrLeaf.svelte`) that tiles the EXISTING `Gr*` views (GrDaily/GrPage/GrInbox/GrAgenda) across `tab.layout`. Do NOT take the handoff's literal "swap the single-pane `view` conditional for `<LayoutTree>`" path.
+
+**Why:** a 5-agent mapping workflow proved the literal swap is not the clean change the A3 note assumed — `LayoutTree` mounts the v5 `BufferShell`, which renders the v5 NoteRenderer/ambient registry, NOT the Graphite views. That swap would (a) regress the default daily (empty pageId → BufferShell "empty pane" placeholder, today's journal lost), (b) drop GrPage's References/Properties **side pane** + title head, (c) replace GrAgenda's Mon–Fri time-grid with the v5 day-list, (d) change GrInbox's look + lose Process-all/snooze, and (e) need `--v4-*` tokens re-scoped into `.gr-root` (BufferShell is styled in v4 tokens absent under Graphite) + a `.gr-main` root-leaf flex rule + a shared default-today seed that also alters /v4. That trips A3's own "REVERT if any view regresses" guardrail. The Graphite-native renderer reuses the already-wired split state (`vsplit`/`hsplit`/`setRatio`/`moveFocus` already mutate `tab.layout`; the leader/⌘K/`:` already reach them — only the renderer was missing) so it's contained to `/g` with zero shared-state/token changes and zero view regressions.
+
+**Shape:** `GrLayoutTree` mirrors `components/v5/LayoutTree.svelte`'s split/resizer/drag algebra (Graphite tokens) but mounts `GrLeaf` per leaf; `GrLeaf` runs the same per-buffer view routing the shell used (empty pageId → daily, so the empty-pane regression is structurally avoided). Focus accent is split-only (`showFocus`) so a lone pane is pixel-identical to before; click focuses the leaf; Ctrl-W h/j/k/l ports v4's `moveFocus` so splits are keyboard-usable. Browser-QA'd all four views + vsplit/hsplit/nested/close/focus-nav on a fresh mosaic, no console errors.
+
+**Open follow-up (intentionally NOT done):** unifying `/g` onto the v5 BufferShell architecture (dropping the bespoke `Gr*` views) remains a deliberate future call — this preserves the Graphite presentation for now.
+
+---
+
 ### 2026-06-06 — Tasks query stays tag-strict; existing tasks get a one-time #Task backfill (not a query widen)
 
 **Decision (Taylor, product-tested):** the Tasks query keeps its strict definition `kind:block tag:Task -status:done` (`system-widgets.ts:50`). Do NOT widen it to `tag:Task OR has:status`.

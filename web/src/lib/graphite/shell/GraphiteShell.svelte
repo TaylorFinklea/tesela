@@ -14,24 +14,21 @@
    * The `.gr-root` scope + tokens are provided by /g/+layout.svelte
    * (the foundation), so this component renders inside that.
    *
-   * Pane content routes by the focused buffer's kind (A6): a daily (empty
-   * pageId or a YYYY-MM-DD page) → GrDaily; any other page → GrPage; the
-   * "inbox"/"agenda" ambients → GrInbox/GrAgenda; everything else falls
-   * back to the placeholder.
+   * The main area renders the active tab's binary pane tree via
+   * <GrLayoutTree> (so vsplit/hsplit show up); each leaf routes its buffer
+   * to a Graphite view in GrLeaf. The shell keeps the single focused-page
+   * Loro doc (it follows focus) + the keydown wiring (leader / ⌘K / `:` /
+   * Ctrl-W pane motion).
    */
   import { onMount, onDestroy } from 'svelte';
   import { openActiveNoteDoc } from '$lib/loro/active-note-doc.svelte';
   import GrTopBar from './GrTopBar.svelte';
   import GrRail from './GrRail.svelte';
-  import GrPane from './GrPane.svelte';
   import GrStatus from './GrStatus.svelte';
   import GrCommandPalette from './GrCommandPalette.svelte';
   import GrLeaderOverlay from './GrLeaderOverlay.svelte';
-  import GrDaily from '$lib/graphite/views/GrDaily.svelte';
-  import GrPage from '$lib/graphite/views/GrPage.svelte';
-  import GrInbox from '$lib/graphite/views/GrInbox.svelte';
-  import GrAgenda from '$lib/graphite/views/GrAgenda.svelte';
-  import { getFocusedBuffer, getFocusedLeafId } from '$lib/buffer/state.svelte';
+  import GrLayoutTree from './GrLayoutTree.svelte';
+  import { getFocusedBuffer, getFocusedLeafId, getActiveTab, moveFocus } from '$lib/buffer/state.svelte';
   import { openStation } from '$lib/stores/station.svelte';
   import { openLeader } from '$lib/v5/leader-tree.svelte';
   import { openColonMode } from '$lib/stores/colon-mode.svelte';
@@ -43,27 +40,21 @@
   const focusedBuffer = $derived(getFocusedBuffer());
   const focusedLeafId = $derived(getFocusedLeafId());
 
+  // The active tab's pane tree + a shared drag flag for the resizers.
+  const tab = $derived(getActiveTab());
+  const dragRef = $state({ value: false });
+  // Only show the per-pane focus accent when the layout is actually split —
+  // a lone pane renders exactly as the pre-split shell did.
+  const isSplit = $derived(tab?.layout.type === 'split');
+
   // A daily page is either the default (empty pageId) leaf or a page whose
   // id is a YYYY-MM-DD date — those render as the continuous JournalView.
   function isDailyPageId(pageId: string): boolean {
     return pageId === '' || /^\d{4}-\d{2}-\d{2}$/.test(pageId);
   }
 
-  // Which top-level view the focused buffer maps to. `placeholder` keeps
-  // the original "coming soon" card for any kind we don't render yet.
-  type ViewKind = 'daily' | 'page' | 'inbox' | 'agenda' | 'placeholder';
-  const view = $derived.by<ViewKind>(() => {
-    const b = focusedBuffer;
-    if (!b) return 'daily';
-    if (b.kind === 'page') return isDailyPageId(b.pageId) ? 'daily' : 'page';
-    if (b.kind === 'ambient') {
-      if (b.ambientName === 'inbox') return 'inbox';
-      if (b.ambientName === 'agenda') return 'agenda';
-    }
-    return 'placeholder';
-  });
-
-  // Pane title for the daily / placeholder GrPane head + the status path.
+  // Status-bar path for the focused buffer (the per-pane heads live in the
+  // Gr* views / GrLeaf now).
   const paneTitle = $derived.by(() => {
     const b = focusedBuffer;
     if (!b) return 'Journal';
@@ -72,10 +63,6 @@
     if (b.kind === 'ambient') return b.ambientName;
     return 'Graphite';
   });
-
-  const activePageId = $derived(
-    focusedBuffer?.kind === 'page' ? focusedBuffer.pageId : '',
-  );
 
   // The user's LOCAL today as a YYYY-MM-DD slug — the default daily buffer
   // (empty pageId) renders today's note, so its Loro doc is keyed by this.
@@ -130,9 +117,50 @@
     });
   }
 
+  // Ctrl-W h/j/k/l prefix for vim-style window motion (mirror of v4). Moving
+  // focus by keyboard is what makes a split usable hands-on the keyboard.
+  let awaitingCtrlW = false;
+  let ctrlWTimer: ReturnType<typeof setTimeout> | null = null;
+  function clearCtrlW() {
+    awaitingCtrlW = false;
+    if (ctrlWTimer) {
+      clearTimeout(ctrlWTimer);
+      ctrlWTimer = null;
+    }
+  }
+
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey;
+
+      // Ctrl-W then h/j/k/l moves focus between split panes.
+      if (
+        !e.metaKey &&
+        !e.altKey &&
+        !e.shiftKey &&
+        e.ctrlKey &&
+        (e.key === 'w' || e.key === 'W')
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        awaitingCtrlW = true;
+        if (ctrlWTimer) clearTimeout(ctrlWTimer);
+        ctrlWTimer = setTimeout(clearCtrlW, 1500);
+        return;
+      }
+      if (awaitingCtrlW) {
+        const k = e.key.toLowerCase();
+        if (k === 'h' || k === 'j' || k === 'k' || k === 'l') {
+          clearCtrlW();
+          e.preventDefault();
+          e.stopPropagation();
+          const dir =
+            k === 'h' ? 'left' : k === 'l' ? 'right' : k === 'j' ? 'down' : 'up';
+          moveFocus(dir);
+          return;
+        }
+        clearCtrlW();
+      }
 
       // `:` opens ex-mode (colon command line), even inside a cm-editor —
       // but let plain HTML inputs/textareas/contenteditables keep the colon.
@@ -203,28 +231,14 @@
 
   <div class="gr-body">
     <GrRail />
-    <div class="gr-main">
-      {#if view === 'daily'}
-        <GrPane title={paneTitle} variant="focus">
-          {#key activePageId}
-            <GrDaily anchorDate={/^\d{4}-\d{2}-\d{2}$/.test(activePageId) ? activePageId : undefined} />
-          {/key}
-        </GrPane>
-      {:else if view === 'page'}
-        {#key activePageId}
-          <GrPage pageId={activePageId} paneId={focusedLeafId as unknown as string | undefined} />
-        {/key}
-      {:else if view === 'inbox'}
-        <GrInbox />
-      {:else if view === 'agenda'}
-        <GrAgenda />
-      {:else}
-        <GrPane title={paneTitle} variant="focus">
-          <div class="gr-placeholder">
-            <div class="ph-title">{paneTitle}</div>
-            <div class="ph-sub">This view lands in a later phase.</div>
-          </div>
-        </GrPane>
+    <div class="gr-main" class:dragging={dragRef.value}>
+      {#if tab}
+        <GrLayoutTree
+          node={tab.layout}
+          focusedLeafId={focusedLeafId}
+          activeDragRef={dragRef}
+          showFocus={isSplit}
+        />
       {/if}
     </div>
   </div>
@@ -261,22 +275,17 @@
     min-width: 0;
     min-height: 0;
   }
-  .gr-placeholder {
-    height: 100%;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 8px;
-    text-align: center;
+  /* The root leaf or split fills the main area (mirror /v4's .v4-grid rule). */
+  .gr-main > :global(.gr-leaf),
+  .gr-main > :global(.gr-split) {
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
   }
-  .gr-placeholder .ph-title {
-    font-size: 16px;
-    font-weight: 600;
-    color: var(--fg2);
+  .gr-main.dragging {
+    user-select: none;
   }
-  .gr-placeholder .ph-sub {
-    font-size: 12.5px;
-    color: var(--faint);
+  .gr-main.dragging :global(.cm-editor) {
+    pointer-events: none;
   }
 </style>
