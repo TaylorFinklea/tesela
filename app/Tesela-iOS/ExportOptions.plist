@@ -2,23 +2,20 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <!-- App Store Connect / TestFlight export. The archive is dev-signed; this
-       step re-signs with the "Apple Distribution: Taylor Finklea (K7CBQW6MPG)"
-       cert + an App Store provisioning profile (managed via automatic signing
-       with -allowProvisioningUpdates). -->
+  <!-- App Store Connect / TestFlight export. `destination: upload` makes
+       `xcodebuild -exportArchive` upload directly (the same pattern as the
+       seedkeep-ios / hermes-voice release scripts). The archive is dev-signed;
+       export re-signs with the "Apple Distribution (K7CBQW6MPG)" cert via
+       automatic signing + -allowProvisioningUpdates + the API key. -->
   <key>method</key>
   <string>app-store-connect</string>
   <key>teamID</key>
   <string>K7CBQW6MPG</string>
   <key>signingStyle</key>
   <string>automatic</string>
-  <key>destination</key>
-  <string>export</string>
   <key>uploadSymbols</key>
   <true/>
-  <!-- The script stamps CFBundleVersion itself (unique per upload), so don't
-       let the exporter rewrite versions. -->
-  <key>manageAppVersionAndBuildNumber</key>
-  <false/>
+  <key>destination</key>
+  <string>upload</string>
 </dict>
 </plist>
