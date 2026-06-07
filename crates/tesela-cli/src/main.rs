@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tesela_core::traits::plugin::PluginRegistry;
 
+mod backfill_task;
 mod import_logseq;
 mod import_obsidian;
 mod import_org;
@@ -188,6 +189,12 @@ enum Commands {
         /// Dry run — show what would be imported without writing
         #[arg(long)]
         dry_run: bool,
+    },
+    /// Add #Task to every status-bearing block that lacks it (dry-run unless --apply)
+    BackfillTask {
+        /// Actually write the tags. Default: dry-run — list affected blocks + a count.
+        #[arg(long)]
+        apply: bool,
     },
     /// Restore a mosaic from a backup
     Restore {
@@ -1039,6 +1046,11 @@ async fn main() -> Result<()> {
         return import_org::run(&mosaic, source, dry_run).await;
     }
 
+    // Backfill #Task — needs the Loro engine over the mosaic, not a full Ctx.
+    if let Commands::BackfillTask { apply } = cli.command {
+        return backfill_task::run(&mosaic, apply).await;
+    }
+
     let ctx = Ctx::new(mosaic).await?;
 
     match cli.command {
@@ -1055,7 +1067,8 @@ async fn main() -> Result<()> {
         | Commands::Export { .. }
         | Commands::ImportLogseq { .. }
         | Commands::ImportObsidian { .. }
-        | Commands::ImportOrg { .. } => unreachable!(),
+        | Commands::ImportOrg { .. }
+        | Commands::BackfillTask { .. } => unreachable!(),
         Commands::New {
             title,
             tags,
