@@ -1,5 +1,13 @@
 # Current State
 
+## 2026-06-07 — Tag/chip redesign shipped + iOS TestFlight pipeline
+
+**Tag/chip redesign (Model A) DONE.** Colored per-tag pills from `tags::` only + ↵→chip / ⌘↵→inline gesture (`d33c8b1`); deferred follow-ups done (`02713da`): tag-page `color::` override + removed the dormant trailing chip-widget. Decisions: `decisions.md` 2026-06-07 (look + the Model-A pill rule, both via harness-deck mock-ups). Verified: `tag-redesign.e2e.mjs` 10/10 + A5 9/9.
+
+**iOS/iPad TestFlight pipeline (`1980cdc`).** `scripts/ios-testflight.sh` (FFI device build → archive → export App Store → altool upload) + `app/Tesela-iOS/ExportOptions.plist`. ONE universal build = iPhone+iPad (`TARGETED_DEVICE_FAMILY 1,2`). **Device archive VERIFIED green** (Tesela.app, app.tesela.ios, dev-signed; export re-signs distribution). Local prereqs present: Apple Distribution cert (K7CBQW6MPG), `aarch64-apple-ios` rust target.
+- ⚠ **Landmine:** SwiftWhisper's `whisper.cpp` git submodule fails to clone via SwiftPM (CWD/tmp-pack race). FIX that unblocked the archive: `cd <DerivedData>/SourcePackages/checkouts/SwiftWhisper && git submodule update --init --recursive` (then SPM accepts it). If a clean build re-fails, the pipeline script should auto-run this. Both ASR pkgs (SwiftWhisper=local Whisper, FluidAudio=Parakeet) ARE used — can't just drop one.
+- [ ] **▶ USER (gates the upload):** (1) create the App Store Connect app record for `app.tesela.ios` + accept agreements; (2) make an App Store Connect API key, drop `AuthKey_*.p8` in `~/.appstoreconnect/private_keys/`, give me the Key ID + Issuer ID. Then `ASC_KEY_ID=… ASC_ISSUER_ID=… scripts/ios-testflight.sh` uploads.
+
 ## 2026-06-06 — Autonomous day (Taylor out; NO user testing until tomorrow)
 
 Self-QA-able / no-input work, priority order. Async product/arch calls → harness-deck. Branch 6 commits ahead of last push (un-pushed).
