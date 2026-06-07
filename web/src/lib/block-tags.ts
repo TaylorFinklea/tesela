@@ -12,6 +12,29 @@ function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/**
+ * Read the block's CHIP tags — the `tags:: a, b` continuation line ONLY (the
+ * "committed" tags that render as right-edge colored pills under Model A,
+ * 2026-06-07). Inline `#tag` tokens in the prose are deliberately EXCLUDED:
+ * they render inline as styled `#text`, never as a pill. Compare `getBlockTags`
+ * / `ln`, which merge both for query / property-def purposes.
+ */
+export function chipTags(rawText: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const m = rawText.match(TAGS_LINE_RE_M);
+  if (m) {
+    for (const t of m[1].split(",").map((s) => s.trim()).filter((s) => s.length > 0)) {
+      const k = t.toLowerCase();
+      if (!seen.has(k)) {
+        seen.add(k);
+        out.push(t);
+      }
+    }
+  }
+  return out;
+}
+
 /** Read the merged tag list (tags:: property first, then any inline #tag tokens). */
 export function getBlockTags(rawText: string): string[] {
   const out: string[] = [];

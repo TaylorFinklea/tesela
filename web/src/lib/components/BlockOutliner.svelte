@@ -31,7 +31,8 @@
   import { onMount, onDestroy } from "svelte";
   import { createQuery } from "@tanstack/svelte-query";
   import { parseBlocks } from "$lib/block-parser";
-  import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
+  import { toggleBlockTag, getBlockTags, chipTags } from "$lib/block-tags";
+  import { tagColor } from "$lib/tag-color";
   import { api } from "$lib/api-client";
   import {
     upsertOpForBlock,
@@ -2163,19 +2164,27 @@
           </div>
         {/if}
 
-        <!-- Tag pills (right side) -->
-        {#if block.tags.length > 0}
+        <!-- Tag pills (right side) — Model A: ONLY the `tags::` chip tags, each
+             colored per-tag. Inline `#tag` tokens stay inline in the prose. -->
+        {#if chipTags(block.raw_text).length > 0}
           <div class="shrink-0 flex items-center gap-1 self-center pr-2 py-1">
-            {#each block.tags as tag}
-              <span class="group/tag inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary/70 font-medium">
+            {#each chipTags(block.raw_text) as tag}
+              {@const c = tagColor(tag)}
+              <span
+                class="group/tag inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium"
+                style="background:{c.bg};color:{c.text}"
+              >
+                <span class="rounded-full shrink-0" style="width:5px;height:5px;background:{c.dot}"></span>
                 <a
                   href="/p/{tag.toLowerCase()}"
-                  class="hover:text-primary transition-colors"
+                  class="transition-opacity hover:opacity-80"
+                  style="color:{c.text}"
                   onclick={(e) => e.stopPropagation()}
                 >{tag}</a>
                 <!-- svelte-ignore a11y_consider_explicit_label -->
                 <button
-                  class="opacity-0 group-hover/tag:opacity-100 leading-none text-primary/40 hover:text-destructive transition-opacity ml-0.5"
+                  class="opacity-0 group-hover/tag:opacity-100 leading-none transition-opacity ml-0.5 hover:!opacity-100"
+                  style="color:{c.text};opacity:.55"
                   onclick={(e) => { e.stopPropagation(); removeBlockTag(block, tag); }}
                   title="Remove #{tag}"
                 >×</button>

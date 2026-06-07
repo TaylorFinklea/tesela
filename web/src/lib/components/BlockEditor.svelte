@@ -684,7 +684,7 @@
     }));
   });
 
-  function applyAutocomplete(item: AutocompleteItem) {
+  function applyAutocomplete(item: AutocompleteItem, mode: "chip" | "inline" = "chip") {
     if (!view || autocompleteStartPos < 0) return;
     const doc = view.state.doc.toString();
 
@@ -737,6 +737,26 @@
     let insertedName = item.label;
     if (item.id.startsWith(CREATE_TAG_ID_PREFIX)) {
       insertedName = item.id.slice(CREATE_TAG_ID_PREFIX.length);
+    }
+
+    // Tag commit gesture (Model A, 2026-06-07): ↵ commits the tag to a CHIP —
+    // write it to the block's `tags::` line (where it renders as a right-edge
+    // colored pill) and DON'T leave a literal `#tag` in the prose. ⌘↵ keeps it
+    // inline (the `else` insert path below). Strip the typed `#filter` first,
+    // exactly like the `tagmanage` branch. (Links ignore mode.)
+    if (autocompleteType === "tag" && mode === "chip") {
+      const cleaned = doc.slice(0, autocompleteStartPos) + after;
+      const fillNames = autoFillNames?.(insertedName) ?? [];
+      const newText = toggleBlockTag(cleaned, insertedName, fillNames);
+      view.dispatch({
+        changes: { from: 0, to: doc.length, insert: newText },
+        selection: { anchor: Math.min(autocompleteStartPos, newText.length) },
+      });
+      onChange(newText);
+      showAutocomplete = false;
+      autocompleteFilter = "";
+      autocompleteStartPos = -1;
+      return;
     }
 
     let insert: string;
@@ -1676,7 +1696,17 @@
           return false;
         },
       },
-      { key: "Mod-Enter", run: () => { if (onCycleStatus) { onCycleStatus(); return true; } return false; } },
+      { key: "Mod-Enter", run: () => {
+        // While the #tag autocomplete popup is open, ⌘↵ is the "keep inline"
+        // accept (Model A gesture) — forward it WITH the modifier so the popup
+        // takes it, instead of falling through to status-cycle/make-task.
+        if (showAutocomplete) {
+          autocompleteRef?.handleKeydown(new KeyboardEvent("keydown", { key: "Enter", metaKey: true }));
+          return true;
+        }
+        if (onCycleStatus) { onCycleStatus(); return true; }
+        return false;
+      } },
       {
         // Tag-system spec: Alt-Enter (Option-Enter on mac) toggles a `#tag`
         // between inline-and-trailing. The spec calls this "Cmd-Enter promote/
@@ -1995,7 +2025,8 @@
       items={autocompleteType === "tagmanage" ? tagManageItems : autocompleteType === "templatepick" ? templatePickItems : autocompleteItems}
       filter={autocompleteFilter}
       position={autocompletePosition}
-      onselect={(item) => applyAutocomplete(item)}
+      onselect={(item) => applyAutocomplete(item, "chip")}
+      onselectInline={(item) => applyAutocomplete(item, "inline")}
       onclose={() => { showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1; }}
     />
   {/if}

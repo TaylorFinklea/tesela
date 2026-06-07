@@ -14,12 +14,16 @@
     filter,
     position,
     onselect,
+    onselectInline,
     onclose,
   }: {
     items: AutocompleteItem[];
     filter: string;
     position: { x: number; y: number };
     onselect: (item: AutocompleteItem) => void;
+    /** ⌘↵/Ctrl↵ accept — the "keep it inline" variant (Model A tag gesture).
+     *  Falls back to `onselect` when not provided. */
+    onselectInline?: (item: AutocompleteItem) => void;
     onclose: () => void;
   } = $props();
 
@@ -72,7 +76,13 @@
       return true;
     } else if ((e.key === "Enter" || e.key === "Tab") && scored[selectedIndex]) {
       e.preventDefault();
-      onselect(scored[selectedIndex].item);
+      // ⌘↵ / Ctrl↵ = the "keep inline" accept (Model A tag gesture); plain
+      // ↵ / Tab = the default (commit to a chip). Tab always commits.
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && onselectInline) {
+        onselectInline(scored[selectedIndex].item);
+      } else {
+        onselect(scored[selectedIndex].item);
+      }
       return true;
     } else if (e.key === "Escape") {
       e.preventDefault();
