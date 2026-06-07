@@ -4,6 +4,18 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-07 — Tag/chip redesign: colored per-tag pills (right-edge) + ↵/⌘↵ commit gesture
+
+**Decision (Taylor, via harness-deck mock-ups `tesela/20260607-tag-chip-redesign`):**
+- **Look = colored per-tag pills** (option C). Keep the right-edge pill placement, but each tag pill is COLORED per-tag (color from the tag's page), with a small color dot — scannable across a list. (Rejected: inline pills, plain coral right-edge pills, stay-literal.)
+- **Commit gesture = yes** (Logseq-style): while the `#tag` autocomplete popup is open, **↵ commits the tag to a chip**, **⌘↵ leaves it as literal `#text`**. Scoped to the popup so it does NOT clash with ⌘↵ = cycle-status/make-task on an already-committed block.
+
+**Why mock-ups (not chat ASCII):** Taylor found ASCII previews hard to evaluate and asked for rendered harness-deck mock-ups in the real theme — now a standing preference ([[feedback-visual-mockups-harness-deck]]).
+
+**Open mechanic to resolve in the build (do NOT guess):** today EVERY `#tag` auto-lifts to a pill, so there's no "literal tag" state. The ⌘↵-kept literal `#tag` needs a persistence + render distinction from a lifted chip (e.g. an escape/marker the parser leaves as text). Also needs a tag→color source (read the tag page's `color` frontmatter; deterministic palette fallback). Build = milestone-sized; likely increment it (colored pills first, then the gesture/literal-state).
+
+---
+
 ### 2026-06-06 — /g splits via a Graphite-native pane renderer (GrLayoutTree), NOT by adopting v5 BufferShell
 
 **Decision (Taylor, presented the fork):** make vsplit/hsplit render on `/g` by building a Graphite-native recursive pane-tree renderer (`graphite/shell/GrLayoutTree.svelte` + `GrLeaf.svelte`) that tiles the EXISTING `Gr*` views (GrDaily/GrPage/GrInbox/GrAgenda) across `tab.layout`. Do NOT take the handoff's literal "swap the single-pane `view` conditional for `<LayoutTree>`" path.
