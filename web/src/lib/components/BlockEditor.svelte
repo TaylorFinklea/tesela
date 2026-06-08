@@ -437,6 +437,7 @@
     type HiddenKeysConfig,
   } from "$lib/cm-decorations";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
+  import { detectTaskTokens } from "$lib/task-tokens";
   import type { PropertyDefinition } from "$lib/property-registry";
   import { assignChords } from "$lib/chord-keys";
 
@@ -1668,6 +1669,26 @@
             const doc = v.state.doc.toString();
             const cursor = v.state.selection.main.head;
             const firstNl = doc.indexOf("\n");
+
+            // Model B "detect-inline, lift-below": committing at the END of the
+            // prose line lifts detected tokens (priority p1..p4) into structured
+            // props (onSetProperty container op — NOT a `key:: value` text line)
+            // and strips them from the text, keeping any continuation lines on
+            // this block and starting an empty next block.
+            const endOfLine0 = firstNl === -1 ? doc.length : firstNl;
+            if (onSetProperty && cursor === endOfLine0 && !showSlashMenu) {
+              const det = detectTaskTokens(doc);
+              if (det.props.length > 0) {
+                // Persist the stripped block text FIRST so the block exists
+                // server-side, THEN set the property (container op resolves the
+                // block by bid). Then start the empty next block.
+                onChange(det.stripped);
+                for (const p of det.props) onSetProperty({ key: p.key, value: p.value });
+                onEnter("");
+                return true;
+              }
+            }
+
             const cursorOnFirstLine = firstNl === -1 || cursor <= firstNl;
             // Phase 10.1 follow-up — when a block has continuation lines
             // (status:: / tags:: / etc. — anything indented after the bullet

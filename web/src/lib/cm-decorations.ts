@@ -12,6 +12,7 @@
 import { EditorView, Decoration, WidgetType, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { EditorSelection, EditorState, Facet, RangeSet, RangeSetBuilder, Transaction } from "@codemirror/state";
 import { tokenizeCode } from "./code-highlight";
+import { priorityTokenRanges } from "./task-tokens";
 
 class EmptyWidget extends WidgetType {
   toDOM() { return document.createElement("span"); }
@@ -67,6 +68,15 @@ class HrWidget extends WidgetType {
 // surface (e.g. read-only block reference card) wants the kind inline.
 
 const tagInlineMark = Decoration.mark({ class: "cm-tesela-tag" });
+// Model B: inline priority tokens (p1..p4), colored per level to match the
+// BlockDateRow flag. They stay non-atomic / freely editable — they lift out on
+// commit (Enter/blur), not while typing.
+const priorityInlineMarks: Record<number, Decoration> = {
+  1: Decoration.mark({ class: "cm-tesela-priority cm-tesela-priority-1" }),
+  2: Decoration.mark({ class: "cm-tesela-priority cm-tesela-priority-2" }),
+  3: Decoration.mark({ class: "cm-tesela-priority cm-tesela-priority-3" }),
+  4: Decoration.mark({ class: "cm-tesela-priority cm-tesela-priority-4" }),
+};
 const bidHide = Decoration.replace({ widget: new EmptyWidget() });
 const wikiLinkMark = Decoration.mark({ class: "cm-tesela-wikilink" });
 const wikiLinkBracketMark = Decoration.mark({ class: "cm-tesela-wikilink-bracket" });
@@ -505,6 +515,13 @@ function buildDecorations(view: EditorView): Built {
   while ((m = TAG_RE.exec(doc)) !== null) {
     if (insideCode(m.index)) continue;
     decos.push({ from: m.index, to: m.index + m[0].length, decoration: tagInlineMark });
+  }
+
+  // Priority tokens (p1..p4) on the prose line — inline highlight (Model B
+  // detect-inline). Ranges are first-line-scoped + doc-absolute.
+  for (const r of priorityTokenRanges(doc)) {
+    if (insideCode(r.from)) continue;
+    decos.push({ from: r.from, to: r.to, decoration: priorityInlineMarks[r.level] });
   }
 
   // tags:: property lines: hide the whole line (canonical display is the pill UI)
@@ -963,6 +980,15 @@ export const teselaDecorationTheme = EditorView.theme({
     fontSize: "0.95em",
     opacity: "0.85",
   },
+  ".cm-tesela-priority": {
+    // Inline priority token (p1..p4) — colored per level to match the flag.
+    fontWeight: "600",
+    fontSize: "0.95em",
+  },
+  ".cm-tesela-priority-1": { color: "#EB5C58" },
+  ".cm-tesela-priority-2": { color: "#E8A33D" },
+  ".cm-tesela-priority-3": { color: "#6B9AE0" },
+  ".cm-tesela-priority-4": { color: "var(--muted-foreground, #8A909C)" },
   ".cm-tesela-tag-chip": {
     // Trailing-cluster chip — atomic widget, click opens the tag page.
     display: "inline-block",
