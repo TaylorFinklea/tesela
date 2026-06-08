@@ -7,7 +7,9 @@ Generalizes Part 2's hardcoded detection into a **config-driven engine** + fixes
 - **Dates keep the TIME** (`due thu at 8` → deadline `<date> 08:00`). `due`/`deadline` keyword → Deadline; bare → Scheduled. Multi-word (`next tuesday`) works.
 - **Lift-on-blur (timing fix):** removed the Enter-lift + make-task-lift; lift happens ONLY on blur (leaving the block). ⌘↵ make-task just tags — no rewriting the line while you're still editing. Single path, no double-lift.
 - **Seed updated** (`tesela-server/src/main.rs`): Priority→p1-p4 + nl_triggers, Deadline/Scheduled nl_triggers, Task gains Points + `default_date_property` + a new Points property. (tesela-fixtures too, but that's benchmarks-only.)
-- ⚠ **PENDING — live-mosaic enablement:** the seed is if-missing, so Taylor's EXISTING live mosaic keeps its old property pages (no nl_triggers in loro) → detection won't fire there until those pages are updated. NEW mosaics get it. Options: (a) a one-time updater I run on the live mosaic (desktop off), (b) re-migrate from Logseq. **Decide with Taylor before his desktop test.** (Markdown edits alone don't take — loro is authoritative.)
+- **Live-mosaic enablement — DONE (re-migrated from Logseq, Taylor's choice).** Quit desktop → backed up the old mosaic to `logseq_pre-nlp` → `tesela init logseq` + `import-logseq --source ~/logseq` (507 notes) → ran the new debug server once to seed the property pages (verified: priority `nl_triggers`, Task `Points`+`detect_tokens`+`default_date_property`) → graceful stop. Desktop relaunch uses the new debug server (Jun 8, has the seed). Detection live on the real mosaic.
+  - Cleanup pending (after Taylor confirms the re-import looks right): remove `~/Library/Application Support/tesela/logseq_pre-nlp` (the backup) + the stale `logseq2`.
+  - ⚠ The desktop's `tesela-server` is the repo `target/debug` binary — keep it newest (or the relaunch could pick the older release w/o the seed). Release server (Jun 5) lacks `nl_triggers`; rebuild it if it ever becomes newest.
 
 ## 2026-06-07 — Tag/chip redesign shipped + iOS TestFlight pipeline
 
