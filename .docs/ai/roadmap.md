@@ -13,6 +13,8 @@ Taylor's proposed order, refined together. Arc = **infra → platform → featur
 7. **Real multi-device — SPLIT:** (7a) presence/remote cursors for YOUR OWN devices — works over any transport, moderate; (7b) TRUE multi-user (accounts, Ed25519 identity, ACL, "see Savanne") — a MASSIVE phase of its own (`project_savanne_collaborator`).
 8. sharing/publishing • app-store distribution + auto-update • history/audit + per-author attribution • AI/agent over your notes (MCP) • monetization/sustainability.
 
+> ⚠ **PRE-PUBLIC-RELEASE GATE (export compliance) — blocks step 8 / any public App Store release.** The app ships standard (exempt) encryption (ChaCha20-Poly1305 sync E2E, etc.). Before publishing publicly you MUST: **deselect France** in App Store Connect → Pricing & Availability (we declared "not available in France" for the exempt path — publishing there = breach), file the **US BIS §740.17 self-classification report**, and review other restricted markets. Full ADR + checklist: `decisions.md` 2026-06-08 "App Store export compliance". TestFlight/internal is unaffected.
+
 **Cross-cutting (not one step):** backup/restore + DR UX (you now HAVE the encrypted cloud backup → surface "restore" + local export); reliability + observability (sync-status indicator, conflict surfacing, telemetry); public-endpoint security hardening (rate-limit/abuse) + **Ed25519 device identity** (pairing has no identity binding today — mandatory once Savanne/public CF exists); conflict/merge UX for non-text (block delete-vs-edit, multi-value props LWW); import/export (Obsidian/Logseq/Notion); perf + search at scale. **Meta:** infra-first is right (multi-device is the current pain), but Taylor daily-drives this → interleave cheap daily wins (markdown/code render) during 1–2.
 
 ---

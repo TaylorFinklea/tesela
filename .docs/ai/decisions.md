@@ -4,6 +4,24 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-08 — App Store export compliance: standard crypto = EXEMPT, but EXCLUDE FRANCE before any PUBLIC release
+
+**Fact (verified `crates/tesela-sync/src/crypto/`):** the iOS build links the Rust sync FFI, which implements app-layer encryption beyond Apple's OS — **ChaCha20-Poly1305** (AEAD) for end-to-end sync-envelope encryption with the group key, **HKDF + HMAC-SHA-256** (relay auth / KDF), **BLAKE3** hashing, **rustls** TLS. All standard published algorithms (RFC 8439 / FIPS 180 / RFC 5869). So the app DOES contain encryption — "your app uses no encryption" is false.
+
+**Classification:** standard published algorithms used only for Tesela's own data sync (not a cryptographic product) → qualifies for the **standard-cryptography / mass-market exemption** (US EAR §740.17(b)(1)). Uses encryption, but EXEMPT.
+
+**TestFlight answers (2026-06-08, the exempt low-friction path):** algorithm type → "None of the algorithms mentioned above"; "available in France?" → **No**. Clears TestFlight with zero paperwork. (Strictly-accurate alternative = "Standard encryption algorithms" + "qualifies for exemption: Yes" — same exempt outcome.)
+
+**⚠⚠ OBLIGATIONS BEFORE ANY PUBLIC APP STORE RELEASE — do NOT publish without doing these (TestFlight/internal is fine; PUBLIC distribution is the trigger):**
+1. **France — EXCLUDE it** from App Store availability (or file France's encryption-import declaration). Apple's export flow explicitly flags France; we answered "not available in France", so a public release MUST keep France deselected in App Store Connect → Pricing and Availability, or we're in breach. This is the headline reminder.
+2. **US BIS self-classification report** — the §740.17 exemption requires a one-time/annual report (encryption@bis.doc.gov + enc@nsa.gov) once the app is publicly exported. File it.
+3. **Other restricted markets** — review encryption-import rules for any other target market (Russia/China have crypto regimes; Apple often auto-handles, but verify). Most of the EU besides France allows standard crypto without a declaration — don't blanket-exclude the EU, just France (+ anything the review flags).
+4. **Info.plist** — declare `ITSAppUsesNonExemptEncryption` (match the exempt path) to stop the per-submission encryption dialog.
+
+See also [[project-ios-release-convention]] (memory).
+
+---
+
 ### 2026-06-08 — Task properties: priority p1/p2/p3 flags + Todoist "detect-inline, lift-below" display (Model B)
 
 **Decision (Taylor, harness-deck mock-ups `tesela/20260607-task-property-ux`):**
