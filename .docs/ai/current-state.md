@@ -1,5 +1,19 @@
 # Current State
 
+## 2026-06-08 — Multi-device sync = always-on RELAY (HA → CF), NOT a Mac-hub
+
+**Decision (Taylor):** the always-on multi-device spine is the **encrypted relay** — **Home-Assistant-hosted relay FIRST** (it's already running on his HA box, always-on; see [[project-relay-413-blocks-sync]] task #140), **then migrate to Cloudflare** (roadmap step 1). NOT a Mac-as-hub. Goal unchanged: multi-device works with the Mac off ([[project-multidevice-next-milestone]]).
+
+**Stopgap built then reverted today:** to get iOS pairing working immediately I (a) launched a standalone LAN `tesela-server` hub on `logseq` (Tailscale `100.112.34.59:7474`) and (b) added a **desktop remote-connect mode** (`feat(desktop): remote-connect mode`, committed) so the native app could wrap the hub's `/g`. Taylor redirected to the relay instead. **Reverted to a clean state:** killed the hub, removed `~/Library/Application Support/tesela/desktop.toml`, quit the app → the desktop is back to its standard self-contained loopback embed (launch `/Applications/Tesela.app` normally). The remote-mode CODE stays committed but **inactive** (an option if we ever want a hub or to wrap the relay's UI).
+
+**Why the desktop couldn't pair iOS:** its embedded server binds loopback by design (not a hub); pairing code was `127.0.0.1`. The fix is the relay path, not LAN-exposing the desktop.
+
+**Next sync work (prioritized):**
+- [ ] Point devices at the **HA relay**: the desktop embed currently sets `TESELA_DISABLE_RELAY=1` (src-tauri/main.rs) — enable relay + configure the HA relay URL; iOS `RelayTicker` (needs FFI `put_snapshots`/`fetch_snapshots`, per roadmap step 1). Then desktop + iOS sync via the always-on HA relay (Mac can be off).
+- [ ] Then Cloudflare relay (`wrangler deploy`, roadmap step 1).
+- ⏳ Taylor is away from home — will **confirm iOS pairing / relay sync later** (needs the home network + the iOS device).
+- (TestFlight build is up + LIVE; the re-migrated `logseq` mosaic has the Model-B NLP config.)
+
 ## 2026-06-08 — Configurable NL triggers + lift-on-blur (Model B Part 2c)
 
 Generalizes Part 2's hardcoded detection into a **config-driven engine** + fixes the lift-timing. Spec: `.docs/ai/phases/2026-06-08-nlp-config-spec.md`; decisions.md 2026-06-08. **Verified `task-tokens-nlp.e2e.mjs` 10/10** + tag-redesign 10/10 (no regression).
