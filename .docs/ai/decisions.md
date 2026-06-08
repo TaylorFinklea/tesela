@@ -10,6 +10,13 @@ Concise log of non-obvious decisions. Newest first.
 - **Priority = `p1`/`p2`/`p3`/`p4` flags** (not low/med/high, not a generic "Priority: critical" chip). Colors: **P1 red, P2 amber, P3 blue, P4 default (no flag)**.
 - **Display model B — Todoist smart-add:** as you type, detected parts (`p1`, dates like "tomorrow"/"fri"/"!jun 9", `#tags`) highlight **inline**; on commit they **lift out of the text into a quiet property strip BELOW the block**. Properties do NOT render as right-edge chips. (Rejected A = below-only, no detection; C = right-edge.)
 
+**Detection gating — per-tag, NOT per-token markers (decided 2026-06-08, supersedes the marker/trailing/anywhere question in `tesela/20260607-date-detect`):**
+- Inline NLP detection runs ONLY on blocks carrying a **detect-enabled tag**. Configurable per-tag via a `detect_tokens` flag on the tag page frontmatter; seeded **on for `Task`**, off elsewhere.
+- **Gate = the block's DIRECT tags only** (`ParsedBlock.tags` = own `tags::` + inline `#tags`), NEVER `inherited_tags`. Children that merely inherit `#Task` from a parent do NOT get NLP — they must be directly tagged / make-tasked. (Both the lift and the cm highlight operate on each block's own text, so inheritance can't leak in.)
+- **Inside an enabled block, detection is fully aggressive** (bare multi-word dates like `next tuesday`, `in 3 days`): bare date → `scheduled`; `due`/`deadline` keyword → `deadline` (reuses `parseDateAndRecurrenceInput`/`extractField`); `p1`–`p3` → priority. No per-token marker — markers can't express multi-word dates, which is the reason this approach won.
+- **⌘↵ make-task = "tag it AND parse it"** — retroactively lifts already-typed tokens (typed `do dishes tom p1`, then ⌘↵ → Task tag + scheduled tom + P1).
+- **Retrofit:** Part 2a's priority lift (currently ungated) gets gated on this flag.
+
 **Build is phased (milestone-sized):**
 - **Part 1 (foundation) — display:** p1/p2/p3 flags + extend `BlockDateRow` into a below-block property strip (priority + scheduled + deadline) + **dedup**: drop priority/scheduled/deadline from the right-edge `DisplayChip` path (`displayChipsFor`) — they were double-rendering (chip + row). Priority set via existing mechanisms (`/p`, property editor) until Part 2.
 - **Part 2 — inline detection:** an NLP-ish parser detects `p1`/dates/`#tags` while typing (cm decoration highlight) + lifts them to structured props on commit. The novel/harder layer.
