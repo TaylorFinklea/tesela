@@ -8,6 +8,13 @@
 // node, NOT a hub. It binds 127.0.0.1 only and mDNS is disabled — other devices
 // never point at it; cross-device sync flows through the spine (relay/LAN), the
 // same transport as iOS. Do not let this bind 0.0.0.0 / become a hub.
+//
+// REMOTE MODE: when a remote URL is configured (env `TESELA_DESKTOP_REMOTE_URL`
+// or `remote_url` in `~/Library/Application Support/tesela/desktop.toml`), the
+// desktop does NOT embed a server — it just wraps that external server's `/g`
+// (a LAN/Tailscale hub, or the cloud relay). The native window keeps the full
+// Vim experience while sharing one server with iOS. This is the desktop acting
+// as a thin client of the spine, the multi-device endgame.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::net::{TcpListener, TcpStream};
@@ -86,6 +93,41 @@ fn resolve_mosaic() -> Option<PathBuf> {
     primary.join(".tesela").exists().then_some(primary)
 }
 
+/// If the desktop should connect to an EXTERNAL tesela-server (a LAN/Tailscale
+/// hub or the relay) instead of embedding its own loopback node, return its base
+/// URL. Source: `TESELA_DESKTOP_REMOTE_URL` env (wins, for terminal launches),
+/// else a `remote_url = "..."` line in
+/// `~/Library/Application Support/tesela/desktop.toml` (works for Finder/Dock
+/// launches, which don't inherit shell env). `None` → embed (default).
+fn resolve_remote_url() -> Option<String> {
+    if let Ok(u) = std::env::var("TESELA_DESKTOP_REMOTE_URL") {
+        let u = u.trim().to_string();
+        if !u.is_empty() {
+            return Some(u);
+        }
+    }
+    let home = std::env::var_os("HOME")?;
+    let cfg = PathBuf::from(home).join("Library/Application Support/tesela/desktop.toml");
+    let text = std::fs::read_to_string(&cfg).ok()?;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("remote_url") {
+            let val = rest
+                .trim_start_matches(|c: char| c == '=' || c.is_whitespace())
+                .trim()
+                .trim_matches('"')
+                .trim();
+            if !val.is_empty() {
+                return Some(val.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// The built static `/g` bundle the embedded server serves. `TESELA_STATIC_DIR`
 /// overrides; otherwise `web/build`.
 fn static_dir() -> PathBuf {
@@ -138,6 +180,16 @@ fn spawn_server(bind: &str) -> std::io::Result<Child> {
 }
 
 fn main() {
+    // Remote mode: wrap an external hub/relay's `/g` instead of embedding a
+    // loopback server. No child to spawn, no single-writer lock to take — the
+    // hub owns the mosaic; this window is just a native client of it.
+    if let Some(remote) = resolve_remote_url() {
+        let url = format!("{}/g", remote.trim_end_matches('/'));
+        run_app(url, None);
+        return;
+    }
+
+    // Embedded mode (default): a loopback Loro-replica node.
     let port = pick_free_loopback_port();
     let bind = format!("127.0.0.1:{port}");
 
@@ -168,9 +220,15 @@ fn main() {
     }
 
     let url = format!("http://127.0.0.1:{port}/g");
+    run_app(url, Some(child));
+}
 
+/// Build + run the Tauri window pointed at `url`. `child` is the embedded server
+/// to reap on exit; `None` in remote mode (the external hub owns its lifecycle —
+/// nothing to reap, no lock taken).
+fn run_app(url: String, child: Option<Child>) {
     tauri::Builder::default()
-        .manage(ServerChild(Mutex::new(Some(child))))
+        .manage(ServerChild(Mutex::new(child)))
         // Cmd+R reloads the webview — the one-keystroke recovery if the page
         // ever goes blank (a crashed WebKit content process, a transient
         // asset-load hiccup). `reload()` is native (runs in the app process),
@@ -205,7 +263,7 @@ fn main() {
             WebviewWindowBuilder::new(
                 app,
                 "main",
-                WebviewUrl::External(url.parse().expect("valid loopback url")),
+                WebviewUrl::External(url.parse().expect("valid server url")),
             )
             .title("Tesela")
             .inner_size(1280.0, 860.0)
