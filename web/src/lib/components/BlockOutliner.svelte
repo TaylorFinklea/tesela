@@ -157,6 +157,16 @@
     "collection",
   ]);
 
+  // Properties owned by the below-block property strip (BlockDateRow) — they
+  // must NOT also render as right-edge chips (Model B, 2026-06-08). priority +
+  // the date/recurrence keys live in the strip; `status` has its own button.
+  const ROW_OWNED_KEYS: ReadonlySet<string> = new Set([
+    "priority",
+    "scheduled",
+    "deadline",
+    "recurring",
+  ]);
+
   /**
    * Phase 10.5 — for each block, return the ordered list of property keys
    * its tags want surfaced as inline chips. Walks `display_chips` from
@@ -234,8 +244,9 @@
         if (!Array.isArray(chipsRaw)) continue;
         for (const rawKey of chipsRaw) {
           const k = String(rawKey).toLowerCase();
-          // `status` has its own dedicated cycle button; system keys are internal.
-          if (k === "status" || SYSTEM_HIDDEN_KEYS.has(k) || seen.has(k)) continue;
+          // `status` has its own button; priority/dates live in the below-block
+          // strip (ROW_OWNED_KEYS); system keys are internal.
+          if (k === "status" || ROW_OWNED_KEYS.has(k) || SYSTEM_HIDDEN_KEYS.has(k) || seen.has(k)) continue;
           seen.add(k);
           const value = block.properties[k];
           if (!value || !value.trim()) continue;
@@ -2205,7 +2216,7 @@
       </div>
 
       <!-- Properties row: date/recurrence strip beneath the block line (Task 5/6) -->
-      {#if block.properties.scheduled || block.properties.deadline || block.properties.recurring}
+      {#if block.properties.priority || block.properties.scheduled || block.properties.deadline || block.properties.recurring}
         <div style="padding-left: {displayIndent * 24}px;">
           <BlockDateRow {block} onUpdate={(t) => handleBlockChange(block.id, t)} />
         </div>

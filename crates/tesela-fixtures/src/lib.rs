@@ -263,7 +263,7 @@ fn seed_builtin_type_pages(root: &Path) -> Result<()> {
     )?;
     fs::write(
         notes_dir.join("priority.md"),
-        "---\ntitle: \"Priority\"\ntype: \"Property\"\nvalue_type: \"select\"\nchoices: [\"critical\", \"high\", \"medium\", \"low\"]\ndefault: \"medium\"\ntags: []\n---\n- Priority property.\n",
+        "---\ntitle: \"Priority\"\ntype: \"Property\"\nvalue_type: \"select\"\nchoices: [\"p1\", \"p2\", \"p3\", \"p4\"]\ndefault: \"p4\"\ntags: []\n---\n- Priority property.\n",
     )?;
     fs::write(
         notes_dir.join("deadline.md"),

@@ -16,6 +16,7 @@
   import { skipRecurrence } from "$lib/recurrence-actions";
   import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
   import { upsertBlockProperty } from "$lib/block-tags";
+  import { priorityFlag } from "$lib/priority";
   import DatePicker from "./DatePicker.svelte";
 
   let {
@@ -28,11 +29,13 @@
     onUpdate?: (newText: string) => void;
   } = $props();
 
+  const priority = $derived((block.properties.priority ?? "").trim());
+  const pflag = $derived(priorityFlag(priority));
   const scheduled = $derived((block.properties.scheduled ?? "").trim());
   const deadline = $derived((block.properties.deadline ?? "").trim());
   const recurring = $derived((block.properties.recurring ?? "").trim());
 
-  const hasAny = $derived(!!scheduled || !!deadline || !!recurring);
+  const hasAny = $derived(!!pflag || !!scheduled || !!deadline || !!recurring);
 
   /** Strip [[YYYY-MM-DD]] brackets to get a bare ISO date for routing. */
   function toIso(raw: string): string {
@@ -105,6 +108,16 @@
 
 {#if hasAny}
   <div class="flex items-center gap-3 px-1 pb-1 text-[11px] text-muted-foreground/70">
+    {#if pflag}
+      <span
+        class="inline-flex items-center gap-1 font-semibold leading-none"
+        style="color: {pflag.color}"
+        title="Priority {pflag.label}"
+      >
+        <span aria-hidden="true">&#9873;</span>{pflag.label}
+      </span>
+    {/if}
+
     {#if scheduled}
       <span class="inline-flex items-center gap-1">
         <span class="text-muted-foreground/40 font-medium uppercase tracking-wide text-[9px]">Scheduled</span>

@@ -4,6 +4,20 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-08 — Task properties: priority p1/p2/p3 flags + Todoist "detect-inline, lift-below" display (Model B)
+
+**Decision (Taylor, harness-deck mock-ups `tesela/20260607-task-property-ux`):**
+- **Priority = `p1`/`p2`/`p3`/`p4` flags** (not low/med/high, not a generic "Priority: critical" chip). Colors: **P1 red, P2 amber, P3 blue, P4 default (no flag)**.
+- **Display model B — Todoist smart-add:** as you type, detected parts (`p1`, dates like "tomorrow"/"fri"/"!jun 9", `#tags`) highlight **inline**; on commit they **lift out of the text into a quiet property strip BELOW the block**. Properties do NOT render as right-edge chips. (Rejected A = below-only, no detection; C = right-edge.)
+
+**Build is phased (milestone-sized):**
+- **Part 1 (foundation) — display:** p1/p2/p3 flags + extend `BlockDateRow` into a below-block property strip (priority + scheduled + deadline) + **dedup**: drop priority/scheduled/deadline from the right-edge `DisplayChip` path (`displayChipsFor`) — they were double-rendering (chip + row). Priority set via existing mechanisms (`/p`, property editor) until Part 2.
+- **Part 2 — inline detection:** an NLP-ish parser detects `p1`/dates/`#tags` while typing (cm decoration highlight) + lifts them to structured props on commit. The novel/harder layer.
+
+**Defaults locked (were open in the scoping):** priority `choices` → `[p1,p2,p3,p4]` (replace low/med/high in ALL seed sources: live `logseq` mosaic, repo `notes/`, fixtures); the priority RENDERER normalizes legacy values (critical→P1, high→P2, medium→P3, low→P4) so existing `priority::` data still shows a flag (no destructive data migration). Per-value color = a priority special-case in the renderer (not a general `value_colors` schema yet). Tag pills stay separate (the right-edge colored pills from 2026-06-07).
+
+---
+
 ### 2026-06-07 — Tag/chip redesign: colored per-tag pills (right-edge) + ↵/⌘↵ commit gesture
 
 **Decision (Taylor, via harness-deck mock-ups `tesela/20260607-tag-chip-redesign`):**
