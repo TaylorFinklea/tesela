@@ -9,7 +9,8 @@
 **Why the desktop couldn't pair iOS:** its embedded server binds loopback by design (not a hub); pairing code was `127.0.0.1`. The fix is the relay path, not LAN-exposing the desktop.
 
 **Next sync work (prioritized):**
-- [ ] Point devices at the **HA relay**: the desktop embed currently sets `TESELA_DISABLE_RELAY=1` (src-tauri/main.rs) — enable relay + configure the HA relay URL; iOS `RelayTicker` (needs FFI `put_snapshots`/`fetch_snapshots`, per roadmap step 1). Then desktop + iOS sync via the always-on HA relay (Mac can be off).
+- [ ] **Update the HA relay first.** The spine relay code (snapshot store `e8be948`, retention `e936f56`, bootstrap `30f66c7`, hardening `348603a`) is all pushed, BUT the HA add-on `version` was stuck at `0.1.1`, so HA won't re-pull a same-tag image → it's likely running a STALE pre-snapshot-store image. Bumped add-on `version`→`0.2.0` (`home-assistant/tesela-relay/config.yaml`); CI (`relay-container.yml`, triggers on `home-assistant/tesela-relay/**`) rebuilds `ghcr.io/taylorfinklea/tesela-relay:0.2.0` from current main on push → HA shows the update → install it. (Or force-rebuild the add-on in HA.) Then the relay has the snapshot endpoints the offline-bootstrap spine needs.
+- [ ] Point devices at the **HA relay**: the desktop embed currently sets `TESELA_DISABLE_RELAY=1` (src-tauri/main.rs) — enable relay + configure the HA relay URL; iOS `RelayTicker` (needs FFI `put_snapshots`/`fetch_snapshots`, per roadmap step 1). The snapshot/relay-spine tick is **dormant in prod** — activate it. Then desktop + iOS sync via the always-on HA relay (Mac can be off).
 - [ ] Then Cloudflare relay (`wrangler deploy`, roadmap step 1).
 - ⏳ Taylor is away from home — will **confirm iOS pairing / relay sync later** (needs the home network + the iOS device).
 - (TestFlight build is up + LIVE; the re-migrated `logseq` mosaic has the Model-B NLP config.)
