@@ -12,7 +12,8 @@
 import { EditorView, Decoration, WidgetType, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { EditorSelection, EditorState, Facet, RangeSet, RangeSetBuilder, Transaction } from "@codemirror/state";
 import { tokenizeCode } from "./code-highlight";
-import { priorityTokenRanges } from "./task-tokens";
+import { detectTokens } from "./task-tokens";
+import { getBlockTags } from "./block-tags";
 
 class EmptyWidget extends WidgetType {
   toDOM() { return document.createElement("span"); }
@@ -77,6 +78,7 @@ const priorityInlineMarks: Record<number, Decoration> = {
   3: Decoration.mark({ class: "cm-tesela-priority cm-tesela-priority-3" }),
   4: Decoration.mark({ class: "cm-tesela-priority cm-tesela-priority-4" }),
 };
+const dateInlineMark = Decoration.mark({ class: "cm-tesela-date" });
 const bidHide = Decoration.replace({ widget: new EmptyWidget() });
 const wikiLinkMark = Decoration.mark({ class: "cm-tesela-wikilink" });
 const wikiLinkBracketMark = Decoration.mark({ class: "cm-tesela-wikilink-bracket" });
@@ -285,6 +287,18 @@ export const hiddenPropertyKeysFacet = Facet.define<HiddenKeysConfig, HiddenKeys
  */
 export const primaryTagFacet = Facet.define<string | null, string | null>({
   combine: (values) => values[0] ?? null,
+});
+
+/**
+ * Model B — lowercased tag names whose blocks get inline NLP detection
+ * (priority/date highlight + lift). The block is detection-enabled when its
+ * DIRECT tags (its own `tags::` + inline `#tags`, never inherited) intersect
+ * this set. Default seeded on for `task`; the parent recomputes it from the
+ * tag pages' `detect_tokens` flag.
+ */
+const EMPTY_DETECT_TAGS: ReadonlySet<string> = new Set();
+export const detectEnabledTagsFacet = Facet.define<ReadonlySet<string>, ReadonlySet<string>>({
+  combine: (values) => values[0] ?? EMPTY_DETECT_TAGS,
 });
 
 type Built = { decorations: DecorationSet; atomicTags: RangeSet<Decoration> };
@@ -517,11 +531,18 @@ function buildDecorations(view: EditorView): Built {
     decos.push({ from: m.index, to: m.index + m[0].length, decoration: tagInlineMark });
   }
 
-  // Priority tokens (p1..p4) on the prose line — inline highlight (Model B
-  // detect-inline). Ranges are first-line-scoped + doc-absolute.
-  for (const r of priorityTokenRanges(doc)) {
-    if (insideCode(r.from)) continue;
-    decos.push({ from: r.from, to: r.to, decoration: priorityInlineMarks[r.level] });
+  // Model B detect-inline: priority (p1..p4) + natural-language date tokens on
+  // the prose line — highlighted live, but ONLY when this block has a
+  // detection-enabled DIRECT tag (default #Task). getBlockTags reads the
+  // block's own tags:: + inline #tags (never inherited), so an inheriting child
+  // never highlights. Tokens lift out on commit (Enter / make-task), not here.
+  const detectTags = view.state.facet(detectEnabledTagsFacet);
+  if (detectTags.size > 0 && getBlockTags(doc).some((t) => detectTags.has(t.toLowerCase()))) {
+    for (const tok of detectTokens(doc)) {
+      if (insideCode(tok.from)) continue;
+      const deco = tok.kind === "priority" ? priorityInlineMarks[tok.level!] : dateInlineMark;
+      decos.push({ from: tok.from, to: tok.to, decoration: deco });
+    }
   }
 
   // tags:: property lines: hide the whole line (canonical display is the pill UI)
@@ -794,12 +815,16 @@ export const teselaDecorations = ViewPlugin.fromClass(
       const primaryChanged =
         update.startState.facet(primaryTagFacet) !==
         update.state.facet(primaryTagFacet);
+      const detectTagsChanged =
+        update.startState.facet(detectEnabledTagsFacet) !==
+        update.state.facet(detectEnabledTagsFacet);
       if (
         update.docChanged ||
         update.viewportChanged ||
         update.focusChanged ||
         hiddenChanged ||
-        primaryChanged
+        primaryChanged ||
+        detectTagsChanged
       ) {
         const built = buildDecorations(update.view);
         this.decorations = built.decorations;
@@ -989,6 +1014,12 @@ export const teselaDecorationTheme = EditorView.theme({
   ".cm-tesela-priority-2": { color: "#E8A33D" },
   ".cm-tesela-priority-3": { color: "#6B9AE0" },
   ".cm-tesela-priority-4": { color: "var(--muted-foreground, #8A909C)" },
+  ".cm-tesela-date": {
+    // Inline natural-language date token (scheduled/deadline) — teal, lifts to
+    // the below-strip on commit.
+    color: "#62B8CE",
+    fontSize: "0.95em",
+  },
   ".cm-tesela-tag-chip": {
     // Trailing-cluster chip — atomic widget, click opens the tag page.
     display: "inline-block",

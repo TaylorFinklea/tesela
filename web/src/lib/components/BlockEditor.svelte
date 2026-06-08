@@ -434,6 +434,7 @@
     teselaDecorationTheme,
     hiddenPropertyKeysFacet,
     primaryTagFacet,
+    detectEnabledTagsFacet,
     type HiddenKeysConfig,
   } from "$lib/cm-decorations";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
@@ -513,6 +514,7 @@
     noteslist: notesList,
     statusChoices,
     hiddenKeys,
+    detectEnabledTags,
     primaryTag,
     autoFillNames,
     propertyDefs,
@@ -566,6 +568,10 @@
     /** Per-block list of property keys to hide in the editor (computed by
      *  BlockOutliner from inherited tag-property defs). */
     hiddenKeys?: HiddenKeysConfig;
+    /** Model B — lowercased tag names whose blocks get inline NLP detection
+     *  (default `#task`). Detection runs when the block's DIRECT tags intersect
+     *  this set. Computed once by BlockOutliner from the tag pages. */
+    detectEnabledTags?: ReadonlySet<string>;
     /** Phase 9.4 — primary tag (kind) for the kind-glyph badge prefix.
      *  Comes from `block.tags[0]` in BlockOutliner. `null` for blocks with no
      *  tag chain (no badge rendered). */
@@ -610,6 +616,7 @@
 
   const hiddenKeysCompartment = new Compartment();
   const primaryTagCompartment = new Compartment();
+  const detectTagsCompartment = new Compartment();
 
   let container: HTMLDivElement;
   let view = $state<EditorView | null>(null);
@@ -1261,6 +1268,14 @@
     });
   });
 
+  // Model B — the detect-enabled tag set (for inline NLP gating).
+  $effect(() => {
+    if (!view) return;
+    view.dispatch({
+      effects: detectTagsCompartment.reconfigure(detectEnabledTagsFacet.of(detectEnabledTags ?? new Set())),
+    });
+  });
+
   // Keep visualMode flag in sync so j/k vim actions can check it without props.
   $effect(() => { vimCtx.visualMode = inVisualMode ?? false; });
 
@@ -1671,13 +1686,18 @@
             const firstNl = doc.indexOf("\n");
 
             // Model B "detect-inline, lift-below": committing at the END of the
-            // prose line lifts detected tokens (priority p1..p4) into structured
-            // props (onSetProperty container op — NOT a `key:: value` text line)
-            // and strips them from the text, keeping any continuation lines on
-            // this block and starting an empty next block.
+            // prose line lifts detected tokens (priority p1..p4 + dates) into
+            // structured props (onSetProperty container op — NOT a `key:: value`
+            // text line) and strips them, keeping continuation lines on this
+            // block and starting an empty next block. Gated on the block's DIRECT
+            // tags (getBlockTags — own tags::/inline #tags, never inherited)
+            // intersecting the detect-enabled set (default #Task).
             const endOfLine0 = firstNl === -1 ? doc.length : firstNl;
-            if (onSetProperty && cursor === endOfLine0 && !showSlashMenu) {
-              const det = detectTaskTokens(doc);
+            const detectOn =
+              !!detectEnabledTags &&
+              getBlockTags(doc).some((t) => detectEnabledTags!.has(t.toLowerCase()));
+            if (onSetProperty && detectOn && cursor === endOfLine0 && !showSlashMenu) {
+              const det = detectTaskTokens(doc, prefs.bareDateField);
               if (det.props.length > 0) {
                 // Persist the stripped block text FIRST so the block exists
                 // server-side, THEN set the property (container op resolves the
@@ -1900,6 +1920,7 @@
           hiddenPropertyKeysFacet.of(hiddenKeys ?? { hide: new Set(), hideEmpty: new Set() }),
         ),
         primaryTagCompartment.of(primaryTagFacet.of(primaryTag ?? null)),
+        detectTagsCompartment.of(detectEnabledTagsFacet.of(detectEnabledTags ?? new Set())),
         EditorView.lineWrapping,
       ],
     });

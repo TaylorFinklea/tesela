@@ -32,6 +32,7 @@
   import { createQuery } from "@tanstack/svelte-query";
   import { parseBlocks } from "$lib/block-parser";
   import { toggleBlockTag, getBlockTags, chipTags } from "$lib/block-tags";
+  import { detectTaskTokens } from "$lib/task-tokens";
   import { tagColor } from "$lib/tag-color";
   import { api } from "$lib/api-client";
   import {
@@ -129,6 +130,19 @@
   );
   const propertyRegistry = $derived(buildRegistry(allNotes));
   const inheritanceMap = $derived(buildInheritanceMap(allNotes));
+
+  // Model B — lowercased tag names whose blocks get inline NLP detection.
+  // Tag pages opt in via `detect_tokens: true` frontmatter; `task` is always on
+  // by default (even if its seed lacks the flag). The editor gates detection on
+  // a block's DIRECT tags ∩ this set.
+  const detectEnabledTags = $derived(
+    new Set<string>([
+      "task",
+      ...allNotes
+        .filter((n) => n.metadata.note_type === "Tag" && n.metadata.custom?.detect_tokens === true)
+        .map((n) => n.title.toLowerCase()),
+    ]),
+  );
 
   /**
    * For a tag being toggled ON via `toggleBlockTag`, return the property names
@@ -1223,14 +1237,25 @@
     // OTHER tag (#urgent etc.) must still get #Task when promoted to tracked
     // work, or it silently never appears in the Tasks query.
     const hasTask = block.tags.some((t) => t.toLowerCase() === "task");
-    if (!hasTask && next !== "") {
-      // Structured-first: add ONLY the #Task tag — do NOT seed empty `Name::`
-      // placeholder lines. Their CAPITALISED keys collide with the lowercase
-      // container-materialized lines (the server strip is case-sensitive), and
-      // the type's property template belongs in the registry UI, not as empty
-      // text scaffolding. The status itself goes to the container below.
-      handleBlockChange(block.id, toggleBlockTag(block.raw_text, "Task", []));
-    }
+    const willBeTask = hasTask || next !== "";
+
+    // Model B — ⌘↵ make-task = "tag it AND parse it": lift detected tokens
+    // (priority/date) out of the prose into structured props. Gated on Task
+    // being detection-enabled (default on). Runs on the block's own text.
+    const detected =
+      willBeTask && detectEnabledTags.has("task")
+        ? detectTaskTokens(block.raw_text, prefs.bareDateField)
+        : { stripped: block.raw_text, props: [] as { key: string; value: string }[] };
+
+    // ONE text edit: strip lifted tokens + add #Task when promoting an untagged
+    // block. Structured-first: add ONLY the #Task tag — no empty `Name::`
+    // placeholder lines (their capitalised keys collide with the lowercase
+    // container-materialized lines). Status + lifted props go to containers.
+    let newRaw = detected.stripped;
+    if (!hasTask && next !== "") newRaw = toggleBlockTag(newRaw, "Task", []);
+    if (newRaw !== block.raw_text) handleBlockChange(block.id, newRaw);
+
+    for (const p of detected.props) void setBlockPropertyStructured(block.id, p.key, p.value);
     void setBlockPropertyStructured(block.id, "status", next);
   }
 
@@ -2136,6 +2161,7 @@
             noteslist={notesList}
             statusChoices={statusChoices}
             hiddenKeys={hiddenKeysFor(block)}
+            detectEnabledTags={detectEnabledTags}
             primaryTag={block.tags[0] ?? block.inherited_tags[0] ?? null}
             autoFillNames={autoFillNamesForTag}
             propertyDefs={propertyDefsFor(block)}

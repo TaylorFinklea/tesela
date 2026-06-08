@@ -255,7 +255,7 @@ fn seed_builtin_type_pages(root: &Path) -> Result<()> {
     let notes_dir = root.join("notes");
     fs::write(
         notes_dir.join("task.md"),
-        "---\ntitle: \"Task\"\ntype: \"Tag\"\nextends: \"Root Tag\"\nicon: \"☑\"\ntag_properties: [\"Status\", \"Priority\", \"Deadline\", \"Scheduled\"]\ntags: []\n---\n- Task tag page.\n",
+        "---\ntitle: \"Task\"\ntype: \"Tag\"\nextends: \"Root Tag\"\nicon: \"☑\"\ntag_properties: [\"Status\", \"Priority\", \"Deadline\", \"Scheduled\"]\ndetect_tokens: true\ntags: []\n---\n- Task tag page.\n",
     )?;
     fs::write(
         notes_dir.join("status.md"),
