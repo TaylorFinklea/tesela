@@ -2025,6 +2025,7 @@
       items={autocompleteType === "tagmanage" ? tagManageItems : autocompleteType === "templatepick" ? templatePickItems : autocompleteItems}
       filter={autocompleteFilter}
       position={autocompletePosition}
+      type={autocompleteType}
       onselect={(item) => applyAutocomplete(item, "chip")}
       onselectInline={(item) => applyAutocomplete(item, "inline")}
       onclose={() => { showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1; }}

@@ -2879,6 +2879,19 @@ async fn ensure_tag_pages(s: &Arc<AppState>, note: &Note) {
             all_tags.push(tag);
         }
     }
+    // Block-level `tags:: a, b` continuation lines. The chip-tag gesture
+    // (Model A) writes ONLY these — no frontmatter tag, no inline #tag — so
+    // without this a committed chip tag would never materialize a Tag page
+    // (→ never offered in autocomplete, no color/properties/inheritance).
+    let block_tags_re = regex::Regex::new(r"(?m)^\s*tags::\s*(.+)$").unwrap();
+    for cap in block_tags_re.captures_iter(&note.body) {
+        for raw in cap[1].split(',') {
+            let tag = raw.trim();
+            if !tag.is_empty() && !all_tags.iter().any(|t| t.eq_ignore_ascii_case(tag)) {
+                all_tags.push(tag.to_string());
+            }
+        }
+    }
 
     for tag in &all_tags {
         if tag == "daily" {

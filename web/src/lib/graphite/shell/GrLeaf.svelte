@@ -63,6 +63,16 @@
     // becomes the focused pane. Skip the commit when already focused.
     if (!focused) focusLeaf(leafId);
   }
+
+  // The reliable "the cursor is now in THIS pane" signal: CodeMirror's
+  // `.cm-content` focus dispatches a `focusin` that bubbles up to the leaf.
+  // A plain click isn't enough — cm owns mousedown, a drag-select fires no
+  // `click`, and wiki/markdown-link clicks `stopPropagation` — so the focus
+  // accent + the active-note Loro doc must follow the editor's FOCUS, not the
+  // click. (onclick stays as the fallback for non-editor leaf chrome.)
+  function onLeafFocusIn() {
+    if (!focused) focusLeaf(leafId);
+  }
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -73,6 +83,7 @@
   class:focused
   data-leaf-id={leafId}
   onclick={onLeafClick}
+  onfocusin={onLeafFocusIn}
 >
   {#if view === 'daily'}
     <GrPane {title} variant="focus">

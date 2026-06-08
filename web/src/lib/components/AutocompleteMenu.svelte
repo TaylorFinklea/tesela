@@ -13,6 +13,7 @@
     items,
     filter,
     position,
+    type,
     onselect,
     onselectInline,
     onclose,
@@ -20,6 +21,9 @@
     items: AutocompleteItem[];
     filter: string;
     position: { x: number; y: number };
+    /** The autocomplete kind (drives the footer hint). "tag" shows the
+     *  ↵-chip / ⌘↵-inline gesture; others show a plain select hint. */
+    type?: "tag" | "link" | "tagmanage" | "templatepick";
     onselect: (item: AutocompleteItem) => void;
     /** ⌘↵/Ctrl↵ accept — the "keep it inline" variant (Model A tag gesture).
      *  Falls back to `onselect` when not provided. */
@@ -104,15 +108,16 @@
 
 {#if scored.length > 0}
   <div
-    class="autocomplete-menu fixed z-50 rounded-md border border-border bg-popover text-popover-foreground shadow-lg w-52 max-h-48 overflow-y-auto"
+    class="autocomplete-menu fixed z-50 rounded-md border border-border bg-popover text-popover-foreground shadow-lg w-56 max-h-56 overflow-hidden"
     style="left: {position.x}px; top: {position.y}px"
   >
-    <div class="py-0.5">
+    <div class="py-0.5 max-h-44 overflow-y-auto">
       {#each scored as { item, positions }, i (item.id)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
-          class="flex items-center gap-2 px-2 py-1 text-[12px] cursor-pointer {i === selectedIndex ? 'bg-accent text-accent-foreground' : ''}"
+          class="ac-row flex items-center gap-2 px-2 py-1 text-[12px] cursor-pointer"
+          class:is-selected={i === selectedIndex}
           onclick={() => onselect(item)}
           onmouseenter={() => (selectedIndex = i)}
         >
@@ -131,5 +136,42 @@
         </div>
       {/each}
     </div>
+    <div class="ac-hint">
+      {#if type === "tag"}
+        <span class="ac-kbd">↵</span> chip<span class="ac-sep">·</span><span class="ac-kbd">⌘↵</span> inline<span class="ac-sep">·</span><span class="ac-kbd">↑↓</span> move
+      {:else}
+        <span class="ac-kbd">↵</span> select<span class="ac-sep">·</span><span class="ac-kbd">↑↓</span> move
+      {/if}
+    </div>
   </div>
 {/if}
+
+<style>
+  /* Visible selection — in /g the old `bg-accent` resolves to the popover bg
+     (invisible). A coral tint + left rail reads clearly; var() fallbacks keep
+     it visible outside the Graphite token scope too. */
+  .ac-row.is-selected {
+    background: var(--coral-dim, rgba(255, 107, 90, 0.14));
+    box-shadow: inset 2px 0 0 var(--coral, #ff6b5a);
+  }
+  .ac-hint {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    border-top: 1px solid var(--line, rgba(255, 255, 255, 0.08));
+    padding: 4px 8px;
+    font-size: 9.5px;
+    color: var(--faint, #8a909c);
+    font-family: var(--mono, ui-monospace, monospace);
+  }
+  .ac-kbd {
+    color: var(--muted, #aab0bb);
+    background: var(--raised-2, rgba(255, 255, 255, 0.06));
+    border-radius: 3px;
+    padding: 0 3px;
+  }
+  .ac-sep {
+    opacity: 0.45;
+    margin: 0 1px;
+  }
+</style>

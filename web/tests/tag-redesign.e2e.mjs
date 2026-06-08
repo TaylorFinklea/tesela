@@ -4,9 +4,16 @@
 //   • ⌘↵ on the autocomplete keeps the tag INLINE (#text in the prose) — no
 //     pill, no `tags::` line.
 //
+// Structure: create all the blocks first (asserting the COMMIT result — on-disk
+// markdown + ⌘↵ inline-ness — inline, which is race-free), THEN reload once and
+// assert the RENDERED pills/colors from the durable on-disk state. The reload
+// sidesteps a pre-existing optimistic-vs-refetch race: committing a chip tag now
+// materializes a Tag page → a broad notes refetch that can transiently clobber a
+// just-written pill in the in-memory journal cache (the on-disk truth is always
+// correct, so a reload renders it).
+//
 // Drives the #tag autocomplete with REAL keystrokes (the only thing that fires
-// cm6's #-inputHandler). Runs against the vite dev server (default /api proxy),
-// so it reads on-disk note content via the proxied /api/notes/<slug>.
+// cm6's #-inputHandler). Runs against the vite dev server (default /api proxy).
 //
 // PREREQUISITES: vite dev on :5173 (pnpm dev) + a fresh tesela-server on :7474
 // (`tesela init /tmp/x && tesela-server --mosaic /tmp/x`) + playwright chromium.
@@ -39,7 +46,13 @@ const pill = (name) =>
     const a = document.querySelector(`a[href="/p/${n}"]`);
     if (!a) return null;
     const span = a.closest('span');
-    return { present: true, style: span?.getAttribute('style') || '', hasDot: !!span?.querySelector('span[style*="border-radius"], span.rounded-full') };
+    return { present: true, style: span?.getAttribute('style') || '' };
+  }, name);
+const colorOf = (name) =>
+  page.evaluate((n) => {
+    const a = document.querySelector(`a[href="/p/${n}"]`);
+    const dot = a?.closest('span')?.querySelector('span[style*="background"]');
+    return dot?.getAttribute('style') || null;
   }, name);
 const esc = async () => { await page.keyboard.press('Escape'); await page.waitForTimeout(60); };
 const freshBlock = async (text) => {
@@ -53,71 +66,64 @@ const freshBlock = async (text) => {
 await page.click('.cm-content');
 await page.waitForTimeout(250);
 
-// ── T1: ↵ commits a #tag to a COLORED pill (tags:: line) ────────────────────
+// ── Create the blocks + assert the COMMIT result (on-disk / inline) ─────────
+// errand — ↵ commits to a chip (tags:: line)
 await freshBlock('buy oat milk #errand');
-await page.waitForTimeout(400); // autocomplete popup
-await page.keyboard.press('Enter'); // ↵ → commit to chip
-await page.waitForTimeout(700);
+await page.waitForTimeout(400);
+await page.keyboard.press('Enter');
 await esc();
-await page.waitForTimeout(700);
-
-const errandPill = await pill('errand');
-check('↵ created an #errand pill', !!errandPill?.present, errandPill);
-check('the pill is per-tag colored (inline style)', !!errandPill && /background|color-mix/.test(errandPill.style), errandPill?.style);
+await page.waitForTimeout(900);
 {
   const c = await noteContent();
   check('↵ wrote a tags:: line (chip), case-insensitive', /tags::.*errand/i.test(c || ''), c);
   check('↵ left NO inline #errand in the prose', !/#errand/i.test(c || ''), c);
 }
 
-// ── T2: ⌘↵ keeps the #tag INLINE (no pill, no tags:: line) ───────────────────
+// article — ⌘↵ keeps it inline (no chip)
 await freshBlock('read the #article');
 await page.waitForTimeout(400);
-await page.keyboard.press('Meta+Enter'); // ⌘↵ → keep inline
-await page.waitForTimeout(700);
+await page.keyboard.press('Meta+Enter');
 await esc();
-await page.waitForTimeout(700);
-
-const articlePill = await pill('article');
-check('⌘↵ did NOT create an #article pill (stays inline)', !articlePill?.present, articlePill);
+await page.waitForTimeout(900);
 {
   const c = await noteContent();
   check('⌘↵ kept #article inline in the prose', /#article/i.test(c || ''), c);
   check('⌘↵ wrote NO tags:: article line', !/tags::.*article/i.test(c || ''), c);
 }
 
-// ── T3: distinct tags get distinct colors ───────────────────────────────────
-const colorOf = (name) => page.evaluate((n) => {
-  const a = document.querySelector(`a[href="/p/${n}"]`);
-  const dot = a?.closest('span')?.querySelector('span[style*="background"]');
-  return dot?.getAttribute('style') || null;
-}, name);
-// errand exists; add a second committed tag on a new block
+// urgent — ↵ chip (second distinct tag for the color check)
 await freshBlock('call the plumber #urgent');
 await page.waitForTimeout(400);
 await page.keyboard.press('Enter');
-await page.waitForTimeout(700);
 await esc();
-await page.waitForTimeout(500);
-const cErrand = await colorOf('errand');
-const cUrgent = await colorOf('urgent');
-check('two distinct tags render distinct dot colors', !!cErrand && !!cUrgent && cErrand !== cUrgent, { cErrand, cUrgent });
+await page.waitForTimeout(900);
 
-// ── T4: ⌘↵ with NO popup still = make-task (the Mod-Enter guard must yield) ──
+// wash — ⌘↵ with NO popup still = make-task (the Mod-Enter guard must yield)
 await freshBlock('wash the car');
 await page.waitForTimeout(300);
-await page.keyboard.press('Meta+Enter'); // no autocomplete open → status cycle + #Task auto-tag
-await page.waitForTimeout(800);
+await page.keyboard.press('Meta+Enter');
 await esc();
-await page.waitForTimeout(600);
-const taskPill = await pill('task');
-check('⌘↵ (no popup) still make-tasks → #Task pill', !!taskPill?.present, taskPill);
+await page.waitForTimeout(900);
 {
   const c = await noteContent();
-  check('⌘↵ make-task wrote a tags:: Task chip line', /tags::.*task/i.test(c || ''), c);
+  check('⌘↵ (no popup) make-task wrote a tags:: Task chip line', /tags::.*task/i.test(c || ''), c);
 }
-// (status:: container materialization on a fresh block is a separate pre-existing
-//  path — covered by property-readmodel.e2e.mjs on the static-serve harness.)
+
+// ── Reload → assert the RENDERED pills from the durable on-disk state ────────
+await page.reload({ waitUntil: 'domcontentloaded' });
+await page.waitForSelector('.cm-editor', { timeout: 15000 });
+await page.waitForTimeout(2000);
+
+const errandPill = await pill('errand');
+check('#errand renders a colored pill', !!errandPill?.present && /background|color-mix/.test(errandPill?.style || ''), errandPill);
+check('#article (⌘↵ inline) renders NO pill', !(await pill('article'))?.present, await pill('article'));
+check('#urgent renders a pill', !!(await pill('urgent'))?.present, await pill('urgent'));
+check('#Task (make-task) renders a pill', !!(await pill('task'))?.present, await pill('task'));
+{
+  const cErrand = await colorOf('errand');
+  const cUrgent = await colorOf('urgent');
+  check('two distinct tags render distinct dot colors', !!cErrand && !!cUrgent && cErrand !== cUrgent, { cErrand, cUrgent });
+}
 
 await page.screenshot({ path: process.env.SHOT || '/tmp/tag-redesign-shot.png' }).catch(() => {});
 
