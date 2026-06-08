@@ -32,7 +32,7 @@
   import { createQuery } from "@tanstack/svelte-query";
   import { parseBlocks } from "$lib/block-parser";
   import { toggleBlockTag, getBlockTags, chipTags } from "$lib/block-tags";
-  import { detectTaskTokens } from "$lib/task-tokens";
+  import type { DetectConfig, TagDetectSpec } from "$lib/task-tokens";
   import { tagColor } from "$lib/tag-color";
   import { api } from "$lib/api-client";
   import {
@@ -131,18 +131,31 @@
   const propertyRegistry = $derived(buildRegistry(allNotes));
   const inheritanceMap = $derived(buildInheritanceMap(allNotes));
 
-  // Model B — lowercased tag names whose blocks get inline NLP detection.
-  // Tag pages opt in via `detect_tokens: true` frontmatter; `task` is always on
-  // by default (even if its seed lacks the flag). The editor gates detection on
-  // a block's DIRECT tags ∩ this set.
-  const detectEnabledTags = $derived(
-    new Set<string>([
-      "task",
-      ...allNotes
-        .filter((n) => n.metadata.note_type === "Tag" && n.metadata.custom?.detect_tokens === true)
-        .map((n) => n.title.toLowerCase()),
-    ]),
-  );
+  // Model B — per-tag NLP detection config. A tag opts in via `detect_tokens:
+  // true` (Task is always on); each enabled tag carries its property specs
+  // (value_type + choices + nl_triggers) + a `default_date_property` (bare dates
+  // → this prop, default scheduled). The editor gates detection on a block's
+  // DIRECT tags ∩ this config's keys and scans per spec.
+  const detectConfig = $derived.by<DetectConfig>(() => {
+    const config = new Map<string, TagDetectSpec>();
+    for (const tagPage of allNotes) {
+      if (tagPage.metadata.note_type !== "Tag") continue;
+      const isTask = tagPage.title.toLowerCase() === "task";
+      if (tagPage.metadata.custom?.detect_tokens !== true && !isTask) continue;
+      const ddp = tagPage.metadata.custom?.default_date_property;
+      const properties = getTagPropertyDefs(tagPage.title, allNotes, propertyRegistry, inheritanceMap).map((d) => ({
+        key: d.name.toLowerCase(),
+        valueType: d.value_type,
+        choices: d.choices,
+        triggers: d.nl_triggers,
+      }));
+      config.set(tagPage.title.toLowerCase(), {
+        defaultDateProperty: typeof ddp === "string" ? ddp.toLowerCase() : "scheduled",
+        properties,
+      });
+    }
+    return config;
+  });
 
   /**
    * For a tag being toggled ON via `toggleBlockTag`, return the property names
@@ -1237,25 +1250,14 @@
     // OTHER tag (#urgent etc.) must still get #Task when promoted to tracked
     // work, or it silently never appears in the Tasks query.
     const hasTask = block.tags.some((t) => t.toLowerCase() === "task");
-    const willBeTask = hasTask || next !== "";
-
-    // Model B — ⌘↵ make-task = "tag it AND parse it": lift detected tokens
-    // (priority/date) out of the prose into structured props. Gated on Task
-    // being detection-enabled (default on). Runs on the block's own text.
-    const detected =
-      willBeTask && detectEnabledTags.has("task")
-        ? detectTaskTokens(block.raw_text, prefs.bareDateField)
-        : { stripped: block.raw_text, props: [] as { key: string; value: string }[] };
-
-    // ONE text edit: strip lifted tokens + add #Task when promoting an untagged
-    // block. Structured-first: add ONLY the #Task tag — no empty `Name::`
-    // placeholder lines (their capitalised keys collide with the lowercase
-    // container-materialized lines). Status + lifted props go to containers.
-    let newRaw = detected.stripped;
-    if (!hasTask && next !== "") newRaw = toggleBlockTag(newRaw, "Task", []);
-    if (newRaw !== block.raw_text) handleBlockChange(block.id, newRaw);
-
-    for (const p of detected.props) void setBlockPropertyStructured(block.id, p.key, p.value);
+    if (!hasTask && next !== "") {
+      // Structured-first: add ONLY the #Task tag — no empty `Name::` placeholder
+      // lines (their capitalised keys collide with the lowercase container-
+      // materialized lines). Status goes to the container below. Model B: the
+      // NL token lift happens on BLUR, not here — ⌘↵ just tags, so it doesn't
+      // rewrite the line while the user is still editing.
+      handleBlockChange(block.id, toggleBlockTag(block.raw_text, "Task", []));
+    }
     void setBlockPropertyStructured(block.id, "status", next);
   }
 
@@ -2161,7 +2163,7 @@
             noteslist={notesList}
             statusChoices={statusChoices}
             hiddenKeys={hiddenKeysFor(block)}
-            detectEnabledTags={detectEnabledTags}
+            detectConfig={detectConfig}
             primaryTag={block.tags[0] ?? block.inherited_tags[0] ?? null}
             autoFillNames={autoFillNamesForTag}
             propertyDefs={propertyDefsFor(block)}

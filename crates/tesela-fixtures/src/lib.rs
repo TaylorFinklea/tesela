@@ -255,7 +255,7 @@ fn seed_builtin_type_pages(root: &Path) -> Result<()> {
     let notes_dir = root.join("notes");
     fs::write(
         notes_dir.join("task.md"),
-        "---\ntitle: \"Task\"\ntype: \"Tag\"\nextends: \"Root Tag\"\nicon: \"☑\"\ntag_properties: [\"Status\", \"Priority\", \"Deadline\", \"Scheduled\"]\ndetect_tokens: true\ntags: []\n---\n- Task tag page.\n",
+        "---\ntitle: \"Task\"\ntype: \"Tag\"\nextends: \"Root Tag\"\nicon: \"☑\"\ntag_properties: [\"Status\", \"Priority\", \"Deadline\", \"Scheduled\", \"Points\"]\ndetect_tokens: true\ndefault_date_property: \"scheduled\"\ntags: []\n---\n- Task tag page.\n",
     )?;
     fs::write(
         notes_dir.join("status.md"),
@@ -263,15 +263,19 @@ fn seed_builtin_type_pages(root: &Path) -> Result<()> {
     )?;
     fs::write(
         notes_dir.join("priority.md"),
-        "---\ntitle: \"Priority\"\ntype: \"Property\"\nvalue_type: \"select\"\nchoices: [\"p1\", \"p2\", \"p3\", \"p4\"]\ndefault: \"p4\"\ntags: []\n---\n- Priority property.\n",
+        "---\ntitle: \"Priority\"\ntype: \"Property\"\nvalue_type: \"select\"\nchoices: [\"p1\", \"p2\", \"p3\", \"p4\"]\ndefault: \"p4\"\nnl_triggers: [\"p1\", \"p2\", \"p3\", \"p4\"]\ntags: []\n---\n- Priority property.\n",
     )?;
     fs::write(
         notes_dir.join("deadline.md"),
-        "---\ntitle: \"Deadline\"\ntype: \"Property\"\nvalue_type: \"date\"\ntags: []\n---\n- Deadline property.\n",
+        "---\ntitle: \"Deadline\"\ntype: \"Property\"\nvalue_type: \"date\"\nnl_triggers: [\"due\", \"deadline\"]\ntags: []\n---\n- Deadline property.\n",
     )?;
     fs::write(
         notes_dir.join("scheduled.md"),
-        "---\ntitle: \"Scheduled\"\ntype: \"Property\"\nvalue_type: \"date\"\ntags: []\n---\n- Scheduled property.\n",
+        "---\ntitle: \"Scheduled\"\ntype: \"Property\"\nvalue_type: \"date\"\nnl_triggers: [\"scheduled\"]\ntags: []\n---\n- Scheduled property.\n",
+    )?;
+    fs::write(
+        notes_dir.join("points.md"),
+        "---\ntitle: \"Points\"\ntype: \"Property\"\nvalue_type: \"number\"\nnl_triggers: [\"points\", \"pts\"]\ntags: []\n---\n- Points property.\n",
     )?;
     Ok(())
 }

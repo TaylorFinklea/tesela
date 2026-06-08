@@ -12,7 +12,7 @@
 import { EditorView, Decoration, WidgetType, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { EditorSelection, EditorState, Facet, RangeSet, RangeSetBuilder, Transaction } from "@codemirror/state";
 import { tokenizeCode } from "./code-highlight";
-import { detectTokens } from "./task-tokens";
+import { detectTokens, resolveDetectSpec, type DetectConfig } from "./task-tokens";
 import { getBlockTags } from "./block-tags";
 
 class EmptyWidget extends WidgetType {
@@ -79,6 +79,8 @@ const priorityInlineMarks: Record<number, Decoration> = {
   4: Decoration.mark({ class: "cm-tesela-priority cm-tesela-priority-4" }),
 };
 const dateInlineMark = Decoration.mark({ class: "cm-tesela-date" });
+const numberInlineMark = Decoration.mark({ class: "cm-tesela-number" });
+const selectInlineMark = Decoration.mark({ class: "cm-tesela-select" });
 const bidHide = Decoration.replace({ widget: new EmptyWidget() });
 const wikiLinkMark = Decoration.mark({ class: "cm-tesela-wikilink" });
 const wikiLinkBracketMark = Decoration.mark({ class: "cm-tesela-wikilink-bracket" });
@@ -296,9 +298,9 @@ export const primaryTagFacet = Facet.define<string | null, string | null>({
  * this set. Default seeded on for `task`; the parent recomputes it from the
  * tag pages' `detect_tokens` flag.
  */
-const EMPTY_DETECT_TAGS: ReadonlySet<string> = new Set();
-export const detectEnabledTagsFacet = Facet.define<ReadonlySet<string>, ReadonlySet<string>>({
-  combine: (values) => values[0] ?? EMPTY_DETECT_TAGS,
+const EMPTY_DETECT_CONFIG: DetectConfig = new Map();
+export const detectConfigFacet = Facet.define<DetectConfig, DetectConfig>({
+  combine: (values) => values[0] ?? EMPTY_DETECT_CONFIG,
 });
 
 type Built = { decorations: DecorationSet; atomicTags: RangeSet<Decoration> };
@@ -531,16 +533,21 @@ function buildDecorations(view: EditorView): Built {
     decos.push({ from: m.index, to: m.index + m[0].length, decoration: tagInlineMark });
   }
 
-  // Model B detect-inline: priority (p1..p4) + natural-language date tokens on
-  // the prose line — highlighted live, but ONLY when this block has a
-  // detection-enabled DIRECT tag (default #Task). getBlockTags reads the
-  // block's own tags:: + inline #tags (never inherited), so an inheriting child
-  // never highlights. Tokens lift out on commit (Enter / make-task), not here.
-  const detectTags = view.state.facet(detectEnabledTagsFacet);
-  if (detectTags.size > 0 && getBlockTags(doc).some((t) => detectTags.has(t.toLowerCase()))) {
-    for (const tok of detectTokens(doc)) {
+  // Model B detect-inline: priority / date / number / select tokens on the
+  // prose line — highlighted live, but ONLY when this block has a
+  // detection-enabled DIRECT tag (config-driven, default #Task). getBlockTags
+  // reads the block's own tags:: + inline #tags (never inherited), so an
+  // inheriting child never highlights. Tokens lift out on blur, not here.
+  const detectConfig = view.state.facet(detectConfigFacet);
+  const detectSpec = detectConfig.size > 0 ? resolveDetectSpec(getBlockTags(doc), detectConfig) : null;
+  if (detectSpec) {
+    for (const tok of detectTokens(doc, detectSpec)) {
       if (insideCode(tok.from)) continue;
-      const deco = tok.kind === "priority" ? priorityInlineMarks[tok.level!] : dateInlineMark;
+      const deco =
+        tok.kind === "priority" ? priorityInlineMarks[tok.level!]
+        : tok.kind === "number" ? numberInlineMark
+        : tok.kind === "date" ? dateInlineMark
+        : selectInlineMark;
       decos.push({ from: tok.from, to: tok.to, decoration: deco });
     }
   }
@@ -816,8 +823,8 @@ export const teselaDecorations = ViewPlugin.fromClass(
         update.startState.facet(primaryTagFacet) !==
         update.state.facet(primaryTagFacet);
       const detectTagsChanged =
-        update.startState.facet(detectEnabledTagsFacet) !==
-        update.state.facet(detectEnabledTagsFacet);
+        update.startState.facet(detectConfigFacet) !==
+        update.state.facet(detectConfigFacet);
       if (
         update.docChanged ||
         update.viewportChanged ||
@@ -1019,6 +1026,17 @@ export const teselaDecorationTheme = EditorView.theme({
     // the below-strip on commit.
     color: "#62B8CE",
     fontSize: "0.95em",
+  },
+  ".cm-tesela-number": {
+    // Inline number-property token (e.g. "5 points") — violet.
+    color: "#A98BE0",
+    fontSize: "0.95em",
+  },
+  ".cm-tesela-select": {
+    // Inline non-priority select token — muted accent.
+    color: "var(--primary)",
+    fontSize: "0.95em",
+    opacity: "0.85",
   },
   ".cm-tesela-tag-chip": {
     // Trailing-cluster chip — atomic widget, click opens the tag page.

@@ -434,11 +434,11 @@
     teselaDecorationTheme,
     hiddenPropertyKeysFacet,
     primaryTagFacet,
-    detectEnabledTagsFacet,
+    detectConfigFacet,
     type HiddenKeysConfig,
   } from "$lib/cm-decorations";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
-  import { detectTaskTokens } from "$lib/task-tokens";
+  import { detectTaskTokens, resolveDetectSpec, type DetectConfig } from "$lib/task-tokens";
   import type { PropertyDefinition } from "$lib/property-registry";
   import { assignChords } from "$lib/chord-keys";
 
@@ -514,7 +514,7 @@
     noteslist: notesList,
     statusChoices,
     hiddenKeys,
-    detectEnabledTags,
+    detectConfig,
     primaryTag,
     autoFillNames,
     propertyDefs,
@@ -568,10 +568,11 @@
     /** Per-block list of property keys to hide in the editor (computed by
      *  BlockOutliner from inherited tag-property defs). */
     hiddenKeys?: HiddenKeysConfig;
-    /** Model B — lowercased tag names whose blocks get inline NLP detection
-     *  (default `#task`). Detection runs when the block's DIRECT tags intersect
-     *  this set. Computed once by BlockOutliner from the tag pages. */
-    detectEnabledTags?: ReadonlySet<string>;
+    /** Model B — per-tag NLP detection config (which tags detect, + each tag's
+     *  property specs: value_type, choices, nl_triggers, default date prop).
+     *  Detection runs when the block's DIRECT tags match. Computed by
+     *  BlockOutliner from the tag + property pages. */
+    detectConfig?: DetectConfig;
     /** Phase 9.4 — primary tag (kind) for the kind-glyph badge prefix.
      *  Comes from `block.tags[0]` in BlockOutliner. `null` for blocks with no
      *  tag chain (no badge rendered). */
@@ -1268,11 +1269,11 @@
     });
   });
 
-  // Model B — the detect-enabled tag set (for inline NLP gating).
+  // Model B — the per-tag NLP detection config (for inline gating + lift).
   $effect(() => {
     if (!view) return;
     view.dispatch({
-      effects: detectTagsCompartment.reconfigure(detectEnabledTagsFacet.of(detectEnabledTags ?? new Set())),
+      effects: detectTagsCompartment.reconfigure(detectConfigFacet.of(detectConfig ?? new Map())),
     });
   });
 
@@ -1498,7 +1499,27 @@
 
     const focusBlurHandler = EditorView.domEventHandlers({
       focus: () => { wireVimCtx(); onFocus?.(); return false; },
-      blur: () => { clearVimCtxIfMine(); if (!showSlashMenu) onBlur(); return false; },
+      blur: (_e, v) => {
+        clearVimCtxIfMine();
+        // Model B — lift detected tokens when LEAVING the block (commit-time),
+        // so editing isn't disrupted mid-stream and ⌘↵ make-task doesn't rewrite
+        // the line under you. Gated on the block's DIRECT tags via the config
+        // (single lift path → no double-lift). The strip dispatch flows through
+        // the normal persist path; props go via onSetProperty (container op).
+        if (onSetProperty && detectConfig && !showSlashMenu && !showAutocomplete) {
+          const doc = v.state.doc.toString();
+          const spec = resolveDetectSpec(getBlockTags(doc), detectConfig);
+          if (spec) {
+            const det = detectTaskTokens(doc, spec);
+            if (det.props.length > 0) {
+              v.dispatch({ changes: { from: 0, to: doc.length, insert: det.stripped } });
+              for (const p of det.props) onSetProperty({ key: p.key, value: p.value });
+            }
+          }
+        }
+        if (!showSlashMenu) onBlur();
+        return false;
+      },
       // Phase 9.5b — wiki-link click navigates via gotoNote when vim is in
       // NORMAL mode. INSERT mode falls through so the click places the cursor.
       // Modifier-click also falls through so cmd/ctrl+click can open a new tab.
@@ -1684,31 +1705,9 @@
             const doc = v.state.doc.toString();
             const cursor = v.state.selection.main.head;
             const firstNl = doc.indexOf("\n");
-
-            // Model B "detect-inline, lift-below": committing at the END of the
-            // prose line lifts detected tokens (priority p1..p4 + dates) into
-            // structured props (onSetProperty container op — NOT a `key:: value`
-            // text line) and strips them, keeping continuation lines on this
-            // block and starting an empty next block. Gated on the block's DIRECT
-            // tags (getBlockTags — own tags::/inline #tags, never inherited)
-            // intersecting the detect-enabled set (default #Task).
-            const endOfLine0 = firstNl === -1 ? doc.length : firstNl;
-            const detectOn =
-              !!detectEnabledTags &&
-              getBlockTags(doc).some((t) => detectEnabledTags!.has(t.toLowerCase()));
-            if (onSetProperty && detectOn && cursor === endOfLine0 && !showSlashMenu) {
-              const det = detectTaskTokens(doc, prefs.bareDateField);
-              if (det.props.length > 0) {
-                // Persist the stripped block text FIRST so the block exists
-                // server-side, THEN set the property (container op resolves the
-                // block by bid). Then start the empty next block.
-                onChange(det.stripped);
-                for (const p of det.props) onSetProperty({ key: p.key, value: p.value });
-                onEnter("");
-                return true;
-              }
-            }
-
+            // Model B: the token lift happens on BLUR (leaving the block), not
+            // here — pressing Enter moves focus to the new block, which blurs
+            // this one and triggers the lift. So Enter is a plain split.
             const cursorOnFirstLine = firstNl === -1 || cursor <= firstNl;
             // Phase 10.1 follow-up — when a block has continuation lines
             // (status:: / tags:: / etc. — anything indented after the bullet
@@ -1920,7 +1919,7 @@
           hiddenPropertyKeysFacet.of(hiddenKeys ?? { hide: new Set(), hideEmpty: new Set() }),
         ),
         primaryTagCompartment.of(primaryTagFacet.of(primaryTag ?? null)),
-        detectTagsCompartment.of(detectEnabledTagsFacet.of(detectEnabledTags ?? new Set())),
+        detectTagsCompartment.of(detectConfigFacet.of(detectConfig ?? new Map())),
         EditorView.lineWrapping,
       ],
     });

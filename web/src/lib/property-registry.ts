@@ -71,6 +71,12 @@ export type PropertyDefinition = {
    *  Same fallback + conflict semantics as `chord_key`, but for the value
    *  submenu. Frontmatter shape: `value_chord_keys: { backlog: b, todo: t }`. */
   value_chord_keys: Record<string, string>;
+  /** Model B — natural-language triggers for inline detection (lowercased).
+   *  Meaning is value-type-driven: select → the value tokens (`["p1","p2"]`);
+   *  date → leading keyword(s) (`["due","deadline"]`); number → adjacent word
+   *  (`["points","pts"]`). Empty → not NL-detected (unless it's the tag's
+   *  default date property). Frontmatter: `nl_triggers: ["due","deadline"]`. */
+  nl_triggers: string[];
 };
 
 export type PropertyRegistry = Map<string, PropertyDefinition>;
@@ -110,6 +116,9 @@ export function parsePropertyPage(note: Note): PropertyDefinition | null {
     chip_value_format: valueFormat,
     chord_key: chordKey,
     value_chord_keys: valueChordKeys,
+    nl_triggers: Array.isArray(c.nl_triggers)
+      ? (c.nl_triggers as unknown[]).filter((t): t is string => typeof t === "string").map((t) => t.toLowerCase())
+      : [],
   };
 }
 
