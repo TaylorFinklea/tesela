@@ -809,8 +809,18 @@ fn resolve_bind_addr() -> String {
     ServerConfig::default().bind
 }
 
-/// Read the configured relay URL from the mosaic's `config.toml`.
+/// Read the configured relay URL: `TESELA_RELAY_URL` env wins (set by the Tauri
+/// shell for the desktop embed, or for CLI/testing), else the mosaic's
+/// `config.toml` `[sync.relay] url`. The env override mirrors the
+/// `TESELA_DEFAULT_MOSAIC` / `TESELA_SERVER_BIND` injection pattern and lets a
+/// node point at the relay without writing `[sync.relay]` into the shared mosaic.
 fn load_relay_url_from_config(mosaic: &std::path::Path) -> Option<String> {
+    if let Ok(url) = std::env::var("TESELA_RELAY_URL") {
+        let url = url.trim().to_string();
+        if !url.is_empty() {
+            return Some(url);
+        }
+    }
     let cfg = load_config(mosaic);
     cfg.sync.relay.map(|r| r.url)
 }
