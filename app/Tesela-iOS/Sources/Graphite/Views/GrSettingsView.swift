@@ -211,8 +211,10 @@ struct GrSettingsView: View {
                 }
             }
             sectionCaption(
-                "Mock is a built-in snapshot. HTTP hits a tesela-server on your Mac or LAN. "
-                + "Simulator: 127.0.0.1. Real device: the Mac's LAN/Tailscale address."
+                "Mock is a built-in snapshot. HTTP hits a tesela-server on your Mac or LAN "
+                + "(Simulator: 127.0.0.1; real device: the Mac's LAN/Tailscale address). "
+                + "Relay reads your on-device notes synced through the encrypted relay — "
+                + "set automatically when you pair to a desktop; works with the Mac off."
             )
         }
     }
@@ -221,6 +223,7 @@ struct GrSettingsView: View {
         HStack(spacing: 4) {
             segmentButton(title: "Mock", on: pickerMode == .mock) { pickerMode = .mock }
             segmentButton(title: "HTTP", on: pickerMode == .http) { pickerMode = .http }
+            segmentButton(title: "Relay", on: pickerMode == .relay) { pickerMode = .relay }
         }
         .padding(3)
         .background(theme.bg3)

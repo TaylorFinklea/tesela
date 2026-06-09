@@ -261,7 +261,11 @@ struct PairScanView: View {
         // synced notes (no Mac reachability needed).
         if RelayTicker.isRelayOnlyPairing(code) {
             if let raw = pendingPayload { RelayTicker.cachePairingCode(raw) }
-            backend.mode = .mock
+            // Local-first RELAY mode (not Mock — Mock is the fake snapshot): the
+            // UI reads the on-device engine's relay-synced notes while the relay
+            // tick syncs in the background. `hubMode` stays off (only `.http`
+            // sets it), so the relay tick runs.
+            backend.mode = .relay
             pending = nil
             pendingPayload = nil
             dismiss()

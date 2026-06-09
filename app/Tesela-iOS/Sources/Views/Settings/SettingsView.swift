@@ -193,6 +193,7 @@ struct SettingsView: View {
         switch backend.mode {
         case .mock: return "Mock"
         case .http: return backend.serverURL
+        case .relay: return "Relay"
         }
     }
 

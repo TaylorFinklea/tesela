@@ -56,6 +56,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
     enum Backend: Equatable {
         case mock
         case http(URL)
+        /// Local-first relay mode: read the on-device engine's relay-synced
+        /// materialized notes (`localMosaicRoot()/notes`) with NO Mac HTTP; the
+        /// RelayTicker syncs in the background. Reads reuse the same local
+        /// helpers `.http` uses for its local-first render
+        /// (`applyLocalRefreshFallback` / `readLocalNote` / `localSearch`).
+        case relay
     }
 
     enum ConnectionState: Equatable {
@@ -578,6 +584,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
             searchHits = search(q)
             searchError = nil
             return
+        case .relay:
+            // Local sandbox scan over the relay-synced notes; no Mac.
+            searchHits = localSearch(q)
+            searchError = nil
+            return
         case .http(let baseURL):
             searchInFlight = true
             // HTTP-first with 2s deadline. If Mac is unreachable
@@ -879,6 +890,23 @@ final class MockMosaicService: ObservableObject, MosaicService {
             loadedBacklinks[id] = MockSeed.backlinks
             loadedLinks[id] = []
             pageLoadStates[id] = .ready
+        case .relay:
+            // Render the engine's relay-synced local file; no Mac HTTP. Fire the
+            // note-opened hook so the RelayTicker imports/catches-up this note's
+            // base. Backlinks come from the local sandbox scan; outgoing links
+            // are HTTP-only today (skip). Resolve the load state either way so
+            // the page never hangs on "loading".
+            onNoteOpened?(id)
+            if let local = readLocalNote(id: id) {
+                loadedPageBlocks[id] = parseBlocks(from: local.body, noteId: id)
+                loadedPageFrontmatter[id] = extractFrontmatter(from: local.content)
+                inMemoryLoadedAt[id] = localNoteMTime(id: id) ?? Date()
+            } else {
+                loadedPageBlocks[id] = []
+            }
+            loadedBacklinks[id] = localBacklinks(for: id)
+            loadedLinks[id] = []
+            pageLoadStates[id] = .ready
         case .http(let baseURL):
             // The page is becoming visible — import the server's note
             // doc as a base so live deltas for it materialize and our
@@ -1012,6 +1040,19 @@ final class MockMosaicService: ObservableObject, MosaicService {
         case .mock:
             resetToSeed()
             connection = .idle
+        case .relay:
+            // Local-first, no Mac: render the relay-synced sandbox notes and
+            // let the RelayTicker freshen in the background (it nudges us via
+            // onAppliedChanges → another refresh when new ops land). Mirrors
+            // the local-first STEP of the .http path, minus the HTTP freshen.
+            onNoteOpened?(dailyId(daysAgo: 0))
+            let hydrated = applyLocalRefreshFallback()
+            if hydrated {
+                todayLoadedAt = localNoteMTime(id: dailyId(daysAgo: 0)) ?? Date()
+            }
+            // Always .ready — there's no server to wait on. Empty until the
+            // relay delivers the first ops, then onAppliedChanges re-refreshes.
+            connection = .ready
         case .http(let baseURL):
             // Today's daily is the always-visible note on launch +
             // every refresh — import the server's doc as a base so its
