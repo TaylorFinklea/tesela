@@ -1,0 +1,16 @@
+# Keep the image build context to source only. The relay Dockerfile copies
+# Cargo.toml/Cargo.lock + crates/ + src-tauri/; everything below is build
+# output, deps, or VCS that the build never needs — excluding it keeps the
+# context small (locally it also avoids shipping a multi-GB target/ dir) and
+# makes the build independent of a clean checkout.
+target
+**/target
+node_modules
+**/node_modules
+.git
+web/build
+web/.svelte-kit
+*.dmg
+*.app
+DerivedData
+.docs

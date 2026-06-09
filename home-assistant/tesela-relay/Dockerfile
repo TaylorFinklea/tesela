@@ -23,7 +23,7 @@
 # horribly slow at running rustc. `--platform=$BUILDPLATFORM` keeps
 # the builder native; the binary it produces targets $TARGETPLATFORM
 # via standard cross-compile triples below.
-FROM --platform=$BUILDPLATFORM rust:1.86-bookworm AS builder
+FROM --platform=$BUILDPLATFORM rust:1.95-bookworm AS builder
 
 ARG TARGETARCH
 ARG TARGETPLATFORM
@@ -44,6 +44,12 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# `src-tauri` is a workspace member (the Tauri desktop crate) outside `crates/`.
+# `cargo build --locked` resolves the WHOLE workspace, so its manifest must be
+# present even though we only build `--bin tesela-relay` (the desktop crate is
+# never compiled here). Omitting it breaks the build with "failed to read
+# src-tauri/Cargo.toml". Keep this in sync if more top-level members are added.
+COPY src-tauri ./src-tauri
 
 # Pick the cargo target triple from $TARGETARCH and build. `--locked`
 # enforces Cargo.lock so no silent dep upgrades sneak in on rebuild.
