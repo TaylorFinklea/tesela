@@ -100,10 +100,30 @@ fn resolve_mosaic() -> Option<PathBuf> {
 /// `~/Library/Application Support/tesela/desktop.toml` (works for Finder/Dock
 /// launches, which don't inherit shell env). `None` → embed (default).
 fn resolve_remote_url() -> Option<String> {
-    if let Ok(u) = std::env::var("TESELA_DESKTOP_REMOTE_URL") {
-        let u = u.trim().to_string();
-        if !u.is_empty() {
-            return Some(u);
+    desktop_config_value("TESELA_DESKTOP_REMOTE_URL", "remote_url")
+}
+
+/// If the EMBEDDED server should JOIN the relay (the spine) directly — instead
+/// of the default loopback-only Loro-replica — return the relay base URL.
+/// Source: `TESELA_EMBED_RELAY_URL` env, else `relay_url = "..."` in
+/// desktop.toml. When set, `spawn_server` drops `TESELA_DISABLE_RELAY` and
+/// points the child at this URL (mDNS stays off — it's a relay participant, not
+/// a LAN hub). `None` → embed stays loopback-only (default).
+/// ⚠ Only opt in when this embed is the SOLE writer for the mosaic — never
+/// alongside a standalone server, or two relay participants share one device_id.
+fn resolve_embed_relay_url() -> Option<String> {
+    desktop_config_value("TESELA_EMBED_RELAY_URL", "relay_url")
+}
+
+/// Read a `key = "value"` line from `desktop.toml`, with an `env_var` override
+/// (env wins — terminal launches; the file works for Finder/Dock launches that
+/// don't inherit shell env). A hand-rolled scan, not a TOML parse — the file is
+/// a handful of flat keys.
+fn desktop_config_value(env_var: &str, key: &str) -> Option<String> {
+    if let Ok(v) = std::env::var(env_var) {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Some(v);
         }
     }
     let home = std::env::var_os("HOME")?;
@@ -114,7 +134,12 @@ fn resolve_remote_url() -> Option<String> {
         if trimmed.starts_with('#') {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("remote_url") {
+        if let Some(rest) = trimmed.strip_prefix(key) {
+            // Require a whole-key match (next char is `=` or whitespace) so
+            // `relay_url` can't match a longer key like `relay_url_extra`.
+            if rest.chars().next().is_some_and(|c| c != '=' && !c.is_whitespace()) {
+                continue;
+            }
             let val = rest
                 .trim_start_matches(|c: char| c == '=' || c.is_whitespace())
                 .trim()
@@ -153,13 +178,11 @@ fn spawn_server(bind: &str) -> std::io::Result<Child> {
     let mut cmd = Command::new(tesela_server_bin());
     cmd.env("TESELA_SERVER_BIND", bind)
         .env("TESELA_STATIC_DIR", static_dir())
-        // Loopback node — never advertise on the LAN (we are not a hub).
+        // Loopback node — never advertise on the LAN (we are not a hub). This
+        // stays set REGARDLESS of relay opt-in: the embed binds 127.0.0.1 and
+        // must never mDNS-advertise.
         .env("TESELA_DISABLE_MDNS", "1")
-        // ...and never participate as a relay/LAN-peer writer: the embed is a
-        // loopback Loro-replica node; cross-device sync flows through the spine.
-        // Prevents a second writer under the shared device_id alongside any
-        // standalone server.
-        .env("TESELA_DISABLE_RELAY", "1")
+        // The LAN peer data-plane is retired; the embed never LAN-peer-writes.
         .env("TESELA_DISABLE_PEER_SYNC", "1")
         // Belt to the shell's suspenders: if THIS process dies non-gracefully
         // (crash/SIGKILL, where our Exit handler never runs), the server exits
@@ -171,6 +194,22 @@ fn spawn_server(bind: &str) -> std::io::Result<Child> {
             "RUST_LOG",
             std::env::var("RUST_LOG").unwrap_or_else(|_| "info,loro=warn".to_string()),
         );
+    // Relay participation. DEFAULT: the embed is a loopback-only Loro-replica
+    // (cross-device sync flows through the spine, reached via a standalone hub
+    // or remote mode) — so it sets TESELA_DISABLE_RELAY to avoid being a second
+    // writer under the shared device_id. OPTED IN (relay_url in desktop.toml /
+    // TESELA_EMBED_RELAY_URL): the embed becomes a first-class relay participant
+    // — drop the disable + point it at the relay. mDNS stays off; it's still not
+    // a LAN hub. ⚠ Never run an opted-in embed AND a standalone server on the
+    // same mosaic (two relay participants under one device_id corrupts cursors).
+    match resolve_embed_relay_url() {
+        Some(url) => {
+            cmd.env("TESELA_RELAY_URL", url);
+        }
+        None => {
+            cmd.env("TESELA_DISABLE_RELAY", "1");
+        }
+    }
     // Explicit `TESELA_MOSAIC`, else the user's primary mosaic when launched
     // from Finder, else let the server's find_mosaic decide.
     if let Some(mosaic) = resolve_mosaic() {
