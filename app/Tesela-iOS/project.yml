@@ -116,6 +116,13 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Tesela
+        # Export compliance: the app uses only STANDARD, published crypto
+        # (ChaCha20-Poly1305 sync E2E + HKDF/HMAC-SHA256 + rustls TLS), which is
+        # EXEMPT (EAR 740.17 standard-cryptography). Declaring this here stops
+        # App Store Connect asking the encryption question on every upload. See
+        # decisions.md 2026-06-08 "App Store export compliance". ⚠ PUBLIC release
+        # still requires excluding France + the BIS self-classification report.
+        ITSAppUsesNonExemptEncryption: false
         UILaunchScreen:
           UIColorName: ""
         UISupportedInterfaceOrientations:
