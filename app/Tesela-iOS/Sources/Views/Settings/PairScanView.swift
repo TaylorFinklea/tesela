@@ -25,6 +25,9 @@ struct PairScanView: View {
     /// Pairing code parsed from a successfully decoded QR. Drives the
     /// confirmation sheet.
     @State private var pending: PairingCodeRecord?
+    /// Raw scanned code blob (the base64url payload) for the pending record —
+    /// needed to cache for the relay tick when pairing a relay-only node.
+    @State private var pendingPayload: String?
     @State private var rawError: String?
     /// Set when the capture pipeline fails to build — see
     /// `QRScannerViewController.onSessionError`.
@@ -241,6 +244,7 @@ struct PairScanView: View {
         do {
             let record = try decodePairingCode(code: payload)
             pending = record
+            pendingPayload = payload
             rawError = nil
         } catch {
             rawError = "QR not a Tesela pairing code"
@@ -248,9 +252,23 @@ struct PairScanView: View {
     }
 
     private func adopt(_ code: PairingCodeRecord) {
-        // Today iOS is the thin client: switching the backend URL is
-        // the meaningful effect of a "pair". The cryptographic group
-        // adoption happens server-side when iOS gains a local core.
+        // Relay-only inviter (loopback/empty `url` + a relay URL — e.g. the Tauri
+        // desktop embed): the phone can't reach the inviter's HTTP server, so
+        // pair via the RELAY instead of pointing the thin HTTP client at an
+        // unreachable loopback. Cache the code for the relay tick + switch to
+        // Mock mode so `hubMode` goes off and the relay tick syncs with this
+        // code's relay URL; the data layer's local-first read surfaces the
+        // synced notes (no Mac reachability needed).
+        if RelayTicker.isRelayOnlyPairing(code) {
+            if let raw = pendingPayload { RelayTicker.cachePairingCode(raw) }
+            backend.mode = .mock
+            pending = nil
+            pendingPayload = nil
+            dismiss()
+            return
+        }
+        // Reachable server → thin HTTP client (current behavior). Switching the
+        // backend URL is the meaningful effect of a "pair".
         backend.mode = .http
         backend.serverURL = code.url
         Task {
@@ -266,6 +284,7 @@ struct PairScanView: View {
             }
         }
         pending = nil
+        pendingPayload = nil
         dismiss()
     }
 

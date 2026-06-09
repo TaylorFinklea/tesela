@@ -882,4 +882,27 @@ final class RelayTicker: ObservableObject {
         UserDefaults.standard.set(fresh, forKey: key)
         return fresh
     }
+
+    /// Is this a RELAY-only pairing — i.e. the inviter is a node we can't reach
+    /// directly (loopback/empty `url`, e.g. the Tauri desktop embed) but it gave
+    /// us a relay URL? Then we pair via the relay (Mock mode + the relay tick)
+    /// instead of pointing the HTTP backend at an unreachable loopback. A node
+    /// with a real reachable `url` (LAN/Tailscale) still pairs HTTP-direct.
+    static func isRelayOnlyPairing(_ record: PairingCodeRecord) -> Bool {
+        guard let relay = record.relayUrl, !relay.isEmpty else { return false }
+        let url = record.url
+        if url.isEmpty { return true }
+        return url.contains("127.0.0.1")
+            || url.contains("//localhost")
+            || url.contains("[::1]")
+            || url.contains("//0.0.0.0")
+    }
+
+    /// Cache a scanned/entered pairing code so the relay tick can build its
+    /// coordinator from it in Mock mode (no Mac HTTP fetch needed) — the relay
+    /// URL + group identity ride inside. Mirrors the cache the tick itself
+    /// writes after a successful HTTP-fetched build.
+    static func cachePairingCode(_ rawCode: String) {
+        UserDefaults.standard.set(rawCode, forKey: pairingCodeKey)
+    }
 }
