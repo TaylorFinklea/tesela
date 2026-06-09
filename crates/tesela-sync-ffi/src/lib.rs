@@ -687,6 +687,26 @@ impl SyncEngineHandle {
             .await
             .map_err(FfiSyncError::from)
     }
+
+    /// Import a relay snapshot keyed by `note_id` (the relay's opaque
+    /// `stream_id`), for bootstrap-from-snapshots. `RelayClientHandle::fetch_snapshots`
+    /// returns note_id-keyed streams, and the bootstrapping device has the
+    /// note_id but NOT the slug (`note_id = stable_uuid_from_slug(slug)` is
+    /// one-way), so it can't use the slug-keyed `import_note_snapshot`.
+    /// Same authoritative re-base as the slug path.
+    pub async fn import_note_snapshot_by_id(
+        &self,
+        note_id: Vec<u8>,
+        bytes: Vec<u8>,
+    ) -> Result<(), FfiSyncError> {
+        let id: [u8; 16] = note_id.as_slice().try_into().map_err(|_| FfiSyncError::Other {
+            message: format!("note_id must be 16 bytes, got {}", note_id.len()),
+        })?;
+        self.inner
+            .import_authoritative_snapshot(id, &bytes)
+            .await
+            .map_err(FfiSyncError::from)
+    }
 }
 
 // ============================================================================
@@ -1071,6 +1091,33 @@ impl RelayClientHandle {
             highest_seq: highest,
         })
     }
+
+    /// Fetch the relay's compacted snapshot set + its compaction watermark.
+    /// A fresh or long-offline device imports each (note_id-keyed) snapshot,
+    /// jumps its inbound cursor to `compaction_seq`, then polls `?since=` for
+    /// the tail. This is the ONLY way a device converges past the relay's GC
+    /// window when the depositor (the Mac) is offline — the offline-bootstrap
+    /// half of the spine. Snapshots are sealed/opened under the GROUP-only AAD
+    /// inside the inner client, so the plaintext returned here is ready to
+    /// import directly.
+    pub async fn fetch_snapshots(&self) -> Result<FetchSnapshotsRecord, FfiSyncError> {
+        let (compaction_seq, snaps) = self
+            .inner
+            .fetch_snapshots()
+            .await
+            .map_err(FfiSyncError::from)?;
+        Ok(FetchSnapshotsRecord {
+            compaction_seq,
+            snapshots: snaps
+                .into_iter()
+                .map(|(stream_id, snapshot_seq, payload)| RelaySnapshotRecord {
+                    stream_id,
+                    snapshot_seq,
+                    payload,
+                })
+                .collect(),
+        })
+    }
 }
 
 /// Probe-only return shape — see [`RelayClientHandle::poll_count`].
@@ -1080,6 +1127,28 @@ pub struct PollProbeRecord {
     pub count: u32,
     /// Highest seq in the returned batch, or `since_seq` when empty.
     pub highest_seq: i64,
+}
+
+/// One decrypted snapshot from the relay — see [`RelayClientHandle::fetch_snapshots`].
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct RelaySnapshotRecord {
+    /// Opaque stream key = the 16-byte `note_id` the snapshot covers. Import
+    /// with [`SyncEngineHandle::import_note_snapshot_by_id`].
+    pub stream_id: Vec<u8>,
+    /// Relay-assigned seq this snapshot covers up to.
+    pub snapshot_seq: i64,
+    /// Decrypted full-note snapshot bytes (already opened with the group key).
+    pub payload: Vec<u8>,
+}
+
+/// The relay's compacted snapshot set + watermark — see
+/// [`RelayClientHandle::fetch_snapshots`].
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct FetchSnapshotsRecord {
+    /// The relay's compaction watermark. After importing all snapshots, set the
+    /// inbound cursor to this, then poll `?since=compaction_seq` for the tail.
+    pub compaction_seq: i64,
+    pub snapshots: Vec<RelaySnapshotRecord>,
 }
 
 #[cfg(test)]
