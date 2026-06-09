@@ -803,6 +803,30 @@ final class RelayTicker: ObservableObject {
         if let outbound = UserDefaults.standard.object(forKey: Self.outboundCursorKey) as? Int64 {
             await coordinator.setOutboundCursorNtp(ntp: outbound)
         }
+        // Bootstrap-from-snapshots (offline-bootstrap spine, phase 3): pull the
+        // relay's compacted snapshot set so a device that's been offline past
+        // the relay's GC window converges even when the Mac (the depositor) is
+        // unreachable — the case the Mac-HTTP `bootstrapNoteIfNeeded` can't cover
+        // with the Mac off. Import each note_id-keyed snapshot, then jump the
+        // inbound cursor to the relay's watermark so the next poll fetches only
+        // the un-compacted tail. Guard: skip when our cursor already covers the
+        // watermark (mirrors the server's `bootstrap_from_snapshots`). Best-effort
+        // — a failure just leaves the cursor as-is and the normal poll handles
+        // the (un-GC'd) tail.
+        do {
+            let snaps = try await relay.fetchSnapshots()
+            if snaps.compactionSeq > inboundCursorSeq {
+                for s in snaps.snapshots {
+                    try? await engine.importNoteSnapshotById(noteId: s.streamId, bytes: s.payload)
+                }
+                await coordinator.setInboundCursorSeq(seq: snaps.compactionSeq)
+                inboundCursorSeq = snaps.compactionSeq
+                UserDefaults.standard.set(snaps.compactionSeq, forKey: Self.inboundCursorKey)
+                if !snaps.snapshots.isEmpty { onAppliedChanges?() }
+            }
+        } catch {
+            // Leave the cursor as-is; the regular poll handles the un-GC'd tail.
+        }
         self.relay = relay
         self.coordinator = coordinator
     }

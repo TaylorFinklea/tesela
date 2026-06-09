@@ -546,6 +546,18 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 public protocol RelayClientHandleProtocol: AnyObject, Sendable {
     
     /**
+     * Fetch the relay's compacted snapshot set + its compaction watermark.
+     * A fresh or long-offline device imports each (note_id-keyed) snapshot,
+     * jumps its inbound cursor to `compaction_seq`, then polls `?since=` for
+     * the tail. This is the ONLY way a device converges past the relay's GC
+     * window when the depositor (the Mac) is offline — the offline-bootstrap
+     * half of the spine. Snapshots are sealed/opened under the GROUP-only AAD
+     * inside the inner client, so the plaintext returned here is ready to
+     * import directly.
+     */
+    func fetchSnapshots() async throws  -> FetchSnapshotsRecord
+    
+    /**
      * Probe: poll for envelopes since `since_seq` and return how many
      * are pending plus the highest seq seen. Used by the B.1.4 smoke
      * probe to confirm two-way traffic without yet doing the apply
@@ -650,6 +662,33 @@ public convenience init(relayUrl: String, groupIdHex: String, deviceIdHex: Strin
 
     
 
+    
+    /**
+     * Fetch the relay's compacted snapshot set + its compaction watermark.
+     * A fresh or long-offline device imports each (note_id-keyed) snapshot,
+     * jumps its inbound cursor to `compaction_seq`, then polls `?since=` for
+     * the tail. This is the ONLY way a device converges past the relay's GC
+     * window when the depositor (the Mac) is offline — the offline-bootstrap
+     * half of the spine. Snapshots are sealed/opened under the GROUP-only AAD
+     * inside the inner client, so the plaintext returned here is ready to
+     * import directly.
+     */
+open func fetchSnapshots()async throws  -> FetchSnapshotsRecord  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_relayclienthandle_fetch_snapshots(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypeFetchSnapshotsRecord_lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
     
     /**
      * Probe: poll for envelopes since `since_seq` and return how many
@@ -1216,6 +1255,16 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func importNoteSnapshot(slug: String, bytes: Data) async throws 
     
     /**
+     * Import a relay snapshot keyed by `note_id` (the relay's opaque
+     * `stream_id`), for bootstrap-from-snapshots. `RelayClientHandle::fetch_snapshots`
+     * returns note_id-keyed streams, and the bootstrapping device has the
+     * note_id but NOT the slug (`note_id = stable_uuid_from_slug(slug)` is
+     * one-way), so it can't use the slug-keyed `import_note_snapshot`.
+     * Same authoritative re-base as the slug path.
+     */
+    func importNoteSnapshotById(noteId: Data, bytes: Data) async throws 
+    
+    /**
      * Encoded version vector of a note's current Loro doc, for the
      * reconnect/catch-up handshake: a peer hands this to the other side's
      * [`Self::produce_note_delta`] (`since_vv`) so the response carries only
@@ -1518,6 +1567,31 @@ open func importNoteSnapshot(slug: String, bytes: Data)async throws   {
                 uniffi_tesela_sync_ffi_fn_method_syncenginehandle_import_note_snapshot(
                     self.uniffiCloneHandle(),
                     FfiConverterString.lower(slug),FfiConverterData.lower(bytes)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_void,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Import a relay snapshot keyed by `note_id` (the relay's opaque
+     * `stream_id`), for bootstrap-from-snapshots. `RelayClientHandle::fetch_snapshots`
+     * returns note_id-keyed streams, and the bootstrapping device has the
+     * note_id but NOT the slug (`note_id = stable_uuid_from_slug(slug)` is
+     * one-way), so it can't use the slug-keyed `import_note_snapshot`.
+     * Same authoritative re-base as the slug path.
+     */
+open func importNoteSnapshotById(noteId: Data, bytes: Data)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_import_note_snapshot_by_id(
+                    self.uniffiCloneHandle(),
+                    FfiConverterData.lower(noteId),FfiConverterData.lower(bytes)
                 )
             },
             pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
@@ -1912,6 +1986,72 @@ public func FfiConverterTypeDeltaApplyOutcome_lower(_ value: DeltaApplyOutcome) 
 
 
 /**
+ * The relay's compacted snapshot set + watermark — see
+ * [`RelayClientHandle::fetch_snapshots`].
+ */
+public struct FetchSnapshotsRecord: Equatable, Hashable {
+    /**
+     * The relay's compaction watermark. After importing all snapshots, set the
+     * inbound cursor to this, then poll `?since=compaction_seq` for the tail.
+     */
+    public var compactionSeq: Int64
+    public var snapshots: [RelaySnapshotRecord]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The relay's compaction watermark. After importing all snapshots, set the
+         * inbound cursor to this, then poll `?since=compaction_seq` for the tail.
+         */compactionSeq: Int64, snapshots: [RelaySnapshotRecord]) {
+        self.compactionSeq = compactionSeq
+        self.snapshots = snapshots
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension FetchSnapshotsRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFetchSnapshotsRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FetchSnapshotsRecord {
+        return
+            try FetchSnapshotsRecord(
+                compactionSeq: FfiConverterInt64.read(from: &buf), 
+                snapshots: FfiConverterSequenceTypeRelaySnapshotRecord.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: FetchSnapshotsRecord, into buf: inout [UInt8]) {
+        FfiConverterInt64.write(value.compactionSeq, into: &buf)
+        FfiConverterSequenceTypeRelaySnapshotRecord.write(value.snapshots, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFetchSnapshotsRecord_lift(_ buf: RustBuffer) throws -> FetchSnapshotsRecord {
+    return try FfiConverterTypeFetchSnapshotsRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFetchSnapshotsRecord_lower(_ value: FetchSnapshotsRecord) -> RustBuffer {
+    return FfiConverterTypeFetchSnapshotsRecord.lower(value)
+}
+
+
+/**
  * Group identity in a Swift-friendly shape: two hex strings.
  */
 public struct GroupIdentityRecord: Equatable, Hashable {
@@ -2175,6 +2315,87 @@ public func FfiConverterTypePollProbeRecord_lift(_ buf: RustBuffer) throws -> Po
 #endif
 public func FfiConverterTypePollProbeRecord_lower(_ value: PollProbeRecord) -> RustBuffer {
     return FfiConverterTypePollProbeRecord.lower(value)
+}
+
+
+/**
+ * One decrypted snapshot from the relay — see [`RelayClientHandle::fetch_snapshots`].
+ */
+public struct RelaySnapshotRecord: Equatable, Hashable {
+    /**
+     * Opaque stream key = the 16-byte `note_id` the snapshot covers. Import
+     * with [`SyncEngineHandle::import_note_snapshot_by_id`].
+     */
+    public var streamId: Data
+    /**
+     * Relay-assigned seq this snapshot covers up to.
+     */
+    public var snapshotSeq: Int64
+    /**
+     * Decrypted full-note snapshot bytes (already opened with the group key).
+     */
+    public var payload: Data
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Opaque stream key = the 16-byte `note_id` the snapshot covers. Import
+         * with [`SyncEngineHandle::import_note_snapshot_by_id`].
+         */streamId: Data, 
+        /**
+         * Relay-assigned seq this snapshot covers up to.
+         */snapshotSeq: Int64, 
+        /**
+         * Decrypted full-note snapshot bytes (already opened with the group key).
+         */payload: Data) {
+        self.streamId = streamId
+        self.snapshotSeq = snapshotSeq
+        self.payload = payload
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RelaySnapshotRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRelaySnapshotRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RelaySnapshotRecord {
+        return
+            try RelaySnapshotRecord(
+                streamId: FfiConverterData.read(from: &buf), 
+                snapshotSeq: FfiConverterInt64.read(from: &buf), 
+                payload: FfiConverterData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RelaySnapshotRecord, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.streamId, into: &buf)
+        FfiConverterInt64.write(value.snapshotSeq, into: &buf)
+        FfiConverterData.write(value.payload, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRelaySnapshotRecord_lift(_ buf: RustBuffer) throws -> RelaySnapshotRecord {
+    return try FfiConverterTypeRelaySnapshotRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRelaySnapshotRecord_lower(_ value: RelaySnapshotRecord) -> RustBuffer {
+    return FfiConverterTypeRelaySnapshotRecord.lower(value)
 }
 
 
@@ -2557,6 +2778,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
         return seq
     }
 }
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeRelaySnapshotRecord: FfiConverterRustBuffer {
+    typealias SwiftType = [RelaySnapshotRecord]
+
+    public static func write(_ value: [RelaySnapshotRecord], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRelaySnapshotRecord.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RelaySnapshotRecord] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RelaySnapshotRecord]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRelaySnapshotRecord.read(from: &buf))
+        }
+        return seq
+    }
+}
 private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
 private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
 
@@ -2710,6 +2956,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_func_tesela_sync_version() != 100) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_fetch_snapshots() != 26517) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_poll_count() != 27172) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2744,6 +2993,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_import_note_snapshot() != 55621) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_import_note_snapshot_by_id() != 34200) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_note_version() != 24306) {
