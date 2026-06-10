@@ -264,17 +264,20 @@ async fn test_02_register_idempotent_on_match_conflict_on_differ() {
         "byte-identical re-register should be 200"
     );
 
-    // Different auth_key → 409 with stored payload echoed back.
+    // Different auth_key → 409 with the stored record's PUBLIC fields
+    // echoed back (registered_at + intent — never the auth_key itself;
+    // see test_16).
     let mut bad = body.clone();
     bad["auth_key_b64"] = json!(b64(&[0u8; 32]));
     let r3 = client.post(&url).json(&bad).send().await.unwrap();
     assert_eq!(r3.status().as_u16(), 409, "conflicting auth_key must 409");
     let echoed: serde_json::Value = r3.json().await.unwrap();
-    assert_eq!(echoed["auth_key_b64"], body["auth_key_b64"]);
+    assert_eq!(echoed["registered_at"], body["registered_at"]);
+    assert_eq!(echoed["intent_b64"], body["intent_b64"]);
 }
 
 #[tokio::test]
-async fn test_03_get_registration_returns_stored_record_verbatim() {
+async fn test_03_get_registration_returns_stored_public_fields() {
     let relay = spawn_relay().await;
     let group = fresh_group();
     let now = now_secs();
@@ -298,7 +301,8 @@ async fn test_03_get_registration_returns_stored_record_verbatim() {
         .unwrap();
     assert!(g.status().is_success());
     let echoed: serde_json::Value = g.json().await.unwrap();
-    assert_eq!(echoed["auth_key_b64"], body["auth_key_b64"]);
+    // The joiner-verification fields come back verbatim; the auth_key
+    // is deliberately absent (test_16 locks that in).
     assert_eq!(echoed["registered_at"], body["registered_at"]);
     assert_eq!(echoed["intent_b64"], body["intent_b64"]);
 }
@@ -1272,6 +1276,76 @@ async fn test_15_ack_body_size_cap() {
         413,
         "over-cap ack body must 413, got {}",
         r.status()
+    );
+}
+
+#[tokio::test]
+async fn test_16_registration_endpoints_do_not_leak_auth_key() {
+    // The MAC auth_key is HKDF-derived from the group key CLIENT-side —
+    // every legitimate member computes it locally and never needs the
+    // relay to echo it back. Serving it from the open GET /registration
+    // (or the equally open POST /register 409 conflict echo) hands the
+    // transport MAC key to anyone who learns the group_id (it's in every
+    // URL path → proxy/access logs), collapsing "can deposit/fetch/GC"
+    // to "knows the group_id". Joiner hijack verification only needs
+    // `registered_at` + `intent_b64` — the signed intent embeds the
+    // auth_key, so a mismatched key already fails verification.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let now = now_secs();
+    let body = register_body(&group, now);
+    let client = reqwest::Client::new();
+    let r = client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success());
+
+    // GET /registration still serves the joiner-verification fields,
+    // but NOT the MAC key.
+    let g = client
+        .get(format!(
+            "{}/groups/{}/registration",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(g.status().is_success());
+    let stored: serde_json::Value = g.json().await.unwrap();
+    assert_eq!(stored["registered_at"], body["registered_at"]);
+    assert_eq!(stored["intent_b64"], body["intent_b64"]);
+    assert!(
+        stored.get("auth_key_b64").is_none(),
+        "open GET /registration must not serve the group's MAC auth_key, got {stored}"
+    );
+
+    // POST /register conflict echo: same open surface, must not leak
+    // the stored key either.
+    let mut bad = body.clone();
+    bad["auth_key_b64"] = json!(b64(&[0u8; 32]));
+    let r = client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&bad)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status().as_u16(), 409);
+    let echoed: serde_json::Value = r.json().await.unwrap();
+    assert!(
+        echoed.get("auth_key_b64").is_none(),
+        "409 register-conflict echo must not serve the stored auth_key, got {echoed}"
     );
 }
 

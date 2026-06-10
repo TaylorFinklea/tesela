@@ -48,9 +48,14 @@ export async function handleRegister(self: GroupDO, req: Request): Promise<Respo
 
   const outcome = self.insertOrFetchRegistration(auth_key, body.registered_at, intent);
   if (outcome.outcome === "conflict" && outcome.existing) {
+    // Echo only the PUBLIC fields. The auth_key is the MAC key every
+    // gated endpoint verifies against, and /register is unauthenticated
+    // — echoing it would hand relay auth to anyone with the group_id.
+    // Joiners detect squatting from registered_at + intent alone (the
+    // signed intent embeds the auth_key). Mirrors the Rust
+    // RegistrationRecord projection.
     return json(
       {
-        auth_key_b64: toB64(outcome.existing.auth_key),
         registered_at: outcome.existing.registered_at,
         intent_b64: toB64(outcome.existing.intent),
       },
@@ -63,8 +68,9 @@ export async function handleRegister(self: GroupDO, req: Request): Promise<Respo
 export async function handleGetRegistration(self: GroupDO, _req: Request): Promise<Response> {
   const reg = self.getRegistration();
   if (!reg) return json({ error: "not registered" }, 404);
+  // Public fields only — never the auth_key (this endpoint is open;
+  // members derive the key locally via HKDF from the group key).
   return json({
-    auth_key_b64: toB64(reg.auth_key),
     registered_at: reg.registered_at,
     intent_b64: toB64(reg.intent),
   });

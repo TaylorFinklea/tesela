@@ -50,21 +50,20 @@ pub struct RelayClient {
 }
 
 /// What the relay returned for a registration record. Carries the
-/// fields the joiner-verification path needs.
+/// fields the joiner-verification path needs. Deliberately does NOT
+/// carry the auth_key: the relay no longer serves it (it's the MAC
+/// key, and `/registration` is an open endpoint) — every member
+/// derives it locally via HKDF from the group key instead.
 #[derive(Debug, Clone)]
 pub struct StoredRegistration {
-    /// Deterministic per-group auth key the relay verifies request
-    /// MACs against. Joiners cross-check this matches their own
-    /// HKDF derivation as a hijack/wrong-group sanity check.
-    pub auth_key: [u8; 32],
     /// Wall-clock seconds at first-write registration. Stable across
     /// idempotent re-registrations; used to reconstruct the signed
     /// intent locally during joiner verification.
     pub registered_at: i64,
     /// `HMAC-SHA256(group_key, intent_msg(group_id, auth_key,
     /// registered_at))`. Joiners recompute this with their local
-    /// `group_key` + verify match — that's the hijack-detection
-    /// invariant the design rests on.
+    /// `group_key` + locally-derived auth_key and verify match —
+    /// that's the hijack-detection invariant the design rests on.
     pub intent: Vec<u8>,
 }
 
@@ -184,18 +183,15 @@ impl RelayClient {
             .fetch_registration()
             .await?
             .ok_or_else(|| SyncError::Crypto("relay has no registration for this group".into()))?;
+        // `intent_text` embeds OUR locally-derived auth_key, so a
+        // registration stored under a different auth_key (wrong
+        // group_key, wrong group_id, or a squatter) already fails this
+        // verify — no need for the relay to echo the key back.
         let intent_text = intent_msg(&self.group_id, &self.auth_key, stored.registered_at);
         if !verify_intent(&self.group_key, &intent_text, &stored.intent) {
             return Err(SyncError::Crypto(
                 "relay registration intent does not verify under our group_key — HIJACKED. \
                  Use admin recovery to delete the bogus registration and re-pair."
-                    .into(),
-            ));
-        }
-        if stored.auth_key != self.auth_key {
-            return Err(SyncError::Crypto(
-                "relay-stored auth_key disagrees with our derivation — wrong group_key, \
-                 wrong group_id, or hijacked relay state."
                     .into(),
             ));
         }
@@ -544,9 +540,11 @@ impl RelayClient {
 
 // ── Wire types ────────────────────────────────────────────────────
 
+/// `GET /registration` response body. Older relays also send an
+/// `auth_key_b64` field — serde ignores it; we never read the MAC key
+/// off the wire (it's derived locally in `RelayClient::new`).
 #[derive(Debug, Deserialize)]
 struct RegistrationWire {
-    auth_key_b64: String,
     registered_at: i64,
     intent_b64: String,
 }
@@ -554,11 +552,8 @@ struct RegistrationWire {
 impl From<RegistrationWire> for StoredRegistration {
     fn from(w: RegistrationWire) -> Self {
         let b64 = base64::engine::general_purpose::STANDARD;
-        let auth_key = b64.decode(&w.auth_key_b64).unwrap_or_default();
         let intent = b64.decode(&w.intent_b64).unwrap_or_default();
-        let auth_key_arr: [u8; 32] = auth_key.try_into().unwrap_or([0u8; 32]);
         Self {
-            auth_key: auth_key_arr,
             registered_at: w.registered_at,
             intent,
         }

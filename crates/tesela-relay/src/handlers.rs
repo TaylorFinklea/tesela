@@ -36,9 +36,16 @@ pub struct RegisterRequest {
     pub intent_b64: String,
 }
 
+/// Public projection of a stored [`Registration`]. Deliberately does
+/// NOT carry the auth_key: `/registration` (and the `/register` 409
+/// echo) are unauthenticated, and the auth_key is the MAC key every
+/// gated endpoint verifies against — echoing it would collapse relay
+/// auth to "knows the group_id". Members derive it locally via HKDF
+/// from the group key; joiner verification only needs
+/// `registered_at` + `intent_b64` (the signed intent embeds the
+/// auth_key, so a mismatched key already fails verification).
 #[derive(Debug, Serialize)]
 pub struct RegistrationRecord {
-    pub auth_key_b64: String,
     pub registered_at: i64,
     pub intent_b64: String,
 }
@@ -47,7 +54,6 @@ impl From<Registration> for RegistrationRecord {
     fn from(r: Registration) -> Self {
         let b64 = base64::engine::general_purpose::STANDARD;
         Self {
-            auth_key_b64: b64.encode(&r.auth_key),
             registered_at: r.registered_at,
             intent_b64: b64.encode(&r.intent),
         }
@@ -64,8 +70,9 @@ impl From<Registration> for RegistrationRecord {
 /// per-request MACs on every other endpoint.
 ///
 /// Idempotent on byte-identical re-register; returns `409` with the
-/// stored payload echoed on conflict so joiners can detect hijack
-/// squatting.
+/// stored record's public fields (`registered_at` + `intent_b64`,
+/// never the auth_key) echoed on conflict so joiners can detect
+/// hijack squatting.
 pub async fn register(
     State(state): State<AppState>,
     Path(group_id_hex): Path<String>,
@@ -104,11 +111,13 @@ pub async fn register(
 
 /// `GET /groups/{group_id}/registration`
 ///
-/// Returns the stored registration record verbatim. Joiners call
-/// this on first connect, recompute the signed intent locally using
-/// their group key, and refuse to use the relay if it doesn't match
-/// — that's the Certificate-Transparency-style hijack-detection
-/// path the protocol rests on.
+/// Returns the stored registration record's public fields
+/// (`registered_at` + `intent_b64` — never the auth_key; see
+/// [`RegistrationRecord`]). Joiners call this on first connect,
+/// recompute the signed intent locally using their group key, and
+/// refuse to use the relay if it doesn't match — that's the
+/// Certificate-Transparency-style hijack-detection path the protocol
+/// rests on.
 pub async fn get_registration(
     State(state): State<AppState>,
     Path(group_id_hex): Path<String>,
