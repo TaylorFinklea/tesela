@@ -180,7 +180,13 @@ pub async fn run_configured_backup(
     let outcome = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
         let destination = destination_from_config(&mosaic_owned, &cfg);
 
-        // Encrypt if destination is non-local and a keypair exists.
+        // Non-local destinations are ALWAYS encrypted — fail closed.
+        // Without an identity we refuse the run entirely (recorded as a
+        // failed run in /backup/status) rather than ship group_key.bin
+        // + every note in plaintext to an external path / git remote,
+        // and rather than silently fall back to a local backup the user
+        // didn't configure. Mirrors the manual route's hard-fail
+        // (routes/data_ops.rs run_backup).
         let encryption = match &destination {
             tesela_backup::Destination::Local => tesela_backup::ManifestEncryption::None,
             _ => match tesela_backup::encrypt::load_identity_for_mosaic(&mosaic_owned)
@@ -190,11 +196,12 @@ pub async fn run_configured_backup(
                     recipient: id.to_public().to_string(),
                 },
                 None => {
-                    // No keypair — warn but don't refuse to back up.
-                    tracing::warn!(
-                        "No age identity in Keychain for this mosaic; non-local backup will be unencrypted"
-                    );
-                    tesela_backup::ManifestEncryption::None
+                    return Err(anyhow::anyhow!(
+                        "refusing UNENCRYPTED backup to a non-local destination: no age \
+                         identity in the Keychain for this mosaic. Click \"Generate \
+                         encryption keypair\" in Settings → Data (or run `tesela backup \
+                         keygen`), then non-local backups will be encrypted automatically."
+                    ));
                 }
             },
         };
@@ -375,5 +382,94 @@ mod tests {
         let cfg = SchedulerConfig::parse(Some("0"), Some("0"), None, None, None, None);
         let handle = BackupStatusHandle::new(cfg);
         assert!(!handle.enabled());
+    }
+
+    /// The always-encrypt-non-local invariant must FAIL CLOSED on the
+    /// automated paths (scheduler tick / startup / quit hook): an
+    /// external or git destination with no age identity in the Keychain
+    /// must refuse to back up — never write `group_key.bin` + notes in
+    /// plaintext offsite, and never silently fall back to a local
+    /// backup. The failure is recorded with an actionable error so
+    /// `/backup/status` surfaces it.
+    #[tokio::test]
+    async fn non_local_backup_without_identity_refuses_plaintext() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let mosaic = temp.path().join("mosaic");
+        std::fs::create_dir_all(mosaic.join("notes")).unwrap();
+        std::fs::create_dir_all(mosaic.join(".tesela")).unwrap();
+        std::fs::write(
+            mosaic.join("notes/secret.md"),
+            "---\ntitle: Secret\n---\n- must never leave in plaintext\n",
+        )
+        .unwrap();
+        // The crown jewel a plaintext non-local backup would leak.
+        std::fs::write(mosaic.join(".tesela/group_key.bin"), b"\x01\x02\x03\x04").unwrap();
+        std::fs::write(mosaic.join(".tesela/config.toml"), "[general]\n").unwrap();
+
+        let external = temp.path().join("external-disk");
+        std::fs::create_dir_all(&external).unwrap();
+
+        let index = Arc::new(
+            SqliteIndex::open(&mosaic.join(".tesela/tesela.db"))
+                .await
+                .unwrap(),
+        );
+        // External destination; the temp mosaic path has no Keychain
+        // identity (keyed by mosaic path, so this can never collide
+        // with a real one).
+        let cfg = BackupConfig {
+            external_path: Some(external.clone()),
+            ..Default::default()
+        };
+
+        let status =
+            BackupStatusHandle::new(SchedulerConfig::parse(None, None, None, None, None, None));
+        run_once(&status, &mosaic, &index, &cfg, "scheduled").await;
+
+        // No archive may exist ANYWHERE — not at the external path…
+        let external_entries: Vec<_> = std::fs::read_dir(&external)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .collect();
+        assert!(
+            external_entries.is_empty(),
+            "refusal must not write anything to the external destination: {:?}",
+            external_entries
+        );
+        // …and not as a silent local fallback either.
+        let local_backups = mosaic.join(".tesela/backups");
+        let local_entries: Vec<_> = if local_backups.exists() {
+            std::fs::read_dir(&local_backups)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        assert!(
+            local_entries.is_empty(),
+            "refusal must not silently fall back to a local backup: {:?}",
+            local_entries
+        );
+
+        // The run is recorded as FAILED with an actionable error.
+        let inner = status.inner.read().await;
+        let last = inner.last_run.as_ref().expect("run must be recorded");
+        assert!(!last.ok, "run must be recorded as failed");
+        let err = inner.last_error.as_ref().expect("error must be recorded");
+        assert!(
+            err.detail.contains("Generate encryption keypair")
+                || err.detail.contains("tesela backup keygen"),
+            "error must tell the user how to fix it, got: {}",
+            err.detail
+        );
+        assert!(
+            err.detail.to_lowercase().contains("unencrypted")
+                || err.detail.to_lowercase().contains("plaintext"),
+            "error must say WHY it refused, got: {}",
+            err.detail
+        );
     }
 }
