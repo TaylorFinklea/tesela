@@ -21,16 +21,24 @@ import Foundation
 ///   `crates/tesela-core/src/recurrence.rs`; rows sort by
 ///   (occurrence_date, occurrence_time, block_id).
 ///
-/// - **Query DSL** mirrors the whitespace-token subset of
-///   `parse_query` + `block_matches` (`crates/tesela-core/src/query.rs`)
-///   that the Inbox chip registry emits (`kind:block`, `-has:status`,
-///   `-is:heading`, `-on:daily-page`, `-on:system-pages`,
-///   `has:scheduled`, `has:deadline`, `-has:tag`, `tag-in:A,B`,
-///   `-page:x`, `-block:x`, plus bare `key:value` property equality).
-///   Tokens outside that subset (the JQL grammar — parens, `ORDER BY`,
-///   infix comparisons, quoted strings) are skipped, which degrades to
-///   "lets everything through" — the same graceful-degradation posture
-///   the server takes for unknown `is:`/`on:` values.
+/// - **Query DSL** mirrors the legacy-colon subset of `parse_query` +
+///   `block_matches` (`crates/tesela-core/src/query.rs`), gated by the
+///   shared conformance fixture
+///   (`crates/tesela-core/tests/fixtures/query-conformance.json`,
+///   consumed by `QueryConformanceTests`): `kind:` prefix, `-`/`NOT`
+///   negation, `key:value` equality, quoted values (`tag:"To Read"`),
+///   comparison ops (`priority:>=3`, `deadline:<=2026-05-01`, and the
+///   infix forms `key >= v`), tight-comma multi-value OR
+///   (`status:backlog,todo` — commas touching whitespace end the
+///   list, mirroring `peek_tight_comma_continuation`), the legacy
+///   loose `tag-in:A,B`, `has:`/`-has:` presence, `is:heading`,
+///   `on:daily-page` / `on:system-pages`, `text:`, `page:`/`block:`,
+///   and the empty-value drop (`status:` degrades toward match-all).
+///   The full-JQL remainder (`OR`, parens, `IN (…)`, `LIKE`,
+///   `BETWEEN`, `IS NULL`, `ORDER BY`) stays server-side; those
+///   tokens drop out, degrading toward "lets everything through" —
+///   the same posture the server takes for unknown `is:`/`on:`
+///   values.
 enum LocalQueryEngine {
 
     // MARK: - ISO date helpers
@@ -354,44 +362,336 @@ enum LocalQueryEngine {
         }
     }
 
-    // MARK: - Query DSL (whitespace-token subset of parse_query)
+    // MARK: - Query DSL (legacy-colon subset of parse_query)
 
     struct SimpleDsl: Equatable {
         enum Kind: Equatable { case block, page }
-        struct Clause: Equatable {
-            let negated: Bool
-            let key: String   // lowercased
-            let value: String // verbatim
+        /// Comparison operator — the `QueryOp` subset the local engine
+        /// evaluates (`Like`/`NotLike` stay server-side).
+        enum Op: Equatable { case eq, ne, gt, lt, gte, lte }
+        /// One parsed clause. Mirrors Rust's `Predicate`: `cmp` is
+        /// `Predicate::Cmp` (negation = the wrapping `Not`), `inList`
+        /// is `Predicate::In` (from `key:v1,v2` tight-comma sugar or
+        /// the legacy `tag-in:a,b` shape — OR within the key).
+        enum Clause: Equatable {
+            case cmp(negated: Bool, key: String, op: Op, value: String)
+            case inList(negated: Bool, key: String, values: [String])
+
+            var negated: Bool {
+                switch self {
+                case .cmp(let n, _, _, _), .inList(let n, _, _): return n
+                }
+            }
         }
         var kind: Kind
         var clauses: [Clause]
     }
 
-    /// Tokenize on whitespace; `-` prefix negates; `key:value` shape
-    /// only. Tokens without a colon (JQL words, parens, operators) are
-    /// skipped — the saved-filter chips never emit them, and skipping
-    /// degrades to match-all rather than excluding every row.
-    static func parseSimpleDsl(_ dsl: String) -> SimpleDsl {
-        var kind: SimpleDsl.Kind = .block
-        var clauses: [SimpleDsl.Clause] = []
-        for tok in dsl.split(whereSeparator: { $0.isWhitespace }) {
-            var t = String(tok)
-            var negated = false
-            if t.hasPrefix("-") {
-                negated = true
-                t.removeFirst()
-            }
-            guard let colon = t.firstIndex(of: ":") else { continue }
-            let key = String(t[..<colon]).lowercased()
-            let value = String(t[t.index(after: colon)...])
-            guard !key.isEmpty else { continue }
-            if key == "kind" {
-                kind = (value.lowercased() == "page") ? .page : .block
+    /// Mirror of `tokenize` (query.rs): punctuation + quoted strings +
+    /// hyphen-keeping words, each token carrying its byte span in the
+    /// source so the parser can detect adjacency (tight commas, value
+    /// slurping across `:` / `-` runs).
+    private enum DslToken: Equatable {
+        case word(String)
+        case quoted(String)
+        case lparen, rparen, comma, colon, minus
+        case op(SimpleDsl.Op)
+    }
+
+    private struct SpannedDslToken {
+        let tok: DslToken
+        /// UTF-8 byte offsets into the source; `end` exclusive.
+        let start: Int
+        let end: Int
+    }
+
+    private static func tokenizeDsl(_ input: String) -> (tokens: [SpannedDslToken], bytes: [UInt8]) {
+        let bytes = Array(input.utf8)
+        var tokens: [SpannedDslToken] = []
+        var i = 0
+        func isWordByte(_ b: UInt8) -> Bool {
+            (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+                || b == UInt8(ascii: "_") || b == UInt8(ascii: "-")
+        }
+        func isSpaceByte(_ b: UInt8) -> Bool {
+            b == 0x20 || (b >= 0x09 && b <= 0x0D)
+        }
+        while i < bytes.count {
+            let b = bytes[i]
+            if isSpaceByte(b) {
+                i += 1
                 continue
             }
-            clauses.append(SimpleDsl.Clause(negated: negated, key: key, value: value))
+            let start = i
+            let tok: DslToken
+            switch b {
+            case UInt8(ascii: "("): tok = .lparen; i += 1
+            case UInt8(ascii: ")"): tok = .rparen; i += 1
+            case UInt8(ascii: ","): tok = .comma; i += 1
+            case UInt8(ascii: ":"): tok = .colon; i += 1
+            case UInt8(ascii: "="): tok = .op(.eq); i += 1
+            case UInt8(ascii: "!") where i + 1 < bytes.count && bytes[i + 1] == UInt8(ascii: "="):
+                tok = .op(.ne); i += 2
+            case UInt8(ascii: "<") where i + 1 < bytes.count && bytes[i + 1] == UInt8(ascii: "="):
+                tok = .op(.lte); i += 2
+            case UInt8(ascii: ">") where i + 1 < bytes.count && bytes[i + 1] == UInt8(ascii: "="):
+                tok = .op(.gte); i += 2
+            case UInt8(ascii: "<"): tok = .op(.lt); i += 1
+            case UInt8(ascii: ">"): tok = .op(.gt); i += 1
+            case UInt8(ascii: "\""):
+                // `"…"` literal; unterminated quote runs to the end.
+                var j = i + 1
+                while j < bytes.count && bytes[j] != UInt8(ascii: "\"") { j += 1 }
+                tok = .quoted(String(decoding: bytes[(i + 1)..<j], as: UTF8.self))
+                i = j < bytes.count ? j + 1 : j
+            case UInt8(ascii: "-"): tok = .minus; i += 1
+            case let w where isWordByte(w):
+                var j = i
+                while j < bytes.count && isWordByte(bytes[j]) { j += 1 }
+                tok = .word(String(decoding: bytes[i..<j], as: UTF8.self))
+                i = j
+            default:
+                // Unknown byte — skip silently, mirroring the Rust
+                // tokenizer's malformed-input posture.
+                i += 1
+                continue
+            }
+            tokens.append(SpannedDslToken(tok: tok, start: start, end: i))
         }
-        return SimpleDsl(kind: kind, clauses: clauses)
+        return (tokens, bytes)
+    }
+
+    /// Flat-AND mirror of the Rust recursive-descent parser
+    /// (`Parser` in query.rs) for the subset the local engine
+    /// evaluates. Structural mirroring notes:
+    ///   * `parseClauses` ≈ `parse_and` — implicit AND between atoms;
+    ///     a token that can't start a unary (stray comma, `or`, `)`)
+    ///     terminates parsing, dropping the remainder exactly like
+    ///     Rust's `parse_and` break.
+    ///   * `parseUnary` ≈ `parse_unary` — `-`/`NOT` toggle negation
+    ///     (Rust stacks `Not` via recursion; a parity flag is
+    ///     equivalent), and a dropped predicate (`kind:…`, bareword,
+    ///     empty value) re-synchronizes at the next unary-starting
+    ///     token with the negation still pending, mirroring how
+    ///     Rust's outer `Not` wraps whatever the inner retry returns.
+    ///   * `OR` / parens / JQL (`IN (…)`, `LIKE`, `BETWEEN`,
+    ///     `IS NULL`, `ORDER BY`) aren't evaluated locally: paren
+    ///     tokens are skipped (so a single parenthesized group
+    ///     degrades to its inner clauses), JQL keywords drop as
+    ///     barewords, and `or` ends the clause list.
+    private struct DslParser {
+        let tokens: [SpannedDslToken]
+        let bytes: [UInt8]
+        var pos = 0
+        var kind: SimpleDsl.Kind = .block
+
+        var peek: DslToken? { pos < tokens.count ? tokens[pos].tok : nil }
+
+        func peekKeyword(_ kw: String) -> Bool {
+            if case .word(let w)? = peek { return w.lowercased() == kw }
+            return false
+        }
+
+        /// Mirror of `peek_starts_unary` — `(`, `-`, or a word that
+        /// isn't the `or`/`and` keyword.
+        var peekStartsUnary: Bool {
+            switch peek {
+            case .lparen, .minus: return true
+            case .word: return !peekKeyword("or") && !peekKeyword("and")
+            default: return false
+            }
+        }
+
+        mutating func parseClauses() -> [SimpleDsl.Clause] {
+            var clauses: [SimpleDsl.Clause] = []
+            // First unary is unconditional (Rust parse_and's `left`);
+            // if it fails the whole expression is empty (match-all).
+            guard let first = parseUnary() else { return clauses }
+            clauses.append(first)
+            while true {
+                if peekKeyword("and") {
+                    pos += 1
+                } else if !peekStartsUnary {
+                    break
+                }
+                guard let next = parseUnary() else { break }
+                clauses.append(next)
+            }
+            return clauses
+        }
+
+        mutating func parseUnary() -> SimpleDsl.Clause? {
+            var negated = false
+            while true {
+                if peekKeyword("not") || peek == .minus {
+                    pos += 1
+                    negated.toggle()
+                    continue
+                }
+                if peek == .lparen {
+                    // Grouping isn't evaluated locally — skip the paren
+                    // so `(tag:x)` degrades to its inner clause.
+                    pos += 1
+                    continue
+                }
+                let startPos = pos
+                if let clause = parsePredicate(negated: negated) { return clause }
+                if pos == startPos { return nil }
+                // Predicate consumed but produced nothing (`kind:…`,
+                // bareword, empty value) — eat an optional AND and
+                // retry at the next unary-starting token.
+                if peekKeyword("and") { pos += 1 }
+                if !peekStartsUnary { return nil }
+            }
+        }
+
+        /// Mirror of `parse_predicate` for the legacy shapes
+        /// (`key:value`, `key:>=N`, `key:v1,v2`, `tag-in:a,b,c`,
+        /// `has:foo`) plus infix ops. JQL keyword forms fall through
+        /// to the bareword drop.
+        mutating func parsePredicate(negated: Bool) -> SimpleDsl.Clause? {
+            guard pos < tokens.count else { return nil }
+            let keyTok = tokens[pos].tok
+            pos += 1
+            guard case .word(let rawKey) = keyTok else { return nil }
+            let key = rawKey.lowercased()
+
+            // `kind:` is meta — consume the value, set kind, no clause.
+            if key == "kind" {
+                if peek == .colon { pos += 1 }
+                if let v = parseValue() {
+                    kind = (v.lowercased() == "page" || v.lowercased() == "pages") ? .page : .block
+                }
+                return nil
+            }
+
+            // Legacy `tag-in:a,b,c` — whitespace-tolerant comma list on
+            // the stripped key, mirroring `parse_comma_list_until_whitespace`.
+            if key.hasSuffix("-in"), peek == .colon {
+                pos += 1
+                let realKey = String(key.dropLast("-in".count))
+                return .inList(negated: negated, key: realKey, values: parseCommaListUntilBoundary())
+            }
+
+            // Infix `key = v` / `key >= v` / … — no empty-value drop and
+            // no comma sugar on this path (mirrors Rust).
+            if case .op(let infixOp)? = peek {
+                pos += 1
+                let value = parseValue() ?? ""
+                return .cmp(negated: negated, key: key, op: infixOp, value: value)
+            }
+
+            // Legacy colon syntax: `key:value`, `key:>=N`, `key:v1,v2`.
+            if peek == .colon {
+                pos += 1
+                var op = SimpleDsl.Op.eq
+                // `consume_legacy_colon_op` accepts !=, <=, >=, <, > —
+                // never a bare `=` after the colon.
+                if case .op(let colonOp)? = peek, colonOp != .eq {
+                    op = colonOp
+                    pos += 1
+                }
+                let value = parseValue() ?? ""
+                // Empty value drops the clause (degrade toward
+                // match-all); `has:` is the one legitimate no-value key.
+                if key != "has" && value.isEmpty { return nil }
+                // Tight-comma multi-value sugar — Eq only.
+                if op == .eq && !value.isEmpty {
+                    var values = [value]
+                    while peekTightCommaContinuation() {
+                        pos += 1 // consume ','
+                        if let v = parseValue(), !v.isEmpty {
+                            values.append(v)
+                        } else {
+                            break
+                        }
+                    }
+                    if values.count > 1 {
+                        return .inList(negated: negated, key: key, values: values)
+                    }
+                }
+                return .cmp(negated: negated, key: key, op: op, value: value)
+            }
+
+            // Bareword with no operator (including the JQL keyword
+            // grammar) — dropped silently, same as Rust.
+            return nil
+        }
+
+        /// Mirror of `parse_value`: a quoted literal is self-contained;
+        /// otherwise slurp every token contiguous with the first word
+        /// (values containing `:`, `-`, comparison glyphs) until a
+        /// whitespace gap or a quoted/paren/comma token.
+        mutating func parseValue() -> String? {
+            if case .quoted(let s)? = peek {
+                pos += 1
+                return s
+            }
+            guard pos < tokens.count else { return nil }
+            let first = tokens[pos]
+            pos += 1
+            guard case .word(let w) = first.tok else { return nil }
+            var buf = w
+            var endOffset = first.end
+            while pos < tokens.count {
+                let span = tokens[pos]
+                if span.start != endOffset { break } // whitespace gap
+                switch span.tok {
+                case .word, .colon, .minus, .op:
+                    buf += String(decoding: bytes[span.start..<span.end], as: UTF8.self)
+                    endOffset = span.end
+                    pos += 1
+                default:
+                    return buf // quoted / paren / comma end the value
+                }
+            }
+            return buf
+        }
+
+        /// Mirror of `peek_tight_comma_continuation` — a `,` with no
+        /// whitespace on either side, followed by a value token. A
+        /// loose comma is stray punctuation that ends the list.
+        func peekTightCommaContinuation() -> Bool {
+            guard pos > 0, pos < tokens.count, tokens[pos].tok == .comma else { return false }
+            let comma = tokens[pos]
+            guard tokens[pos - 1].end == comma.start else { return false }
+            guard pos + 1 < tokens.count else { return false }
+            let next = tokens[pos + 1]
+            guard next.start == comma.end else { return false }
+            switch next.tok {
+            case .word, .quoted: return true
+            default: return false
+            }
+        }
+
+        /// Mirror of `parse_comma_list_until_whitespace` (the legacy
+        /// `tag-in:` list) — words/quoted + commas until any other
+        /// token; empty entries (trailing comma) stripped.
+        mutating func parseCommaListUntilBoundary() -> [String] {
+            var out: [String] = []
+            loop: while pos < tokens.count {
+                switch tokens[pos].tok {
+                case .word, .quoted:
+                    if let v = parseValue() { out.append(v) }
+                case .comma:
+                    pos += 1
+                default:
+                    break loop
+                }
+            }
+            return out.filter { !$0.isEmpty }
+        }
+    }
+
+    /// Parse a DSL string into the flat-AND clause list the local
+    /// matcher evaluates. Gated by the shared conformance fixture —
+    /// every supported shape must match Rust's `parse_query` +
+    /// `block_matches` exactly.
+    static func parseSimpleDsl(_ dsl: String) -> SimpleDsl {
+        let (tokens, bytes) = tokenizeDsl(dsl)
+        var parser = DslParser(tokens: tokens, bytes: bytes)
+        let clauses = parser.parseClauses()
+        return SimpleDsl(kind: parser.kind, clauses: clauses)
     }
 
     /// Per-block evaluation context: the parsed block enriched with the
@@ -492,56 +792,136 @@ enum LocalQueryEngine {
         return false
     }
 
-    /// Mirror of `filter_matches` (query.rs) for the Eq/Ne token subset.
+    /// Mirror of `is_iso_date` (query.rs) — `YYYY-MM-DD` prefix shape
+    /// (longer strings pass when the first 10 bytes match, same as Rust).
+    private static func isIsoDateShaped(_ s: String) -> Bool {
+        let b = Array(s.utf8)
+        return b.count >= 10
+            && b[4] == UInt8(ascii: "-")
+            && b[7] == UInt8(ascii: "-")
+            && b[0..<4].allSatisfy { $0 >= 48 && $0 <= 57 }
+            && b[5..<7].allSatisfy { $0 >= 48 && $0 <= 57 }
+            && b[8..<10].allSatisfy { $0 >= 48 && $0 <= 57 }
+    }
+
+    /// Byte-wise lexicographic order, mirroring Rust's `str::cmp`.
+    private static func lexicographic(_ a: String, _ b: String) -> ComparisonResult {
+        let ab = Array(a.utf8)
+        let bb = Array(b.utf8)
+        var i = 0
+        let n = min(ab.count, bb.count)
+        while i < n {
+            if ab[i] != bb[i] {
+                return ab[i] < bb[i] ? .orderedAscending : .orderedDescending
+            }
+            i += 1
+        }
+        if ab.count == bb.count { return .orderedSame }
+        return ab.count < bb.count ? .orderedAscending : .orderedDescending
+    }
+
+    /// Mirror of `compare` (query.rs): number → ISO date → case-folded
+    /// string, in that order.
+    static func compareValues(_ a: String, _ b: String) -> ComparisonResult {
+        if let an = Double(a.trimmingCharacters(in: .whitespaces)),
+           let bn = Double(b.trimmingCharacters(in: .whitespaces)) {
+            if an < bn { return .orderedAscending }
+            if an > bn { return .orderedDescending }
+            return .orderedSame
+        }
+        if isIsoDateShaped(a) && isIsoDateShaped(b) {
+            return lexicographic(a, b) // ISO dates sort lexicographically
+        }
+        return lexicographic(a.lowercased(), b.lowercased())
+    }
+
+    /// Mirror of `apply_op` (query.rs) for the local op subset.
+    static func applyOp(_ actual: String, _ op: SimpleDsl.Op, _ expected: String) -> Bool {
+        switch op {
+        case .eq: return actual.lowercased() == expected.lowercased()
+        case .ne: return actual.lowercased() != expected.lowercased()
+        case .gt: return compareValues(actual, expected) == .orderedDescending
+        case .lt: return compareValues(actual, expected) == .orderedAscending
+        case .gte: return compareValues(actual, expected) != .orderedAscending
+        case .lte: return compareValues(actual, expected) != .orderedDescending
+        }
+    }
+
+    /// Mirror of `pred_matches` (query.rs): `cmp` routes to the per-key
+    /// matcher; `inList` is OR over per-value Eq through the same
+    /// matcher (so `status:a,b` ≡ `tag-in:`-style membership exactly).
     static func clauseMatches(_ clause: SimpleDsl.Clause, ctx: BlockContext) -> Bool {
-        let matched: Bool
-        switch clause.key {
+        switch clause {
+        case .cmp(let negated, let key, let op, let value):
+            let matched = cmpMatches(key: key, op: op, value: value, ctx: ctx)
+            return negated ? !matched : matched
+        case .inList(let negated, let key, let values):
+            let matched = values.contains { cmpMatches(key: key, op: .eq, value: $0, ctx: ctx) }
+            return negated ? !matched : matched
+        }
+    }
+
+    /// Mirror of `filter_matches` (query.rs) for one `key OP value`.
+    private static func cmpMatches(key: String, op: SimpleDsl.Op, value: String, ctx: BlockContext) -> Bool {
+        switch key {
         case "tag", "type", "pagetag", "blocktag":
-            let needle = clause.value.lowercased()
-            let includeInherited = clause.key != "blocktag"
+            let needle = value.lowercased()
+            let includeInherited = key != "blocktag"
             let pool = includeInherited ? ctx.ownTags + ctx.inheritedTags : ctx.ownTags
-            matched = pool.contains { $0.lowercased() == needle }
+            let hasTag = pool.contains { $0.lowercased() == needle }
+            return presence(hasTag, op)
         case "has-link":
-            let needle = "[[\(clause.value)]]".lowercased()
-            matched = ctx.block.displayText.lowercased().contains(needle)
+            let needle = "[[\(value)]]".lowercased()
+            return presence(ctx.block.displayText.lowercased().contains(needle), op)
         case "has":
-            let needle = clause.value.lowercased()
-            matched = ctx.properties.keys.contains { $0.lowercased() == needle }
+            let needle = value.lowercased()
+            return presence(ctx.properties.keys.contains { $0.lowercased() == needle }, op)
         case "page":
-            matched = ctx.noteId.lowercased() == clause.value.lowercased()
+            return presence(ctx.noteId.lowercased() == value.lowercased(), op)
         case "block":
-            matched = ctx.blockId.lowercased() == clause.value.lowercased()
+            return presence(ctx.blockId.lowercased() == value.lowercased(), op)
         case "tag-in":
-            let needles = clause.value.split(separator: ",")
+            // Legacy comma-valued filter shape (kept for callers that
+            // build clauses directly; the parser desugars `tag-in:` to
+            // `inList` on `tag`).
+            let needles = value.split(separator: ",")
                 .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
                 .filter { !$0.isEmpty }
-            if needles.isEmpty {
-                matched = false
-            } else {
-                matched = (ctx.ownTags + ctx.inheritedTags)
-                    .contains { needles.contains($0.lowercased()) }
-            }
+            let matched = !needles.isEmpty && (ctx.ownTags + ctx.inheritedTags)
+                .contains { needles.contains($0.lowercased()) }
+            return presence(matched, op)
         case "on":
-            switch clause.value.lowercased() {
+            let matched: Bool
+            switch value.lowercased() {
             case "daily-page": matched = isDailyNoteId(ctx.noteId)
             case "system-pages": matched = ctx.pageNoteType.map(isSystemNoteType) ?? false
-            default: matched = false
+            default: matched = false // unknown on: degrades gracefully
             }
+            return presence(matched, op)
         case "is":
-            switch clause.value.lowercased() {
-            case "heading": matched = isHeadingText(ctx.block.text)
-            default: matched = false
-            }
+            let matched = value.lowercased() == "heading"
+                ? isHeadingText(ctx.block.text)
+                : false // unknown is: degrades gracefully
+            return presence(matched, op)
         case "text":
-            matched = ctx.block.text.lowercased() == clause.value.lowercased()
+            return applyOp(ctx.block.text, op, value)
         default:
             // Property lookup — case-insensitive key; missing property
-            // matches Ne ("missing != value") and fails Eq.
-            let actual = ctx.properties.first { $0.key.lowercased() == clause.key }?.value
-            guard let actual else { return clause.negated }
-            matched = actual.lowercased() == clause.value.lowercased()
+            // matches Ne ("missing != value") and fails everything else.
+            let actual = ctx.properties.first { $0.key.lowercased() == key }?.value
+            guard let actual else { return op == .ne }
+            return applyOp(actual, op, value)
         }
-        return clause.negated ? !matched : matched
+    }
+
+    /// Eq/Ne over a boolean presence test; comparison ops aren't
+    /// meaningful for these keys (Rust returns `false`).
+    private static func presence(_ matched: Bool, _ op: SimpleDsl.Op) -> Bool {
+        switch op {
+        case .eq: return matched
+        case .ne: return !matched
+        default: return false
+        }
     }
 
     static func blockMatches(_ dsl: SimpleDsl, ctx: BlockContext) -> Bool {
