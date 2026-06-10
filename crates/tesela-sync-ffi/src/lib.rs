@@ -866,7 +866,7 @@ impl SyncCoordinator {
         let our_device = self.engine.inner.device();
         let since = *self.inbound_cursor.lock().await;
 
-        let envelopes = self
+        let batch = self
             .relay
             .inner
             .poll(since)
@@ -877,7 +877,19 @@ impl SyncCoordinator {
         let mut skipped_own = 0u32;
         let mut errors = 0u32;
         let mut max_seq = since;
-        for (seq, env) in envelopes {
+        // Rows whose outer payload failed to decode/AEAD-open were
+        // skipped inside poll() (deterministic — corrupt payload or a
+        // foreign key; the client logged each). Count them as errors
+        // and advance past their seqs so one poisoned row can't wedge
+        // inbound sync forever.
+        for seq in &batch.skipped {
+            errors += 1;
+            eprintln!("tesela-sync-ffi: relay poll skipped undecryptable seq={seq}");
+            if *seq > max_seq {
+                max_seq = *seq;
+            }
+        }
+        for (seq, env) in batch.rows {
             if env.from_device == our_device {
                 // Our own write echoed back by the relay; advance the
                 // cursor but skip the apply.
@@ -1076,18 +1088,18 @@ impl RelayClientHandle {
     /// probe to confirm two-way traffic without yet doing the apply
     /// work. The full envelope-bearing poll lands in B.2.
     pub async fn poll_count(&self, since_seq: i64) -> Result<PollProbeRecord, FfiSyncError> {
-        let envelopes = self
+        let batch = self
             .inner
             .poll(since_seq)
             .await
             .map_err(FfiSyncError::from)?;
-        let highest = envelopes
-            .iter()
-            .map(|(seq, _)| *seq)
-            .max()
-            .unwrap_or(since_seq);
+        // Count only decryptable envelopes, but let the watermark cover
+        // skipped (undecryptable) rows too — they're permanently
+        // unreadable, so a cursor pinned below them would just re-fetch
+        // them forever.
+        let highest = batch.max_seq().unwrap_or(since_seq);
         Ok(PollProbeRecord {
-            count: envelopes.len() as u32,
+            count: batch.rows.len() as u32,
             highest_seq: highest,
         })
     }

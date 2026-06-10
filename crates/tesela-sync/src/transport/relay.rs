@@ -259,10 +259,20 @@ impl RelayClient {
     }
 
     /// Fetch envelopes the relay has buffered for this group since
-    /// the caller's cursor. Each tuple is `(seq, envelope)` — the
-    /// caller advances its cursor to the highest seq + calls `ack`
-    /// once the SyncEngine has applied them.
-    pub async fn poll(&self, since: i64) -> SyncResult<Vec<(i64, SyncEnvelope)>> {
+    /// the caller's cursor. Each row in [`PollBatch::rows`] is
+    /// `(seq, envelope)` — the caller advances its cursor to
+    /// [`PollBatch::max_seq`] (which also covers skipped rows) + calls
+    /// `ack` once the SyncEngine has applied them.
+    ///
+    /// A row whose outer payload fails to decode or AEAD-open does NOT
+    /// fail the batch: the failure is deterministic (corrupt payload,
+    /// postcard version skew, or a foreign/rotated key), so re-fetching
+    /// the same bytes can never succeed — aborting would wedge every
+    /// subsequent envelope for this consumer forever. Such rows are
+    /// logged + collected in [`PollBatch::skipped`] so callers advance
+    /// past them, mirroring how the post-decrypt apply path already
+    /// skips undecodable inner payloads.
+    pub async fn poll(&self, since: i64) -> SyncResult<PollBatch> {
         let path = format!("/groups/{}/ops", hex::encode(self.group_id.as_bytes()));
         let query = format!("since={since}");
         let url = self
@@ -291,29 +301,48 @@ impl RelayClient {
             )));
         }
         let rows: Vec<RelayOpWire> = resp.json().await.map_err(net_err("poll response body"))?;
-        let mut out = Vec::with_capacity(rows.len());
+        let mut out = PollBatch {
+            rows: Vec::with_capacity(rows.len()),
+            skipped: Vec::new(),
+        };
         for row in rows {
-            let from_device_bytes = hex::decode(&row.from_device)
-                .map_err(|e| SyncError::Other(format!("from_device hex: {e}")))?;
-            let from_device_arr: [u8; 16] = from_device_bytes
-                .try_into()
-                .map_err(|_| SyncError::Other("from_device wrong length".into()))?;
-            let outer_bytes = base64::engine::general_purpose::STANDARD
-                .decode(&row.payload_b64)
-                .map_err(|e| SyncError::Other(format!("payload base64: {e}")))?;
-            let outer: OuterPayload = postcard::from_bytes(&outer_bytes)
-                .map_err(|e| SyncError::Other(format!("postcard outer: {e}")))?;
-            let aad = envelope_aad(&from_device_arr, self.group_id.as_bytes());
-            let plaintext = aead_open(&self.group_key, &outer.nonce, &outer.ciphertext, &aad)?;
-            let envelope = SyncEnvelope {
-                from_device: DeviceId::from_bytes(from_device_arr),
-                to_group: self.group_id,
-                nonce: outer.nonce,
-                ciphertext: plaintext,
-            };
-            out.push((row.seq, envelope));
+            match self.open_relay_row(&row) {
+                Ok(envelope) => out.rows.push((row.seq, envelope)),
+                Err(e) => {
+                    tracing::warn!(
+                        seq = row.seq,
+                        from_device = %row.from_device,
+                        "relay poll: skipping undecryptable envelope: {e}"
+                    );
+                    out.skipped.push(row.seq);
+                }
+            }
         }
         Ok(out)
+    }
+
+    /// Decode + AEAD-open one relay row. Failures here are
+    /// deterministic per-row conditions, isolated so `poll` can skip
+    /// the row instead of failing the whole batch.
+    fn open_relay_row(&self, row: &RelayOpWire) -> SyncResult<SyncEnvelope> {
+        let from_device_bytes = hex::decode(&row.from_device)
+            .map_err(|e| SyncError::Other(format!("from_device hex: {e}")))?;
+        let from_device_arr: [u8; 16] = from_device_bytes
+            .try_into()
+            .map_err(|_| SyncError::Other("from_device wrong length".into()))?;
+        let outer_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&row.payload_b64)
+            .map_err(|e| SyncError::Other(format!("payload base64: {e}")))?;
+        let outer: OuterPayload = postcard::from_bytes(&outer_bytes)
+            .map_err(|e| SyncError::Other(format!("postcard outer: {e}")))?;
+        let aad = envelope_aad(&from_device_arr, self.group_id.as_bytes());
+        let plaintext = aead_open(&self.group_key, &outer.nonce, &outer.ciphertext, &aad)?;
+        Ok(SyncEnvelope {
+            from_device: DeviceId::from_bytes(from_device_arr),
+            to_group: self.group_id,
+            nonce: outer.nonce,
+            ciphertext: plaintext,
+        })
     }
 
     /// Deposit a full set of per-stream encrypted snapshots covering
@@ -535,6 +564,32 @@ impl RelayClient {
         use rand::RngCore;
         rand::thread_rng().fill_bytes(&mut bytes);
         base64_std(&bytes)
+    }
+}
+
+/// One [`RelayClient::poll`] batch.
+#[derive(Debug, Default)]
+pub struct PollBatch {
+    /// Envelopes that decoded + AEAD-opened cleanly, in seq order.
+    pub rows: Vec<(i64, SyncEnvelope)>,
+    /// Seqs of rows skipped because their outer payload failed to
+    /// decode or decrypt (deterministic — retrying can never help).
+    /// Surfaced so callers fold them into their cursor advancement;
+    /// otherwise a poisoned row at the batch tail would be re-fetched
+    /// and re-skipped on every poll.
+    pub skipped: Vec<i64>,
+}
+
+impl PollBatch {
+    /// Highest seq seen in this batch across BOTH delivered and
+    /// skipped rows — the watermark callers should advance their
+    /// cursor to (after applying `rows`). `None` for an empty batch.
+    pub fn max_seq(&self) -> Option<i64> {
+        self.rows
+            .iter()
+            .map(|(seq, _)| *seq)
+            .chain(self.skipped.iter().copied())
+            .max()
     }
 }
 

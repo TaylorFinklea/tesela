@@ -6,13 +6,18 @@
 //! trip matches the original `SyncEnvelope` byte-for-byte.
 
 use std::net::SocketAddr;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
 use rand::RngCore;
 use reqwest::Url;
 use tempfile::TempDir;
 
 use tesela_relay::{router, AppState};
 use tesela_sync::crypto::keys::GroupKey;
+use tesela_sync::crypto::relay_auth::{
+    body_hash_hex, canonical_request, compute_request_mac, derive_relay_auth_key,
+};
 use tesela_sync::device::DeviceId;
 use tesela_sync::group::GroupId;
 use tesela_sync::transport::relay::RelayClient;
@@ -110,7 +115,7 @@ async fn two_clients_round_trip_an_envelope_through_the_relay() {
     assert_eq!(seq, 1);
 
     // Bob polls and gets it back, AEAD-opened.
-    let rows = bob_client.poll(0).await.expect("bob poll");
+    let rows = bob_client.poll(0).await.expect("bob poll").rows;
     assert_eq!(rows.len(), 1);
     let (got_seq, got_env) = &rows[0];
     assert_eq!(*got_seq, 1);
@@ -130,11 +135,130 @@ async fn two_clients_round_trip_an_envelope_through_the_relay() {
     // compaction is now snapshot-gated (Phase 1b).
     bob_client.ack(seq).await.expect("bob ack");
     alice_client.ack(seq).await.expect("alice ack");
-    let rows = bob_client.poll(0).await.expect("bob poll after ack");
+    let rows = bob_client.poll(0).await.expect("bob poll after ack").rows;
     assert_eq!(
         rows.len(),
         1,
         "durable retention: the op survives ack (encrypted backup + bootstrap)"
+    );
+}
+
+/// Deposit a raw payload directly over HTTP with a valid MAC,
+/// bypassing `RelayClient::put_envelope`'s always-well-formed sealing
+/// path. This is how a poisoned row reaches the relay in real life:
+/// postcard version skew between clients, payload corruption, or
+/// garbage from anyone who passes the MAC gate. Returns the assigned
+/// seq.
+async fn deposit_raw(
+    base_url: &Url,
+    group: GroupId,
+    key: &GroupKey,
+    device: DeviceId,
+    payload: &[u8],
+) -> i64 {
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let auth = derive_relay_auth_key(key, &group);
+    let put_body = serde_json::json!({
+        "from_device": hex::encode(device.as_bytes()),
+        "payload_b64": b64.encode(payload),
+    });
+    let body_bytes = serde_json::to_vec(&put_body).unwrap();
+    let path = format!("/groups/{}/ops", hex::encode(group.as_bytes()));
+    let mut nonce_bytes = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = b64.encode(nonce_bytes);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let canonical = canonical_request("PUT", &path, "", &nonce, ts, &body_hash_hex(&body_bytes));
+    let mac = compute_request_mac(&auth, &canonical);
+    let resp = reqwest::Client::new()
+        .put(base_url.join(&path).unwrap())
+        .header("Content-Type", "application/json")
+        .header("X-Tesela-Group", hex::encode(group.as_bytes()))
+        .header("X-Tesela-Device", hex::encode(device.as_bytes()))
+        .header("X-Tesela-Nonce", &nonce)
+        .header("X-Tesela-Ts", ts.to_string())
+        .header("X-Tesela-Mac", b64.encode(mac))
+        .body(body_bytes)
+        .send()
+        .await
+        .expect("raw deposit send");
+    assert!(
+        resp.status().is_success(),
+        "raw deposit must 2xx, got {}",
+        resp.status()
+    );
+    let ack: serde_json::Value = resp.json().await.expect("raw deposit ack json");
+    ack["seq"].as_i64().expect("seq")
+}
+
+#[tokio::test]
+async fn poisoned_envelope_is_skipped_not_wedging_the_batch() {
+    // One row whose outer payload fails to decode/decrypt must not
+    // abort the whole poll: both surrounding good envelopes apply and
+    // the poisoned seqs are surfaced so callers advance their cursor
+    // past them (otherwise one bad row blocks every subsequent envelope
+    // for every consumer, forever — and compaction never GCs it because
+    // the depositor's covers_seq is its own stuck inbound cursor).
+    let ctx = spawn().await;
+    let (group, key) = fresh_group();
+    let alice = fresh_device();
+    let bob = fresh_device();
+    let alice_client = RelayClient::new(ctx.base_url.clone(), group, alice, key.clone());
+    let bob_client = RelayClient::new(ctx.base_url.clone(), group, bob, key.clone());
+    alice_client
+        .register_or_recover()
+        .await
+        .expect("alice register");
+
+    // seq 1: good envelope.
+    let good1 = fixture_envelope(alice, group);
+    let (seq1, _) = alice_client
+        .put_envelope(good1.clone())
+        .await
+        .expect("put good1");
+
+    // seq 2: garbage that fails the OUTER postcard decode (3 bytes —
+    // too short for the 24-byte nonce).
+    let seq2 = deposit_raw(&ctx.base_url, group, &key, alice, &[0xde, 0xad, 0xbe]).await;
+
+    // seq 3: a well-formed OuterPayload whose ciphertext won't
+    // AEAD-open under the group key (≈ sealed under a foreign key).
+    // Hand-rolled postcard: [u8; 24] nonce as raw bytes, then
+    // varint-length-prefixed Vec<u8> ciphertext.
+    let mut foreign = Vec::new();
+    foreign.extend_from_slice(&[0x42u8; 24]);
+    foreign.push(32);
+    foreign.extend_from_slice(&[0x99u8; 32]);
+    let seq3 = deposit_raw(&ctx.base_url, group, &key, alice, &foreign).await;
+
+    // seq 4: good envelope.
+    let good2 = fixture_envelope(alice, group);
+    let (seq4, _) = alice_client
+        .put_envelope(good2.clone())
+        .await
+        .expect("put good2");
+
+    // Bob's poll must NOT error out on the poisoned rows.
+    let batch = bob_client
+        .poll(0)
+        .await
+        .expect("poll must skip poisoned rows, not wedge the batch");
+    let seqs: Vec<i64> = batch.rows.iter().map(|(s, _)| *s).collect();
+    assert_eq!(seqs, vec![seq1, seq4], "both good envelopes delivered");
+    assert_eq!(batch.rows[0].1.ciphertext, good1.ciphertext);
+    assert_eq!(batch.rows[1].1.ciphertext, good2.ciphertext);
+    assert_eq!(
+        batch.skipped,
+        vec![seq2, seq3],
+        "poisoned seqs surfaced so callers advance the cursor past them"
+    );
+    assert_eq!(
+        batch.max_seq(),
+        Some(seq4),
+        "cursor watermark covers good AND skipped rows"
     );
 }
 

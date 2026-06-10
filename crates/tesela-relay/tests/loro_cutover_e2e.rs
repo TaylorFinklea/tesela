@@ -116,7 +116,7 @@ async fn relay_pull(
     cursor: &mut i64,
     self_dev: DeviceId,
 ) -> usize {
-    let rows = client.poll(*cursor).await.expect("poll");
+    let rows = client.poll(*cursor).await.expect("poll").rows;
     let mut applied = 0;
     let mut max_seq = *cursor;
     for (seq, env) in rows {
@@ -415,7 +415,7 @@ async fn snapshot_compaction_then_fresh_device_bootstraps_from_snapshots() {
     assert!(covers_seq > 0, "relay assigned a positive seq");
 
     // The deltas are durably in `relay_ops` right now.
-    let pre = client_a.poll(0).await.expect("poll pre-snapshot");
+    let pre = client_a.poll(0).await.expect("poll pre-snapshot").rows;
     assert!(!pre.is_empty(), "deltas present before compaction");
 
     // A exports a full snapshot per note (ExportMode::Snapshot via
@@ -439,7 +439,7 @@ async fn snapshot_compaction_then_fresh_device_bootstraps_from_snapshots() {
     );
 
     // Post-compaction the pre-snapshot deltas are gone from the relay log.
-    let post = client_a.poll(0).await.expect("poll post-snapshot");
+    let post = client_a.poll(0).await.expect("poll post-snapshot").rows;
     assert!(
         post.len() < pre.len(),
         "compaction dropped deltas: {} -> {}",

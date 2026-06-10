@@ -170,9 +170,19 @@ pub async fn tick(
 
     // ─── Inbound ─────────────────────────────────────────────────────
     match handle.client.poll(state.inbound_cursor).await {
-        Ok(envelopes) => {
+        Ok(batch) => {
             let mut max_seq = state.inbound_cursor;
-            for (seq, env) in envelopes {
+            // Rows whose outer payload failed to decode/AEAD-open were
+            // skipped inside poll() (deterministic failures — foreign
+            // key, corrupt payload; RelayClient already logged each).
+            // Advance past their seqs too so one poisoned row can't
+            // wedge inbound sync for this group forever.
+            for seq in &batch.skipped {
+                if *seq > max_seq {
+                    max_seq = *seq;
+                }
+            }
+            for (seq, env) in batch.rows {
                 // Drop our own echoes — the relay sees everyone's PUTs,
                 // including our own. Applying them would no-op at the
                 // engine but burns cycles.
@@ -605,7 +615,7 @@ mod tests {
         );
         assert_eq!(snaps.len(), 2, "both notes' snapshots are on the relay");
         assert!(
-            probe.poll(0).await.unwrap().is_empty(),
+            probe.poll(0).await.unwrap().rows.is_empty(),
             "ops <= watermark compacted out from under since=0"
         );
 
