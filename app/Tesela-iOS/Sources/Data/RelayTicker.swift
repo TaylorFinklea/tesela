@@ -406,11 +406,26 @@ final class RelayTicker: ObservableObject {
         guard let coordinator else { return }
         do {
             let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
-            lastSent = outcome.opsSent
-            lastTickAt = Date()
-            lastError = nil
+            noteOutboundOutcome(outcome)
         } catch {
             lastError = error.localizedDescription
+        }
+    }
+
+    /// Fold a `tickOutbound` outcome into the published status (audit A7).
+    /// The FFI returns Ok even when relay PUTs failed — the failed batch
+    /// just retries next tick — so the honesty lives HERE: a non-zero
+    /// `batchesFailed` sets `lastError` (Settings → Sync goes red) instead
+    /// of clearing it. `opsSent == 0` alone is indistinguishable from
+    /// "nothing to send" and must not be treated as a failure.
+    private func noteOutboundOutcome(_ outcome: TickOutboundRecord) {
+        lastSent = outcome.opsSent
+        lastTickAt = Date()
+        if outcome.batchesFailed > 0 {
+            lastError = outcome.lastError
+                ?? "relay delivery failed (\(outcome.batchesFailed)/\(outcome.batchesAttempted) batches)"
+        } else {
+            lastError = nil
         }
     }
 
@@ -479,9 +494,7 @@ final class RelayTicker: ObservableObject {
         guard let coordinator else { return }
         do {
             let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
-            lastSent = outcome.opsSent
-            lastTickAt = Date()
-            lastError = nil
+            noteOutboundOutcome(outcome)
         } catch {
             lastError = error.localizedDescription
         }
@@ -670,12 +683,21 @@ final class RelayTicker: ObservableObject {
             guard let coordinator else { return }
             let outbound = try await coordinator.tickOutbound(maxBytes: 1_000_000)
             let inbound = try await coordinator.tickInbound()
-            lastSent = outbound.opsSent
+            noteOutboundOutcome(outbound)
             lastApplied = inbound.applied
             inboundCursorSeq = inbound.newCursorSeq
-            lastTickAt = Date()
-            lastError = nil
-            consecutiveErrors = 0
+            // Audit A7: tick_outbound returns Ok even when relay PUTs
+            // failed (skip-not-abort — the failed batch's cursors stay
+            // uncommitted and re-produce next tick), so an Ok return is
+            // NOT "healthy". batchesFailed > 0 keeps lastError set (via
+            // noteOutboundOutcome) and backs the loop off; the green
+            // "Syncing" while edits never left the device was the
+            // 413-over-budget incident class.
+            if outbound.batchesFailed > 0 {
+                consecutiveErrors = consecutiveErrors &+ 1
+            } else {
+                consecutiveErrors = 0
+            }
             // Persist cursors (scoped per relay+group, audit A5) so a
             // cold launch resumes where we left off instead of re-polling
             // the full relay history.
@@ -1044,9 +1066,7 @@ final class RelayTicker: ObservableObject {
         guard let coordinator else { return 0 }
         do {
             let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
-            lastSent = outcome.opsSent
-            lastTickAt = Date()
-            lastError = nil
+            noteOutboundOutcome(outcome)
             return outcome.opsSent
         } catch {
             lastError = error.localizedDescription

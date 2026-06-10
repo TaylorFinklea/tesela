@@ -83,7 +83,7 @@ struct GrAppShell: View {
                         //    confirmed (commitPushedDelta) — a dropped frame
                         //    keeps the VV back so the next delta re-includes it.
                         if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
-                            if liveSync?.sendDelta(frame) == true {
+                            if await liveSync?.sendDelta(frame) == true {
                                 await relayTicker?.commitPushedDelta(slug: slug)
                             }
                         }
@@ -106,7 +106,7 @@ struct GrAppShell: View {
                             insert: insert
                         )
                         if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
-                            if liveSync?.sendDelta(frame) == true {
+                            if await liveSync?.sendDelta(frame) == true {
                                 await relayTicker?.commitPushedDelta(slug: slug)
                             }
                         }

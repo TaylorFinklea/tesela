@@ -88,7 +88,7 @@ struct AppShell: View {
                                 //    (commitPushedDelta) so a dropped frame
                                 //    re-ships next time.
                                 if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
-                                    if liveSync?.sendDelta(frame) == true {
+                                    if await liveSync?.sendDelta(frame) == true {
                                         await relayTicker?.commitPushedDelta(slug: slug)
                                     }
                                 }

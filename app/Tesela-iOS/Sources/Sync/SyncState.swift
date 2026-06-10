@@ -160,24 +160,34 @@ final class LiveSyncSocket: ObservableObject {
     }
 
     /// Push a TLR2-framed Loro delta to the hub as a binary WS frame.
-    /// Returns `true` when the frame was handed to a connected socket,
-    /// `false` when the socket isn't connected (the caller must NOT advance
-    /// its per-note `lastPushedVV` baseline in that case, so the dropped ops
-    /// are re-included in the next delta — otherwise a since_vv delta would
-    /// skip them, since a snapshot is no longer re-sent every keystroke).
+    /// Returns `true` ONLY after the send completion confirms the frame
+    /// actually went out on the wire; `false` when there is no socket or
+    /// the send (or the handshake it was queued behind) ultimately failed.
+    /// The caller must NOT advance its per-note `lastPushedVV` baseline on
+    /// `false`, so the dropped ops are re-included in the next delta —
+    /// otherwise a since_vv delta would skip them forever (in hub mode the
+    /// WS is the SOLE author→hub path; the relay tick is gated off).
+    ///
+    /// Audit A7: the old version returned `true` for any frame QUEUED onto
+    /// a socket whose `connected` flag is set optimistically pre-handshake
+    /// (openSocket flips it right after `resume()`), ignoring the send
+    /// completion. A frame queued onto a connection that never completed
+    /// its handshake — or racing a dying socket — was reported as sent,
+    /// the baseline advanced, and the edit was permanently excluded from
+    /// WS delivery (silent one-way divergence). Awaiting the completion
+    /// covers both: URLSession queues pre-handshake sends and fails their
+    /// completions when the connection ultimately fails.
     /// The bytes are produced by the engine owner
-    /// (`RelayTicker.produceDeltaFrame(slug:)`); this type never touches the
-    /// engine. `true` is best-effort: a queued send that later fails surfaces
-    /// as the next receive failure → reconnect/backoff, and the reconnect
-    /// catch-up (`bootstrapNoteIfNeeded`) reconciles a continuously-open peer.
+    /// (`RelayTicker.produceDeltaFrame(slug:)`); this type never touches
+    /// the engine.
     @discardableResult
-    func sendDelta(_ frame: Data) -> Bool {
+    func sendDelta(_ frame: Data) async -> Bool {
         guard connected, let task else { return false }
-        task.send(.data(frame)) { _ in
-            // Best-effort: a send failure surfaces as the next receive
-            // failure, which drives the existing reconnect/backoff path.
+        return await withCheckedContinuation { cont in
+            task.send(.data(frame)) { error in
+                cont.resume(returning: error == nil)
+            }
         }
-        return true
     }
 
     private func scheduleReconnect() {
