@@ -135,8 +135,7 @@ async fn setup_with_peer_beta_edit(
         addr
     );
 
-    let seed_body =
-        format!("- alpha <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n");
+    let seed_body = format!("- alpha <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n");
     let created: serde_json::Value = client
         .post(format!("{}/notes", base))
         .json(&serde_json::json!({
@@ -202,9 +201,8 @@ async fn put_with_base_preserves_concurrent_peer_edit() {
     // The STALE author's whole-body PUT: it changed alpha ("alpha
     // CHANGED") but carries the OLD beta. It sends `base_content` = the
     // body it started from (the pre-peer seed, with old beta).
-    let stale_new = format!(
-        "- alpha CHANGED <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n"
-    );
+    let stale_new =
+        format!("- alpha CHANGED <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n");
     let after: serde_json::Value = client
         .put(format!("{}/notes/{}", base, note_id))
         .json(&serde_json::json!({
@@ -310,9 +308,8 @@ async fn put_without_base_still_clobbers() {
         setup_with_peer_beta_edit(&temp, &client).await;
 
     // Same stale PUT, but NO `base_content` field — the legacy path.
-    let stale_new = format!(
-        "- alpha CHANGED <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n"
-    );
+    let stale_new =
+        format!("- alpha CHANGED <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n");
     let after: serde_json::Value = client
         .put(format!("{}/notes/{}", base, note_id))
         .json(&serde_json::json!({
@@ -394,8 +391,7 @@ async fn setup_with_frontmatter(
 async fn bundled_block_and_frontmatter_put_lands_both() {
     let temp = TempDir::new().unwrap();
     let client = reqwest::Client::new();
-    let (mosaic, _server, base, note_id, seed_body) =
-        setup_with_frontmatter(&temp, &client).await;
+    let (mosaic, _server, base, note_id, seed_body) = setup_with_frontmatter(&temp, &client).await;
 
     // ONE PUT: change alpha's text AND the frontmatter (title + tags),
     // carrying `base_content` = the original seed so the diff is base→new.
@@ -507,9 +503,7 @@ async fn bundled_block_and_frontmatter_put_preserves_peer_block_edit() {
     let file = read_note_file_containing(&mosaic, "alpha CHANGED")
         .expect("a notes/*.md should hold 'alpha CHANGED'");
     assert!(
-        file.contains("alpha CHANGED")
-            && file.contains("New Title")
-            && file.contains("beta PEER"),
+        file.contains("alpha CHANGED") && file.contains("New Title") && file.contains("beta PEER"),
         "materialized file must hold the block edit, frontmatter edit, AND \
          the peer's beta edit; got:\n{file}"
     );

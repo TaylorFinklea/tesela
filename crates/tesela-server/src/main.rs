@@ -276,14 +276,10 @@ async fn main() -> Result<()> {
         let snapshot_dir = mosaic.join(".tesela").join("loro");
         let notes_dir = mosaic.join("notes");
         let hlc = Arc::new(tesela_sync::Hlc::new(device));
-        let loro = tesela_sync::LoroEngine::with_dirs(
-            device,
-            hlc,
-            snapshot_dir,
-            Some(notes_dir.clone()),
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!("open loro engine: {e}"))?;
+        let loro =
+            tesela_sync::LoroEngine::with_dirs(device, hlc, snapshot_dir, Some(notes_dir.clone()))
+                .await
+                .map_err(|e| anyhow::anyhow!("open loro engine: {e}"))?;
         info!("tesela-sync: device id = {}", loro.device().to_hex());
         let reseed = std::env::var("TESELA_LORO_RESEED")
             .map(|v| !v.is_empty())
@@ -308,10 +304,9 @@ async fn main() -> Result<()> {
     // `<mosaic>/.tesela/`. A fresh install gets a freshly-minted group;
     // a join via pairing code overwrites both halves. Loaded BEFORE the
     // sync daemon so it can encrypt outgoing envelopes from tick 0.
-    let group_identity =
-        tesela_sync::load_or_create_group_identity(&mosaic_for_shutdown)
-            .await
-            .map_err(|e| anyhow::anyhow!("load group identity: {e}"))?;
+    let group_identity = tesela_sync::load_or_create_group_identity(&mosaic_for_shutdown)
+        .await
+        .map_err(|e| anyhow::anyhow!("load group identity: {e}"))?;
     info!(
         "tesela-sync: group id = {:02x?}",
         group_identity.group_id.as_bytes()
@@ -663,7 +658,10 @@ fn spawn_parent_death_watchdog() {
         let gone = unsafe { libc::kill(expected, 0) } != 0
             && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
         if reparented || gone {
-            warn!("parent process {} gone; shutting down embedded server", expected);
+            warn!(
+                "parent process {} gone; shutting down embedded server",
+                expected
+            );
             unsafe {
                 libc::raise(libc::SIGTERM);
             }
@@ -854,14 +852,12 @@ async fn bring_up_relay_if_configured(
     };
     let ident = state.group_identity.read().await.clone();
     let device = state.sync_engine.device();
-    let client = std::sync::Arc::new(
-        tesela_sync::transport::relay::RelayClient::new(
-            url.clone(),
-            ident.group_id,
-            device,
-            ident.group_key.clone(),
-        ),
-    );
+    let client = std::sync::Arc::new(tesela_sync::transport::relay::RelayClient::new(
+        url.clone(),
+        ident.group_id,
+        device,
+        ident.group_key.clone(),
+    ));
     let mut persisted = sync_relay::RelayState::load(mosaic).await;
     // Scope the persisted cursors to the CURRENT (relay, group) identity:
     // a relay migration or a group re-pair means a fresh seq namespace, so
@@ -950,10 +946,7 @@ async fn bring_up_relay_if_configured(
                         // so they converge without waiting on their own poll.
                         // `origin: None` — fan out to everyone (the relay has
                         // no originating WS socket). Cursor-free export.
-                        if let Some(bytes) = tick_engine
-                            .export_doc_update(note_id, None)
-                            .await
-                        {
+                        if let Some(bytes) = tick_engine.export_doc_update(note_id, None).await {
                             if let Ok(frame) = tesela_sync::encode_loro_relay_payload(&[
                                 tesela_sync::LoroDocUpdate {
                                     doc: note_id,
@@ -1137,7 +1130,10 @@ mod tests {
             .await
             .unwrap();
         let base = device_a.export_doc_update(note_id, None).await.unwrap();
-        server_engine.import_doc_update(note_id, &base).await.unwrap();
+        server_engine
+            .import_doc_update(note_id, &base)
+            .await
+            .unwrap();
 
         // Now A makes the edit we expect to propagate.
         device_a
@@ -1169,7 +1165,11 @@ mod tests {
             mosaic.clone(),
             tesela_core::config::StorageConfig::default(),
         ));
-        let index = Arc::new(SqliteIndex::open(&mosaic.join(".tesela").join("test.db")).await.unwrap());
+        let index = Arc::new(
+            SqliteIndex::open(&mosaic.join(".tesela").join("test.db"))
+                .await
+                .unwrap(),
+        );
         let (ws_tx, _) = broadcast::channel::<WsEvent>(64);
         let (ws_delta_tx, _) = broadcast::channel::<state::WsDelta>(64);
         let group_identity = Arc::new(RwLock::new(tesela_sync::GroupIdentity {
@@ -1223,12 +1223,22 @@ mod tests {
         while (!got_binary_b || !got_text_b) && tokio::time::Instant::now() < deadline {
             match tokio::time::timeout(std::time::Duration::from_secs(2), client_b.next()).await {
                 Ok(Some(Ok(TMessage::Binary(b)))) => {
-                    assert_eq!(b.as_ref(), frame.as_slice(), "B gets the exact applied bytes");
+                    assert_eq!(
+                        b.as_ref(),
+                        frame.as_slice(),
+                        "B gets the exact applied bytes"
+                    );
                     got_binary_b = true;
                 }
                 Ok(Some(Ok(TMessage::Text(t)))) => {
-                    assert!(t.contains("note_updated"), "B gets a NoteUpdated event: {t}");
-                    assert!(t.contains("live edit from A"), "event carries merged content");
+                    assert!(
+                        t.contains("note_updated"),
+                        "B gets a NoteUpdated event: {t}"
+                    );
+                    assert!(
+                        t.contains("live edit from A"),
+                        "event carries merged content"
+                    );
                     got_text_b = true;
                 }
                 Ok(Some(Ok(_))) => {}
@@ -1253,11 +1263,17 @@ mod tests {
                 _ => break,
             }
         }
-        assert!(!echoed_to_a, "echo-suppression: A never gets its own delta back");
+        assert!(
+            !echoed_to_a,
+            "echo-suppression: A never gets its own delta back"
+        );
 
         // ── Server engine converged on A's edit ───────────────────────────
         let rendered = server_engine_handle.render_note(note_id).await.unwrap();
-        assert!(rendered.contains("live edit from A"), "server converged: {rendered:?}");
+        assert!(
+            rendered.contains("live edit from A"),
+            "server converged: {rendered:?}"
+        );
     }
 
     /// End-to-end real-socket regression for the WS-push clobber (the final
@@ -1340,8 +1356,7 @@ mod tests {
         // the stale "Awesome".)
         let ddev = DeviceId::from_bytes([0x11; 16]);
         let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
-        let base_content =
-            format!("- Awesome <!-- bid:{A_BID} -->\n- Bee <!-- bid:{B_BID} -->\n");
+        let base_content = format!("- Awesome <!-- bid:{A_BID} -->\n- Bee <!-- bid:{B_BID} -->\n");
         for engine in [&server_engine, &device] {
             engine
                 .record_local(OpPayload::NoteUpsert {
@@ -1581,7 +1596,10 @@ mod tests {
             })
             .await
             .unwrap();
-        let base_snap = server_engine.export_doc_update(note_id, None).await.unwrap();
+        let base_snap = server_engine
+            .export_doc_update(note_id, None)
+            .await
+            .unwrap();
 
         let ddev = DeviceId::from_bytes([0x11; 16]);
         let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
@@ -1673,10 +1691,17 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert!(resp.status().is_success(), "block-op POST ok: {:?}", resp.status());
+        assert!(
+            resp.status().is_success(),
+            "block-op POST ok: {:?}",
+            resp.status()
+        );
 
         // ── THE "DEVICE" EDIT over the real WS: push the concurrent A frame. ──
-        pusher.send(TMessage::Binary(frame.clone().into())).await.unwrap();
+        pusher
+            .send(TMessage::Binary(frame.clone().into()))
+            .await
+            .unwrap();
 
         // Drain WS events until the server has applied the inbound delta (the
         // HTTP edit + the WS apply each emit a note_updated; wait for at least

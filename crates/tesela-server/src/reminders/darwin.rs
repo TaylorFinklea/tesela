@@ -645,8 +645,7 @@ fn build_recurrence_rule(rec: &Recurrence) -> Retained<EKRecurrenceRule> {
                 .iter()
                 .map(|w| EKRecurrenceDayOfWeek::dayOfWeek(chrono_weekday_to_ek(*w)))
                 .collect();
-            let arr: Retained<NSArray<EKRecurrenceDayOfWeek>> =
-                NSArray::from_retained_slice(&days);
+            let arr: Retained<NSArray<EKRecurrenceDayOfWeek>> = NSArray::from_retained_slice(&days);
             let alloc = EKRecurrenceRule::alloc();
             EKRecurrenceRule::initRecurrenceWithFrequency_interval_daysOfTheWeek_daysOfTheMonth_monthsOfTheYear_weeksOfTheYear_daysOfTheYear_setPositions_end(
                 alloc,
@@ -781,7 +780,12 @@ unsafe fn snapshot_recurrence(rem: &EKReminder) -> Option<Recurrence> {
         None
     };
 
-    Some(Recurrence { freq: tesela_freq, interval, by_weekday, end })
+    Some(Recurrence {
+        freq: tesela_freq,
+        interval,
+        by_weekday,
+        end,
+    })
 }
 
 /// Canonical `recurring::` value for a `Recurrence`. Used when writing
@@ -797,8 +801,14 @@ fn recurrence_to_canonical(rec: &Recurrence) -> String {
         // Weekday aliases for common sets.
         let mut days = rec.by_weekday.clone();
         days.sort_by_key(|w| w.num_days_from_monday());
-        let mon_fri =
-            [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri].as_slice();
+        let mon_fri = [
+            Weekday::Mon,
+            Weekday::Tue,
+            Weekday::Wed,
+            Weekday::Thu,
+            Weekday::Fri,
+        ]
+        .as_slice();
         let sat_sun = [Weekday::Sat, Weekday::Sun].as_slice();
         if days.as_slice() == mon_fri {
             "weekdays".to_string()
@@ -1572,7 +1582,10 @@ mod tests {
         // Pulled values should round-trip into the user-friendly forms,
         // not the long "every 1 week" variants — those would flap on
         // every sync if the user typed a shorter form locally.
-        assert_eq!(recurrence_to_canonical(&Recurrence::simple(Freq::Daily, 1)), "daily");
+        assert_eq!(
+            recurrence_to_canonical(&Recurrence::simple(Freq::Daily, 1)),
+            "daily"
+        );
         assert_eq!(
             recurrence_to_canonical(&Recurrence::simple(Freq::Weekly, 1)),
             "weekly"
@@ -1661,7 +1674,11 @@ mod tests {
         let mwf = Recurrence {
             freq: Freq::Weekly,
             interval: 1,
-            by_weekday: vec![chrono::Weekday::Mon, chrono::Weekday::Wed, chrono::Weekday::Fri],
+            by_weekday: vec![
+                chrono::Weekday::Mon,
+                chrono::Weekday::Wed,
+                chrono::Weekday::Fri,
+            ],
             end: None,
         };
         let s = recurrence_to_canonical(&mwf);
@@ -1705,7 +1722,9 @@ mod tests {
             freq: Freq::Weekly,
             interval: 1,
             by_weekday: vec![],
-            end: Some(RecurrenceEnd::Until(NaiveDate::from_ymd_opt(2026, 12, 31).unwrap())),
+            end: Some(RecurrenceEnd::Until(
+                NaiveDate::from_ymd_opt(2026, 12, 31).unwrap(),
+            )),
         };
         let s = recurrence_to_canonical(&until);
         assert_eq!(s, "weekly until 2026-12-31");
@@ -1730,8 +1749,14 @@ mod tests {
         let mwf_until = Recurrence {
             freq: Freq::Weekly,
             interval: 1,
-            by_weekday: vec![chrono::Weekday::Mon, chrono::Weekday::Wed, chrono::Weekday::Fri],
-            end: Some(RecurrenceEnd::Until(NaiveDate::from_ymd_opt(2027, 6, 30).unwrap())),
+            by_weekday: vec![
+                chrono::Weekday::Mon,
+                chrono::Weekday::Wed,
+                chrono::Weekday::Fri,
+            ],
+            end: Some(RecurrenceEnd::Until(
+                NaiveDate::from_ymd_opt(2027, 6, 30).unwrap(),
+            )),
         };
         let s = recurrence_to_canonical(&mwf_until);
         assert_eq!(s, "every mon, wed, fri until 2027-06-30");
@@ -1743,7 +1768,11 @@ mod tests {
         let mwf_count = Recurrence {
             freq: Freq::Weekly,
             interval: 1,
-            by_weekday: vec![chrono::Weekday::Mon, chrono::Weekday::Wed, chrono::Weekday::Fri],
+            by_weekday: vec![
+                chrono::Weekday::Mon,
+                chrono::Weekday::Wed,
+                chrono::Weekday::Fri,
+            ],
             end: Some(RecurrenceEnd::Count(10)),
         };
         let s = recurrence_to_canonical(&mwf_count);

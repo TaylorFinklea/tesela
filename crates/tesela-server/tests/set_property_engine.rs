@@ -217,7 +217,10 @@ async fn set_property_on_block_with_intext_prop_does_not_duplicate() {
     let addr = format!("127.0.0.1:{}", port);
     let base = format!("http://{}", addr);
     let _server = spawn_server(&mosaic, &addr);
-    assert!(wait_for_port(&addr, Duration::from_secs(15)), "server never bound");
+    assert!(
+        wait_for_port(&addr, Duration::from_secs(15)),
+        "server never bound"
+    );
 
     let client = reqwest::Client::new();
 
@@ -225,7 +228,14 @@ async fn set_property_on_block_with_intext_prop_does_not_duplicate() {
     let created: serde_json::Value = client
         .post(format!("{base}/notes"))
         .json(&serde_json::json!({ "title": "Dup Note", "content": seed_body, "tags": [] }))
-        .send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     let note_id = created["id"].as_str().unwrap().to_string();
 
     // The bullet is body line 0; status:: todo is its continuation line.
@@ -236,7 +246,11 @@ async fn set_property_on_block_with_intext_prop_does_not_duplicate() {
             "key": "status",
             "value": "doing",
         }))
-        .send().await.unwrap().error_for_status().unwrap();
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
 
     let file = read_note_file_containing(&mosaic, "a task").expect("note file");
     let status_lines = file.matches("status::").count();
@@ -264,7 +278,10 @@ async fn set_status_done_on_recurring_block_rolls_via_engine() {
     let addr = format!("127.0.0.1:{}", port);
     let base = format!("http://{}", addr);
     let _server = spawn_server(&mosaic, &addr);
-    assert!(wait_for_port(&addr, Duration::from_secs(15)), "server never bound");
+    assert!(
+        wait_for_port(&addr, Duration::from_secs(15)),
+        "server never bound"
+    );
 
     let client = reqwest::Client::new();
 
@@ -276,7 +293,14 @@ async fn set_status_done_on_recurring_block_rolls_via_engine() {
     let created: serde_json::Value = client
         .post(format!("{base}/notes"))
         .json(&serde_json::json!({ "title": "Recur Note", "content": seed_body, "tags": [] }))
-        .send().await.unwrap().error_for_status().unwrap().json().await.unwrap();
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
     let note_id = created["id"].as_str().unwrap().to_string();
 
     // Mark it done via the re-pointed route — should trigger the roll.
@@ -287,7 +311,11 @@ async fn set_status_done_on_recurring_block_rolls_via_engine() {
             "key": "status",
             "value": "done",
         }))
-        .send().await.unwrap().error_for_status().unwrap();
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
 
     let file = read_note_file_containing(&mosaic, "water plants").expect("note file");
     // Exactly one status:: line, and the roll reset it to todo (not done).

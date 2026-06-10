@@ -38,7 +38,12 @@ pub struct Recurrence {
 impl Recurrence {
     /// Constructor for a plain interval recurrence with no BYDAY / end.
     pub fn simple(freq: Freq, interval: u32) -> Self {
-        Recurrence { freq, interval, by_weekday: Vec::new(), end: None }
+        Recurrence {
+            freq,
+            interval,
+            by_weekday: Vec::new(),
+            end: None,
+        }
     }
 }
 
@@ -109,7 +114,11 @@ fn parse_freq(base: &str) -> Option<Recurrence> {
                 freq: Freq::Weekly,
                 interval: 1,
                 by_weekday: vec![
-                    Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri,
+                    Weekday::Mon,
+                    Weekday::Tue,
+                    Weekday::Wed,
+                    Weekday::Thu,
+                    Weekday::Fri,
                 ],
                 end: None,
             })
@@ -262,7 +271,10 @@ mod tests {
         assert_eq!(parse(" Daily "), Some(Recurrence::simple(Freq::Daily, 1)));
         assert_eq!(parse("every day"), Some(Recurrence::simple(Freq::Daily, 1)));
         assert_eq!(parse("weekly"), Some(Recurrence::simple(Freq::Weekly, 1)));
-        assert_eq!(parse("every week"), Some(Recurrence::simple(Freq::Weekly, 1)));
+        assert_eq!(
+            parse("every week"),
+            Some(Recurrence::simple(Freq::Weekly, 1))
+        );
         assert_eq!(parse("monthly"), Some(Recurrence::simple(Freq::Monthly, 1)));
         assert_eq!(parse("yearly"), Some(Recurrence::simple(Freq::Yearly, 1)));
         assert_eq!(parse("annually"), Some(Recurrence::simple(Freq::Yearly, 1)));
@@ -271,7 +283,13 @@ mod tests {
             Some(Recurrence {
                 freq: Freq::Weekly,
                 interval: 1,
-                by_weekday: vec![Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri],
+                by_weekday: vec![
+                    Weekday::Mon,
+                    Weekday::Tue,
+                    Weekday::Wed,
+                    Weekday::Thu,
+                    Weekday::Fri
+                ],
                 end: None,
             })
         );
@@ -279,11 +297,26 @@ mod tests {
 
     #[test]
     fn parse_every_n() {
-        assert_eq!(parse("every 2 weeks"), Some(Recurrence::simple(Freq::Weekly, 2)));
-        assert_eq!(parse("every 3 days"), Some(Recurrence::simple(Freq::Daily, 3)));
-        assert_eq!(parse("every 1 day"), Some(Recurrence::simple(Freq::Daily, 1)));
-        assert_eq!(parse("every 6 months"), Some(Recurrence::simple(Freq::Monthly, 6)));
-        assert_eq!(parse("every 2 years"), Some(Recurrence::simple(Freq::Yearly, 2)));
+        assert_eq!(
+            parse("every 2 weeks"),
+            Some(Recurrence::simple(Freq::Weekly, 2))
+        );
+        assert_eq!(
+            parse("every 3 days"),
+            Some(Recurrence::simple(Freq::Daily, 3))
+        );
+        assert_eq!(
+            parse("every 1 day"),
+            Some(Recurrence::simple(Freq::Daily, 1))
+        );
+        assert_eq!(
+            parse("every 6 months"),
+            Some(Recurrence::simple(Freq::Monthly, 6))
+        );
+        assert_eq!(
+            parse("every 2 years"),
+            Some(Recurrence::simple(Freq::Yearly, 2))
+        );
     }
 
     #[test]
@@ -369,9 +402,15 @@ mod tests {
     fn parse_byday_sets() {
         let mwf = parse("every mon, wed, fri").unwrap();
         assert_eq!(mwf.freq, Freq::Weekly);
-        assert_eq!(mwf.by_weekday, vec![Weekday::Mon, Weekday::Wed, Weekday::Fri]);
+        assert_eq!(
+            mwf.by_weekday,
+            vec![Weekday::Mon, Weekday::Wed, Weekday::Fri]
+        );
         // Full names and a single day also parse.
-        assert_eq!(parse("every monday").unwrap().by_weekday, vec![Weekday::Mon]);
+        assert_eq!(
+            parse("every monday").unwrap().by_weekday,
+            vec![Weekday::Mon]
+        );
         // Order is normalized Mon..Sun regardless of input order.
         assert_eq!(
             parse("every fri, mon").unwrap().by_weekday,
@@ -407,7 +446,7 @@ mod tests {
         assert_eq!(next_after(&mwf, d(2026, 5, 11)), d(2026, 5, 13)); // Mon -> Wed
         assert_eq!(next_after(&mwf, d(2026, 5, 13)), d(2026, 5, 15)); // Wed -> Fri
         assert_eq!(next_after(&mwf, d(2026, 5, 15)), d(2026, 5, 18)); // Fri -> next Mon
-        // From a day not in the set: Tue -> Wed.
+                                                                      // From a day not in the set: Tue -> Wed.
         assert_eq!(next_after(&mwf, d(2026, 5, 12)), d(2026, 5, 13));
     }
 
@@ -434,7 +473,7 @@ mod tests {
         // count 3 = occurrences #1,#2,#3. done_so_far is the count already completed.
         assert_eq!(advance(&r, d(2026, 5, 7), 0), Some(d(2026, 5, 8))); // completing #1 -> #2
         assert_eq!(advance(&r, d(2026, 5, 8), 1), Some(d(2026, 5, 9))); // completing #2 -> #3
-        assert_eq!(advance(&r, d(2026, 5, 9), 2), None);                // completing #3 -> spent
+        assert_eq!(advance(&r, d(2026, 5, 9), 2), None); // completing #3 -> spent
     }
 
     #[test]
@@ -448,7 +487,13 @@ mod tests {
         let weekdays = Recurrence {
             freq: Freq::Weekly,
             interval: 1,
-            by_weekday: vec![Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri],
+            by_weekday: vec![
+                Weekday::Mon,
+                Weekday::Tue,
+                Weekday::Wed,
+                Weekday::Thu,
+                Weekday::Fri,
+            ],
             end: None,
         };
         // Fri 2026-05-08 → Mon 2026-05-11

@@ -498,13 +498,12 @@ fn extract_bid(line: &str) -> (String, Option<Uuid>) {
         let end = inner_end + BID_SUFFIX.len();
         match Uuid::parse_str(input[after_prefix..inner_end].trim()) {
             Ok(uuid) => {
-                let preceding_end = if start > idx
-                    && matches!(input.as_bytes()[start - 1], b' ' | b'\t')
-                {
-                    start - 1
-                } else {
-                    start
-                };
+                let preceding_end =
+                    if start > idx && matches!(input.as_bytes()[start - 1], b' ' | b'\t') {
+                        start - 1
+                    } else {
+                        start
+                    };
                 out.push_str(&input[idx..preceding_end]);
                 if id.is_none() {
                     id = Some(uuid);
@@ -551,13 +550,12 @@ fn strip_valid_bid_comments(content: &str) -> String {
         let end = inner_end + BID_SUFFIX.len();
         match Uuid::parse_str(content[after_prefix..inner_end].trim()) {
             Ok(_) => {
-                let preceding_end = if start > idx
-                    && matches!(content.as_bytes()[start - 1], b' ' | b'\t')
-                {
-                    start - 1
-                } else {
-                    start
-                };
+                let preceding_end =
+                    if start > idx && matches!(content.as_bytes()[start - 1], b' ' | b'\t') {
+                        start - 1
+                    } else {
+                        start
+                    };
                 out.push_str(&content[idx..preceding_end]);
                 idx = end;
             }
@@ -637,10 +635,7 @@ pub async fn stamp_existing_notes(notes_dir: &std::path::Path) -> std::io::Resul
             continue;
         }
         if let Err(e) = tokio::fs::write(&path, &stamped_content).await {
-            tracing::warn!(
-                "stamp_existing_notes: write {} failed: {e}",
-                path.display()
-            );
+            tracing::warn!("stamp_existing_notes: write {} failed: {e}", path.display());
             continue;
         }
         stamped += 1;
@@ -769,7 +764,8 @@ mod tests {
     fn parse_page_properties_only_note() {
         // A query/page-property page — NO bullets. Previously parsed to
         // zero blocks and serialized empty (silent data loss).
-        let content = "---\ntitle: Saved\n---\n\nquery:: kind:page\nsort:: modified desc\nicon:: clock\n";
+        let content =
+            "---\ntitle: Saved\n---\n\nquery:: kind:page\nsort:: modified desc\nicon:: clock\n";
         let t = parse_note(content);
         assert_eq!(
             t.page_properties,
@@ -786,7 +782,11 @@ mod tests {
     fn round_trip_page_properties_only() {
         let content = "---\ntitle: Saved\n---\n\nquery:: kind:page\nsort:: modified desc\n";
         let t = parse_note(content);
-        assert_eq!(serialize_note(&t), content, "byte round-trip for clean input");
+        assert_eq!(
+            serialize_note(&t),
+            content,
+            "byte round-trip for clean input"
+        );
     }
 
     #[test]
@@ -808,7 +808,10 @@ mod tests {
     fn page_properties_then_bullets() {
         let content = "type:: ChatGPT\n- a bullet\n";
         let t = parse_note(content);
-        assert_eq!(t.page_properties, vec![("type".to_string(), "ChatGPT".to_string())]);
+        assert_eq!(
+            t.page_properties,
+            vec![("type".to_string(), "ChatGPT".to_string())]
+        );
         assert_eq!(t.blocks.len(), 1);
         assert_eq!(t.blocks[0].text, "a bullet");
         // Re-parse the serialized form is stable.
@@ -867,7 +870,10 @@ mod tests {
         let id = fixture_uuid(0x42);
         let content = format!("- foo <!-- bid:{} -->bar\n", id);
         let t = parse_note(&content);
-        assert!(!t.stamped_any, "existing bid should be reused, not re-stamped");
+        assert!(
+            !t.stamped_any,
+            "existing bid should be reused, not re-stamped"
+        );
         assert_eq!(t.blocks.len(), 1);
         assert_eq!(t.blocks[0].id, id);
         assert_eq!(t.blocks[0].text, "foobar");
@@ -1214,10 +1220,7 @@ mod tests {
         };
         assert_eq!(
             serialize_note(&tree),
-            format!(
-                "- First line <!-- bid:{} -->\n  second line\n  k:: v\n",
-                id,
-            ),
+            format!("- First line <!-- bid:{} -->\n  second line\n  k:: v\n", id,),
         );
     }
 
@@ -1226,10 +1229,7 @@ mod tests {
         // The new field is `#[serde(default)]` so older serialized
         // FlatBlocks (no `properties` key) deserialize cleanly.
         let id = fixture_uuid(0x80);
-        let json = format!(
-            r#"{{"id":"{}","parent":null,"indent":0,"text":"hi"}}"#,
-            id,
-        );
+        let json = format!(r#"{{"id":"{}","parent":null,"indent":0,"text":"hi"}}"#, id,);
         let block: FlatBlock = serde_json::from_str(&json).unwrap();
         assert!(block.properties.is_empty());
         assert_eq!(block.text, "hi");

@@ -16,9 +16,18 @@ use uuid::Uuid;
 
 #[derive(Debug)]
 enum FakeOp {
-    BlockUpsert { id: Uuid, parent: Option<Uuid>, text: String },
-    BlockMove { id: Uuid, new_parent: Option<Uuid> },
-    BlockDelete { id: Uuid },
+    BlockUpsert {
+        id: Uuid,
+        parent: Option<Uuid>,
+        text: String,
+    },
+    BlockMove {
+        id: Uuid,
+        new_parent: Option<Uuid>,
+    },
+    BlockDelete {
+        id: Uuid,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -55,8 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Maintain a uuid → loro tree id mapping. The Tesela bid is the
     // identity that must survive the migration; Loro's internal TreeID
     // is an implementation detail we map to/from on the boundary.
-    let mut map: std::collections::HashMap<Uuid, loro::TreeID> =
-        std::collections::HashMap::new();
+    let mut map: std::collections::HashMap<Uuid, loro::TreeID> = std::collections::HashMap::new();
 
     for op in &ops {
         match op {
@@ -103,6 +111,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         map.len()
     );
     let mapping_ok = map.len() == 2 && map.contains_key(&b_uuid) && map.contains_key(&c_uuid);
-    println!("\nVerdict: {}", if mapping_ok { "GREEN — oplog→Loro mapping is straightforward" } else { "FAIL" });
+    println!(
+        "\nVerdict: {}",
+        if mapping_ok {
+            "GREEN — oplog→Loro mapping is straightforward"
+        } else {
+            "FAIL"
+        }
+    );
     Ok(())
 }

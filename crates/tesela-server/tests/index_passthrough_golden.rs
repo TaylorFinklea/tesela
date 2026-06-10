@@ -147,9 +147,8 @@ async fn container_props_index_to_same_rows_as_legacy_intext_markdown() {
     // The hand-authored legacy equivalent: same prose + same `key:: value`
     // continuation lines. The bid comment is stripped by `parse_blocks`, so
     // the block lands at the same `{note_id}:0` id in both forms.
-    let legacy = format!(
-        "- finish report #Task <!-- bid:{BID_STR} -->\n  status:: doing\n  priority:: 3\n"
-    );
+    let legacy =
+        format!("- finish report #Task <!-- bid:{BID_STR} -->\n  status:: doing\n  priority:: 3\n");
 
     let from_containers = indexed_rows(&materialized).await;
     let from_legacy = indexed_rows(&legacy).await;
@@ -224,7 +223,9 @@ async fn multi_value_container_prop_indexes_to_same_row_as_legacy() {
     assert!(
         from_containers
             .iter()
-            .any(|((_, key), value)| key == "labels" && value.contains("alpha") && value.contains("beta")),
+            .any(|((_, key), value)| key == "labels"
+                && value.contains("alpha")
+                && value.contains("beta")),
         "both list members must survive into the indexed row; got: {from_containers:?}"
     );
 }

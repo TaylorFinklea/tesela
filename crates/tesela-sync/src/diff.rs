@@ -219,9 +219,7 @@ mod tests {
         assert_eq!(ops.len(), 2);
         for op in &ops {
             match op {
-                OpPayload::BlockUpsert {
-                    note_id, text, ..
-                } => {
+                OpPayload::BlockUpsert { note_id, text, .. } => {
                     assert_eq!(*note_id, [1u8; 16]);
                     assert!(text == "One" || text == "Two");
                 }
@@ -243,9 +241,27 @@ mod tests {
             frontmatter: None,
             page_properties: vec![],
             blocks: vec![
-                FlatBlock { id: a_id, parent: None, indent: 0, text: "A".into(), properties: vec![] },
-                FlatBlock { id: b_id, parent: None, indent: 0, text: "B".into(), properties: vec![] },
-                FlatBlock { id: c_id, parent: None, indent: 0, text: "C".into(), properties: vec![] },
+                FlatBlock {
+                    id: a_id,
+                    parent: None,
+                    indent: 0,
+                    text: "A".into(),
+                    properties: vec![],
+                },
+                FlatBlock {
+                    id: b_id,
+                    parent: None,
+                    indent: 0,
+                    text: "B".into(),
+                    properties: vec![],
+                },
+                FlatBlock {
+                    id: c_id,
+                    parent: None,
+                    indent: 0,
+                    text: "C".into(),
+                    properties: vec![],
+                },
             ],
             stamped_any: false,
         };

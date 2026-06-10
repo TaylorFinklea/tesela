@@ -20,8 +20,11 @@ fn build_source_doc() -> LoroDoc {
     for i in 0..60 {
         list.insert(
             list.len(),
-            format!("Block {} with some realistic text content that's not too short", i)
-                .as_str(),
+            format!(
+                "Block {} with some realistic text content that's not too short",
+                i
+            )
+            .as_str(),
         )
         .unwrap();
     }
@@ -29,7 +32,8 @@ fn build_source_doc() -> LoroDoc {
     for i in 0..25 {
         let idx = (i * 2) % (list.len());
         list.delete(idx, 1).unwrap();
-        list.insert(idx, format!("Edited block {}", i).as_str()).unwrap();
+        list.insert(idx, format!("Edited block {}", i).as_str())
+            .unwrap();
     }
     // 10 moves
     for i in 0..10 {

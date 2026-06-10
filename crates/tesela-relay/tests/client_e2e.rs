@@ -95,11 +95,17 @@ async fn two_clients_round_trip_an_envelope_through_the_relay() {
         .register_or_recover()
         .await
         .expect("alice register");
-    alice_client.verify_registration().await.expect("alice verify");
+    alice_client
+        .verify_registration()
+        .await
+        .expect("alice verify");
 
     // Bob's join: register_or_recover on the already-registered
     // group must succeed via the idempotent / recovery path.
-    let bob_at = bob_client.register_or_recover().await.expect("bob register");
+    let bob_at = bob_client
+        .register_or_recover()
+        .await
+        .expect("bob register");
     assert_eq!(
         bob_at, registered_at,
         "joining device must end up pinned to the same registered_at"
@@ -273,7 +279,10 @@ async fn hijacked_relay_is_detected_by_joiner_verification() {
     // Attacker registers first under a different key (squatting the
     // group_id they somehow learned without the group_key).
     let attacker = RelayClient::new(ctx.base_url.clone(), group, real_device, attacker_key);
-    attacker.register_or_recover().await.expect("attacker squat");
+    attacker
+        .register_or_recover()
+        .await
+        .expect("attacker squat");
 
     // Legitimate joiner (holds the real group_key) tries to verify.
     let joiner = RelayClient::new(ctx.base_url.clone(), group, joiner_device, real_key);

@@ -14,11 +14,8 @@ use std::sync::Arc;
 use tesela_sync::{
     decode_loro_relay_payload, decode_pairing_code as decode_pairing_code_inner,
     encode_loro_relay_payload, encode_pairing_code as encode_pairing_code_inner,
-    engine::SyncEngine,
-    oplog::op::OpPayload,
-    transport::relay::RelayClient,
-    DeviceId, GroupId, GroupKey, Hlc, LoroDocUpdate, LoroEngine, SyncEnvelope,
-    PairingCode as InnerPairingCode,
+    engine::SyncEngine, oplog::op::OpPayload, transport::relay::RelayClient, DeviceId, GroupId,
+    GroupKey, Hlc, LoroDocUpdate, LoroEngine, PairingCode as InnerPairingCode, SyncEnvelope,
 };
 use tokio::sync::Mutex;
 
@@ -143,9 +140,10 @@ pub struct PairingCodeRecord {
 /// Swift UI can surface a clean "Couldn't read pairing code" message.
 #[uniffi::export]
 pub fn decode_pairing_code(code: String) -> Result<PairingCodeRecord, FfiSyncError> {
-    let parsed = decode_pairing_code_inner(&code).map_err(|e| FfiSyncError::InvalidPairingCode {
-        message: e.to_string(),
-    })?;
+    let parsed =
+        decode_pairing_code_inner(&code).map_err(|e| FfiSyncError::InvalidPairingCode {
+            message: e.to_string(),
+        })?;
     Ok(PairingCodeRecord {
         group_id_hex: hex_encode(parsed.group_id.as_bytes()),
         group_key_hex: hex_encode(&parsed.group_key_bytes),
@@ -700,9 +698,12 @@ impl SyncEngineHandle {
         note_id: Vec<u8>,
         bytes: Vec<u8>,
     ) -> Result<(), FfiSyncError> {
-        let id: [u8; 16] = note_id.as_slice().try_into().map_err(|_| FfiSyncError::Other {
-            message: format!("note_id must be 16 bytes, got {}", note_id.len()),
-        })?;
+        let id: [u8; 16] = note_id
+            .as_slice()
+            .try_into()
+            .map_err(|_| FfiSyncError::Other {
+                message: format!("note_id must be 16 bytes, got {}", note_id.len()),
+            })?;
         self.inner
             .import_authoritative_snapshot(id, &bytes)
             .await
@@ -800,10 +801,7 @@ impl SyncCoordinator {
     /// caller must treat a non-zero `batches_failed` as a sync error
     /// (surface it, back off); `Ok` with `ops_sent: 0` alone is
     /// indistinguishable from "nothing to send".
-    pub async fn tick_outbound(
-        &self,
-        max_bytes: u32,
-    ) -> Result<TickOutboundRecord, FfiSyncError> {
+    pub async fn tick_outbound(&self, max_bytes: u32) -> Result<TickOutboundRecord, FfiSyncError> {
         let _ = max_bytes; // Loro batching uses MAX_RELAY_PLAINTEXT_BYTES, not this.
         let our_device = self.engine.inner.device();
 
@@ -817,10 +815,8 @@ impl SyncCoordinator {
         // limit (the canonical bootstrap would otherwise 413). Commit each
         // batch's cursors only after its PUT confirms; skip a failed batch so
         // it retries next tick rather than aborting the whole tick.
-        let batches = tesela_sync::pack_loro_relay_batches(
-            updates,
-            tesela_sync::MAX_RELAY_PLAINTEXT_BYTES,
-        );
+        let batches =
+            tesela_sync::pack_loro_relay_batches(updates, tesela_sync::MAX_RELAY_PLAINTEXT_BYTES);
         let mut ops_count = 0u32;
         let mut last_seq = None;
         let mut attempted = 0u32;
@@ -945,8 +941,10 @@ impl SyncCoordinator {
             // advance past it too rather than re-fetching the same bytes.
             match decode_loro_relay_payload(&env.ciphertext) {
                 Ok(Some(updates)) => {
-                    let pairs: Vec<([u8; 16], Vec<u8>)> =
-                        updates.into_iter().map(|u| (u.doc, u.update_bytes)).collect();
+                    let pairs: Vec<([u8; 16], Vec<u8>)> = updates
+                        .into_iter()
+                        .map(|u| (u.doc, u.update_bytes))
+                        .collect();
                     let report = self.engine.inner.apply_relay_updates(&pairs).await;
                     applied += 1;
                     // PENDING imports (causal gap): cursor advances, but the
@@ -1388,7 +1386,11 @@ mod tests {
             .await
             .unwrap()
             .expect("resident doc yields a bootstrap frame");
-        assert_eq!(&bootstrap[..4], &tesela_sync::LORO_RELAY_MAGIC, "TLR2 framed");
+        assert_eq!(
+            &bootstrap[..4],
+            &tesela_sync::LORO_RELAY_MAGIC,
+            "TLR2 framed"
+        );
 
         let outcome = b.apply_delta_frame(bootstrap).await.unwrap();
         assert_eq!(outcome.applied, 1, "one per-note update applied");
@@ -1426,7 +1428,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(ops_a >= 1 && ops_b >= 1, "each side emitted a block op (a={ops_a}, b={ops_b})");
+        assert!(
+            ops_a >= 1 && ops_b >= 1,
+            "each side emitted a block op (a={ops_a}, b={ops_b})"
+        );
 
         // B → A: A advertises its version vector; B exports the complement
         // (the reconnect/catch-up handshake `note_version` → `produce_note_delta`).
@@ -1462,7 +1467,10 @@ mod tests {
         // (empty outcome — applied 0, no catch-up), not error.
         let dir = tempfile::tempdir().unwrap();
         let h = open_handle(dir.path(), &generate_device_id_hex()).await;
-        let o1 = h.apply_delta_frame(b"not a tlr2 frame".to_vec()).await.unwrap();
+        let o1 = h
+            .apply_delta_frame(b"not a tlr2 frame".to_vec())
+            .await
+            .unwrap();
         assert_eq!(o1.applied, 0);
         assert!(!o1.needs_catchup);
         assert!(o1.note_ids_hex.is_empty());
@@ -1692,8 +1700,7 @@ mod tests {
             &[(note_poison, b"definitely not a loro update".to_vec())],
         )
         .await;
-        let good_seq =
-            put_loro_envelope(&sender, dev_b, group_id, &[(note_good, good_snap)]).await;
+        let good_seq = put_loro_envelope(&sender, dev_b, group_id, &[(note_good, good_snap)]).await;
         assert!(good_seq > poison_seq);
 
         // Consumer A through the real FFI coordinator.
@@ -1708,8 +1715,7 @@ mod tests {
         )
         .unwrap();
         relay.register_or_recover().await.expect("a register");
-        let coord =
-            SyncCoordinator::new(engine.clone(), relay, g.group_id_hex.clone()).unwrap();
+        let coord = SyncCoordinator::new(engine.clone(), relay, g.group_id_hex.clone()).unwrap();
 
         let rec = coord.tick_inbound().await.unwrap();
         assert!(rec.errors >= 1, "the failed apply is counted: {rec:?}");

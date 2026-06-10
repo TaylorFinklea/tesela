@@ -53,21 +53,26 @@ pub mod crypto;
 // Public re-exports. Keep this surface narrow and FFI-friendly.
 
 pub use crypto::aead::{envelope_aad, open as aead_open, seal as aead_seal, SealedPayload};
-pub use crypto::keys::{adopt as adopt_group_identity, load_or_create as load_or_create_group_identity, GroupIdentity, GroupKey};
-pub use crypto::pairing::{decode as decode_pairing_code, encode as encode_pairing_code, PairingCode};
+pub use crypto::keys::{
+    adopt as adopt_group_identity, load_or_create as load_or_create_group_identity, GroupIdentity,
+    GroupKey,
+};
+pub use crypto::pairing::{
+    decode as decode_pairing_code, encode as encode_pairing_code, PairingCode,
+};
 pub use device::{DeviceId, DeviceMetadata};
 pub use discovery::{DiscoveredPeer, LanDiscovery, TESELA_SERVICE_TYPE};
+pub use engine::loro_engine::LoroEngine;
 pub use engine::{
     AppliedChanges, LocalCursor, ParkedSummary, PeerCursor, RelayApplyReport, ReplayReport,
     SyncEngine,
 };
-pub use engine::loro_engine::LoroEngine;
-pub use oplog::parked::ParkReason;
 pub use error::{SyncError, SyncResult};
 pub use group::{GroupId, GroupMember};
 pub use hlc::{Hlc, HlcTimestamp};
 pub use migrate::{OpTranslator, TranslatorRegistry};
 pub use oplog::op::{ContentHash, EncodedOp, OpKind, OpPayload, PropOp};
+pub use oplog::parked::ParkReason;
 pub use tesela_core::property::PropScalar;
 pub use transport::loopback::LoopbackTransport;
 pub use transport::{Transport, TransportSession, TransportTarget, TransportTickReport};

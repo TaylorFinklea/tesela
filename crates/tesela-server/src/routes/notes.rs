@@ -535,11 +535,10 @@ pub async fn upsert_blocks(
 
     // Re-read to get fresh parsed metadata + checksum from the file the
     // engine just wrote (the engine's serialization is canonical).
-    let updated = s
-        .store
-        .get(&note_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Note not found after block write: {}", id)))?;
+    let updated =
+        s.store.get(&note_id).await?.ok_or_else(|| {
+            AppError::NotFound(format!("Note not found after block write: {}", id))
+        })?;
     s.index.reindex(&updated).await?;
     // Refresh the link graph for this note (same as the PUT path).
     {
@@ -1056,16 +1055,11 @@ pub async fn rename_tag(
         // client view), so the historical prev→new diff is correct. Pass
         // `None` to keep that path exactly.
         record_sync_update(&s, &note.content, None, &updated_note).await?;
-        let _ = s.ws_tx.send(WsEvent::NoteUpdated {
-            note: updated_note,
-        });
+        let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated_note });
     }
 
     // Now move the source tag's own file.
-    let renamed = s
-        .store
-        .create(&req.to_slug, &source.content, &[])
-        .await?;
+    let renamed = s.store.create(&req.to_slug, &source.content, &[]).await?;
     s.index.reindex(&renamed).await?;
     record_sync_create(&s, &renamed).await?;
     let _ = s.ws_tx.send(WsEvent::NoteCreated {
@@ -1105,9 +1099,7 @@ pub async fn cleanup_tag_references(
 ) -> AppResult<Json<serde_json::Value>> {
     let slug_lc = slug.to_lowercase();
 
-    use tesela_core::tag_rewrite::{
-        clear_parent_frontmatter, strip_inline_tag, strip_wiki_link,
-    };
+    use tesela_core::tag_rewrite::{clear_parent_frontmatter, strip_inline_tag, strip_wiki_link};
 
     let all = s.store.list(None, 100_000, 0).await?;
     let mut plan: Vec<(Note, String, usize)> = Vec::new();
@@ -1153,9 +1145,7 @@ pub async fn cleanup_tag_references(
         // Server-internal rewrite: `note.content` IS the base. Pass `None`
         // to keep the historical prev→new diff (see the tag-rename twin).
         record_sync_update(&s, &note.content, None, &updated_note).await?;
-        let _ = s.ws_tx.send(WsEvent::NoteUpdated {
-            note: updated_note,
-        });
+        let _ = s.ws_tx.send(WsEvent::NoteUpdated { note: updated_note });
     }
 
     Ok(Json(serde_json::json!({
@@ -1313,7 +1303,9 @@ async fn record_sync_update(
         note_id,
         &old_tree,
         &new_tree,
-        tesela_sync::diff::DiffOptions { emit_deletes: false },
+        tesela_sync::diff::DiffOptions {
+            emit_deletes: false,
+        },
     );
 
     if ops.is_empty() {
@@ -1355,11 +1347,7 @@ async fn record_sync_update(
 
     for op in ops {
         if let Err(e) = s.sync_engine.record_local(op).await {
-            tracing::warn!(
-                "sync: record_local Block op failed for {}: {}",
-                note.id,
-                e
-            );
+            tracing::warn!("sync: record_local Block op failed for {}: {}", note.id, e);
             anyhow::bail!(
                 "a block edit to note '{}' could not be recorded by the sync \
                  engine ({e}); the save may be partially applied and will not \
@@ -1759,11 +1747,7 @@ pub async fn set_block_property(
     };
 
     let key = req.key.trim().to_lowercase();
-    if key.is_empty()
-        || !key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(AppError::Validation(format!(
             "invalid property key '{}'",
             req.key
@@ -1785,12 +1769,13 @@ pub async fn set_block_property(
     // stale the moment the note reflows/prunes server-side, while its bid never
     // moves. Resolve the canonical bid (the `<!-- bid:UUID -->` marker) either
     // way so the property op targets the engine node directly.
-    let block_bid = block_bid_from_suffix(&prev_content, note_id_str, id_suffix).ok_or_else(|| {
-        AppError::NotFound(format!(
-            "block '{}' not found in note '{}'",
-            req.block_id, note_id_str
-        ))
-    })?;
+    let block_bid =
+        block_bid_from_suffix(&prev_content, note_id_str, id_suffix).ok_or_else(|| {
+            AppError::NotFound(format!(
+                "block '{}' not found in note '{}'",
+                req.block_id, note_id_str
+            ))
+        })?;
     let block_id = parse_bid(&block_bid)?;
     let doc_note_id = stable_uuid_from_slug(note_id_str);
 
@@ -1815,7 +1800,10 @@ pub async fn set_block_property(
             after_block_id: None,
         };
         if let Err(e) = s.sync_engine.record_local(payload).await {
-            tracing::warn!("sync: record_local prose-strip BlockUpsert failed for {}: {e}", req.block_id);
+            tracing::warn!(
+                "sync: record_local prose-strip BlockUpsert failed for {}: {e}",
+                req.block_id
+            );
             return Err(AppError::Internal(anyhow::anyhow!(
                 "Failed to strip in-text property: {e}"
             )));
@@ -1834,7 +1822,10 @@ pub async fn set_block_property(
             value,
         };
         if let Err(e) = s.sync_engine.record_local(payload).await {
-            tracing::warn!("sync: record_local BlockPropertySet failed for {}: {e}", req.block_id);
+            tracing::warn!(
+                "sync: record_local BlockPropertySet failed for {}: {e}",
+                req.block_id
+            );
             return Err(AppError::Internal(anyhow::anyhow!(
                 "Failed to record BlockPropertySet: {e}"
             )));
@@ -1845,11 +1836,12 @@ pub async fn set_block_property(
     // `key:: value` line in the `<slug>.md` view (the container's markdown
     // projection). This is the post-property-set re-materialized view the
     // recurring-roll + dependency-unblock logic reads from.
-    let after_prop = s
-        .store
-        .get(&note_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Note not found after set-property: {}", note_id_str)))?;
+    let after_prop = s.store.get(&note_id).await?.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "Note not found after set-property: {}",
+            note_id_str
+        ))
+    })?;
     let after_prop_content = after_prop.content.clone();
 
     // Run post-save bumps + dependency cycles against the re-materialized
@@ -1876,15 +1868,19 @@ pub async fn set_block_property(
             value: PropOp::Clear,
         };
         if let Err(e) = s.sync_engine.record_local(payload).await {
-            tracing::warn!("sync: record_local post-roll Clear failed for {}: {e}", req.block_id);
+            tracing::warn!(
+                "sync: record_local post-roll Clear failed for {}: {e}",
+                req.block_id
+            );
         }
         // Re-read AFTER the clear so the diff base reflects the cleared
         // container (no `key:: value` line), then diff → the rolled content.
-        let cleared = s
-            .store
-            .get(&note_id)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("Note not found after set-property: {}", note_id_str)))?;
+        let cleared = s.store.get(&note_id).await?.ok_or_else(|| {
+            AppError::NotFound(format!(
+                "Note not found after set-property: {}",
+                note_id_str
+            ))
+        })?;
         let stamped = stamp_block_ids(&rolled_content);
         let mut rolled_note = cleared.clone();
         rolled_note.content = stamped;
@@ -1892,11 +1888,12 @@ pub async fn set_block_property(
     }
 
     // Re-read the final materialized note for indexing + the response echo.
-    let updated = s
-        .store
-        .get(&note_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Note not found after set-property: {}", note_id_str)))?;
+    let updated = s.store.get(&note_id).await?.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "Note not found after set-property: {}",
+            note_id_str
+        ))
+    })?;
 
     s.index.reindex(&updated).await?;
     {
@@ -1904,7 +1901,11 @@ pub async fn set_block_property(
         use tesela_core::traits::link_graph::LinkGraph;
         let links = extract_wiki_links(&updated.content);
         if let Err(e) = s.index.update_links(&note_id, &links).await {
-            tracing::warn!("Failed to update links on set-property for {:?}: {}", note_id, e);
+            tracing::warn!(
+                "Failed to update links on set-property for {:?}: {}",
+                note_id,
+                e
+            );
         }
     }
     if updated.content != prev_content {
@@ -1977,7 +1978,8 @@ mod tests {
         );
 
         // Form 2: direct bid passed through.
-        let bid_direct = block_bid_from_suffix(content, note_id, "22222222-2222-2222-2222-222222222222");
+        let bid_direct =
+            block_bid_from_suffix(content, note_id, "22222222-2222-2222-2222-222222222222");
         assert_eq!(
             bid_direct,
             Some("22222222-2222-2222-2222-222222222222".to_string())
@@ -2012,8 +2014,8 @@ mod tests {
 
         use tesela_core::{config::StorageConfig, storage::filesystem::FsNoteStore};
         use tesela_sync::{
-            ContentHash, DeviceId, EncodedOp, LocalCursor, OpPayload, ParkReason,
-            ParkedSummary, PeerCursor, ReplayReport, SyncEngine, SyncError, SyncResult,
+            ContentHash, DeviceId, EncodedOp, LocalCursor, OpPayload, ParkReason, ParkedSummary,
+            PeerCursor, ReplayReport, SyncEngine, SyncError, SyncResult,
         };
 
         /// A stub engine whose `record_local` always fails — simulates a
@@ -2118,10 +2120,7 @@ mod tests {
                 Err(e) => e,
             };
             let status = err.into_response().status();
-            assert!(
-                status.is_server_error(),
-                "expected a 5xx, got {status}"
-            );
+            assert!(status.is_server_error(), "expected a 5xx, got {status}");
         }
 
         /// NoteUpsert-fallback path (frontmatter-only change, empty block
@@ -2130,18 +2129,14 @@ mod tests {
         async fn put_propagates_noteupsert_fallback_record_local_failure() {
             let tmp = tempfile::TempDir::new().unwrap();
             let state = failing_state(tmp.path()).await;
-            let seed = format!(
-                "---\ntitle: \"Old\"\n---\n\n- alpha <!-- bid:{BID} -->\n"
-            );
+            let seed = format!("---\ntitle: \"Old\"\n---\n\n- alpha <!-- bid:{BID} -->\n");
             std::fs::write(tmp.path().join("notes/fmfail.md"), &seed).unwrap();
 
             let result = update_note(
                 Path("fmfail".to_string()),
                 State(Arc::clone(&state)),
                 Json(UpdateNoteReq {
-                    content: format!(
-                        "---\ntitle: \"New\"\n---\n\n- alpha <!-- bid:{BID} -->\n"
-                    ),
+                    content: format!("---\ntitle: \"New\"\n---\n\n- alpha <!-- bid:{BID} -->\n"),
                     base_content: None,
                 }),
             )
@@ -2155,10 +2150,7 @@ mod tests {
                 Err(e) => e,
             };
             let status = err.into_response().status();
-            assert!(
-                status.is_server_error(),
-                "expected a 5xx, got {status}"
-            );
+            assert!(status.is_server_error(), "expected a 5xx, got {status}");
         }
     }
 }
@@ -2180,7 +2172,11 @@ struct StrippedBlockProse {
 /// duplicating). Returns `None` when the block has no such in-text line (so
 /// the caller skips the redundant prose update). Only the target `key`'s line
 /// is stripped — other in-text properties are preserved verbatim.
-fn strip_block_intext_prop(content: &str, block_bid: &str, key: &str) -> Option<StrippedBlockProse> {
+fn strip_block_intext_prop(
+    content: &str,
+    block_bid: &str,
+    key: &str,
+) -> Option<StrippedBlockProse> {
     let tree = parse_note(content);
     let target = uuid::Uuid::parse_str(block_bid).ok()?;
     let block = tree.blocks.iter().find(|b| b.id == target)?;
@@ -2276,11 +2272,7 @@ pub async fn clear_block_property(
     };
 
     let key = req.key.trim().to_lowercase();
-    if key.is_empty()
-        || !key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
-    {
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(AppError::Validation(format!(
             "invalid property key '{}'",
             req.key
@@ -2300,12 +2292,13 @@ pub async fn clear_block_property(
     // engine's node directly (mirror `set_block_property`): a numeric suffix is
     // a `<note_id>:<line>` resolved against the body, a non-numeric one is a
     // stable bid passed directly by the editor seam.
-    let block_bid = block_bid_from_suffix(&prev_content, note_id_str, id_suffix).ok_or_else(|| {
-        AppError::NotFound(format!(
-            "block '{}' not found in note '{}'",
-            req.block_id, note_id_str
-        ))
-    })?;
+    let block_bid =
+        block_bid_from_suffix(&prev_content, note_id_str, id_suffix).ok_or_else(|| {
+            AppError::NotFound(format!(
+                "block '{}' not found in note '{}'",
+                req.block_id, note_id_str
+            ))
+        })?;
     let block_id = parse_bid(&block_bid)?;
     let doc_note_id = stable_uuid_from_slug(note_id_str);
 
@@ -2316,17 +2309,21 @@ pub async fn clear_block_property(
         value: PropOp::Clear,
     };
     if let Err(e) = s.sync_engine.record_local(payload).await {
-        tracing::warn!("sync: record_local BlockPropertySet(Clear) failed for {}: {e}", req.block_id);
+        tracing::warn!(
+            "sync: record_local BlockPropertySet(Clear) failed for {}: {e}",
+            req.block_id
+        );
         return Err(AppError::Internal(anyhow::anyhow!(
             "Failed to record BlockPropertySet(Clear): {e}"
         )));
     }
 
-    let updated = s
-        .store
-        .get(&note_id)
-        .await?
-        .ok_or_else(|| AppError::NotFound(format!("Note not found after clear-property: {}", note_id_str)))?;
+    let updated = s.store.get(&note_id).await?.ok_or_else(|| {
+        AppError::NotFound(format!(
+            "Note not found after clear-property: {}",
+            note_id_str
+        ))
+    })?;
 
     s.index.reindex(&updated).await?;
     {
@@ -2334,7 +2331,11 @@ pub async fn clear_block_property(
         use tesela_core::traits::link_graph::LinkGraph;
         let links = extract_wiki_links(&updated.content);
         if let Err(e) = s.index.update_links(&note_id, &links).await {
-            tracing::warn!("Failed to update links on clear-property for {:?}: {}", note_id, e);
+            tracing::warn!(
+                "Failed to update links on clear-property for {:?}: {}",
+                note_id,
+                e
+            );
         }
     }
     if updated.content != prev_content {
@@ -2385,7 +2386,11 @@ pub fn try_bump_block(content: &str, block_id: &str) -> Option<(String, String)>
     let last_completed_str = format!("[[{}]]", step.anchor_date.format("%Y-%m-%d"));
 
     match step.active {
-        Some(ActiveStep { new_deadline, new_scheduled, next_iso }) => {
+        Some(ActiveStep {
+            new_deadline,
+            new_scheduled,
+            next_iso,
+        }) => {
             // Series still active — advance every date field from its own value.
             let new_body = rewrite_block_for_complete(
                 &body,
@@ -2424,7 +2429,11 @@ pub fn try_skip_block(content: &str, block_id: &str) -> Option<(String, String)>
     let step = compute_recurrence_step(block)?;
 
     match step.active {
-        Some(ActiveStep { new_deadline, new_scheduled, next_iso }) => {
+        Some(ActiveStep {
+            new_deadline,
+            new_scheduled,
+            next_iso,
+        }) => {
             let new_body = rewrite_block_for_skip(
                 &body,
                 line_num,
@@ -2780,12 +2789,20 @@ fn compute_recurrence_step(block: &tesela_core::block::ParsedBlock) -> Option<Re
                 .get("deadline")
                 .and_then(|v| {
                     let (d, _) = parse_deadline_value(v)?;
-                    Some(recurrence::next_after(&rec, d).format("%Y-%m-%d").to_string())
+                    Some(
+                        recurrence::next_after(&rec, d)
+                            .format("%Y-%m-%d")
+                            .to_string(),
+                    )
                 })
                 .or_else(|| {
                     block.properties.get("scheduled").and_then(|v| {
                         let (d, _) = parse_deadline_value(v)?;
-                        Some(recurrence::next_after(&rec, d).format("%Y-%m-%d").to_string())
+                        Some(
+                            recurrence::next_after(&rec, d)
+                                .format("%Y-%m-%d")
+                                .to_string(),
+                        )
                     })
                 })?;
 
@@ -2848,10 +2865,7 @@ fn format_deadline(date: chrono::NaiveDate, time_suffix: Option<&str>) -> String
 /// Shared block-boundary scanner. Returns `(lines, end_index, cont_indent)`
 /// where `end_index` is the first line after the block's continuation range
 /// (exclusive upper bound for in-place mutation).
-fn block_range(
-    body: &str,
-    block_line_num: usize,
-) -> Option<(Vec<String>, usize, String)> {
+fn block_range(body: &str, block_line_num: usize) -> Option<(Vec<String>, usize, String)> {
     let lines: Vec<String> = body.lines().map(String::from).collect();
     if block_line_num >= lines.len() {
         return None;
@@ -2956,7 +2970,10 @@ fn rewrite_block_for_complete(
         }
     }
     if !updated_last_completed {
-        additions.push(format!("{}last_completed:: {}", cont_indent, last_completed));
+        additions.push(format!(
+            "{}last_completed:: {}",
+            cont_indent, last_completed
+        ));
     }
     if !updated_recurrence_done {
         additions.push(format!("{}recurrence_done:: {}", cont_indent, new_done));
@@ -3031,11 +3048,7 @@ fn rewrite_block_for_skip(
 
 /// `spent` mode: series exhausted — only update `recurrence_done::`. Does not
 /// touch dates, `status::`, or `last_completed::`.
-fn rewrite_block_for_spent(
-    body: &str,
-    block_line_num: usize,
-    new_done: u32,
-) -> Option<String> {
+fn rewrite_block_for_spent(body: &str, block_line_num: usize, new_done: u32) -> Option<String> {
     let trailing_newline = body.ends_with('\n');
     let (mut lines, end, cont_indent) = block_range(body, block_line_num)?;
 
@@ -3049,7 +3062,10 @@ fn rewrite_block_for_spent(
         }
     }
     if !updated_recurrence_done {
-        lines.insert(end, format!("{}recurrence_done:: {}", cont_indent, new_done));
+        lines.insert(
+            end,
+            format!("{}recurrence_done:: {}", cont_indent, new_done),
+        );
     }
 
     Some(join_lines(lines, trailing_newline))
@@ -3153,10 +3169,19 @@ async fn ensure_tag_pages(s: &Arc<AppState>, note: &Note) {
                     tracing::warn!("ensure_tag_pages: {e}");
                 }
                 let _ = s.ws_tx.send(WsEvent::NoteCreated { note: tag_note });
-                tracing::info!("Auto-created tag page at slug '{}' (display name: '{}')", resolved_slug, tag);
+                tracing::info!(
+                    "Auto-created tag page at slug '{}' (display name: '{}')",
+                    resolved_slug,
+                    tag
+                );
             }
             Err(e) => {
-                tracing::warn!("Failed to auto-create tag page '{}' at slug '{}': {}", tag, resolved_slug, e);
+                tracing::warn!(
+                    "Failed to auto-create tag page '{}' at slug '{}': {}",
+                    tag,
+                    resolved_slug,
+                    e
+                );
             }
         }
     }
@@ -3171,7 +3196,10 @@ async fn ensure_tag_pages(s: &Arc<AppState>, note: &Note) {
 ///   - `Ok(None)` when the bare slug already holds a tag page; the caller
 ///     should reuse it and skip creation.
 ///   - `Err` on store errors.
-async fn resolve_free_tag_slug(s: &Arc<AppState>, slug_base: &str) -> Result<Option<String>, String> {
+async fn resolve_free_tag_slug(
+    s: &Arc<AppState>,
+    slug_base: &str,
+) -> Result<Option<String>, String> {
     let bare = slug_base.to_string();
     let bare_id = NoteId::new(bare.clone());
     match s.store.get(&bare_id).await {
@@ -3327,12 +3355,11 @@ mod recurrence_tests {
                 .replace("scheduled:: [[2026-05-06]]", "scheduled:: [[2026-05-07]]")
         };
         // Flip to done again.
-        let content_with_done2 =
-            content_after_first.replace("status:: todo", "status:: done");
+        let content_with_done2 = content_after_first.replace("status:: todo", "status:: done");
 
         // Second complete — series is now spent (count 2, done_so_far=1 → advance returns None).
-        let (bumped2, _iso) =
-            try_bump_block(&content_with_done2, BLOCK_ID).expect("bump returns Some even when spent");
+        let (bumped2, _iso) = try_bump_block(&content_with_done2, BLOCK_ID)
+            .expect("bump returns Some even when spent");
 
         // status stays done
         assert_eq!(
@@ -3375,8 +3402,7 @@ mod recurrence_tests {
         // Start in todo state (skip does not require done).
         let content = make_note(&[]);
 
-        let (skipped, next_iso) =
-            try_skip_block(&content, BLOCK_ID).expect("skip should succeed");
+        let (skipped, next_iso) = try_skip_block(&content, BLOCK_ID).expect("skip should succeed");
 
         assert_eq!(next_iso, "2026-05-08");
         // dates advanced
@@ -3435,7 +3461,6 @@ mod recurrence_tests {
             Some("1")
         );
     }
-
 }
 
 #[cfg(test)]
@@ -3450,8 +3475,7 @@ mod strip_block_intext_prop_tests {
     #[test]
     fn block_bid_from_suffix_accepts_line_and_bid() {
         let bid = "019e9a49-cb5c-76a1-b8c2-540abd2362f2";
-        let content =
-            format!("---\ntitle: \"T\"\ntags: []\n---\n- buy milk <!-- bid:{bid} -->\n");
+        let content = format!("---\ntitle: \"T\"\ntags: []\n---\n- buy milk <!-- bid:{bid} -->\n");
         // Numeric suffix → resolved against the body to the block's bid.
         assert_eq!(
             block_bid_from_suffix(&content, "T", "0").as_deref(),

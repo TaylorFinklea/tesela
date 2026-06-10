@@ -85,23 +85,34 @@ fn concurrent_same_block_text_edit_converges_no_pingpong() {
     let a = LoroDoc::new();
     let tree_a = a.get_tree("blocks");
     let node = tree_a.create(TreeParentId::Root).unwrap();
-    tree_a.get_meta(node).unwrap().insert("text", "original").unwrap();
+    tree_a
+        .get_meta(node)
+        .unwrap()
+        .insert("text", "original")
+        .unwrap();
     a.commit();
 
     let b = LoroDoc::new();
-    b.import(&a.export(ExportMode::all_updates()).unwrap()).unwrap();
+    b.import(&a.export(ExportMode::all_updates()).unwrap())
+        .unwrap();
 
     // Concurrent conflicting edits to the same node's "text".
     {
         let t = a.get_tree("blocks");
         let n = t.children(TreeParentId::Root).unwrap()[0];
-        t.get_meta(n).unwrap().insert("text", "A says posts were it can").unwrap();
+        t.get_meta(n)
+            .unwrap()
+            .insert("text", "A says posts were it can")
+            .unwrap();
         a.commit();
     }
     {
         let t = b.get_tree("blocks");
         let n = t.children(TreeParentId::Root).unwrap()[0];
-        t.get_meta(n).unwrap().insert("text", "B says send out").unwrap();
+        t.get_meta(n)
+            .unwrap()
+            .insert("text", "B says send out")
+            .unwrap();
         b.commit();
     }
 
@@ -167,10 +178,17 @@ fn version_vector_round_trips_for_transport() {
     add_block(&doc, "y");
     let delta = doc.export(ExportMode::updates(&decoded)).unwrap();
     let fresh = LoroDoc::new();
-    fresh.import(&doc.export(ExportMode::updates(&VersionVector::new())).unwrap())
+    fresh
+        .import(
+            &doc.export(ExportMode::updates(&VersionVector::new()))
+                .unwrap(),
+        )
         .ok();
     // Sanity: delta is non-empty (there were ops after the VV).
-    assert!(!delta.is_empty(), "delta since old VV should carry the new op");
+    assert!(
+        !delta.is_empty(),
+        "delta since old VV should carry the new op"
+    );
 }
 
 /// Phase 1 schema prototype: a per-note doc that round-trips FULL note
@@ -192,7 +210,8 @@ mod full_content {
         for (is_bullet, indent, text) in segments {
             let n = body.create(TreeParentId::Root).unwrap();
             let m = body.get_meta(n).unwrap();
-            m.insert("kind", if *is_bullet { "bullet" } else { "raw" }).unwrap();
+            m.insert("kind", if *is_bullet { "bullet" } else { "raw" })
+                .unwrap();
             m.insert("indent", *indent as i64).unwrap();
             m.insert("text", *text).unwrap();
         }
@@ -214,17 +233,35 @@ mod full_content {
             let kind = m
                 .get("kind")
                 .and_then(|v| v.into_value().ok())
-                .and_then(|v| if let LoroValue::String(s) = v { Some((*s).to_string()) } else { None })
+                .and_then(|v| {
+                    if let LoroValue::String(s) = v {
+                        Some((*s).to_string())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_default();
             let indent = m
                 .get("indent")
                 .and_then(|v| v.into_value().ok())
-                .and_then(|v| if let LoroValue::I64(i) = v { Some(i) } else { None })
+                .and_then(|v| {
+                    if let LoroValue::I64(i) = v {
+                        Some(i)
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or(0) as usize;
             let text = m
                 .get("text")
                 .and_then(|v| v.into_value().ok())
-                .and_then(|v| if let LoroValue::String(s) = v { Some((*s).to_string()) } else { None })
+                .and_then(|v| {
+                    if let LoroValue::String(s) = v {
+                        Some((*s).to_string())
+                    } else {
+                        None
+                    }
+                })
                 .unwrap_or_default();
             if kind == "bullet" {
                 out.push_str(&"  ".repeat(indent));
@@ -278,22 +315,31 @@ mod full_content {
         // Two devices edit different segments of a page-property note;
         // converge with no loss.
         let a = LoroDoc::new();
-        a.get_text("frontmatter").insert(0, "---\ntitle: T\n---\n\n").unwrap();
+        a.get_text("frontmatter")
+            .insert(0, "---\ntitle: T\n---\n\n")
+            .unwrap();
         let body = a.get_tree("body");
         let n = body.create(TreeParentId::Root).unwrap();
         body.get_meta(n).unwrap().insert("kind", "raw").unwrap();
-        body.get_meta(n).unwrap().insert("text", "query:: kind:page").unwrap();
+        body.get_meta(n)
+            .unwrap()
+            .insert("text", "query:: kind:page")
+            .unwrap();
         a.commit();
 
         let b = LoroDoc::new();
-        b.import(&a.export(ExportMode::all_updates()).unwrap()).unwrap();
+        b.import(&a.export(ExportMode::all_updates()).unwrap())
+            .unwrap();
 
         // A appends a raw line; B edits the frontmatter — disjoint.
         {
             let t = a.get_tree("body");
             let n2 = t.create(TreeParentId::Root).unwrap();
             t.get_meta(n2).unwrap().insert("kind", "raw").unwrap();
-            t.get_meta(n2).unwrap().insert("text", "sort:: modified").unwrap();
+            t.get_meta(n2)
+                .unwrap()
+                .insert("text", "sort:: modified")
+                .unwrap();
             a.commit();
         }
         {

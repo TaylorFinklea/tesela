@@ -201,11 +201,7 @@ pub trait SyncEngine: Send + Sync {
     /// trigger an authoritative-snapshot catch-up). Default forwards to
     /// `import_doc_update` and reports `false`; LoroEngine overrides to surface
     /// the real `ImportStatus.pending`.
-    async fn apply_doc_update_status(
-        &self,
-        note_id: [u8; 16],
-        bytes: &[u8],
-    ) -> SyncResult<bool> {
+    async fn apply_doc_update_status(&self, note_id: [u8; 16], bytes: &[u8]) -> SyncResult<bool> {
         self.import_doc_update(note_id, bytes).await?;
         Ok(false)
     }
@@ -239,11 +235,7 @@ pub trait SyncEngine: Send + Sync {
     /// text here to reconcile the open editor (the engine is the source of
     /// truth; the editor matches it). Returns `None` for an unknown note/block
     /// or an empty block. Default `None`; LoroEngine overrides.
-    async fn read_block_text(
-        &self,
-        _note_id: [u8; 16],
-        _block_id: [u8; 16],
-    ) -> Option<String> {
+    async fn read_block_text(&self, _note_id: [u8; 16], _block_id: [u8; 16]) -> Option<String> {
         None
     }
 

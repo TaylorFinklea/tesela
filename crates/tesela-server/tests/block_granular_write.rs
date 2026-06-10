@@ -134,8 +134,7 @@ async fn post_blocks_preserves_concurrent_peer_edit() {
 
     // 1. Create a note with alpha + beta, each carrying an explicit bid so
     //    the engine keys its nodes to ids we can address by block-granular op.
-    let seed_body =
-        format!("- alpha <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n");
+    let seed_body = format!("- alpha <!-- bid:{ALPHA_BID} -->\n- beta <!-- bid:{BETA_BID} -->\n");
     let created: serde_json::Value = client
         .post(format!("{}/notes", base))
         .json(&serde_json::json!({

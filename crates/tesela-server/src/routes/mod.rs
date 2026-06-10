@@ -44,10 +44,7 @@ pub fn build(state: AppState) -> Router {
             axum::routing::delete(notes::delete_block),
         )
         .route("/loro/index", get(notes::get_loro_index))
-        .route(
-            "/loro/notes/{id}/snapshot",
-            get(notes::get_loro_snapshot),
-        )
+        .route("/loro/notes/{id}/snapshot", get(notes::get_loro_snapshot))
         .route("/notes/{id}/backlinks", get(notes::get_backlinks))
         .route("/notes/{id}/links", get(notes::get_forward_links))
         .route("/notes/{id}/unlinked", get(notes::get_unlinked))
@@ -77,7 +74,10 @@ pub fn build(state: AppState) -> Router {
             "/sync/peer/peers",
             get(peer_sync::list_peers).post(peer_sync::add_peer),
         )
-        .route("/sync/peer/peers/{device_id_hex}", axum::routing::delete(peer_sync::remove_peer))
+        .route(
+            "/sync/peer/peers/{device_id_hex}",
+            axum::routing::delete(peer_sync::remove_peer),
+        )
         .route("/sync/peer/produce", post(peer_sync::produce))
         .route("/sync/peer/envelope", post(peer_sync::receive_envelope))
         .route("/sync/peer/now", post(peer_sync::sync_now))

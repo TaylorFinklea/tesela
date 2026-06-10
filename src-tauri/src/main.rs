@@ -137,7 +137,11 @@ fn desktop_config_value(env_var: &str, key: &str) -> Option<String> {
         if let Some(rest) = trimmed.strip_prefix(key) {
             // Require a whole-key match (next char is `=` or whitespace) so
             // `relay_url` can't match a longer key like `relay_url_extra`.
-            if rest.chars().next().is_some_and(|c| c != '=' && !c.is_whitespace()) {
+            if rest
+                .chars()
+                .next()
+                .is_some_and(|c| c != '=' && !c.is_whitespace())
+            {
                 continue;
             }
             let val = rest
@@ -283,7 +287,8 @@ fn run_app(url: String, child: Option<Child>) {
             // gear / leader `,` open).
             "settings" => {
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.eval("document.dispatchEvent(new CustomEvent('tesela:open-settings'))");
+                    let _ =
+                        w.eval("document.dispatchEvent(new CustomEvent('tesela:open-settings'))");
                 }
             }
             _ => {}
@@ -292,7 +297,8 @@ fn run_app(url: String, child: Option<Child>) {
             // Default app menu + Settings (⌘,) and a View ▸ Reload (Cmd+R) item.
             // The menu is owned by the (always-alive) app process, so the
             // accelerators fire even when the webview content process has died.
-            let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+            let settings =
+                MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
             let reload = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
             let view = Submenu::with_items(app, "View", true, &[&settings, &reload])?;
             let menu = Menu::default(app.handle())?;

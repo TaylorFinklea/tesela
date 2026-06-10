@@ -65,11 +65,7 @@ pub struct LanDiscovery {
 
 impl LanDiscovery {
     /// Advertise this server and start browsing for siblings.
-    pub fn start(
-        device_id: DeviceId,
-        display_name: &str,
-        port: u16,
-    ) -> SyncResult<Self> {
+    pub fn start(device_id: DeviceId, display_name: &str, port: u16) -> SyncResult<Self> {
         let daemon = ServiceDaemon::new().map_err(map_mdns_err)?;
 
         let device_hex = device_id.to_hex();
@@ -103,9 +99,7 @@ impl LanDiscovery {
 
         let peers: Arc<RwLock<HashMap<DeviceId, DiscoveredPeer>>> =
             Arc::new(RwLock::new(HashMap::new()));
-        let browse_rx = daemon
-            .browse(TESELA_SERVICE_TYPE)
-            .map_err(map_mdns_err)?;
+        let browse_rx = daemon.browse(TESELA_SERVICE_TYPE).map_err(map_mdns_err)?;
 
         // Spawn a background task that drains the mDNS event channel into
         // the peers map. Owning this task is fine — when the daemon is
@@ -180,10 +174,7 @@ fn handle_event(
                 return;
             };
             let Some(device_id) = parse_device_hex(did_hex) else {
-                tracing::debug!(
-                    did_hex,
-                    "mDNS peer did TXT not valid hex"
-                );
+                tracing::debug!(did_hex, "mDNS peer did TXT not valid hex");
                 return;
             };
             if device_id == self_device {
@@ -250,10 +241,7 @@ fn pick_host(info: &ServiceInfo) -> Option<IpAddr> {
     if let Some(ip) = info.get_addresses_v4().iter().next() {
         return Some(IpAddr::V4(**ip));
     }
-    info.get_addresses()
-        .iter()
-        .next()
-        .copied()
+    info.get_addresses().iter().next().copied()
 }
 
 fn parse_device_hex(hex: &str) -> Option<DeviceId> {

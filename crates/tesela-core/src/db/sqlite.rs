@@ -1026,13 +1026,12 @@ impl SearchIndex for SqliteIndex {
             std::collections::HashMap<String, String>,
         > = std::collections::HashMap::new();
         for (block_id, _) in &candidate_ids {
-            let prop_rows = sqlx::query(
-                "SELECT property_name, value FROM block_properties WHERE block_id = ?",
-            )
-            .bind(block_id)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| db_err("Failed to fetch block properties for agenda", e))?;
+            let prop_rows =
+                sqlx::query("SELECT property_name, value FROM block_properties WHERE block_id = ?")
+                    .bind(block_id)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|e| db_err("Failed to fetch block properties for agenda", e))?;
             let mut props = std::collections::HashMap::new();
             for pr in &prop_rows {
                 let key: String = pr.get("property_name");
@@ -1102,15 +1101,16 @@ impl SearchIndex for SqliteIndex {
             let is_task = {
                 let has_task_tag = props
                     .get("tags")
-                    .map(|v| {
-                        v.split(',')
-                            .any(|t| t.trim().eq_ignore_ascii_case("task"))
-                    })
+                    .map(|v| v.split(',').any(|t| t.trim().eq_ignore_ascii_case("task")))
                     .unwrap_or(false);
                 let has_status = props.contains_key("status");
                 has_task_tag || has_status
             };
-            let kind = if is_task { AgendaRowKind::Task } else { AgendaRowKind::Event };
+            let kind = if is_task {
+                AgendaRowKind::Task
+            } else {
+                AgendaRowKind::Event
+            };
 
             // Block text: parse from body if we have it, otherwise use empty.
             let block_text: String = note_bodies
@@ -1126,9 +1126,7 @@ impl SearchIndex for SqliteIndex {
 
             // Recurrence setup.
             let recurrence_str = props.get("recurring").cloned();
-            let rec = recurrence_str
-                .as_deref()
-                .and_then(|s| recurrence::parse(s));
+            let rec = recurrence_str.as_deref().and_then(|s| recurrence::parse(s));
             let done_so_far_start: u32 = props
                 .get("recurrence_done")
                 .and_then(|s| s.parse().ok())
@@ -1469,7 +1467,10 @@ fn field(item: &crate::query::QueryItem, key: &str) -> String {
 /// stay intact since they're real content, not a link wrapper.
 fn normalize_sort_value(value: &str) -> String {
     let trimmed = value.trim();
-    if let Some(inner) = trimmed.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
+    if let Some(inner) = trimmed
+        .strip_prefix("[[")
+        .and_then(|s| s.strip_suffix("]]"))
+    {
         inner.to_ascii_lowercase()
     } else {
         trimmed.to_ascii_lowercase()
@@ -2007,15 +2008,21 @@ mod tests {
             .unwrap();
 
         // done task excluded
-        assert_eq!(rows.len(), 2, "expected 2 rows (done excluded): got {rows:?}");
+        assert_eq!(
+            rows.len(),
+            2,
+            "expected 2 rows (done excluded): got {rows:?}"
+        );
         assert!(
-            rows.iter().any(|r| r.kind == crate::query::AgendaRowKind::Task
-                && r.occurrence_date == "2026-05-22"),
+            rows.iter()
+                .any(|r| r.kind == crate::query::AgendaRowKind::Task
+                    && r.occurrence_date == "2026-05-22"),
             "task row missing"
         );
         assert!(
-            rows.iter().any(|r| r.kind == crate::query::AgendaRowKind::Event
-                && r.occurrence_time == Some("14:00".to_string())),
+            rows.iter()
+                .any(|r| r.kind == crate::query::AgendaRowKind::Event
+                    && r.occurrence_time == Some("14:00".to_string())),
             "event row missing"
         );
     }
@@ -2062,7 +2069,10 @@ mod tests {
             &[],
         );
         index.reindex(&note).await.unwrap();
-        let rows = index.agenda_blocks("2026-05-22", "2026-05-22", false).await.unwrap();
+        let rows = index
+            .agenda_blocks("2026-05-22", "2026-05-22", false)
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].field, crate::query::AgendaField::Scheduled);
     }
@@ -2078,7 +2088,10 @@ mod tests {
             &[],
         );
         index.reindex(&note).await.unwrap();
-        let rows = index.agenda_blocks("2026-04-15", "2026-04-15", false).await.unwrap();
+        let rows = index
+            .agenda_blocks("2026-04-15", "2026-04-15", false)
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].field, crate::query::AgendaField::Deadline);
     }
@@ -2098,9 +2111,15 @@ mod tests {
             &[],
         );
         index.reindex(&note).await.unwrap();
-        let rows = index.agenda_blocks("2026-05-19", "2026-05-26", false).await.unwrap();
+        let rows = index
+            .agenda_blocks("2026-05-19", "2026-05-26", false)
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].occurrence_date, "2026-05-20", "anchor should be scheduled date");
+        assert_eq!(
+            rows[0].occurrence_date, "2026-05-20",
+            "anchor should be scheduled date"
+        );
         assert_eq!(rows[0].field, crate::query::AgendaField::Scheduled);
     }
 
@@ -2123,7 +2142,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(rows.len(), 3, "count 3 should yield exactly 3 rows: got {rows:?}");
+        assert_eq!(
+            rows.len(),
+            3,
+            "count 3 should yield exactly 3 rows: got {rows:?}"
+        );
     }
 
     // ────────────────────────────────────────────────────────────────

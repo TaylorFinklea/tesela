@@ -328,7 +328,10 @@ mod tests {
         let ddev = DeviceId::from_bytes([0xd1; 16]);
         let device = LoroEngine::new(ddev, Arc::new(Hlc::new(ddev)));
 
-        let store = FsNoteStore::new(mosaic.clone(), tesela_core::config::StorageConfig::default());
+        let store = FsNoteStore::new(
+            mosaic.clone(),
+            tesela_core::config::StorageConfig::default(),
+        );
         let index = SqliteIndex::open(&mosaic.join(".tesela").join("test.db"))
             .await
             .unwrap();
@@ -376,13 +379,23 @@ mod tests {
 
         let origin: ConnId = 7;
         apply_inbound_delta(
-            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame, Some(origin), None,
+            &h.server,
+            &h.store,
+            &h.index,
+            &ws_tx,
+            &delta_tx,
+            &frame,
+            Some(origin),
+            None,
         )
         .await;
 
         // (1) Server engine converged on A's edit.
         let rendered = h.server.render_note(note_id).await.unwrap();
-        assert!(rendered.contains("hello from A"), "server converged: {rendered:?}");
+        assert!(
+            rendered.contains("hello from A"),
+            "server converged: {rendered:?}"
+        );
 
         // (2) A WsEvent::NoteUpdated fired (web-as-view invalidation).
         let evt = ws_rx.try_recv().expect("a WsEvent should be emitted");
@@ -397,7 +410,11 @@ mod tests {
         // (3) The exact applied bytes were re-broadcast, tagged with the
         // origin connection so the send loop can suppress the echo.
         let fanned = delta_rx.try_recv().expect("delta should fan out");
-        assert_eq!(fanned.origin, Some(origin), "origin tagged for echo-suppression");
+        assert_eq!(
+            fanned.origin,
+            Some(origin),
+            "origin tagged for echo-suppression"
+        );
         assert_eq!(fanned.frame, frame, "exact applied bytes forwarded");
     }
 
@@ -464,11 +481,25 @@ mod tests {
         let conn_a: ConnId = 1;
         let conn_c: ConnId = 3;
         apply_inbound_delta(
-            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame_a, Some(conn_a), None,
+            &h.server,
+            &h.store,
+            &h.index,
+            &ws_tx,
+            &delta_tx,
+            &frame_a,
+            Some(conn_a),
+            None,
         )
         .await;
         apply_inbound_delta(
-            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame_c, Some(conn_c), None,
+            &h.server,
+            &h.store,
+            &h.index,
+            &ws_tx,
+            &delta_tx,
+            &frame_c,
+            Some(conn_c),
+            None,
         )
         .await;
 
@@ -486,12 +517,22 @@ mod tests {
         // and C's frame for C. Verify the origins are exactly {conn_a, conn_c}.
         let mut origins = vec![f1.origin, f2.origin];
         origins.sort();
-        assert_eq!(origins, vec![Some(conn_a), Some(conn_c)], "each fan-out tagged with its origin");
+        assert_eq!(
+            origins,
+            vec![Some(conn_a), Some(conn_c)],
+            "each fan-out tagged with its origin"
+        );
 
         // Hub converged on BOTH concurrent edits, no lost edit.
         let rendered = h.server.render_note(note_id).await.unwrap();
-        assert!(rendered.contains("A edit"), "A's edit present: {rendered:?}");
-        assert!(rendered.contains("C edit"), "C's edit present: {rendered:?}");
+        assert!(
+            rendered.contains("A edit"),
+            "A's edit present: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("C edit"),
+            "C's edit present: {rendered:?}"
+        );
     }
 
     #[tokio::test]

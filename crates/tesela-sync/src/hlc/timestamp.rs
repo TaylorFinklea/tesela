@@ -34,8 +34,8 @@ impl HlcTimestamp {
 
     /// Convert back to a `uhlc::Timestamp`.
     pub fn to_uhlc(&self) -> uhlc::Timestamp {
-        let id = uhlc::ID::try_from(self.device.as_bytes().as_slice())
-            .expect("DeviceId is 16 bytes");
+        let id =
+            uhlc::ID::try_from(self.device.as_bytes().as_slice()).expect("DeviceId is 16 bytes");
         uhlc::Timestamp::new(uhlc::NTP64(self.ntp64), id)
     }
 
@@ -86,9 +86,18 @@ mod tests {
     #[test]
     fn ord_lexicographic() {
         let dev = DeviceId::new_random();
-        let a = HlcTimestamp { ntp64: 100, device: dev };
-        let b = HlcTimestamp { ntp64: 101, device: dev };
-        let c = HlcTimestamp { ntp64: 200, device: dev };
+        let a = HlcTimestamp {
+            ntp64: 100,
+            device: dev,
+        };
+        let b = HlcTimestamp {
+            ntp64: 101,
+            device: dev,
+        };
+        let c = HlcTimestamp {
+            ntp64: 200,
+            device: dev,
+        };
         assert!(a < b);
         assert!(b < c);
         assert!(a < c);
@@ -98,8 +107,14 @@ mod tests {
     fn device_tiebreak_provides_total_order() {
         let dev_a = DeviceId::from_bytes([0x00; 16]);
         let dev_b = DeviceId::from_bytes([0xff; 16]);
-        let ta = HlcTimestamp { ntp64: 1000, device: dev_a };
-        let tb = HlcTimestamp { ntp64: 1000, device: dev_b };
+        let ta = HlcTimestamp {
+            ntp64: 1000,
+            device: dev_a,
+        };
+        let tb = HlcTimestamp {
+            ntp64: 1000,
+            device: dev_b,
+        };
         assert!(ta < tb);
     }
 

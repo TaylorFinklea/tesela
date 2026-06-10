@@ -182,7 +182,8 @@ async fn http_backup_list_verify_restore_round_trip() {
         .await
         .expect("verify json");
     assert_eq!(
-        verify["ok"], serde_json::Value::Bool(true),
+        verify["ok"],
+        serde_json::Value::Bool(true),
         "verify failed: {:?}",
         verify
     );
@@ -237,7 +238,8 @@ async fn http_backup_list_verify_restore_round_trip() {
             )
         });
         assert_eq!(
-            orig, rest,
+            orig,
+            rest,
             "byte mismatch in {} after HTTP-driven restore",
             rel.display()
         );

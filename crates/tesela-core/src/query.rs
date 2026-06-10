@@ -58,7 +58,6 @@ pub enum QueryOp {
     NotLike,
 }
 
-
 /// Which entity the query targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
@@ -98,7 +97,11 @@ pub struct QueryFilter {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum Predicate {
     /// `key op value` — Eq / Ne / Lt / Lte / Gt / Gte against a single value.
-    Cmp { key: String, op: QueryOp, value: String },
+    Cmp {
+        key: String,
+        op: QueryOp,
+        value: String,
+    },
     /// `key IN (a, b, c)` or `key NOT IN (a, b, c)`. Drives the chip-bar
     /// Types group and any future multi-value chip clusters.
     In {
@@ -371,11 +374,21 @@ fn atom(pred: Predicate) -> BoolExpr {
 
 pub fn parse_query(input: &str) -> ParsedQuery {
     let tokens = tokenize(input);
-    let mut parser = Parser { input, tokens, pos: 0, kind: Kind::Block };
+    let mut parser = Parser {
+        input,
+        tokens,
+        pos: 0,
+        kind: Kind::Block,
+    };
     let expr = parser.parse_or().unwrap_or_default();
     let sort = parser.parse_order_by();
     let filters = flatten_to_legacy_filters(&expr);
-    ParsedQuery { kind: parser.kind, expr, filters, sort }
+    ParsedQuery {
+        kind: parser.kind,
+        expr,
+        filters,
+        sort,
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -457,15 +470,23 @@ fn tokenize(input: &str) -> Vec<Spanned> {
             b'"' => {
                 let val_start = i + 1;
                 let mut j = val_start;
-                while j < bytes.len() && bytes[j] != b'"' { j += 1; }
+                while j < bytes.len() && bytes[j] != b'"' {
+                    j += 1;
+                }
                 let val = input[val_start..j].to_string();
-                let end = if j < bytes.len() && bytes[j] == b'"' { j + 1 } else { j };
+                let end = if j < bytes.len() && bytes[j] == b'"' {
+                    j + 1
+                } else {
+                    j
+                };
                 (Token::Quoted(val), end)
             }
             b'-' => (Token::Minus, i + 1),
             b if is_word_char(b) => {
                 let mut j = i;
-                while j < bytes.len() && is_word_char(bytes[j]) { j += 1; }
+                while j < bytes.len() && is_word_char(bytes[j]) {
+                    j += 1;
+                }
                 (Token::Word(input[i..j].to_string()), j)
             }
             _ => {
@@ -475,7 +496,11 @@ fn tokenize(input: &str) -> Vec<Spanned> {
                 continue;
             }
         };
-        tokens.push(Spanned { tok, start, end: new_i });
+        tokens.push(Spanned {
+            tok,
+            start,
+            end: new_i,
+        });
         i = new_i;
     }
     tokens
@@ -518,7 +543,6 @@ impl<'a> Parser<'a> {
             None
         }
     }
-
 
     /// Is the upcoming token a boolean keyword (case-insensitive)?
     fn peek_keyword(&self, kw: &str) -> bool {
@@ -650,12 +674,16 @@ impl<'a> Parser<'a> {
             if self.peek_keyword("not") {
                 self.bump();
                 let inner = self.parse_unary()?;
-                return Some(BoolExpr::Not { arg: Box::new(inner) });
+                return Some(BoolExpr::Not {
+                    arg: Box::new(inner),
+                });
             }
             if matches!(self.peek(), Some(Token::Minus)) {
                 self.bump();
                 let inner = self.parse_unary()?;
-                return Some(BoolExpr::Not { arg: Box::new(inner) });
+                return Some(BoolExpr::Not {
+                    arg: Box::new(inner),
+                });
             }
             if matches!(self.peek(), Some(Token::LParen)) {
                 self.bump();
@@ -728,14 +756,22 @@ impl<'a> Parser<'a> {
             self.bump(); // consume ':'
             let real_key = key[..key.len() - "-in".len()].to_string();
             let values = self.parse_comma_list_until_whitespace();
-            return Some(atom(Predicate::In { key: real_key, values, negated: false }));
+            return Some(atom(Predicate::In {
+                key: real_key,
+                values,
+                negated: false,
+            }));
         }
 
         // New-style infix `key IN (…)` / `key NOT IN (…)`
         if self.peek_keyword("in") {
             self.bump();
             let values = self.parse_paren_value_list();
-            return Some(atom(Predicate::In { key, values, negated: false }));
+            return Some(atom(Predicate::In {
+                key,
+                values,
+                negated: false,
+            }));
         }
         if self.peek_keyword("not") {
             // Tentatively consume NOT; commit only if followed by IN or LIKE.
@@ -744,12 +780,20 @@ impl<'a> Parser<'a> {
             if self.peek_keyword("in") {
                 self.bump();
                 let values = self.parse_paren_value_list();
-                return Some(atom(Predicate::In { key, values, negated: true }));
+                return Some(atom(Predicate::In {
+                    key,
+                    values,
+                    negated: true,
+                }));
             }
             if self.peek_keyword("like") {
                 self.bump();
                 let value = self.parse_value().unwrap_or_default();
-                return Some(atom(Predicate::Cmp { key, op: QueryOp::NotLike, value }));
+                return Some(atom(Predicate::Cmp {
+                    key,
+                    op: QueryOp::NotLike,
+                    value,
+                }));
             }
             self.pos = save;
         }
@@ -761,7 +805,11 @@ impl<'a> Parser<'a> {
         if self.peek_keyword("like") {
             self.bump();
             let value = self.parse_value().unwrap_or_default();
-            return Some(atom(Predicate::Cmp { key, op: QueryOp::Like, value }));
+            return Some(atom(Predicate::Cmp {
+                key,
+                op: QueryOp::Like,
+                value,
+            }));
         }
 
         // `key IS NULL` / `key IS NOT NULL` — sugar for `-has:key` /
@@ -908,8 +956,14 @@ impl<'a> Parser<'a> {
                 break; // whitespace gap → value ends
             }
             match &span.tok {
-                Token::Word(_) | Token::Colon | Token::Eq | Token::Ne
-                | Token::Lt | Token::Lte | Token::Gt | Token::Gte
+                Token::Word(_)
+                | Token::Colon
+                | Token::Eq
+                | Token::Ne
+                | Token::Lt
+                | Token::Lte
+                | Token::Gt
+                | Token::Gte
                 | Token::Minus => {
                     // Append the raw source bytes — preserves the exact
                     // characters the tokenizer split off.
@@ -935,8 +989,13 @@ impl<'a> Parser<'a> {
         self.bump();
         loop {
             match self.peek() {
-                Some(Token::RParen) => { self.bump(); break; }
-                Some(Token::Comma) => { self.bump(); }
+                Some(Token::RParen) => {
+                    self.bump();
+                    break;
+                }
+                Some(Token::Comma) => {
+                    self.bump();
+                }
                 Some(Token::Word(_)) | Some(Token::Quoted(_)) => {
                     if let Some(v) = self.parse_value() {
                         out.push(v);
@@ -961,7 +1020,9 @@ impl<'a> Parser<'a> {
                         out.push(v);
                     }
                 }
-                Some(Token::Comma) => { self.bump(); }
+                Some(Token::Comma) => {
+                    self.bump();
+                }
                 _ => break,
             }
         }
@@ -987,7 +1048,9 @@ fn flatten_to_legacy_filters(expr: &BoolExpr) -> Vec<QueryFilter> {
     let mut out = Vec::with_capacity(atoms.len());
     for a in atoms {
         match a {
-            BoolExpr::Atom { pred: Predicate::Cmp { key, op, value } } => {
+            BoolExpr::Atom {
+                pred: Predicate::Cmp { key, op, value },
+            } => {
                 out.push(QueryFilter {
                     key: key.clone(),
                     op: *op,
@@ -995,7 +1058,9 @@ fn flatten_to_legacy_filters(expr: &BoolExpr) -> Vec<QueryFilter> {
                 });
             }
             BoolExpr::Not { arg } => match arg.as_ref() {
-                BoolExpr::Atom { pred: Predicate::Cmp { key, op, value } } => {
+                BoolExpr::Atom {
+                    pred: Predicate::Cmp { key, op, value },
+                } => {
                     out.push(QueryFilter {
                         key: key.clone(),
                         op: invert(*op),
@@ -1043,8 +1108,8 @@ fn like_to_regex(pattern: &str) -> String {
             // as literals. Kept in sync with `regex::escape`'s set;
             // hand-rolled here to avoid a per-call allocation when the
             // pattern is short.
-            '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$'
-            | '\\' | '#' | '&' | '-' | '~' => {
+            '.' | '+' | '*' | '?' | '(' | ')' | '|' | '[' | ']' | '{' | '}' | '^' | '$' | '\\'
+            | '#' | '&' | '-' | '~' => {
                 out.push('\\');
                 out.push(ch);
             }
@@ -1185,7 +1250,11 @@ fn pred_matches(block: &ParsedBlock, pred: &Predicate) -> bool {
             };
             filter_matches(block, &f)
         }
-        Predicate::In { key, values, negated } => {
+        Predicate::In {
+            key,
+            values,
+            negated,
+        } => {
             // `key in (a, b, c)` is OR over `key = v` for each v.
             // `key not in (a, b, c)` is the negation. Uses the same
             // per-key matcher path so semantics line up with `tag:foo`
@@ -1198,7 +1267,11 @@ fn pred_matches(block: &ParsedBlock, pred: &Predicate) -> bool {
                 };
                 filter_matches(block, &f)
             });
-            if *negated { !any_match } else { any_match }
+            if *negated {
+                !any_match
+            } else {
+                any_match
+            }
         }
     }
 }
@@ -1552,7 +1625,10 @@ mod tests {
         let q = parse_query("on:system-pages");
         assert!(block_matches(&block_on("tag-page", Some("Tag")), &q));
         assert!(block_matches(&block_on("query-page", Some("Query")), &q));
-        assert!(block_matches(&block_on("template-page", Some("Template")), &q));
+        assert!(block_matches(
+            &block_on("template-page", Some("Template")),
+            &q
+        ));
         assert!(block_matches(&block_on("prop-page", Some("Property")), &q));
         assert!(!block_matches(&block_on("project", Some("Project")), &q));
         // Missing parent_note_type degrades to "doesn't match" rather
@@ -1679,8 +1755,11 @@ mod tests {
         // `a OR b` and `a or b` both build an Or with two args.
         for input in ["tag:Task OR tag:Note", "tag:Task or tag:Note"] {
             let q = parse_query(input);
-            assert!(matches!(q.expr, BoolExpr::Or { ref args } if args.len() == 2),
-                "input {input:?} parsed as {:?}", q.expr);
+            assert!(
+                matches!(q.expr, BoolExpr::Or { ref args } if args.len() == 2),
+                "input {input:?} parsed as {:?}",
+                q.expr
+            );
         }
     }
 
@@ -1688,9 +1767,18 @@ mod tests {
     fn block_matches_or_disjunction() {
         // (status:todo OR status:doing) — either matches the row.
         let q = parse_query("status:todo OR status:doing");
-        assert!(block_matches(&block_with(vec![], &[("status", "todo")]), &q));
-        assert!(block_matches(&block_with(vec![], &[("status", "doing")]), &q));
-        assert!(!block_matches(&block_with(vec![], &[("status", "done")]), &q));
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "todo")]),
+            &q
+        ));
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "doing")]),
+            &q
+        ));
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "done")]),
+            &q
+        ));
     }
 
     #[test]
@@ -1703,7 +1791,10 @@ mod tests {
             &q,
         ));
         // todo but no deadline → falls out
-        assert!(!block_matches(&block_with(vec![], &[("status", "todo")]), &q));
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "todo")]),
+            &q
+        ));
         // has deadline but wrong status → falls out
         assert!(!block_matches(
             &block_with(vec![], &[("status", "done"), ("deadline", "2026-01-01")]),
@@ -1765,13 +1856,25 @@ mod tests {
         //   (status:todo OR status:doing) AND tag in (Task, Issue)
         let q = parse_query("(status:todo OR status:doing) AND tag in (Task, Issue)");
         // todo + Task → matches
-        assert!(block_matches(&block_with(vec!["Task"], &[("status", "todo")]), &q));
+        assert!(block_matches(
+            &block_with(vec!["Task"], &[("status", "todo")]),
+            &q
+        ));
         // doing + Issue → matches
-        assert!(block_matches(&block_with(vec!["Issue"], &[("status", "doing")]), &q));
+        assert!(block_matches(
+            &block_with(vec!["Issue"], &[("status", "doing")]),
+            &q
+        ));
         // done + Task → fails (status check)
-        assert!(!block_matches(&block_with(vec!["Task"], &[("status", "done")]), &q));
+        assert!(!block_matches(
+            &block_with(vec!["Task"], &[("status", "done")]),
+            &q
+        ));
         // todo + Person → fails (tag-in check)
-        assert!(!block_matches(&block_with(vec!["Person"], &[("status", "todo")]), &q));
+        assert!(!block_matches(
+            &block_with(vec!["Person"], &[("status", "todo")]),
+            &q
+        ));
     }
 
     #[test]
@@ -1799,7 +1902,9 @@ mod tests {
         // doesn't appear in the AST; it lives on ParsedQuery.kind).
         assert_eq!(q.kind, Kind::Block);
         match &q.expr {
-            BoolExpr::Atom { pred: Predicate::Cmp { key, value, .. } } => {
+            BoolExpr::Atom {
+                pred: Predicate::Cmp { key, value, .. },
+            } => {
                 assert_eq!(key, "tag");
                 assert_eq!(value, "Task");
             }
@@ -1828,10 +1933,7 @@ mod tests {
 
     // Tag-system Phase 16 — pagetag / blocktag DSL keys.
 
-    fn block_with_inherited(
-        tags: Vec<&str>,
-        inherited: Vec<&str>,
-    ) -> ParsedBlock {
+    fn block_with_inherited(tags: Vec<&str>, inherited: Vec<&str>) -> ParsedBlock {
         let mut b = block_with(tags, &[]);
         b.inherited_tags = inherited.iter().map(|s| (*s).into()).collect();
         b
@@ -2206,34 +2308,22 @@ mod tests {
         );
         // Has scheduled in range
         assert!(block_matches(
-            &block_with(
-                vec![],
-                &[("status", "todo"), ("scheduled", "2026-05-10")],
-            ),
+            &block_with(vec![], &[("status", "todo"), ("scheduled", "2026-05-10")],),
             &q
         ));
         // Has deadline in range
         assert!(block_matches(
-            &block_with(
-                vec![],
-                &[("status", "doing"), ("deadline", "2026-05-20")],
-            ),
+            &block_with(vec![], &[("status", "doing"), ("deadline", "2026-05-20")],),
             &q
         ));
         // Status=done → first clause fails
         assert!(!block_matches(
-            &block_with(
-                vec![],
-                &[("status", "done"), ("scheduled", "2026-05-10")],
-            ),
+            &block_with(vec![], &[("status", "done"), ("scheduled", "2026-05-10")],),
             &q
         ));
         // Both dates outside range → second clause fails
         assert!(!block_matches(
-            &block_with(
-                vec![],
-                &[("status", "todo"), ("scheduled", "2026-06-15")],
-            ),
+            &block_with(vec![], &[("status", "todo"), ("scheduled", "2026-06-15")],),
             &q
         ));
     }

@@ -10,15 +10,15 @@
 //!   POST   /transcription/models/{id}/activate      → set as the active model
 //!   GET    /transcription/active                    → current active model id
 
-use crate::state::AppState;
 use crate::error::{AppError, AppResult};
+use crate::state::AppState;
 use axum::{
     extract::{Multipart, Path, State},
     Json,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
@@ -184,7 +184,11 @@ pub async fn list_models(State(s): State<Arc<AppState>>) -> AppResult<Json<Vec<M
             Ok(m) => Some(m.len()),
             Err(_) => None,
         };
-        let state = if on_disk_bytes.is_some() { "downloaded" } else { "available" };
+        let state = if on_disk_bytes.is_some() {
+            "downloaded"
+        } else {
+            "available"
+        };
         out.push(ModelStatus {
             id: entry.id.clone(),
             family: entry.family,
@@ -316,9 +320,7 @@ pub struct ActiveModelResponse {
 }
 
 /// GET /transcription/active — current active model id, if any.
-pub async fn get_active(
-    State(s): State<Arc<AppState>>,
-) -> AppResult<Json<ActiveModelResponse>> {
+pub async fn get_active(State(s): State<Arc<AppState>>) -> AppResult<Json<ActiveModelResponse>> {
     Ok(Json(ActiveModelResponse {
         active: read_active(&s).await,
     }))
@@ -371,13 +373,16 @@ pub async fn transcribe(
 
     // Pull the audio file out of the multipart body.
     let mut audio_bytes: Option<Vec<u8>> = None;
-    while let Some(field) = multipart.next_field().await.map_err(|e| {
-        AppError::Internal(anyhow::anyhow!("multipart read: {e}"))
-    })? {
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("multipart read: {e}")))?
+    {
         if field.name() == Some("audio") {
-            let bytes = field.bytes().await.map_err(|e| {
-                AppError::Internal(anyhow::anyhow!("read audio field: {e}"))
-            })?;
+            let bytes = field
+                .bytes()
+                .await
+                .map_err(|e| AppError::Internal(anyhow::anyhow!("read audio field: {e}")))?;
             audio_bytes = Some(bytes.to_vec());
             break;
         }
@@ -401,11 +406,9 @@ pub async fn transcribe(
         };
         if needs_load {
             let path_str = model_path_owned.to_string_lossy().to_string();
-            let ctx = WhisperContext::new_with_params(
-                &path_str,
-                WhisperContextParameters::default(),
-            )
-            .map_err(|e| anyhow::anyhow!("load whisper model: {e}"))?;
+            let ctx =
+                WhisperContext::new_with_params(&path_str, WhisperContextParameters::default())
+                    .map_err(|e| anyhow::anyhow!("load whisper model: {e}"))?;
             *cache = Some(LoadedModel {
                 id: model_id_owned.clone(),
                 ctx,
@@ -456,9 +459,7 @@ fn decode_audio_to_16k_mono(bytes: &[u8]) -> Result<Vec<f32>, AppError> {
         .map_err(|e| AppError::Validation(format!("not a WAV file: {e}")))?;
     let spec = reader.spec();
     if spec.sample_format != hound::SampleFormat::Int || spec.bits_per_sample != 16 {
-        return Err(AppError::Validation(
-            "expected 16-bit PCM WAV".into(),
-        ));
+        return Err(AppError::Validation("expected 16-bit PCM WAV".into()));
     }
     // Read samples interleaved by channel, then collapse to mono.
     let mut interleaved: Vec<i16> = Vec::with_capacity(reader.len() as usize);
@@ -467,7 +468,10 @@ fn decode_audio_to_16k_mono(bytes: &[u8]) -> Result<Vec<f32>, AppError> {
         interleaved.push(s);
     }
     let mono: Vec<f32> = if spec.channels == 1 {
-        interleaved.iter().map(|s| *s as f32 / i16::MAX as f32).collect()
+        interleaved
+            .iter()
+            .map(|s| *s as f32 / i16::MAX as f32)
+            .collect()
     } else {
         // Average each channel-group into one sample.
         let ch = spec.channels as usize;

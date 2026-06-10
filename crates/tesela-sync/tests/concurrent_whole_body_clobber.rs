@@ -131,7 +131,9 @@ async fn whole_body_diff_clobbers_concurrent_peer_edit() {
         NOTE_ID,
         &old_tree,
         &new_tree,
-        DiffOptions { emit_deletes: false },
+        DiffOptions {
+            emit_deletes: false,
+        },
     );
     eprintln!("=== OPS EMITTED BY WHOLE-BODY DIFF ===\n{ops:#?}\n=== END ===");
 

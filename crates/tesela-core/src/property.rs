@@ -113,7 +113,14 @@ mod tests {
     #[test]
     fn value_type_round_trips_via_as_str() {
         for s in [
-            "text", "number", "date", "datetime", "checkbox", "url", "select", "multiselect",
+            "text",
+            "number",
+            "date",
+            "datetime",
+            "checkbox",
+            "url",
+            "select",
+            "multiselect",
             "node",
         ] {
             assert_eq!(ValueType::parse(s).as_str(), s);
@@ -122,17 +129,32 @@ mod tests {
 
     #[test]
     fn checkbox_scalar_formats_canonically() {
-        assert_eq!(format_scalar(&parse_scalar(ValueType::Checkbox, "true")), "true");
-        assert_eq!(format_scalar(&parse_scalar(ValueType::Checkbox, "TRUE")), "true");
-        assert_eq!(format_scalar(&parse_scalar(ValueType::Checkbox, "false")), "false");
-        assert_eq!(format_scalar(&parse_scalar(ValueType::Checkbox, "anything-else")), "false");
+        assert_eq!(
+            format_scalar(&parse_scalar(ValueType::Checkbox, "true")),
+            "true"
+        );
+        assert_eq!(
+            format_scalar(&parse_scalar(ValueType::Checkbox, "TRUE")),
+            "true"
+        );
+        assert_eq!(
+            format_scalar(&parse_scalar(ValueType::Checkbox, "false")),
+            "false"
+        );
+        assert_eq!(
+            format_scalar(&parse_scalar(ValueType::Checkbox, "anything-else")),
+            "false"
+        );
     }
 
     #[test]
     fn number_scalar_drops_trailing_zeros() {
         assert_eq!(format_scalar(&parse_scalar(ValueType::Number, "3")), "3");
         assert_eq!(format_scalar(&parse_scalar(ValueType::Number, "3.0")), "3");
-        assert_eq!(format_scalar(&parse_scalar(ValueType::Number, "3.50")), "3.5");
+        assert_eq!(
+            format_scalar(&parse_scalar(ValueType::Number, "3.50")),
+            "3.5"
+        );
         // coerce-and-keep: a non-numeric value is preserved verbatim, never dropped
         assert_eq!(
             format_scalar(&parse_scalar(ValueType::Number, "not-a-number")),
@@ -142,8 +164,17 @@ mod tests {
 
     #[test]
     fn text_like_scalars_pass_through_verbatim() {
-        assert_eq!(format_scalar(&parse_scalar(ValueType::Date, "2026-06-10")), "2026-06-10");
-        assert_eq!(format_scalar(&parse_scalar(ValueType::Select, "doing")), "doing");
-        assert_eq!(format_scalar(&parse_scalar(ValueType::Node, "alice")), "alice");
+        assert_eq!(
+            format_scalar(&parse_scalar(ValueType::Date, "2026-06-10")),
+            "2026-06-10"
+        );
+        assert_eq!(
+            format_scalar(&parse_scalar(ValueType::Select, "doing")),
+            "doing"
+        );
+        assert_eq!(
+            format_scalar(&parse_scalar(ValueType::Node, "alice")),
+            "alice"
+        );
     }
 }

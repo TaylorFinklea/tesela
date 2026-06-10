@@ -271,12 +271,11 @@ mod tests {
     async fn triggers_do_not_arm_when_flag_unset() {
         std::env::remove_var(AUTOSYNC_ENV);
         let auto = Arc::new(AutoSync::new());
-        let store: Arc<dyn NoteStore> = Arc::new(
-            tesela_core::storage::filesystem::FsNoteStore::new(
+        let store: Arc<dyn NoteStore> =
+            Arc::new(tesela_core::storage::filesystem::FsNoteStore::new(
                 std::path::PathBuf::from("/nonexistent-test-mosaic"),
                 tesela_core::config::StorageConfig::default(),
-            ),
-        );
+            ));
         let (tx, _) = broadcast::channel::<NoteEvent>(4);
         let armed = start_triggers(auto, store, tx);
         assert!(

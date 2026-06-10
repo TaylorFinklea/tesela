@@ -103,7 +103,10 @@ pub async fn put_config(
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!("relay URL scheme must be http or https (got `{}`)", parsed.scheme()),
+            format!(
+                "relay URL scheme must be http or https (got `{}`)",
+                parsed.scheme()
+            ),
         ));
     }
     let url_canonical = parsed.to_string();
@@ -113,9 +116,7 @@ pub async fn put_config(
     if poll_interval_ms < 250 {
         return Err((
             StatusCode::BAD_REQUEST,
-            format!(
-                "poll_interval_ms must be at least 250ms (got {poll_interval_ms})"
-            ),
+            format!("poll_interval_ms must be at least 250ms (got {poll_interval_ms})"),
         ));
     }
 

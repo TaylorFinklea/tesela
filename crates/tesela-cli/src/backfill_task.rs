@@ -116,9 +116,7 @@ pub async fn run(mosaic: &Path, apply: bool) -> Result<()> {
         );
     }
     if !apply {
-        println!(
-            "\nRun the same command with --apply to write (stop the server first)."
-        );
+        println!("\nRun the same command with --apply to write (stop the server first).");
     }
     Ok(())
 }
@@ -257,7 +255,12 @@ mod tests {
     #[tokio::test]
     async fn dry_run_finds_status_block_without_task_and_writes_nothing() {
         let e = engine();
-        upsert(&e, NOTE_A, &format!("- buy milk <!-- bid:{BID} -->\n  status:: doing\n")).await;
+        upsert(
+            &e,
+            NOTE_A,
+            &format!("- buy milk <!-- bid:{BID} -->\n  status:: doing\n"),
+        )
+        .await;
 
         let report = backfill(&e, false).await.unwrap();
 
@@ -270,7 +273,12 @@ mod tests {
     #[tokio::test]
     async fn apply_adds_task_tag_through_structured_path() {
         let e = engine();
-        upsert(&e, NOTE_A, &format!("- buy milk <!-- bid:{BID} -->\n  status:: doing\n")).await;
+        upsert(
+            &e,
+            NOTE_A,
+            &format!("- buy milk <!-- bid:{BID} -->\n  status:: doing\n"),
+        )
+        .await;
 
         let report = backfill(&e, true).await.unwrap();
 
@@ -291,7 +299,12 @@ mod tests {
     #[tokio::test]
     async fn apply_is_idempotent() {
         let e = engine();
-        upsert(&e, NOTE_A, &format!("- buy milk <!-- bid:{BID} -->\n  status:: doing\n")).await;
+        upsert(
+            &e,
+            NOTE_A,
+            &format!("- buy milk <!-- bid:{BID} -->\n  status:: doing\n"),
+        )
+        .await;
 
         backfill(&e, true).await.unwrap();
         let second = backfill(&e, true).await.unwrap();

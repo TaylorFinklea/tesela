@@ -345,13 +345,8 @@ fn logseq_import_backup_restore_byte_exact_round_trip() {
     for rel in &captured_files {
         let orig = std::fs::read(mosaic.join(rel))
             .unwrap_or_else(|e| panic!("read original {}: {}", rel.display(), e));
-        let rest = std::fs::read(restored.join(rel)).unwrap_or_else(|e| {
-            panic!(
-                "restore missing {} (or unreadable): {}",
-                rel.display(),
-                e
-            )
-        });
+        let rest = std::fs::read(restored.join(rel))
+            .unwrap_or_else(|e| panic!("restore missing {} (or unreadable): {}", rel.display(), e));
         assert_eq!(orig, rest, "byte mismatch in {}", rel.display());
     }
 
@@ -372,10 +367,17 @@ fn logseq_import_backup_restore_byte_exact_round_trip() {
     );
 
     let journal = std::fs::read_to_string(restored.join("notes/2026-05-19.md")).unwrap();
-    assert!(journal.contains("status:: todo"), "TODO state lost\n{}", journal);
+    assert!(
+        journal.contains("status:: todo"),
+        "TODO state lost\n{}",
+        journal
+    );
     assert!(journal.contains("status:: done"), "DONE state lost");
     assert!(journal.contains("priority:: high"), "priority [#A] lost");
-    assert!(journal.contains("scheduled:: 2026-05-20"), "SCHEDULED date lost");
+    assert!(
+        journal.contains("scheduled:: 2026-05-20"),
+        "SCHEDULED date lost"
+    );
 }
 
 #[test]

@@ -153,7 +153,10 @@ mod tests {
     #[test]
     fn op_roundtrip_note_upsert() {
         let dev = DeviceId::new_random();
-        let hlc = HlcTimestamp { ntp64: 1, device: dev };
+        let hlc = HlcTimestamp {
+            ntp64: 1,
+            device: dev,
+        };
         let op = EncodedOp::new(hlc, 1, note_upsert(0xab, "Hello"), None).unwrap();
         let bytes = encode_op(&op).unwrap();
         let back = decode_op(&bytes).unwrap();
@@ -164,7 +167,10 @@ mod tests {
     #[test]
     fn op_roundtrip_block_upsert() {
         let dev = DeviceId::new_random();
-        let hlc = HlcTimestamp { ntp64: 5, device: dev };
+        let hlc = HlcTimestamp {
+            ntp64: 5,
+            device: dev,
+        };
         let payload = OpPayload::BlockUpsert {
             block_id: [0xcd; 16],
             note_id: [0xab; 16],
@@ -184,7 +190,10 @@ mod tests {
     #[test]
     fn distinct_payloads_have_distinct_hashes() {
         let dev = DeviceId::new_random();
-        let hlc = HlcTimestamp { ntp64: 1, device: dev };
+        let hlc = HlcTimestamp {
+            ntp64: 1,
+            device: dev,
+        };
         let a = EncodedOp::new(hlc, 1, note_upsert(1, "A"), None).unwrap();
         let b = EncodedOp::new(hlc, 1, note_upsert(2, "B"), None).unwrap();
         assert_ne!(a.content_hash, b.content_hash);
@@ -193,12 +202,20 @@ mod tests {
     #[test]
     fn loro_relay_payload_round_trips() {
         let updates = vec![
-            LoroDocUpdate { doc: [0x11; 16], update_bytes: b"alpha".to_vec() },
-            LoroDocUpdate { doc: [0x22; 16], update_bytes: vec![] },
+            LoroDocUpdate {
+                doc: [0x11; 16],
+                update_bytes: b"alpha".to_vec(),
+            },
+            LoroDocUpdate {
+                doc: [0x22; 16],
+                update_bytes: vec![],
+            },
         ];
         let bytes = encode_loro_relay_payload(&updates).unwrap();
         assert_eq!(&bytes[..4], &LORO_RELAY_MAGIC, "magic prefix present");
-        let back = decode_loro_relay_payload(&bytes).unwrap().expect("v2 payload");
+        let back = decode_loro_relay_payload(&bytes)
+            .unwrap()
+            .expect("v2 payload");
         assert_eq!(back, updates);
     }
 
@@ -210,7 +227,10 @@ mod tests {
         let dev = DeviceId::new_random();
         let ops: Vec<EncodedOp> = (0..3)
             .map(|i| {
-                let hlc = HlcTimestamp { ntp64: i, device: dev };
+                let hlc = HlcTimestamp {
+                    ntp64: i,
+                    device: dev,
+                };
                 EncodedOp::new(hlc, 1, note_upsert(i as u8, "x"), None).unwrap()
             })
             .collect();

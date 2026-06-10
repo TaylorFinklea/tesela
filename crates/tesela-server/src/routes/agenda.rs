@@ -30,10 +30,10 @@ pub async fn post_agenda(
 
 #[cfg(test)]
 mod tests {
-    use tesela_core::{db::SqliteIndex, note::NoteMetadata, note::NoteId, Note};
-    use tesela_core::traits::search_index::SearchIndex as _;
     use chrono::Utc;
     use std::path::PathBuf;
+    use tesela_core::traits::search_index::SearchIndex as _;
+    use tesela_core::{db::SqliteIndex, note::NoteId, note::NoteMetadata, Note};
 
     fn make_test_note(id: &str, title: &str, body: &str) -> Note {
         Note {

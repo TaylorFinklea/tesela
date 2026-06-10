@@ -417,8 +417,7 @@ pub async fn tick(
     // the queue and join the fan-out set; notes without a deposited
     // snapshot stay queued for a later tick.
     if !state.catchup_notes.is_empty() {
-        let healed =
-            catchup_from_snapshots(engine, &handle.client, &state.catchup_notes).await;
+        let healed = catchup_from_snapshots(engine, &handle.client, &state.catchup_notes).await;
         if !healed.is_empty() {
             state.catchup_notes.retain(|h| !healed.contains(h));
             for h in &healed {
@@ -449,10 +448,8 @@ pub async fn tick(
     // otherwise 413. Commit each batch's cursors only after its PUT confirms;
     // skip (don't stop) on failure so one over-limit batch can't block the
     // others, and uncommitted batches re-produce next tick.
-    let batches = tesela_sync::pack_loro_relay_batches(
-        updates,
-        tesela_sync::MAX_RELAY_PLAINTEXT_BYTES,
-    );
+    let batches =
+        tesela_sync::pack_loro_relay_batches(updates, tesela_sync::MAX_RELAY_PLAINTEXT_BYTES);
     for (payload, committed) in batches {
         let ciphertext = match tesela_sync::encode_loro_relay_payload(&payload) {
             Ok(c) => c,
@@ -576,10 +573,7 @@ async fn deposit_snapshots(
 /// [`RelayState::catchup_notes`] and healed by the per-tick targeted
 /// snapshot catch-up (`fetch_snapshots` is idempotent); a later bootstrap
 /// retries too, since the cursor stays below the watermark.
-pub async fn bootstrap_from_snapshots(
-    engine: &dyn tesela_sync::SyncEngine,
-    handle: &RelayHandle,
-) {
+pub async fn bootstrap_from_snapshots(engine: &dyn tesela_sync::SyncEngine, handle: &RelayHandle) {
     let (compaction_seq, snaps) = match handle.client.fetch_snapshots().await {
         Ok(v) => v,
         Err(e) => {
@@ -663,7 +657,10 @@ pub(crate) async fn catchup_from_snapshots(
         if !targets_hex.contains(&hex_id) {
             continue;
         }
-        match engine.import_authoritative_snapshot(note_id, &plaintext).await {
+        match engine
+            .import_authoritative_snapshot(note_id, &plaintext)
+            .await
+        {
             Ok(()) => {
                 tracing::info!("relay snapshot catch-up healed note {hex_id}");
                 healed.push(hex_id);
@@ -696,9 +693,7 @@ fn snapshot_interval_secs() -> i64 {
 /// path), verify the stored intent, persist `registered_at`. Returns
 /// `Ok` even on failure — the caller wires the error into RelayState
 /// + lets the daemon retry on its tick.
-pub async fn bring_up(
-    handle: &RelayHandle,
-) -> Result<(), String> {
+pub async fn bring_up(handle: &RelayHandle) -> Result<(), String> {
     let registered_at = handle
         .client
         .register_or_recover()
@@ -1014,8 +1009,7 @@ mod tests {
             &[(NID_POISON, b"definitely not a loro update".to_vec())],
         )
         .await;
-        let good_seq =
-            put_loro_envelope(&client_b, dev_b, group, &[(NID_GOOD, good_snap)]).await;
+        let good_seq = put_loro_envelope(&client_b, dev_b, group, &[(NID_GOOD, good_snap)]).await;
         assert!(good_seq > poison_seq);
 
         // Consumer A.

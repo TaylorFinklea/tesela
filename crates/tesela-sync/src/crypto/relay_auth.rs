@@ -74,8 +74,8 @@ pub fn intent_msg(group_id: &GroupId, auth_key: &[u8; 32], registered_at: i64) -
 /// group-key holders can produce a valid signature — the relay
 /// cannot, by design (zero-knowledge).
 pub fn sign_intent(group_key: &GroupKey, intent: &str) -> [u8; 32] {
-    let mut mac = HmacSha256::new_from_slice(group_key.as_bytes())
-        .expect("HMAC accepts any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(group_key.as_bytes()).expect("HMAC accepts any key length");
     mac.update(intent.as_bytes());
     mac.finalize().into_bytes().into()
 }
@@ -83,13 +83,9 @@ pub fn sign_intent(group_key: &GroupKey, intent: &str) -> [u8; 32] {
 /// Verify a signed intent. Used by joiners on first connection to a
 /// relay to check that the registration was made by a legitimate
 /// group-key holder. Returns `true` on match.
-pub fn verify_intent(
-    group_key: &GroupKey,
-    intent: &str,
-    candidate_signature: &[u8],
-) -> bool {
-    let mut mac = HmacSha256::new_from_slice(group_key.as_bytes())
-        .expect("HMAC accepts any key length");
+pub fn verify_intent(group_key: &GroupKey, intent: &str, candidate_signature: &[u8]) -> bool {
+    let mut mac =
+        HmacSha256::new_from_slice(group_key.as_bytes()).expect("HMAC accepts any key length");
     mac.update(intent.as_bytes());
     // Hmac's `verify_slice` is constant-time.
     mac.verify_slice(candidate_signature).is_ok()
@@ -118,8 +114,7 @@ pub fn canonical_request(
 /// HMAC-SHA256 the canonical request with the **auth key** (not the
 /// group key — auth key is what the relay knows + verifies against).
 pub fn compute_request_mac(auth_key: &[u8; 32], canonical: &str) -> [u8; 32] {
-    let mut mac = HmacSha256::new_from_slice(auth_key)
-        .expect("HMAC accepts 32-byte keys");
+    let mut mac = HmacSha256::new_from_slice(auth_key).expect("HMAC accepts 32-byte keys");
     mac.update(canonical.as_bytes());
     mac.finalize().into_bytes().into()
 }
@@ -130,8 +125,7 @@ pub fn verify_request_mac(
     canonical: &str,
     candidate_signature: &[u8],
 ) -> bool {
-    let mut mac = HmacSha256::new_from_slice(auth_key)
-        .expect("HMAC accepts 32-byte keys");
+    let mut mac = HmacSha256::new_from_slice(auth_key).expect("HMAC accepts 32-byte keys");
     mac.update(canonical.as_bytes());
     mac.verify_slice(candidate_signature).is_ok()
 }

@@ -80,10 +80,12 @@ impl Transport for LoopbackTransport {
         }
         let inbound = {
             let mut slot = self.inbound.lock().await;
-            slot.take()
-                .ok_or_else(|| SyncError::Transport(
-                    "loopback session already opened (only one session per pair allowed)".to_string(),
-                ))?
+            slot.take().ok_or_else(|| {
+                SyncError::Transport(
+                    "loopback session already opened (only one session per pair allowed)"
+                        .to_string(),
+                )
+            })?
         };
         Ok(Box::new(LoopbackSession {
             peer_device: self.peer_device,

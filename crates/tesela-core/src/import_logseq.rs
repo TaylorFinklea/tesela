@@ -881,23 +881,45 @@ tags:: idea, project
         let coverage = fs::read_to_string(mosaic.join("notes/coverage.md")).unwrap();
 
         // ── Tasks — all five states observed in the user's vault ──
-        assert!(coverage.contains("status:: todo"), "missing TODO state\n{}", coverage);
+        assert!(
+            coverage.contains("status:: todo"),
+            "missing TODO state\n{}",
+            coverage
+        );
         assert!(coverage.contains("status:: doing"), "missing DOING state");
         assert!(coverage.contains("status:: done"), "missing DONE state");
-        assert!(coverage.contains("status:: backlog"), "missing LATER → backlog");
-        assert!(coverage.contains("status:: canceled"), "missing CANCELED state");
+        assert!(
+            coverage.contains("status:: backlog"),
+            "missing LATER → backlog"
+        );
+        assert!(
+            coverage.contains("status:: canceled"),
+            "missing CANCELED state"
+        );
 
         // ── Priority ──
-        assert!(coverage.contains("priority:: high"), "missing [#A] → priority high");
+        assert!(
+            coverage.contains("priority:: high"),
+            "missing [#A] → priority high"
+        );
 
         // ── DEADLINE / SCHEDULED ──
-        assert!(coverage.contains("scheduled:: 2026-05-19"), "missing SCHEDULED conversion");
-        assert!(coverage.contains("deadline:: 2026-05-21"), "missing DEADLINE conversion");
+        assert!(
+            coverage.contains("scheduled:: 2026-05-19"),
+            "missing SCHEDULED conversion"
+        );
+        assert!(
+            coverage.contains("deadline:: 2026-05-21"),
+            "missing DEADLINE conversion"
+        );
 
         // ── Wikilinks + hashtags + external links pass through ──
         assert!(coverage.contains("[[Wikilink]]"), "wikilink mangled");
         assert!(coverage.contains("#hashtag"), "hashtag mangled");
-        assert!(coverage.contains("[Apple](https://apple.com)"), "external link mangled");
+        assert!(
+            coverage.contains("[Apple](https://apple.com)"),
+            "external link mangled"
+        );
 
         // ── Block refs preserve the uuid (was lossy: replaced with `[ref]`) ──
         assert!(
@@ -942,17 +964,29 @@ tags:: idea, project
         );
 
         // ── Logseq-specific metadata properties stripped ──
-        assert!(!coverage.contains("collapsed::"), "collapsed should be stripped");
+        assert!(
+            !coverage.contains("collapsed::"),
+            "collapsed should be stripped"
+        );
         assert!(!coverage.contains("id::"), "id should be stripped");
         assert!(!coverage.contains("file::"), "file should be stripped");
 
         // ── Assets copied + attachments dir exists ──
-        assert!(mosaic.join("attachments/diagram.png").exists(), "diagram not copied");
-        assert!(mosaic.join("attachments/notes.pdf").exists(), "pdf not copied");
+        assert!(
+            mosaic.join("attachments/diagram.png").exists(),
+            "diagram not copied"
+        );
+        assert!(
+            mosaic.join("attachments/notes.pdf").exists(),
+            "pdf not copied"
+        );
 
         // ── Namespace flattening ──
         let nested = fs::read_to_string(mosaic.join("notes/parent-child.md")).unwrap();
-        assert!(nested.contains("Nested namespace"), "namespace page body lost");
+        assert!(
+            nested.contains("Nested namespace"),
+            "namespace page body lost"
+        );
 
         // ── Journal renamed to ISO date ──
         assert!(

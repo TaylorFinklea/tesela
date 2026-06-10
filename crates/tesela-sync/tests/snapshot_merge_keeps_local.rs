@@ -34,8 +34,7 @@ async fn snapshot_import_into_resident_doc_keeps_local_only_block() {
             note_id,
             display_alias: Some("daily".into()),
             title: "Daily".into(),
-            content: "- server base <!-- bid:0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a -->\n"
-                .into(),
+            content: "- server base <!-- bid:0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a -->\n".into(),
             created_at_millis: 1,
         })
         .await

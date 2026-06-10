@@ -122,8 +122,8 @@ fn rewrite_inline_outside_fence(
                 // through.
                 let last = out.chars().last();
                 let has_left_ws = matches!(last, Some(' ') | Some('\t'));
-                let next_is_ws = name_end < bytes.len()
-                    && matches!(bytes[name_end] as char, ' ' | '\t');
+                let next_is_ws =
+                    name_end < bytes.len() && matches!(bytes[name_end] as char, ' ' | '\t');
                 if has_left_ws && next_is_ws {
                     // Drop one of the doubled spaces.
                     i = name_end + 1;
@@ -264,11 +264,7 @@ fn rewrite_wiki_outside_fence(
 /// changed)`.
 ///
 /// Only the first `---`-delimited frontmatter block is scanned.
-pub fn rewrite_parent_frontmatter(
-    content: &str,
-    old_slug: &str,
-    new_slug: &str,
-) -> (String, bool) {
+pub fn rewrite_parent_frontmatter(content: &str, old_slug: &str, new_slug: &str) -> (String, bool) {
     let Some(fm_end) = find_frontmatter_end(content) else {
         return (content.to_string(), false);
     };
@@ -367,11 +363,7 @@ fn iter_code_fence_segments(body: &str) -> Vec<CodeFenceSegment<'_>> {
                 }
             };
             segments.push(seg);
-            segment_start = if in_code {
-                next_seg_start
-            } else {
-                line_start
-            };
+            segment_start = if in_code { next_seg_start } else { line_start };
             in_code = !in_code;
         }
         if i < bytes.len() {
@@ -393,7 +385,8 @@ mod tests {
 
     #[test]
     fn rewrite_simple_inline_tag() {
-        let (out, n) = rewrite_inline_tag("- hello #cardinal world", "cardinal", "cardinal-religion");
+        let (out, n) =
+            rewrite_inline_tag("- hello #cardinal world", "cardinal", "cardinal-religion");
         assert_eq!(out, "- hello #cardinal-religion world");
         assert_eq!(n, 1);
     }
@@ -433,7 +426,11 @@ mod tests {
 
     #[test]
     fn rewrite_wiki_link_with_alias_preserves_alias() {
-        let (out, n) = rewrite_wiki_link("see [[Cardinal|the bird]] flying", "cardinal", "Cardinal-Religion");
+        let (out, n) = rewrite_wiki_link(
+            "see [[Cardinal|the bird]] flying",
+            "cardinal",
+            "Cardinal-Religion",
+        );
         assert_eq!(out, "see [[cardinal-religion|the bird]] flying");
         assert_eq!(n, 1);
     }

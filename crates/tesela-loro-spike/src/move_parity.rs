@@ -42,7 +42,9 @@ fn scenario_move_and_edit() -> Result<(), Box<dyn std::error::Error>> {
 
     // Device 2: edit A's text concurrently.
     let d2_tree: LoroTree = d2.get_tree("blocks");
-    d2_tree.get_meta(a)?.insert("text", "A EDITED by device 2")?;
+    d2_tree
+        .get_meta(a)?
+        .insert("text", "A EDITED by device 2")?;
     d2.commit();
 
     // Merge both into a third doc.
@@ -52,16 +54,28 @@ fn scenario_move_and_edit() -> Result<(), Box<dyn std::error::Error>> {
     let merged_tree: LoroTree = merged.get_tree("blocks");
 
     let a_parent = merged_tree.parent(a).map(|p| format!("{:?}", p));
-    let a_meta = merged_tree.get_meta(a)?.get("text").map(|v| format!("{:?}", v));
-    println!("  A's parent after merge:  {:?} (expected: Some({:?}))", a_parent, b);
-    println!("  A's text after merge:    {:?} (expected: contains 'EDITED by device 2')", a_meta);
+    let a_meta = merged_tree
+        .get_meta(a)?
+        .get("text")
+        .map(|v| format!("{:?}", v));
+    println!(
+        "  A's parent after merge:  {:?} (expected: Some({:?}))",
+        a_parent, b
+    );
+    println!(
+        "  A's text after merge:    {:?} (expected: contains 'EDITED by device 2')",
+        a_meta
+    );
 
     let ok = a_parent.is_some()
         && a_meta
             .as_ref()
             .map(|s| s.contains("EDITED by device 2"))
             .unwrap_or(false);
-    println!("  Scenario A verdict: {}", if ok { "GREEN" } else { "FAIL" });
+    println!(
+        "  Scenario A verdict: {}",
+        if ok { "GREEN" } else { "FAIL" }
+    );
     Ok(())
 }
 
@@ -102,7 +116,11 @@ fn scenario_move_cycle() -> Result<(), Box<dyn std::error::Error>> {
     let no_cycle = !(a_parent.is_some() && b_parent.is_some());
     println!(
         "  Scenario B verdict: {}",
-        if !crashed && no_cycle { "GREEN" } else { "FAIL" }
+        if !crashed && no_cycle {
+            "GREEN"
+        } else {
+            "FAIL"
+        }
     );
     Ok(())
 }

@@ -56,7 +56,9 @@ async fn partial_delta_into_empty_doc_does_not_apply() {
 
     // A fresh device with NO base imports the partial delta.
     let device = engine(0x22);
-    let applied = device.apply_relay_updates(&[(note_id, partial.clone())]).await;
+    let applied = device
+        .apply_relay_updates(&[(note_id, partial.clone())])
+        .await;
 
     // The edit must NOT be visible — the partial update is missing its base
     // dependency, so it can't materialize. This is the bug behind
@@ -82,7 +84,9 @@ async fn partial_delta_into_empty_doc_does_not_apply() {
         .await
         .expect("reseed");
         // Same device id 0x11 → same peer → identical base history as `server`.
-        s2.export_doc_update(note_id, None).await.expect("base snapshot")
+        s2.export_doc_update(note_id, None)
+            .await
+            .expect("base snapshot")
     };
     let device2 = engine(0x33);
     device2

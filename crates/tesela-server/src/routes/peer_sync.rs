@@ -62,7 +62,6 @@ pub struct ProduceRequest {
     pub since_hlc_ntp: Option<i64>,
 }
 
-
 #[derive(Debug, Serialize)]
 pub struct PeerStatus {
     pub device_id_hex: String,
@@ -364,9 +363,7 @@ pub async fn pair_with_code(
             let incoming = parsed.group_identity();
             tesela_sync::adopt_group_identity(&s.mosaic_root, &incoming)
                 .await
-                .map_err(|e| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, format!("adopt: {e}"))
-                })?;
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("adopt: {e}")))?;
             *s.group_identity.write().await = incoming;
             adopted = true;
         }

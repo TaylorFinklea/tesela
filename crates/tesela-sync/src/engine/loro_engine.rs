@@ -84,9 +84,7 @@ fn join_list(items: &[String]) -> String {
 
 /// Build the block_id → note_id map from a set of loaded per-note docs
 /// by reading each block node's `block_id` meta. Used at boot.
-fn build_block_index(
-    docs: &HashMap<[u8; 16], LoroDoc>,
-) -> HashMap<[u8; 16], [u8; 16]> {
+fn build_block_index(docs: &HashMap<[u8; 16], LoroDoc>) -> HashMap<[u8; 16], [u8; 16]> {
     let mut out = HashMap::new();
     for (note_id, doc) in docs.iter() {
         let tree = doc.get_tree("blocks");
@@ -479,11 +477,7 @@ impl LoroEngine {
     /// Idempotent + commutative: a re-applied frame finds every twin's value
     /// already at its target → no heal. A decode/fork failure logs + falls back
     /// to a plain raw import (never panics).
-    pub async fn import_doc_update(
-        &self,
-        note_id: [u8; 16],
-        bytes: &[u8],
-    ) -> SyncResult<()> {
+    pub async fn import_doc_update(&self, note_id: [u8; 16], bytes: &[u8]) -> SyncResult<()> {
         let already_resident = self.inner.docs.read().await.contains_key(&note_id);
         let doc = self.doc_for_note_mut(note_id).await;
 
@@ -740,7 +734,11 @@ impl LoroEngine {
     /// before `record_local` (which re-acquires) — same lock discipline as the
     /// text heal. A `BlockPropertySet` on a block whose survivor went missing is
     /// itself a safe no-op (the apply arm guards it).
-    async fn reassert_prop_heals(&self, note_id: [u8; 16], changes: &[PeerBlockChange]) -> SyncResult<()> {
+    async fn reassert_prop_heals(
+        &self,
+        note_id: [u8; 16],
+        changes: &[PeerBlockChange],
+    ) -> SyncResult<()> {
         // Collect the (block_id, key, op) re-asserts while holding the read
         // lock, then drop it before `record_local` (which re-acquires).
         let mut block_ops: Vec<([u8; 16], String, PropOp)> = Vec::new();
@@ -765,12 +763,20 @@ impl LoroEngine {
                     match target {
                         ResolvedValue::Scalar(s) => {
                             if cur != Some(&ResolvedValue::Scalar(s.clone())) {
-                                block_ops.push((c.block_id, key.clone(), PropOp::SetScalar(s.clone())));
+                                block_ops.push((
+                                    c.block_id,
+                                    key.clone(),
+                                    PropOp::SetScalar(s.clone()),
+                                ));
                             }
                         }
                         ResolvedValue::Text(t) => {
                             if cur != Some(&ResolvedValue::Text(t.clone())) {
-                                block_ops.push((c.block_id, key.clone(), PropOp::SetText(t.clone())));
+                                block_ops.push((
+                                    c.block_id,
+                                    key.clone(),
+                                    PropOp::SetText(t.clone()),
+                                ));
                             }
                         }
                         ResolvedValue::List(members) => {
@@ -780,7 +786,11 @@ impl LoroEngine {
                             };
                             for m in members {
                                 if !present.contains(m) {
-                                    block_ops.push((c.block_id, key.clone(), PropOp::AddToList(m.clone())));
+                                    block_ops.push((
+                                        c.block_id,
+                                        key.clone(),
+                                        PropOp::AddToList(m.clone()),
+                                    ));
                                 }
                             }
                         }
@@ -874,11 +884,7 @@ impl LoroEngine {
     /// Read-only — the inbound live-apply path calls this AFTER a remote
     /// splice is applied to reconcile the open editor with the merged text.
     /// `None` for an unknown note/block or an empty block.
-    pub async fn read_block_text(
-        &self,
-        note_id: [u8; 16],
-        block_id: [u8; 16],
-    ) -> Option<String> {
+    pub async fn read_block_text(&self, note_id: [u8; 16], block_id: [u8; 16]) -> Option<String> {
         let docs = self.inner.docs.read().await;
         let doc = docs.get(&note_id)?;
         let tree = doc.get_tree("blocks");
@@ -901,15 +907,20 @@ impl LoroEngine {
     /// returns the same set. This is the relay BROADCAST model (Phase 5):
     /// we emit our deltas and let every receiver import idempotently.
     pub async fn produce_relay_updates(&self) -> Vec<([u8; 16], Vec<u8>, Vec<u8>)> {
-        let note_ids: Vec<[u8; 16]> =
-            self.inner.docs.read().await.keys().copied().collect();
+        let note_ids: Vec<[u8; 16]> = self.inner.docs.read().await.keys().copied().collect();
         let mut out = Vec::new();
         for note_id in note_ids {
             let current = match self.doc_version(note_id).await {
                 Some(v) => v,
                 None => continue,
             };
-            let since = self.inner.broadcast_cursor.read().await.get(&note_id).cloned();
+            let since = self
+                .inner
+                .broadcast_cursor
+                .read()
+                .await
+                .get(&note_id)
+                .cloned();
             // Nothing new since last broadcast → skip.
             if since.as_deref() == Some(current.as_slice()) {
                 continue;
@@ -1046,8 +1057,7 @@ impl LoroEngine {
         // leaves ghost entries (review finding [6]). A doc can be absent
         // because its snapshot was corrupt/unreadable on load; its index
         // entry must not survive as a phantom note.
-        let live: std::collections::HashSet<String> =
-            docs.keys().map(hex_id).collect();
+        let live: std::collections::HashSet<String> = docs.keys().map(hex_id).collect();
         let notes_map = self.inner.index.get_map("notes");
         let stale: Vec<String> = existing
             .keys()
@@ -1172,9 +1182,7 @@ impl LoroEngine {
                     let split = |k: &str| -> Vec<String> {
                         get(k)
                             .filter(|s| !s.is_empty())
-                            .map(|s| {
-                                s.split(INDEX_LIST_SEP).map(|t| t.to_string()).collect()
-                            })
+                            .map(|s| s.split(INDEX_LIST_SEP).map(|t| t.to_string()).collect())
                             .unwrap_or_default()
                     };
                     out.push(crate::engine::IndexEntry {
@@ -1251,9 +1259,7 @@ impl LoroEngine {
     /// engines' per-note docs merging cleanly (Phase 4).
     fn peer_id(&self) -> u64 {
         let b = self.inner.device.as_bytes();
-        let raw = u64::from_le_bytes([
-            b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-        ]);
+        let raw = u64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]);
         let masked = raw & 0x7FFF_FFFF_FFFF_FFFF;
         if masked == 0 {
             1
@@ -1299,10 +1305,7 @@ impl LoroEngine {
     /// point at the owning note so its doc can be loaded on demand.
     /// Stale entries (note deleted) self-correct: the docs lookup misses
     /// and we return None, matching "unknown block → no-op".
-    async fn find_doc_for_block(
-        &self,
-        block_id: &[u8; 16],
-    ) -> Option<([u8; 16], LoroDoc, TreeID)> {
+    async fn find_doc_for_block(&self, block_id: &[u8; 16]) -> Option<([u8; 16], LoroDoc, TreeID)> {
         let note_id = *self.inner.block_index.read().await.get(block_id)?;
         let block_hex = hex_id(block_id);
         let docs = self.inner.docs.read().await;
@@ -1342,17 +1345,11 @@ impl LoroEngine {
                 };
                 let tmp = unique_tmp(&path);
                 if let Err(e) = tokio::fs::write(&tmp, &bytes).await {
-                    tracing::warn!(
-                        "tesela-sync/loro: snapshot write {}: {e}",
-                        tmp.display()
-                    );
+                    tracing::warn!("tesela-sync/loro: snapshot write {}: {e}", tmp.display());
                     return;
                 }
                 if let Err(e) = tokio::fs::rename(&tmp, &path).await {
-                    tracing::warn!(
-                        "tesela-sync/loro: snapshot rename {}: {e}",
-                        path.display()
-                    );
+                    tracing::warn!("tesela-sync/loro: snapshot rename {}: {e}", path.display());
                     let _ = tokio::fs::remove_file(&tmp).await;
                 }
             }
@@ -1360,10 +1357,7 @@ impl LoroEngine {
                 // Doc gone (NoteDelete). Remove the snapshot if present.
                 if let Err(e) = tokio::fs::remove_file(&path).await {
                     if e.kind() != std::io::ErrorKind::NotFound {
-                        tracing::warn!(
-                            "tesela-sync/loro: snapshot delete {}: {e}",
-                            path.display()
-                        );
+                        tracing::warn!("tesela-sync/loro: snapshot delete {}: {e}", path.display());
                     }
                 }
             }
@@ -1424,7 +1418,10 @@ impl LoroEngine {
             return;
         }
         if let Err(e) = tokio::fs::rename(&tmp, &path).await {
-            tracing::warn!("tesela-sync/loro: materialize rename {}: {e}", path.display());
+            tracing::warn!(
+                "tesela-sync/loro: materialize rename {}: {e}",
+                path.display()
+            );
             let _ = tokio::fs::remove_file(&tmp).await;
         }
     }
@@ -1438,7 +1435,10 @@ impl LoroEngine {
         let path = dir.join(format!("{slug}.md"));
         if let Err(e) = tokio::fs::remove_file(&path).await {
             if e.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!("tesela-sync/loro: materialize delete {}: {e}", path.display());
+                tracing::warn!(
+                    "tesela-sync/loro: materialize delete {}: {e}",
+                    path.display()
+                );
             }
         }
     }
@@ -1563,9 +1563,7 @@ async fn load_broadcast_cursors(dir: &Path) -> HashMap<[u8; 16], Vec<u8>> {
 /// Files with malformed names or corrupt snapshot bytes are warned
 /// about and skipped — the caller's prepopulate-from-oplog path covers
 /// them.
-async fn load_snapshots_from_dir(
-    dir: &Path,
-) -> SyncResult<HashMap<[u8; 16], LoroDoc>> {
+async fn load_snapshots_from_dir(dir: &Path) -> SyncResult<HashMap<[u8; 16], LoroDoc>> {
     let mut docs: HashMap<[u8; 16], LoroDoc> = HashMap::new();
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(e) => e,
@@ -1577,9 +1575,11 @@ async fn load_snapshots_from_dir(
             )))
         }
     };
-    while let Some(entry) = entries.next_entry().await.map_err(|e| {
-        SyncError::Storage(format!("read_dir {}: {e}", dir.display()))
-    })? {
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| SyncError::Storage(format!("read_dir {}: {e}", dir.display())))?
+    {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) != Some("bin") {
             continue;
@@ -1602,19 +1602,13 @@ async fn load_snapshots_from_dir(
         let bytes = match tokio::fs::read(&path).await {
             Ok(b) => b,
             Err(e) => {
-                tracing::warn!(
-                    "tesela-sync/loro: read snapshot {}: {e}",
-                    path.display()
-                );
+                tracing::warn!("tesela-sync/loro: read snapshot {}: {e}", path.display());
                 continue;
             }
         };
         let doc = LoroDoc::new();
         if let Err(e) = doc.import(&bytes) {
-            tracing::warn!(
-                "tesela-sync/loro: import snapshot {}: {e}",
-                path.display()
-            );
+            tracing::warn!("tesela-sync/loro: import snapshot {}: {e}", path.display());
             continue;
         }
         docs.insert(note_id, doc);
@@ -1637,10 +1631,7 @@ fn parse_note_id_from_hex(s: &str) -> Option<[u8; 16]> {
 /// `None` because `serialize_note` renders purely off `indent` —
 /// matching SqliteEngine, which also derives the on-disk shape from
 /// document order + indent, not from the parent pointer.
-fn flatblock_from_node(
-    tree: &LoroTree,
-    node: TreeID,
-) -> Option<tesela_core::note_tree::FlatBlock> {
+fn flatblock_from_node(tree: &LoroTree, node: TreeID) -> Option<tesela_core::note_tree::FlatBlock> {
     let meta = tree.get_meta(node).ok()?;
     let indent = meta
         .get("indent_level")
@@ -1767,484 +1758,526 @@ fn read_indent_level(tree: &LoroTree, node: TreeID) -> Option<u16> {
 // ---------------------------------------------------------------------------
 
 mod prop_containers {
-use super::*;
-use tesela_core::property::PropScalar;
-
-/// Get-or-create the `props` + `prop_keys` containers on a block node's meta map.
-pub(super) fn node_prop_containers(meta: &loro::LoroMap) -> SyncResult<(loro::LoroMap, loro::LoroList)> {
-    let props = meta
-        .get_or_create_container("props", loro::LoroMap::new())
-        .map_err(|e| SyncError::Storage(format!("loro props get_or_create: {e}")))?;
-    let prop_keys = meta
-        .get_or_create_container("prop_keys", loro::LoroList::new())
-        .map_err(|e| SyncError::Storage(format!("loro prop_keys get_or_create: {e}")))?;
-    Ok((props, prop_keys))
-}
-
-/// The page-level `props` + `prop_keys` containers live at the doc root.
-pub(super) fn page_prop_containers(doc: &LoroDoc) -> (loro::LoroMap, loro::LoroList) {
-    (doc.get_map("props"), doc.get_list("prop_keys"))
-}
-
-/// NON-MUTATING read of a block node's `props` + `prop_keys` containers,
-/// returning `None` when either has never been created. The materializer
-/// reads through here — `node_prop_containers` would `get_or_create` the
-/// nested containers and dirty the doc on a pure render (same discipline as
-/// `read_block_text` inspecting `text_seq` via `meta.get`, never minting).
-pub(super) fn read_node_prop_containers(
-    meta: &loro::LoroMap,
-) -> Option<(loro::LoroMap, loro::LoroList)> {
-    let props = meta
-        .get("props")?
-        .into_container()
-        .ok()?
-        .into_map()
-        .ok()?;
-    let prop_keys = meta
-        .get("prop_keys")?
-        .into_container()
-        .ok()?
-        .into_list()
-        .ok()?;
-    Some((props, prop_keys))
-}
-
-/// The keys in `prop_keys` insertion order (raw — the dedup / drop-missing
-/// reconcile shared by the materializer and index lands in P1.3).
-fn prop_keys_ordered(prop_keys: &loro::LoroList) -> Vec<String> {
-    let mut out = Vec::new();
-    for i in 0..prop_keys.len() {
-        if let Some(v) = prop_keys.get(i) {
-            if let Ok(val) = v.into_value() {
-                if let Ok(s) = val.into_string() {
-                    out.push(s.to_string());
-                }
-            }
-        }
-    }
-    out
-}
-
-/// All keys present in the `props` map (primitive values AND nested
-/// containers), in the map's (unspecified) iteration order.
-fn props_map_keys(props: &loro::LoroMap) -> Vec<String> {
-    props.keys().map(|k| k.to_string()).collect()
-}
-
-/// The canonical ordered key set shared by the materializer + index + chips.
-///
-/// Walk `prop_keys` keeping the FIRST occurrence of each key and DROPPING any
-/// key absent from `props`; then APPEND any key present in `props` but missing
-/// from `prop_keys`, in lexicographic (byte) order. `prop_keys` is the sole
-/// ordering authority — the `props` map's iteration order is never trusted for
-/// order, only consulted for membership and for the lexicographic tail.
-fn prop_keys_resolved(props: &loro::LoroMap, prop_keys: &loro::LoroList) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for key in prop_keys_ordered(prop_keys) {
-        if seen.contains(&key) {
-            continue;
-        }
-        if props.get(&key).is_none() {
-            continue;
-        }
-        seen.insert(key.clone());
-        out.push(key);
-    }
-    let mut tail: Vec<String> = props_map_keys(props)
-        .into_iter()
-        .filter(|k| !seen.contains(k))
-        .collect();
-    tail.sort();
-    out.extend(tail);
-    out
-}
-
-/// Append `key` to `prop_keys` once (first-seen order); no-op if present.
-fn prop_keys_ensure(prop_keys: &loro::LoroList, key: &str) -> SyncResult<()> {
-    if prop_keys_ordered(prop_keys).iter().any(|k| k.as_str() == key) {
-        return Ok(());
-    }
-    prop_keys
-        .push(key)
-        .map_err(|e| SyncError::Storage(format!("loro prop_keys push: {e}")))
-}
-
-/// Remove every occurrence of `key` from `prop_keys`.
-fn prop_keys_remove(prop_keys: &loro::LoroList, key: &str) -> SyncResult<()> {
-    let mut i = 0;
-    while i < prop_keys.len() {
-        let matches = prop_keys
-            .get(i)
-            .and_then(|v| v.into_value().ok())
-            .and_then(|val| val.into_string().ok())
-            .map(|s| s.as_str() == key)
-            .unwrap_or(false);
-        if matches {
-            prop_keys
-                .delete(i, 1)
-                .map_err(|e| SyncError::Storage(format!("loro prop_keys delete: {e}")))?;
-        } else {
-            i += 1;
-        }
-    }
-    Ok(())
-}
-
-/// Convert a primitive LoroValue back into a `PropScalar` (containers → None).
-fn loro_value_to_scalar(v: loro::LoroValue) -> Option<PropScalar> {
-    match v {
-        loro::LoroValue::String(s) => Some(PropScalar::Text(s.to_string())),
-        loro::LoroValue::I64(i) => Some(PropScalar::Int(i)),
-        loro::LoroValue::Double(f) => Some(PropScalar::Float(f)),
-        loro::LoroValue::Bool(b) => Some(PropScalar::Bool(b)),
-        _ => None,
-    }
-}
-
-fn map_insert_scalar(props: &loro::LoroMap, key: &str, value: &PropScalar) -> SyncResult<()> {
-    let r = match value {
-        PropScalar::Text(s) => props.insert(key, s.as_str()),
-        PropScalar::Int(i) => props.insert(key, *i),
-        PropScalar::Float(f) => props.insert(key, *f),
-        PropScalar::Bool(b) => props.insert(key, *b),
-    };
-    r.map_err(|e| SyncError::Storage(format!("loro props insert: {e}")))
-}
-
-/// Set a single-value scalar property (primitive LoroValue; concurrent set = LWW).
-pub(super) fn prop_set_scalar(
-    props: &loro::LoroMap,
-    prop_keys: &loro::LoroList,
-    key: &str,
-    value: &PropScalar,
-) -> SyncResult<()> {
-    map_insert_scalar(props, key, value)?;
-    prop_keys_ensure(prop_keys, key)
-}
-
-/// Set a free-text property as a nested LoroText (concurrent char-merge).
-pub(super) fn prop_set_text(
-    props: &loro::LoroMap,
-    prop_keys: &loro::LoroList,
-    key: &str,
-    text: &str,
-) -> SyncResult<()> {
-    let t: LoroText = props
-        .get_or_create_container(key, LoroText::new())
-        .map_err(|e| SyncError::Storage(format!("loro prop text get_or_create: {e}")))?;
-    t.update(text, UpdateOptions::default())
-        .map_err(|e| SyncError::Storage(format!("loro prop text update: {e}")))?;
-    prop_keys_ensure(prop_keys, key)
-}
-
-fn list_push_scalar(list: &loro::LoroList, value: &PropScalar) -> SyncResult<()> {
-    let r = match value {
-        PropScalar::Text(s) => list.push(s.as_str()),
-        PropScalar::Int(i) => list.push(*i),
-        PropScalar::Float(f) => list.push(*f),
-        PropScalar::Bool(b) => list.push(*b),
-    };
-    r.map_err(|e| SyncError::Storage(format!("loro prop list push: {e}")))
-}
-
-/// Index of `value` in a list, or None.
-fn list_position(list: &loro::LoroList, value: &PropScalar) -> Option<usize> {
-    for i in 0..list.len() {
-        if let Some(v) = list.get(i) {
-            if let Ok(val) = v.into_value() {
-                if loro_value_to_scalar(val).as_ref() == Some(value) {
-                    return Some(i);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn get_list_container(props: &loro::LoroMap, key: &str) -> Option<loro::LoroList> {
-    props
-        .get(key)
-        .and_then(|v| v.into_container().ok())
-        .and_then(|c| c.into_list().ok())
-}
-
-/// Add a value to a multi-value property's nested LoroList, union semantics
-/// (a value already present is a no-op).
-pub(super) fn prop_add_to_list(
-    props: &loro::LoroMap,
-    prop_keys: &loro::LoroList,
-    key: &str,
-    value: &PropScalar,
-) -> SyncResult<()> {
-    let list: loro::LoroList = props
-        .get_or_create_container(key, loro::LoroList::new())
-        .map_err(|e| SyncError::Storage(format!("loro prop list get_or_create: {e}")))?;
-    if list_position(&list, value).is_none() {
-        list_push_scalar(&list, value)?;
-    }
-    prop_keys_ensure(prop_keys, key)
-}
-
-/// Remove a value from a multi-value property's list (no-op if absent or the
-/// property isn't a list). `prop_keys` is left intact — an emptied list keeps
-/// its key until an explicit `prop_clear`.
-pub(super) fn prop_remove_from_list(
-    props: &loro::LoroMap,
-    key: &str,
-    value: &PropScalar,
-) -> SyncResult<()> {
-    let Some(list) = get_list_container(props, key) else {
-        return Ok(());
-    };
-    if let Some(i) = list_position(&list, value) {
-        list.delete(i, 1)
-            .map_err(|e| SyncError::Storage(format!("loro prop list delete: {e}")))?;
-    }
-    Ok(())
-}
-
-/// Remove a property entirely: from `props` AND `prop_keys`.
-pub(super) fn prop_clear(props: &loro::LoroMap, prop_keys: &loro::LoroList, key: &str) -> SyncResult<()> {
-    props
-        .delete(key)
-        .map_err(|e| SyncError::Storage(format!("loro props delete: {e}")))?;
-    prop_keys_remove(prop_keys, key)
-}
-
-/// Read a scalar property (primitive value under `key`); None if absent or a container.
-#[allow(dead_code)] // scalar reader wired by the materializer in P1.5; tests read it now
-pub(super) fn prop_get_scalar(props: &loro::LoroMap, key: &str) -> Option<PropScalar> {
-    let val = props.get(key)?.into_value().ok()?;
-    loro_value_to_scalar(val)
-}
-
-/// Read a text property (nested LoroText); None if absent or not text.
-fn prop_get_text(props: &loro::LoroMap, key: &str) -> Option<String> {
-    props
-        .get(key)?
-        .into_container()
-        .ok()?
-        .into_text()
-        .ok()
-        .map(|t| t.to_string())
-}
-
-/// Read a multi-value property as scalars in list order; empty if absent.
-pub(super) fn prop_get_list(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
-    let Some(list) = get_list_container(props, key) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for i in 0..list.len() {
-        if let Some(s) = list
-            .get(i)
-            .and_then(|v| v.into_value().ok())
-            .and_then(loro_value_to_scalar)
-        {
-            out.push(s);
-        }
-    }
-    out
-}
-
-/// Read a multi-value property with STABLE first-occurrence dedup over the
-/// merged list order. A concurrent union-merge across replicas can leave the
-/// same value at more than one position; the materializer/index/chips read
-/// through here so the view is deterministic (same CRDT state → same bytes).
-fn prop_get_list_dedup(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
-    let mut seen: Vec<PropScalar> = Vec::new();
-    for v in prop_get_list(props, key) {
-        if !seen.contains(&v) {
-            seen.push(v);
-        }
-    }
-    seen
-}
-
-/// Materialize a `(props, prop_keys)` owner into the ordered, canonical
-/// `(key, value)` pairs the `note_tree` serializer renders as `key:: value`
-/// continuation lines. The ONE shared read path for the materializer (block
-/// and page). Walks `prop_keys_resolved` order, rendering each stored kind:
-/// a scalar via `format_scalar`; a multi-value list via stable-dedup
-/// comma-join (the `tags::` convention); free text via the nested LoroText
-/// string. Deterministic: same CRDT state always yields the same bytes.
-pub(super) fn materialize_props(
-    props: &loro::LoroMap,
-    prop_keys: &loro::LoroList,
-) -> Vec<(String, String)> {
-    use tesela_core::property::format_scalar;
-    let mut out: Vec<(String, String)> = Vec::new();
-    for key in prop_keys_resolved(props, prop_keys) {
-        let value = if let Some(scalar) = prop_get_scalar(props, &key) {
-            format_scalar(&scalar)
-        } else if get_list_container(props, &key).is_some() {
-            prop_get_list_dedup(props, &key)
-                .iter()
-                .map(format_scalar)
-                .collect::<Vec<_>>()
-                .join(", ")
-        } else if let Some(text) = prop_get_text(props, &key) {
-            text
-        } else {
-            // A key in `prop_keys` whose `props` entry is absent is already
-            // dropped by `prop_keys_resolved`; an unreadable container is
-            // skipped rather than rendered as an empty line.
-            continue;
-        };
-        out.push((key, value));
-    }
-    out
-}
-
-/// Read a `(props, prop_keys)` owner into ordered TYPED resolved values — the
-/// twin-heal analog of [`materialize_props`] (which flattens to strings). Walks
-/// `prop_keys_resolved` order, classifying each stored kind the same way the
-/// materializer does: scalar (primitive) → [`ResolvedValue::Scalar`]; nested
-/// list → [`ResolvedValue::List`] (stable-deduped); nested text →
-/// [`ResolvedValue::Text`]. Used by the disjoint-twin heal to capture each
-/// twin's typed props in the fork BEFORE the tombstone drops the loser.
-pub(super) fn read_props_typed(
-    props: &loro::LoroMap,
-    prop_keys: &loro::LoroList,
-) -> Vec<(String, super::ResolvedValue)> {
-    let mut out: Vec<(String, super::ResolvedValue)> = Vec::new();
-    for key in prop_keys_resolved(props, prop_keys) {
-        let value = if let Some(scalar) = prop_get_scalar(props, &key) {
-            super::ResolvedValue::Scalar(scalar)
-        } else if get_list_container(props, &key).is_some() {
-            super::ResolvedValue::List(prop_get_list_dedup(props, &key))
-        } else if let Some(text) = prop_get_text(props, &key) {
-            super::ResolvedValue::Text(text)
-        } else {
-            continue;
-        };
-        out.push((key, value));
-    }
-    out
-}
-
-#[cfg(test)]
-mod prop_helper_tests {
     use super::*;
     use tesela_core::property::PropScalar;
 
-    #[test]
-    fn prop_helpers_set_get_clear_on_block_node() {
-        let doc = loro::LoroDoc::new();
-        let tree = doc.get_tree("blocks");
-        let node = tree.create(loro::TreeParentId::Root).unwrap();
-        let meta = tree.get_meta(node).unwrap();
-        let (props, prop_keys) = node_prop_containers(&meta).unwrap();
-
-        // scalar (string)
-        prop_set_scalar(&props, &prop_keys, "status", &PropScalar::Text("doing".into())).unwrap();
-        assert_eq!(prop_get_scalar(&props, "status"), Some(PropScalar::Text("doing".into())));
-
-        // scalar (int)
-        prop_set_scalar(&props, &prop_keys, "priority", &PropScalar::Int(3)).unwrap();
-        assert_eq!(prop_get_scalar(&props, "priority"), Some(PropScalar::Int(3)));
-
-        // text (nested LoroText)
-        prop_set_text(&props, &prop_keys, "note", "hello world").unwrap();
-        assert_eq!(prop_get_text(&props, "note").as_deref(), Some("hello world"));
-
-        // multi-value: add → union (dup is a no-op), then remove
-        prop_add_to_list(&props, &prop_keys, "tags", &PropScalar::Text("Task".into())).unwrap();
-        prop_add_to_list(&props, &prop_keys, "tags", &PropScalar::Text("Urgent".into())).unwrap();
-        prop_add_to_list(&props, &prop_keys, "tags", &PropScalar::Text("Task".into())).unwrap();
-        assert_eq!(
-            prop_get_list(&props, "tags"),
-            vec![
-                PropScalar::Text("Task".into()),
-                PropScalar::Text("Urgent".into())
-            ]
-        );
-        prop_remove_from_list(&props, "tags", &PropScalar::Text("Task".into())).unwrap();
-        assert_eq!(prop_get_list(&props, "tags"), vec![PropScalar::Text("Urgent".into())]);
-
-        // prop_keys preserves first-seen order
-        assert_eq!(prop_keys_ordered(&prop_keys).join(","), "status,priority,note,tags");
-
-        // clear removes from BOTH props and prop_keys
-        prop_clear(&props, &prop_keys, "priority").unwrap();
-        assert_eq!(prop_get_scalar(&props, "priority"), None);
-        assert_eq!(prop_keys_ordered(&prop_keys).join(","), "status,note,tags");
+    /// Get-or-create the `props` + `prop_keys` containers on a block node's meta map.
+    pub(super) fn node_prop_containers(
+        meta: &loro::LoroMap,
+    ) -> SyncResult<(loro::LoroMap, loro::LoroList)> {
+        let props = meta
+            .get_or_create_container("props", loro::LoroMap::new())
+            .map_err(|e| SyncError::Storage(format!("loro props get_or_create: {e}")))?;
+        let prop_keys = meta
+            .get_or_create_container("prop_keys", loro::LoroList::new())
+            .map_err(|e| SyncError::Storage(format!("loro prop_keys get_or_create: {e}")))?;
+        Ok((props, prop_keys))
     }
 
-    #[test]
-    fn prop_helpers_on_page_root() {
-        let doc = loro::LoroDoc::new();
-        let (props, prop_keys) = page_prop_containers(&doc);
-        prop_set_scalar(&props, &prop_keys, "type", &PropScalar::Text("Tag".into())).unwrap();
-        assert_eq!(prop_get_scalar(&props, "type"), Some(PropScalar::Text("Tag".into())));
-        assert_eq!(prop_keys_ordered(&prop_keys).join(","), "type");
+    /// The page-level `props` + `prop_keys` containers live at the doc root.
+    pub(super) fn page_prop_containers(doc: &LoroDoc) -> (loro::LoroMap, loro::LoroList) {
+        (doc.get_map("props"), doc.get_list("prop_keys"))
     }
 
-    #[test]
-    fn prop_keys_resolved_dedups_drops_missing_appends_lexicographically() {
-        let doc = loro::LoroDoc::new();
-        let (props, prop_keys) = page_prop_containers(&doc);
+    /// NON-MUTATING read of a block node's `props` + `prop_keys` containers,
+    /// returning `None` when either has never been created. The materializer
+    /// reads through here — `node_prop_containers` would `get_or_create` the
+    /// nested containers and dirty the doc on a pure render (same discipline as
+    /// `read_block_text` inspecting `text_seq` via `meta.get`, never minting).
+    pub(super) fn read_node_prop_containers(
+        meta: &loro::LoroMap,
+    ) -> Option<(loro::LoroMap, loro::LoroList)> {
+        let props = meta.get("props")?.into_container().ok()?.into_map().ok()?;
+        let prop_keys = meta
+            .get("prop_keys")?
+            .into_container()
+            .ok()?
+            .into_list()
+            .ok()?;
+        Some((props, prop_keys))
+    }
 
-        // props gets three keys via the set helpers (which also push to prop_keys);
-        // then we hand-build a messy prop_keys list to exercise the reconcile:
-        //   - "status"  : present in props, listed
-        //   - "ghost"   : NOT in props, listed (must be DROPPED)
-        //   - "status"  : duplicate (must keep FIRST occurrence only)
-        //   - "priority": present in props, listed
-        // and "zeta" is present in props but absent from prop_keys (must be
-        // APPENDED in lexicographic order relative to other props-only keys).
-        prop_set_scalar(&props, &prop_keys, "status", &PropScalar::Text("doing".into())).unwrap();
-        prop_set_scalar(&props, &prop_keys, "priority", &PropScalar::Int(3)).unwrap();
-        // props-only keys (NOT pushed to prop_keys): inserted directly so they
-        // exercise the lexicographic append. "alpha" sorts before "zeta".
-        props.insert("zeta", "z").unwrap();
-        props.insert("alpha", "a").unwrap();
+    /// The keys in `prop_keys` insertion order (raw — the dedup / drop-missing
+    /// reconcile shared by the materializer and index lands in P1.3).
+    fn prop_keys_ordered(prop_keys: &loro::LoroList) -> Vec<String> {
+        let mut out = Vec::new();
+        for i in 0..prop_keys.len() {
+            if let Some(v) = prop_keys.get(i) {
+                if let Ok(val) = v.into_value() {
+                    if let Ok(s) = val.into_string() {
+                        out.push(s.to_string());
+                    }
+                }
+            }
+        }
+        out
+    }
 
-        // Overwrite prop_keys with the messy ordering described above.
-        prop_keys.delete(0, prop_keys.len()).unwrap();
-        for k in ["status", "ghost", "status", "priority"] {
-            prop_keys.push(k).unwrap();
+    /// All keys present in the `props` map (primitive values AND nested
+    /// containers), in the map's (unspecified) iteration order.
+    fn props_map_keys(props: &loro::LoroMap) -> Vec<String> {
+        props.keys().map(|k| k.to_string()).collect()
+    }
+
+    /// The canonical ordered key set shared by the materializer + index + chips.
+    ///
+    /// Walk `prop_keys` keeping the FIRST occurrence of each key and DROPPING any
+    /// key absent from `props`; then APPEND any key present in `props` but missing
+    /// from `prop_keys`, in lexicographic (byte) order. `prop_keys` is the sole
+    /// ordering authority — the `props` map's iteration order is never trusted for
+    /// order, only consulted for membership and for the lexicographic tail.
+    fn prop_keys_resolved(props: &loro::LoroMap, prop_keys: &loro::LoroList) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for key in prop_keys_ordered(prop_keys) {
+            if seen.contains(&key) {
+                continue;
+            }
+            if props.get(&key).is_none() {
+                continue;
+            }
+            seen.insert(key.clone());
+            out.push(key);
+        }
+        let mut tail: Vec<String> = props_map_keys(props)
+            .into_iter()
+            .filter(|k| !seen.contains(k))
+            .collect();
+        tail.sort();
+        out.extend(tail);
+        out
+    }
+
+    /// Append `key` to `prop_keys` once (first-seen order); no-op if present.
+    fn prop_keys_ensure(prop_keys: &loro::LoroList, key: &str) -> SyncResult<()> {
+        if prop_keys_ordered(prop_keys)
+            .iter()
+            .any(|k| k.as_str() == key)
+        {
+            return Ok(());
+        }
+        prop_keys
+            .push(key)
+            .map_err(|e| SyncError::Storage(format!("loro prop_keys push: {e}")))
+    }
+
+    /// Remove every occurrence of `key` from `prop_keys`.
+    fn prop_keys_remove(prop_keys: &loro::LoroList, key: &str) -> SyncResult<()> {
+        let mut i = 0;
+        while i < prop_keys.len() {
+            let matches = prop_keys
+                .get(i)
+                .and_then(|v| v.into_value().ok())
+                .and_then(|val| val.into_string().ok())
+                .map(|s| s.as_str() == key)
+                .unwrap_or(false);
+            if matches {
+                prop_keys
+                    .delete(i, 1)
+                    .map_err(|e| SyncError::Storage(format!("loro prop_keys delete: {e}")))?;
+            } else {
+                i += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Convert a primitive LoroValue back into a `PropScalar` (containers → None).
+    fn loro_value_to_scalar(v: loro::LoroValue) -> Option<PropScalar> {
+        match v {
+            loro::LoroValue::String(s) => Some(PropScalar::Text(s.to_string())),
+            loro::LoroValue::I64(i) => Some(PropScalar::Int(i)),
+            loro::LoroValue::Double(f) => Some(PropScalar::Float(f)),
+            loro::LoroValue::Bool(b) => Some(PropScalar::Bool(b)),
+            _ => None,
+        }
+    }
+
+    fn map_insert_scalar(props: &loro::LoroMap, key: &str, value: &PropScalar) -> SyncResult<()> {
+        let r = match value {
+            PropScalar::Text(s) => props.insert(key, s.as_str()),
+            PropScalar::Int(i) => props.insert(key, *i),
+            PropScalar::Float(f) => props.insert(key, *f),
+            PropScalar::Bool(b) => props.insert(key, *b),
+        };
+        r.map_err(|e| SyncError::Storage(format!("loro props insert: {e}")))
+    }
+
+    /// Set a single-value scalar property (primitive LoroValue; concurrent set = LWW).
+    pub(super) fn prop_set_scalar(
+        props: &loro::LoroMap,
+        prop_keys: &loro::LoroList,
+        key: &str,
+        value: &PropScalar,
+    ) -> SyncResult<()> {
+        map_insert_scalar(props, key, value)?;
+        prop_keys_ensure(prop_keys, key)
+    }
+
+    /// Set a free-text property as a nested LoroText (concurrent char-merge).
+    pub(super) fn prop_set_text(
+        props: &loro::LoroMap,
+        prop_keys: &loro::LoroList,
+        key: &str,
+        text: &str,
+    ) -> SyncResult<()> {
+        let t: LoroText = props
+            .get_or_create_container(key, LoroText::new())
+            .map_err(|e| SyncError::Storage(format!("loro prop text get_or_create: {e}")))?;
+        t.update(text, UpdateOptions::default())
+            .map_err(|e| SyncError::Storage(format!("loro prop text update: {e}")))?;
+        prop_keys_ensure(prop_keys, key)
+    }
+
+    fn list_push_scalar(list: &loro::LoroList, value: &PropScalar) -> SyncResult<()> {
+        let r = match value {
+            PropScalar::Text(s) => list.push(s.as_str()),
+            PropScalar::Int(i) => list.push(*i),
+            PropScalar::Float(f) => list.push(*f),
+            PropScalar::Bool(b) => list.push(*b),
+        };
+        r.map_err(|e| SyncError::Storage(format!("loro prop list push: {e}")))
+    }
+
+    /// Index of `value` in a list, or None.
+    fn list_position(list: &loro::LoroList, value: &PropScalar) -> Option<usize> {
+        for i in 0..list.len() {
+            if let Some(v) = list.get(i) {
+                if let Ok(val) = v.into_value() {
+                    if loro_value_to_scalar(val).as_ref() == Some(value) {
+                        return Some(i);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn get_list_container(props: &loro::LoroMap, key: &str) -> Option<loro::LoroList> {
+        props
+            .get(key)
+            .and_then(|v| v.into_container().ok())
+            .and_then(|c| c.into_list().ok())
+    }
+
+    /// Add a value to a multi-value property's nested LoroList, union semantics
+    /// (a value already present is a no-op).
+    pub(super) fn prop_add_to_list(
+        props: &loro::LoroMap,
+        prop_keys: &loro::LoroList,
+        key: &str,
+        value: &PropScalar,
+    ) -> SyncResult<()> {
+        let list: loro::LoroList = props
+            .get_or_create_container(key, loro::LoroList::new())
+            .map_err(|e| SyncError::Storage(format!("loro prop list get_or_create: {e}")))?;
+        if list_position(&list, value).is_none() {
+            list_push_scalar(&list, value)?;
+        }
+        prop_keys_ensure(prop_keys, key)
+    }
+
+    /// Remove a value from a multi-value property's list (no-op if absent or the
+    /// property isn't a list). `prop_keys` is left intact — an emptied list keeps
+    /// its key until an explicit `prop_clear`.
+    pub(super) fn prop_remove_from_list(
+        props: &loro::LoroMap,
+        key: &str,
+        value: &PropScalar,
+    ) -> SyncResult<()> {
+        let Some(list) = get_list_container(props, key) else {
+            return Ok(());
+        };
+        if let Some(i) = list_position(&list, value) {
+            list.delete(i, 1)
+                .map_err(|e| SyncError::Storage(format!("loro prop list delete: {e}")))?;
+        }
+        Ok(())
+    }
+
+    /// Remove a property entirely: from `props` AND `prop_keys`.
+    pub(super) fn prop_clear(
+        props: &loro::LoroMap,
+        prop_keys: &loro::LoroList,
+        key: &str,
+    ) -> SyncResult<()> {
+        props
+            .delete(key)
+            .map_err(|e| SyncError::Storage(format!("loro props delete: {e}")))?;
+        prop_keys_remove(prop_keys, key)
+    }
+
+    /// Read a scalar property (primitive value under `key`); None if absent or a container.
+    #[allow(dead_code)] // scalar reader wired by the materializer in P1.5; tests read it now
+    pub(super) fn prop_get_scalar(props: &loro::LoroMap, key: &str) -> Option<PropScalar> {
+        let val = props.get(key)?.into_value().ok()?;
+        loro_value_to_scalar(val)
+    }
+
+    /// Read a text property (nested LoroText); None if absent or not text.
+    fn prop_get_text(props: &loro::LoroMap, key: &str) -> Option<String> {
+        props
+            .get(key)?
+            .into_container()
+            .ok()?
+            .into_text()
+            .ok()
+            .map(|t| t.to_string())
+    }
+
+    /// Read a multi-value property as scalars in list order; empty if absent.
+    pub(super) fn prop_get_list(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
+        let Some(list) = get_list_container(props, key) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for i in 0..list.len() {
+            if let Some(s) = list
+                .get(i)
+                .and_then(|v| v.into_value().ok())
+                .and_then(loro_value_to_scalar)
+            {
+                out.push(s);
+            }
+        }
+        out
+    }
+
+    /// Read a multi-value property with STABLE first-occurrence dedup over the
+    /// merged list order. A concurrent union-merge across replicas can leave the
+    /// same value at more than one position; the materializer/index/chips read
+    /// through here so the view is deterministic (same CRDT state → same bytes).
+    fn prop_get_list_dedup(props: &loro::LoroMap, key: &str) -> Vec<PropScalar> {
+        let mut seen: Vec<PropScalar> = Vec::new();
+        for v in prop_get_list(props, key) {
+            if !seen.contains(&v) {
+                seen.push(v);
+            }
+        }
+        seen
+    }
+
+    /// Materialize a `(props, prop_keys)` owner into the ordered, canonical
+    /// `(key, value)` pairs the `note_tree` serializer renders as `key:: value`
+    /// continuation lines. The ONE shared read path for the materializer (block
+    /// and page). Walks `prop_keys_resolved` order, rendering each stored kind:
+    /// a scalar via `format_scalar`; a multi-value list via stable-dedup
+    /// comma-join (the `tags::` convention); free text via the nested LoroText
+    /// string. Deterministic: same CRDT state always yields the same bytes.
+    pub(super) fn materialize_props(
+        props: &loro::LoroMap,
+        prop_keys: &loro::LoroList,
+    ) -> Vec<(String, String)> {
+        use tesela_core::property::format_scalar;
+        let mut out: Vec<(String, String)> = Vec::new();
+        for key in prop_keys_resolved(props, prop_keys) {
+            let value = if let Some(scalar) = prop_get_scalar(props, &key) {
+                format_scalar(&scalar)
+            } else if get_list_container(props, &key).is_some() {
+                prop_get_list_dedup(props, &key)
+                    .iter()
+                    .map(format_scalar)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            } else if let Some(text) = prop_get_text(props, &key) {
+                text
+            } else {
+                // A key in `prop_keys` whose `props` entry is absent is already
+                // dropped by `prop_keys_resolved`; an unreadable container is
+                // skipped rather than rendered as an empty line.
+                continue;
+            };
+            out.push((key, value));
+        }
+        out
+    }
+
+    /// Read a `(props, prop_keys)` owner into ordered TYPED resolved values — the
+    /// twin-heal analog of [`materialize_props`] (which flattens to strings). Walks
+    /// `prop_keys_resolved` order, classifying each stored kind the same way the
+    /// materializer does: scalar (primitive) → [`ResolvedValue::Scalar`]; nested
+    /// list → [`ResolvedValue::List`] (stable-deduped); nested text →
+    /// [`ResolvedValue::Text`]. Used by the disjoint-twin heal to capture each
+    /// twin's typed props in the fork BEFORE the tombstone drops the loser.
+    pub(super) fn read_props_typed(
+        props: &loro::LoroMap,
+        prop_keys: &loro::LoroList,
+    ) -> Vec<(String, super::ResolvedValue)> {
+        let mut out: Vec<(String, super::ResolvedValue)> = Vec::new();
+        for key in prop_keys_resolved(props, prop_keys) {
+            let value = if let Some(scalar) = prop_get_scalar(props, &key) {
+                super::ResolvedValue::Scalar(scalar)
+            } else if get_list_container(props, &key).is_some() {
+                super::ResolvedValue::List(prop_get_list_dedup(props, &key))
+            } else if let Some(text) = prop_get_text(props, &key) {
+                super::ResolvedValue::Text(text)
+            } else {
+                continue;
+            };
+            out.push((key, value));
+        }
+        out
+    }
+
+    #[cfg(test)]
+    mod prop_helper_tests {
+        use super::*;
+        use tesela_core::property::PropScalar;
+
+        #[test]
+        fn prop_helpers_set_get_clear_on_block_node() {
+            let doc = loro::LoroDoc::new();
+            let tree = doc.get_tree("blocks");
+            let node = tree.create(loro::TreeParentId::Root).unwrap();
+            let meta = tree.get_meta(node).unwrap();
+            let (props, prop_keys) = node_prop_containers(&meta).unwrap();
+
+            // scalar (string)
+            prop_set_scalar(
+                &props,
+                &prop_keys,
+                "status",
+                &PropScalar::Text("doing".into()),
+            )
+            .unwrap();
+            assert_eq!(
+                prop_get_scalar(&props, "status"),
+                Some(PropScalar::Text("doing".into()))
+            );
+
+            // scalar (int)
+            prop_set_scalar(&props, &prop_keys, "priority", &PropScalar::Int(3)).unwrap();
+            assert_eq!(
+                prop_get_scalar(&props, "priority"),
+                Some(PropScalar::Int(3))
+            );
+
+            // text (nested LoroText)
+            prop_set_text(&props, &prop_keys, "note", "hello world").unwrap();
+            assert_eq!(
+                prop_get_text(&props, "note").as_deref(),
+                Some("hello world")
+            );
+
+            // multi-value: add → union (dup is a no-op), then remove
+            prop_add_to_list(&props, &prop_keys, "tags", &PropScalar::Text("Task".into())).unwrap();
+            prop_add_to_list(
+                &props,
+                &prop_keys,
+                "tags",
+                &PropScalar::Text("Urgent".into()),
+            )
+            .unwrap();
+            prop_add_to_list(&props, &prop_keys, "tags", &PropScalar::Text("Task".into())).unwrap();
+            assert_eq!(
+                prop_get_list(&props, "tags"),
+                vec![
+                    PropScalar::Text("Task".into()),
+                    PropScalar::Text("Urgent".into())
+                ]
+            );
+            prop_remove_from_list(&props, "tags", &PropScalar::Text("Task".into())).unwrap();
+            assert_eq!(
+                prop_get_list(&props, "tags"),
+                vec![PropScalar::Text("Urgent".into())]
+            );
+
+            // prop_keys preserves first-seen order
+            assert_eq!(
+                prop_keys_ordered(&prop_keys).join(","),
+                "status,priority,note,tags"
+            );
+
+            // clear removes from BOTH props and prop_keys
+            prop_clear(&props, &prop_keys, "priority").unwrap();
+            assert_eq!(prop_get_scalar(&props, "priority"), None);
+            assert_eq!(prop_keys_ordered(&prop_keys).join(","), "status,note,tags");
         }
 
-        // Expected: listed-and-present in first-seen order (status, priority,
-        // dup status dropped, ghost dropped), then props-only keys appended in
-        // byte order (alpha, zeta).
-        assert_eq!(
-            prop_keys_resolved(&props, &prop_keys),
-            vec![
-                "status".to_string(),
-                "priority".to_string(),
-                "alpha".to_string(),
-                "zeta".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn prop_get_list_dedup_is_stable_first_occurrence() {
-        let doc = loro::LoroDoc::new();
-        let (props, prop_keys) = page_prop_containers(&doc);
-
-        // Simulate a post-merge list where a value appears at more than one
-        // position: [A, B, A, C, B]. The stable dedup keeps the FIRST sighting
-        // of each value, preserving merged order: [A, B, C].
-        let list: loro::LoroList = props.get_or_create_container("tags", loro::LoroList::new()).unwrap();
-        for v in ["A", "B", "A", "C", "B"] {
-            list.push(v).unwrap();
+        #[test]
+        fn prop_helpers_on_page_root() {
+            let doc = loro::LoroDoc::new();
+            let (props, prop_keys) = page_prop_containers(&doc);
+            prop_set_scalar(&props, &prop_keys, "type", &PropScalar::Text("Tag".into())).unwrap();
+            assert_eq!(
+                prop_get_scalar(&props, "type"),
+                Some(PropScalar::Text("Tag".into()))
+            );
+            assert_eq!(prop_keys_ordered(&prop_keys).join(","), "type");
         }
-        prop_keys.push("tags").unwrap();
 
-        assert_eq!(
-            prop_get_list_dedup(&props, "tags"),
-            vec![
-                PropScalar::Text("A".into()),
-                PropScalar::Text("B".into()),
-                PropScalar::Text("C".into()),
-            ]
-        );
+        #[test]
+        fn prop_keys_resolved_dedups_drops_missing_appends_lexicographically() {
+            let doc = loro::LoroDoc::new();
+            let (props, prop_keys) = page_prop_containers(&doc);
+
+            // props gets three keys via the set helpers (which also push to prop_keys);
+            // then we hand-build a messy prop_keys list to exercise the reconcile:
+            //   - "status"  : present in props, listed
+            //   - "ghost"   : NOT in props, listed (must be DROPPED)
+            //   - "status"  : duplicate (must keep FIRST occurrence only)
+            //   - "priority": present in props, listed
+            // and "zeta" is present in props but absent from prop_keys (must be
+            // APPENDED in lexicographic order relative to other props-only keys).
+            prop_set_scalar(
+                &props,
+                &prop_keys,
+                "status",
+                &PropScalar::Text("doing".into()),
+            )
+            .unwrap();
+            prop_set_scalar(&props, &prop_keys, "priority", &PropScalar::Int(3)).unwrap();
+            // props-only keys (NOT pushed to prop_keys): inserted directly so they
+            // exercise the lexicographic append. "alpha" sorts before "zeta".
+            props.insert("zeta", "z").unwrap();
+            props.insert("alpha", "a").unwrap();
+
+            // Overwrite prop_keys with the messy ordering described above.
+            prop_keys.delete(0, prop_keys.len()).unwrap();
+            for k in ["status", "ghost", "status", "priority"] {
+                prop_keys.push(k).unwrap();
+            }
+
+            // Expected: listed-and-present in first-seen order (status, priority,
+            // dup status dropped, ghost dropped), then props-only keys appended in
+            // byte order (alpha, zeta).
+            assert_eq!(
+                prop_keys_resolved(&props, &prop_keys),
+                vec![
+                    "status".to_string(),
+                    "priority".to_string(),
+                    "alpha".to_string(),
+                    "zeta".to_string(),
+                ]
+            );
+        }
+
+        #[test]
+        fn prop_get_list_dedup_is_stable_first_occurrence() {
+            let doc = loro::LoroDoc::new();
+            let (props, prop_keys) = page_prop_containers(&doc);
+
+            // Simulate a post-merge list where a value appears at more than one
+            // position: [A, B, A, C, B]. The stable dedup keeps the FIRST sighting
+            // of each value, preserving merged order: [A, B, C].
+            let list: loro::LoroList = props
+                .get_or_create_container("tags", loro::LoroList::new())
+                .unwrap();
+            for v in ["A", "B", "A", "C", "B"] {
+                list.push(v).unwrap();
+            }
+            prop_keys.push("tags").unwrap();
+
+            assert_eq!(
+                prop_get_list_dedup(&props, "tags"),
+                vec![
+                    PropScalar::Text("A".into()),
+                    PropScalar::Text("B".into()),
+                    PropScalar::Text("C".into()),
+                ]
+            );
+        }
     }
-}
 }
 
 /// Page-property storage: an ordered `LoroList` named "page_props" on
@@ -2254,10 +2287,7 @@ mod prop_helper_tests {
 /// render reproduces on-disk order deterministically. (When granular
 /// per-property merge lands — the deferred multi-value work — this
 /// becomes a map/movable-list with per-key updates.)
-fn set_page_properties(
-    doc: &LoroDoc,
-    props: &[(String, String)],
-) -> SyncResult<()> {
+fn set_page_properties(doc: &LoroDoc, props: &[(String, String)]) -> SyncResult<()> {
     let list = doc.get_list("page_props");
     let len = list.len();
     if len > 0 {
@@ -2327,8 +2357,7 @@ fn note_tree_from_doc(
 fn page_properties_materialized(doc: &LoroDoc) -> Vec<(String, String)> {
     let (props, prop_keys) = prop_containers::page_prop_containers(doc);
     let mut out = prop_containers::materialize_props(&props, &prop_keys);
-    let seen: std::collections::HashSet<String> =
-        out.iter().map(|(k, _)| k.clone()).collect();
+    let seen: std::collections::HashSet<String> = out.iter().map(|(k, _)| k.clone()).collect();
     for (k, v) in read_page_properties(doc) {
         if !seen.contains(&k) {
             out.push((k, v));
@@ -2472,10 +2501,7 @@ fn solely_property_line(line: &str) -> Option<(String, String)> {
 /// stored verbatim, so we lowercase those too). Returns `text` byte-for-byte
 /// unchanged when there are no container props OR no line is dropped, so the
 /// common no-duplicate path is untouched.
-fn dedup_intext_props_against_container(
-    text: String,
-    properties: &[(String, String)],
-) -> String {
+fn dedup_intext_props_against_container(text: String, properties: &[(String, String)]) -> String {
     if properties.is_empty() {
         return text;
     }
@@ -2514,10 +2540,7 @@ fn dedup_intext_props_against_container(
 /// (id + prose + indent match, props differ) is likewise NEVER drift, so the
 /// classifier's lifted props are discarded — a NoteUpsert must never reseed to
 /// chase a body's in-text props.
-fn tree_matches_blocks(
-    tree: &LoroTree,
-    blocks: &[tesela_core::note_tree::FlatBlock],
-) -> bool {
+fn tree_matches_blocks(tree: &LoroTree, blocks: &[tesela_core::note_tree::FlatBlock]) -> bool {
     let live: Vec<TreeID> = tree
         .children(TreeParentId::Root)
         .unwrap_or_default()
@@ -3003,9 +3026,7 @@ enum ResolvedValue {
 /// and snapshot every block's text after each step, accumulating the distinct
 /// values seen. Bounded by the server's op count for this one note, on the
 /// WS-apply path that already forks + diffs.
-fn server_block_text_history(
-    auth: &LoroDoc,
-) -> HashMap<String, std::collections::HashSet<String>> {
+fn server_block_text_history(auth: &LoroDoc) -> HashMap<String, std::collections::HashSet<String>> {
     let mut history: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
     let server_vv = auth.oplog_vv();
     let scratch = LoroDoc::new();
@@ -3054,10 +3075,7 @@ fn server_block_text_history(
 /// A key that appears as different kinds across twins keeps the FIRST kind seen
 /// (deterministic). Idempotent: re-reading a single-twin block returns its props
 /// unchanged.
-fn reconcile_orphaned_prop_containers(
-    doc: &LoroDoc,
-    owner: &str,
-) -> Vec<(String, ResolvedValue)> {
+fn reconcile_orphaned_prop_containers(doc: &LoroDoc, owner: &str) -> Vec<(String, ResolvedValue)> {
     let tree = doc.get_tree("blocks");
     let live: Vec<TreeID> = tree
         .children(TreeParentId::Root)
@@ -3150,10 +3168,7 @@ fn reconcile_orphaned_prop_containers(
 ///
 /// Conservative + idempotent: the heal forces the target only when the post-
 /// import survivor differs from it, so a re-applied frame is a no-op.
-fn peer_genuine_block_changes(
-    auth: &LoroDoc,
-    frame: &[u8],
-) -> SyncResult<Vec<PeerBlockChange>> {
+fn peer_genuine_block_changes(auth: &LoroDoc, frame: &[u8]) -> SyncResult<Vec<PeerBlockChange>> {
     let server_vv = auth.oplog_vv();
     // Fork (full-history clone) so the import never touches the auth doc.
     let fork = auth.fork();
@@ -3213,9 +3228,7 @@ fn peer_genuine_block_changes(
         // current value AND was never a value the server itself authored.
         let genuine = candidates.iter().find(|(t, _)| {
             server_text != Some(t.as_str())
-                && !server_history
-                    .get(&bid_hex)
-                    .is_some_and(|h| h.contains(t))
+                && !server_history.get(&bid_hex).is_some_and(|h| h.contains(t))
         });
         let (text, indent) = match genuine {
             // The peer's genuine edit the dedup might drop → force the peer value.
@@ -3368,11 +3381,7 @@ impl SyncEngine for LoroEngine {
     /// Trait-level override forwarding to the inherent
     /// `LoroEngine::export_doc_update` — the cursor-free delta export the
     /// live WS path uses (does NOT touch the relay broadcast cursor).
-    async fn export_doc_update(
-        &self,
-        note_id: [u8; 16],
-        since: Option<&[u8]>,
-    ) -> Option<Vec<u8>> {
+    async fn export_doc_update(&self, note_id: [u8; 16], since: Option<&[u8]>) -> Option<Vec<u8>> {
         LoroEngine::export_doc_update(self, note_id, since).await
     }
 
@@ -3395,11 +3404,7 @@ impl SyncEngine for LoroEngine {
     /// Trait-level override forwarding to the inherent
     /// `LoroEngine::apply_doc_update_status` — applies one received delta and
     /// reports whether Loro left it pending (causal gap).
-    async fn apply_doc_update_status(
-        &self,
-        note_id: [u8; 16],
-        bytes: &[u8],
-    ) -> SyncResult<bool> {
+    async fn apply_doc_update_status(&self, note_id: [u8; 16], bytes: &[u8]) -> SyncResult<bool> {
         LoroEngine::apply_doc_update_status(self, note_id, bytes).await
     }
 
@@ -3463,9 +3468,7 @@ impl LoroEngine {
                 OpPayload::NoteDelete {
                     note_id,
                     display_alias,
-                } => display_alias
-                    .clone()
-                    .or(self.slug_for_note(*note_id).await),
+                } => display_alias.clone().or(self.slug_for_note(*note_id).await),
                 _ => None,
             }
         } else {
@@ -3701,8 +3704,7 @@ impl LoroEngine {
                 // already-clean prose classifies to zero props → no-op. The
                 // render keeps emitting `key:: value` lines (dual-read).
                 if self.inner.migrate_in_text {
-                    let (prose_only, lifted) =
-                        classify_block_prose_and_props(text.as_str());
+                    let (prose_only, lifted) = classify_block_prose_and_props(text.as_str());
                     write_block_text(&meta, prose_only.as_str())?;
                     for (key, value) in &lifted {
                         // `tags::` is a multi-value key → AddToList (union),
@@ -3736,8 +3738,7 @@ impl LoroEngine {
                 new_parent,
                 new_order_key: _,
             } => {
-                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await
-                else {
+                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await else {
                     // We never saw the prior BlockUpsert (e.g. the
                     // engine started after the block was created).
                     // SqliteEngine handles it; LoroEngine catches up
@@ -3767,17 +3768,13 @@ impl LoroEngine {
                     .map_err(|e| SyncError::Storage(format!("loro get_meta: {e}")))?;
                 meta.insert("indent_level", new_indent as i64)
                     .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
-                meta.insert(
-                    "parent",
-                    new_parent.map(|p| hex_id(&p)).unwrap_or_default(),
-                )
-                .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
+                meta.insert("parent", new_parent.map(|p| hex_id(&p)).unwrap_or_default())
+                    .map_err(|e| SyncError::Storage(format!("loro meta insert: {e}")))?;
                 doc.commit();
                 Some(note_id)
             }
             OpPayload::BlockDelete { block_id } => {
-                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await
-                else {
+                let Some((note_id, doc, node)) = self.find_doc_for_block(block_id).await else {
                     tracing::debug!(
                         "tesela-sync/loro: BlockDelete for unknown block {}",
                         hex_id(block_id)
@@ -4145,7 +4142,10 @@ mod tests {
 
         let t1 = block_texts(&e1, note_id).await;
         let t2 = block_texts(&e2, note_id).await;
-        assert_eq!(t1, t2, "engines diverged after concurrent positional insert");
+        assert_eq!(
+            t1, t2,
+            "engines diverged after concurrent positional insert"
+        );
         // Both new blocks survive, A first and C last (the inserts went
         // between them).
         assert_eq!(t1.first().map(String::as_str), Some("A"));
@@ -4397,10 +4397,9 @@ mod tests {
 
         // First engine — write a block + verify snapshot file lands.
         let hlc = Arc::new(Hlc::new(test_device()));
-        let engine =
-            LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
-                .await
-                .unwrap();
+        let engine = LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+            .await
+            .unwrap();
         let note_id = [0xee; 16];
         let block = [0xff; 16];
         engine
@@ -4420,10 +4419,9 @@ mod tests {
         // Second engine — points at the same dir, loads snapshot,
         // render should match without replaying any oplog ops.
         let hlc2 = Arc::new(Hlc::new(test_device()));
-        let reloaded =
-            LoroEngine::with_snapshot_dir(test_device(), hlc2, dir.clone())
-                .await
-                .unwrap();
+        let reloaded = LoroEngine::with_snapshot_dir(test_device(), hlc2, dir.clone())
+            .await
+            .unwrap();
         assert_eq!(reloaded.note_count().await, 1);
         let rendered = reloaded.render_note(note_id).await.unwrap();
         assert_eq!(
@@ -4444,10 +4442,9 @@ mod tests {
         let dir = tmp.path().join("loro");
 
         let hlc = Arc::new(Hlc::new(test_device()));
-        let engine =
-            LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
-                .await
-                .unwrap();
+        let engine = LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+            .await
+            .unwrap();
         let note_id = [0x10; 16];
         let content = "---\ntitle: T\n---\n- a <!-- bid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa -->\n- b <!-- bid:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb -->\n";
 
@@ -4466,10 +4463,9 @@ mod tests {
 
         // Reload from snapshot, then re-fire NoteUpsert with same body.
         let hlc2 = Arc::new(Hlc::new(test_device()));
-        let reloaded =
-            LoroEngine::with_snapshot_dir(test_device(), hlc2, dir)
-                .await
-                .unwrap();
+        let reloaded = LoroEngine::with_snapshot_dir(test_device(), hlc2, dir)
+            .await
+            .unwrap();
         reloaded
             .record_local(OpPayload::NoteUpsert {
                 note_id,
@@ -4503,10 +4499,9 @@ mod tests {
             .unwrap();
 
         let hlc = Arc::new(Hlc::new(test_device()));
-        let engine =
-            LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
-                .await
-                .unwrap();
+        let engine = LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+            .await
+            .unwrap();
         // Corrupt note didn't load; engine works for a fresh note.
         assert_eq!(engine.note_count().await, 0);
 
@@ -4535,10 +4530,9 @@ mod tests {
         assert!(!dir.exists());
 
         let hlc = Arc::new(Hlc::new(test_device()));
-        let engine =
-            LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
-                .await
-                .unwrap();
+        let engine = LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+            .await
+            .unwrap();
         assert!(dir.exists());
         assert_eq!(engine.note_count().await, 0);
     }
@@ -4548,10 +4542,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("loro");
         let hlc = Arc::new(Hlc::new(test_device()));
-        let engine =
-            LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
-                .await
-                .unwrap();
+        let engine = LoroEngine::with_snapshot_dir(test_device(), hlc, dir.clone())
+            .await
+            .unwrap();
         let note_id = [0xdd; 16];
 
         engine
@@ -4612,7 +4605,8 @@ mod tests {
         let hlc = Arc::new(Hlc::new(test_device()));
         let engine = LoroEngine::new(test_device(), hlc);
         let note_id = [0x7f; 16];
-        let content = "---\ntitle: Full\n---\n\n- hello <!-- bid:00000000-0000-0000-0000-000000000001 -->\n";
+        let content =
+            "---\ntitle: Full\n---\n\n- hello <!-- bid:00000000-0000-0000-0000-000000000001 -->\n";
 
         engine
             .record_local(OpPayload::NoteUpsert {
@@ -4695,8 +4689,16 @@ mod tests {
             .into_iter()
             .find(|e| e.note_id == hex_id(&note_id))
             .unwrap();
-        assert!(entry.tags.contains(&"alpha".to_string()), "frontmatter tag: {:?}", entry.tags);
-        assert!(entry.tags.contains(&"beta".to_string()), "inline body tag: {:?}", entry.tags);
+        assert!(
+            entry.tags.contains(&"alpha".to_string()),
+            "frontmatter tag: {:?}",
+            entry.tags
+        );
+        assert!(
+            entry.tags.contains(&"beta".to_string()),
+            "inline body tag: {:?}",
+            entry.tags
+        );
         assert_eq!(entry.links, vec!["target".to_string()], "body link indexed");
     }
 
@@ -4835,7 +4837,8 @@ mod tests {
             let tree = doc.get_tree("blocks");
             let n = tree.create(TreeParentId::Root).unwrap();
             let m = tree.get_meta(n).unwrap();
-            m.insert("block_id", "33333333-3333-3333-3333-333333333333").unwrap();
+            m.insert("block_id", "33333333-3333-3333-3333-333333333333")
+                .unwrap();
             m.insert("text", "STALE").unwrap();
             m.insert("indent_level", 0i64).unwrap();
             doc.commit();
@@ -4901,20 +4904,38 @@ mod tests {
 
         // Concurrent edits on all three.
         a.record_local(OpPayload::BlockUpsert {
-            block_id: [0xaa; 16], note_id: note, parent_block_id: None,
-            order_key: "a".into(), indent_level: 0, text: "A edit".into(),
+            block_id: [0xaa; 16],
+            note_id: note,
+            parent_block_id: None,
+            order_key: "a".into(),
+            indent_level: 0,
+            text: "A edit".into(),
             after_block_id: None,
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         b.record_local(OpPayload::BlockUpsert {
-            block_id: [0xbb; 16], note_id: note, parent_block_id: None,
-            order_key: "b".into(), indent_level: 0, text: "B edit".into(),
+            block_id: [0xbb; 16],
+            note_id: note,
+            parent_block_id: None,
+            order_key: "b".into(),
+            indent_level: 0,
+            text: "B edit".into(),
             after_block_id: None,
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         c.record_local(OpPayload::BlockUpsert {
-            block_id: [0xcc; 16], note_id: note, parent_block_id: None,
-            order_key: "c".into(), indent_level: 0, text: "C edit".into(),
+            block_id: [0xcc; 16],
+            note_id: note,
+            parent_block_id: None,
+            order_key: "c".into(),
+            indent_level: 0,
+            text: "C edit".into(),
             after_block_id: None,
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // A couple of relay rounds to fully propagate.
         relay_round(&all).await;
@@ -4937,7 +4958,10 @@ mod tests {
             }
             n
         };
-        assert_eq!(nothing, 0, "no new broadcasts at steady state (bounded re-broadcast)");
+        assert_eq!(
+            nothing, 0,
+            "no new broadcasts at steady state (bounded re-broadcast)"
+        );
     }
 
     #[tokio::test]
@@ -4949,10 +4973,14 @@ mod tests {
         // holder shape), and (2) the live export is CURSOR-FREE — it must NOT
         // advance the relay's broadcast cursor, so the relay path still sees
         // the note as pending (spec finding #3: no WS/relay cursor contention).
-        let a_concrete =
-            LoroEngine::new(DeviceId::from_bytes([0xc1; 16]), Arc::new(Hlc::new(DeviceId::from_bytes([0xc1; 16]))));
-        let b_concrete =
-            LoroEngine::new(DeviceId::from_bytes([0xd2; 16]), Arc::new(Hlc::new(DeviceId::from_bytes([0xd2; 16]))));
+        let a_concrete = LoroEngine::new(
+            DeviceId::from_bytes([0xc1; 16]),
+            Arc::new(Hlc::new(DeviceId::from_bytes([0xc1; 16]))),
+        );
+        let b_concrete = LoroEngine::new(
+            DeviceId::from_bytes([0xd2; 16]),
+            Arc::new(Hlc::new(DeviceId::from_bytes([0xd2; 16]))),
+        );
         let note = [0x88; 16];
 
         a_concrete
@@ -4992,16 +5020,24 @@ mod tests {
         // Concurrent edits, exchanged both ways via the trait object.
         a_concrete
             .record_local(OpPayload::BlockUpsert {
-                block_id: [0xca; 16], note_id: note, parent_block_id: None,
-                order_key: "a".into(), indent_level: 0, text: "from A".into(),
+                block_id: [0xca; 16],
+                note_id: note,
+                parent_block_id: None,
+                order_key: "a".into(),
+                indent_level: 0,
+                text: "from A".into(),
                 after_block_id: None,
             })
             .await
             .unwrap();
         b_concrete
             .record_local(OpPayload::BlockUpsert {
-                block_id: [0xcb; 16], note_id: note, parent_block_id: None,
-                order_key: "b".into(), indent_level: 0, text: "from B".into(),
+                block_id: [0xcb; 16],
+                note_id: note,
+                parent_block_id: None,
+                order_key: "b".into(),
+                indent_level: 0,
+                text: "from B".into(),
                 after_block_id: None,
             })
             .await
@@ -5028,9 +5064,19 @@ mod tests {
         // deterministic state on both sides — stable across repeated
         // exchange (no ping-pong). The hand-rolled engine could not do
         // this; that's the whole reason for the migration.
-        let a = LoroEngine::new(DeviceId::from_bytes([0xa1; 16]), Arc::new(Hlc::new(DeviceId::from_bytes([0xa1; 16]))));
-        let b = LoroEngine::new(DeviceId::from_bytes([0xb2; 16]), Arc::new(Hlc::new(DeviceId::from_bytes([0xb2; 16]))));
-        assert_ne!(a.peer_id(), b.peer_id(), "devices must have distinct peer ids");
+        let a = LoroEngine::new(
+            DeviceId::from_bytes([0xa1; 16]),
+            Arc::new(Hlc::new(DeviceId::from_bytes([0xa1; 16]))),
+        );
+        let b = LoroEngine::new(
+            DeviceId::from_bytes([0xb2; 16]),
+            Arc::new(Hlc::new(DeviceId::from_bytes([0xb2; 16]))),
+        );
+        assert_ne!(
+            a.peer_id(),
+            b.peer_id(),
+            "devices must have distinct peer ids"
+        );
         let note = [0x77; 16];
 
         // A creates the note with one stamped block; B bootstraps from
@@ -5046,19 +5092,35 @@ mod tests {
         .unwrap();
         let bootstrap = a.export_doc_update(note, None).await.unwrap();
         b.import_doc_update(note, &bootstrap).await.unwrap();
-        assert_eq!(a.render_note(note).await, b.render_note(note).await, "bootstrapped equal");
+        assert_eq!(
+            a.render_note(note).await,
+            b.render_note(note).await,
+            "bootstrapped equal"
+        );
 
         // Concurrent edits: A appends a block, B appends a different one.
         a.record_local(OpPayload::BlockUpsert {
-            block_id: [0xaa; 16], note_id: note, parent_block_id: None,
-            order_key: "a".into(), indent_level: 0, text: "from A".into(),
+            block_id: [0xaa; 16],
+            note_id: note,
+            parent_block_id: None,
+            order_key: "a".into(),
+            indent_level: 0,
+            text: "from A".into(),
             after_block_id: None,
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         b.record_local(OpPayload::BlockUpsert {
-            block_id: [0xbb; 16], note_id: note, parent_block_id: None,
-            order_key: "b".into(), indent_level: 0, text: "from B".into(),
+            block_id: [0xbb; 16],
+            note_id: note,
+            parent_block_id: None,
+            order_key: "b".into(),
+            indent_level: 0,
+            text: "from B".into(),
             after_block_id: None,
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
 
         // Exchange updates both ways (two relay ticks), using each peer's
         // version vector as the cursor.
@@ -5077,10 +5139,20 @@ mod tests {
         // Re-exchange must be a stable no-op (no oscillation).
         let b_vv2 = b.doc_version(note).await;
         if let Some(u) = a.export_doc_update(note, b_vv2.as_deref()).await {
-            if !u.is_empty() { b.import_doc_update(note, &u).await.unwrap(); }
+            if !u.is_empty() {
+                b.import_doc_update(note, &u).await.unwrap();
+            }
         }
-        assert_eq!(a.render_note(note).await.unwrap(), ra, "stable after re-exchange");
-        assert_eq!(b.render_note(note).await.unwrap(), rb, "stable after re-exchange");
+        assert_eq!(
+            a.render_note(note).await.unwrap(),
+            ra,
+            "stable after re-exchange"
+        );
+        assert_eq!(
+            b.render_note(note).await.unwrap(),
+            rb,
+            "stable after re-exchange"
+        );
     }
 
     #[tokio::test]
@@ -5229,7 +5301,10 @@ mod tests {
 
         let ra = a.render_note(note).await.unwrap();
         let rb = b.render_note(note).await.unwrap();
-        assert_eq!(ra, rb, "same-key scalar LWW converges to one winner on both");
+        assert_eq!(
+            ra, rb,
+            "same-key scalar LWW converges to one winner on both"
+        );
         assert!(
             ra.contains("status:: doing") || ra.contains("status:: done"),
             "exactly one of the conflicting values must win, got: {ra:?}"
@@ -5300,7 +5375,11 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            engine.render_note(note).await.unwrap().contains("status:: doing"),
+            engine
+                .render_note(note)
+                .await
+                .unwrap()
+                .contains("status:: doing"),
             "property is set before the re-save"
         );
 
@@ -5405,7 +5484,11 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            engine.render_note(note).await.unwrap().contains("status:: doing"),
+            engine
+                .render_note(note)
+                .await
+                .unwrap()
+                .contains("status:: doing"),
             "property is set before the re-save"
         );
 
@@ -5498,7 +5581,11 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(engine.render_note(note).await.unwrap().contains("status:: doing"));
+        assert!(engine
+            .render_note(note)
+            .await
+            .unwrap()
+            .contains("status:: doing"));
 
         // A NoteUpsert whose body has the SAME first block PLUS a brand-new
         // second block — genuine drift forcing a reseed.
@@ -5556,12 +5643,17 @@ mod tests {
             let tree = doc.get_tree("blocks");
             let n = tree.create(TreeParentId::Root).unwrap();
             let m = tree.get_meta(n).unwrap();
-            m.insert("block_id", "33333333-3333-3333-3333-333333333333").unwrap();
+            m.insert("block_id", "33333333-3333-3333-3333-333333333333")
+                .unwrap();
             write_block_text(&m, "STALE").unwrap();
             m.insert("indent_level", 0i64).unwrap();
             doc.commit();
         }
-        assert!(device_engine.render_note(note).await.unwrap().contains("STALE"));
+        assert!(device_engine
+            .render_note(note)
+            .await
+            .unwrap()
+            .contains("STALE"));
 
         // A drifting full-content NoteUpsert on the NON-authoritative engine
         // must NOT reseed (which would re-mint rival container ids); the stale
@@ -5577,7 +5669,11 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            device_engine.render_note(note).await.unwrap().contains("STALE"),
+            device_engine
+                .render_note(note)
+                .await
+                .unwrap()
+                .contains("STALE"),
             "a device (non-authoritative) engine must NOT reseed on drift"
         );
     }
@@ -5609,8 +5705,7 @@ mod tests {
             .unwrap();
         let rendered = engine.render_note(note_id).await.unwrap();
         assert_eq!(
-            rendered,
-            "- keep <!-- bid:10101010-1010-1010-1010-101010101010 -->\n",
+            rendered, "- keep <!-- bid:10101010-1010-1010-1010-101010101010 -->\n",
             "seeded block resolved + deleted via block_index"
         );
     }
@@ -5629,24 +5724,36 @@ mod tests {
 
         engine
             .record_local(OpPayload::BlockUpsert {
-                block_id: a, note_id, parent_block_id: None,
-                order_key: "a".into(), indent_level: 0, text: "A".into(),
+                block_id: a,
+                note_id,
+                parent_block_id: None,
+                order_key: "a".into(),
+                indent_level: 0,
+                text: "A".into(),
                 after_block_id: None,
             })
             .await
             .unwrap();
         engine
             .record_local(OpPayload::BlockUpsert {
-                block_id: b, note_id, parent_block_id: Some(a),
-                order_key: "b".into(), indent_level: 1, text: "B".into(),
+                block_id: b,
+                note_id,
+                parent_block_id: Some(a),
+                order_key: "b".into(),
+                indent_level: 1,
+                text: "B".into(),
                 after_block_id: None,
             })
             .await
             .unwrap();
         engine
             .record_local(OpPayload::BlockUpsert {
-                block_id: c, note_id, parent_block_id: Some(b),
-                order_key: "c".into(), indent_level: 2, text: "C".into(),
+                block_id: c,
+                note_id,
+                parent_block_id: Some(b),
+                order_key: "c".into(),
+                indent_level: 2,
+                text: "C".into(),
                 after_block_id: None,
             })
             .await
@@ -5716,7 +5823,11 @@ mod tests {
             ghost.insert("slug", "ghost").unwrap();
             engine.inner.index.commit();
         }
-        assert_eq!(engine.index_entries().await.len(), 2, "ghost present pre-rebuild");
+        assert_eq!(
+            engine.index_entries().await.len(),
+            2,
+            "ghost present pre-rebuild"
+        );
 
         engine.rebuild_index_from_docs().await;
         let entries = engine.index_entries().await;
@@ -5751,7 +5862,8 @@ mod tests {
         // Downgrade the persisted index schema marker to force a rebuild.
         let idx_path = dir.join("_index.bin");
         let idx = LoroDoc::new();
-        idx.import(&tokio::fs::read(&idx_path).await.unwrap()).unwrap();
+        idx.import(&tokio::fs::read(&idx_path).await.unwrap())
+            .unwrap();
         idx.get_map("meta").insert("schema_version", 1i64).unwrap();
         idx.commit();
         tokio::fs::write(&idx_path, idx.export(ExportMode::Snapshot).unwrap())
@@ -5765,7 +5877,11 @@ mod tests {
             .unwrap();
         let entries = reloaded.index_entries().await;
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].tags.contains(&"alpha".to_string()), "tags: {:?}", entries[0].tags);
+        assert!(
+            entries[0].tags.contains(&"alpha".to_string()),
+            "tags: {:?}",
+            entries[0].tags
+        );
         assert_eq!(entries[0].links, vec!["target".to_string()]);
     }
 
@@ -5794,7 +5910,9 @@ mod tests {
         // Prior index entry (title+slug only, no tags) — like step 1.
         {
             let notes = engine.inner.index.get_map("notes");
-            let entry = notes.insert_container(&hex_id(&note_id), loro::LoroMap::new()).unwrap();
+            let entry = notes
+                .insert_container(&hex_id(&note_id), loro::LoroMap::new())
+                .unwrap();
             entry.insert("title", "Kept").unwrap();
             entry.insert("slug", "kept-slug").unwrap();
             engine.inner.index.commit();
@@ -5803,9 +5921,16 @@ mod tests {
         engine.rebuild_index_from_docs().await;
         let entries = engine.index_entries().await;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].slug, "kept-slug", "slug preserved from prior index");
+        assert_eq!(
+            entries[0].slug, "kept-slug",
+            "slug preserved from prior index"
+        );
         assert_eq!(entries[0].title, "Kept");
-        assert!(entries[0].tags.contains(&"z".to_string()), "tags derived: {:?}", entries[0].tags);
+        assert!(
+            entries[0].tags.contains(&"z".to_string()),
+            "tags derived: {:?}",
+            entries[0].tags
+        );
     }
 
     #[tokio::test]
@@ -5829,9 +5954,21 @@ mod tests {
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
         // tags from frontmatter (daily), page property (project), inline (#urgent)
-        assert!(e.tags.contains(&"daily".to_string()), "frontmatter tag: {:?}", e.tags);
-        assert!(e.tags.contains(&"project".to_string()), "page-prop tag: {:?}", e.tags);
-        assert!(e.tags.contains(&"urgent".to_string()), "inline tag: {:?}", e.tags);
+        assert!(
+            e.tags.contains(&"daily".to_string()),
+            "frontmatter tag: {:?}",
+            e.tags
+        );
+        assert!(
+            e.tags.contains(&"project".to_string()),
+            "page-prop tag: {:?}",
+            e.tags
+        );
+        assert!(
+            e.tags.contains(&"urgent".to_string()),
+            "inline tag: {:?}",
+            e.tags
+        );
         // link target
         assert_eq!(e.links, vec!["other-note".to_string()]);
     }
@@ -5970,14 +6107,9 @@ mod tests {
         let snap = tmp.path().join("loro");
         let notes = tmp.path().join("notes");
         let dev = test_device();
-        let engine = LoroEngine::with_dirs(
-            dev,
-            Arc::new(Hlc::new(dev)),
-            snap,
-            Some(notes.clone()),
-        )
-        .await
-        .unwrap();
+        let engine = LoroEngine::with_dirs(dev, Arc::new(Hlc::new(dev)), snap, Some(notes.clone()))
+            .await
+            .unwrap();
         let note_id = blake3_note_id("daily");
         let content =
             "---\ntitle: Daily\n---\n\n- one <!-- bid:30303030-3030-3030-3030-303030303030 -->\n";
@@ -6009,8 +6141,14 @@ mod tests {
             .await
             .unwrap();
         let on_disk = tokio::fs::read_to_string(&path).await.unwrap();
-        assert!(on_disk.contains("- one ") && on_disk.contains("- two "), "block append materialized: {on_disk:?}");
-        assert!(on_disk.starts_with("---\ntitle: Daily\n---\n"), "frontmatter preserved");
+        assert!(
+            on_disk.contains("- one ") && on_disk.contains("- two "),
+            "block append materialized: {on_disk:?}"
+        );
+        assert!(
+            on_disk.starts_with("---\ntitle: Daily\n---\n"),
+            "frontmatter preserved"
+        );
 
         // NoteDelete removes the file.
         engine
@@ -6085,7 +6223,10 @@ mod tests {
             .await
             .unwrap();
         // Only the snapshot dir should exist; no notes/ dir was created.
-        assert!(!tmp.path().join("notes").exists(), "no .md materialization when non-authoritative");
+        assert!(
+            !tmp.path().join("notes").exists(),
+            "no .md materialization when non-authoritative"
+        );
     }
 
     #[tokio::test]
@@ -6106,14 +6247,9 @@ mod tests {
             .await
             .unwrap();
         let dev = test_device();
-        let engine = LoroEngine::with_dirs(
-            dev,
-            Arc::new(Hlc::new(dev)),
-            snap,
-            Some(notes.clone()),
-        )
-        .await
-        .unwrap();
+        let engine = LoroEngine::with_dirs(dev, Arc::new(Hlc::new(dev)), snap, Some(notes.clone()))
+            .await
+            .unwrap();
         let n = engine.reseed_from_disk(&notes).await.unwrap();
         assert_eq!(n, 2, "both .md files reseeded");
         // Both notes are now tracked + render their content.
@@ -6123,7 +6259,10 @@ mod tests {
         // beta got a canonical bid stamped on its bullet (was bare).
         let beta = blake3_note_id("beta");
         let rb = engine.render_note(beta).await.unwrap();
-        assert!(rb.contains("- just text") && rb.contains("<!-- bid:"), "beta canonicalized: {rb:?}");
+        assert!(
+            rb.contains("- just text") && rb.contains("<!-- bid:"),
+            "beta canonicalized: {rb:?}"
+        );
     }
 
     #[tokio::test]
@@ -6172,9 +6311,13 @@ mod tests {
             let committed: Vec<([u8; 16], Vec<u8>)> =
                 updates.into_iter().map(|(doc, _b, vv)| (doc, vv)).collect();
             let wire = encode_loro_relay_payload(&payload).unwrap();
-            let decoded = decode_loro_relay_payload(&wire).unwrap().expect("v2 payload");
-            let pairs: Vec<([u8; 16], Vec<u8>)> =
-                decoded.into_iter().map(|u| (u.doc, u.update_bytes)).collect();
+            let decoded = decode_loro_relay_payload(&wire)
+                .unwrap()
+                .expect("v2 payload");
+            let pairs: Vec<([u8; 16], Vec<u8>)> = decoded
+                .into_iter()
+                .map(|u| (u.doc, u.update_bytes))
+                .collect();
             let n = to.apply_relay_updates(&pairs).await.applied_count();
             from.commit_broadcast_cursors(&committed).await;
             n
@@ -6288,7 +6431,10 @@ mod tests {
             .await
             .unwrap();
         let again = engine.produce_relay_updates().await;
-        assert!(again.is_empty(), "persisted cursor suppresses re-broadcast after restart");
+        assert!(
+            again.is_empty(),
+            "persisted cursor suppresses re-broadcast after restart"
+        );
     }
 
     #[tokio::test]
@@ -6324,7 +6470,11 @@ mod tests {
         // Simulate a FAILED send: do NOT commit. Next produce must still
         // emit the same delta (not lost).
         let retry = engine.produce_relay_updates().await;
-        assert_eq!(retry.len(), 1, "failed send re-emits the delta — not dropped");
+        assert_eq!(
+            retry.len(),
+            1,
+            "failed send re-emits the delta — not dropped"
+        );
         assert_eq!(retry[0].0, note);
         // Now commit (confirmed send). Subsequent produce is empty.
         let committed: Vec<([u8; 16], Vec<u8>)> =
@@ -6404,7 +6554,10 @@ mod tests {
             .export_doc_update(note, Some(&vv_before_edit))
             .await
             .expect("delta export");
-        let full_snapshot = author.export_doc_update(note, None).await.expect("snapshot");
+        let full_snapshot = author
+            .export_doc_update(note, None)
+            .await
+            .expect("snapshot");
         assert!(
             delta.len() < full_snapshot.len(),
             "since_vv delta ({} bytes) must be smaller than the full snapshot ({} bytes)",
@@ -6473,8 +6626,7 @@ mod tests {
     async fn seed_disjoint(server: &LoroEngine, device: &LoroEngine, note: [u8; 16]) {
         // BOTH author the same note body independently — disjoint Loro
         // lineages (distinct TreeIDs for the same block_ids).
-        let content =
-            format!("- Awesome <!-- bid:{A_BID} -->\n- B base <!-- bid:{B_BID} -->\n");
+        let content = format!("- Awesome <!-- bid:{A_BID} -->\n- B base <!-- bid:{B_BID} -->\n");
         for e in [server, device] {
             e.record_local(OpPayload::NoteUpsert {
                 note_id: note,
@@ -6544,8 +6696,12 @@ mod tests {
         // Server applies the device's stale snapshot via the WS-apply path.
         server.import_doc_update(note, &snapshot).await.unwrap();
 
-        let a = block_text(&server, note, A_BID_BYTES).await.unwrap_or_default();
-        let b = block_text(&server, note, B_BID_BYTES).await.unwrap_or_default();
+        let a = block_text(&server, note, A_BID_BYTES)
+            .await
+            .unwrap_or_default();
+        let b = block_text(&server, note, B_BID_BYTES)
+            .await
+            .unwrap_or_default();
         assert_eq!(
             a, "Awesome sweet",
             "A must NOT be reverted by the device's stale snapshot (got {a:?})"
@@ -6647,12 +6803,20 @@ mod tests {
         let snapshot = device.export_doc_update(note, None).await.unwrap();
 
         server.import_doc_update(note, &snapshot).await.unwrap();
-        let a1 = block_text(&server, note, A_BID_BYTES).await.unwrap_or_default();
-        let b1 = block_text(&server, note, B_BID_BYTES).await.unwrap_or_default();
+        let a1 = block_text(&server, note, A_BID_BYTES)
+            .await
+            .unwrap_or_default();
+        let b1 = block_text(&server, note, B_BID_BYTES)
+            .await
+            .unwrap_or_default();
         // Second apply of the identical frame.
         server.import_doc_update(note, &snapshot).await.unwrap();
-        let a2 = block_text(&server, note, A_BID_BYTES).await.unwrap_or_default();
-        let b2 = block_text(&server, note, B_BID_BYTES).await.unwrap_or_default();
+        let a2 = block_text(&server, note, A_BID_BYTES)
+            .await
+            .unwrap_or_default();
+        let b2 = block_text(&server, note, B_BID_BYTES)
+            .await
+            .unwrap_or_default();
 
         assert_eq!(a1, "Awesome sweet");
         assert_eq!(b1, "B device");
@@ -6696,38 +6860,65 @@ mod tests {
         // Concurrent edits to the SAME shared block.
         server
             .record_local(OpPayload::BlockUpsert {
-                block_id: A_BID_BYTES, note_id: note, parent_block_id: None,
-                order_key: "00000000".into(), indent_level: 0,
-                text: "server edit".into(), after_block_id: None,
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "server edit".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
         device
             .record_local(OpPayload::BlockUpsert {
-                block_id: A_BID_BYTES, note_id: note, parent_block_id: None,
-                order_key: "00000000".into(), indent_level: 0,
-                text: "device edit".into(), after_block_id: None,
+                block_id: A_BID_BYTES,
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000000".into(),
+                indent_level: 0,
+                text: "device edit".into(),
+                after_block_id: None,
             })
             .await
             .unwrap();
-        let delta = device.export_doc_update(note, dev_vv.as_deref()).await.unwrap();
+        let delta = device
+            .export_doc_update(note, dev_vv.as_deref())
+            .await
+            .unwrap();
 
         // Server applies the device's delta. Loro's LoroText merge picks the
         // SAME converged value on both sides — and re-applying must be stable.
         server.import_doc_update(note, &delta).await.unwrap();
         // Round-trip the server's state back to the device to converge.
         let dev_vv2 = device.doc_version(note).await;
-        let srv_delta = server.export_doc_update(note, dev_vv2.as_deref()).await.unwrap();
+        let srv_delta = server
+            .export_doc_update(note, dev_vv2.as_deref())
+            .await
+            .unwrap();
         device.import_doc_update(note, &srv_delta).await.unwrap();
 
-        let sa = block_text(&server, note, A_BID_BYTES).await.unwrap_or_default();
-        let da = block_text(&device, note, A_BID_BYTES).await.unwrap_or_default();
-        assert_eq!(sa, da, "shared-register concurrent edit converges on both sides");
+        let sa = block_text(&server, note, A_BID_BYTES)
+            .await
+            .unwrap_or_default();
+        let da = block_text(&device, note, A_BID_BYTES)
+            .await
+            .unwrap_or_default();
+        assert_eq!(
+            sa, da,
+            "shared-register concurrent edit converges on both sides"
+        );
         // The LoroText merge INTERLEAVES both whole-text edits rather than
         // LWW-picking one: the result is NEITHER whole string (no clobber) and
         // is longer than either input — both sides contributed characters.
-        assert_ne!(sa, "server edit", "not an LWW pick of the server's whole edit");
-        assert_ne!(sa, "device edit", "not an LWW pick of the device's whole edit");
+        assert_ne!(
+            sa, "server edit",
+            "not an LWW pick of the server's whole edit"
+        );
+        assert_ne!(
+            sa, "device edit",
+            "not an LWW pick of the device's whole edit"
+        );
         assert!(
             sa.len() > "server edit".len() && sa.contains("device"),
             "both concurrent edits' contributions survive the merge: {sa:?}"
@@ -6735,7 +6926,9 @@ mod tests {
 
         // Stable: re-applying the same delta does not flip the value.
         server.import_doc_update(note, &delta).await.unwrap();
-        let sa2 = block_text(&server, note, A_BID_BYTES).await.unwrap_or_default();
+        let sa2 = block_text(&server, note, A_BID_BYTES)
+            .await
+            .unwrap_or_default();
         assert_eq!(sa, sa2, "no oscillation on re-apply");
     }
 
@@ -6856,10 +7049,7 @@ mod tests {
     /// `text`, then return a second replica that has imported the base — so
     /// both share the SAME `text_seq` lineage (the merge precondition, NOT
     /// disjoint twins).
-    async fn splice_shared_base(
-        note: [u8; 16],
-        text: &str,
-    ) -> (LoroEngine, LoroEngine) {
+    async fn splice_shared_base(note: [u8; 16], text: &str) -> (LoroEngine, LoroEngine) {
         let dev_a = DeviceId::from_bytes([0xa7; 16]);
         let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
         a.record_local(OpPayload::BlockUpsert {
@@ -7210,7 +7400,9 @@ mod tests {
         // Concurrent, neither has seen the other:
         //   A appends " world" to the SAME block's prose.
         //   B sets a `status` property on the SAME block.
-        a.splice_block_text(note, block, 5, 0, " world").await.unwrap();
+        a.splice_block_text(note, block, 5, 0, " world")
+            .await
+            .unwrap();
         b.record_local(OpPayload::BlockPropertySet {
             note_id: note,
             block_id: block,
@@ -7556,7 +7748,10 @@ mod tests {
 
         // The SAME logical op set, in two different orders.
         let ops_order_1 = vec![
-            ("status", PropOp::SetScalar(PropScalar::Text("doing".into()))),
+            (
+                "status",
+                PropOp::SetScalar(PropScalar::Text("doing".into())),
+            ),
             ("priority", PropOp::SetScalar(PropScalar::Int(3))),
             ("tags", PropOp::AddToList(PropScalar::Text("Task".into()))),
             ("tags", PropOp::AddToList(PropScalar::Text("Urgent".into()))),
@@ -7566,7 +7761,10 @@ mod tests {
             ("tags", PropOp::AddToList(PropScalar::Text("Urgent".into()))),
             ("note", PropOp::SetText("freeform".into())),
             ("priority", PropOp::SetScalar(PropScalar::Int(3))),
-            ("status", PropOp::SetScalar(PropScalar::Text("doing".into()))),
+            (
+                "status",
+                PropOp::SetScalar(PropScalar::Text("doing".into())),
+            ),
             ("tags", PropOp::AddToList(PropScalar::Text("Task".into()))),
         ];
 
@@ -7617,7 +7815,10 @@ mod tests {
             "tags:: Base, Task, Urgent",
             "note:: freeform",
         ] {
-            assert!(ra.contains(needle), "converged render missing {needle}: {ra}");
+            assert!(
+                ra.contains(needle),
+                "converged render missing {needle}: {ra}"
+            );
         }
 
         // Migrated-vs-unmigrated byte equality (P1.6 determinism gate): a block
@@ -8031,6 +8232,9 @@ mod tests {
         );
         let ra = a.render_note_full(note).await.unwrap();
         let rb = b.render_note_full(note).await.unwrap();
-        assert_eq!(ra, rb, "concurrent migrators render byte-identical markdown");
+        assert_eq!(
+            ra, rb,
+            "concurrent migrators render byte-identical markdown"
+        );
     }
 }

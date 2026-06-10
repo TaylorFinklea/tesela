@@ -44,7 +44,11 @@ async fn apply_relay_updates_reports_per_note_failures() {
 
     assert_eq!(report.applied, vec![note_good], "the good update applied");
     assert!(report.pending.is_empty(), "nothing pending: {report:?}");
-    assert_eq!(report.failed.len(), 1, "the bad update surfaced: {report:?}");
+    assert_eq!(
+        report.failed.len(),
+        1,
+        "the bad update surfaced: {report:?}"
+    );
     assert_eq!(report.failed[0].0, note_bad, "failure names the note");
     assert!(
         !report.failed[0].1.is_empty(),
@@ -54,7 +58,10 @@ async fn apply_relay_updates_reports_per_note_failures() {
 
     // The good note really did land despite the bad sibling.
     let rendered = consumer.render_note(note_good).await.unwrap_or_default();
-    assert!(rendered.contains("hello good"), "good note applied: {rendered:?}");
+    assert!(
+        rendered.contains("hello good"),
+        "good note applied: {rendered:?}"
+    );
 }
 
 #[tokio::test]
@@ -96,7 +103,10 @@ async fn apply_relay_updates_reports_pending_for_causal_gap() {
     let report = device.apply_relay_updates(&[(note, tail)]).await;
 
     assert_eq!(report.pending, vec![note], "causal gap surfaced as pending");
-    assert!(report.failed.is_empty(), "a pending import is not a failure");
+    assert!(
+        report.failed.is_empty(),
+        "a pending import is not a failure"
+    );
     assert!(report.applied.is_empty(), "not reported as cleanly applied");
     assert_eq!(
         report.applied_count(),
