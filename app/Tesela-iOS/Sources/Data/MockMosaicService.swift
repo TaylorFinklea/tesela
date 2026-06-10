@@ -159,6 +159,26 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Args: (slug, blockIdHex, utf16Offset, utf16DeleteLen, insert).
     var onLocalSplice: ((String, String, Int, Int, String) -> Void)? = nil
 
+    /// P1.11 relay-mode property write: fired when a `.relay` triage /
+    /// mark-done / reschedule needs to reach the on-device engine. Wired in
+    /// both shells to `relayTicker.setBlockPropertyAndPush(...)` (the FFI
+    /// `setBlockProperty` → typed `BlockPropertySet` op → materialize +
+    /// relay/WS push). ASYNC + result-bearing — unlike `onLocalWrite` — so
+    /// `setBlockProperty` can read the just-materialized file after the
+    /// write and THROW on a not-found bid instead of letting the row
+    /// optimistically vanish over a silent no-op.
+    /// Args: (slug, bidHex, key, value) → true when the engine recorded it.
+    var onLocalPropertySet:
+        ((_ slug: String, _ bidHex: String, _ key: String, _ value: String) async -> Bool)? = nil
+
+    /// Relay-mode whole-note write used by `saveInboxDsl` (the saved-filter
+    /// Query note). Same `recordAndPush` + live-WS tail as `onLocalWrite`,
+    /// but AWAITABLE so the caller's immediate reload (`load()` right after
+    /// the save) reads the re-materialized file instead of racing it.
+    /// Args: (slug, title, fullContent, createdAtMillis).
+    var onLocalNoteWrite:
+        ((_ slug: String, _ title: String, _ content: String, _ createdAtMillis: Int64) async -> Void)? = nil
+
     /// Callback fired whenever a note becomes visible/loaded (the daily
     /// on refresh, any opened page). Wired in both shells to
     /// `relayTicker.bootstrapNoteIfNeeded(slug:)` so a device that's only
@@ -2843,6 +2863,27 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// fresh `note_type: Query` note with canonical frontmatter and
     /// the new DSL baked in.
     func saveInboxDsl(slug: String, dsl: String) async throws {
+        // `.relay` persists the saved-filter Query note through the engine
+        // — the relay analog of the HTTP read-splice-PUT below, with
+        // `readLocalNote` playing the GET (preserve existing frontmatter).
+        // Awaiting `onLocalNoteWrite` means the engine has re-materialized
+        // the local file before the caller's reload reads the DSL back
+        // (the views call `load()` immediately after saving). Previously
+        // this was `.http`-gated: a relay-mode chip toggle / save-filter
+        // silently did nothing. `.mock` still drops the write.
+        if case .relay = currentBackend {
+            let title = Self.titleForInboxFilterSlug(slug)
+            let newContent: String
+            if let existing = readLocalNote(id: slug) {
+                newContent = Self.spliceInboxDsl(into: existing.content, dsl: dsl, title: title)
+            } else {
+                newContent = Self.freshInboxNoteContent(title: title, dsl: dsl)
+            }
+            await onLocalNoteWrite?(
+                slug, title, newContent, Int64(Date().timeIntervalSince1970 * 1000)
+            )
+            return
+        }
         guard case .http(let baseURL) = currentBackend else { return }
         // First try to read the existing note so we can preserve its
         // frontmatter (icon, color, section, etc.). 404 → first-write
@@ -3010,10 +3051,87 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// triage paths that already have the canonical server-side block
     /// id (`noteId:lineNumber`) from a query response — no need to look
     /// up via in-memory caches the way `setBlockProperties(id:)` does.
+    ///
+    /// `.relay` routes through the on-device engine instead (P1.11): the
+    /// row address's suffix is resolved to the block's canonical bid
+    /// against the local sandbox copy (the client mirror of the server's
+    /// `block_bid_from_suffix`), `onLocalPropertySet` records the typed
+    /// `BlockPropertySet` op via the FFI, and the engine re-materializes
+    /// the file before the awaited seam returns — then a local refresh
+    /// re-renders + bumps `refreshTick` (the `recurBump` pattern) so the
+    /// Daily and the query-backed Agenda/Inbox freshen. Previously this
+    /// was `.http`-gated: a relay-mode triage swipe / mark-done silently
+    /// did NOTHING while the row optimistically vanished.
     func setBlockProperty(blockId: String, key: String, value: String) async throws {
-        guard case .http(let baseURL) = currentBackend else { return }
-        let body = APISetBlockPropertyBody(block_id: blockId, key: key, value: value)
-        try await httpPostNoResponse("/blocks/set-property", baseURL: baseURL, body: body)
+        switch currentBackend {
+        case .mock:
+            return
+        case .http(let baseURL):
+            let body = APISetBlockPropertyBody(block_id: blockId, key: key, value: value)
+            try await httpPostNoResponse("/blocks/set-property", baseURL: baseURL, body: body)
+        case .relay:
+            guard let (noteId, bid) = resolveLocalBlockBid(blockId) else {
+                throw URLError(
+                    .fileDoesNotExist,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "block \(blockId) not found in the local mosaic"
+                    ]
+                )
+            }
+            let applied = await onLocalPropertySet?(noteId, bid, key, value) ?? false
+            guard applied else {
+                throw URLError(
+                    .cannotWriteToFile,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "engine property write for \(blockId) did not apply"
+                    ]
+                )
+            }
+            await refresh(from: currentBackend)
+        }
+    }
+
+    /// Split a query-row block address (`<noteId>:<line>` or
+    /// `<noteId>:<bid>`) into note id + suffix on the LAST colon —
+    /// `rsplit_once(':')`, matching the server route's parsing. `nil`
+    /// when either half would be empty.
+    static func splitBlockAddress(_ blockId: String) -> (noteId: String, suffix: String)? {
+        guard let sep = blockId.lastIndex(of: ":"), sep != blockId.startIndex else {
+            return nil
+        }
+        let noteId = String(blockId[..<sep])
+        let suffix = String(blockId[blockId.index(after: sep)...])
+        guard !suffix.isEmpty else { return nil }
+        return (noteId, suffix)
+    }
+
+    /// Resolve an address suffix to the block's canonical bid against a
+    /// parsed block list — the client mirror of the server's
+    /// `block_bid_from_suffix`: a numeric suffix is a 0-based body line
+    /// matched on `lineNumber`; anything else is a bid passed through.
+    /// `nil` when a numeric line matches no block. (A bid-less parsed
+    /// line carries a parser-MINTED UUID — that resolves here but the
+    /// engine reports it not-found downstream, which `setBlockProperty`
+    /// surfaces as a throw instead of a silent drop.)
+    static func blockBid(in blocks: [Block], suffix: String) -> String? {
+        guard let line = Int(suffix) else { return suffix }
+        return blocks.first(where: { $0.lineNumber == line })?.id
+    }
+
+    /// `<noteId>:<line|bid>` → `(noteId, canonical bid)` resolved against
+    /// the local sandbox copy of the note (the same materialized file the
+    /// relay-mode queries were answered from). `nil` when the address is
+    /// malformed, the note has no local file, or no block sits at that
+    /// line.
+    private func resolveLocalBlockBid(_ blockId: String) -> (noteId: String, bid: String)? {
+        guard let (noteId, suffix) = Self.splitBlockAddress(blockId) else { return nil }
+        if Int(suffix) == nil { return (noteId, suffix) }
+        guard let note = readLocalNote(id: noteId) else { return nil }
+        let blocks = parseBlocks(from: note.body, noteId: noteId)
+        guard let bid = Self.blockBid(in: blocks, suffix: suffix) else { return nil }
+        return (noteId, bid)
     }
 
     // MARK: - Internal test hooks

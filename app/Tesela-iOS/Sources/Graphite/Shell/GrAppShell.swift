@@ -112,6 +112,44 @@ struct GrAppShell: View {
                         }
                     }
                 }
+                // P1.11: relay-mode property writes (Inbox triage swipes,
+                // Agenda mark-done / reschedule). Mirrors onLocalSplice but
+                // records via the FFI setBlockProperty (typed container op,
+                // merges independently of the block's prose) and is AWAITED
+                // by the service so its post-write local re-read sees the
+                // materialized file. Same produce → send → commit tail for
+                // sub-second peer delivery; returns whether the engine
+                // recorded the write so a not-found bid surfaces as a throw
+                // instead of a silently vanished row.
+                mosaic.onLocalPropertySet = { [weak relayTicker, weak liveSync] slug, bidHex, key, value in
+                    guard let relayTicker else { return false }
+                    let applied = await relayTicker.setBlockPropertyAndPush(
+                        slug: slug, bidHex: bidHex, key: key, value: value
+                    )
+                    if applied, let frame = await relayTicker.produceDeltaFrame(slug: slug) {
+                        if await liveSync?.sendDelta(frame) == true {
+                            await relayTicker.commitPushedDelta(slug: slug)
+                        }
+                    }
+                    return applied
+                }
+                // Awaitable whole-note write (relay-mode saveInboxDsl):
+                // identical record → produce → send → commit tail to
+                // onLocalWrite, but the caller can read-after-write (the
+                // inbox reloads its DSL immediately after saving).
+                mosaic.onLocalNoteWrite = { [weak relayTicker, weak liveSync] slug, title, content, createdAt in
+                    await relayTicker?.recordAndPush(
+                        slug: slug,
+                        title: title,
+                        content: content,
+                        createdAtMillis: createdAt
+                    )
+                    if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
+                        if await liveSync?.sendDelta(frame) == true {
+                            await relayTicker?.commitPushedDelta(slug: slug)
+                        }
+                    }
+                }
                 relayTicker.onAppliedChanges = { [weak mosaic] in
                     // Route through applyRemoteChange() — NOT a direct
                     // refresh() — so the isEditingBlock + post-local-write

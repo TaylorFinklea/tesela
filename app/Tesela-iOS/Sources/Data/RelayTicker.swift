@@ -500,6 +500,82 @@ final class RelayTicker: ObservableObject {
         }
     }
 
+    /// P1.11 outbound: record ONE typed property write (an Inbox triage
+    /// swipe / Agenda mark-done / reschedule) into the engine's
+    /// `props`/`prop_keys` containers and drain it, mirroring
+    /// `spliceAndPush` but calling `engine.setBlockProperty(...)` — the FFI
+    /// mirror of the server's set-property route. Because the property
+    /// merges independently of the block's `text_seq`, a peer's concurrent
+    /// prose edit on the same block is never clobbered, and the engine
+    /// re-materializes the sandbox `.md` (with the `key:: value` line)
+    /// before this returns.
+    ///
+    /// Same bootstrap-before-edit + push-floor sequence as `spliceAndPush`,
+    /// and the same hub-mode gate (the live `/ws` socket owns delivery; the
+    /// caller pushes the delta after this returns via
+    /// `produceDeltaFrame`/`sendDelta`/`commitPushedDelta`).
+    ///
+    /// Returns whether the engine RECORDED the write — `false` when the
+    /// engine can't open or the bid isn't found in the note (the FFI's
+    /// mirror of the route's 404). The caller must surface a `false`
+    /// instead of optimistically dropping the triaged row: a silent
+    /// no-op here is the exact bug class this seam exists to close.
+    func setBlockPropertyAndPush(
+        slug: String,
+        bidHex: String,
+        key: String,
+        value: String
+    ) async -> Bool {
+        do {
+            try await openEngineIfNeeded()
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+        guard let engine else { return false }
+        // Part D: shared base before the first local edit (no-op once
+        // resident) — the block node must exist for the property op to
+        // address it, which the base guarantees for a note the user sees.
+        await bootstrapNoteIfNeeded(slug: slug)
+        // Part A: seed the per-note push floor BEFORE recording so the
+        // next delta exports only this edit, never a full snapshot.
+        if lastPushedVV[slug] == nil {
+            lastPushedVV[slug] = await engine.noteVersion(slug: slug)
+        }
+        let applied: UInt32
+        do {
+            applied = try await engine.setBlockProperty(
+                slug: slug,
+                blockIdHex: bidHex,
+                key: key,
+                value: value
+            )
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
+        guard applied == 1 else {
+            lastError = "property write: block \(bidHex) not found in \(slug)"
+            return false
+        }
+        // Engine durability is guaranteed. In hub mode the live `/ws`
+        // socket owns delivery (the caller pushes the delta after this
+        // returns), so the relay coordinator must NOT also drain this op.
+        if hubMode { return true }
+        invalidateCoordinatorIfRepaired()
+        if coordinator == nil {
+            try? await ensureCoordinator()
+        }
+        guard let coordinator else { return true }
+        do {
+            let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
+            noteOutboundOutcome(outcome)
+        } catch {
+            lastError = error.localizedDescription
+        }
+        return true
+    }
+
     /// Read a block's current engine-exact text (collab editing C1-inbound).
     /// The engine is the source of truth: after a remote splice lands via
     /// `applyInboundDelta`, the open editor reads the MERGED block text here

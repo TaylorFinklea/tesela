@@ -94,6 +94,43 @@ struct AppShell: View {
                                 }
                             }
                         }
+                        // P1.11: relay-mode property writes (Inbox
+                        // triage swipes, Agenda mark-done / reschedule)
+                        // — mirrors GrAppShell. AWAITED by the service
+                        // so its post-write re-read sees the
+                        // materialized file; returns whether the engine
+                        // recorded the write so a not-found bid throws
+                        // instead of silently vanishing the row.
+                        mosaic.onLocalPropertySet = { [weak relayTicker, weak liveSync] slug, bidHex, key, value in
+                            guard let relayTicker else { return false }
+                            let applied = await relayTicker.setBlockPropertyAndPush(
+                                slug: slug, bidHex: bidHex, key: key, value: value
+                            )
+                            if applied, let frame = await relayTicker.produceDeltaFrame(slug: slug) {
+                                if await liveSync?.sendDelta(frame) == true {
+                                    await relayTicker.commitPushedDelta(slug: slug)
+                                }
+                            }
+                            return applied
+                        }
+                        // Awaitable whole-note write (relay-mode
+                        // saveInboxDsl): same record → produce → send →
+                        // commit tail as onLocalWrite, but the caller
+                        // can read-after-write (the inbox reloads its
+                        // DSL immediately after saving).
+                        mosaic.onLocalNoteWrite = { [weak relayTicker, weak liveSync] slug, title, content, createdAt in
+                            await relayTicker?.recordAndPush(
+                                slug: slug,
+                                title: title,
+                                content: content,
+                                createdAtMillis: createdAt
+                            )
+                            if let frame = await relayTicker?.produceDeltaFrame(slug: slug) {
+                                if await liveSync?.sendDelta(frame) == true {
+                                    await relayTicker?.commitPushedDelta(slug: slug)
+                                }
+                            }
+                        }
                         // When the ticker applies new inbound ops,
                         // re-pull the user-visible pages over HTTP so
                         // the UI shows the change immediately. On
