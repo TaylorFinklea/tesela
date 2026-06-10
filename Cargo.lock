@@ -6913,6 +6913,7 @@ dependencies = [
  "hound",
  "if-addrs",
  "libc",
+ "loro",
  "objc2",
  "objc2-event-kit",
  "objc2-foundation",

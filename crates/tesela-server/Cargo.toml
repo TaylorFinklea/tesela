@@ -90,6 +90,9 @@ tesela-relay = { path = "../tesela-relay" }
 # Real-socket WS round-trip test (instant-multidevice Phase A). Pinned to
 # the same version axum 0.8 already pulls in, so no new lockfile entry.
 tokio-tungstenite = "0.28"
+# Decode engine version vectors in the restore drill (lineage assertions:
+# peer set + per-peer counters). Same version tesela-sync already pulls in.
+loro = "1.10"
 
 [[bench]]
 name = "http"
