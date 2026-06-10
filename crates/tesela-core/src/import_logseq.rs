@@ -578,11 +578,34 @@ fn convert_content(content: &str) -> String {
     // inside a code block. Logseq nests its `#+BEGIN_QUERY` blocks via
     // a leading `- `, so we strip that bullet from the marker check.
     let mut in_code_block = false;
+    // After converting a task marker we owe the block a `tags:: Task`
+    // continuation line (the same materialized form the engine emits for
+    // a structured tag-add — see `tesela-cli`'s backfill-task). Held
+    // pending so it can union into an existing `tags::` continuation
+    // line instead of duplicating it; flushed when the block's property
+    // region ends. Carries the block's property indent.
+    let mut pending_task_tag: Option<String> = None;
 
     for line in content.lines() {
         let trimmed = line.trim();
         let leading = line.len() - line.trim_start().len();
         let indent_str = &line[..leading];
+
+        if let Some(task_indent) = pending_task_tag.take() {
+            if !trimmed.starts_with("- ")
+                && property_line_key(trimmed).is_some_and(|k| k.eq_ignore_ascii_case("tags"))
+            {
+                // The task block already has a tags continuation line —
+                // union Task into it (idempotent if already present).
+                lines.push(merge_task_into_tags_line(line).replace('\t', "  "));
+                continue;
+            }
+            if is_block_property_continuation(trimmed) {
+                pending_task_tag = Some(task_indent);
+            } else {
+                lines.push(format!("{}tags:: Task", task_indent));
+            }
+        }
 
         // Toggle triple-backtick code fences. Inside a fence we
         // pass content through verbatim — task/block-ref/asset URL
@@ -640,6 +663,14 @@ fn convert_content(content: &str) -> String {
             if let Some(p) = priority {
                 lines.push(format!("{}priority:: {}", prop_indent, p));
             }
+            // Tag the block Task so task surfaces (Tasks widget, agenda)
+            // actually see it — `status::` alone is invisible to them.
+            // Skip when the text already carries an inline #Task.
+            pending_task_tag = if has_inline_task_tag(&clean_text) {
+                None
+            } else {
+                Some(prop_indent)
+            };
             continue;
         }
 
@@ -654,7 +685,12 @@ fn convert_content(content: &str) -> String {
             };
             if let Some(caps) = LOGSEQ_DATE_RE.captures(trimmed) {
                 let date = caps.get(1).unwrap().as_str();
-                result = format!("{}{}:: {}", indent_str, key, date);
+                // Keep an HH:MM time when present (the agenda parses
+                // "YYYY-MM-DD HH:MM"); repeaters etc. are dropped.
+                result = match caps.get(2) {
+                    Some(t) => format!("{}{}:: {} {}", indent_str, key, date, t.as_str()),
+                    None => format!("{}{}:: {}", indent_str, key, date),
+                };
             }
         }
 
@@ -676,7 +712,62 @@ fn convert_content(content: &str) -> String {
         lines.push(result);
     }
 
+    if let Some(task_indent) = pending_task_tag {
+        lines.push(format!("{}tags:: Task", task_indent));
+    }
+
     lines.join("\n")
+}
+
+/// Key of a `key:: value` block-property line (identifier-ish key — Logseq
+/// allows dashes, e.g. `file-path`), or `None`.
+fn property_line_key(trimmed: &str) -> Option<&str> {
+    let (key, value) = trimmed.split_once(":: ")?;
+    if value.is_empty() {
+        return None;
+    }
+    let mut chars = key.chars();
+    let first = chars.next()?;
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return None;
+    }
+    if !chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+        return None;
+    }
+    Some(key)
+}
+
+/// True if the line is still part of the current block's property region
+/// (a non-bullet `key:: value` line or a SCHEDULED/DEADLINE planning line)
+/// — i.e. a pending `tags:: Task` must wait, not interleave.
+fn is_block_property_continuation(trimmed: &str) -> bool {
+    if trimmed.starts_with("- ") {
+        return false;
+    }
+    trimmed.starts_with("SCHEDULED:")
+        || trimmed.starts_with("DEADLINE:")
+        || property_line_key(trimmed).is_some()
+}
+
+/// Union `Task` into an existing `tags:: a, b` line (no-op if any
+/// comma-separated value already equals Task, case-insensitively).
+fn merge_task_into_tags_line(line: &str) -> String {
+    let already = line
+        .split_once(":: ")
+        .map(|(_, v)| v.split(',').any(|t| t.trim().eq_ignore_ascii_case("task")))
+        .unwrap_or(false);
+    if already {
+        line.to_string()
+    } else {
+        format!("{}, Task", line.trim_end())
+    }
+}
+
+/// Whole-token inline `#Task` (case-insensitive) — matches the detection
+/// the backfill-task migration uses, so neither path double-tags.
+fn has_inline_task_tag(text: &str) -> bool {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '#'))
+        .any(|tok| tok.eq_ignore_ascii_case("#Task"))
 }
 
 fn strip_task_marker(line: &str) -> Option<(String, String)> {
@@ -686,14 +777,21 @@ fn strip_task_marker(line: &str) -> Option<(String, String)> {
         (line, "")
     };
 
+    // Status values must come from the seed Status property's choices
+    // (backlog/todo/doing/in-review/done/canceled — `status.md` seed in
+    // tesela-server's ensure_seed pages). Markers cover Logseq's full
+    // built-in workflow set.
     for (marker, status) in [
         ("TODO ", "todo"),
         ("DOING ", "doing"),
+        ("IN-PROGRESS ", "doing"),
         ("DONE ", "done"),
         ("LATER ", "backlog"),
         ("NOW ", "doing"),
         ("WAITING ", "backlog"),
+        ("WAIT ", "backlog"),
         ("CANCELED ", "canceled"),
+        ("CANCELLED ", "canceled"),
     ] {
         if let Some(rest) = without_dash.strip_prefix(marker) {
             return Some((status.to_string(), format!("{}{}", prefix, rest)));
@@ -897,6 +995,21 @@ tags:: idea, project
             "missing CANCELED state"
         );
 
+        // ── Every converted task is a REAL task: tagged `Task` so the
+        //    Tasks widget / agenda surfaces see it ──
+        assert_eq!(
+            coverage.matches("tags:: Task").count(),
+            5,
+            "all five task markers tagged Task\n{}",
+            coverage
+        );
+        let journal = fs::read_to_string(mosaic.join("notes/2026-05-19.md")).unwrap();
+        assert!(
+            journal.contains("tags:: Task"),
+            "journal task tagged Task\n{}",
+            journal
+        );
+
         // ── Priority ──
         assert!(
             coverage.contains("priority:: high"),
@@ -993,6 +1106,55 @@ tags:: idea, project
             mosaic.join("notes/2026-05-19.md").exists(),
             "journal not renamed to ISO"
         );
+    }
+
+    // ── Task tag — converted markers must produce REAL Tesela tasks.
+    // Every task surface (Tasks widget `kind:block tag:Task -status:done`,
+    // agenda) filters on the Task tag, so `status::` alone is invisible. ──
+
+    #[test]
+    fn task_marker_gets_status_and_task_tag() {
+        let out = convert_content("- TODO buy milk\n");
+        assert_eq!(out, "- buy milk\n  status:: todo\n  tags:: Task");
+    }
+
+    #[test]
+    fn task_tag_unions_into_existing_tags_continuation() {
+        let out = convert_content("- TODO buy milk\n  tags:: errand\n");
+        assert_eq!(out.matches("tags::").count(), 1, "{out}");
+        assert!(out.contains("tags:: errand, Task"), "{out}");
+    }
+
+    #[test]
+    fn task_tag_not_duplicated_when_already_tagged() {
+        let out = convert_content("- TODO buy milk\n  tags:: Task\n");
+        assert_eq!(out.matches("Task").count(), 1, "{out}");
+        let out = convert_content("- TODO buy milk #Task\n");
+        assert!(!out.contains("tags::"), "inline #Task already marks it: {out}");
+    }
+
+    #[test]
+    fn consecutive_tasks_each_get_their_tag() {
+        let out = convert_content("- TODO first\n- DONE second\n");
+        assert_eq!(out.matches("tags:: Task").count(), 2, "{out}");
+        // The first task's tag lands before the second bullet.
+        let first_tag = out.find("tags:: Task").unwrap();
+        let second_bullet = out.find("- second").unwrap();
+        assert!(first_tag < second_bullet, "{out}");
+    }
+
+    #[test]
+    fn extended_logseq_markers_map_to_seed_statuses() {
+        // Canonical status choices: backlog/todo/doing/in-review/done/
+        // canceled (status.md seed in crates/tesela-server/src/main.rs).
+        for (line, want) in [
+            ("- WAIT for review\n", "status:: backlog"),
+            ("- IN-PROGRESS shipping\n", "status:: doing"),
+            ("- CANCELLED bad idea\n", "status:: canceled"),
+        ] {
+            let out = convert_content(line);
+            assert!(out.contains(want), "{line:?} → {out}");
+        }
     }
 
     #[test]

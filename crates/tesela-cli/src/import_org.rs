@@ -8,9 +8,10 @@
 //! v1 scope (matches the Phase 13.E plan):
 //! - Headlines (`*`, `**`, ...) → block hierarchy (one block per
 //!   headline; depth = `*` count).
-//! - TODO state → `status:: todo|done|cancelled|...`. Reads `#+TODO:`
-//!   per-file overrides if present, else the standard `TODO`/`DONE`/
-//!   `CANCELED` states.
+//! - TODO state → `status:: todo|done|canceled|...` plus a `tags:: Task`
+//!   continuation line (task surfaces filter on the Task tag). Reads
+//!   `#+TODO:` per-file overrides if present, else the standard `TODO`/
+//!   `DONE`/`CANCELED` states.
 //! - `[#A]`/`[#B]`/`[#C]` priority cookies → `priority:: high|medium|low`.
 //! - `DEADLINE: <YYYY-MM-DD ...>` → `deadline:: [[YYYY-MM-DD]]`.
 //! - `SCHEDULED: <YYYY-MM-DD ...>` → `scheduled:: [[YYYY-MM-DD]]`.
@@ -35,6 +36,9 @@ use std::path::{Path, PathBuf};
 const SOURCE_PATH_KEY: &str = "source_org_path";
 const SOURCE_SHA_KEY: &str = "source_org_sha";
 
+// Status values must come from the seed Status property's choices
+// (backlog/todo/doing/in-review/done/canceled — `status.md` seed in
+// tesela-server's ensure_seed pages). Note single-L `canceled`.
 const DEFAULT_TODO_STATES: &[(&str, &str)] = &[
     ("TODO", "todo"),
     ("NEXT", "doing"),
@@ -42,8 +46,8 @@ const DEFAULT_TODO_STATES: &[(&str, &str)] = &[
     ("LATER", "backlog"),
     ("NOW", "doing"),
     ("DONE", "done"),
-    ("CANCELED", "cancelled"),
-    ("CANCELLED", "cancelled"),
+    ("CANCELED", "canceled"),
+    ("CANCELLED", "canceled"),
 ];
 
 #[derive(Debug, Default)]
@@ -283,6 +287,16 @@ fn convert_org_to_markdown(raw: &str, log: &mut Vec<String>, rel_str: &str) -> S
             if let Some(priority) = &parsed.priority {
                 out.push_str(&format!("{}priority:: {}\n", prop_indent, priority));
             }
+            // A TODO-state headline is a real Tesela task — it needs a
+            // `tags:: Task` continuation line (the materialized form the
+            // engine emits; task surfaces filter on the Task tag, not
+            // bare `status::`). Held pending so a `tags` key in the
+            // :PROPERTIES: drawer unions instead of duplicating; flushed
+            // when the block's property region ends. Skipped when the
+            // headline's own org tags already include `task` (rendered
+            // as an inline #task above).
+            let mut task_tag_pending = parsed.status.is_some()
+                && !parsed.tags.iter().any(|t| t.eq_ignore_ascii_case("task"));
 
             i += 1;
             // Now consume planning lines + drawers + body until the
@@ -330,6 +344,17 @@ fn convert_org_to_markdown(raw: &str, log: &mut Vec<String>, rel_str: &str) -> S
                                 i += 1;
                                 continue;
                             }
+                            if key == "tags" && task_tag_pending {
+                                task_tag_pending = false;
+                                if !v.split(',').any(|t| t.trim().eq_ignore_ascii_case("task")) {
+                                    out.push_str(&format!(
+                                        "{}tags:: {}, Task\n",
+                                        prop_indent, v
+                                    ));
+                                    i += 1;
+                                    continue;
+                                }
+                            }
                             out.push_str(&format!("{}{}:: {}\n", prop_indent, key, v));
                         }
                         i += 1;
@@ -355,6 +380,10 @@ fn convert_org_to_markdown(raw: &str, log: &mut Vec<String>, rel_str: &str) -> S
                     continue;
                 }
                 if trimmed.starts_with("#+BEGIN_SRC") {
+                    if task_tag_pending {
+                        out.push_str(&format!("{}tags:: Task\n", prop_indent));
+                        task_tag_pending = false;
+                    }
                     let lang = trimmed
                         .split(char::is_whitespace)
                         .nth(1)
@@ -380,9 +409,16 @@ fn convert_org_to_markdown(raw: &str, log: &mut Vec<String>, rel_str: &str) -> S
                     continue;
                 }
                 // Plain body line — render under the block.
+                if task_tag_pending {
+                    out.push_str(&format!("{}tags:: Task\n", prop_indent));
+                    task_tag_pending = false;
+                }
                 let rewritten = rewrite_org_links(l);
                 out.push_str(&format!("{}{}\n", prop_indent, rewritten.trim_end()));
                 i += 1;
+            }
+            if task_tag_pending {
+                out.push_str(&format!("{}tags:: Task\n", prop_indent));
             }
             continue;
         }
@@ -587,7 +623,7 @@ fn parse_todo_keywords(raw: &str) -> Vec<(String, String)> {
                     out.push((
                         kw.to_string(),
                         if kw.to_ascii_uppercase().contains("CANCEL") {
-                            "cancelled".to_string()
+                            "canceled".to_string()
                         } else {
                             "done".to_string()
                         },
@@ -721,6 +757,11 @@ Plan content.
         let body = fs::read_to_string(mosaic.join("notes/project.md")).unwrap();
         assert!(body.contains("- Pay rent #finance"));
         assert!(body.contains("status:: todo"));
+        // Every TODO-state headline is tagged Task (4 in this fixture),
+        // at the block's own property indent.
+        assert_eq!(body.matches("tags:: Task").count(), 4, "{body}");
+        assert!(body.contains("\n  tags:: Task"), "level-1 indent\n{body}");
+        assert!(body.contains("\n    tags:: Task"), "level-2 indent\n{body}");
         assert!(body.contains("deadline:: [[2026-05-15]]"));
         assert!(body.contains("recurring:: monthly"));
         assert!(body.contains("owner:: me"));
@@ -772,6 +813,52 @@ Plan content.
             .modified()
             .unwrap();
         assert_eq!(mtime1, mtime2);
+    }
+
+    fn convert(raw: &str) -> String {
+        let mut log = Vec::new();
+        convert_org_to_markdown(raw, &mut log, "test.org")
+    }
+
+    // ── Task tag — converted TODO states must produce REAL Tesela tasks
+    // (task surfaces filter on the Task tag, not bare `status::`). ──
+
+    #[test]
+    fn task_headline_gets_task_tag() {
+        let out = convert("* TODO Buy milk\n");
+        assert!(out.contains("status:: todo"), "{out}");
+        assert_eq!(out.matches("tags:: Task").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn canceled_maps_to_seed_spelling() {
+        // Canonical status choices use single-L `canceled`
+        // (status.md seed in crates/tesela-server/src/main.rs).
+        let out = convert("* CANCELED Drop the plan\n");
+        assert!(out.contains("status:: canceled"), "{out}");
+        assert!(!out.contains("cancelled"), "{out}");
+        let custom = convert("#+TODO: TODO | DONE CANCELLED\n* CANCELLED Old idea\n");
+        assert!(custom.contains("status:: canceled"), "{custom}");
+    }
+
+    #[test]
+    fn task_tag_unions_with_drawer_tags() {
+        let out = convert("* TODO Chore\n:PROPERTIES:\n:TAGS: home\n:END:\n");
+        assert_eq!(out.matches("tags::").count(), 1, "{out}");
+        assert!(out.contains("tags:: home, Task"), "{out}");
+    }
+
+    #[test]
+    fn headline_task_tag_not_duplicated() {
+        let out = convert("* TODO Foo :task:\n");
+        assert!(out.contains("#task"), "{out}");
+        assert!(!out.contains("tags:: Task"), "{out}");
+    }
+
+    #[test]
+    fn non_task_headline_gets_no_task_tag() {
+        let out = convert("* Just a heading\nBody.\n");
+        assert!(!out.contains("tags:: Task"), "{out}");
     }
 
     #[test]

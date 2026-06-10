@@ -323,6 +323,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn block_with_unioned_tags_line_is_untouched() {
+        // The importers can merge Task into an existing tags continuation
+        // line (`tags:: errand, Task`) — backfill must not re-add it.
+        let e = engine();
+        upsert(
+            &e,
+            NOTE_A,
+            &format!("- buy milk <!-- bid:{BID} -->\n  status:: todo\n  tags:: errand, Task\n"),
+        )
+        .await;
+
+        let report = backfill(&e, false).await.unwrap();
+
+        assert_eq!(
+            report.candidates.len(),
+            0,
+            "unioned tags line already carries Task"
+        );
+    }
+
+    #[tokio::test]
     async fn block_without_status_is_untouched() {
         let e = engine();
         upsert(&e, NOTE_A, &format!("- just a note <!-- bid:{BID} -->\n")).await;
