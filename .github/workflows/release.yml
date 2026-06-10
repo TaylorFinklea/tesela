@@ -1,8 +1,14 @@
 name: Release
 
+# 2026-06-10: removed the on-every-push trigger. This auto-release pipeline
+# has failed every recent run (archived actions-rs/toolchain; Tauri glib
+# system deps missing since src-tauri joined the workspace) and its
+# RELEASE.md append step is the source of the 73 MB tracked blob — so every
+# push to main spawned a guaranteed-red run plus bot push-backs. Full
+# retirement + RELEASE.md purge is PARKED (Taylor's call, see roadmap
+# "Parked / Later"); until then it is manual-only via workflow_dispatch.
+
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:

@@ -1,0 +1,88 @@
+name: iOS compile smoke
+
+# workflow_dispatch-ONLY (not push/PR) — deliberately, for two reasons:
+#
+# 1. The build cannot work from checked-in artifacts alone. The Xcode
+#    project links the Rust FFI static lib by explicit path
+#    (app/Tesela-iOS/project.yml OTHER_LDFLAGS →
+#    target/aarch64-apple-ios-sim/release/libtesela_sync_ffi.a), and
+#    target/ is gitignored — so every CI run must cross-compile
+#    tesela-sync-ffi first. The .xcodeproj itself is also gitignored
+#    (xcodegen-generated from project.yml). Only the UniFFI bindings
+#    (app/Tesela-iOS/Generated/) are committed.
+# 2. macOS runner minutes are expensive (10x Linux), and the SwiftPM
+#    SwiftWhisper dependency pulls a whisper.cpp git submodule that
+#    flakes on resolution (see scripts/ios-testflight.sh's heal logic).
+#
+# TODO: after a successful manual dispatch proves this pipeline on a
+# hosted runner (Xcode 26 / iOS 26 SDK availability is the main unknown
+# — the app's deployment target is iOS 26.0), promote the trigger to
+# push-to-main only (NOT pull_request; keep macOS minutes off the PR
+# path). Until then, run it by hand from the Actions tab.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  smoke:
+    name: xcodebuild (iOS Simulator, no signing)
+    # The app targets iOS 26.0, which needs Xcode 26 — only the macos-26
+    # image ships it (macos-14/15 top out at older SDKs).
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable (iOS sim target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-ios-${{ hashFiles('**/Cargo.lock') }}
+
+      # Same step 1 as scripts/ios-testflight.sh, but for the simulator
+      # target. The committed bindings in app/Tesela-iOS/Generated/ are
+      # used as-is (regenerate-and-diff drift checking is A13's job).
+      - name: Build Rust FFI static lib
+        run: cargo build --release -p tesela-sync-ffi --target aarch64-apple-ios-sim
+
+      - name: Generate Xcode project
+        run: |
+          brew install xcodegen
+          cd app/Tesela-iOS
+          xcodegen generate
+
+      # SwiftWhisper pulls a whisper.cpp git submodule that SwiftPM
+      # sometimes fails to clone. Mirror the heal-and-retry from
+      # scripts/ios-testflight.sh.
+      - name: Resolve SwiftPM packages
+        run: |
+          PROJECT=app/Tesela-iOS/Tesela-iOS.xcodeproj
+          if ! xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme Tesela; then
+            SW="$(ls -d "$HOME"/Library/Developer/Xcode/DerivedData/Tesela-iOS-*/SourcePackages/checkouts/SwiftWhisper 2>/dev/null | head -1)"
+            [ -n "$SW" ] && git -C "$SW" submodule update --init --recursive || true
+            xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme Tesela
+          fi
+
+      - name: Build for iOS Simulator
+        run: |
+          xcodebuild build \
+            -project app/Tesela-iOS/Tesela-iOS.xcodeproj \
+            -scheme Tesela \
+            -configuration Debug \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO

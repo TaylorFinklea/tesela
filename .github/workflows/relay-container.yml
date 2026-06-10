@@ -28,6 +28,7 @@ on:
 permissions:
   contents: read
   packages: write
+  issues: write
 
 env:
   IMAGE_NAME: ghcr.io/taylorfinklea/tesela-relay
@@ -68,3 +69,24 @@ jobs:
             BUILD_DESCRIPTION=Zero-knowledge sync relay for Tesela notes.
             BUILD_REPOSITORY=${{ github.repository }}
             BUILD_REF=${{ github.sha }}
+
+      # Failure alerting: this pipeline was dark-red 2026-05-29 → 06-08 and
+      # nobody noticed until the HA add-on 404'd on the missing GHCR image.
+      # On failure, file (or refresh) a GitHub issue so red is visible
+      # outside the Actions tab. Only built-in safe env vars — no untrusted
+      # input reaches the shell.
+      - name: Create or refresh the failure issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="relay-container build failing on main"
+          run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          body="relay-container failed: $run_url (commit $GITHUB_SHA)"
+          num="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$num" ]; then
+            gh issue comment "$num" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
