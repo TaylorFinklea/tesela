@@ -101,11 +101,9 @@ pub const INBOX_VIEW_ID: &str = "builtin-inbox";
 
 /// Default DSL of the built-in Inbox view (Taylor's definition: backlog or
 /// todo status, no scheduled or deadline date). User-editable after seed.
-///
-/// TODO(views): swap this literal for the `pub const` in `tesela-core`
-/// once `feat(core): query DSL comma-OR lists + the Inbox default` lands
-/// (parallel agent; not in tree as of 2026-06-10).
-pub const INBOX_DEFAULT_DSL: &str = "status:backlog,todo -has:scheduled -has:deadline";
+/// Re-exports the canonical const from `tesela-core` (landed in c3afb69
+/// alongside the comma-OR DSL support that makes it parse).
+pub const INBOX_DEFAULT_DSL: &str = tesela_core::query::INBOX_VIEW_DSL;
 
 /// Schema version stamped on the views registry doc's `meta` map, for
 /// future shape evolution (mirrors `INDEX_SCHEMA_VERSION`'s role —
