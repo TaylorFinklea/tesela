@@ -681,6 +681,12 @@ final class RelayTicker: ObservableObject {
                 try await ensureCoordinator()
             }
             guard let coordinator else { return }
+            // Capture the scope WITH the coordinator: a re-pair completing
+            // during the awaits below swaps self.cursorScope to the new
+            // identity, and persisting the OLD group's cursor under the NEW
+            // key would silently stall the new group's inbound (review
+            // finding on ddd8def — same class as the hubMode mid-tick flip).
+            let tickScope = cursorScope
             let outbound = try await coordinator.tickOutbound(maxBytes: 1_000_000)
             let inbound = try await coordinator.tickInbound()
             noteOutboundOutcome(outbound)
@@ -701,7 +707,7 @@ final class RelayTicker: ObservableObject {
             // Persist cursors (scoped per relay+group, audit A5) so a
             // cold launch resumes where we left off instead of re-polling
             // the full relay history.
-            if let scope = cursorScope {
+            if let scope = tickScope {
                 UserDefaults.standard.set(inbound.newCursorSeq, forKey: Self.inboundCursorKey(scope: scope))
                 if let ntp = outbound.newCursorNtp {
                     UserDefaults.standard.set(ntp, forKey: Self.outboundCursorKey(scope: scope))

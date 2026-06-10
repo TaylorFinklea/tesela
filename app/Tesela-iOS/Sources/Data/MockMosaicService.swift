@@ -1075,9 +1075,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // to mint an id), so set it even when today's file doesn't exist
             // yet — the daily write gates (`scheduleWriteback`/splice) need
             // it non-empty for the FIRST edit on a fresh pair (audit A6).
-            if serverDailyId.isEmpty {
-                serverDailyId = dailyId(daysAgo: 0)
-            }
+            // Re-derive on every refresh (not just when empty): an app left
+            // foregrounded across midnight would otherwise keep writing
+            // "today's" edits into yesterday's note (review finding).
+            serverDailyId = dailyId(daysAgo: 0)
             // Always .ready — there's no server to wait on. Empty until the
             // relay delivers the first ops, then onAppliedChanges re-refreshes.
             connection = .ready
