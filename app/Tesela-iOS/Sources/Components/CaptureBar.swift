@@ -369,6 +369,12 @@ final class CaptureComposer: ObservableObject {
     /// resolve from settings + active tab + page context. Held here so
     /// the compact bar and the expanded panel always agree.
     @Published var manualTarget: CaptureTarget? = nil
+    /// Set by the compact bar's mic button just before expanding: the
+    /// sheet opens straight into voice mode — start recording, and do
+    /// NOT autofocus the text field (the keyboard rising mid-present
+    /// mangled the sheet layout). Consumed (reset) by the sheet's
+    /// onAppear.
+    @Published var pendingVoiceCapture: Bool = false
 
     /// Append dictated / transcribed text, separated by a space.
     func append(_ text: String) {

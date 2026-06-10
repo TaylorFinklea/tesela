@@ -109,7 +109,15 @@ struct GrCaptureBar: View {
             }
             .buttonStyle(.plain)
 
-            Button(action: expand) {
+            Button {
+                // Voice-first expand: flag the composer so the sheet opens
+                // recording with NO text-field autofocus — the keyboard
+                // rising while the sheet presented left it half-behind the
+                // keyboard with the mic blob clipped (2026-06-10 product
+                // test).
+                composer.pendingVoiceCapture = true
+                expand()
+            } label: {
                 GrIcon(name: "microphone", size: 21)
                     .foregroundStyle(theme.fgMuted)
                     .frame(width: 38, height: 38)
@@ -142,6 +150,11 @@ struct GrCaptureSheet: View {
     @Environment(\.theme) private var theme
 
     @FocusState private var fieldFocused: Bool
+
+    /// Live vertical drag of the swipe-to-dismiss gesture. Positive =
+    /// dragging down; the sheet follows the finger and either dismisses
+    /// past the threshold or springs back.
+    @State private var dragOffset: CGFloat = 0
 
     @AppStorage("captureDefaultTarget") private var captureDefault: CaptureDefault = .contextAware
     @AppStorage("voice.useOnDevice") private var useOnDevice: Bool = true
@@ -184,12 +197,49 @@ struct GrCaptureSheet: View {
         }
         .clipShape(.rect(topLeadingRadius: 26, topTrailingRadius: 26))
         .shadow(color: .black.opacity(0.5), radius: 25, y: -16)
+        // Swipe-down dismissal — the grabber promised it, but only the
+        // chevron button collapsed the sheet. Attached with `.gesture`
+        // so child interactions (the TextField's own drag/selection, the
+        // buttons) keep priority; drags on the handle / head / footer /
+        // padding reach us.
+        .offset(y: max(0, dragOffset))
+        .gesture(dismissDrag)
         .onAppear {
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(60))
-                fieldFocused = true
+            if composer.pendingVoiceCapture {
+                // Voice-first open (compact bar's mic): start recording
+                // immediately and skip the text-field autofocus so the
+                // keyboard can't fight the presentation.
+                composer.pendingVoiceCapture = false
+                Task { await toggleRecording() }
+            } else {
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(60))
+                    fieldFocused = true
+                }
             }
         }
+    }
+
+    /// Drag-to-dismiss: track the finger while dragging down, collapse
+    /// when released past the distance threshold (or flicked), spring
+    /// back otherwise.
+    private var dismissDrag: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                dragOffset = value.translation.height
+            }
+            .onEnded { value in
+                let flick = value.predictedEndTranslation.height > 160
+                if value.translation.height > 80 || flick {
+                    fieldFocused = false
+                    withAnimation(.snappy(duration: 0.28)) {
+                        composer.isExpanded = false
+                    }
+                    dragOffset = 0
+                } else {
+                    withAnimation(.snappy(duration: 0.2)) { dragOffset = 0 }
+                }
+            }
     }
 
     private var grabHandle: some View {

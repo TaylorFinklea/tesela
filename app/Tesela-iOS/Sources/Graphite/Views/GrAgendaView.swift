@@ -226,6 +226,10 @@ struct GrAgendaView: View {
                     .frame(width: 18)
             }
 
+            // Row BODY navigates; the checkbox column stays its own tap
+            // target. The old whole-card `.onTapGesture` swallowed the
+            // checkbox button's taps, so EVERY tap opened the block
+            // (2026-06-10 product test).
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     Text(timeOrDate(row))
@@ -250,7 +254,12 @@ struct GrAgendaView: View {
                     .strikethrough(isDone, color: theme.fgSubtle)
                     .multilineTextAlignment(.leading)
             }
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard !row.source_note_id.isEmpty else { return }
+                navigationPath.append(GrPageRoute(slug: row.source_note_id))
+            }
         }
         .padding(.horizontal, 13)
         .padding(.vertical, 12)
@@ -261,11 +270,6 @@ struct GrAgendaView: View {
                 .stroke(overdue ? theme.accentPrimary.opacity(0.34) : theme.lineSoft, lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 11))
-        .contentShape(Rectangle())
-        .onTapGesture {
-            guard !row.source_note_id.isEmpty else { return }
-            navigationPath.append(GrPageRoute(slug: row.source_note_id))
-        }
         .contextMenu {
             if row.is_anchor {
                 Button { rescheduleTarget = row } label: {
@@ -315,6 +319,25 @@ struct GrAgendaView: View {
     private func markDone(_ row: AgendaRow) async {
         guard row.is_anchor else { return }
         let next = (row.status == "done") ? "todo" : "done"
+        // Optimistic restyle — strikethrough/un-strike immediately; the
+        // post-write `load()` settles the row's final placement (done
+        // rows drop out unless "Show done" is on). A failed write skips
+        // straight to `load()`, which restores the server truth.
+        if let idx = rows.firstIndex(of: row) {
+            rows[idx] = AgendaRow(
+                block_id: row.block_id,
+                source_note_id: row.source_note_id,
+                occurrence_date: row.occurrence_date,
+                occurrence_time: row.occurrence_time,
+                kind: row.kind,
+                overdue: row.overdue,
+                recurrence: row.recurrence,
+                is_anchor: row.is_anchor,
+                text: row.text,
+                status: next,
+                field: row.field
+            )
+        }
         try? await mosaic.setBlockProperty(blockId: row.block_id, key: "status", value: next)
         await load()
     }
