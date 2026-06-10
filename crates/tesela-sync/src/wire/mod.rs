@@ -9,11 +9,13 @@ use crate::oplog::op::EncodedOp;
 use serde::{Deserialize, Serialize};
 
 /// One doc's Loro update bytes for relay broadcast — the Loro-cutover
-/// (protocol v2) relay payload unit. `doc` is the 16-byte note id;
+/// (protocol v2) relay payload unit. `doc` is the 16-byte doc id;
 /// `update_bytes` is `LoroDoc::export(ExportMode::updates(&since_vv))`.
 /// The index doc is NOT broadcast — each peer rebuilds it locally from
-/// the per-note docs it receives (the self-healing index), so this only
-/// ever carries note docs.
+/// the per-note docs it receives (the self-healing index). So this
+/// carries note docs plus the one well-known non-note doc that DOES
+/// sync: the views registry (`VIEWS_DOC_ID`), which rides the streams
+/// like any note doc.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LoroDocUpdate {
     /// 16-byte note id the update belongs to.

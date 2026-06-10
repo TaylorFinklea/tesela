@@ -77,6 +77,41 @@ const INDEX_SCHEMA_VERSION: i64 = 3;
 /// collision-free — unlike the comma it replaced.
 const INDEX_LIST_SEP: char = '\n';
 
+/// Well-known doc id of the SYNCED VIEWS REGISTRY doc (saved-views spec,
+/// 2026-06-10): the 16 ASCII bytes `tesela.views.reg`
+/// (hex `746573656c612e76696577732e726567`). Chosen over a random UUID so
+/// the id is self-describing in snapshot filenames / relay logs, and over
+/// a nil/derived id so it can never collide with a real note id — note ids
+/// are blake3-of-slug truncations (or minted UUIDs), and a slug whose hash
+/// lands on this exact ASCII string is astronomically unlikely.
+///
+/// The views doc lives IN the engine's `docs` map under this id, which is
+/// precisely what makes it sync like a note doc with zero wire changes:
+/// `produce_relay_updates` / `apply_relay_updates` / snapshot deposits /
+/// bootstrap all iterate or address `docs` by `[u8; 16]` id. The id is
+/// instead EXCLUDED from every note-shaped projection (materialization,
+/// index, render, twin heal, note-op apply) via explicit guards.
+pub const VIEWS_DOC_ID: [u8; 16] = *b"tesela.views.reg";
+
+/// Fixed id of the built-in Inbox view. A CONSTANT (not a minted UUID) so
+/// two devices seeding concurrently write the SAME registry entry with the
+/// same field values — whichever insert wins the map-key LWW, the group
+/// converges to one identical Inbox.
+pub const INBOX_VIEW_ID: &str = "builtin-inbox";
+
+/// Default DSL of the built-in Inbox view (Taylor's definition: backlog or
+/// todo status, no scheduled or deadline date). User-editable after seed.
+///
+/// TODO(views): swap this literal for the `pub const` in `tesela-core`
+/// once `feat(core): query DSL comma-OR lists + the Inbox default` lands
+/// (parallel agent; not in tree as of 2026-06-10).
+pub const INBOX_DEFAULT_DSL: &str = "status:backlog,todo -has:scheduled -has:deadline";
+
+/// Schema version stamped on the views registry doc's `meta` map, for
+/// future shape evolution (mirrors `INDEX_SCHEMA_VERSION`'s role —
+/// though the views doc is authoritative CRDT state, never rebuilt).
+const VIEWS_SCHEMA_VERSION: i64 = 1;
+
 /// Join a multi-valued index field with the collision-free separator.
 fn join_list(items: &[String]) -> String {
     items.join(&INDEX_LIST_SEP.to_string())
@@ -485,8 +520,10 @@ impl LoroEngine {
         // RESOLVED target text for every disjoint-twin block (the value its
         // surviving node must hold after the raw merge + dedup). Skipped on
         // bootstrap (nothing to protect) and on a decode/fork failure
-        // (graceful: raw-import, never panic).
-        let plan = if already_resident {
+        // (graceful: raw-import, never panic). Also skipped for the VIEWS
+        // registry doc: it has no "blocks" tree to heal — its state is a
+        // map of LWW registers, where the raw Loro import IS the merge.
+        let plan = if already_resident && !Self::is_views_doc(&note_id) {
             match peer_genuine_block_changes(&doc, bytes) {
                 Ok(changes) => Some(changes),
                 Err(e) => {
@@ -514,7 +551,10 @@ impl LoroEngine {
         // before deriving the index/markdown from the tree — so the persisted
         // doc carries exactly one node per bid and later block-diff saves
         // can't update a ghost. Idempotent: a re-import finds nothing to drop.
-        tombstone_duplicate_twins(&doc, note_id);
+        // (No-op shape for the views doc — guarded for clarity/cheapness.)
+        if !Self::is_views_doc(&note_id) {
+            tombstone_duplicate_twins(&doc, note_id);
+        }
 
         // ── Disjoint-twin heal (the protection) ──────────────────────────
         // Block text is now a nested LoroText, so SHARED-lineage blocks need no
@@ -622,7 +662,11 @@ impl LoroEngine {
         doc.import(bytes)
             .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
 
-        rebase_twins_onto_snapshot(&doc, &pre_nodes);
+        // The views registry doc has no "blocks" tree (its map registers
+        // merge natively), so there are no twins to re-base.
+        if !Self::is_views_doc(&note_id) {
+            rebase_twins_onto_snapshot(&doc, &pre_nodes);
+        }
 
         self.refresh_note_derived(note_id, &doc).await;
         if let Some(dir) = self.inner.snapshot_dir.as_ref() {
@@ -653,7 +697,9 @@ impl LoroEngine {
         let already_resident = self.inner.docs.read().await.contains_key(&note_id);
         let doc = self.doc_for_note_mut(note_id).await;
 
-        let plan = if already_resident {
+        // Views registry doc: no "blocks" tree → no twin plan/heal (see
+        // `import_doc_update`); the raw import below IS the merge.
+        let plan = if already_resident && !Self::is_views_doc(&note_id) {
             match peer_genuine_block_changes(&doc, bytes) {
                 Ok(changes) => Some(changes),
                 Err(e) => {
@@ -678,7 +724,9 @@ impl LoroEngine {
             .map(|p| !p.is_empty())
             .unwrap_or(false);
 
-        tombstone_duplicate_twins(&doc, note_id);
+        if !Self::is_views_doc(&note_id) {
+            tombstone_duplicate_twins(&doc, note_id);
+        }
 
         if let Some(changes) = plan {
             let post_texts = current_block_texts(&doc);
@@ -997,6 +1045,11 @@ impl LoroEngine {
     /// import: re-register its live blocks in block_index and rebuild
     /// its index entry from the doc's root content.
     async fn refresh_note_derived(&self, note_id: [u8; 16], doc: &LoroDoc) {
+        // The views registry doc is not a note: no blocks to register, and
+        // it must NOT grow a phantom index entry / appear in note lists.
+        if Self::is_views_doc(&note_id) {
+            return;
+        }
         let tree = doc.get_tree("blocks");
         let mut ids = Vec::new();
         for node in tree.children(TreeParentId::Root).unwrap_or_default() {
@@ -1069,6 +1122,10 @@ impl LoroEngine {
         }
 
         for (note_id, doc) in docs.iter() {
+            // The views registry doc is not a note — never index it.
+            if Self::is_views_doc(note_id) {
+                continue;
+            }
             let root = doc.get_map("root");
             let read = |k: &str| -> String {
                 root.get(k)
@@ -1227,6 +1284,12 @@ impl LoroEngine {
     ///
     /// Returns `None` for unknown note ids.
     pub async fn render_note(&self, note_id: [u8; 16]) -> Option<String> {
+        // The views registry doc has no markdown view — `None` keeps every
+        // render-driven note walker (divergence checks, CLI backfills)
+        // skipping it like an unknown note.
+        if Self::is_views_doc(&note_id) {
+            return None;
+        }
         let docs = self.inner.docs.read().await;
         let doc = docs.get(&note_id)?;
         Some(tesela_core::note_tree::serialize_note(&note_tree_from_doc(
@@ -1247,6 +1310,10 @@ impl LoroEngine {
     ///
     /// Returns `None` for unknown note ids.
     pub async fn render_note_full(&self, note_id: [u8; 16]) -> Option<String> {
+        // Views registry doc: not a note, no markdown view (see render_note).
+        if Self::is_views_doc(&note_id) {
+            return None;
+        }
         let docs = self.inner.docs.read().await;
         let doc = docs.get(&note_id)?;
         Some(doc_full_markdown(doc))
@@ -1398,6 +1465,11 @@ impl LoroEngine {
     /// be resolved. This is what makes LoroEngine the sole writer of the
     /// mosaic in authoritative mode.
     async fn materialize_note(&self, note_id: [u8; 16]) {
+        // The views registry doc never materializes to notes/ — it has no
+        // slug and is not a note (it would otherwise warn every import).
+        if Self::is_views_doc(&note_id) {
+            return;
+        }
         let Some(dir) = self.inner.materialize_dir.as_ref() else {
             return;
         };
@@ -1535,6 +1607,247 @@ impl LoroEngine {
             count += 1;
         }
         Ok(count)
+    }
+}
+
+// ============================================================================
+// Views registry (saved-views spec, 2026-06-10)
+// ============================================================================
+//
+// ONE dedicated Loro doc (id = `VIEWS_DOC_ID`) holds every saved view. It
+// lives in the engine's `docs` map, so it RIDES the relay exactly like a
+// note doc — `produce_relay_updates`, `apply_relay_updates`, snapshot
+// deposits (`tracked_note_ids` → `export_doc_update(id, None)`), bootstrap
+// imports, and per-doc `.bin` persistence all address `docs` by 16-byte id
+// and need no special case. This is the OPPOSITE of the index doc, which is
+// a derived projection each peer rebuilds locally and is deliberately NOT
+// broadcast; the views registry is authoritative user state and must sync.
+//
+// What the views doc is EXCLUDED from (the note-shaped machinery):
+//   - materialization: no `<slug>.md` is ever written (`materialize_note`
+//     guard) and `reseed_from_disk` only ever UPSERTS from `.md` files, so
+//     a reseed can't touch (let alone wipe) the views doc;
+//   - the index: `refresh_note_derived` / `rebuild_index_from_docs` skip
+//     it, so no phantom note appears in note lists;
+//   - rendering: `render_note` / `render_note_full` return `None` (which
+//     also makes note walkers like the CLI task-backfill skip it);
+//   - the disjoint-twin import heal + tombstone pass: the doc has no
+//     "blocks" tree — its state is a map of LWW registers, where a raw
+//     Loro import IS the correct merge — so `import_doc_update` /
+//     `apply_doc_update_status` / `import_authoritative_snapshot` take the
+//     plain-import path;
+//   - note-shaped ops: an `OpPayload` addressed at `VIEWS_DOC_ID` is
+//     refused in `apply_payload_inner` (defense in depth).
+//
+// CRDT shape: `views` LoroMap keyed by view id → per-view LoroMap of
+// scalar fields ({id, name, dsl, order, builtin, display_mode,
+// display_group_by?, display_show_done?}). Field-level LWW: concurrent
+// edits of different fields both survive; same-field edits resolve
+// deterministically. Ordering is a plain `order` i64 per view (ties break
+// by id) — a CRDT list would add tombstone/move complexity for a registry
+// of 6–12 entries whose reorders are rare whole-renumber writes.
+//
+// Known boundary (documented, accepted): two devices that INDEPENDENTLY
+// first-create the same view id (e.g. a fresh device seeding the builtin
+// before its first sync) race on the map key's container register — the
+// losing container's fields are dropped wholesale. For the builtin seed
+// both containers are identical so convergence is unaffected; the
+// seed-vs-concurrent-edit window only exists on a brand-new device that
+// has never synced, and `ensure_builtin_views` no-ops once the entry
+// arrives, keeping the window to that first boot.
+impl LoroEngine {
+    /// True when the id addresses the views registry doc (not a note).
+    fn is_views_doc(note_id: &[u8; 16]) -> bool {
+        *note_id == VIEWS_DOC_ID
+    }
+
+    /// Persist the views doc's snapshot (`<dir>/<hex(VIEWS_DOC_ID)>.bin`).
+    /// Same per-doc snapshot file every note uses, so boot's
+    /// `load_snapshots_from_dir` restores it with no special case.
+    async fn persist_views_doc(&self) {
+        if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+            self.save_snapshot(dir, VIEWS_DOC_ID).await;
+        }
+    }
+
+    /// All saved views, sorted by `(order, id)` — deterministic across
+    /// devices. Empty when the registry doc doesn't exist yet (fresh
+    /// device pre-seed / pre-bootstrap).
+    pub async fn views_list(&self) -> Vec<crate::engine::ViewRecord> {
+        let doc = {
+            let docs = self.inner.docs.read().await;
+            match docs.get(&VIEWS_DOC_ID) {
+                Some(d) => d.clone(),
+                None => return Vec::new(),
+            }
+        };
+        let value = doc.get_map("views").get_deep_value();
+        let mut out = Vec::new();
+        if let loro::LoroValue::Map(m) = value {
+            for (key, v) in m.iter() {
+                let loro::LoroValue::Map(entry) = v else {
+                    continue;
+                };
+                let get_str = |k: &str| -> Option<String> {
+                    entry.get(k).and_then(|x| {
+                        if let loro::LoroValue::String(s) = x {
+                            Some((**s).to_string())
+                        } else {
+                            None
+                        }
+                    })
+                };
+                let get_bool = |k: &str| -> Option<bool> {
+                    entry.get(k).and_then(|x| {
+                        if let loro::LoroValue::Bool(b) = x {
+                            Some(*b)
+                        } else {
+                            None
+                        }
+                    })
+                };
+                let get_i64 = |k: &str| -> Option<i64> {
+                    entry.get(k).and_then(|x| {
+                        if let loro::LoroValue::I64(n) = x {
+                            Some(*n)
+                        } else {
+                            None
+                        }
+                    })
+                };
+                out.push(crate::engine::ViewRecord {
+                    id: get_str("id").unwrap_or_else(|| key.to_string()),
+                    name: get_str("name").unwrap_or_default(),
+                    dsl: get_str("dsl").unwrap_or_default(),
+                    order: get_i64("order").unwrap_or(0),
+                    builtin: get_bool("builtin").unwrap_or(false),
+                    display_mode: get_str("display_mode").unwrap_or_else(|| "list".to_string()),
+                    display_group_by: get_str("display_group_by").filter(|s| !s.is_empty()),
+                    display_show_done: get_bool("display_show_done"),
+                });
+            }
+        }
+        out.sort_by(|a, b| a.order.cmp(&b.order).then_with(|| a.id.cmp(&b.id)));
+        out
+    }
+
+    /// Create or update a saved view. Field-level LWW: an EXISTING view's
+    /// per-view map is reused and each field written individually, so a
+    /// concurrent peer edit of a different field survives the merge (only
+    /// a brand-new view id inserts a fresh container). `builtin` is
+    /// STICKY — once a view is builtin it stays builtin regardless of the
+    /// record's flag, so the delete guard can't be bypassed by first
+    /// un-flagging via upsert. The doc's vv changes here, which is what
+    /// gets the write picked up by the next `produce_relay_updates` tick.
+    pub async fn views_upsert(&self, record: crate::engine::ViewRecord) -> SyncResult<()> {
+        if record.id.trim().is_empty() {
+            return Err(SyncError::Protocol("view id must be non-empty".into()));
+        }
+        let doc = self.doc_for_note_mut(VIEWS_DOC_ID).await;
+        let views = doc.get_map("views");
+        let entry = match views.get(&record.id) {
+            Some(loro::ValueOrContainer::Container(loro::Container::Map(m))) => m,
+            _ => views
+                .insert_container(&record.id, loro::LoroMap::new())
+                .map_err(|e| SyncError::Storage(format!("views insert_container: {e}")))?,
+        };
+        let was_builtin = matches!(
+            entry.get("builtin").and_then(|v| v.into_value().ok()),
+            Some(loro::LoroValue::Bool(true))
+        );
+        let builtin = record.builtin || was_builtin;
+        let ins = |e: loro::LoroError| SyncError::Storage(format!("views insert: {e}"));
+        entry.insert("id", record.id.as_str()).map_err(ins)?;
+        entry.insert("name", record.name.as_str()).map_err(ins)?;
+        entry.insert("dsl", record.dsl.as_str()).map_err(ins)?;
+        entry.insert("order", record.order).map_err(ins)?;
+        entry.insert("builtin", builtin).map_err(ins)?;
+        entry
+            .insert("display_mode", record.display_mode.as_str())
+            .map_err(ins)?;
+        match record.display_group_by.as_deref() {
+            Some(v) => entry.insert("display_group_by", v).map_err(ins)?,
+            None => {
+                let _ = entry.delete("display_group_by");
+            }
+        }
+        match record.display_show_done {
+            Some(v) => entry.insert("display_show_done", v).map_err(ins)?,
+            None => {
+                let _ = entry.delete("display_show_done");
+            }
+        }
+        let _ = doc.get_map("meta").insert("schema_version", VIEWS_SCHEMA_VERSION);
+        doc.commit();
+        self.persist_views_doc().await;
+        Ok(())
+    }
+
+    /// Delete a saved view by id. `Ok(true)` when removed, `Ok(false)`
+    /// when no such view exists, `Err(Protocol)` for a builtin (builtins
+    /// are editable, never deletable — the guard lives HERE, at the API;
+    /// the CRDT itself would happily delete the key). Concurrent
+    /// delete-vs-edit resolves deterministically: the map-key delete wins
+    /// over edits INSIDE the removed container, so both peers converge on
+    /// the view being gone.
+    pub async fn views_delete(&self, view_id: &str) -> SyncResult<bool> {
+        let doc = {
+            let docs = self.inner.docs.read().await;
+            match docs.get(&VIEWS_DOC_ID) {
+                Some(d) => d.clone(),
+                None => return Ok(false),
+            }
+        };
+        let views = doc.get_map("views");
+        let Some(loro::ValueOrContainer::Container(loro::Container::Map(entry))) =
+            views.get(view_id)
+        else {
+            return Ok(false);
+        };
+        let builtin = matches!(
+            entry.get("builtin").and_then(|v| v.into_value().ok()),
+            Some(loro::LoroValue::Bool(true))
+        );
+        if builtin {
+            return Err(SyncError::Protocol(format!(
+                "view '{view_id}' is builtin and not deletable"
+            )));
+        }
+        views
+            .delete(view_id)
+            .map_err(|e| SyncError::Storage(format!("views delete: {e}")))?;
+        doc.commit();
+        self.persist_views_doc().await;
+        Ok(true)
+    }
+
+    /// Idempotently seed the built-in views (currently: Inbox). No-op when
+    /// the Inbox entry already exists — whether seeded locally or received
+    /// via sync — so a reseed never clobbers the user's edits to the
+    /// builtin's dsl/display. Concurrent first-seeds on two devices write
+    /// the SAME fixed id with the SAME field values, so whichever
+    /// container wins the map-key LWW the group converges to one
+    /// identical Inbox (TDD'd in `concurrent_seed_converges_to_one_inbox`).
+    pub async fn ensure_builtin_views(&self) -> SyncResult<()> {
+        {
+            let docs = self.inner.docs.read().await;
+            if let Some(doc) = docs.get(&VIEWS_DOC_ID) {
+                if doc.get_map("views").get(INBOX_VIEW_ID).is_some() {
+                    return Ok(());
+                }
+            }
+        }
+        self.views_upsert(crate::engine::ViewRecord {
+            id: INBOX_VIEW_ID.to_string(),
+            name: "Inbox".to_string(),
+            dsl: INBOX_DEFAULT_DSL.to_string(),
+            order: 0,
+            builtin: true,
+            display_mode: "list".to_string(),
+            display_group_by: None,
+            display_show_done: None,
+        })
+        .await
     }
 }
 
@@ -3404,6 +3717,22 @@ impl SyncEngine for LoroEngine {
     async fn index_entries(&self) -> Vec<crate::engine::IndexEntry> {
         LoroEngine::index_entries(self).await
     }
+
+    async fn views_list(&self) -> Vec<crate::engine::ViewRecord> {
+        LoroEngine::views_list(self).await
+    }
+
+    async fn views_upsert(&self, record: crate::engine::ViewRecord) -> SyncResult<()> {
+        LoroEngine::views_upsert(self, record).await
+    }
+
+    async fn views_delete(&self, view_id: &str) -> SyncResult<bool> {
+        LoroEngine::views_delete(self, view_id).await
+    }
+
+    async fn ensure_builtin_views(&self) -> SyncResult<()> {
+        LoroEngine::ensure_builtin_views(self).await
+    }
 }
 
 impl LoroEngine {
@@ -3494,6 +3823,30 @@ impl LoroEngine {
     /// `None` for ops that don't touch a single note (AttachmentUpsert,
     /// no-op cases) — those don't trigger a snapshot write.
     async fn apply_payload_inner(&self, payload: &OpPayload) -> SyncResult<Option<[u8; 16]>> {
+        // Defense in depth: refuse note-shaped ops addressed at the views
+        // registry doc. The views doc is mutated ONLY via the views_* API;
+        // letting a NoteUpsert/BlockUpsert land there would graft a
+        // "blocks" tree / root meta onto it and drag it into note-shaped
+        // machinery (a NoteDelete would silently drop the whole registry).
+        let op_target = match payload {
+            OpPayload::NoteUpsert { note_id, .. }
+            | OpPayload::NoteDelete { note_id, .. }
+            | OpPayload::BlockUpsert { note_id, .. }
+            | OpPayload::AttachmentUpsert { note_id, .. }
+            | OpPayload::BlockPropertySet { note_id, .. }
+            | OpPayload::PagePropertySet { note_id, .. } => Some(*note_id),
+            OpPayload::BlockMove { .. }
+            | OpPayload::BlockDelete { .. }
+            | OpPayload::AttachmentDelete { .. } => None,
+        };
+        if op_target.is_some_and(|id| Self::is_views_doc(&id)) {
+            tracing::warn!(
+                "tesela-sync/loro: refusing note-shaped op {:?} addressed at the \
+                 views registry doc — use the views_* API",
+                payload.kind()
+            );
+            return Ok(None);
+        }
         let touched = match payload {
             OpPayload::NoteUpsert {
                 note_id,
@@ -8340,5 +8693,501 @@ mod tests {
             ra, rb,
             "concurrent migrators render byte-identical markdown"
         );
+    }
+
+    // ─── Views registry (saved-views spec, 2026-06-10) ───────────────────
+
+    fn user_view(id: &str, name: &str, dsl: &str, order: i64) -> crate::engine::ViewRecord {
+        crate::engine::ViewRecord {
+            id: id.to_string(),
+            name: name.to_string(),
+            dsl: dsl.to_string(),
+            order,
+            builtin: false,
+            display_mode: "list".to_string(),
+            display_group_by: None,
+            display_show_done: None,
+        }
+    }
+
+    /// Ship `from`'s produced relay updates to `to` through the real wire
+    /// codec, then commit `from`'s broadcast cursor (a confirmed send).
+    /// Same shape as `two_authoritative_engines_converge_through_wire_codec`'s
+    /// inline helper.
+    async fn ship_relay(from: &LoroEngine, to: &LoroEngine) -> usize {
+        use crate::wire::{decode_loro_relay_payload, encode_loro_relay_payload, LoroDocUpdate};
+        let updates = from.produce_relay_updates().await;
+        if updates.is_empty() {
+            return 0;
+        }
+        let payload: Vec<LoroDocUpdate> = updates
+            .iter()
+            .map(|(doc, update_bytes, _vv)| LoroDocUpdate {
+                doc: *doc,
+                update_bytes: update_bytes.clone(),
+            })
+            .collect();
+        let committed: Vec<([u8; 16], Vec<u8>)> =
+            updates.into_iter().map(|(d, _b, vv)| (d, vv)).collect();
+        let wire = encode_loro_relay_payload(&payload).unwrap();
+        let decoded = decode_loro_relay_payload(&wire).unwrap().expect("v2 payload");
+        let pairs: Vec<([u8; 16], Vec<u8>)> = decoded
+            .into_iter()
+            .map(|u| (u.doc, u.update_bytes))
+            .collect();
+        let n = to.apply_relay_updates(&pairs).await.applied_count();
+        from.commit_broadcast_cursors(&committed).await;
+        n
+    }
+
+    #[tokio::test]
+    async fn views_upsert_list_round_trip_sorted_by_order() {
+        let e = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
+        let mut kanban = user_view("v-kanban", "Board", "tag:project", 20);
+        kanban.display_mode = "kanban".to_string();
+        kanban.display_group_by = Some("status".to_string());
+        kanban.display_show_done = Some(true);
+        e.views_upsert(kanban.clone()).await.unwrap();
+        e.views_upsert(user_view("v-week", "This week", "has:scheduled", 10))
+            .await
+            .unwrap();
+
+        let views = e.views_list().await;
+        assert_eq!(views.len(), 2);
+        assert_eq!(
+            views.iter().map(|v| v.id.as_str()).collect::<Vec<_>>(),
+            vec!["v-week", "v-kanban"],
+            "sorted by (order, id)"
+        );
+        assert_eq!(views[1], kanban, "all fields round-trip");
+
+        // Update one field; the others persist (field-level write).
+        let mut renamed = kanban.clone();
+        renamed.name = "Project board".to_string();
+        e.views_upsert(renamed.clone()).await.unwrap();
+        let views = e.views_list().await;
+        assert_eq!(views.len(), 2, "upsert of existing id is an update");
+        assert_eq!(views[1], renamed);
+    }
+
+    #[tokio::test]
+    async fn views_delete_guards_builtin_and_removes_user_view() {
+        let e = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
+        e.ensure_builtin_views().await.unwrap();
+        e.views_upsert(user_view("v-user", "Mine", "tag:x", 10))
+            .await
+            .unwrap();
+
+        // Builtin: not deletable — enforced at the API.
+        let err = e.views_delete(INBOX_VIEW_ID).await;
+        assert!(err.is_err(), "builtin delete must error: {err:?}");
+        assert!(
+            e.views_list().await.iter().any(|v| v.id == INBOX_VIEW_ID),
+            "inbox survives the delete attempt"
+        );
+
+        // User view: deletable; second delete reports false.
+        assert!(e.views_delete("v-user").await.unwrap());
+        assert!(!e.views_delete("v-user").await.unwrap());
+        assert!(
+            !e.views_list().await.iter().any(|v| v.id == "v-user"),
+            "user view removed"
+        );
+
+        // Unknown id: Ok(false), no error.
+        assert!(!e.views_delete("nope").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn views_upsert_cannot_unflag_builtin() {
+        // The delete guard would be bypassable by first upserting
+        // builtin=false — `builtin` is sticky to close that hole.
+        let e = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
+        e.ensure_builtin_views().await.unwrap();
+        let mut edited = e.views_list().await[0].clone();
+        assert_eq!(edited.id, INBOX_VIEW_ID);
+        edited.builtin = false;
+        edited.dsl = "status:todo".to_string();
+        e.views_upsert(edited).await.unwrap();
+
+        let inbox = e.views_list().await[0].clone();
+        assert!(inbox.builtin, "builtin flag is sticky across upserts");
+        assert_eq!(inbox.dsl, "status:todo", "the edit itself landed");
+        assert!(e.views_delete(INBOX_VIEW_ID).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ensure_builtin_views_is_idempotent_and_preserves_user_edits() {
+        let e = LoroEngine::new(test_device(), Arc::new(Hlc::new(test_device())));
+        e.ensure_builtin_views().await.unwrap();
+        e.ensure_builtin_views().await.unwrap();
+        let views = e.views_list().await;
+        assert_eq!(views.len(), 1, "double seed yields ONE inbox");
+        assert_eq!(views[0].id, INBOX_VIEW_ID);
+        assert_eq!(views[0].dsl, INBOX_DEFAULT_DSL);
+        assert!(views[0].builtin);
+
+        // The builtin is editable; a later reseed must NOT clobber the edit.
+        let mut edited = views[0].clone();
+        edited.dsl = "status:todo -has:deadline".to_string();
+        e.views_upsert(edited.clone()).await.unwrap();
+        e.ensure_builtin_views().await.unwrap();
+        assert_eq!(
+            e.views_list().await[0].dsl,
+            edited.dsl,
+            "reseed preserves the user's dsl edit"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_seed_converges_to_one_inbox() {
+        // Two devices both seed BEFORE ever syncing — the fixed view id
+        // means both write the same entry, and the group converges to ONE
+        // Inbox with the default fields whichever container wins.
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+        a.ensure_builtin_views().await.unwrap();
+        b.ensure_builtin_views().await.unwrap();
+
+        ship_relay(&a, &b).await;
+        ship_relay(&b, &a).await;
+        ship_relay(&a, &b).await;
+
+        let va = a.views_list().await;
+        let vb = b.views_list().await;
+        assert_eq!(va, vb, "engines converge");
+        assert_eq!(va.len(), 1, "exactly ONE inbox group-wide");
+        assert_eq!(va[0].id, INBOX_VIEW_ID);
+        assert_eq!(va[0].dsl, INBOX_DEFAULT_DSL);
+        assert!(va[0].builtin);
+    }
+
+    #[tokio::test]
+    async fn concurrent_upsert_of_different_views_both_survive() {
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+        // Shared base: A seeds, B receives it.
+        a.ensure_builtin_views().await.unwrap();
+        ship_relay(&a, &b).await;
+
+        // Concurrent: each device creates a DIFFERENT view.
+        a.views_upsert(user_view("v-from-a", "A's", "tag:a", 10))
+            .await
+            .unwrap();
+        b.views_upsert(user_view("v-from-b", "B's", "tag:b", 20))
+            .await
+            .unwrap();
+        ship_relay(&a, &b).await;
+        ship_relay(&b, &a).await;
+        ship_relay(&a, &b).await;
+
+        let va = a.views_list().await;
+        assert_eq!(va, b.views_list().await, "engines converge");
+        assert_eq!(
+            va.iter().map(|v| v.id.as_str()).collect::<Vec<_>>(),
+            vec![INBOX_VIEW_ID, "v-from-a", "v-from-b"],
+            "both concurrent creations survive (+ the seeded inbox)"
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_edit_of_same_view_dsl_is_lww_and_other_fields_survive() {
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+        a.views_upsert(user_view("v-shared", "Shared", "tag:base", 10))
+            .await
+            .unwrap();
+        ship_relay(&a, &b).await;
+
+        // Concurrent: A edits the dsl, B edits the name (different fields
+        // of the SAME view — field-level LWW keeps both).
+        let mut on_a = a.views_list().await[0].clone();
+        on_a.dsl = "tag:edited-by-a".to_string();
+        a.views_upsert(on_a).await.unwrap();
+        let mut on_b = b.views_list().await[0].clone();
+        on_b.name = "Renamed by B".to_string();
+        b.views_upsert(on_b).await.unwrap();
+        ship_relay(&a, &b).await;
+        ship_relay(&b, &a).await;
+        ship_relay(&a, &b).await;
+
+        let va = a.views_list().await;
+        assert_eq!(va, b.views_list().await, "engines converge");
+        // B's upsert re-wrote dsl with its stale base value — same-field
+        // LWW resolves deterministically to ONE of the two; the rename
+        // (the field only B touched with a NEW value) must survive.
+        assert_eq!(va[0].name, "Renamed by B");
+        assert!(
+            va[0].dsl == "tag:edited-by-a" || va[0].dsl == "tag:base",
+            "dsl is one LWW winner, not a mash: {}",
+            va[0].dsl
+        );
+    }
+
+    #[tokio::test]
+    async fn views_delete_vs_concurrent_edit_converges_deterministically() {
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+        a.views_upsert(user_view("v-doomed", "Doomed", "tag:x", 10))
+            .await
+            .unwrap();
+        ship_relay(&a, &b).await;
+
+        // Concurrent: A deletes the view, B edits its dsl.
+        assert!(a.views_delete("v-doomed").await.unwrap());
+        let mut on_b = b.views_list().await[0].clone();
+        on_b.dsl = "tag:edited".to_string();
+        b.views_upsert(on_b).await.unwrap();
+        ship_relay(&a, &b).await;
+        ship_relay(&b, &a).await;
+        ship_relay(&a, &b).await;
+
+        let va = a.views_list().await;
+        let vb = b.views_list().await;
+        assert_eq!(va, vb, "delete vs edit converges to the same state");
+        // The map-key delete outranks edits INSIDE the (removed)
+        // container: deterministic delete-wins on both replicas.
+        assert!(va.is_empty(), "deleted view stays deleted: {va:?}");
+    }
+
+    #[tokio::test]
+    async fn views_doc_rides_relay_update_path_and_deposit_streams() {
+        // Spec item 5: A creates a view → B receives it via the relay
+        // update path → B edits the dsl → A converges. Plus: the views doc
+        // id is in `tracked_note_ids` (what `deposit_snapshots` iterates).
+        let tmp_a = tempfile::tempdir().unwrap();
+        let tmp_b = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let a = LoroEngine::with_dirs(
+            dev_a,
+            Arc::new(Hlc::new(dev_a)),
+            tmp_a.path().join("loro"),
+            Some(tmp_a.path().join("notes")),
+        )
+        .await
+        .unwrap();
+        let b = LoroEngine::with_dirs(
+            dev_b,
+            Arc::new(Hlc::new(dev_b)),
+            tmp_b.path().join("loro"),
+            Some(tmp_b.path().join("notes")),
+        )
+        .await
+        .unwrap();
+
+        a.ensure_builtin_views().await.unwrap();
+        a.views_upsert(user_view("v-travel", "Travel", "tag:trip", 10))
+            .await
+            .unwrap();
+        assert!(
+            SyncEngine::tracked_note_ids(&a).await.contains(&VIEWS_DOC_ID),
+            "views doc is in the deposit walk (tracked_note_ids)"
+        );
+
+        assert!(ship_relay(&a, &b).await >= 1, "B received the views doc");
+        assert_eq!(a.views_list().await, b.views_list().await, "bootstrapped");
+
+        // B edits the dsl; A converges through the same path.
+        let mut travel = b
+            .views_list()
+            .await
+            .into_iter()
+            .find(|v| v.id == "v-travel")
+            .unwrap();
+        travel.dsl = "tag:trip status:todo".to_string();
+        b.views_upsert(travel.clone()).await.unwrap();
+        ship_relay(&b, &a).await;
+        let on_a = a
+            .views_list()
+            .await
+            .into_iter()
+            .find(|v| v.id == "v-travel")
+            .unwrap();
+        assert_eq!(on_a, travel, "A converged on B's edit");
+
+        // One bounded transitive re-broadcast (A re-emits the delta it just
+        // imported — idempotent on B), then steady state: nothing to send.
+        ship_relay(&a, &b).await;
+        assert_eq!(ship_relay(&b, &a).await, 0);
+        assert_eq!(ship_relay(&a, &b).await, 0);
+    }
+
+    #[tokio::test]
+    async fn views_doc_survives_snapshot_deposit_bootstrap_round() {
+        // The relay compaction path: `deposit_snapshots` exports
+        // `export_doc_update(id, None)` per tracked doc; a fresh device's
+        // `bootstrap_from_snapshots` imports each via `import_doc_update`.
+        // Mirror that engine-level seam for the views doc.
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        a.ensure_builtin_views().await.unwrap();
+        a.views_upsert(user_view("v-x", "X", "tag:x", 10))
+            .await
+            .unwrap();
+
+        let snapshot = a
+            .export_doc_update(VIEWS_DOC_ID, None)
+            .await
+            .expect("views doc exports a full snapshot for deposit");
+
+        // Fresh device bootstraps from the deposited snapshot.
+        let dev_c = DeviceId::from_bytes([0xc3; 16]);
+        let c = LoroEngine::new(dev_c, Arc::new(Hlc::new(dev_c)));
+        c.import_doc_update(VIEWS_DOC_ID, &snapshot).await.unwrap();
+        assert_eq!(c.views_list().await, a.views_list().await, "bootstrap");
+
+        // The targeted catch-up path (`import_authoritative_snapshot`) is
+        // idempotent on the same bytes.
+        c.import_authoritative_snapshot(VIEWS_DOC_ID, &snapshot)
+            .await
+            .unwrap();
+        assert_eq!(c.views_list().await, a.views_list().await, "idempotent");
+    }
+
+    #[tokio::test]
+    async fn views_doc_is_excluded_from_note_machinery() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dev = test_device();
+        let e = LoroEngine::with_dirs(
+            dev,
+            Arc::new(Hlc::new(dev)),
+            tmp.path().join("loro"),
+            Some(tmp.path().join("notes")),
+        )
+        .await
+        .unwrap();
+        e.ensure_builtin_views().await.unwrap();
+
+        // A real note for contrast.
+        let note = blake3_note_id("real-note");
+        e.record_local(OpPayload::NoteUpsert {
+            note_id: note,
+            display_alias: Some("real-note".into()),
+            title: "Real".into(),
+            content: "- hi <!-- bid:70707070-7070-7070-7070-707070707070 -->\n".into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+
+        // Not indexed.
+        let views_hex = hex_id(&VIEWS_DOC_ID);
+        assert!(
+            !e.index_entries().await.iter().any(|x| x.note_id == views_hex),
+            "no phantom index entry for the views doc"
+        );
+        // Not renderable / not a note for walkers.
+        assert!(LoroEngine::render_note(&e, VIEWS_DOC_ID).await.is_none());
+        assert!(LoroEngine::render_note_full(&e, VIEWS_DOC_ID)
+            .await
+            .is_none());
+        // Not materialized: notes/ holds exactly the real note.
+        let mut files = Vec::new();
+        let mut rd = tokio::fs::read_dir(tmp.path().join("notes")).await.unwrap();
+        while let Some(entry) = rd.next_entry().await.unwrap() {
+            files.push(entry.file_name().to_string_lossy().to_string());
+        }
+        assert_eq!(files, vec!["real-note.md"], "views doc never hits notes/");
+        // But its snapshot IS persisted like any doc's.
+        assert!(
+            tmp.path()
+                .join("loro")
+                .join(format!("{views_hex}.bin"))
+                .exists(),
+            "views doc snapshot persisted"
+        );
+
+        // Note-shaped ops addressed at the views doc are refused no-ops.
+        let before = e.views_list().await;
+        e.apply_payload(&OpPayload::NoteUpsert {
+            note_id: VIEWS_DOC_ID,
+            display_alias: Some("evil".into()),
+            title: "Evil".into(),
+            content: "- nope\n".into(),
+            created_at_millis: 1,
+        })
+        .await
+        .unwrap();
+        e.apply_payload(&OpPayload::NoteDelete {
+            note_id: VIEWS_DOC_ID,
+            display_alias: None,
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            e.views_list().await,
+            before,
+            "NoteUpsert/NoteDelete at the views doc are no-ops"
+        );
+        assert!(
+            !e.index_entries().await.iter().any(|x| x.note_id == views_hex),
+            "still not indexed after the refused ops"
+        );
+    }
+
+    #[tokio::test]
+    async fn views_doc_survives_reseed_from_disk() {
+        // `reseed_from_disk` replays NoteUpserts from `.md` files — it must
+        // leave the views registry untouched (it only ever UPSERTS notes).
+        let tmp = tempfile::tempdir().unwrap();
+        let dev = test_device();
+        let e = LoroEngine::with_dirs(
+            dev,
+            Arc::new(Hlc::new(dev)),
+            tmp.path().join("loro"),
+            Some(tmp.path().join("notes")),
+        )
+        .await
+        .unwrap();
+        e.ensure_builtin_views().await.unwrap();
+        e.views_upsert(user_view("v-keep", "Keep", "tag:keep", 10))
+            .await
+            .unwrap();
+        let before = e.views_list().await;
+
+        tokio::fs::write(
+            tmp.path().join("notes").join("seeded.md"),
+            "- from disk\n",
+        )
+        .await
+        .unwrap();
+        let count = e.reseed_from_disk(&tmp.path().join("notes")).await.unwrap();
+        assert_eq!(count, 1, "reseed processed the md file");
+        assert_eq!(e.views_list().await, before, "views registry untouched");
+    }
+
+    #[tokio::test]
+    async fn views_persist_across_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("loro");
+        let dev = test_device();
+        let expected;
+        {
+            let e = LoroEngine::with_dirs(dev, Arc::new(Hlc::new(dev)), snap.clone(), None)
+                .await
+                .unwrap();
+            e.ensure_builtin_views().await.unwrap();
+            e.views_upsert(user_view("v-persist", "P", "tag:p", 10))
+                .await
+                .unwrap();
+            expected = e.views_list().await;
+            assert_eq!(expected.len(), 2);
+        }
+        // Reopen from the same snapshot dir: the views doc loads like any
+        // per-doc snapshot, and the seed stays a no-op.
+        let e = LoroEngine::with_dirs(dev, Arc::new(Hlc::new(dev)), snap, None)
+            .await
+            .unwrap();
+        e.ensure_builtin_views().await.unwrap();
+        assert_eq!(e.views_list().await, expected, "registry survives restart");
     }
 }

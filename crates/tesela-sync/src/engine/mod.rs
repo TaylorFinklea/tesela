@@ -263,6 +263,78 @@ pub trait SyncEngine: Send + Sync {
     async fn index_entries(&self) -> Vec<IndexEntry> {
         Vec::new()
     }
+
+    /// All saved views from the synced views registry doc, sorted by
+    /// `(order, id)` — deterministic across devices. Default empty;
+    /// LoroEngine overrides (saved-views spec, 2026-06-10).
+    async fn views_list(&self) -> Vec<ViewRecord> {
+        Vec::new()
+    }
+
+    /// Create or update a saved view in the registry (field-level LWW —
+    /// concurrent edits of different fields both survive). A view that is
+    /// already builtin stays builtin regardless of the record's flag, so
+    /// the delete guard can't be bypassed via upsert. Default no-op;
+    /// LoroEngine overrides.
+    async fn views_upsert(&self, _record: ViewRecord) -> SyncResult<()> {
+        Ok(())
+    }
+
+    /// Delete a saved view by id. Returns `Ok(true)` when removed,
+    /// `Ok(false)` when no such view exists, and `Err` for a builtin view
+    /// (builtins are editable but never deletable — enforced HERE, at the
+    /// API). Default `Ok(false)`; LoroEngine overrides.
+    async fn views_delete(&self, _view_id: &str) -> SyncResult<bool> {
+        Ok(false)
+    }
+
+    /// Idempotently seed the built-in views (currently: Inbox). Safe to
+    /// call on every boot and on every device — the builtin's FIXED view
+    /// id makes concurrent seeds write the same entry, so the group
+    /// converges to ONE Inbox. No-op when the entry already exists
+    /// (locally seeded or received via sync), so user edits to the
+    /// builtin's dsl/display are never clobbered by a reseed. Default
+    /// no-op; LoroEngine overrides.
+    async fn ensure_builtin_views(&self) -> SyncResult<()> {
+        Ok(())
+    }
+}
+
+/// One saved view in the synced views registry doc (saved-views spec,
+/// 2026-06-10). The registry is ONE dedicated always-resident Loro doc
+/// ([`loro_engine::VIEWS_DOC_ID`]) that syncs across devices exactly like
+/// a note doc; each view is a map entry with field-level LWW.
+///
+/// The spec's nested `display{mode, groupBy?, showDone?}` shape is stored
+/// FLAT (`display_mode` / `display_group_by` / `display_show_done`) — a
+/// nested CRDT map would buy identical per-field LWW semantics at the cost
+/// of one more container per view, and flat fields cross the FFI as plain
+/// scalars.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ViewRecord {
+    /// Stable view id. User views mint a UUID; builtins use a FIXED
+    /// constant id (e.g. [`loro_engine::INBOX_VIEW_ID`]) so concurrent
+    /// seeds on two devices write the same entry and converge to one.
+    pub id: String,
+    /// Display name ("Inbox", "This week", …).
+    pub name: String,
+    /// The query DSL string the view executes
+    /// (e.g. `status:backlog,todo -has:scheduled -has:deadline`).
+    pub dsl: String,
+    /// Sort position in the view switcher. A plain LWW integer (not a
+    /// CRDT list): with 6–12 views, reorder rewrites the handful of
+    /// affected `order` values — far simpler than a movable list, and
+    /// ties break deterministically by `id`.
+    pub order: i64,
+    /// Built-in views are seeded by the engine, editable, but never
+    /// deletable. Sticky: once true, an upsert cannot flip it back.
+    pub builtin: bool,
+    /// Result rendering: "list" | "table" | "kanban".
+    pub display_mode: String,
+    /// Optional grouping key (kanban columns / table groups).
+    pub display_group_by: Option<String>,
+    /// Optional "include done items" toggle.
+    pub display_show_done: Option<bool>,
 }
 
 /// One note's entry in the Loro index doc.
