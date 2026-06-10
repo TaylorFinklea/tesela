@@ -1,11 +1,10 @@
 import { redirect } from "@sveltejs/kit";
 
-// Phase 6 default-route swap. `/` lands in Prism v4 — the redesign now
-// owns the daily-driver entry. The v4 page auto-seeds today's daily note
-// into the focused pane on first mount, so the user still arrives on
-// their journal without an extra redirect hop. Legacy `/p/<id>`,
-// `/settings/*`, `/timeline`, `/graph`, `/properties`, `/design` routes
-// keep their chrome until they're folded into v4 panes.
+// Graphite cutover (B2): `/` lands in the Graphite shell — `/g` is the
+// default chrome now. The shell's default empty page buffer renders the
+// continuous journal, so the user still arrives on their daily note
+// without an extra hop. The Prism v4 chrome stays reachable at `/v4`
+// until the parity checklist clears its deletion (B3).
 export function load() {
-  throw redirect(307, "/v4");
+  throw redirect(307, "/g");
 }

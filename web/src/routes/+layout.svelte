@@ -10,12 +10,13 @@
    *   - System Query widgets bootstrap (idempotent)
    *   - Toast surface
    *
-   * Visible chrome lives per-route: `/v4` mounts the Prism v4 shell;
-   * `/settings/*` mounts its own settings nav. Routes outside those two
-   * groups render directly without chrome — `/` redirects into `/v4`
-   * and `/p/<id>` / `/daily` / `/timeline` / `/graph` / `/properties`
-   * redirect via their `+page.ts` files, so the no-chrome surface is
-   * never reached in practice.
+   * Visible chrome lives per-route: `/g` mounts the Graphite shell (the
+   * default chrome since the B2 cutover), `/v4` keeps the Prism v4 shell
+   * until B3 deletes it, and `/settings/*` mounts its own settings nav.
+   * Routes outside those groups render directly without chrome — `/`
+   * redirects into `/g` and `/p/<id>` / `/daily` / `/timeline` / `/graph`
+   * / `/properties` redirect via their `+page.ts` files, so the no-chrome
+   * surface is never reached in practice.
    */
   import { QueryClient, QueryClientProvider } from "@tanstack/svelte-query";
   import { registerAppQueryClient } from "$lib/app-query-client.svelte";

@@ -1,8 +1,8 @@
 import { redirect } from "@sveltejs/kit";
 
-// `/graph` was the legacy fullscreen graph route. v4 owns this as
-// either the `g` fullscreen overlay or a pane kind, depending on
-// whether the user wants it persistent or transient.
+// `/graph` was the legacy fullscreen graph route. In the Graphite shell
+// the graph lives behind the fullscreen overlay (⌘G / leader). Like the
+// old /v4 stub, this lands on the shell without auto-opening the overlay.
 export function load() {
-  throw redirect(307, "/v4");
+  throw redirect(307, "/g");
 }
