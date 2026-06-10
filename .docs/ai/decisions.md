@@ -4,6 +4,19 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-10 — Backups capture the AUTHORITY (Loro state + sync identity); scheduled in-server; provable via /backup/status
+
+**Context:** audit rec (l4.json "Back up the authority, not the export view") + Taylor: must be 100% certain backups happen before fully leaving Logseq. Pre-change, backups held only the materialized export view (`notes/` etc.) — a restore had zero CRDT history + no device/group identity → reseed → disjoint-lineage twin hazard.
+
+1. **Capture set = the authority.** `.tesela/loro/**` (skipping in-flight `*.tmp.*`), `device_id.hex`, `group_id.hex`, `group_key.bin`, `relay_state.json`, `sync_peers.json` — all optional-presence. Manifest `SCHEMA_VERSION` 1→2; restore is manifest-driven so v1 backups stay restorable; old binaries refuse v2 (correct: they don't know it carries the authority).
+2. **Local backups stay plaintext** (NOT encrypted as the audit suggested): the local destination lives in `.tesela/backups/` beside the live plaintext `group_key.bin` it copies — encrypting the copy adds nothing, and forcing it would make backups fail keyless. Non-local (external/git) destinations remain always-age-encrypted, so the group key never leaves the machine in plaintext.
+3. **Scheduler lives in tesela-server** (`backup_scheduler.rs`, mirrors the notifications-scanner pattern): backup at startup (+15s settle) + every 6h, GFS prune after each. Env knobs: `TESELA_BACKUP_INTERVAL_SECS` (21600; 0=off), `TESELA_BACKUP_ON_START` (1), `TESELA_BACKUP_STARTUP_DELAY_SECS` (15), `TESELA_BACKUP_KEEP_DAILY/WEEKLY/MONTHLY` (7/4/6). Shutdown hook + scheduler share one `run_configured_backup` (same destination/encryption policy every trigger). `.backup.lock` already serializes concurrent triggers.
+4. **Provable:** `GET /backup/status` = newest on-disk manifest (path/size/validated/`includes_loro_state`/`includes_sync_identity` + per-category contents summary) + scheduler state (last run/error, `next_scheduled_at`, cadence/retention) + `auto_on_quit`. On-disk manifest is the truth source (covers manual/shutdown/pre-restart backups), scheduler state rides alongside.
+5. **Restore drill = the certainty artifact** (`tesela-server/tests/restore_drill.rs`): backup live engine → offsite-copy → `rm -rf` mosaic → restore → reopen: byte-identical encoded Loro version vector (a reseed would fail this), identical rendered+materialized content, identical device/group identity, writes continue the same lineage. Also proven end-to-end through the spawned server binary + HTTP.
+6. **Not fixed here (still open from the audit):** `POST /backups/{name}/restore` unpacks into the RUNNING mosaic while the engine holds pre-restore state (next materialize can clobber). Restore stays a stopped-engine/CLI operation until that's redesigned.
+
+---
+
 ### 2026-06-09 — Ultracode audit + product review: two-stream plan, relay topology, Reminders containment, full testing program
 
 **Context:** full-repo multi-agent audit (12 bug finders + adversarial verifier per finding; 7 arch lenses + fact-checkers; 169 agents). 91 confirmed findings (3 distinct criticals), 42 fact-checked recommendations. Report + per-claim file:line evidence: `~/.harness/reports/tesela/20260609-bugbash-arch-review/`. Execution spec: `phases/2026-06-09-audit-hardening-spec.md`. Taylor decided (structured product review):
