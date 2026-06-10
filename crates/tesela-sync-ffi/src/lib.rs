@@ -7,6 +7,7 @@
 //! FFI-clean (owned data, no borrows in public signatures, no generics
 //! in trait methods), so each expansion is a mechanical wrap.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -737,7 +738,21 @@ pub struct SyncCoordinator {
     /// Inbound cursor (highest relay-assigned `seq` we've applied + acked).
     /// `0` ≡ nothing applied yet (the relay's first seq is `1`).
     inbound_cursor: Mutex<i64>,
+    /// Per-seq apply-retry attempts for inbound envelopes whose per-note
+    /// apply failed (audit A4). In-memory only — RelayTicker rebuilds the
+    /// coordinator on errors and the budget restarting is fine; the bound
+    /// exists to unstick the cursor, not to be a durable counter.
+    apply_retries: Mutex<HashMap<i64, u32>>,
 }
+
+/// How many ticks an inbound envelope whose per-note apply failed is
+/// retried (the cursor holds just before it) before giving up: the failed
+/// note ids are surfaced via
+/// [`TickInboundRecord::needs_catchup_note_ids_hex`] for a snapshot
+/// catch-up and the cursor moves past, so one poisoned envelope can't
+/// stall every later stream forever (audit A4). Mirrors the server tick's
+/// `tesela_server::sync_relay::MAX_APPLY_RETRIES`.
+pub const MAX_APPLY_RETRIES: u32 = 5;
 
 #[uniffi::export(async_runtime = "tokio")]
 impl SyncCoordinator {
@@ -766,6 +781,7 @@ impl SyncCoordinator {
             group_id,
             outbound_cursor: Mutex::new(None),
             inbound_cursor: Mutex::new(0),
+            apply_retries: Mutex::new(HashMap::new()),
         }))
     }
 
@@ -775,14 +791,15 @@ impl SyncCoordinator {
     /// caller can show in the UI ("sent N ops, seq=…").
     ///
     /// Idempotent on no-op: if there's nothing to send, returns
-    /// `ops_sent: 0` without touching the relay.
+    /// `ops_sent: 0` / `batches_attempted: 0` without touching the relay.
     ///
-    /// Errors fall into two buckets and the caller should treat them
-    /// differently:
-    /// - Network/relay errors (timeouts, 4xx, MAC fail) → don't advance
-    ///   the cursor; the next tick will retry the same batch.
-    /// - Engine errors (db corruption, encoding) → the cursor stays put
-    ///   but Swift may need to surface them to the user as a sync halt.
+    /// Failure honesty (audit A7): a failed encode or relay PUT does NOT
+    /// fail the whole tick (the other batches still go out, and the failed
+    /// batch's cursors stay uncommitted so it re-produces next tick), but
+    /// it IS reported — `batches_failed` > 0 with `last_error` set. The
+    /// caller must treat a non-zero `batches_failed` as a sync error
+    /// (surface it, back off); `Ok` with `ops_sent: 0` alone is
+    /// indistinguishable from "nothing to send".
     pub async fn tick_outbound(
         &self,
         max_bytes: u32,
@@ -806,11 +823,17 @@ impl SyncCoordinator {
         );
         let mut ops_count = 0u32;
         let mut last_seq = None;
+        let mut attempted = 0u32;
+        let mut failed = 0u32;
+        let mut last_error: Option<String> = None;
         for (payload, committed) in batches {
+            attempted += 1;
             let ciphertext = match encode_loro_relay_payload(&payload) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("tesela-sync-ffi: encode loro payload: {e}");
+                    failed += 1;
+                    last_error = Some(format!("encode loro payload: {e}"));
                     continue;
                 }
             };
@@ -828,6 +851,8 @@ impl SyncCoordinator {
                 }
                 Err(e) => {
                     eprintln!("tesela-sync-ffi: relay put (loro): {e}");
+                    failed += 1;
+                    last_error = Some(format!("relay put: {e}"));
                 }
             }
         }
@@ -835,6 +860,9 @@ impl SyncCoordinator {
             ops_sent: ops_count,
             relay_seq: last_seq,
             new_cursor_ntp: None,
+            batches_attempted: attempted,
+            batches_failed: failed,
+            last_error,
         })
     }
 
@@ -855,13 +883,21 @@ impl SyncCoordinator {
     /// relay broadcasts to all members including the author, and
     /// re-applying our own writes would burn cycles for no effect.
     ///
-    /// Failure modes — same shape as `tick_outbound`:
+    /// Failure modes — honesty rules (audit A4, FFI half):
     /// - Network errors → cursor untouched; next tick retries the same
     ///   batch (relay's idempotent storage + engine's content-hash
     ///   dedupe make this safe).
-    /// - Per-envelope apply errors are logged + counted but do NOT
-    ///   abort the whole tick; bad envelopes from one device shouldn't
-    ///   stop us from applying good envelopes from another.
+    /// - An envelope whose per-note apply FAILED is NOT acked past: the
+    ///   cursor holds just before it (bounded retry, [`MAX_APPLY_RETRIES`]
+    ///   ticks) while later envelopes still apply (idempotent). After the
+    ///   budget, the failed note ids are surfaced via
+    ///   `needs_catchup_note_ids_hex` (snapshot catch-up is the heal) and
+    ///   the cursor moves on. Each failing envelope counts into `errors`.
+    /// - An update Loro leaves PENDING (causal gap) advances the cursor
+    ///   but its note id is surfaced via `needs_catchup_note_ids_hex` —
+    ///   the buffered bytes are in-memory only, so without a snapshot
+    ///   catch-up the note silently freezes (and loses the buffer on
+    ///   restart).
     pub async fn tick_inbound(&self) -> Result<TickInboundRecord, FfiSyncError> {
         let our_device = self.engine.inner.device();
         let since = *self.inbound_cursor.lock().await;
@@ -877,6 +913,10 @@ impl SyncCoordinator {
         let mut skipped_own = 0u32;
         let mut errors = 0u32;
         let mut max_seq = since;
+        // Earliest seq whose apply failed and is still within its retry
+        // budget — the cursor is capped just before it below.
+        let mut blocked_at: Option<i64> = None;
+        let mut needs_catchup: Vec<String> = Vec::new();
         // Rows whose outer payload failed to decode/AEAD-open were
         // skipped inside poll() (deterministic — corrupt payload or a
         // foreign key; the client logged each). Count them as errors
@@ -907,10 +947,67 @@ impl SyncCoordinator {
                 Ok(Some(updates)) => {
                     let pairs: Vec<([u8; 16], Vec<u8>)> =
                         updates.into_iter().map(|u| (u.doc, u.update_bytes)).collect();
-                    self.engine.inner.apply_relay_updates(&pairs).await;
+                    let report = self.engine.inner.apply_relay_updates(&pairs).await;
                     applied += 1;
-                    if seq > max_seq {
-                        max_seq = seq;
+                    // PENDING imports (causal gap): cursor advances, but the
+                    // caller must snapshot-catch-up these notes.
+                    for doc in &report.pending {
+                        let hex_id = hex_encode(doc);
+                        if !needs_catchup.contains(&hex_id) {
+                            needs_catchup.push(hex_id);
+                        }
+                    }
+                    if report.failed.is_empty() {
+                        self.apply_retries.lock().await.remove(&seq);
+                        if seq > max_seq {
+                            max_seq = seq;
+                        }
+                    } else {
+                        errors += 1;
+                        // Bounded retry: hold the cursor BEFORE this envelope
+                        // for up to MAX_APPLY_RETRIES ticks, then give up —
+                        // surface the failed notes for snapshot catch-up and
+                        // move on so one poisoned envelope can't stall every
+                        // later stream forever.
+                        let attempts = {
+                            let mut retries = self.apply_retries.lock().await;
+                            let a = retries.entry(seq).or_insert(0);
+                            *a += 1;
+                            *a
+                        };
+                        if attempts >= MAX_APPLY_RETRIES {
+                            eprintln!(
+                                "tesela-sync-ffi: giving up on envelope seq={seq} after \
+                                 {MAX_APPLY_RETRIES} failed apply attempts; notes need \
+                                 snapshot catch-up: {:?}",
+                                report
+                                    .failed
+                                    .iter()
+                                    .map(|(id, e)| format!("{}: {e}", hex_encode(id)))
+                                    .collect::<Vec<_>>()
+                            );
+                            for (doc, _) in &report.failed {
+                                let hex_id = hex_encode(doc);
+                                if !needs_catchup.contains(&hex_id) {
+                                    needs_catchup.push(hex_id);
+                                }
+                            }
+                            self.apply_retries.lock().await.remove(&seq);
+                            if seq > max_seq {
+                                max_seq = seq;
+                            }
+                        } else {
+                            eprintln!(
+                                "tesela-sync-ffi: apply failed for {}/{} note(s) in envelope \
+                                 seq={seq} (attempt {attempts}/{MAX_APPLY_RETRIES}); holding \
+                                 the cursor for retry",
+                                report.failed.len(),
+                                pairs.len()
+                            );
+                            if blocked_at.map_or(true, |b| seq < b) {
+                                blocked_at = Some(seq);
+                            }
+                        }
                     }
                 }
                 Ok(None) => {
@@ -928,6 +1025,13 @@ impl SyncCoordinator {
             }
         }
 
+        // Cap the cursor just before the earliest still-retrying failure so
+        // the failed envelope is re-polled next tick. Later envelopes were
+        // still applied above (idempotent re-apply next tick is harmless).
+        if let Some(b) = blocked_at {
+            max_seq = max_seq.min(b - 1);
+        }
+
         if max_seq > since {
             // Ack first, then advance our cursor. If ack fails the next
             // tick re-polls the same range — harmless thanks to engine
@@ -943,6 +1047,7 @@ impl SyncCoordinator {
             skipped_own,
             errors,
             new_cursor_seq: max_seq,
+            needs_catchup_note_ids_hex: needs_catchup,
         })
     }
 
@@ -979,18 +1084,28 @@ impl SyncCoordinator {
 /// enough to render in a one-line status string.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct TickInboundRecord {
-    /// Envelopes that were decrypted, decoded, and successfully
-    /// applied via the engine.
+    /// Envelopes that were decrypted, decoded, and run through the
+    /// engine apply (including ones whose updates landed pending).
     pub applied: u32,
     /// Envelopes the relay echoed back to us (we authored them
     /// originally). Cursor still advances over these but the apply is
     /// skipped.
     pub skipped_own: u32,
-    /// Envelopes whose apply failed. Logged but don't abort the tick.
+    /// Failures this tick: undecryptable/undecodable envelopes PLUS
+    /// envelopes with at least one failed per-note apply. Non-zero means
+    /// the tick was not fully healthy even though it returned Ok.
     pub errors: u32,
-    /// Highest relay-assigned seq seen in this batch. Same as the
-    /// updated inbound cursor on a successful tick.
+    /// Highest relay-assigned seq acked this tick. Same as the updated
+    /// inbound cursor — held BEFORE a failing envelope while its retry
+    /// budget lasts (audit A4).
     pub new_cursor_seq: i64,
+    /// Hex (32-char) note ids that need an authoritative-snapshot
+    /// catch-up: updates Loro left PENDING (causal gap) plus per-note
+    /// applies that kept failing past the retry budget. The caller
+    /// should fetch the relay snapshots (or the hub's note snapshot)
+    /// and import them for exactly these notes, or they silently
+    /// freeze (audit A4).
+    pub needs_catchup_note_ids_hex: Vec<String>,
 }
 
 /// Outcome of [`SyncCoordinator::tick_outbound`]. Designed to be small
@@ -1005,6 +1120,16 @@ pub struct TickOutboundRecord {
     /// HLC ntp64 of the new outbound cursor, or `None` when nothing
     /// was sent (or the produced batch wasn't `At`-cursor-shaped).
     pub new_cursor_ntp: Option<i64>,
+    /// Batches produced + attempted this tick. `0` ≡ nothing to send.
+    pub batches_attempted: u32,
+    /// Batches whose encode or relay PUT failed (audit A7). Their
+    /// cursors stay uncommitted, so they re-produce next tick. Non-zero
+    /// means outbound is NOT healthy even though the call returned Ok —
+    /// the caller must surface it (`ops_sent: 0` alone is
+    /// indistinguishable from "nothing to send").
+    pub batches_failed: u32,
+    /// Error message from the most recent failed batch, for the UI.
+    pub last_error: Option<String>,
 }
 
 // ============================================================================
@@ -1424,5 +1549,290 @@ mod tests {
             FfiSyncError::Other { .. } => {}
             other => panic!("wrong error variant: {other:?}"),
         }
+    }
+
+    // ─── A7 / A4 (FFI half): honest tick outcomes ────────────────────────
+
+    /// Spin an in-process relay (mirrors tesela-server's sync_relay tests).
+    async fn spawn_relay() -> (String, tempfile::TempDir, tokio::task::JoinHandle<()>) {
+        let tmp = tempfile::tempdir().expect("tmp");
+        let db = tmp.path().join("relay.sqlite");
+        let state = tesela_relay::AppState::open(&db, 4_194_304, Some("admin".into()))
+            .await
+            .expect("relay state");
+        let app = tesela_relay::router(state);
+        let listener =
+            tokio::net::TcpListener::bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+                .await
+                .expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .await;
+        });
+        (format!("http://{}/", addr), tmp, server)
+    }
+
+    /// Seal + PUT one TLR2 envelope with the given per-note update bytes via
+    /// the inner (non-FFI) RelayClient, as a peer device would.
+    async fn put_loro_envelope(
+        sender: &RelayClient,
+        from: DeviceId,
+        group: GroupId,
+        updates: &[([u8; 16], Vec<u8>)],
+    ) -> i64 {
+        let payload: Vec<LoroDocUpdate> = updates
+            .iter()
+            .map(|(doc, bytes)| LoroDocUpdate {
+                doc: *doc,
+                update_bytes: bytes.clone(),
+            })
+            .collect();
+        let ciphertext = encode_loro_relay_payload(&payload).unwrap();
+        let env = SyncEnvelope {
+            from_device: from,
+            to_group: group,
+            nonce: [0u8; 24],
+            ciphertext,
+        };
+        let (seq, _ts) = sender.put_envelope(env).await.expect("put envelope");
+        seq
+    }
+
+    #[tokio::test]
+    async fn tick_outbound_reports_put_failures() {
+        // A7: a tick whose every relay PUT fails must say so — the old
+        // record returned Ok with ops_sent=0, indistinguishable from
+        // "nothing to send", so iOS showed healthy sync while outbound
+        // was dead.
+        let dir = tempfile::tempdir().unwrap();
+        let dev = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+        let engine = open_handle(dir.path(), dev).await;
+        engine
+            .record_note_upsert_by_slug(
+                "outbound-note".into(),
+                "Outbound".into(),
+                "- pending edit\n".into(),
+                1,
+            )
+            .await
+            .unwrap();
+
+        // Closed port → every PUT fails fast (connection refused).
+        let g = generate_group_identity();
+        let relay = RelayClientHandle::new(
+            "http://127.0.0.1:9/".into(),
+            g.group_id_hex.clone(),
+            dev.into(),
+            g.group_key_hex.clone(),
+        )
+        .unwrap();
+        let coord = SyncCoordinator::new(engine, relay, g.group_id_hex.clone()).unwrap();
+
+        let rec = coord.tick_outbound(0).await.unwrap();
+        assert_eq!(rec.batches_attempted, 1, "one batch was produced + tried");
+        assert_eq!(rec.batches_failed, 1, "the failed PUT is reported");
+        assert!(
+            rec.last_error.is_some(),
+            "the PUT error message is surfaced for the UI"
+        );
+        assert_eq!(rec.ops_sent, 0);
+        assert!(rec.relay_seq.is_none());
+    }
+
+    #[tokio::test]
+    async fn tick_inbound_holds_cursor_at_failed_apply_then_reports_catchup() {
+        // A4 (FFI half): an envelope whose per-note apply FAILS must not be
+        // acked past — the cursor holds (bounded retry), later envelopes
+        // still apply, and after the retry budget the failed note ids are
+        // surfaced so Swift can run a snapshot catch-up.
+        let (url, _relay_tmp, _srv) = spawn_relay().await;
+        let g = generate_group_identity();
+        let group_id = GroupId::from_bytes(parse_hex_16(&g.group_id_hex).unwrap());
+        let group_key = GroupKey::from_bytes(parse_hex_32(&g.group_key_hex).unwrap());
+
+        // Sender B (inner client — not the surface under test).
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let sender = RelayClient::new(
+            reqwest::Url::parse(&url).unwrap(),
+            group_id,
+            dev_b,
+            group_key.clone(),
+        );
+        sender.register_or_recover().await.expect("b register");
+
+        // Author the good note on a separate handle (same device id as the
+        // sender so the envelope's from_device matches its authorship).
+        let bdir = tempfile::tempdir().unwrap();
+        let author = open_handle(bdir.path(), "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2").await;
+        author
+            .record_note_upsert_by_slug(
+                "good-note".into(),
+                "Good".into(),
+                "- hello good\n".into(),
+                1,
+            )
+            .await
+            .unwrap();
+        let note_good = stable_uuid_from_slug("good-note");
+        let good_snap = author
+            .inner
+            .export_doc_update(note_good, None)
+            .await
+            .expect("good snapshot");
+
+        let note_poison: [u8; 16] = [0x0f; 16];
+        let poison_seq = put_loro_envelope(
+            &sender,
+            dev_b,
+            group_id,
+            &[(note_poison, b"definitely not a loro update".to_vec())],
+        )
+        .await;
+        let good_seq =
+            put_loro_envelope(&sender, dev_b, group_id, &[(note_good, good_snap)]).await;
+        assert!(good_seq > poison_seq);
+
+        // Consumer A through the real FFI coordinator.
+        let adir = tempfile::tempdir().unwrap();
+        let dev_a = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+        let engine = open_handle(adir.path(), dev_a).await;
+        let relay = RelayClientHandle::new(
+            url.clone(),
+            g.group_id_hex.clone(),
+            dev_a.into(),
+            g.group_key_hex.clone(),
+        )
+        .unwrap();
+        relay.register_or_recover().await.expect("a register");
+        let coord =
+            SyncCoordinator::new(engine.clone(), relay, g.group_id_hex.clone()).unwrap();
+
+        let rec = coord.tick_inbound().await.unwrap();
+        assert!(rec.errors >= 1, "the failed apply is counted: {rec:?}");
+        assert_eq!(
+            rec.new_cursor_seq,
+            poison_seq - 1,
+            "cursor held before the failed envelope"
+        );
+        assert!(
+            rec.needs_catchup_note_ids_hex.is_empty(),
+            "still within the retry budget — not yet handed to catch-up"
+        );
+        // The good (later) envelope still applied — no stalled streams.
+        let rendered = engine
+            .inner
+            .render_note(note_good)
+            .await
+            .unwrap_or_default();
+        assert!(
+            rendered.contains("hello good"),
+            "good envelope applies despite the poisoned one: {rendered:?}"
+        );
+
+        // Deterministic failure: after the budget, give up — surface the
+        // poisoned note for the Swift-side snapshot catch-up + move on.
+        let mut last = TickInboundRecord {
+            applied: 0,
+            skipped_own: 0,
+            errors: 0,
+            new_cursor_seq: 0,
+            needs_catchup_note_ids_hex: Vec::new(),
+        };
+        for _ in 1..MAX_APPLY_RETRIES {
+            last = coord.tick_inbound().await.unwrap();
+        }
+        assert_eq!(
+            last.new_cursor_seq, good_seq,
+            "after the retry budget the cursor moves past the poisoned envelope"
+        );
+        assert!(
+            last.needs_catchup_note_ids_hex
+                .contains(&hex_encode(&note_poison)),
+            "the poisoned note is surfaced for snapshot catch-up: {last:?}"
+        );
+        assert_eq!(
+            coord.inbound_cursor_seq().await,
+            good_seq,
+            "coordinator cursor matches the record"
+        );
+    }
+
+    #[tokio::test]
+    async fn tick_inbound_reports_pending_as_needs_catchup() {
+        // A4 (FFI half): a delta Loro leaves PENDING (causal gap) advances
+        // the cursor but must surface the note id so the caller can run an
+        // authoritative-snapshot catch-up — silently counting it as applied
+        // freezes the note (and the buffer is lost on restart).
+        let (url, _relay_tmp, _srv) = spawn_relay().await;
+        let g = generate_group_identity();
+        let group_id = GroupId::from_bytes(parse_hex_16(&g.group_id_hex).unwrap());
+        let group_key = GroupKey::from_bytes(parse_hex_32(&g.group_key_hex).unwrap());
+
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let sender = RelayClient::new(
+            reqwest::Url::parse(&url).unwrap(),
+            group_id,
+            dev_b,
+            group_key.clone(),
+        );
+        sender.register_or_recover().await.expect("b register");
+
+        // Base + tail edit; ship ONLY the tail (export since the base VV).
+        let bdir = tempfile::tempdir().unwrap();
+        let author = open_handle(bdir.path(), "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2").await;
+        author
+            .record_note_upsert_by_slug(
+                "gap-note".into(),
+                "Gap".into(),
+                "- alpha <!-- bid:01010101-0101-0101-0101-010101010101 -->\n".into(),
+                1,
+            )
+            .await
+            .unwrap();
+        let note = stable_uuid_from_slug("gap-note");
+        let pre_vv = author.inner.doc_version(note).await.expect("pre vv");
+        author
+            .record_note_upsert_by_slug(
+                "gap-note".into(),
+                "Gap".into(),
+                "- alpha <!-- bid:01010101-0101-0101-0101-010101010101 -->\n- tail edit <!-- bid:02020202-0202-0202-0202-020202020202 -->\n".into(),
+                1,
+            )
+            .await
+            .unwrap();
+        let tail = author
+            .inner
+            .export_doc_update(note, Some(&pre_vv))
+            .await
+            .expect("tail delta");
+        let tail_seq = put_loro_envelope(&sender, dev_b, group_id, &[(note, tail)]).await;
+
+        let adir = tempfile::tempdir().unwrap();
+        let dev_a = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+        let engine = open_handle(adir.path(), dev_a).await;
+        let relay = RelayClientHandle::new(
+            url.clone(),
+            g.group_id_hex.clone(),
+            dev_a.into(),
+            g.group_key_hex.clone(),
+        )
+        .unwrap();
+        relay.register_or_recover().await.expect("a register");
+        let coord = SyncCoordinator::new(engine, relay, g.group_id_hex.clone()).unwrap();
+
+        let rec = coord.tick_inbound().await.unwrap();
+        assert_eq!(
+            rec.new_cursor_seq, tail_seq,
+            "a pending (not failed) envelope still advances the cursor"
+        );
+        assert!(
+            rec.needs_catchup_note_ids_hex.contains(&hex_encode(&note)),
+            "the pending note is surfaced for snapshot catch-up: {rec:?}"
+        );
+        assert_eq!(rec.errors, 0, "pending is a gap, not an error");
     }
 }

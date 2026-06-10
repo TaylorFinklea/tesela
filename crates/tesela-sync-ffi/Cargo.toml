@@ -37,6 +37,10 @@ blake3 = { workspace = true }
 # The Phase B WS-delta round-trip test opens two real LoroEngine handles
 # (open_loro takes an on-disk mosaic path), so it needs throwaway dirs.
 tempfile = { workspace = true }
+# The tick_inbound failure-handling tests drive SyncCoordinator against a
+# real in-process relay (mirrors tesela-server's sync_relay tests).
+tesela-relay = { path = "../tesela-relay" }
+axum = { workspace = true }
 
 [features]
 # Pulls in the binary scaffolding so `cargo run --bin uniffi-bindgen

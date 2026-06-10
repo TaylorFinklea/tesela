@@ -869,13 +869,21 @@ public protocol SyncCoordinatorProtocol: AnyObject, Sendable {
      * relay broadcasts to all members including the author, and
      * re-applying our own writes would burn cycles for no effect.
      *
-     * Failure modes — same shape as `tick_outbound`:
+     * Failure modes — honesty rules (audit A4, FFI half):
      * - Network errors → cursor untouched; next tick retries the same
      * batch (relay's idempotent storage + engine's content-hash
      * dedupe make this safe).
-     * - Per-envelope apply errors are logged + counted but do NOT
-     * abort the whole tick; bad envelopes from one device shouldn't
-     * stop us from applying good envelopes from another.
+     * - An envelope whose per-note apply FAILED is NOT acked past: the
+     * cursor holds just before it (bounded retry, [`MAX_APPLY_RETRIES`]
+     * ticks) while later envelopes still apply (idempotent). After the
+     * budget, the failed note ids are surfaced via
+     * `needs_catchup_note_ids_hex` (snapshot catch-up is the heal) and
+     * the cursor moves on. Each failing envelope counts into `errors`.
+     * - An update Loro leaves PENDING (causal gap) advances the cursor
+     * but its note id is surfaced via `needs_catchup_note_ids_hex` —
+     * the buffered bytes are in-memory only, so without a snapshot
+     * catch-up the note silently freezes (and loses the buffer on
+     * restart).
      */
     func tickInbound() async throws  -> TickInboundRecord
     
@@ -886,14 +894,15 @@ public protocol SyncCoordinatorProtocol: AnyObject, Sendable {
      * caller can show in the UI ("sent N ops, seq=…").
      *
      * Idempotent on no-op: if there's nothing to send, returns
-     * `ops_sent: 0` without touching the relay.
+     * `ops_sent: 0` / `batches_attempted: 0` without touching the relay.
      *
-     * Errors fall into two buckets and the caller should treat them
-     * differently:
-     * - Network/relay errors (timeouts, 4xx, MAC fail) → don't advance
-     * the cursor; the next tick will retry the same batch.
-     * - Engine errors (db corruption, encoding) → the cursor stays put
-     * but Swift may need to surface them to the user as a sync halt.
+     * Failure honesty (audit A7): a failed encode or relay PUT does NOT
+     * fail the whole tick (the other batches still go out, and the failed
+     * batch's cursors stay uncommitted so it re-produces next tick), but
+     * it IS reported — `batches_failed` > 0 with `last_error` set. The
+     * caller must treat a non-zero `batches_failed` as a sync error
+     * (surface it, back off); `Ok` with `ops_sent: 0` alone is
+     * indistinguishable from "nothing to send".
      */
     func tickOutbound(maxBytes: UInt32) async throws  -> TickOutboundRecord
     
@@ -1091,13 +1100,21 @@ open func setOutboundCursorNtp(ntp: Int64)async   {
      * relay broadcasts to all members including the author, and
      * re-applying our own writes would burn cycles for no effect.
      *
-     * Failure modes — same shape as `tick_outbound`:
+     * Failure modes — honesty rules (audit A4, FFI half):
      * - Network errors → cursor untouched; next tick retries the same
      * batch (relay's idempotent storage + engine's content-hash
      * dedupe make this safe).
-     * - Per-envelope apply errors are logged + counted but do NOT
-     * abort the whole tick; bad envelopes from one device shouldn't
-     * stop us from applying good envelopes from another.
+     * - An envelope whose per-note apply FAILED is NOT acked past: the
+     * cursor holds just before it (bounded retry, [`MAX_APPLY_RETRIES`]
+     * ticks) while later envelopes still apply (idempotent). After the
+     * budget, the failed note ids are surfaced via
+     * `needs_catchup_note_ids_hex` (snapshot catch-up is the heal) and
+     * the cursor moves on. Each failing envelope counts into `errors`.
+     * - An update Loro leaves PENDING (causal gap) advances the cursor
+     * but its note id is surfaced via `needs_catchup_note_ids_hex` —
+     * the buffered bytes are in-memory only, so without a snapshot
+     * catch-up the note silently freezes (and loses the buffer on
+     * restart).
      */
 open func tickInbound()async throws  -> TickInboundRecord  {
     return
@@ -1123,14 +1140,15 @@ open func tickInbound()async throws  -> TickInboundRecord  {
      * caller can show in the UI ("sent N ops, seq=…").
      *
      * Idempotent on no-op: if there's nothing to send, returns
-     * `ops_sent: 0` without touching the relay.
+     * `ops_sent: 0` / `batches_attempted: 0` without touching the relay.
      *
-     * Errors fall into two buckets and the caller should treat them
-     * differently:
-     * - Network/relay errors (timeouts, 4xx, MAC fail) → don't advance
-     * the cursor; the next tick will retry the same batch.
-     * - Engine errors (db corruption, encoding) → the cursor stays put
-     * but Swift may need to surface them to the user as a sync halt.
+     * Failure honesty (audit A7): a failed encode or relay PUT does NOT
+     * fail the whole tick (the other batches still go out, and the failed
+     * batch's cursors stay uncommitted so it re-produces next tick), but
+     * it IS reported — `batches_failed` > 0 with `last_error` set. The
+     * caller must treat a non-zero `batches_failed` as a sync error
+     * (surface it, back off); `Ok` with `ops_sent: 0` alone is
+     * indistinguishable from "nothing to send".
      */
 open func tickOutbound(maxBytes: UInt32)async throws  -> TickOutboundRecord  {
     return
@@ -2405,8 +2423,8 @@ public func FfiConverterTypeRelaySnapshotRecord_lower(_ value: RelaySnapshotReco
  */
 public struct TickInboundRecord: Equatable, Hashable {
     /**
-     * Envelopes that were decrypted, decoded, and successfully
-     * applied via the engine.
+     * Envelopes that were decrypted, decoded, and run through the
+     * engine apply (including ones whose updates landed pending).
      */
     public var applied: UInt32
     /**
@@ -2416,21 +2434,33 @@ public struct TickInboundRecord: Equatable, Hashable {
      */
     public var skippedOwn: UInt32
     /**
-     * Envelopes whose apply failed. Logged but don't abort the tick.
+     * Failures this tick: undecryptable/undecodable envelopes PLUS
+     * envelopes with at least one failed per-note apply. Non-zero means
+     * the tick was not fully healthy even though it returned Ok.
      */
     public var errors: UInt32
     /**
-     * Highest relay-assigned seq seen in this batch. Same as the
-     * updated inbound cursor on a successful tick.
+     * Highest relay-assigned seq acked this tick. Same as the updated
+     * inbound cursor — held BEFORE a failing envelope while its retry
+     * budget lasts (audit A4).
      */
     public var newCursorSeq: Int64
+    /**
+     * Hex (32-char) note ids that need an authoritative-snapshot
+     * catch-up: updates Loro left PENDING (causal gap) plus per-note
+     * applies that kept failing past the retry budget. The caller
+     * should fetch the relay snapshots (or the hub's note snapshot)
+     * and import them for exactly these notes, or they silently
+     * freeze (audit A4).
+     */
+    public var needsCatchupNoteIdsHex: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(
         /**
-         * Envelopes that were decrypted, decoded, and successfully
-         * applied via the engine.
+         * Envelopes that were decrypted, decoded, and run through the
+         * engine apply (including ones whose updates landed pending).
          */applied: UInt32, 
         /**
          * Envelopes the relay echoed back to us (we authored them
@@ -2438,16 +2468,28 @@ public struct TickInboundRecord: Equatable, Hashable {
          * skipped.
          */skippedOwn: UInt32, 
         /**
-         * Envelopes whose apply failed. Logged but don't abort the tick.
+         * Failures this tick: undecryptable/undecodable envelopes PLUS
+         * envelopes with at least one failed per-note apply. Non-zero means
+         * the tick was not fully healthy even though it returned Ok.
          */errors: UInt32, 
         /**
-         * Highest relay-assigned seq seen in this batch. Same as the
-         * updated inbound cursor on a successful tick.
-         */newCursorSeq: Int64) {
+         * Highest relay-assigned seq acked this tick. Same as the updated
+         * inbound cursor — held BEFORE a failing envelope while its retry
+         * budget lasts (audit A4).
+         */newCursorSeq: Int64, 
+        /**
+         * Hex (32-char) note ids that need an authoritative-snapshot
+         * catch-up: updates Loro left PENDING (causal gap) plus per-note
+         * applies that kept failing past the retry budget. The caller
+         * should fetch the relay snapshots (or the hub's note snapshot)
+         * and import them for exactly these notes, or they silently
+         * freeze (audit A4).
+         */needsCatchupNoteIdsHex: [String]) {
         self.applied = applied
         self.skippedOwn = skippedOwn
         self.errors = errors
         self.newCursorSeq = newCursorSeq
+        self.needsCatchupNoteIdsHex = needsCatchupNoteIdsHex
     }
 
     
@@ -2469,7 +2511,8 @@ public struct FfiConverterTypeTickInboundRecord: FfiConverterRustBuffer {
                 applied: FfiConverterUInt32.read(from: &buf), 
                 skippedOwn: FfiConverterUInt32.read(from: &buf), 
                 errors: FfiConverterUInt32.read(from: &buf), 
-                newCursorSeq: FfiConverterInt64.read(from: &buf)
+                newCursorSeq: FfiConverterInt64.read(from: &buf), 
+                needsCatchupNoteIdsHex: FfiConverterSequenceString.read(from: &buf)
         )
     }
 
@@ -2478,6 +2521,7 @@ public struct FfiConverterTypeTickInboundRecord: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.skippedOwn, into: &buf)
         FfiConverterUInt32.write(value.errors, into: &buf)
         FfiConverterInt64.write(value.newCursorSeq, into: &buf)
+        FfiConverterSequenceString.write(value.needsCatchupNoteIdsHex, into: &buf)
     }
 }
 
@@ -2516,6 +2560,22 @@ public struct TickOutboundRecord: Equatable, Hashable {
      * was sent (or the produced batch wasn't `At`-cursor-shaped).
      */
     public var newCursorNtp: Int64?
+    /**
+     * Batches produced + attempted this tick. `0` ≡ nothing to send.
+     */
+    public var batchesAttempted: UInt32
+    /**
+     * Batches whose encode or relay PUT failed (audit A7). Their
+     * cursors stay uncommitted, so they re-produce next tick. Non-zero
+     * means outbound is NOT healthy even though the call returned Ok —
+     * the caller must surface it (`ops_sent: 0` alone is
+     * indistinguishable from "nothing to send").
+     */
+    public var batchesFailed: UInt32
+    /**
+     * Error message from the most recent failed batch, for the UI.
+     */
+    public var lastError: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2530,10 +2590,26 @@ public struct TickOutboundRecord: Equatable, Hashable {
         /**
          * HLC ntp64 of the new outbound cursor, or `None` when nothing
          * was sent (or the produced batch wasn't `At`-cursor-shaped).
-         */newCursorNtp: Int64?) {
+         */newCursorNtp: Int64?, 
+        /**
+         * Batches produced + attempted this tick. `0` ≡ nothing to send.
+         */batchesAttempted: UInt32, 
+        /**
+         * Batches whose encode or relay PUT failed (audit A7). Their
+         * cursors stay uncommitted, so they re-produce next tick. Non-zero
+         * means outbound is NOT healthy even though the call returned Ok —
+         * the caller must surface it (`ops_sent: 0` alone is
+         * indistinguishable from "nothing to send").
+         */batchesFailed: UInt32, 
+        /**
+         * Error message from the most recent failed batch, for the UI.
+         */lastError: String?) {
         self.opsSent = opsSent
         self.relaySeq = relaySeq
         self.newCursorNtp = newCursorNtp
+        self.batchesAttempted = batchesAttempted
+        self.batchesFailed = batchesFailed
+        self.lastError = lastError
     }
 
     
@@ -2554,7 +2630,10 @@ public struct FfiConverterTypeTickOutboundRecord: FfiConverterRustBuffer {
             try TickOutboundRecord(
                 opsSent: FfiConverterUInt32.read(from: &buf), 
                 relaySeq: FfiConverterOptionInt64.read(from: &buf), 
-                newCursorNtp: FfiConverterOptionInt64.read(from: &buf)
+                newCursorNtp: FfiConverterOptionInt64.read(from: &buf), 
+                batchesAttempted: FfiConverterUInt32.read(from: &buf), 
+                batchesFailed: FfiConverterUInt32.read(from: &buf), 
+                lastError: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -2562,6 +2641,9 @@ public struct FfiConverterTypeTickOutboundRecord: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.opsSent, into: &buf)
         FfiConverterOptionInt64.write(value.relaySeq, into: &buf)
         FfiConverterOptionInt64.write(value.newCursorNtp, into: &buf)
+        FfiConverterUInt32.write(value.batchesAttempted, into: &buf)
+        FfiConverterUInt32.write(value.batchesFailed, into: &buf)
+        FfiConverterOptionString.write(value.lastError, into: &buf)
     }
 }
 
@@ -2980,10 +3062,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_set_outbound_cursor_ntp() != 22775) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_tick_inbound() != 22311) {
+    if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_tick_inbound() != 43817) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_tick_outbound() != 26776) {
+    if (uniffi_tesela_sync_ffi_checksum_method_synccoordinator_tick_outbound() != 20755) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_apply_delta_frame() != 47838) {
