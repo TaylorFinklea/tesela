@@ -81,7 +81,7 @@
     if (!widget.query) return null;
     try {
       const parsed = parseQuery(widget.query);
-      const tagFilter = parsed.filters.find((f) => f.key === "tag" && f.op === "=");
+      const tagFilter = parsed.filters.find((f) => f.key === "tag" && f.op === "Eq");
       return tagFilter ? tagFilter.value : null;
     } catch { return null; }
   });
