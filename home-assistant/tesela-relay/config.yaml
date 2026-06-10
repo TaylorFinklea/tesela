@@ -1,5 +1,5 @@
 name: Tesela Sync Relay
-version: "0.2.0"
+version: "0.2.1"
 slug: tesela_relay
 description: Zero-knowledge sync relay for Tesela notes. Stores AEAD-sealed envelopes only — never sees your data.
 url: https://github.com/TaylorFinklea/tesela
