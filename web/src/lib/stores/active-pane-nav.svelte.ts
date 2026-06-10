@@ -62,19 +62,12 @@ function programmaticGoto(url: string, opts: Parameters<typeof goto>[1]): void {
 export function gotoNote(targetNoteId: string, targetBlockId?: string | null): void {
   const u = page.url;
 
-  // v5 short-circuit: when the active route is a buffer-tree chrome (/v4
-  // or the Graphite /g shell), open the target directly in the focused
-  // buffer instead of rewriting the URL. The v5 buffer tree owns
-  // navigation; the URL is just for deep-link entry. Without this,
-  // wiki-link clicks set the URL but the chrome doesn't observe it and
-  // nothing visibly changes — worse, /p/<id> 307-redirects into the
-  // legacy /v4 chrome, ejecting the user out of /g entirely.
-  if (
-    u.pathname === "/v4" ||
-    u.pathname.startsWith("/v4/") ||
-    u.pathname === "/g" ||
-    u.pathname.startsWith("/g/")
-  ) {
+  // Buffer-tree short-circuit: when the active route is the Graphite /g
+  // shell, open the target directly in the focused buffer instead of
+  // rewriting the URL. The buffer tree owns navigation; the URL is just
+  // for deep-link entry. Without this, wiki-link clicks set the URL but
+  // the chrome doesn't observe it and nothing visibly changes.
+  if (u.pathname === "/g" || u.pathname.startsWith("/g/")) {
     // Lazy import to avoid a hard dep cycle: this module is also
     // imported by legacy v9 components that don't know about v5.
     import("$lib/buffer/state.svelte").then(({ openPageInFocused }) => {
