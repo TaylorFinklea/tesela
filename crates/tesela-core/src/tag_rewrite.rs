@@ -70,8 +70,14 @@ fn rewrite_inline_outside_fence(
 
     while i < bytes.len() {
         if bytes[i] != b'#' {
-            out.push(bytes[i] as char);
-            i += 1;
+            // Copy through to the next `#` (or end of segment) as a str
+            // slice so multi-byte UTF-8 chars survive intact. `#` is
+            // ASCII, so any byte equal to b'#' is a char boundary.
+            let run_start = i;
+            while i < bytes.len() && bytes[i] != b'#' {
+                i += 1;
+            }
+            out.push_str(&text[run_start..i]);
             continue;
         }
 
@@ -195,7 +201,7 @@ fn rewrite_wiki_outside_fence(
                 j += 1;
             }
             if !closed {
-                out.push(bytes[i] as char);
+                out.push('[');
                 i += 1;
                 continue;
             }
@@ -229,8 +235,21 @@ fn rewrite_wiki_outside_fence(
             i = j + 2;
             continue;
         }
-        out.push(bytes[i] as char);
+        // Copy through to the next `[` (or end of segment) as a str
+        // slice so multi-byte UTF-8 chars survive intact. `[` is ASCII,
+        // so the scan can only stop on a char boundary; if it stops past
+        // the second-to-last byte, fall through to the tail copy below.
+        let run_start = i;
         i += 1;
+        while i < bytes.len() && bytes[i] != b'[' {
+            i += 1;
+        }
+        if i + 1 < bytes.len() {
+            out.push_str(&text[run_start..i]);
+        } else {
+            out.push_str(&text[run_start..]);
+            i = bytes.len();
+        }
     }
     if i < bytes.len() {
         out.push_str(&text[i..]);
@@ -480,6 +499,60 @@ mod tests {
         );
         assert_eq!(out, "#bird and #bird again, also #bird");
         assert_eq!(n, 3);
+    }
+
+    #[test]
+    fn rewrite_inline_tag_preserves_non_ascii_text() {
+        let body = "café ☕ “naïve” — résumé #cardinal fin 🚀";
+        let (out, n) = rewrite_inline_tag(body, "cardinal", "bird");
+        assert_eq!(out, "café ☕ “naïve” — résumé #bird fin 🚀");
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn rename_double_pass_preserves_non_ascii_text() {
+        // The server's :rename-slug runs the wiki pass over the inline
+        // pass's output; non-tag text must survive both passes
+        // byte-identical.
+        let body = "héllo — “quotes” #cardinal et [[cardinal|l’oiseau]] 🦤";
+        let (after_inline, n1) = rewrite_inline_tag(body, "cardinal", "bird");
+        let (after_wiki, n2) = rewrite_wiki_link(&after_inline, "cardinal", "bird");
+        assert_eq!(after_wiki, "héllo — “quotes” #bird et [[bird|l’oiseau]] 🦤");
+        assert_eq!(n1, 1);
+        assert_eq!(n2, 1);
+    }
+
+    #[test]
+    fn delete_path_preserves_non_ascii_text() {
+        // The server's :delete-tag runs strip_inline_tag then
+        // strip_wiki_link over its output.
+        let body = "déjà vu #cardinal — voir [[cardinal|l’alias]] 😀";
+        let (after_strip, n1) = strip_inline_tag(body, "cardinal");
+        let (after_wiki, n2) = strip_wiki_link(&after_strip, "cardinal");
+        assert_eq!(after_wiki, "déjà vu — voir l’alias 😀");
+        assert_eq!(n1, 1);
+        assert_eq!(n2, 1);
+    }
+
+    #[test]
+    fn non_matching_body_passes_through_byte_identical() {
+        // The server splices the rewritten body back into the note even
+        // when the tag never matched (n_total == 0, parent-only change),
+        // so pure pass-through must be byte-identical for all four
+        // helpers.
+        let body = "naïve — “smart quotes” ☕ #other et [[autre|l’été]] 🌟";
+        let (out, n) = rewrite_inline_tag(body, "cardinal", "bird");
+        assert_eq!(n, 0);
+        assert_eq!(out.as_bytes(), body.as_bytes());
+        let (out, n) = rewrite_wiki_link(body, "cardinal", "bird");
+        assert_eq!(n, 0);
+        assert_eq!(out.as_bytes(), body.as_bytes());
+        let (out, n) = strip_inline_tag(body, "cardinal");
+        assert_eq!(n, 0);
+        assert_eq!(out.as_bytes(), body.as_bytes());
+        let (out, n) = strip_wiki_link(body, "cardinal");
+        assert_eq!(n, 0);
+        assert_eq!(out.as_bytes(), body.as_bytes());
     }
 
     #[test]
