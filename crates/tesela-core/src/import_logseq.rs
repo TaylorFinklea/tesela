@@ -1144,6 +1144,16 @@ tags:: idea, project
     }
 
     #[test]
+    fn scheduled_with_time_and_repeater_still_converts() {
+        let out = convert_content(
+            "- TODO call dentist\n  SCHEDULED: <2026-06-12 Fri 10:00 .+1w>\n  DEADLINE: <2026-06-13 Sat>\n",
+        );
+        assert!(out.contains("scheduled:: 2026-06-12 10:00"), "{out}");
+        assert!(out.contains("deadline:: 2026-06-13"), "{out}");
+        assert!(out.contains("tags:: Task"), "{out}");
+    }
+
+    #[test]
     fn extended_logseq_markers_map_to_seed_statuses() {
         // Canonical status choices: backlog/todo/doing/in-review/done/
         // canceled (status.md seed in crates/tesela-server/src/main.rs).
