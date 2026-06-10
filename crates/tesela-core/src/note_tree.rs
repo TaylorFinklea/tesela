@@ -30,10 +30,16 @@
 //! - Continuation lines (indented lines following a bullet, used for
 //!   properties like `status:: doing`) are folded into the parent
 //!   block's `text` joined by newlines.
-//! - Non-bullet body content (headings, prose paragraphs outside the
-//!   frontmatter) is preserved verbatim as `raw_segments` so the round
-//!   trip is lossless, but those segments are not given block ids and
-//!   are not part of the sync data model.
+//! - Non-bullet body content does NOT survive the round trip: a heading
+//!   or prose paragraph before the first bullet is dropped by
+//!   `parse_body_blocks`, and blank-line-separated prose after a bullet
+//!   folds into the preceding block as continuation text. The tree model
+//!   (and the Loro doc model it seeds) has no home for non-bullet
+//!   segments, so writers that re-serialize a parsed tree over an
+//!   arbitrary file must gate on a lossless round trip first — see
+//!   [`stamp_existing_notes`]'s content-preserving check (audit A9b,
+//!   2026-06-09). True preservation requires a raw-segment home in the
+//!   doc model (deferred with the structured-block-tree work).
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -519,6 +525,63 @@ fn format_bid(id: Uuid) -> String {
     id.to_string()
 }
 
+/// Remove every valid `<!-- bid:UUID -->` comment (plus the single space
+/// or tab immediately preceding it, mirroring [`extract_bid`]'s join rule)
+/// from `content`, leaving every other byte untouched — including
+/// whitespace, blank lines, and malformed bid comments.
+///
+/// This is the comparison key for the stamp gate below: two contents that
+/// are equal after this strip differ ONLY by bid comments, which is
+/// exactly the change stamping is allowed to make.
+fn strip_valid_bid_comments(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut idx = 0;
+    while idx < content.len() {
+        let Some(rel_start) = content[idx..].find(BID_PREFIX) else {
+            out.push_str(&content[idx..]);
+            break;
+        };
+        let start = idx + rel_start;
+        let after_prefix = start + BID_PREFIX.len();
+        let Some(rel_end) = content[after_prefix..].find(BID_SUFFIX) else {
+            out.push_str(&content[idx..]);
+            break;
+        };
+        let inner_end = after_prefix + rel_end;
+        let end = inner_end + BID_SUFFIX.len();
+        match Uuid::parse_str(content[after_prefix..inner_end].trim()) {
+            Ok(_) => {
+                let preceding_end = if start > idx
+                    && matches!(content.as_bytes()[start - 1], b' ' | b'\t')
+                {
+                    start - 1
+                } else {
+                    start
+                };
+                out.push_str(&content[idx..preceding_end]);
+                idx = end;
+            }
+            Err(_) => {
+                // Malformed bid: keep it verbatim (the parser leaves it in
+                // block text, so the serializer re-emits it too).
+                out.push_str(&content[idx..after_prefix]);
+                idx = after_prefix;
+            }
+        }
+    }
+    out
+}
+
+/// Whether rewriting `original` as `stamped` changes ONLY bid comments —
+/// i.e. the parse→serialize round trip preserved every other byte. False
+/// whenever the round trip would drop or reshape content: non-bullet
+/// headings/prose (deleted), blank-line-separated prose after a bullet
+/// (folded into the block), non-canonical indentation or blank lines
+/// (normalized away), a missing frontmatter separator line (inserted).
+fn stamp_is_content_preserving(original: &str, stamped: &str) -> bool {
+    strip_valid_bid_comments(original) == strip_valid_bid_comments(stamped)
+}
+
 /// Walk a mosaic's `notes/` directory and ensure every `.md` file has
 /// stable block ids stamped inline. Returns the count of files that were
 /// modified. Idempotent: a second call on the same tree is a no-op.
@@ -526,6 +589,19 @@ fn format_bid(id: Uuid) -> String {
 /// Skips files that aren't notes (any file without a `.md` extension)
 /// and silently ignores files that don't parse as a note tree (e.g.
 /// the mosaic's `.tesela/` configs).
+///
+/// ## Lossy-round-trip gate (audit A9b, 2026-06-09)
+/// This runs at every server startup over files Tesela did not
+/// necessarily write (hand-authored notes, external drops, migration
+/// artifacts), and `parse_note → serialize_note` deletes non-bullet body
+/// content (see module docs). Before writing, the stamped output is
+/// compared against the original with bid comments stripped from both:
+/// if anything else would change, the file is left byte-for-byte intact
+/// and a warning names it. Such notes simply stay unstamped until the
+/// content is reshaped through a normal edit path. Preserving non-bullet
+/// segments through the round trip needs a raw-segment home in the tree
+/// AND the Loro doc model (the engine re-materializes files from the doc,
+/// so parser-only preservation would still be lost) — deferred.
 pub async fn stamp_existing_notes(notes_dir: &std::path::Path) -> std::io::Result<usize> {
     if !notes_dir.is_dir() {
         return Ok(0);
@@ -549,6 +625,17 @@ pub async fn stamp_existing_notes(notes_dir: &std::path::Path) -> std::io::Resul
             continue;
         }
         let stamped_content = serialize_note(&tree);
+        // Lossy-round-trip gate: only write when the rewrite changes
+        // nothing but bid comments. See the function docs.
+        if !stamp_is_content_preserving(&content, &stamped_content) {
+            tracing::warn!(
+                "stamp_existing_notes: skipping {} — its body would not \
+                 survive the parse→serialize round trip (non-bullet or \
+                 non-canonical content); leaving it unstamped",
+                path.display()
+            );
+            continue;
+        }
         if let Err(e) = tokio::fs::write(&path, &stamped_content).await {
             tracing::warn!(
                 "stamp_existing_notes: write {} failed: {e}",
@@ -818,6 +905,94 @@ mod tests {
 
         let after2 = tokio::fs::read_to_string(&path).await.unwrap();
         assert_eq!(after, after2);
+    }
+
+    /// Audit A9b (2026-06-09): `parse_note → serialize_note` silently
+    /// deletes non-bullet body content (a `# Heading` / prose paragraph
+    /// before the first bullet), and `stamp_existing_notes` runs that
+    /// round-trip over every notes/*.md at server startup — so a
+    /// hand-authored or externally-dropped note with a heading + unstamped
+    /// bullets lost the heading permanently on first launch. The stamper
+    /// must detect the lossy round-trip and SKIP the file (warn) instead
+    /// of rewriting it.
+    #[tokio::test]
+    async fn stamp_existing_notes_preserves_non_bullet_heading() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let notes_dir = tmp.path().join("notes");
+        tokio::fs::create_dir_all(&notes_dir).await.unwrap();
+
+        let original = "# Heading\n\nSome prose paragraph.\n\n- a bullet\n- another\n";
+        let path = notes_dir.join("external-drop.md");
+        tokio::fs::write(&path, original).await.unwrap();
+
+        let count = stamp_existing_notes(&notes_dir).await.unwrap();
+
+        let after = tokio::fs::read_to_string(&path).await.unwrap();
+        assert!(
+            after.contains("# Heading"),
+            "startup stamping must NOT destroy the heading; file now:\n{after}"
+        );
+        assert!(
+            after.contains("Some prose paragraph."),
+            "startup stamping must NOT destroy prose; file now:\n{after}"
+        );
+        assert_eq!(
+            after, original,
+            "a lossy-round-trip note must be skipped byte-for-byte"
+        );
+        assert_eq!(count, 0, "the skipped note must not count as stamped");
+    }
+
+    /// The gate must still ALLOW stamping of canonical notes (frontmatter
+    /// + blank separator + bullets, two-space indents), including
+    /// partially-stamped ones — only the bid comments may differ.
+    #[test]
+    fn stamp_gate_allows_canonical_and_partially_stamped_notes() {
+        let canonical = "---\ntitle: \"X\"\n---\n\n- One\n- Two\n  - Nested\n";
+        let tree = parse_note(canonical);
+        assert!(stamp_is_content_preserving(
+            canonical,
+            &serialize_note(&tree)
+        ));
+
+        let partly = format!(
+            "---\ntitle: \"X\"\n---\n\n- Done <!-- bid:{} -->\n- New bullet\n",
+            fixture_uuid(0x77),
+        );
+        let tree = parse_note(&partly);
+        assert!(stamp_is_content_preserving(&partly, &serialize_note(&tree)));
+
+        // And it must REFUSE when a heading would be dropped.
+        let heading = "# H\n\n- bullet\n";
+        let tree = parse_note(heading);
+        assert!(!stamp_is_content_preserving(
+            heading,
+            &serialize_note(&tree)
+        ));
+    }
+
+    /// Same gate, the other lossy shape: a blank-line-separated standalone
+    /// paragraph AFTER a bullet folds into the preceding block as
+    /// continuation text (structure mangled, blank line dropped). The
+    /// stamper must skip this file too.
+    #[tokio::test]
+    async fn stamp_existing_notes_skips_prose_after_bullet() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let notes_dir = tmp.path().join("notes");
+        tokio::fs::create_dir_all(&notes_dir).await.unwrap();
+
+        let original = "- a bullet\n\nstandalone paragraph\n";
+        let path = notes_dir.join("folded.md");
+        tokio::fs::write(&path, original).await.unwrap();
+
+        let count = stamp_existing_notes(&notes_dir).await.unwrap();
+
+        let after = tokio::fs::read_to_string(&path).await.unwrap();
+        assert_eq!(
+            after, original,
+            "a note whose round-trip folds prose into a bullet must be skipped"
+        );
+        assert_eq!(count, 0);
     }
 
     #[tokio::test]
