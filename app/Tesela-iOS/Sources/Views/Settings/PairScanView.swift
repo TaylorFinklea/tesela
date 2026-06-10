@@ -256,9 +256,9 @@ struct PairScanView: View {
         // desktop embed): the phone can't reach the inviter's HTTP server, so
         // pair via the RELAY instead of pointing the thin HTTP client at an
         // unreachable loopback. Cache the code for the relay tick + switch to
-        // Mock mode so `hubMode` goes off and the relay tick syncs with this
-        // code's relay URL; the data layer's local-first read surfaces the
-        // synced notes (no Mac reachability needed).
+        // `.relay` mode so `hubMode` stays off and the relay tick syncs with
+        // this code's relay URL; the data layer's local-first read surfaces
+        // the synced notes (no Mac reachability needed).
         if RelayTicker.isRelayOnlyPairing(code) {
             if let raw = pendingPayload { RelayTicker.cachePairingCode(raw) }
             // Local-first RELAY mode (not Mock — Mock is the fake snapshot): the

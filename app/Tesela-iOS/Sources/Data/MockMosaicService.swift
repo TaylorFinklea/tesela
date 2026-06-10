@@ -348,9 +348,25 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // offset (the authoritative UTF-16 position from the UITextView).
         // Open the local-write suppression window so the echo of our own
         // delta can't revert the splice (mirrors `scheduleWriteback`).
-        guard case .http = currentBackend, !serverDailyId.isEmpty else { return }
+        // `.relay` writes through the same engine seam (audit A6) — the
+        // splice is purely local; the RelayTicker drains it via the tick.
+        // Only `.mock` (the fake snapshot) drops the write.
+        let dailySlug: String
+        switch currentBackend {
+        case .mock:
+            return
+        case .http:
+            guard !serverDailyId.isEmpty else { return }
+            dailySlug = serverDailyId
+        case .relay:
+            // `applyLocalRefreshFallback` sets `serverDailyId` once today's
+            // file exists locally; before the first materialization (fresh
+            // pair) fall back to the date-derived daily slug, which is
+            // identical on every device.
+            dailySlug = serverDailyId.isEmpty ? dailyId(daysAgo: 0) : serverDailyId
+        }
         beginLocalWriteSuppression()
-        onLocalSplice?(serverDailyId, id, clampedOffset, clampedDelete, insert)
+        onLocalSplice?(dailySlug, id, clampedOffset, clampedDelete, insert)
     }
 
     /// The engine-exact stored text for a block: the materialized line's
@@ -984,7 +1000,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// don't stomp tags / title / status.
     func pushPage(id: String, blocks: [Block]) async {
         loadedPageBlocks[id] = blocks
-        guard case .http(let baseURL) = currentBackend else { return }
+        // `.http` AND `.relay` both write through the engine seam below —
+        // there is no HTTP tail left here (the PUT was removed in Phase
+        // 2.1), so the only mode that must NOT write is `.mock` (audit A6:
+        // this gate used to be `.http`-only, silently dropping every
+        // `.relay` edit).
+        guard currentBackend != .mock else { return }
         beginLocalWriteSuppression()
         let body = renderBody(from: blocks)
         let frontmatter = loadedPageFrontmatter[id] ?? "---\ntitle: \(id)\n---"
@@ -1049,6 +1070,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
             let hydrated = applyLocalRefreshFallback()
             if hydrated {
                 todayLoadedAt = localNoteMTime(id: dailyId(daysAgo: 0)) ?? Date()
+            }
+            // The daily slug is purely date-derived in relay mode (no server
+            // to mint an id), so set it even when today's file doesn't exist
+            // yet — the daily write gates (`scheduleWriteback`/splice) need
+            // it non-empty for the FIRST edit on a fresh pair (audit A6).
+            if serverDailyId.isEmpty {
+                serverDailyId = dailyId(daysAgo: 0)
             }
             // Always .ready — there's no server to wait on. Empty until the
             // relay delivers the first ops, then onAppliedChanges re-refreshes.
@@ -1224,13 +1252,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     func attach(backend: Backend) {
         currentBackend = backend
-        if case .http = backend {
-            // HTTP mode must never render the built-in `MockSeed`.
-            // Clearing here means a slow or failing connect shows an
-            // honest empty state instead of fake "old mosaic" data: a
-            // successful `refresh` repopulates from the server, and a
-            // failed one leaves the empty snapshot in place rather than
-            // resetting to the seed.
+        if backend != .mock {
+            // HTTP and relay modes must never render the built-in
+            // `MockSeed`. Clearing here means a slow or failing connect
+            // (or, in relay mode, a fresh pair before the first relay
+            // delivery) shows an honest empty state instead of fake "old
+            // mosaic" data: a successful `refresh` repopulates from the
+            // server / local sandbox, and a failed one leaves the empty
+            // snapshot in place rather than resetting to the seed.
+            // (Audit A6: `.relay` previously kept the seed, presenting
+            // fake notes as a healthy real backend.)
             clearToEmpty()
         }
     }
@@ -1332,7 +1363,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// post-local-write window is deferred (`pendingRemoteRefresh`) and
     /// flushed when the guard clears, never refreshing over a live edit.
     func applyRemoteChange() async {
-        guard case .http = currentBackend else { return }
+        // `.relay` MUST pass: the relay tick's `onAppliedChanges` is the
+        // ONLY automatic refresh seam in that mode (no WS, no reconnect
+        // loop), and `refresh(from: .relay)` is a pure local read — the
+        // edit/suppression guards below apply unchanged (audit A6: the
+        // `.http`-only gate left `.relay` permanently stale in-session).
+        guard currentBackend != .mock else { return }
         if isEditingBlock {
             pendingRemoteRefresh = true
             // C1-inbound: live-apply a remote splice into the OPEN editor so a
@@ -1551,12 +1587,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
 
     private func scheduleWriteback() {
-        guard case .http(let baseURL) = currentBackend, !serverDailyId.isEmpty else {
+        // `.http` and `.relay` both flush through the engine seam in
+        // `pushTodayBlocks` (the HTTP PUT was removed in Phase 2.1; the
+        // old `baseURL` capture was vestigial). Only `.mock` drops the
+        // write (audit A6: the `.http`-only gate silently discarded every
+        // `.relay` daily edit — capture, toggle, delete, indent…).
+        guard currentBackend != .mock, !serverDailyId.isEmpty else {
             return
         }
         beginLocalWriteSuppression()
         let snapshot = todayBlocks
-        Task { await pushTodayBlocks(snapshot, baseURL: baseURL) }
+        Task { await pushTodayBlocks(snapshot) }
     }
 
     // MARK: - HTTP plumbing
@@ -2226,7 +2267,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return s.trimmingCharacters(in: .whitespaces)
     }
 
-    private func pushTodayBlocks(_ blocks: [Block], baseURL: URL) async {
+    private func pushTodayBlocks(_ blocks: [Block]) async {
         guard !serverDailyId.isEmpty else { return }
         // Build the new content from cached frontmatter rather than
         // re-fetching it over HTTP — the old "fetch existing
@@ -2254,7 +2295,6 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // raced the relay path and produced duplicate blocks +
         // overwrote peer edits on Mac. Relay tick carries within
         // ~2 s; APNs (Phase 4) will drop that further.
-        _ = baseURL // kept in signature for symmetry with pushPage; unused now
         onLocalWrite?(serverDailyId, titleGuess, content, Int64(Date().timeIntervalSince1970 * 1000))
     }
 

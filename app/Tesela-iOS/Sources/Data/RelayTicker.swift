@@ -762,15 +762,42 @@ final class RelayTicker: ObservableObject {
                 UserDefaults.standard.set(codeStr, forKey: Self.pairingCodeKey)
             }
         } catch {
-            // If the cached code is stale (group rotated, auth_key
-            // mismatch, etc.), nuke it and let the next tick refetch
-            // from Mac. Don't recurse here — surface the error and
-            // wait for the next tick so we don't infinitely retry on
-            // a Mac that's actually unreachable.
-            if cached != nil {
+            // Only a DEFINITIVE staleness signal invalidates the cached
+            // code (decode failure, registration intent that doesn't
+            // verify under our group key). A transient error — network
+            // drop, relay restart, timeout — must KEEP the cache: in
+            // `.relay` mode there is no Mac HTTP to refetch the code from
+            // (`fetchPairingCode` throws for non-.http backends), so
+            // deleting it on a connectivity blip permanently bricked sync
+            // until the user re-scanned the QR (audit A6). Either way,
+            // surface the error and let the next tick (with backoff)
+            // retry — don't recurse here.
+            if cached != nil, Self.isDefinitivePairingFailure(error) {
                 UserDefaults.standard.removeObject(forKey: Self.pairingCodeKey)
             }
             throw error
+        }
+    }
+
+    /// Does `error` PROVE the cached pairing code is unusable (vs a
+    /// transient connectivity failure that the same code will survive)?
+    /// - `InvalidPairingCode` — the cached blob doesn't even decode.
+    /// - A crypto intent-verify failure — the relay's stored registration
+    ///   doesn't verify under our group key (group rotated / hijacked),
+    ///   so retrying with this code can never succeed.
+    /// Everything else (reqwest send errors, relay 5xx, timeouts) keeps
+    /// the cache; the next tick retries with the same code.
+    private static func isDefinitivePairingFailure(_ error: Error) -> Bool {
+        guard let ffi = error as? FfiSyncError else { return false }
+        switch ffi {
+        case .InvalidPairingCode:
+            return true
+        case .Other(let message):
+            // `SyncError::Crypto` verify failures from
+            // `register_or_recover`/`verify_registration` — both hijack
+            // messages contain these markers (transport/net errors never do).
+            let m = message.lowercased()
+            return m.contains("hijack") || m.contains("does not verify")
         }
     }
 
