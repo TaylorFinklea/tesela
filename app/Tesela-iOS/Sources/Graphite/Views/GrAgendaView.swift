@@ -200,26 +200,30 @@ struct GrAgendaView: View {
         let isDone = (row.status == "done")
         return HStack(alignment: .top, spacing: 12) {
             // Leading affordance: a tappable checkbox for anchor tasks,
-            // else a type dot.
+            // else a type dot. A plain `.onTapGesture` (the BlockRow
+            // checkbox pattern) — a `Button` here never received taps
+            // (the row's gesture layer swallowed it), which is why every
+            // tap navigated (2026-06-10 product test).
             if isTask && row.is_anchor {
-                Button {
-                    Task { await markDone(row) }
-                } label: {
-                    ZStack {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 4)
+                        .stroke(theme.typeTask, lineWidth: 1.5)
+                        .frame(width: 18, height: 18)
+                    if isDone {
                         RoundedRectangle(cornerRadius: 4)
-                            .stroke(theme.typeTask, lineWidth: 1.5)
+                            .fill(theme.typeTask)
                             .frame(width: 18, height: 18)
-                        if isDone {
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(theme.typeTask)
-                                .frame(width: 18, height: 18)
-                            GrIcon(name: "square-check", size: 11, weight: .bold)
-                                .foregroundStyle(theme.bg)
-                        }
+                        GrIcon(name: "square-check", size: 11, weight: .bold)
+                            .foregroundStyle(theme.bg)
                     }
                 }
-                .buttonStyle(.plain)
                 .padding(.top, 1)
+                // Generous hit area around the 18pt glyph (extends past
+                // the frame; keeps the column width matching the dot rows).
+                .contentShape(Rectangle().inset(by: -10))
+                .onTapGesture {
+                    Task { await markDone(row) }
+                }
             } else {
                 GrTypeDot(kind: row.kind.rawValue, size: 8)
                     .padding(.top, 6)
