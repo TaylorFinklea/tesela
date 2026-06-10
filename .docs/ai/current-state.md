@@ -8,7 +8,7 @@
 **⚠ Mojibake risk on the REAL mosaic today:** tag rename/delete corrupts ALL non-ASCII text (`tag_rewrite.rs` byte-as-char). Avoid tag renames until A8 lands.
 
 ### Plan (two parallel streams — items detailed in the spec; pick ONE per iteration)
-- [ ] **A1** relay seq fix + conformance case + HA add-on 0.2.1. Verify: `cargo test -p tesela-relay` + conformance both impls.
+- [x] **A1** relay seq fix + conformance case + HA add-on 0.2.1 ✓ (`61506af` fix + test, `1aa4987` HA bump). TDD red→green; conformance now 20 cases, **green vs BOTH impls** (Rust + CF Worker via wrangler dev); `cargo test -p tesela-relay` + `-p tesela-sync` all green. ⚠ Live HA relay still has the black hole until: Taylor pushes → `relay-container.yml` builds `:0.2.1` green → HA refresh repo + UPDATE the add-on.
 - [ ] **A2-A3** auth_key off GET /registration; poison-envelope skip-not-wedge. Verify: conformance + `cargo test -p tesela-sync`.
 - [ ] **A4-A5** cursor-past-failure family + per-(relay,group) scoped cursors (server + FFI/iOS). Verify: `cargo test --workspace` + new harness cases.
 - [ ] **A6-A7** iOS `.relay` write gates + applyRemoteChange + pairing-code resilience + Mock-seed clear; honest tick_outbound/sendDelta errors. Verify: `xcodebuild` + new iOS unit target.
@@ -16,7 +16,7 @@
 - [ ] **A10** Reminders auto-sync default-OFF. Verify: `cargo test -p tesela-server`.
 - [ ] **A11-A13** CI green (`cargo fmt --all`) + CI gates + convergence harness + iOS unit target + FFI drift check. Verify: green GH Actions run.
 - [ ] **A14** ship: HA 0.2.1 + TestFlight build; replace the held product test on harness-deck. Verify: [?] Taylor's on-device product test.
-- [ ] **B1** the 7 /g parity bugs (artifact has file:line). Verify: web e2e + hands-on /g pass.
+- [x] **B1** all 8 /g parity bugs FIXED ✓ (`65c11a4` drills stay in /g, `1e1e505` shell key wiring — g leader/⌘K toggle/modal guards/missing chords/Ctrl-W gate, `47cfedd` colon+peek styling + live-store re-point). Browser-QA'd on a sandbox mosaic (7/8; autocomplete recency boost trace-only); adversarial code review: CLEAN, /v4 byte-identical, no vim regressions. Notes for B3: orphaned store files remain (still imported by orphaned `lib/commands.ts`); /g has no in-chrome PIN affordance (pre-existing — pins set on /v4 surface in GrRail).
 - [ ] **B2-B3** flip /g default → parity checklist → delete v4/v5 (preserve `lib/v4`+`lib/v5` behavior modules).
 - [ ] **B4** web-editor invariant fixes (inbox-triage→engine ops; BlockOpsSaver kind-blind coalesce; remote multi-run misapply; NORMAL Enter/Backspace guard; JournalView future-dailies hang). Verify: `property-readmodel.e2e.mjs` + new cases.
 
