@@ -66,6 +66,20 @@ struct CollabTextView: UIViewRepresentable {
     /// the toolbar handlers.
     let inserter: CollabTextInserter
 
+    /// The formatting accessory hosted as the text view's
+    /// `inputAccessoryView`. SwiftUI's `ToolbarItemGroup(placement:
+    /// .keyboard)` only attaches when the first responder is a
+    /// SwiftUI-managed text input — this editor's responder is a raw
+    /// `UITextView`, so the `.toolbar` route silently shows nothing
+    /// (the bug: today's collab-edited blocks had no toolbar while
+    /// yesterday's legacy `TextField` did). Hosting the same accessory
+    /// content here is the only attachment point UIKit honors.
+    var accessory: AnyView? = nil
+
+    /// Height of the hosted accessory bar (pill + its vertical padding).
+    /// `BlockRow.collabKeyboardAccessory`'s layout must add up to this.
+    static let accessoryBarHeight: CGFloat = 54
+
     func makeUIView(context: Context) -> UITextView {
         let tv = UITextView()
         tv.delegate = context.coordinator
@@ -82,6 +96,23 @@ struct CollabTextView: UIViewRepresentable {
         tv.autocorrectionType = .default
         tv.autocapitalizationType = .sentences
         tv.text = text
+        // Install the keyboard accessory as a UIKit `inputAccessoryView`
+        // (see `accessory` doc — SwiftUI's `.toolbar(.keyboard)` never
+        // attaches to a UIKit first responder). The hosting controller
+        // lives on the coordinator so `updateUIView` can refresh its
+        // rootView when the theme / configured items change.
+        if let accessory {
+            let host = UIHostingController(rootView: accessory)
+            host.view.backgroundColor = .clear
+            // Don't let the hosted view apply keyboard/safe-area
+            // avoidance — it IS the keyboard accessory.
+            host.safeAreaRegions = []
+            host.view.frame = CGRect(
+                x: 0, y: 0, width: 0, height: Self.accessoryBarHeight
+            )
+            tv.inputAccessoryView = host.view
+            context.coordinator.accessoryHost = host
+        }
         // Bind the imperative inserter to this concrete text view so
         // toolbar buttons insert at the live caret.
         inserter.bind(tv, coordinator: context.coordinator)
@@ -105,6 +136,11 @@ struct CollabTextView: UIViewRepresentable {
         // this struct on every render, but `makeCoordinator()` ran once.
         context.coordinator.parent = self
         inserter.bind(uiView, coordinator: context.coordinator)
+        // Refresh the hosted accessory so theme changes / toolbar
+        // reconfiguration (Settings) propagate into the UIKit bar.
+        if let accessory {
+            context.coordinator.accessoryHost?.rootView = accessory
+        }
 
         // Drive first-responder state from the binding (replacing the
         // old `@FocusState`). Defer to the next runloop so it doesn't
@@ -124,6 +160,10 @@ struct CollabTextView: UIViewRepresentable {
         /// Refreshed by `updateUIView` each render so callbacks fire the
         /// latest closures/bindings (the struct is rebuilt every render).
         var parent: CollabTextView
+        /// Retains the keyboard-accessory hosting controller for the
+        /// lifetime of the text view (its view is the
+        /// `inputAccessoryView`); `updateUIView` swaps its rootView.
+        var accessoryHost: UIHostingController<AnyView>?
         /// Guards against re-entrant split handling while we tear down
         /// the field for a block split.
         private var didSplit = false

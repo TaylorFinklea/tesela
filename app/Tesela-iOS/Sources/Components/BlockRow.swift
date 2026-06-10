@@ -257,10 +257,13 @@ struct BlockRow: View {
     /// clobbered. Used when the owner wires `onTextSplice` (today's
     /// daily). `editBuffer` is loaded as the ENGINE-EXACT block text
     /// (body + inline tags, see `combinedEditableText`) so splice offsets
-    /// land correctly on the engine's `text_seq`; the toolbar keeps the
-    /// SAME `.toolbar { keyboardAccessory }` wiring, with its
-    /// text-inserting buttons routed through `inserter` (the splice path)
-    /// so they don't desync.
+    /// land correctly on the engine's `text_seq`. The keyboard accessory
+    /// is passed as a hosted `inputAccessoryView` — NOT via `.toolbar
+    /// { ToolbarItemGroup(placement: .keyboard) }`, which only attaches
+    /// to SwiftUI-managed text inputs and silently shows nothing when a
+    /// raw `UITextView` is the first responder — with its text-inserting
+    /// buttons routed through `inserter` (the splice path) so they don't
+    /// desync.
     private var collabEditField: some View {
         CollabTextView(
             text: $editBuffer,
@@ -276,7 +279,8 @@ struct BlockRow: View {
             onSplitToNewBlock: { stripped in
                 onSplitToNewBlock?(stripped)
             },
-            inserter: inserter
+            inserter: inserter,
+            accessory: collabKeyboardAccessory
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
@@ -286,13 +290,27 @@ struct BlockRow: View {
             // live-apply an inbound remote splice on THIS block (C1-inbound).
             onActiveCollabInserter?(inserter)
         }
-        .toolbar {
-            if isEditing {
-                ToolbarItemGroup(placement: .keyboard) {
-                    keyboardAccessory
-                }
-            }
-        }
+    }
+
+    /// The collab editor's keyboard accessory, styled as a floating pill
+    /// to match the system bar the legacy `TextField` path gets from
+    /// `ToolbarItemGroup(placement: .keyboard)`. Hosted by
+    /// `CollabTextView` as the `UITextView`'s `inputAccessoryView`
+    /// (separate UIKit hierarchy), so theme + tint must be re-applied
+    /// explicitly — the SwiftUI environment doesn't flow across. Vertical
+    /// metrics must total `CollabTextView.accessoryBarHeight`.
+    private var collabKeyboardAccessory: AnyView {
+        AnyView(
+            keyboardAccessory
+                .padding(.horizontal, 16)
+                .frame(height: 44)
+                .glassEffect()
+                .padding(.horizontal, 12)
+                .padding(.top, 2)
+                .padding(.bottom, 8)
+                .tint(theme.accentPrimary)
+                .environment(\.theme, theme)
+        )
     }
 
     private var legacyEditField: some View {
