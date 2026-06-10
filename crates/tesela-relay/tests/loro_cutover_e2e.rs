@@ -126,7 +126,7 @@ async fn relay_pull(
                     .into_iter()
                     .map(|u| (u.doc, u.update_bytes))
                     .collect();
-                applied += engine.apply_relay_updates(&pairs).await;
+                applied += engine.apply_relay_updates(&pairs).await.applied_count();
             }
         }
         if seq > max_seq {

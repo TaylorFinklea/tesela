@@ -31,7 +31,7 @@
 
 use crate::device::DeviceId;
 use crate::engine::{
-    cursor::PeerCursor, LocalCursor, ParkedSummary, ReplayReport, SyncEngine,
+    cursor::PeerCursor, LocalCursor, ParkedSummary, RelayApplyReport, ReplayReport, SyncEngine,
 };
 use crate::error::{SyncError, SyncResult};
 use crate::hlc::Hlc;
@@ -943,20 +943,43 @@ impl LoroEngine {
 
     /// Apply a batch of broadcast per-note Loro updates (the inbound
     /// relay tick). Idempotent + commutative — duplicate / out-of-order
-    /// batches are safe. Returns the count applied.
-    pub async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> usize {
-        let mut applied = 0;
+    /// batches are safe. Returns a per-note [`RelayApplyReport`]: which
+    /// notes applied cleanly, which were left PENDING by Loro (causal gap
+    /// — the caller should snapshot-catch-up those notes), and which
+    /// failed (the caller must not silently ack past them). Every failure
+    /// is also warn-logged here, so even a caller that drops the report
+    /// leaves a trace (audit A4).
+    pub async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> RelayApplyReport {
+        let mut report = RelayApplyReport::default();
         for (note_id, bytes) in updates {
-            // Fully-qualified call: `import_doc_update` now also exists on the
-            // `SyncEngine` trait, so the unqualified `self.import_doc_update`
-            // would be ambiguous-by-convention here (and a recursion trap if
-            // this body were ever reached through `dyn SyncEngine`). Pin it to
-            // the inherent method like every other call site in this file.
-            if LoroEngine::import_doc_update(self, *note_id, bytes).await.is_ok() {
-                applied += 1;
+            // Fully-qualified call: `apply_doc_update_status` also exists on
+            // the `SyncEngine` trait, so the unqualified call would be
+            // ambiguous-by-convention here (and a recursion trap if this body
+            // were ever reached through `dyn SyncEngine`). Pin it to the
+            // inherent method like every other call site in this file. The
+            // status-aware path runs the SAME protected apply as
+            // `import_doc_update` but additionally surfaces Loro's pending
+            // status instead of discarding it.
+            match LoroEngine::apply_doc_update_status(self, *note_id, bytes).await {
+                Ok(false) => report.applied.push(*note_id),
+                Ok(true) => {
+                    tracing::warn!(
+                        "tesela-sync/loro: relay update for {} imported PENDING \
+                         (causal gap) — needs snapshot catch-up",
+                        hex_id(note_id)
+                    );
+                    report.pending.push(*note_id);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "tesela-sync/loro: relay update for {} failed to apply: {e}",
+                        hex_id(note_id)
+                    );
+                    report.failed.push((*note_id, e.to_string()));
+                }
             }
         }
-        applied
+        report
     }
 
     /// Refresh derived state for one note after its doc changed via an
@@ -3331,7 +3354,7 @@ impl SyncEngine for LoroEngine {
         LoroEngine::commit_broadcast_cursors(self, committed).await
     }
 
-    async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> usize {
+    async fn apply_relay_updates(&self, updates: &[([u8; 16], Vec<u8>)]) -> RelayApplyReport {
         LoroEngine::apply_relay_updates(self, updates).await
     }
 
@@ -6152,7 +6175,7 @@ mod tests {
             let decoded = decode_loro_relay_payload(&wire).unwrap().expect("v2 payload");
             let pairs: Vec<([u8; 16], Vec<u8>)> =
                 decoded.into_iter().map(|u| (u.doc, u.update_bytes)).collect();
-            let n = to.apply_relay_updates(&pairs).await;
+            let n = to.apply_relay_updates(&pairs).await.applied_count();
             from.commit_broadcast_cursors(&committed).await;
             n
         }

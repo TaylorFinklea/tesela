@@ -62,7 +62,7 @@ async fn partial_delta_into_empty_doc_does_not_apply() {
     // dependency, so it can't materialize. This is the bug behind
     // "iOS never updated with web edits".
     let rendered = device.render_note(note_id).await.unwrap_or_default();
-    eprintln!("applied={applied} rendered={rendered:?}");
+    eprintln!("applied={applied:?} rendered={rendered:?}");
     assert!(
         !rendered.contains("alpha EDITED"),
         "partial delta should NOT apply without the base; got: {rendered:?}"

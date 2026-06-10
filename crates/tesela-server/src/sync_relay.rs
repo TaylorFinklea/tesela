@@ -7,6 +7,7 @@
 //! module is the glue: cursor persistence, the per-tick function,
 //! and the JSON status response the web settings page reads.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -44,7 +45,27 @@ pub struct RelayState {
     /// relay compact its retained op log) periodically, not every tick.
     #[serde(default)]
     pub last_snapshot_at: Option<i64>,
+    /// Hex note ids whose inbound apply / snapshot import FAILED (or whose
+    /// snapshot bootstrap partially failed) and that need a targeted
+    /// snapshot catch-up. Retried every tick via `fetch_snapshots` →
+    /// `import_authoritative_snapshot` (idempotent); removed on success.
+    /// Persisted so a restart keeps retrying instead of forgetting the
+    /// failure (audit A4).
+    #[serde(default)]
+    pub catchup_notes: Vec<String>,
+    /// Per-seq apply-retry attempts for envelopes whose per-note apply
+    /// failed. In-memory only — a restart restarts the budget, which is
+    /// fine (the retry bound exists to unstick the cursor, not to be a
+    /// durable counter).
+    #[serde(skip)]
+    pub apply_retries: HashMap<i64, u32>,
 }
+
+/// How many ticks an envelope whose per-note apply failed is retried (the
+/// cursor holds just before it) before we give up: queue the failed notes
+/// for snapshot catch-up, log loudly, and move the cursor past so one
+/// poisoned envelope can't stall every later stream forever (audit A4).
+pub const MAX_APPLY_RETRIES: u32 = 5;
 
 impl RelayState {
     fn path(mosaic_root: &Path) -> PathBuf {
@@ -172,6 +193,11 @@ pub async fn tick(
     match handle.client.poll(state.inbound_cursor).await {
         Ok(batch) => {
             let mut max_seq = state.inbound_cursor;
+            // Earliest seq in this batch whose apply FAILED and is still
+            // within its retry budget — the cursor is capped just before it
+            // below, so the envelope is re-polled + retried next tick
+            // instead of being silently acked past (audit A4).
+            let mut blocked_at: Option<i64> = None;
             // Rows whose outer payload failed to decode/AEAD-open were
             // skipped inside poll() (deterministic failures — foreign
             // key, corrupt payload; RelayClient already logged each).
@@ -204,21 +230,85 @@ pub async fn tick(
                             .into_iter()
                             .map(|u| (u.doc, u.update_bytes))
                             .collect();
-                        let n = engine.apply_relay_updates(&pairs).await;
-                        applied_total += n as u32;
-                        if n > 0 {
-                            // Loro apply is idempotent, so the caller emitting a
-                            // WsEvent for a no-op merge is harmless; record each
-                            // doc in this applied batch (deduped) so the live-WS
-                            // fan-out can notify web + re-broadcast the delta.
-                            for (doc, _) in &pairs {
-                                if !applied_note_ids.contains(doc) {
-                                    applied_note_ids.push(*doc);
-                                }
+                        let report = engine.apply_relay_updates(&pairs).await;
+                        applied_total += report.applied_count() as u32;
+                        // Loro apply is idempotent, so the caller emitting a
+                        // WsEvent for a no-op merge is harmless; record each
+                        // cleanly-applied doc (deduped) so the live-WS
+                        // fan-out can notify web + re-broadcast the delta.
+                        for doc in &report.applied {
+                            if !applied_note_ids.contains(doc) {
+                                applied_note_ids.push(*doc);
                             }
                         }
-                        if seq > max_seq {
-                            max_seq = seq;
+                        // A PENDING import (causal gap — the base was
+                        // compacted away or never delivered) advances the
+                        // cursor but queues the note for the targeted
+                        // snapshot catch-up below: the buffered bytes live
+                        // in-memory only and the note is frozen until its
+                        // base arrives (audit A4).
+                        for doc in &report.pending {
+                            let hex_id = hex::encode(doc);
+                            if !state.catchup_notes.contains(&hex_id) {
+                                state.catchup_notes.push(hex_id);
+                            }
+                        }
+                        if report.failed.is_empty() {
+                            state.apply_retries.remove(&seq);
+                            if seq > max_seq {
+                                max_seq = seq;
+                            }
+                        } else {
+                            // Bounded retry: hold the cursor BEFORE this
+                            // envelope for up to MAX_APPLY_RETRIES ticks (a
+                            // transient engine failure heals on a retry),
+                            // then give up — queue the failed notes for
+                            // snapshot catch-up and move on, so one
+                            // poisoned note can't stall every later stream
+                            // forever.
+                            let attempts = {
+                                let a = state.apply_retries.entry(seq).or_insert(0);
+                                *a += 1;
+                                *a
+                            };
+                            if attempts >= MAX_APPLY_RETRIES {
+                                tracing::error!(
+                                    "relay: giving up on envelope seq={} from={} after {} failed apply attempts; \
+                                     queueing {} note(s) for snapshot catch-up: {:?}",
+                                    seq,
+                                    hex::encode(peer.as_bytes()),
+                                    MAX_APPLY_RETRIES,
+                                    report.failed.len(),
+                                    report
+                                        .failed
+                                        .iter()
+                                        .map(|(id, e)| format!("{}: {e}", hex::encode(id)))
+                                        .collect::<Vec<_>>()
+                                );
+                                for (doc, _) in &report.failed {
+                                    let hex_id = hex::encode(doc);
+                                    if !state.catchup_notes.contains(&hex_id) {
+                                        state.catchup_notes.push(hex_id);
+                                    }
+                                }
+                                state.apply_retries.remove(&seq);
+                                if seq > max_seq {
+                                    max_seq = seq;
+                                }
+                            } else {
+                                tracing::warn!(
+                                    "relay: apply failed for {}/{} note(s) in envelope seq={} \
+                                     (attempt {}/{}); holding the cursor for retry",
+                                    report.failed.len(),
+                                    pairs.len(),
+                                    seq,
+                                    attempts,
+                                    MAX_APPLY_RETRIES
+                                );
+                                if blocked_at.map_or(true, |b| seq < b) {
+                                    blocked_at = Some(seq);
+                                }
+                            }
                         }
                     }
                     Ok(None) => {
@@ -250,6 +340,13 @@ pub async fn tick(
                     }
                 }
             }
+            // Cap the cursor just before the earliest still-retrying
+            // failure so the failed envelope is re-polled next tick. Later
+            // envelopes were still applied above (idempotent) — they just
+            // get re-applied harmlessly until the failure resolves.
+            if let Some(b) = blocked_at {
+                max_seq = max_seq.min(b - 1);
+            }
             if max_seq > state.inbound_cursor {
                 state.inbound_cursor = max_seq;
                 if let Err(e) = handle.client.ack(max_seq).await {
@@ -263,6 +360,27 @@ pub async fn tick(
             let msg = format!("relay poll: {e}");
             tracing::warn!("{msg}");
             state.last_error = Some(msg);
+        }
+    }
+
+    // ─── Targeted snapshot catch-up ──────────────────────────────────
+    // Heal notes whose inbound apply failed or landed PENDING (and notes a
+    // partially-failed bootstrap queued): authoritatively re-import each
+    // from the relay's deposited snapshot (idempotent). Healed notes leave
+    // the queue and join the fan-out set; notes without a deposited
+    // snapshot stay queued for a later tick.
+    if !state.catchup_notes.is_empty() {
+        let healed =
+            catchup_from_snapshots(engine, &handle.client, &state.catchup_notes).await;
+        if !healed.is_empty() {
+            state.catchup_notes.retain(|h| !healed.contains(h));
+            for h in &healed {
+                if let Some(id) = parse_hex_note_id(h) {
+                    if !applied_note_ids.contains(&id) {
+                        applied_note_ids.push(id);
+                    }
+                }
+            }
         }
     }
 
@@ -329,7 +447,19 @@ pub async fn tick(
     let due = state
         .last_snapshot_at
         .map_or(true, |t| now - t >= snapshot_interval_secs());
-    if due && state.inbound_cursor > 0 {
+    if due && state.inbound_cursor > 0 && !state.catchup_notes.is_empty() {
+        // Don't deposit (→ relay GC) while notes we failed to integrate are
+        // still queued: covers_seq = our cursor, and the deposited snapshots
+        // would LACK those notes' content — the GC would destroy their ops
+        // group-wide. Conservative: the op log grows until the catch-up
+        // heals the queue (loud in the log either way).
+        tracing::warn!(
+            "relay: snapshot deposit SKIPPED — {} note(s) awaiting catch-up: {:?}",
+            state.catchup_notes.len(),
+            state.catchup_notes
+        );
+    }
+    if due && state.inbound_cursor > 0 && state.catchup_notes.is_empty() {
         match deposit_snapshots(engine, &handle.client, state.inbound_cursor).await {
             Ok(gc) => {
                 state.last_snapshot_at = Some(now);
@@ -391,6 +521,14 @@ async fn deposit_snapshots(
 /// snapshots and jump the cursor to the watermark. The subsequent `?since=`
 /// poll then collects only the un-compacted tail. Idempotent (Loro merge);
 /// a no-op when we're already caught up past the watermark.
+///
+/// The cursor jumps to the watermark ONLY when every per-note import
+/// succeeded: the ops a snapshot covers are already GC'd on the relay, so
+/// jumping past a failed import would permanently skip that note (audit
+/// A4). On partial failure the failed note ids are queued in
+/// [`RelayState::catchup_notes`] and healed by the per-tick targeted
+/// snapshot catch-up (`fetch_snapshots` is idempotent); a later bootstrap
+/// retries too, since the cursor stays below the watermark.
 pub async fn bootstrap_from_snapshots(
     engine: &dyn tesela_sync::SyncEngine,
     handle: &RelayHandle,
@@ -407,6 +545,7 @@ pub async fn bootstrap_from_snapshots(
         return; // already past the watermark — nothing compacted out from under us
     }
     let mut imported = 0u32;
+    let mut failed: Vec<String> = Vec::new();
     for (stream_id, _snapshot_seq, plaintext) in snaps {
         let Ok(note_id) = <[u8; 16]>::try_from(stream_id.as_slice()) else {
             continue; // v1 stream_id is the 16-byte note_id; skip anything else
@@ -416,19 +555,84 @@ pub async fn bootstrap_from_snapshots(
                 "relay snapshot bootstrap import {}: {e}",
                 hex::encode(note_id)
             );
+            failed.push(hex::encode(note_id));
             continue;
         }
         imported += 1;
     }
-    state.inbound_cursor = compaction_seq;
-    tracing::info!(
-        "relay snapshot bootstrap: imported {} note(s), cursor → {}",
-        imported,
-        compaction_seq
-    );
+    if failed.is_empty() {
+        state.inbound_cursor = compaction_seq;
+        tracing::info!(
+            "relay snapshot bootstrap: imported {} note(s), cursor → {}",
+            imported,
+            compaction_seq
+        );
+    } else {
+        tracing::error!(
+            "relay snapshot bootstrap: {}/{} imports FAILED — cursor held at {} \
+             (not jumped to watermark {}); failed notes queued for snapshot catch-up: {:?}",
+            failed.len(),
+            failed.len() + imported as usize,
+            state.inbound_cursor,
+            compaction_seq,
+            failed
+        );
+        for hex_id in failed {
+            if !state.catchup_notes.contains(&hex_id) {
+                state.catchup_notes.push(hex_id);
+            }
+        }
+    }
     if let Err(e) = state.save(&handle.mosaic_root).await {
         tracing::warn!("relay state save (post-bootstrap): {e}");
     }
+}
+
+/// Targeted snapshot catch-up for notes whose inbound apply failed or was
+/// left PENDING by Loro: fetch the relay's deposited snapshots and
+/// authoritatively re-import the ones matching `targets_hex` (32-char hex
+/// note ids). Returns the hex ids that healed; targets with no deposited
+/// snapshot (or whose import failed again) are left for the caller to
+/// retry later. Idempotent — `fetch_snapshots` + the authoritative import
+/// are both safe to repeat.
+pub(crate) async fn catchup_from_snapshots(
+    engine: &dyn tesela_sync::SyncEngine,
+    client: &RelayClient,
+    targets_hex: &[String],
+) -> Vec<String> {
+    let (_watermark, snaps) = match client.fetch_snapshots().await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("relay snapshot catch-up fetch: {e}");
+            return Vec::new();
+        }
+    };
+    let mut healed = Vec::new();
+    for (stream_id, _snapshot_seq, plaintext) in snaps {
+        let Ok(note_id) = <[u8; 16]>::try_from(stream_id.as_slice()) else {
+            continue;
+        };
+        let hex_id = hex::encode(note_id);
+        if !targets_hex.contains(&hex_id) {
+            continue;
+        }
+        match engine.import_authoritative_snapshot(note_id, &plaintext).await {
+            Ok(()) => {
+                tracing::info!("relay snapshot catch-up healed note {hex_id}");
+                healed.push(hex_id);
+            }
+            Err(e) => {
+                tracing::warn!("relay snapshot catch-up import {hex_id}: {e}");
+            }
+        }
+    }
+    healed
+}
+
+/// Parse a 32-char hex note id back to its 16 raw bytes.
+pub(crate) fn parse_hex_note_id(hex_id: &str) -> Option<[u8; 16]> {
+    let bytes = hex::decode(hex_id).ok()?;
+    <[u8; 16]>::try_from(bytes.as_slice()).ok()
 }
 
 /// Snapshot-deposit cadence in seconds. Env-tunable
@@ -647,6 +851,334 @@ mod tests {
             handle_c.state.read().await.inbound_cursor,
             comp_seq,
             "bootstrap jumped C's cursor to the relay watermark"
+        );
+    }
+
+    /// Seal + PUT one TLR2 relay envelope carrying the given per-note update
+    /// bytes, as a peer device would. Returns the relay-assigned seq.
+    async fn put_loro_envelope(
+        client: &RelayClient,
+        from: DeviceId,
+        group: GroupId,
+        updates: &[([u8; 16], Vec<u8>)],
+    ) -> i64 {
+        let payload: Vec<tesela_sync::LoroDocUpdate> = updates
+            .iter()
+            .map(|(doc, bytes)| tesela_sync::LoroDocUpdate {
+                doc: *doc,
+                update_bytes: bytes.clone(),
+            })
+            .collect();
+        let ciphertext = tesela_sync::encode_loro_relay_payload(&payload).unwrap();
+        let env = SyncEnvelope {
+            from_device: from,
+            to_group: group,
+            nonce: [0u8; 24],
+            ciphertext,
+        };
+        let (seq, _ts) = client.put_envelope(env).await.expect("put envelope");
+        seq
+    }
+
+    /// A4: an envelope whose per-note apply FAILS must not be acked past.
+    /// The cursor holds at the seq before the failure (bounded retry), good
+    /// envelopes beyond it still apply, and after the retry budget the
+    /// poisoned note is queued for snapshot catch-up and the cursor moves on.
+    #[tokio::test]
+    async fn tick_holds_cursor_at_failed_apply_then_gives_up_after_bound() {
+        let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+        let (group, key) = fresh_group();
+        let ident = GroupIdentity {
+            group_id: group,
+            group_key: key.clone(),
+        };
+
+        const NID_POISON: [u8; 16] = [0x0f; 16];
+        const NID_GOOD: [u8; 16] = [0x1a; 16];
+
+        // Sender B: one poisoned update (valid TLR2 wire, garbage Loro
+        // bytes → deterministic apply failure) then one good full snapshot.
+        let b_tmp = tempfile::tempdir().unwrap();
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let engine_b = engine_in(&b_tmp, dev_b).await;
+        engine_b
+            .record_local(OpPayload::NoteUpsert {
+                note_id: NID_GOOD,
+                display_alias: Some("good".into()),
+                title: "good".into(),
+                content: "- hello good\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let good_snap = engine_b.export_doc_update(NID_GOOD, None).await.unwrap();
+        let client_b = RelayClient::new(base_url.clone(), group, dev_b, key.clone());
+        client_b.register_or_recover().await.expect("b register");
+        let poison_seq = put_loro_envelope(
+            &client_b,
+            dev_b,
+            group,
+            &[(NID_POISON, b"definitely not a loro update".to_vec())],
+        )
+        .await;
+        let good_seq =
+            put_loro_envelope(&client_b, dev_b, group, &[(NID_GOOD, good_snap)]).await;
+        assert!(good_seq > poison_seq);
+
+        // Consumer A.
+        let a_tmp = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let engine_a = engine_in(&a_tmp, dev_a).await;
+        let handle_a = handle_for(
+            &base_url,
+            group,
+            dev_a,
+            key.clone(),
+            a_tmp.path().to_path_buf(),
+        );
+        bring_up(&handle_a).await.expect("relay bring-up");
+
+        tick(&engine_a, &ident, &handle_a).await.unwrap();
+
+        // The good envelope (later seq) still applied — one poisoned note
+        // doesn't stall other streams …
+        let rendered = engine_a.render_note(NID_GOOD).await.unwrap_or_default();
+        assert!(
+            rendered.contains("hello good"),
+            "good envelope applies despite the poisoned one: {rendered:?}"
+        );
+        // … but the cursor must NOT advance past the failed envelope.
+        assert_eq!(
+            handle_a.state.read().await.inbound_cursor,
+            poison_seq - 1,
+            "cursor holds before the failed apply (bounded retry)"
+        );
+
+        // Exhaust the retry budget: the failure is deterministic, so after
+        // MAX_APPLY_RETRIES ticks the note is queued for snapshot catch-up
+        // and the cursor moves past the poisoned envelope.
+        for _ in 1..MAX_APPLY_RETRIES {
+            tick(&engine_a, &ident, &handle_a).await.unwrap();
+        }
+        let state = handle_a.state.read().await;
+        // `>=` not `==`: A's own outbound re-broadcast of the applied good
+        // note lands on the relay too, and A advances over its own echo.
+        assert!(
+            state.inbound_cursor >= good_seq,
+            "after the retry budget the cursor moves past the poisoned envelope \
+             (cursor {}, poison seq {poison_seq})",
+            state.inbound_cursor
+        );
+        assert!(
+            state.catchup_notes.contains(&hex::encode(NID_POISON)),
+            "the poisoned note is queued for snapshot catch-up: {:?}",
+            state.catchup_notes
+        );
+    }
+
+    /// A4: a delta that Loro leaves PENDING (causal gap — its base was
+    /// compacted away / never delivered) must trigger a targeted snapshot
+    /// catch-up in the same tick, not silently freeze the note.
+    #[tokio::test]
+    async fn tick_pending_delta_triggers_snapshot_catchup() {
+        let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+        let (group, key) = fresh_group();
+        let ident = GroupIdentity {
+            group_id: group,
+            group_key: key.clone(),
+        };
+
+        const NID: [u8; 16] = [0x2b; 16];
+
+        // Sender B: base state, then a tail edit exported SINCE the base —
+        // the tail alone cannot integrate on a device that lacks the base.
+        let b_tmp = tempfile::tempdir().unwrap();
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let engine_b = engine_in(&b_tmp, dev_b).await;
+        engine_b
+            .record_local(OpPayload::NoteUpsert {
+                note_id: NID,
+                display_alias: Some("gap".into()),
+                title: "gap".into(),
+                content: "- alpha <!-- bid:01010101-0101-0101-0101-010101010101 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let base_snap = engine_b.export_doc_update(NID, None).await.unwrap();
+        let pre_vv = engine_b.doc_version(NID).await.unwrap();
+        engine_b
+            .record_local(OpPayload::BlockUpsert {
+                block_id: [0x77; 16],
+                note_id: NID,
+                parent_block_id: None,
+                order_key: "z".into(),
+                indent_level: 0,
+                text: "TAIL EDIT".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        let tail = engine_b
+            .export_doc_update(NID, Some(&pre_vv))
+            .await
+            .unwrap();
+
+        // The base lives ONLY as a relay snapshot (as after compaction);
+        // the live op log carries only the tail delta.
+        let client_b = RelayClient::new(base_url.clone(), group, dev_b, key.clone());
+        client_b.register_or_recover().await.expect("b register");
+        client_b
+            .put_snapshots(0, vec![(NID.to_vec(), base_snap)])
+            .await
+            .expect("deposit base snapshot");
+        let tail_seq = put_loro_envelope(&client_b, dev_b, group, &[(NID, tail)]).await;
+
+        // Consumer A: one tick must apply the tail (pending), notice the
+        // causal gap, and heal it from the relay snapshot — converging.
+        let a_tmp = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let engine_a = engine_in(&a_tmp, dev_a).await;
+        let handle_a = handle_for(
+            &base_url,
+            group,
+            dev_a,
+            key.clone(),
+            a_tmp.path().to_path_buf(),
+        );
+        bring_up(&handle_a).await.expect("relay bring-up");
+        let outcome = tick(&engine_a, &ident, &handle_a).await.unwrap();
+
+        let rendered = engine_a.render_note(NID).await.unwrap_or_default();
+        assert!(
+            rendered.contains("TAIL EDIT"),
+            "pending tail delta healed via snapshot catch-up in the same tick: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("alpha"),
+            "base content restored from the snapshot: {rendered:?}"
+        );
+        assert_eq!(
+            handle_a.state.read().await.inbound_cursor,
+            tail_seq,
+            "a pending (not failed) envelope still advances the cursor"
+        );
+        assert!(
+            handle_a.state.read().await.catchup_notes.is_empty(),
+            "healed note removed from the catch-up queue"
+        );
+        assert!(
+            outcome.applied_note_ids.contains(&NID),
+            "healed note included in the fan-out set"
+        );
+    }
+
+    /// A4: snapshot bootstrap must NOT jump the cursor to the watermark when
+    /// per-note imports failed — the failed notes are queued and healed on a
+    /// later tick (fetch_snapshots is idempotent), and a later bootstrap can
+    /// still advance the cursor once everything imports.
+    #[tokio::test]
+    async fn bootstrap_partial_failure_keeps_cursor_and_heals_via_tick() {
+        let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+        let (group, key) = fresh_group();
+        let ident = GroupIdentity {
+            group_id: group,
+            group_key: key.clone(),
+        };
+
+        const NID_OK: [u8; 16] = [0x3c; 16];
+        const NID_BAD: [u8; 16] = [0x4d; 16];
+
+        let b_tmp = tempfile::tempdir().unwrap();
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let engine_b = engine_in(&b_tmp, dev_b).await;
+        for (nid, slug) in [(NID_OK, "ok-note"), (NID_BAD, "bad-note")] {
+            engine_b
+                .record_local(OpPayload::NoteUpsert {
+                    note_id: nid,
+                    display_alias: Some(slug.into()),
+                    title: slug.into(),
+                    content: format!("- body of {slug}\n"),
+                    created_at_millis: 1,
+                })
+                .await
+                .unwrap();
+        }
+        let snap_ok = engine_b.export_doc_update(NID_OK, None).await.unwrap();
+        let snap_bad_valid = engine_b.export_doc_update(NID_BAD, None).await.unwrap();
+
+        let client_b = RelayClient::new(base_url.clone(), group, dev_b, key.clone());
+        client_b.register_or_recover().await.expect("b register");
+        // Deposit covering seq 7: one valid snapshot + one corrupt one.
+        client_b
+            .put_snapshots(
+                7,
+                vec![
+                    (NID_OK.to_vec(), snap_ok),
+                    (NID_BAD.to_vec(), b"corrupt snapshot bytes".to_vec()),
+                ],
+            )
+            .await
+            .expect("deposit snapshots");
+
+        // Fresh consumer A bootstraps: the valid note imports, the corrupt
+        // one fails — the cursor must NOT jump to the watermark.
+        let a_tmp = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let engine_a = engine_in(&a_tmp, dev_a).await;
+        let handle_a = handle_for(
+            &base_url,
+            group,
+            dev_a,
+            key.clone(),
+            a_tmp.path().to_path_buf(),
+        );
+        bring_up(&handle_a).await.expect("relay bring-up");
+        bootstrap_from_snapshots(&engine_a, &handle_a).await;
+
+        let rendered_ok = engine_a.render_note(NID_OK).await.unwrap_or_default();
+        assert!(
+            rendered_ok.contains("body of ok-note"),
+            "valid snapshot imported despite the corrupt sibling: {rendered_ok:?}"
+        );
+        {
+            let state = handle_a.state.read().await;
+            assert_eq!(
+                state.inbound_cursor, 0,
+                "cursor must NOT jump to the watermark past a failed import"
+            );
+            assert!(
+                state.catchup_notes.contains(&hex::encode(NID_BAD)),
+                "failed note queued for catch-up: {:?}",
+                state.catchup_notes
+            );
+        }
+
+        // The depositor replaces the corrupt snapshot with a valid one; the
+        // next tick's targeted catch-up heals the note.
+        client_b
+            .put_snapshots(7, vec![(NID_BAD.to_vec(), snap_bad_valid)])
+            .await
+            .expect("re-deposit valid snapshot");
+        tick(&engine_a, &ident, &handle_a).await.unwrap();
+
+        let rendered_bad = engine_a.render_note(NID_BAD).await.unwrap_or_default();
+        assert!(
+            rendered_bad.contains("body of bad-note"),
+            "failed note healed by the per-tick snapshot catch-up: {rendered_bad:?}"
+        );
+        assert!(
+            handle_a.state.read().await.catchup_notes.is_empty(),
+            "healed note removed from the catch-up queue"
+        );
+
+        // And a re-bootstrap is NOT permanently skipped: with every import
+        // now succeeding, the cursor advances to the watermark.
+        bootstrap_from_snapshots(&engine_a, &handle_a).await;
+        assert_eq!(
+            handle_a.state.read().await.inbound_cursor,
+            7,
+            "bootstrap advances the cursor once ALL imports succeed"
         );
     }
 }

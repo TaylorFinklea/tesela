@@ -97,6 +97,7 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
                         &recv_state.ws_delta_tx,
                         &bytes,
                         Some(conn_id),
+                        recv_state.relay.as_ref(),
                     )
                     .await;
                 }
@@ -126,6 +127,13 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
 /// to everyone. Shared by the WS recv path and the relay tick fan-out — it
 /// takes the `AppState` pieces individually so the relay loop (which holds
 /// clones, not the assembled `Arc<AppState>`) can call it too.
+///
+/// `relay` (when configured) is the heal path for per-note imports the
+/// engine reports FAILED or PENDING (causal gap): those notes are
+/// authoritatively re-imported from the relay's deposited snapshots, and
+/// whatever doesn't heal immediately is queued on the relay state's
+/// catch-up list so the relay tick keeps retrying (audit A4). The status-
+/// aware apply itself happens inside `apply_relay_updates`.
 #[allow(clippy::too_many_arguments)]
 pub async fn apply_inbound_delta(
     engine: &dyn tesela_sync::SyncEngine,
@@ -135,6 +143,7 @@ pub async fn apply_inbound_delta(
     ws_delta_tx: &broadcast::Sender<WsDelta>,
     bytes: &[u8],
     origin: Option<ConnId>,
+    relay: Option<&crate::sync_relay::RelayHandle>,
 ) {
     let updates = match tesela_sync::decode_loro_relay_payload(bytes) {
         Ok(Some(u)) => u,
@@ -151,13 +160,53 @@ pub async fn apply_inbound_delta(
         .into_iter()
         .map(|u| (u.doc, u.update_bytes))
         .collect();
-    let applied = engine.apply_relay_updates(&pairs).await;
-    if applied == 0 {
+    let report = engine.apply_relay_updates(&pairs).await;
+
+    // FAILED or PENDING imports need a snapshot catch-up: a WS frame has no
+    // cursor to hold, and the sender's broadcast cursor already advanced, so
+    // the relay's deposited snapshot is the only convergence path.
+    let mut need_catchup: Vec<String> = report.pending.iter().map(hex::encode).collect();
+    for (doc, _) in &report.failed {
+        let hex_id = hex::encode(doc);
+        if !need_catchup.contains(&hex_id) {
+            need_catchup.push(hex_id);
+        }
+    }
+    let mut healed: Vec<[u8; 16]> = Vec::new();
+    if !need_catchup.is_empty() {
+        if let Some(relay) = relay {
+            let healed_hex =
+                crate::sync_relay::catchup_from_snapshots(engine, &relay.client, &need_catchup)
+                    .await;
+            healed = healed_hex
+                .iter()
+                .filter_map(|h| crate::sync_relay::parse_hex_note_id(h))
+                .collect();
+            // Whatever didn't heal now joins the relay tick's retry queue.
+            let mut state = relay.state.write().await;
+            for hex_id in need_catchup {
+                if healed_hex.contains(&hex_id) || state.catchup_notes.contains(&hex_id) {
+                    continue;
+                }
+                state.catchup_notes.push(hex_id);
+            }
+        } else {
+            tracing::warn!(
+                "ws: {} inbound note update(s) need a snapshot catch-up but no relay \
+                 is configured — notes stay stale until re-based: {:?}",
+                need_catchup.len(),
+                need_catchup
+            );
+        }
+    }
+
+    if report.applied_count() == 0 && healed.is_empty() {
         return;
     }
-    // Notify web (finding #4) for each distinct touched note.
+    // Notify web (finding #4) for each distinct note that visibly changed
+    // (cleanly applied, or healed by the snapshot catch-up).
     let mut seen: Vec<[u8; 16]> = Vec::new();
-    for (doc, _) in &pairs {
+    for doc in report.applied.iter().chain(healed.iter()) {
         if seen.contains(doc) {
             continue;
         }
@@ -327,7 +376,7 @@ mod tests {
 
         let origin: ConnId = 7;
         apply_inbound_delta(
-            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame, Some(origin),
+            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame, Some(origin), None,
         )
         .await;
 
@@ -415,11 +464,11 @@ mod tests {
         let conn_a: ConnId = 1;
         let conn_c: ConnId = 3;
         apply_inbound_delta(
-            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame_a, Some(conn_a),
+            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame_a, Some(conn_a), None,
         )
         .await;
         apply_inbound_delta(
-            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame_c, Some(conn_c),
+            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame_c, Some(conn_c), None,
         )
         .await;
 
@@ -460,6 +509,7 @@ mod tests {
             &delta_tx,
             b"not a tlr2 frame",
             Some(9),
+            None,
         )
         .await;
 

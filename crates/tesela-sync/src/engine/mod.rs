@@ -33,6 +33,33 @@ pub struct ParkedSummary {
     pub oldest_parked_at_millis: Option<i64>,
 }
 
+/// Per-note outcome of one inbound relay batch apply
+/// ([`SyncEngine::apply_relay_updates`]). Replaces the old bare `usize`
+/// count, which silently swallowed per-note failures while the callers
+/// advanced/acked the relay cursor past them (audit A4, 2026-06-09).
+#[derive(Debug, Clone, Default)]
+pub struct RelayApplyReport {
+    /// Notes whose update imported cleanly (fully integrated).
+    pub applied: Vec<[u8; 16]>,
+    /// Notes whose update imported but was left PENDING by Loro — a causal
+    /// gap (missing dependencies). The bytes are buffered in-memory only,
+    /// so the caller should trigger an authoritative-snapshot catch-up for
+    /// these notes or the data is lost on restart.
+    pub pending: Vec<[u8; 16]>,
+    /// Notes whose import errored, with the error message. A caller MUST
+    /// NOT ack/advance its relay cursor past the carrying envelope without
+    /// a retry/catch-up policy, or the update is skipped forever.
+    pub failed: Vec<([u8; 16], String)>,
+}
+
+impl RelayApplyReport {
+    /// Count of updates that imported (cleanly OR pending) — the same
+    /// number the old `usize` return reported, for observability parity.
+    pub fn applied_count(&self) -> usize {
+        self.applied.len() + self.pending.len()
+    }
+}
+
 /// The core sync engine trait. Post-flag-day (2026-05-29) the only
 /// implementation is [`LoroEngine`]; the trait remains as the boundary
 /// the server's `Arc<dyn SyncEngine>` and the FFI hold. The legacy
@@ -109,9 +136,13 @@ pub trait SyncEngine: Send + Sync {
     async fn commit_broadcast_cursors(&self, _committed: &[([u8; 16], Vec<u8>)]) {}
 
     /// Apply a batch of inbound per-note Loro updates from the relay
-    /// (idempotent + commutative). Returns the count applied. Default 0.
-    async fn apply_relay_updates(&self, _updates: &[([u8; 16], Vec<u8>)]) -> usize {
-        0
+    /// (idempotent + commutative). Returns a per-note [`RelayApplyReport`]
+    /// — which notes applied cleanly, which were left PENDING by Loro
+    /// (causal gap), and which failed — so callers can hold the cursor /
+    /// trigger a snapshot catch-up instead of silently skipping failures.
+    /// Default: empty report.
+    async fn apply_relay_updates(&self, _updates: &[([u8; 16], Vec<u8>)]) -> RelayApplyReport {
+        RelayApplyReport::default()
     }
 
     /// Encoded version vector of a note's doc — a peer sends this so we

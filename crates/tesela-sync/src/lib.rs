@@ -58,7 +58,8 @@ pub use crypto::pairing::{decode as decode_pairing_code, encode as encode_pairin
 pub use device::{DeviceId, DeviceMetadata};
 pub use discovery::{DiscoveredPeer, LanDiscovery, TESELA_SERVICE_TYPE};
 pub use engine::{
-    AppliedChanges, LocalCursor, ParkedSummary, PeerCursor, ReplayReport, SyncEngine,
+    AppliedChanges, LocalCursor, ParkedSummary, PeerCursor, RelayApplyReport, ReplayReport,
+    SyncEngine,
 };
 pub use engine::loro_engine::LoroEngine;
 pub use oplog::parked::ParkReason;
