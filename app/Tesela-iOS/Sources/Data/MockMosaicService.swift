@@ -1991,6 +1991,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
     private func dailyId(daysAgo: Int) -> String {
         let cal = Calendar.current
         guard let date = cal.date(byAdding: .day, value: -daysAgo, to: todayDate) else { return "" }
+        return Self.dailySlug(for: date)
+    }
+
+    /// Pure date→slug derivation for daily notes (`yyyy-MM-dd`). This is
+    /// the convention every device derives independently — the `.relay`
+    /// splice path falls back to it before the first local materialization
+    /// sets `serverDailyId` — so the format is load-bearing for sync:
+    /// devices converge on the same daily note only because this string
+    /// matches across platforms.
+    static func dailySlug(for date: Date) -> String {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
         return f.string(from: date)

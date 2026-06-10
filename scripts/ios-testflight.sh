@@ -42,10 +42,10 @@ if [[ "$NO_UPLOAD" == 0 && ! -f "$ASC_KEY_PATH" ]]; then
   exit 1
 fi
 
-echo "==> 1/4  Rust FFI static lib (aarch64-apple-ios, release)"
+echo "==> 1/5  Rust FFI static lib (aarch64-apple-ios, release)"
 cargo build --release -p tesela-sync-ffi --target aarch64-apple-ios
 
-echo "==> 2/4  resolve SwiftPM packages (+ heal the SwiftWhisper submodule if it flakes)"
+echo "==> 2/5  resolve SwiftPM packages (+ heal the SwiftWhisper submodule if it flakes)"
 # SwiftWhisper pulls a `whisper.cpp` git submodule that SwiftPM sometimes fails
 # to clone (a CWD/tmp-pack race). If resolution fails, init the submodule by
 # hand in the checkout and retry — then SwiftPM accepts it.
@@ -55,7 +55,27 @@ if ! xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme "$SCHEME
   xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme "$SCHEME" >/dev/null 2>&1 || true
 fi
 
-echo "==> 3/4  stamp a unique build number + archive (Release, generic iOS)"
+echo "==> 3/5  unit tests (TeselaTests, iOS Simulator) — a red sync-logic test aborts the release"
+# The test host builds for the simulator, so it links the SIM static lib —
+# build it alongside the device one (step 1) so both stay fresh.
+cargo build --release -p tesela-sync-ffi --target aarch64-apple-ios-sim
+# Regenerate the project so test files added since the last `xcodegen` are
+# in the test target (project.yml is the source of truth; the .xcodeproj
+# is gitignored).
+if command -v xcodegen >/dev/null 2>&1; then
+  (cd "$IOS" && xcodegen generate >/dev/null)
+fi
+# First available iOS simulator (override with TESELA_TEST_SIM_UDID).
+SIM_UDID="${TESELA_TEST_SIM_UDID:-$(xcrun simctl list devices available \
+  | awk '/^-- iOS/{ios=1; next} /^--/{ios=0} ios' \
+  | grep -Eo -m1 '[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}')}"
+[[ -n "$SIM_UDID" ]] || { echo "no available iOS simulator found — create one in Xcode or set TESELA_TEST_SIM_UDID" >&2; exit 1; }
+# `set -e` makes a failing test suite abort here, before the archive.
+xcodebuild test \
+  -project "$PROJECT" -scheme "$SCHEME" \
+  -destination "platform=iOS Simulator,id=$SIM_UDID"
+
+echo "==> 4/5  stamp a unique build number + archive (Release, generic iOS)"
 BUILDNO="$(date +%Y%m%d%H%M)"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILDNO" "$INFO"
 echo "         CFBundleVersion = $BUILDNO  (CFBundleShortVersionString unchanged)"
@@ -76,7 +96,7 @@ if [[ "$NO_UPLOAD" == 1 ]]; then
   exit 0
 fi
 
-echo "==> 4/4  export + upload to TestFlight"
+echo "==> 5/5  export + upload to TestFlight"
 /bin/rm -rf "$EXPORT"
 xcodebuild -exportArchive \
   -archivePath "$ARCHIVE" \

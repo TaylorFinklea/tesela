@@ -153,15 +153,15 @@ final class RelayTicker: ObservableObject {
     /// runs. The pre-scoping bare keys are migrated once (adopted by the
     /// first pairing that builds a coordinator post-upgrade, so in-place
     /// upgrades keep their progress) and then removed.
-    private static let legacyInboundCursorKey = "relay.inboundCursorSeq"
-    private static let legacyOutboundCursorKey = "relay.outboundCursorNtp"
-    private static func cursorScope(relayUrl: String, groupIdHex: String) -> String {
+    static let legacyInboundCursorKey = "relay.inboundCursorSeq"
+    static let legacyOutboundCursorKey = "relay.outboundCursorNtp"
+    static func cursorScope(relayUrl: String, groupIdHex: String) -> String {
         "\(relayUrl)|\(groupIdHex)"
     }
-    private static func inboundCursorKey(scope: String) -> String {
+    static func inboundCursorKey(scope: String) -> String {
         "relay.inboundCursorSeq.\(scope)"
     }
-    private static func outboundCursorKey(scope: String) -> String {
+    static func outboundCursorKey(scope: String) -> String {
         "relay.outboundCursorNtp.\(scope)"
     }
     /// The (relay URL, group id) identity the live coordinator's cursors
@@ -858,7 +858,7 @@ final class RelayTicker: ObservableObject {
     ///   so retrying with this code can never succeed.
     /// Everything else (reqwest send errors, relay 5xx, timeouts) keeps
     /// the cache; the next tick retries with the same code.
-    private static func isDefinitivePairingFailure(_ error: Error) -> Bool {
+    static func isDefinitivePairingFailure(_ error: Error) -> Bool {
         guard let ffi = error as? FfiSyncError else { return false }
         switch ffi {
         case .InvalidPairingCode:
@@ -870,6 +870,26 @@ final class RelayTicker: ObservableObject {
             let m = message.lowercased()
             return m.contains("hijack") || m.contains("does not verify")
         }
+    }
+
+    /// Pure half of the snapshot-bootstrap gate (audit A4/A5): the
+    /// bootstrap runs only when the relay's GC watermark is PAST our
+    /// inbound cursor — i.e. ops we've never polled were compacted away
+    /// and only the deposited snapshots can cover them. A cursor at (or
+    /// past) the watermark means the tail poll covers everything.
+    static func shouldRunSnapshotBootstrap(compactionSeq: Int64, inboundCursorSeq: Int64) -> Bool {
+        compactionSeq > inboundCursorSeq
+    }
+
+    /// Pure half of the bootstrap-cursor rule (audit A4, mirrors the
+    /// server fix): jump the inbound cursor to the GC watermark only when
+    /// EVERY snapshot import landed. The covered ops are already GC'd, so
+    /// jumping past a failed import would skip that note permanently —
+    /// and the `compactionSeq > cursor` guard would make every future
+    /// bootstrap a no-op. On any failure the cursor HOLDS so the next
+    /// rebuild retries the imports.
+    static func shouldJumpBootstrapCursor(failedImports: Int) -> Bool {
+        failedImports == 0
     }
 
     /// Inner half of `ensureCoordinator`: decode `codeStr`, build the
@@ -925,7 +945,10 @@ final class RelayTicker: ObservableObject {
         // handles the (un-GC'd) tail.
         do {
             let snaps = try await relay.fetchSnapshots()
-            if snaps.compactionSeq > inboundCursorSeq {
+            if Self.shouldRunSnapshotBootstrap(
+                compactionSeq: snaps.compactionSeq,
+                inboundCursorSeq: inboundCursorSeq
+            ) {
                 var imported = 0
                 var failed = 0
                 for s in snaps.snapshots {
@@ -936,7 +959,7 @@ final class RelayTicker: ObservableObject {
                         failed += 1
                     }
                 }
-                if failed == 0 {
+                if Self.shouldJumpBootstrapCursor(failedImports: failed) {
                     // Only jump the cursor past the GC watermark when EVERY
                     // import landed (audit A4, mirrors the server fix): the
                     // covered ops are already GC'd, so jumping past a failed
@@ -969,8 +992,7 @@ final class RelayTicker: ObservableObject {
     /// belonging to the CURRENT pairing once (the first coordinator built
     /// post-upgrade adopts them — in-place upgrades keep their progress)
     /// and then re-keyed; the bare keys are removed either way.
-    private static func migrateLegacyCursors(toScope scope: String) {
-        let defaults = UserDefaults.standard
+    static func migrateLegacyCursors(toScope scope: String, defaults: UserDefaults = .standard) {
         if let inbound = defaults.object(forKey: legacyInboundCursorKey) as? Int64 {
             if defaults.object(forKey: inboundCursorKey(scope: scope)) == nil {
                 defaults.set(inbound, forKey: inboundCursorKey(scope: scope))

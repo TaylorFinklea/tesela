@@ -31,6 +31,13 @@ final class BackendSettings: ObservableObject {
     /// value. Returns `.mock` when the URL is unparseable so the app
     /// never falls into a broken state.
     var backend: MockMosaicService.Backend {
+        Self.resolveBackend(mode: mode, serverURL: serverURL)
+    }
+
+    /// Pure mode→backend mapping (extracted for unit testing, audit A13).
+    /// `.relay` ignores the server URL entirely — the relay tick's pairing
+    /// code carries the relay identity; there is no Mac HTTP to point at.
+    static func resolveBackend(mode: Mode, serverURL: String) -> MockMosaicService.Backend {
         if mode == .relay {
             return .relay
         }
