@@ -228,6 +228,28 @@ pub fn restore(
     if !backup_root.exists() {
         return Err(BackupError::BackupNotFound(backup_root.to_path_buf()));
     }
+
+    // Mutual exclusion with backup — and, crucially, with the GFS
+    // prune that runs inside `backup()` under this same lock: a
+    // concurrent prune can `remove_dir_all` the very backup directory
+    // we're reading, yielding a half-read restore. Holding the
+    // MosaicLock for the whole restore turns that race into a clean
+    // `LockHeld` error on whichever side arrives second.
+    //
+    // Skipped when the mosaic root doesn't exist (the
+    // disaster-recovery drill: mosaic nuked, restoring into its old
+    // path): a dead mosaic has no scheduler to race, and creating the
+    // lock's `.tesela/` dir would make a same-path restore target
+    // "already exist" and refuse. Known residual: the manual prune
+    // surfaces (`POST /backups/prune`, `tesela backup-prune`) call
+    // `prune_gfs` directly without this lock — they're explicit user
+    // actions, not the scheduler, and remain outside this guard.
+    let _lock = if current_mosaic.exists() {
+        Some(MosaicLock::acquire(current_mosaic)?)
+    } else {
+        None
+    };
+
     let manifest = Manifest::load(backup_root)?;
 
     if manifest.schema_version > SCHEMA_VERSION {
@@ -548,6 +570,69 @@ mod tests {
                 .unwrap_or_else(|e| panic!("read restored {}: {}", rel.display(), e));
             assert_eq!(orig, rest, "byte mismatch in {}", rel.display());
         }
+    }
+
+    /// Restore must be mutually exclusive with backup (and therefore
+    /// with the scheduler's GFS prune, which runs inside `backup()`
+    /// under the MosaicLock): a concurrent prune can `remove_dir_all`
+    /// the very backup a restore is reading. Holding the lock means a
+    /// restore racing a backup gets a clean `LockHeld` instead of a
+    /// half-read, half-deleted backup.
+    #[test]
+    fn restore_refuses_while_backup_lock_held() {
+        let temp = TempDir::new().unwrap();
+        let mosaic = temp.path().join("source");
+        make_fixture_mosaic(&mosaic).unwrap();
+        let outcome = backup(
+            &mosaic,
+            BackupOptions {
+                retention: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Simulate an in-flight scheduler backup: hold the advisory
+        // lock from "another" handle (flock conflicts across separate
+        // fds even within one process).
+        let lock_file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(mosaic.join(".tesela/.backup.lock"))
+            .unwrap();
+        lock_file.try_lock_exclusive().unwrap();
+
+        let err = restore(
+            &outcome.path,
+            &mosaic,
+            RestoreOptions {
+                target_override: Some(temp.path().join("restored-under-lock")),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        match err {
+            BackupError::LockHeld => {}
+            other => panic!("expected LockHeld, got {:?}", other),
+        }
+        assert!(
+            !temp.path().join("restored-under-lock").exists(),
+            "refused restore must not write a partial target"
+        );
+
+        // Once the lock is released the same restore succeeds.
+        FileExt::unlock(&lock_file).unwrap();
+        restore(
+            &outcome.path,
+            &mosaic,
+            RestoreOptions {
+                target_override: Some(temp.path().join("restored-after-unlock")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
     }
 
     #[test]
