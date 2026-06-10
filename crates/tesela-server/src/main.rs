@@ -862,7 +862,22 @@ async fn bring_up_relay_if_configured(
             ident.group_key.clone(),
         ),
     );
-    let persisted = sync_relay::RelayState::load(mosaic).await;
+    let mut persisted = sync_relay::RelayState::load(mosaic).await;
+    // Scope the persisted cursors to the CURRENT (relay, group) identity:
+    // a relay migration or a group re-pair means a fresh seq namespace, so
+    // replaying the old cursor would silently skip every op below it. On
+    // mismatch the state resets and `bootstrap_from_snapshots` below pulls
+    // the new relay's full state (audit A5).
+    if persisted.scope_to_identity(url.as_str(), &hex::encode(ident.group_id.as_bytes())) {
+        tracing::warn!(
+            "relay identity changed (url/group) — persisted cursors reset; \
+             re-registering + re-bootstrapping against {}",
+            url
+        );
+        if let Err(e) = persisted.save(mosaic).await {
+            tracing::warn!("relay state save (post-identity-reset): {e}");
+        }
+    }
     let handle = sync_relay::RelayHandle {
         url: url.to_string(),
         client: client.clone(),

@@ -59,6 +59,18 @@ pub struct RelayState {
     /// durable counter).
     #[serde(skip)]
     pub apply_retries: HashMap<i64, u32>,
+    /// Relay URL the cursors were earned against. Together with
+    /// `group_id_hex` this scopes the persisted state to ONE
+    /// (relay, group) identity: relay seqs are a per-relay, per-group
+    /// namespace, so replaying a cursor against a different relay/group
+    /// silently skips every op below it (audit A5). `None` = legacy state
+    /// file written before identity scoping.
+    #[serde(default)]
+    pub relay_url: Option<String>,
+    /// 32-char hex group id the cursors were earned against. See
+    /// `relay_url`.
+    #[serde(default)]
+    pub group_id_hex: Option<String>,
 }
 
 /// How many ticks an envelope whose per-note apply failed is retried (the
@@ -79,6 +91,41 @@ impl RelayState {
             Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_default(),
             Err(_) => Self::default(),
         }
+    }
+
+    /// Reconcile the persisted state with the CURRENT (relay_url, group_id)
+    /// identity (audit A5). Relay seqs are a per-relay, per-group namespace
+    /// that restarts at 1 on a fresh relay, so a cursor earned against a
+    /// different identity must not be replayed — `poll(?since=stale_high)`
+    /// would return empty forever while the snapshot-bootstrap guard
+    /// (`compaction_seq > cursor`) also never fires: a silent, permanent
+    /// inbound stall. This is the exact shape of the planned HA→Cloudflare
+    /// relay migration and of re-pairing into a new group.
+    ///
+    /// - Identity matches (or was never recorded — legacy file): stamp the
+    ///   current identity, keep the cursors. Returns `false`.
+    /// - Identity differs: reset to a fresh state carrying only the new
+    ///   identity, so bring-up re-registers and re-bootstraps from the new
+    ///   relay's snapshots. Returns `true`.
+    pub fn scope_to_identity(&mut self, relay_url: &str, group_id_hex: &str) -> bool {
+        let matches = match (&self.relay_url, &self.group_id_hex) {
+            (Some(u), Some(g)) => u == relay_url && g == group_id_hex,
+            // Legacy state (pre-identity): adopt the current identity
+            // without resetting — the common in-place upgrade keeps its
+            // cursor; the NEXT relay/group switch is then detected.
+            _ => true,
+        };
+        if matches {
+            self.relay_url = Some(relay_url.to_string());
+            self.group_id_hex = Some(group_id_hex.to_string());
+            return false;
+        }
+        *self = RelayState {
+            relay_url: Some(relay_url.to_string()),
+            group_id_hex: Some(group_id_hex.to_string()),
+            ..Default::default()
+        };
+        true
     }
 
     /// Atomic-ish write: write to a tmp file then rename. SQLite-WAL-
@@ -852,6 +899,52 @@ mod tests {
             comp_seq,
             "bootstrap jumped C's cursor to the relay watermark"
         );
+    }
+
+    /// A5: persisted cursors are only valid against the (relay_url, group_id)
+    /// identity they were earned from. A mismatch (relay migration, re-pair
+    /// into a different group) must reset the state so bring-up re-bootstraps
+    /// from the new relay's snapshots instead of replaying a stale high
+    /// cursor against a fresh seq namespace (silent permanent inbound stall).
+    #[test]
+    fn relay_state_scope_to_identity() {
+        // Legacy state file (no identity recorded): adopt the current
+        // identity without resetting — the in-place upgrade keeps the cursor.
+        let mut s = RelayState {
+            inbound_cursor: 42,
+            registered_at: Some(1),
+            ..Default::default()
+        };
+        assert!(!s.scope_to_identity("https://relay-a/", "aa11"));
+        assert_eq!(s.inbound_cursor, 42, "legacy stamp keeps the cursor");
+        assert_eq!(s.relay_url.as_deref(), Some("https://relay-a/"));
+        assert_eq!(s.group_id_hex.as_deref(), Some("aa11"));
+
+        // Same identity: no reset.
+        assert!(!s.scope_to_identity("https://relay-a/", "aa11"));
+        assert_eq!(s.inbound_cursor, 42);
+
+        // Different relay URL: full reset (cursor, catch-up queue,
+        // registration timestamp) + re-stamp.
+        s.catchup_notes = vec!["ff".into()];
+        assert!(s.scope_to_identity("https://relay-b/", "aa11"));
+        assert_eq!(s.inbound_cursor, 0, "stale cursor reset for the new relay");
+        assert!(s.catchup_notes.is_empty());
+        assert_eq!(s.registered_at, None);
+        assert_eq!(s.relay_url.as_deref(), Some("https://relay-b/"));
+        assert_eq!(s.group_id_hex.as_deref(), Some("aa11"));
+
+        // Different group on the same relay: reset too (per-group seq
+        // namespaces restart at 1).
+        let mut s2 = RelayState {
+            inbound_cursor: 7,
+            relay_url: Some("https://relay-b/".into()),
+            group_id_hex: Some("aa11".into()),
+            ..Default::default()
+        };
+        assert!(s2.scope_to_identity("https://relay-b/", "bb22"));
+        assert_eq!(s2.inbound_cursor, 0);
+        assert_eq!(s2.group_id_hex.as_deref(), Some("bb22"));
     }
 
     /// Seal + PUT one TLR2 relay envelope carrying the given per-note update
