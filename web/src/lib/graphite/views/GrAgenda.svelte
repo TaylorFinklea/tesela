@@ -1,17 +1,71 @@
-<!-- web/src/lib/graphite/views/GrAgenda.svelte — Part A, Task A5.
-     Graphite agenda week. NEW presentation over api.getAgenda — a 5-day
-     time grid (Mon–Fri) with a 56px hour gutter, GR_HOURS 8..16, GR_SLOT
-     62px rows, GR_START 8. Type-colored `.gr-ev` blocks are positioned by
-     the verbatim formula (top=(h-8)*62+(m/60)*62, height=dur*62-5); untimed
+<!-- web/src/lib/graphite/views/GrAgenda.svelte — Part A, Task A5 + triage parity.
+     Two modes, toggled by the pane-head segmented control or `v`:
+
+     LIST (default) — the triage surface. Embeds the v5 agenda ambient
+     ($lib/ambients/agenda — preserve-list) directly, so overdue
+     deadline/scheduled buckets, mark-done (x), reschedule (d + bulk
+     DatePicker), skip occurrence (s), show-done, j/k nav and the 60d
+     infinite scroll are the SAME code paths /v4 runs — zero duplicated
+     triage logic. The `.gr-aglist` wrapper re-maps the shadcn alias
+     tokens (--foreground/--primary/…) onto Graphite tokens so the
+     embedded ambient + its DatePicker render native inside .gr-root.
+
+     WEEK — NEW presentation over api.getAgenda: a 5-day time grid
+     (Mon–Fri) with a 56px hour gutter, GR_HOURS 8..16, GR_SLOT 62px rows,
+     GR_START 8. Type-colored `.gr-ev` blocks are positioned by the
+     verbatim formula (top=(h-8)*62+(m/60)*62, height=dur*62-5); untimed
      rows fall back to a 1h block at GR_START. A `.gr-now` indicator marks
-     the current time on today's column. Vim nav: h/l shift the week anchor,
-     t jumps to this week. api + the agenda types imported READ-ONLY. -->
+     the current time on today's column. Vim nav: h/l shift the week
+     anchor, t jumps to this week. Overdue rows live outside the visible
+     week, so the head shows a coral "⚑ N overdue" badge that jumps to
+     LIST. api + the agenda types imported READ-ONLY. -->
 <script lang="ts">
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import type { AgendaRow as AgendaRowT } from "$lib/types/AgendaRow";
   import { openPageInFocused } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
+  import Agenda from "$lib/ambients/agenda/Agenda.svelte";
+
+  // ── mode (list = triage surface, week = time grid) ──────────────────
+  type AgendaMode = "list" | "week";
+  const MODE_KEY = "tesela:graphite:agenda-mode";
+  function loadMode(): AgendaMode {
+    if (typeof localStorage === "undefined") return "list";
+    return localStorage.getItem(MODE_KEY) === "week" ? "week" : "list";
+  }
+  let mode = $state<AgendaMode>(loadMode());
+  function setMode(m: AgendaMode) {
+    mode = m;
+    try {
+      localStorage.setItem(MODE_KEY, m);
+    } catch {
+      /* private mode etc. — non-fatal */
+    }
+  }
+
+  // `v` toggles list ↔ week. Bubble-phase on the pane root so it works
+  // from either mode's inner view; skipped when the key was consumed
+  // (inner views preventDefault what they handle), originates in a text
+  // entry, or comes from the DatePicker dialog (its grid mode focuses a
+  // role=dialog div, not an input).
+  function handleModeKey(e: KeyboardEvent) {
+    if (e.defaultPrevented) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (e.key !== "v") return;
+    const t = e.target as HTMLElement | null;
+    if (
+      t &&
+      (t.tagName === "INPUT" ||
+        t.tagName === "TEXTAREA" ||
+        t.isContentEditable ||
+        t.closest?.('[role="dialog"]'))
+    ) {
+      return;
+    }
+    e.preventDefault();
+    setMode(mode === "list" ? "week" : "list");
+  }
 
   // Layout constants (from the plan's verbatim Agenda spec).
   const GR_HOURS = Array.from({ length: 9 }, (_, i) => 8 + i); // [8..16]
@@ -66,9 +120,30 @@
   const q = createQuery(() => ({
     queryKey: ["agenda", { from: fromIso, to: toIso, includeDone: false }] as const,
     queryFn: () => api.getAgenda(fromIso, toIso, false),
-    enabled: !!fromIso && !!toIso,
+    enabled: mode === "week" && !!fromIso && !!toIso,
   }));
   const rows = $derived((q.data ?? []) as AgendaRowT[]);
+
+  // Week mode hides overdue rows (they live before the visible week), so
+  // surface a count in the head that jumps to LIST. Same 90d lookback the
+  // ambient uses; only fetched while the week grid is showing.
+  const overdueFromIso = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 90);
+    return isoDate(d);
+  })();
+  const overdueToIso = isoDate(new Date());
+  const overdueQ = createQuery(() => ({
+    queryKey: [
+      "agenda",
+      { from: overdueFromIso, to: overdueToIso, includeDone: false },
+    ] as const,
+    queryFn: () => api.getAgenda(overdueFromIso, overdueToIso, false),
+    enabled: mode === "week",
+  }));
+  const overdueCount = $derived(
+    ((overdueQ.data ?? []) as AgendaRowT[]).filter((r) => r.overdue).length,
+  );
 
   type Positioned = {
     row: AgendaRowT;
@@ -186,14 +261,50 @@
   });
 </script>
 
-<div class="gr-pane focus">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="gr-pane focus" onkeydown={handleModeKey}>
   <div class="gr-pane-head">
     <span class="ttl">Agenda</span>
-    <span class="sub">{weekLabel}</span>
+    {#if mode === "week"}
+      <span class="sub">{weekLabel}</span>
+    {/if}
     <span class="sp"></span>
-    <span class="meta">h/l week · t today</span>
+    {#if mode === "week" && overdueCount > 0}
+      <button
+        type="button"
+        class="gr-ag-overdue"
+        title="Overdue items are outside the week grid — show the triage list"
+        onclick={() => setMode("list")}
+      >⚑ {overdueCount} overdue</button>
+    {/if}
+    <span class="meta">
+      {mode === "week"
+        ? "h/l week · t today · v list"
+        : "j/k · ↵ open · x done · d date · s skip · v week"}
+    </span>
+    <div class="gr-ag-modes">
+      <button
+        type="button"
+        class:active={mode === "list"}
+        onclick={() => setMode("list")}
+      >List</button>
+      <button
+        type="button"
+        class:active={mode === "week"}
+        onclick={() => setMode("week")}
+      >Week</button>
+    </div>
   </div>
 
+  {#if mode === "list"}
+    <!-- Embedded v5 agenda ambient — the real triage surface (overdue
+         buckets, x/d/s verbs, bulk reschedule, show-done, 60d scroll).
+         It owns its own focus + keyboard; props mirror BufferShell's
+         ambient mount (size is unused by Agenda but typed-required). -->
+    <div class="gr-aglist">
+      <Agenda size={{ cols: 80, rows: 24 }} onNavigate={() => {}} />
+    </div>
+  {:else}
   <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
   <div
     bind:this={rootEl}
@@ -246,6 +357,7 @@
       {/each}
     </div>
   </div>
+  {/if}
 </div>
 
 <style>
@@ -285,6 +397,94 @@
     font-size: 10.5px;
     color: var(--faint);
     white-space: nowrap;
+  }
+
+  /* Mode toggle (List | Week segmented control). */
+  .gr-ag-modes {
+    display: inline-flex;
+    border: 1px solid var(--line-2);
+    border-radius: 7px;
+    overflow: hidden;
+    flex-shrink: 0;
+  }
+  .gr-ag-modes button {
+    appearance: none;
+    background: transparent;
+    border: none;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--subtle);
+    padding: 3px 9px;
+    cursor: pointer;
+  }
+  .gr-ag-modes button + button {
+    border-left: 1px solid var(--line-2);
+  }
+  .gr-ag-modes button:hover {
+    color: var(--fg);
+  }
+  .gr-ag-modes button.active {
+    background: var(--raised-2);
+    color: var(--fg);
+  }
+
+  /* Week-mode overdue badge → jumps to the list (triage) mode. */
+  .gr-ag-overdue {
+    appearance: none;
+    background: var(--coral-dim);
+    border: 1px solid var(--coral-line);
+    border-radius: 7px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--coral);
+    padding: 3px 9px;
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .gr-ag-overdue:hover {
+    background: var(--coral-dim);
+    border-color: var(--coral);
+  }
+
+  /* List mode — hosts the embedded v5 agenda ambient. The token block
+   * bridges the shadcn alias tokens the ambient (+ DatePicker) renders
+   * with onto Graphite tokens; aliases resolve at point of use, so
+   * declaring them here re-skins the whole embedded subtree without
+   * touching the ambient. */
+  .gr-aglist {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+
+    --background: var(--bg);
+    --foreground: var(--fg);
+    --muted: var(--raised-2);
+    --muted-foreground: var(--subtle);
+    --accent: var(--raised-2);
+    --accent-foreground: var(--fg);
+    --primary: var(--coral);
+    --primary-foreground: var(--bg);
+    --popover: var(--raised);
+    --popover-foreground: var(--fg);
+    --border: var(--line-2);
+    --destructive: var(--task);
+    --ring: var(--coral);
+  }
+  .gr-aglist > :global(div) {
+    flex: 1;
+    min-height: 0;
+  }
+  /* The embedded header's "📋 Agenda" title duplicates the pane head (its
+   * verb hints moved into .meta above); keep the show-done toggle, pinned
+   * right. Cosmetic only — degrades to a doubled label if the ambient's
+   * markup changes. */
+  .gr-aglist :global(header > .font-semibold) {
+    display: none;
+  }
+  .gr-aglist :global(header) {
+    justify-content: flex-end;
   }
 
   /* Agenda time grid (verbatim Graphite CSS). */
