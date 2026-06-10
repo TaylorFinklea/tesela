@@ -6,7 +6,7 @@ use serde::Serialize;
 use tokio::sync::broadcast;
 
 use tesela_core::{db::SqliteIndex, storage::filesystem::FsNoteStore, types::TypeRegistry, Note};
-use tesela_sync::{GroupIdentity, LanDiscovery, SyncEngine};
+use tesela_sync::{GroupIdentity, LanDiscovery, SyncEngine, ViewRecord};
 use tokio::sync::RwLock;
 
 use crate::reminders::auto::AutoSync;
@@ -129,5 +129,12 @@ pub enum WsEvent {
         title: String,
         note_id: String,
         next_deadline: String,
+    },
+    /// Saved-views registry changed (create/update/delete/reorder via the
+    /// `/views` routes — saved-views spec 2026-06-10). Carries the full
+    /// ordered registry so clients refresh the view switcher without a
+    /// refetch, mirroring how `NoteUpdated` carries the whole note.
+    ViewsChanged {
+        views: Vec<ViewRecord>,
     },
 }

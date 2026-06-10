@@ -11,6 +11,7 @@ mod sync;
 mod tags;
 mod transcription;
 mod types;
+mod views;
 pub mod ws;
 
 use std::sync::Arc;
@@ -108,6 +109,14 @@ pub fn build(state: AppState) -> Router {
         .route("/search/query", post(search_query::execute))
         .route("/calendar/marks", get(calendar::marks))
         .route("/tags", get(tags::list_tags))
+        // Saved-views registry (spec 2026-06-10) — thin wrappers over the
+        // engine's synced views doc; WS `views_changed` fires on any write.
+        .route("/views", get(views::list_views).post(views::create_view))
+        .route("/views/reorder", post(views::reorder_views))
+        .route(
+            "/views/{id}",
+            axum::routing::put(views::update_view).delete(views::delete_view),
+        )
         .route("/types", get(types::list_types))
         .route("/types/{name}", get(types::get_type))
         .route("/types/{name}/nodes", get(types::list_typed_nodes))

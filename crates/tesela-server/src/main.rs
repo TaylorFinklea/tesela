@@ -297,6 +297,17 @@ async fn main() -> Result<()> {
         Arc::new(loro)
     };
 
+    // Saved-views registry (spec 2026-06-10): idempotently seed the built-in
+    // views (the Inbox) at bring-up — after the engine opens (a registry
+    // restored from snapshots or received via sync is visible here and left
+    // untouched, so user edits to the builtin survive restarts), before
+    // serving. Convergence-safe: the builtin's FIXED id makes concurrent
+    // seeds on other devices write the same entry → one Inbox group-wide.
+    // Non-fatal on error — a peer's seed converges the registry anyway.
+    if let Err(e) = sync_engine.ensure_builtin_views().await {
+        warn!("views: ensure_builtin_views at bring-up failed: {e}");
+    }
+
     let addr = resolve_bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(7474);
