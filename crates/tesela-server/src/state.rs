@@ -67,6 +67,10 @@ pub struct AppState {
     /// relay is configured OR bring-up failed (the daemon retries
     /// on its tick). The status endpoint reads through this.
     pub relay: Option<crate::sync_relay::RelayHandle>,
+    /// Scheduled-backup state (last run, next run, cadence) shared with
+    /// the scheduler task. `GET /backup/status` reads through this and
+    /// combines it with the on-disk backup listing.
+    pub backup_status: crate::backup_scheduler::BackupStatusHandle,
 }
 
 /// Unique id assigned to each upgraded `/ws` socket, used to suppress

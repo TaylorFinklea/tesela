@@ -127,6 +127,9 @@ pub fn build(state: AppState) -> Router {
             "/backup-config",
             get(data_ops::get_backup_config).put(data_ops::put_backup_config),
         )
+        // Provable backups: last/next backup, contents manifest summary,
+        // scheduler cadence. On-disk truth + in-process scheduler state.
+        .route("/backup/status", get(data_ops::backup_status))
         .route("/export", post(data_ops::run_export))
         .route("/imports/obsidian", post(data_ops::import_obsidian))
         .route("/imports/logseq", post(data_ops::import_logseq))

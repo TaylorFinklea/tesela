@@ -1,3 +1,4 @@
+mod backup_scheduler;
 mod error;
 mod notifications;
 mod reminders;
@@ -15,7 +16,7 @@ use tokio::sync::broadcast;
 use tracing::{info, warn};
 
 use tesela_core::{
-    config::{BackupConfig, Config, ServerConfig},
+    config::{Config, ServerConfig},
     db::SqliteIndex,
     indexer::{Indexer, NoteEvent},
     storage::filesystem::FsNoteStore,
@@ -364,6 +365,13 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Backup scheduler status — shared with the `/backup/status` route.
+    // Knobs resolved once from the environment (cadence, startup backup,
+    // retention); the task itself is spawned after relay bring-up below.
+    let backup_status = backup_scheduler::BackupStatusHandle::new(
+        backup_scheduler::SchedulerConfig::from_env(),
+    );
+
     let app_state = AppState {
         mosaic_root: mosaic_for_shutdown.clone(),
         store,
@@ -381,8 +389,23 @@ async fn main() -> Result<()> {
         relay_url: load_relay_url_from_config(&mosaic),
         // Brought up below if config has `[sync.relay] url`.
         relay: None,
+        backup_status: backup_status.clone(),
     };
     let app_state = bring_up_relay_if_configured(app_state, &mosaic).await;
+
+    // Scheduled backups (audit 2026-06-09 "Back up the authority"):
+    // one backup after bring-up + a periodic cadence, both env-tunable.
+    // Spawned after relay bring-up so the startup backup captures the
+    // post-bring-up state. The shutdown hook below shares the same
+    // `run_configured_backup` policy.
+    let backup_retention = backup_status.config.policy;
+    backup_scheduler::start(
+        backup_status,
+        mosaic_for_shutdown.clone(),
+        Arc::clone(&index_for_shutdown),
+        backup_cfg_for_shutdown.clone(),
+    );
+
     let router = routes::build(app_state);
 
     info!("tesela-server listening on http://{}", addr);
@@ -398,14 +421,15 @@ async fn main() -> Result<()> {
     // mosaic is in a quiescent state. We deliberately do NOT block
     // shutdown indefinitely if backup fails — log + move on.
     if backup_cfg_for_shutdown.auto_on_quit {
-        match auto_backup_on_quit(
+        match backup_scheduler::run_configured_backup(
             &mosaic_for_shutdown,
             &index_for_shutdown,
             &backup_cfg_for_shutdown,
+            Some(backup_retention),
         )
         .await
         {
-            Ok(path) => info!("Auto-backup on shutdown: {}", path.display()),
+            Ok(outcome) => info!("Auto-backup on shutdown: {}", outcome.path.display()),
             Err(e) => warn!("Auto-backup on shutdown failed: {}", e),
         }
     }
@@ -700,82 +724,6 @@ async fn wait_for_shutdown_signal() {
         _ = terminate => {},
     }
     info!("Shutdown signal received");
-}
-
-async fn auto_backup_on_quit(
-    mosaic: &std::path::Path,
-    index: &Arc<SqliteIndex>,
-    cfg: &BackupConfig,
-) -> Result<PathBuf> {
-    // Pre-stage the SQLite VACUUM INTO snapshot in-process while we
-    // still hold the live index handle.
-    let snapshot = tempfile::Builder::new()
-        .prefix("tesela-vacuum-")
-        .suffix(".db")
-        .tempfile()?;
-    let snap_path = snapshot.path().to_path_buf();
-    index.vacuum_into(&snap_path).await?;
-
-    let mosaic_owned = mosaic.to_path_buf();
-    let cfg = cfg.clone();
-    let snap_path_for_blocking = snap_path.clone();
-
-    // tesela_backup is sync; offload to a blocking task so we don't
-    // stall the runtime while git + sha hashing run.
-    let outcome = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
-        let destination = if let Some(remote) = cfg.git_remote.as_ref() {
-            let branch = cfg.git_branch.clone().unwrap_or_else(|| "main".to_string());
-            let mirror = mosaic_owned.join(".tesela").join("backups").join(".git-mirror");
-            tesela_backup::Destination::Git {
-                remote: remote.clone(),
-                branch,
-                local_mirror: mirror,
-            }
-        } else if let Some(path) = cfg.external_path.as_ref() {
-            tesela_backup::Destination::External { path: path.clone() }
-        } else {
-            tesela_backup::Destination::Local
-        };
-
-        // Encrypt if destination is non-local and a keypair exists.
-        let encryption = match &destination {
-            tesela_backup::Destination::Local => tesela_backup::ManifestEncryption::None,
-            _ => match tesela_backup::encrypt::load_identity_for_mosaic(&mosaic_owned)
-                .map_err(|e| anyhow::anyhow!("{}", e))?
-            {
-                Some(id) => tesela_backup::ManifestEncryption::Age {
-                    recipient: id.to_public().to_string(),
-                },
-                None => {
-                    // No keypair — emit a warning but don't refuse to
-                    // back up. Non-local destinations would be
-                    // plaintext, which is suboptimal but better than
-                    // failing the shutdown hook silently.
-                    tracing::warn!(
-                        "No age identity in Keychain for this mosaic; non-local backup will be unencrypted"
-                    );
-                    tesela_backup::ManifestEncryption::None
-                }
-            },
-        };
-
-        let outcome = tesela_backup::backup(
-            &mosaic_owned,
-            tesela_backup::BackupOptions {
-                destination,
-                validate: true,
-                extra_files: vec![(".tesela/tesela.db".to_string(), snap_path_for_blocking)],
-                retention: Some(tesela_backup::GfsPolicy::default()),
-                encryption,
-            },
-        )
-        .map_err(|e| anyhow::anyhow!("{}", e))?;
-        Ok(outcome)
-    })
-    .await??;
-
-    drop(snapshot);
-    Ok(outcome.path)
 }
 
 /// Resolve the address the HTTP server binds to. Precedence:
@@ -1192,6 +1140,9 @@ mod tests {
             public_url: "http://127.0.0.1:0".into(),
             relay_url: None,
             relay: None,
+            backup_status: crate::backup_scheduler::BackupStatusHandle::new(
+                crate::backup_scheduler::SchedulerConfig::from_env(),
+            ),
         };
         let server_engine_handle = Arc::clone(&app_state.sync_engine);
         let router = routes::build(app_state);
@@ -1453,6 +1404,9 @@ mod tests {
             public_url: "http://127.0.0.1:0".into(),
             relay_url: None,
             relay: None,
+            backup_status: crate::backup_scheduler::BackupStatusHandle::new(
+                crate::backup_scheduler::SchedulerConfig::from_env(),
+            ),
         };
         let server_engine_handle = Arc::clone(&app_state.sync_engine);
         let router = routes::build(app_state);
@@ -1660,6 +1614,9 @@ mod tests {
             public_url: "http://127.0.0.1:0".into(),
             relay_url: None,
             relay: None,
+            backup_status: crate::backup_scheduler::BackupStatusHandle::new(
+                crate::backup_scheduler::SchedulerConfig::from_env(),
+            ),
         };
         let server_engine_handle = Arc::clone(&app_state.sync_engine);
         let router = routes::build(app_state);

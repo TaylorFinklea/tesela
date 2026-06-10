@@ -2089,6 +2089,9 @@ mod tests {
                 public_url: "http://127.0.0.1:0".into(),
                 relay_url: None,
                 relay: None,
+                backup_status: crate::backup_scheduler::BackupStatusHandle::new(
+                    crate::backup_scheduler::SchedulerConfig::from_env(),
+                ),
             })
         }
 

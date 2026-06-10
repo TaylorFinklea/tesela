@@ -296,6 +296,131 @@ pub async fn prune_backups(
     })))
 }
 
+/// GET /backup/status — the "is my data actually backed up?" endpoint.
+///
+/// Combines two sources:
+/// - `latest`: on-disk truth — the newest manifest under the configured
+///   destination root (covers scheduled, manual, shutdown, and
+///   pre-restart backups alike), with a contents summary proving the
+///   AUTHORITY (Loro state + sync identity) was captured.
+/// - `scheduler`: the in-process scheduler's cadence, last run, last
+///   error, and next scheduled time.
+pub async fn backup_status(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // Resolve the same destination root every backup trigger writes to.
+    let cfg_path = state.mosaic_root.join(".tesela").join("config.toml");
+    let backup_cfg = if cfg_path.exists() {
+        Config::load(&cfg_path).map_err(server_error)?.backup
+    } else {
+        Config::default().backup
+    };
+    let destination =
+        crate::backup_scheduler::destination_from_config(&state.mosaic_root, &backup_cfg);
+    let root = destination
+        .root_for_listing(&state.mosaic_root)
+        .map_err(server_error)?;
+
+    let root_for_list = root.clone();
+    let backups = tokio::task::spawn_blocking(move || tesela_backup::list(&root_for_list))
+        .await
+        .map_err(internal)?
+        .map_err(server_error)?;
+    let backup_count = backups.len();
+
+    // `list` sorts newest-first.
+    let latest = backups.into_iter().next().map(|(path, manifest)| {
+        let total_bytes: u64 = manifest.files.iter().map(|f| f.size).sum();
+        serde_json::json!({
+            "path": path.to_string_lossy(),
+            "created_at": manifest.created_at.to_rfc3339(),
+            "schema_version": manifest.schema_version,
+            "file_count": manifest.files.len(),
+            "total_bytes": total_bytes,
+            "validated": manifest.validated.as_ref().map(|v| v.ok).unwrap_or(false),
+            "validated_at": manifest.validated.as_ref().map(|v| v.checked_at.to_rfc3339()),
+            "includes_loro_state": manifest.includes_loro_state(),
+            "includes_sync_identity": manifest.includes_sync_identity(),
+            "encryption": match manifest.encryption {
+                tesela_backup::ManifestEncryption::None => "none",
+                tesela_backup::ManifestEncryption::Age { .. } => "age",
+            },
+            "contents": contents_summary(&manifest),
+        })
+    });
+
+    let status = &state.backup_status;
+    let sched_cfg = &status.config;
+    let inner = status.inner.read().await;
+    let run_json = |r: &crate::backup_scheduler::RunRecord| {
+        serde_json::json!({
+            "at": r.at.to_rfc3339(),
+            "ok": r.ok,
+            "detail": r.detail,
+            "trigger": r.trigger,
+        })
+    };
+
+    Ok(Json(serde_json::json!({
+        "latest": latest,
+        "backup_count": backup_count,
+        "backups_root": root.to_string_lossy(),
+        "scheduler": {
+            "enabled": status.enabled(),
+            "interval_secs": sched_cfg.interval_secs,
+            "backup_on_start": sched_cfg.backup_on_start,
+            "retention": {
+                "daily": sched_cfg.policy.daily,
+                "weekly": sched_cfg.policy.weekly,
+                "monthly": sched_cfg.policy.monthly,
+            },
+            "next_scheduled_at": inner.next_scheduled_at.map(|t| t.to_rfc3339()),
+            "last_run": inner.last_run.as_ref().map(run_json),
+            "last_error": inner.last_error.as_ref().map(run_json),
+        },
+        "auto_on_quit": backup_cfg.auto_on_quit,
+    })))
+}
+
+/// Count manifest entries by category so the status endpoint can show
+/// WHAT a backup holds without dumping thousands of file paths.
+fn contents_summary(manifest: &tesela_backup::Manifest) -> serde_json::Value {
+    let mut notes = 0usize;
+    let mut attachments = 0usize;
+    let mut templates = 0usize;
+    let mut loro_docs = 0usize;
+    let mut identity_files: Vec<&str> = Vec::new();
+    let mut has_config = false;
+    let mut has_db_snapshot = false;
+    for f in &manifest.files {
+        let p = f.path.as_str();
+        if p.starts_with("notes/") {
+            notes += 1;
+        } else if p.starts_with("attachments/") {
+            attachments += 1;
+        } else if p.starts_with("templates/") {
+            templates += 1;
+        } else if p.starts_with(".tesela/loro/") {
+            loro_docs += 1;
+        } else if p == ".tesela/config.toml" {
+            has_config = true;
+        } else if p == ".tesela/tesela.db" {
+            has_db_snapshot = true;
+        } else if let Some(name) = p.strip_prefix(".tesela/") {
+            identity_files.push(name);
+        }
+    }
+    serde_json::json!({
+        "notes": notes,
+        "attachments": attachments,
+        "templates": templates,
+        "loro_docs": loro_docs,
+        "identity_files": identity_files,
+        "has_config": has_config,
+        "has_db_snapshot": has_db_snapshot,
+    })
+}
+
 pub async fn keygen(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
