@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.2 — stop serving the group auth_key from registration endpoints
+
+- `GET /groups/:id/registration` (an open, unauthenticated endpoint) and
+  the `POST /register` 409 conflict echo no longer include `auth_key_b64`.
+  The auth_key is the MAC key gating every write — serving it openly let
+  anyone who learned a group id mint valid request MACs. Every member
+  derives it locally via HKDF from the group key instead; joiner
+  verification still works from the public fields (registered_at + intent).
+
 ## 0.2.1 — fix op seq allocation after full compaction
 
 - `insert_op` now allocates `MAX(MAX(seq), compaction_seq) + 1` instead of
