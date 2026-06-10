@@ -9,7 +9,7 @@
 
 ### Plan (two parallel streams — items detailed in the spec; pick ONE per iteration)
 - [x] **A1** relay seq fix + conformance case + HA add-on 0.2.1 ✓ (`61506af` fix + test, `1aa4987` HA bump). TDD red→green; conformance now 20 cases, **green vs BOTH impls** (Rust + CF Worker via wrangler dev); `cargo test -p tesela-relay` + `-p tesela-sync` all green. ⚠ Live HA relay still has the black hole until: Taylor pushes → `relay-container.yml` builds `:0.2.1` green → HA refresh repo + UPDATE the add-on.
-- [ ] **A2-A3** auth_key off GET /registration; poison-envelope skip-not-wedge. Verify: conformance + `cargo test -p tesela-sync`.
+- [x] **A2-A3** ✓ auth_key stripped from GET /registration AND the 409 register echo, BOTH impls (`ff6fdde`; never load-bearing — clients derive via HKDF; conformance test_16 locks it). Poison-envelope skip-not-wedge (`7069a48`: `PollBatch{rows,skipped}`, per-row open_relay_row, server folds skipped into max_seq, FFI counts into `errors`; perturb-checked load-bearing). Conformance **21/21 vs both impls** (CF via wrangler). HA bumped 0.2.2 (`ed72238`) — supersedes 0.2.1: after next push+green CI, update HA straight to **0.2.2**.
 - [ ] **A4-A5** cursor-past-failure family + per-(relay,group) scoped cursors (server + FFI/iOS). Verify: `cargo test --workspace` + new harness cases.
 - [ ] **A6-A7** iOS `.relay` write gates + applyRemoteChange + pairing-code resilience + Mock-seed clear; honest tick_outbound/sendDelta errors. Verify: `xcodebuild` + new iOS unit target.
 - [ ] **A8-A9** mojibake fix (+non-ASCII round-trip test); PUT-200-on-record_local-failure; note_tree non-bullet preservation. Verify: `cargo test -p tesela-core -p tesela-server`.
