@@ -124,6 +124,30 @@ async fn engine_at(root: &Path, device: DeviceId) -> LoroEngine {
 /// cursors commit only after a confirmed send; a retry after a
 /// lost-response success deposits a duplicate envelope, which is
 /// harmless (Loro update application is idempotent).
+/// Register with transient-failure retries. A `Crypto` error is a true
+/// conflict/hijack signal — fail fast. Anything else (5xx while the HA
+/// box is busy serving the real group, network blip) retries.
+async fn register_with_retry(client: &RelayClient, who: &str) {
+    let mut last = String::new();
+    for attempt in 1..=5u32 {
+        match client.register_or_recover().await {
+            Ok(_) => return,
+            Err(e @ tesela_sync::error::SyncError::Crypto(_)) => {
+                panic!("{who} registers: non-transient: {e}")
+            }
+            Err(e) => {
+                last = e.to_string();
+                println!(
+                    "[{}] {who} register attempt {attempt}/5 failed (transient): {last}",
+                    now_log()
+                );
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+        }
+    }
+    panic!("{who} registers: all attempts failed: {last}");
+}
+
 async fn push_with_retry(
     engine: &LoroEngine,
     client: &RelayClient,
@@ -370,8 +394,12 @@ async fn soak_real_relay() {
     let dev_b = DeviceId::from_bytes(random_id16());
     let client_a = RelayClient::new(base_url.clone(), group, dev_a, key.clone());
     let client_b = RelayClient::new(base_url.clone(), group, dev_b, key);
-    client_a.register_or_recover().await.expect("A registers");
-    client_b.register_or_recover().await.expect("B registers");
+    // Registration retries: the relay lives on home hardware that's also
+    // serving the user's real group every 5s — a transient 5xx (SQLite
+    // busy, HA restart) must not kill a multi-hour soak before round 1.
+    // Crypto errors (true conflict/hijack) still fail fast.
+    register_with_retry(&client_a, "A").await;
+    register_with_retry(&client_b, "B").await;
 
     let tmp_a = tempfile::tempdir().expect("tmp A");
     let tmp_b = tempfile::tempdir().expect("tmp B");

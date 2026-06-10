@@ -113,7 +113,18 @@ impl RelayClient {
                  already stored. Caller should fetch /registration and recover."
                     .into(),
             )),
-            s => Err(SyncError::Crypto(format!("register: relay returned {s}"))),
+            // Any other status is a transient/server failure, NOT a conflict —
+            // it must not take the conflict-recovery path (a 500/503 here used
+            // to be misdiagnosed as "relay 409 but /registration returned 404",
+            // turning a blip into a scary hijack-shaped error). `Other` lets
+            // callers treat it as retryable.
+            s => {
+                let body = resp.text().await.unwrap_or_default();
+                Err(SyncError::Other(format!(
+                    "register: relay returned {s}: {}",
+                    body.chars().take(200).collect::<String>()
+                )))
+            }
         }
     }
 

@@ -296,3 +296,38 @@ async fn hijacked_relay_is_detected_by_joiner_verification() {
         "error must mention hijack: got {msg}"
     );
 }
+
+/// Audit regression: a transient non-OK from POST /register (5xx while the
+/// relay host is busy, 429, etc.) must NOT take the conflict-recovery path.
+/// It used to be misdiagnosed as a 409, and since the group genuinely
+/// doesn't exist, recovery then failed with the hijack-shaped
+/// "relay 409 but /registration returned 404".
+#[tokio::test]
+async fn transient_register_failure_is_not_misdiagnosed_as_conflict() {
+    use axum::{http::StatusCode, routing::post, Router};
+
+    let app = Router::new().route(
+        "/groups/{id}/register",
+        post(|| async { (StatusCode::SERVICE_UNAVAILABLE, "busy") }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = reqwest::Url::parse(&format!("http://{}", listener.local_addr().unwrap()))
+        .expect("stub url");
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let (group, key) = fresh_group();
+    let client = RelayClient::new(base_url, group, fresh_device(), key);
+    let err = client
+        .register_or_recover()
+        .await
+        .expect_err("503 must surface as an error");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("503") || msg.to_lowercase().contains("service unavailable"),
+        "error must carry the real status, got: {msg}"
+    );
+    assert!(
+        !msg.contains("409") && !msg.to_lowercase().contains("hijack"),
+        "transient failure must not be conflict/hijack-shaped, got: {msg}"
+    );
+}
