@@ -1,5 +1,12 @@
 # Current State
 
+## 2026-06-10 (midday) — Round-1 product test: 5 findings, ALL FIXED + shipped as 1.1 (build 6)
+
+**Taylor's round-1 result:** sync works BOTH directions incl. same-block concurrent edits; quiet period seemed OK. 5 findings, all fixed same-day (details in the A15/A16 entries below + commits): (1) iOS deletes didn't propagate + resurrected (3 engine seams, worst = the destructive NoteUpsert reseed gate vacuously true on every device — `ddc84ba`/`54e80ab`); (2) phantom empty block above Today (placeholder writeback suppressed); (3) Agenda/Inbox empty in .relay (`9935979` LocalQueryEngine mirrors server semantics + refreshTick); (4) triage swipes/mark-done were silent no-ops in .relay (`2325a16`/`fd233ec` P1.11 block-property FFI + engine-routed writes — page-prop FFI fns still pending); (5) keyboard toolbar missing on the collab editor (UITextView needs a real inputAccessoryView — `c268617`).
+**SHIPPED: TestFlight 1.1 (build 6)** — ⚠ NEW VERSION SCHEME (Taylor, `1c22b31`): plain integer builds ("build 6"), NEVER timestamps; **version truth = project.yml** (xcodegen regenerates Info.plist — plist-only stamps reset!); the script bumps the counter in both files, commit them post-upload. 1.1 = one-time reset (Apple needs ascending builds per version). Test card refreshed: harness-deck ask `build6-result`.
+**Soak:** `498f321` real-relay soak test (env-driven rounds across compaction quiet periods); its FIRST run caught a live bug — transient register 5xx misdiagnosed as 409-conflict/hijack (the audit's medium finding) — fixed `9dad7d8` + stub-503 regression test. 12-round soak vs the live HA relay relaunched (~1.5h, log /tmp/tesela-soak-long2.log); smoke (2 rounds) already PASSED on the deployed image incl. the black-hole condition (post-compaction seq above watermark).
+**Next:** Taylor's build-6 test round → then Stream B (B2-B4 cutover) + Milestone 3. HA stays 0.2.2 (no relay change today; the register fix is client-side — lands in the next desktop relaunch + future builds).
+
 ## 2026-06-09 (evening) — Ultracode audit + product review → two-stream plan
 
 **Branch:** main (un-pushed commits — remind Taylor to push at session end, adopted 2026-06-09).
