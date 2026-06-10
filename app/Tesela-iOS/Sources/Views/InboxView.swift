@@ -133,6 +133,15 @@ struct InboxView: View {
             await loadFilters()
             await load()
         }
+        // Re-query when a refresh pass lands (relay tick / WS event) —
+        // same signal that freshens Daily. Filters can change too (a
+        // synced Query note), so reload both.
+        .onChange(of: mosaic.refreshTick) { _, _ in
+            Task {
+                await loadFilters()
+                await load()
+            }
+        }
         .sheet(isPresented: $showRawDslSheet) {
             InboxRawDslSheet(
                 initialDsl: dslFromChips(chipState),

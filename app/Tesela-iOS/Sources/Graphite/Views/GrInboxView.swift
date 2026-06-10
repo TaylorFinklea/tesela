@@ -44,6 +44,9 @@ struct GrInboxView: View {
             }
         }
         .task { await load() }
+        // Re-query when a refresh pass lands (relay tick / WS event) —
+        // same signal that freshens Daily.
+        .onChange(of: mosaic.refreshTick) { _, _ in Task { await load() } }
     }
 
     private var subtitle: String {

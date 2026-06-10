@@ -51,6 +51,9 @@ struct GrAgendaView: View {
         }
         .task { await load() }
         .onChange(of: includeDone) { _, _ in Task { await load() } }
+        // Re-query when a refresh pass lands (relay tick / WS event /
+        // pull-to-refresh elsewhere) — same signal that freshens Daily.
+        .onChange(of: mosaic.refreshTick) { _, _ in Task { await load() } }
     }
 
     // ── Week strip (.grm-agstrip) ───────────────────────────────────────

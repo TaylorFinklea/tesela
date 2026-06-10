@@ -31,6 +31,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
     @Published private(set) var palette: [PaletteVerb]
     @Published private(set) var searchResults: [SearchResult]
 
+    /// Bumped after every non-mock `refresh(from:)` pass — including the
+    /// relay-tick path (`onAppliedChanges → applyRemoteChange → refresh`).
+    /// Views whose data lives in their own query-backed `@State` (Agenda,
+    /// Inbox) observe this to re-run their load when new ops land; the
+    /// Daily doesn't need it because it renders `todayBlocks` directly.
+    @Published private(set) var refreshTick: Int = 0
+
     /// Backlinks for each page the user has opened, keyed by note id.
     /// Filled by `loadPage(id:)` from `GET /notes/{id}/backlinks`. The
     /// page outline is derived on demand from `loadedPageBlocks`, so it
@@ -1071,6 +1078,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// pass on top of the local source of truth, not a gate that
     /// blocks the UI.
     func refresh(from backend: Backend, userInitiated: Bool = false) async {
+        // Nudge query-backed views (Agenda/Inbox) on every real-backend
+        // refresh — `defer` so the `.http` catch-path early returns
+        // still signal (a failed freshen may still have hydrated from
+        // the local sandbox).
+        defer { if backend != .mock { refreshTick &+= 1 } }
         switch backend {
         case .mock:
             resetToSeed()
@@ -1892,6 +1904,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         }()
         let title = parseTitleFromFrontmatter(frontmatter) ?? id
         let tags = parseTagsFromFrontmatter(frontmatter)
+        let noteType = parseNoteTypeFromFrontmatter(frontmatter)
         let mtime = (try? FileManager.default.attributesOfItem(atPath: path.path)[.modificationDate] as? Date)
             ?? Date()
         let mtimeISO = ISO8601DateFormatter().string(from: mtime)
@@ -1903,12 +1916,27 @@ final class MockMosaicService: ObservableObject, MosaicService {
             metadata: APINoteMetadata(
                 title: title,
                 tags: tags,
-                note_type: nil,
+                note_type: noteType,
                 created: nil,
                 modified: mtimeISO
             ),
             modified_at: mtimeISO
         )
+    }
+
+    /// Read every materialized note in the local sandbox, sorted by
+    /// slug for deterministic output. The whole-mosaic walk the `.relay`
+    /// Agenda + Inbox local queries run over — same corpus and cost
+    /// shape as `localSearch` / `applyLocalRefreshFallback`.
+    private func loadAllLocalNotes() -> [APINote] {
+        let notesDir = localMosaicRoot().appendingPathComponent("notes")
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: notesDir.path) else {
+            return []
+        }
+        return files
+            .filter { $0.hasSuffix(".md") }
+            .sorted()
+            .compactMap { readLocalNote(id: String($0.dropLast(3))) }
     }
 
     /// Pull `title: "..."` out of a YAML frontmatter block. Returns
@@ -1920,6 +1948,23 @@ final class MockMosaicService: ObservableObject, MosaicService {
             if line.hasPrefix("title:") {
                 let val = line.dropFirst("title:".count).trimmingCharacters(in: .whitespaces)
                 return val.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            }
+        }
+        return nil
+    }
+
+    /// Pull `type: "..."` (the note_type discriminator) out of a YAML
+    /// frontmatter block. Same quick-and-dirty single-line treatment as
+    /// `parseTitleFromFrontmatter` — the Mac writer emits `type: "Query"`
+    /// style lines only. Needed locally so the `.relay` Inbox can apply
+    /// the server's `on:system-pages` semantics (Tag/Property/Query/
+    /// Template) without HTTP.
+    private func parseNoteTypeFromFrontmatter(_ fm: String) -> String? {
+        for line in fm.split(separator: "\n") {
+            if line.hasPrefix("type:") {
+                let val = line.dropFirst("type:".count).trimmingCharacters(in: .whitespaces)
+                let unquoted = val.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                return unquoted.isEmpty ? nil : unquoted
             }
         }
         return nil
@@ -2631,14 +2676,46 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// (`YYYY-MM-DD`) for `from` / `to`, inclusive both ends. Returns an
     /// empty list on mock mode or HTTP failure rather than throwing, so
     /// the calling view can render an empty state without ceremony.
+    ///
+    /// `.relay` serves the same window from the relay-synced sandbox
+    /// notes via `LocalQueryEngine` (the local mirror of the server's
+    /// `agenda_blocks`) — the Agenda was empty in relay mode because
+    /// this method was `.http`-gated (2026-06-10 product test).
     func fetchAgenda(from: String, to: String, includeDone: Bool) async -> [AgendaRow] {
-        guard case .http(let baseURL) = currentBackend else { return [] }
-        let body = APIAgendaRequest(from: from, to: to, include_done: includeDone)
-        do {
-            return try await httpPostJSON("/agenda", baseURL: baseURL, body: body)
-        } catch {
+        switch currentBackend {
+        case .mock:
             return []
+        case .relay:
+            return localAgenda(from: from, to: to, includeDone: includeDone)
+        case .http(let baseURL):
+            let body = APIAgendaRequest(from: from, to: to, include_done: includeDone)
+            do {
+                return try await httpPostJSON("/agenda", baseURL: baseURL, body: body)
+            } catch {
+                return []
+            }
         }
+    }
+
+    /// Local-sandbox mirror of `POST /agenda`: walk every materialized
+    /// note, parse blocks, and let `LocalQueryEngine` apply the server's
+    /// `agenda_blocks` semantics (scheduled/deadline anchors, done
+    /// filtering, recurrence projection, the canonical sort).
+    private func localAgenda(from: String, to: String, includeDone: Bool) -> [AgendaRow] {
+        let today = Self.dailySlug(for: Date())
+        var rows: [AgendaRow] = []
+        for note in loadAllLocalNotes() {
+            let blocks = parseBlocks(from: note.body, noteId: note.id)
+            rows += LocalQueryEngine.agendaRows(
+                blocks: blocks,
+                from: from,
+                to: to,
+                includeDone: includeDone,
+                today: today
+            )
+        }
+        LocalQueryEngine.sortAgendaRows(&rows)
+        return rows
     }
 
     /// Fetch the active Inbox-style saved filter's DSL. The Inbox surface
@@ -2649,18 +2726,27 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// the active slug is persisted client-side and passed in.
     ///
     /// Returns `nil` when:
-    ///   - we're not on an HTTP backend
+    ///   - we're on the mock backend
     ///   - the note doesn't exist yet (first-run mosaic)
     ///   - the note exists but has no `query::` line
     ///
     /// Callers fall back to `defaultInboxDsl()` in those cases.
+    /// `.relay` reads the saved-filter note from the local sandbox
+    /// instead of HTTP — same body scan either way.
     func fetchInboxDsl(slug: String) async -> String? {
-        guard case .http(let baseURL) = currentBackend else { return nil }
         let note: APINote
-        do {
-            note = try await httpGet("/notes/\(slug)", baseURL: baseURL)
-        } catch {
+        switch currentBackend {
+        case .mock:
             return nil
+        case .relay:
+            guard let local = readLocalNote(id: slug) else { return nil }
+            note = local
+        case .http(let baseURL):
+            do {
+                note = try await httpGet("/notes/\(slug)", baseURL: baseURL)
+            } catch {
+                return nil
+            }
         }
         // Match `^query::\s*(.+)$` line-by-line; mirrors the web's
         // `readQueryFromNote` (`Inbox.svelte`).
@@ -2703,12 +2789,20 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// focused. Mirrors `availableFilters` in the web's
     /// `Inbox.svelte`.
     func listInboxFilters() async -> [InboxFilterRef] {
-        guard case .http(let baseURL) = currentBackend else { return [] }
         let notes: [APINote]
-        do {
-            notes = try await httpGet("/notes?limit=500", baseURL: baseURL)
-        } catch {
+        switch currentBackend {
+        case .mock:
             return []
+        case .relay:
+            // Local sandbox scan; `note_type` comes from the frontmatter
+            // `type:` line via `readLocalNote`.
+            notes = loadAllLocalNotes()
+        case .http(let baseURL):
+            do {
+                notes = try await httpGet("/notes?limit=500", baseURL: baseURL)
+            } catch {
+                return []
+            }
         }
         return notes
             .filter { $0.metadata.note_type == "Query" }
@@ -2868,16 +2962,48 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// surface uses a saved filter's DSL (fetched via `fetchInboxDsl`)
     /// or `defaultInboxDsl()` for first-run. Returns an empty result on
     /// failure so the view renders the empty state instead of crashing.
+    ///
+    /// `.relay` evaluates the chip-registry token subset of the DSL
+    /// locally over the sandbox notes (`LocalQueryEngine`, mirroring
+    /// `block_matches`) — the Inbox was empty in relay mode because this
+    /// method was `.http`-gated (2026-06-10 product test). JQL-grammar
+    /// clauses beyond that subset are skipped locally (match-all).
     func executeQuery(_ dsl: String) async -> QueryResult {
-        guard case .http(let baseURL) = currentBackend else {
+        switch currentBackend {
+        case .mock:
             return QueryResult(groups: [])
+        case .relay:
+            return localExecuteQuery(dsl)
+        case .http(let baseURL):
+            let body = APIExecuteQueryBody(dsl: dsl, group: nil, sort: nil)
+            do {
+                return try await httpPostJSON("/search/query", baseURL: baseURL, body: body)
+            } catch {
+                return QueryResult(groups: [])
+            }
         }
-        let body = APIExecuteQueryBody(dsl: dsl, group: nil, sort: nil)
-        do {
-            return try await httpPostJSON("/search/query", baseURL: baseURL, body: body)
-        } catch {
-            return QueryResult(groups: [])
+    }
+
+    /// Local-sandbox mirror of `POST /search/query` for block-kind
+    /// queries. Page-kind queries (`kind:page`) aren't served locally —
+    /// no iOS surface issues them today. Group/sort follow the iOS
+    /// caller convention (both nil), which server-side yields a single
+    /// ungrouped bucket with an empty key (`apply_group(None)`).
+    private func localExecuteQuery(_ dsl: String) -> QueryResult {
+        let parsed = LocalQueryEngine.parseSimpleDsl(dsl)
+        guard parsed.kind == .block else { return QueryResult(groups: []) }
+        var items: [QueryItem] = []
+        for note in loadAllLocalNotes() {
+            let blocks = parseBlocks(from: note.body, noteId: note.id)
+            items += LocalQueryEngine.queryItems(
+                blocks: blocks,
+                noteId: note.id,
+                noteTitle: note.title,
+                pageNoteType: note.metadata.note_type,
+                dsl: parsed
+            )
         }
+        return QueryResult(groups: [QueryGroup(key: "", items: items)])
     }
 
     /// Direct write to `/blocks/set-property`. Used by Agenda + Inbox

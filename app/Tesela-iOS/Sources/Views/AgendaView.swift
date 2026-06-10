@@ -131,6 +131,9 @@ struct AgendaView: View {
             Task { await load() }
         }
         .onChange(of: rows) { _, _ in rebucket() }
+        // Re-query when a refresh pass lands (relay tick / WS event) —
+        // same signal that freshens Daily.
+        .onChange(of: mosaic.refreshTick) { _, _ in Task { await load() } }
     }
 
     // MARK: - Content
