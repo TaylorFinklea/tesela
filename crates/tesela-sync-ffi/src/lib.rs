@@ -15,7 +15,8 @@ use tesela_sync::{
     decode_loro_relay_payload, decode_pairing_code as decode_pairing_code_inner,
     encode_loro_relay_payload, encode_pairing_code as encode_pairing_code_inner,
     engine::SyncEngine, oplog::op::OpPayload, transport::relay::RelayClient, DeviceId, GroupId,
-    GroupKey, Hlc, LoroDocUpdate, LoroEngine, PairingCode as InnerPairingCode, SyncEnvelope,
+    GroupKey, Hlc, LoroDocUpdate, LoroEngine, PairingCode as InnerPairingCode, PropOp, PropScalar,
+    SyncEnvelope,
 };
 use tokio::sync::Mutex;
 
@@ -684,6 +685,103 @@ impl SyncEngineHandle {
         Ok(self.inner.read_block_text(note_id, block_id).await)
     }
 
+    /// Set ONE property on a block through the engine's typed
+    /// `props`/`prop_keys` containers (P1.11) — the on-device mirror of the
+    /// server's `POST /blocks/set-property` route (P1.10,
+    /// `tesela-server::routes::notes::set_block_property`). Emits
+    /// `OpPayload::BlockPropertySet` via `record_local`, NOT a text rewrite:
+    /// the property merges INDEPENDENTLY of the block's prose `text_seq`, so
+    /// a concurrent peer prose edit and this set never clobber each other.
+    /// The engine materializes the property as a `key:: value` continuation
+    /// line in the sandbox `<slug>.md` (the iOS read path) as a side effect.
+    ///
+    /// **Typing policy — the server's unknown-key degrade.** The server
+    /// resolves the property's `value_type` from the registry
+    /// (`prop_ops_for_set`/`lookup_value_type` in the route file); on-device
+    /// there is no registry, so EVERY key takes the server's unknown-key path
+    /// (`ValueType::Text` → `PropOp::SetText`; coerce-and-keep — the registry
+    /// is advisory, never a write gate). The `tags` multi-value convention is
+    /// honored exactly as the server does registry-less: `PropOp::Clear`
+    /// followed by one `PropOp::AddToList` per comma-separated item.
+    ///
+    /// **No in-text strip.** The server's route strips a legacy
+    /// solely-`key:: value` prose line before the container set; here we
+    /// deliberately DON'T — the materializer's render-time dedup (A4,
+    /// `dedup_intext_props_against_container`) already emits each key once,
+    /// container value winning. Known boundary: clearing the key later
+    /// un-hides a legacy in-text line (the iOS triage paths set keys the
+    /// block didn't carry, so this doesn't arise there).
+    ///
+    /// `slug` / `block_id_hex` follow [`Self::splice_block_text`]'s shape
+    /// (blake3 slug → note id; 32-char dashless hex OR dashed UUID block id).
+    /// The key is normalized like the route: trim + lowercase, `[a-z0-9_]+`
+    /// only (anything else is an error). Returns `1` when recorded, `0` when
+    /// the block isn't present in the note's rendered view — the FFI mirror
+    /// of the route's 404, so a stale/minted bid surfaces instead of
+    /// silently no-opping in the apply arm.
+    pub async fn set_block_property(
+        &self,
+        slug: String,
+        block_id_hex: String,
+        key: String,
+        value: String,
+    ) -> Result<u32, FfiSyncError> {
+        let note_id = stable_uuid_from_slug(&slug);
+        let block_id = parse_block_id_hex(&block_id_hex).ok_or_else(|| FfiSyncError::Other {
+            message: "block_id_hex must be 32 hex chars or a dashed UUID".into(),
+        })?;
+        let key = normalize_prop_key(&key)?;
+        if !self.block_exists(note_id, &block_id).await {
+            return Ok(0);
+        }
+        for op in prop_ops_for_set(&key, &value) {
+            self.inner
+                .record_local(OpPayload::BlockPropertySet {
+                    note_id,
+                    block_id,
+                    key: key.clone(),
+                    value: op,
+                })
+                .await
+                .map_err(FfiSyncError::from)?;
+        }
+        Ok(1)
+    }
+
+    /// Remove a property from a block — the on-device mirror of the server's
+    /// `POST /blocks/clear-property` route (P1.10,
+    /// `tesela-server::routes::notes::clear_block_property`). Emits
+    /// `OpPayload::BlockPropertySet { value: PropOp::Clear }` through the
+    /// engine, dropping the key from the block's `props`/`prop_keys`
+    /// containers; the materializer then stops emitting its `key:: value`
+    /// line. Same addressing/normalization/return contract as
+    /// [`Self::set_block_property`] (`1` recorded, `0` block not found).
+    pub async fn clear_block_property(
+        &self,
+        slug: String,
+        block_id_hex: String,
+        key: String,
+    ) -> Result<u32, FfiSyncError> {
+        let note_id = stable_uuid_from_slug(&slug);
+        let block_id = parse_block_id_hex(&block_id_hex).ok_or_else(|| FfiSyncError::Other {
+            message: "block_id_hex must be 32 hex chars or a dashed UUID".into(),
+        })?;
+        let key = normalize_prop_key(&key)?;
+        if !self.block_exists(note_id, &block_id).await {
+            return Ok(0);
+        }
+        self.inner
+            .record_local(OpPayload::BlockPropertySet {
+                note_id,
+                block_id,
+                key,
+                value: PropOp::Clear,
+            })
+            .await
+            .map_err(FfiSyncError::from)?;
+        Ok(1)
+    }
+
     /// Import the server's full Loro snapshot for a note as an **authoritative
     /// re-base**. Used both as a pre-author shared base (a later `recordNoteDiff`
     /// BlockUpsert resolves to the server's tree nodes instead of minting rival
@@ -735,6 +833,69 @@ impl SyncEngineHandle {
             .await
             .map_err(FfiSyncError::from)
     }
+}
+
+impl SyncEngineHandle {
+    /// True when the block is present (live) in the note's rendered view —
+    /// the engine's `serialize_note` output stamps every live block with its
+    /// `<!-- bid:<dashed-uuid> -->` marker. This is the FFI counterpart of
+    /// the server route's `block_bid_from_suffix` 404 check (resolve the
+    /// target against the materialized view before emitting the op): the
+    /// engine's `BlockPropertySet` apply arm treats an unknown block as a
+    /// SAFE NO-OP, so without this probe a stale or freshly-minted bid would
+    /// silently drop the write — the exact class P1.11 exists to close.
+    async fn block_exists(&self, note_id: [u8; 16], block_id: &[u8; 16]) -> bool {
+        let Some(rendered) = self.inner.render_note(note_id).await else {
+            return false;
+        };
+        rendered.contains(&format_dashed_uuid(block_id))
+    }
+}
+
+/// Normalize + validate a property key the way the server's set/clear
+/// property routes do (`tesela-server::routes::notes`): trim + lowercase,
+/// then require non-empty `[a-z0-9_]+`.
+fn normalize_prop_key(key: &str) -> Result<String, FfiSyncError> {
+    let key = key.trim().to_lowercase();
+    if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(FfiSyncError::Other {
+            message: format!("invalid property key '{key}'"),
+        });
+    }
+    Ok(key)
+}
+
+/// The [`PropOp`]s a property set maps to — the server's `prop_ops_for_set`
+/// with no registry in reach, i.e. its unknown-key degrade for every key:
+/// free-text `SetText` (coerce-and-keep), except the registry-less `tags`
+/// multi-value convention (`Clear` + one `AddToList` per comma item, so a
+/// set replaces the list deterministically — mirrors `list_set_ops`).
+fn prop_ops_for_set(key: &str, value: &str) -> Vec<PropOp> {
+    if key == "tags" {
+        let mut ops = vec![PropOp::Clear];
+        for item in value.split(',') {
+            let item = item.trim();
+            if !item.is_empty() {
+                ops.push(PropOp::AddToList(PropScalar::Text(item.to_string())));
+            }
+        }
+        return ops;
+    }
+    vec![PropOp::SetText(value.to_string())]
+}
+
+/// Format a 16-byte id as the dashed lowercase UUID `serialize_note`'s
+/// `<!-- bid:… -->` markers carry (8-4-4-4-12).
+fn format_dashed_uuid(b: &[u8; 16]) -> String {
+    let h = hex_encode(b);
+    format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    )
 }
 
 // ============================================================================
@@ -1779,6 +1940,279 @@ mod tests {
         let h = open_handle(dir.path(), &generate_device_id_hex()).await;
         let err = h
             .splice_block_text("any".into(), "not-a-hex-id".into(), 0, 0, "X".into())
+            .await
+            .unwrap_err();
+        match err {
+            FfiSyncError::Other { .. } => {}
+            other => panic!("wrong error variant: {other:?}"),
+        }
+    }
+
+    // ─── P1.11 — set/clear block property through the FFI ────────────────
+
+    #[tokio::test]
+    async fn set_block_property_materializes_one_line_and_dedups_intext() {
+        // The relay-mode triage write: set a property via the FFI and the
+        // materialized view must show exactly ONE `key:: value` line — the
+        // typed container's — with a legacy in-text line for the same key
+        // dropped at render time (A4 `dedup_intext_props_against_container`).
+        // No double-strip: the FFI emits ONLY the BlockPropertySet op.
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let slug = "prop-note".to_string();
+        let bid = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+
+        // The block starts life with a legacy in-text `status:: todo`
+        // continuation line (notes are seeded from markdown).
+        h.record_note_upsert_by_slug(
+            slug.clone(),
+            "Prop".into(),
+            format!("- triage me <!-- bid:{bid} -->\n  status:: todo\n"),
+            1,
+        )
+        .await
+        .unwrap();
+
+        let n = h
+            .set_block_property(slug.clone(), bid.to_string(), "status".into(), "done".into())
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "property set applied");
+
+        let note_id = stable_uuid_from_slug(&slug);
+        let rendered = h.inner.render_note(note_id).await.unwrap_or_default();
+        let status_lines: Vec<&str> = rendered
+            .lines()
+            .filter(|l| l.trim_start().starts_with("status::"))
+            .collect();
+        assert_eq!(
+            status_lines,
+            vec!["  status:: done"],
+            "exactly one status line, container value wins: {rendered:?}"
+        );
+        // The materialized FILE — what the iOS read path actually parses —
+        // shows the same single line.
+        let file = dir.path().join("notes").join(format!("{slug}.md"));
+        let on_disk = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            on_disk.matches("status::").count(),
+            1,
+            "one status line on disk: {on_disk:?}"
+        );
+        assert!(on_disk.contains("status:: done"), "{on_disk:?}");
+    }
+
+    #[tokio::test]
+    async fn set_block_property_converges_to_peer_via_relay_update() {
+        // The property set must travel as an ordinary per-note Loro update:
+        // peer B applies A's delta frame and renders the same single line.
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a = open_handle(dir_a.path(), "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1").await;
+        let b = open_handle(dir_b.path(), "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2").await;
+        let slug = "prop-sync".to_string();
+        let note_id = stable_uuid_from_slug(&slug);
+        let bid = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+
+        a.record_note_upsert_by_slug(
+            slug.clone(),
+            "PropSync".into(),
+            format!("- shared task <!-- bid:{bid} -->\n"),
+            1,
+        )
+        .await
+        .unwrap();
+        let bootstrap = a
+            .produce_note_delta(slug.clone(), None)
+            .await
+            .unwrap()
+            .expect("bootstrap frame");
+        b.apply_delta_frame(bootstrap).await.unwrap();
+
+        let n = a
+            .set_block_property(slug.clone(), bid.to_string(), "status".into(), "done".into())
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+
+        let b_vv = b.note_version(slug.clone()).await;
+        let frame = a
+            .produce_note_delta(slug.clone(), b_vv)
+            .await
+            .unwrap()
+            .expect("property delta");
+        b.apply_delta_frame(frame).await.unwrap();
+
+        let ra = a.inner.render_note(note_id).await.unwrap();
+        let rb = b.inner.render_note(note_id).await.unwrap();
+        assert_eq!(ra, rb, "peer converges on the property set");
+        assert!(rb.contains("status:: done"), "{rb:?}");
+        assert_eq!(rb.matches("status::").count(), 1, "no duplicate: {rb:?}");
+    }
+
+    #[tokio::test]
+    async fn clear_block_property_removes_the_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let slug = "prop-clear".to_string();
+        let note_id = stable_uuid_from_slug(&slug);
+        let bid = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+
+        h.record_note_upsert_by_slug(
+            slug.clone(),
+            "PropClear".into(),
+            format!("- task <!-- bid:{bid} -->\n"),
+            1,
+        )
+        .await
+        .unwrap();
+        h.set_block_property(slug.clone(), bid.to_string(), "status".into(), "doing".into())
+            .await
+            .unwrap();
+        assert!(h
+            .inner
+            .render_note(note_id)
+            .await
+            .unwrap()
+            .contains("status:: doing"));
+
+        let n = h
+            .clear_block_property(slug.clone(), bid.to_string(), "status".into())
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "clear applied");
+        let rendered = h.inner.render_note(note_id).await.unwrap();
+        assert!(
+            !rendered.contains("status::"),
+            "cleared property no longer renders: {rendered:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_block_property_tags_takes_the_multi_value_convention() {
+        // `tags` is multi-value even without a registry (the server's
+        // registry-less convention): a set is Clear + one AddToList per
+        // comma item, leaving a LIST container at the key. The load-bearing
+        // observable is TYPE INTEROP with the fleet: a later bare
+        // `AddToList` (the `backfill-task` / twin-heal re-assert op shape)
+        // must UNION into the FFI-created container — a `SetText` degrade
+        // would leave a LoroText at the key and the union would fail or
+        // clobber. (Concurrent route-style SETS of the same key stay
+        // replace/LWW by design — `prop_clear` deletes the container — so
+        // union-of-sets is deliberately NOT asserted here.)
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let slug = "prop-tags".to_string();
+        let note_id = stable_uuid_from_slug(&slug);
+        let bid = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+
+        h.record_note_upsert_by_slug(
+            slug.clone(),
+            "PropTags".into(),
+            format!("- tag me <!-- bid:{bid} -->\n"),
+            1,
+        )
+        .await
+        .unwrap();
+        h.set_block_property(
+            slug.clone(),
+            bid.to_string(),
+            "tags".into(),
+            "alpha, beta".into(),
+        )
+        .await
+        .unwrap();
+        let rendered = h.inner.render_note(note_id).await.unwrap();
+        assert!(
+            rendered.contains("tags:: alpha, beta"),
+            "list materializes comma-joined: {rendered:?}"
+        );
+
+        // Fleet-side AddToList (backfill/heal shape) unions into the SAME
+        // list container the FFI's set created.
+        let block_id = parse_block_id_hex(bid).unwrap();
+        h.inner
+            .record_local(OpPayload::BlockPropertySet {
+                note_id,
+                block_id,
+                key: "tags".into(),
+                value: PropOp::AddToList(PropScalar::Text("Task".into())),
+            })
+            .await
+            .unwrap();
+        let rendered = h.inner.render_note(note_id).await.unwrap();
+        assert!(
+            rendered.contains("tags:: alpha, beta, Task"),
+            "AddToList unions into the FFI-created list: {rendered:?}"
+        );
+        assert_eq!(rendered.matches("tags::").count(), 1, "{rendered:?}");
+    }
+
+    #[tokio::test]
+    async fn set_and_clear_block_property_unknown_block_return_zero() {
+        // A bid that isn't in the note's rendered view (stale, or minted by
+        // a bid-less parse) must surface as Ok(0) — NOT silently no-op in
+        // the engine's apply arm. Mirrors the server route's 404.
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let slug = "prop-missing".to_string();
+        h.record_note_upsert_by_slug(
+            slug.clone(),
+            "PropMissing".into(),
+            "- present <!-- bid:0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a -->\n".into(),
+            1,
+        )
+        .await
+        .unwrap();
+
+        let ghost = "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b";
+        let n = h
+            .set_block_property(slug.clone(), ghost.to_string(), "status".into(), "done".into())
+            .await
+            .unwrap();
+        assert_eq!(n, 0, "missing block → Ok(0)");
+        let m = h
+            .clear_block_property(slug.clone(), ghost.to_string(), "status".into())
+            .await
+            .unwrap();
+        assert_eq!(m, 0, "missing block → Ok(0)");
+        // And an entirely unknown note too.
+        let k = h
+            .set_block_property(
+                "never-seen".into(),
+                ghost.to_string(),
+                "status".into(),
+                "done".into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(k, 0, "unknown note → Ok(0)");
+    }
+
+    #[tokio::test]
+    async fn set_block_property_rejects_bad_block_id_and_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+        let err = h
+            .set_block_property(
+                "any".into(),
+                "not-a-hex-id".into(),
+                "status".into(),
+                "done".into(),
+            )
+            .await
+            .unwrap_err();
+        match err {
+            FfiSyncError::Other { .. } => {}
+            other => panic!("wrong error variant: {other:?}"),
+        }
+        let err = h
+            .set_block_property(
+                "any".into(),
+                "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a".into(),
+                "not a key!".into(),
+                "x".into(),
+            )
             .await
             .unwrap_err();
         match err {

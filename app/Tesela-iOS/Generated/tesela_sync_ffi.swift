@@ -1252,6 +1252,18 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func applyDeltaFrame(frame: Data) async throws  -> DeltaApplyOutcome
     
     /**
+     * Remove a property from a block — the on-device mirror of the server's
+     * `POST /blocks/clear-property` route (P1.10,
+     * `tesela-server::routes::notes::clear_block_property`). Emits
+     * `OpPayload::BlockPropertySet { value: PropOp::Clear }` through the
+     * engine, dropping the key from the block's `props`/`prop_keys`
+     * containers; the materializer then stops emitting its `key:: value`
+     * line. Same addressing/normalization/return contract as
+     * [`Self::set_block_property`] (`1` recorded, `0` block not found).
+     */
+    func clearBlockProperty(slug: String, blockIdHex: String, key: String) async throws  -> UInt32
+    
+    /**
      * 32-char hex of this engine's device id. The Swift coordinator
      * reads this once at boot for display in Settings → Sync.
      */
@@ -1397,6 +1409,44 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * keeps the engine's HLC ordering monotonic.
      */
     func recordNoteUpsertBySlug(slug: String, title: String, content: String, createdAtMillis: Int64) async throws  -> String
+    
+    /**
+     * Set ONE property on a block through the engine's typed
+     * `props`/`prop_keys` containers (P1.11) — the on-device mirror of the
+     * server's `POST /blocks/set-property` route (P1.10,
+     * `tesela-server::routes::notes::set_block_property`). Emits
+     * `OpPayload::BlockPropertySet` via `record_local`, NOT a text rewrite:
+     * the property merges INDEPENDENTLY of the block's prose `text_seq`, so
+     * a concurrent peer prose edit and this set never clobber each other.
+     * The engine materializes the property as a `key:: value` continuation
+     * line in the sandbox `<slug>.md` (the iOS read path) as a side effect.
+     *
+     * **Typing policy — the server's unknown-key degrade.** The server
+     * resolves the property's `value_type` from the registry
+     * (`prop_ops_for_set`/`lookup_value_type` in the route file); on-device
+     * there is no registry, so EVERY key takes the server's unknown-key path
+     * (`ValueType::Text` → `PropOp::SetText`; coerce-and-keep — the registry
+     * is advisory, never a write gate). The `tags` multi-value convention is
+     * honored exactly as the server does registry-less: `PropOp::Clear`
+     * followed by one `PropOp::AddToList` per comma-separated item.
+     *
+     * **No in-text strip.** The server's route strips a legacy
+     * solely-`key:: value` prose line before the container set; here we
+     * deliberately DON'T — the materializer's render-time dedup (A4,
+     * `dedup_intext_props_against_container`) already emits each key once,
+     * container value winning. Known boundary: clearing the key later
+     * un-hides a legacy in-text line (the iOS triage paths set keys the
+     * block didn't carry, so this doesn't arise there).
+     *
+     * `slug` / `block_id_hex` follow [`Self::splice_block_text`]'s shape
+     * (blake3 slug → note id; 32-char dashless hex OR dashed UUID block id).
+     * The key is normalized like the route: trim + lowercase, `[a-z0-9_]+`
+     * only (anything else is an error). Returns `1` when recorded, `0` when
+     * the block isn't present in the note's rendered view — the FFI mirror
+     * of the route's 404, so a stale/minted bid surfaces instead of
+     * silently no-opping in the apply arm.
+     */
+    func setBlockProperty(slug: String, blockIdHex: String, key: String, value: String) async throws  -> UInt32
     
     /**
      * Apply a single CHARACTER-LEVEL splice to one block's text — the
@@ -1550,6 +1600,33 @@ open func applyDeltaFrame(frame: Data)async throws  -> DeltaApplyOutcome  {
             completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypeDeltaApplyOutcome_lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Remove a property from a block — the on-device mirror of the server's
+     * `POST /blocks/clear-property` route (P1.10,
+     * `tesela-server::routes::notes::clear_block_property`). Emits
+     * `OpPayload::BlockPropertySet { value: PropOp::Clear }` through the
+     * engine, dropping the key from the block's `props`/`prop_keys`
+     * containers; the materializer then stops emitting its `key:: value`
+     * line. Same addressing/normalization/return contract as
+     * [`Self::set_block_property`] (`1` recorded, `0` block not found).
+     */
+open func clearBlockProperty(slug: String, blockIdHex: String, key: String)async throws  -> UInt32  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_clear_block_property(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug),FfiConverterString.lower(blockIdHex),FfiConverterString.lower(key)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u32,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u32,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u32,
+            liftFunc: FfiConverterUInt32.lift,
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
@@ -1824,6 +1901,59 @@ open func recordNoteUpsertBySlug(slug: String, title: String, content: String, c
             completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterString.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Set ONE property on a block through the engine's typed
+     * `props`/`prop_keys` containers (P1.11) — the on-device mirror of the
+     * server's `POST /blocks/set-property` route (P1.10,
+     * `tesela-server::routes::notes::set_block_property`). Emits
+     * `OpPayload::BlockPropertySet` via `record_local`, NOT a text rewrite:
+     * the property merges INDEPENDENTLY of the block's prose `text_seq`, so
+     * a concurrent peer prose edit and this set never clobber each other.
+     * The engine materializes the property as a `key:: value` continuation
+     * line in the sandbox `<slug>.md` (the iOS read path) as a side effect.
+     *
+     * **Typing policy — the server's unknown-key degrade.** The server
+     * resolves the property's `value_type` from the registry
+     * (`prop_ops_for_set`/`lookup_value_type` in the route file); on-device
+     * there is no registry, so EVERY key takes the server's unknown-key path
+     * (`ValueType::Text` → `PropOp::SetText`; coerce-and-keep — the registry
+     * is advisory, never a write gate). The `tags` multi-value convention is
+     * honored exactly as the server does registry-less: `PropOp::Clear`
+     * followed by one `PropOp::AddToList` per comma-separated item.
+     *
+     * **No in-text strip.** The server's route strips a legacy
+     * solely-`key:: value` prose line before the container set; here we
+     * deliberately DON'T — the materializer's render-time dedup (A4,
+     * `dedup_intext_props_against_container`) already emits each key once,
+     * container value winning. Known boundary: clearing the key later
+     * un-hides a legacy in-text line (the iOS triage paths set keys the
+     * block didn't carry, so this doesn't arise there).
+     *
+     * `slug` / `block_id_hex` follow [`Self::splice_block_text`]'s shape
+     * (blake3 slug → note id; 32-char dashless hex OR dashed UUID block id).
+     * The key is normalized like the route: trim + lowercase, `[a-z0-9_]+`
+     * only (anything else is an error). Returns `1` when recorded, `0` when
+     * the block isn't present in the note's rendered view — the FFI mirror
+     * of the route's 404, so a stale/minted bid surfaces instead of
+     * silently no-opping in the apply arm.
+     */
+open func setBlockProperty(slug: String, blockIdHex: String, key: String, value: String)async throws  -> UInt32  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_set_block_property(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(slug),FfiConverterString.lower(blockIdHex),FfiConverterString.lower(key),FfiConverterString.lower(value)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_u32,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u32,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_u32,
+            liftFunc: FfiConverterUInt32.lift,
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
@@ -3073,6 +3203,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_apply_delta_frame() != 47838) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_clear_block_property() != 24678) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_device_hex() != 4479) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3098,6 +3231,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_upsert_by_slug() != 28447) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_set_block_property() != 18420) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_splice_block_text() != 6907) {
