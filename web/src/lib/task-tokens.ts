@@ -15,8 +15,10 @@
  * GATING (does detection run) is the caller's job via `resolveDetectSpec` on the
  * block's DIRECT tags — never inherited. The WRITE side is `onSetProperty`.
  */
-import { priorityLevel } from "./priority";
-import { parseDateAndRecurrenceInput } from "./date-parser";
+// Explicit .ts extensions so node's type-stripping test runner can resolve
+// these (the unit suite imports this module directly — cf. scratch-prune-pure).
+import { priorityLevel } from "./priority.ts";
+import { parseDateAndRecurrenceInput } from "./date-parser.ts";
 
 /** A single property's detection rule, resolved from its Property page. */
 export type PropertySpec = {
@@ -89,6 +91,31 @@ export function resolveDetectSpec(blockTags: string[], config: DetectConfig): De
 type WordSpan = { start: number; end: number };
 type DateHit = { from: number; to: number; endWord: number; date: string; time: string | null; recurrence: string | null };
 
+/**
+ * Literal ranges on the first line that detection must never lift tokens out
+ * of: `[[wiki links]]`, markdown links/images `[text](url)`, bare URLs, and
+ * inline `` `code` `` spans. Pre-claimed in `detectTokens` so a trigger word
+ * inside a link target / code span is never detected — and therefore never
+ * stripped by the blur lift (`detectTaskTokens`), which would otherwise
+ * rewrite the link target ("p1" excised from a URL, a date word lifted out of
+ * a `[[wiki link]]`). Because cm-decorations' highlight layer renders from the
+ * same `detectTokens`, highlight and lift stay consistent by construction.
+ * Exported for unit tests.
+ */
+export function literalRanges(line0: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const collect = (re: RegExp) => {
+    for (const m of line0.matchAll(re)) {
+      ranges.push([m.index!, m.index! + m[0].length]);
+    }
+  };
+  collect(/\[\[[^\]]*\]\]/g); // wiki links
+  collect(/!?\[[^\]]*\]\([^)]*\)/g); // markdown links + images
+  collect(/`[^`]*`/g); // inline code spans
+  collect(/\bhttps?:\/\/\S+/g); // bare URLs (also covers link targets)
+  return ranges;
+}
+
 /** Longest valid date phrase starting at word `i` (skips claimed ranges). */
 function longestDateFrom(line0: string, words: WordSpan[], i: number, overlaps: (a: number, b: number) => boolean): DateHit | null {
   const maxLen = Math.min(MAX_DATE_WORDS, words.length - i);
@@ -106,7 +133,11 @@ function longestDateFrom(line0: string, words: WordSpan[], i: number, overlaps: 
 export function detectTokens(text: string, spec: DetectSpec): DetectedToken[] {
   const line0 = firstLine(text);
   const tokens: DetectedToken[] = [];
-  const claimed: Array<[number, number]> = [];
+  // Seed the claimed set with the line's literal ranges (links / URLs / inline
+  // code) so `overlaps` rejects any candidate token inside them — those spans
+  // are addresses/verbatim text, not task metadata. No token is ever emitted
+  // for a seeded range, so nothing here is highlighted or stripped.
+  const claimed: Array<[number, number]> = literalRanges(line0);
   const overlaps = (from: number, to: number) => claimed.some(([a, b]) => from < b && to > a);
   const claim = (from: number, to: number) => claimed.push([from, to]);
   const words: WordSpan[] = [...line0.matchAll(/\S+/g)].map((w) => ({ start: w.index!, end: w.index! + w[0].length }));
