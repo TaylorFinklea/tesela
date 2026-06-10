@@ -1270,6 +1270,15 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func deviceHex()  -> String
     
     /**
+     * Idempotently seed the built-in views (currently: the Inbox).
+     * Safe to call on every launch — a registry that already carries the
+     * Inbox (locally seeded or received via sync) is left untouched, so
+     * user edits to the builtin survive. Concurrent seeds on two devices
+     * write the same fixed id and converge to ONE Inbox.
+     */
+    func ensureBuiltinViews() async throws 
+    
+    /**
      * Import the server's full Loro snapshot for a note as an **authoritative
      * re-base**. Used both as a pre-author shared base (a later `recordNoteDiff`
      * BlockUpsert resolves to the server's tree nodes instead of minting rival
@@ -1473,6 +1482,33 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      */
     func spliceBlockText(slug: String, blockIdHex: String, utf16Offset: UInt32, utf16DeleteLen: UInt32, insert: String) async throws  -> UInt32
     
+    /**
+     * Delete a saved view by id. Returns `true` when removed, `false`
+     * when no such view exists; a BUILTIN view errors (builtins are
+     * editable, never deletable — mirror the engine API's guard in the
+     * UI by hiding the delete affordance).
+     */
+    func viewsDelete(viewId: String) async throws  -> Bool
+    
+    /**
+     * All saved views from the synced views registry, sorted by
+     * `(order, id)` — deterministic across devices. Empty on a fresh
+     * device that has neither seeded nor synced yet. The registry doc
+     * rides the SAME relay/delta/snapshot streams the note docs do, so
+     * no extra sync plumbing is needed on the Swift side.
+     */
+    func viewsList() async  -> [ViewRecord]
+    
+    /**
+     * Create or update a saved view (field-level LWW — a concurrent peer
+     * edit of a DIFFERENT field of the same view survives the merge).
+     * `builtin` is sticky: upserting a builtin with `builtin: false`
+     * cannot make it deletable. The write lands in the views registry
+     * doc and is picked up by the next outbound sync tick / WS push like
+     * any note edit.
+     */
+    func viewsUpsert(record: ViewRecord) async throws 
+    
 }
 /**
  * Handle to the authoritative Loro sync engine. Created with
@@ -1641,6 +1677,30 @@ open func deviceHex() -> String  {
             self.uniffiCloneHandle(),$0
     )
 })
+}
+    
+    /**
+     * Idempotently seed the built-in views (currently: the Inbox).
+     * Safe to call on every launch — a registry that already carries the
+     * Inbox (locally seeded or received via sync) is left untouched, so
+     * user edits to the builtin survive. Concurrent seeds on two devices
+     * write the same fixed id and converge to ONE Inbox.
+     */
+open func ensureBuiltinViews()async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_ensure_builtin_views(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_void,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
+            liftFunc: { $0 },
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
 }
     
     /**
@@ -1994,6 +2054,79 @@ open func spliceBlockText(slug: String, blockIdHex: String, utf16Offset: UInt32,
             completeFunc: ffi_tesela_sync_ffi_rust_future_complete_u32,
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_u32,
             liftFunc: FfiConverterUInt32.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Delete a saved view by id. Returns `true` when removed, `false`
+     * when no such view exists; a BUILTIN view errors (builtins are
+     * editable, never deletable — mirror the engine API's guard in the
+     * UI by hiding the delete affordance).
+     */
+open func viewsDelete(viewId: String)async throws  -> Bool  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_views_delete(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(viewId)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_i8,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_i8,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_i8,
+            liftFunc: FfiConverterBool.lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * All saved views from the synced views registry, sorted by
+     * `(order, id)` — deterministic across devices. Empty on a fresh
+     * device that has neither seeded nor synced yet. The registry doc
+     * rides the SAME relay/delta/snapshot streams the note docs do, so
+     * no extra sync plumbing is needed on the Swift side.
+     */
+open func viewsList()async  -> [ViewRecord]  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_views_list(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeViewRecord.lift,
+            errorHandler: nil
+            
+        )
+}
+    
+    /**
+     * Create or update a saved view (field-level LWW — a concurrent peer
+     * edit of a DIFFERENT field of the same view survives the merge).
+     * `builtin` is sticky: upserting a builtin with `builtin: false`
+     * cannot make it deletable. The write lands in the views registry
+     * doc and is picked up by the next outbound sync tick / WS push like
+     * any note edit.
+     */
+open func viewsUpsert(record: ViewRecord)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_views_upsert(
+                    self.uniffiCloneHandle(),
+                    FfiConverterTypeViewRecord_lower(record)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_void,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
+            liftFunc: { $0 },
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
@@ -2796,6 +2929,144 @@ public func FfiConverterTypeTickOutboundRecord_lower(_ value: TickOutboundRecord
 
 
 /**
+ * One saved view from the synced views registry (saved-views spec,
+ * 2026-06-10) — the Swift-friendly mirror of `tesela_sync::ViewRecord`.
+ * The registry is ONE dedicated Loro doc that syncs across devices like a
+ * note doc, so `.relay`-mode iOS reads/writes views through the engine
+ * (these FFI calls) and converges with the Mac through the normal relay
+ * streams; `.http` mode uses the server's `/views` routes instead.
+ */
+public struct ViewRecord: Equatable, Hashable {
+    /**
+     * Stable view id (UUID string for user views; the fixed
+     * `builtin-inbox` constant for the seeded Inbox).
+     */
+    public var id: String
+    /**
+     * Display name ("Inbox", "This week", …).
+     */
+    public var name: String
+    /**
+     * The query DSL string the view executes.
+     */
+    public var dsl: String
+    /**
+     * Sort position in the view switcher (ties break by id).
+     */
+    public var order: Int64
+    /**
+     * Built-ins are editable but never deletable (sticky — an upsert
+     * can't unflag it).
+     */
+    public var builtin: Bool
+    /**
+     * Result rendering: "list" | "table" | "kanban".
+     */
+    public var displayMode: String
+    /**
+     * Optional grouping key (kanban columns / table groups).
+     */
+    public var displayGroupBy: String?
+    /**
+     * Optional "include done items" toggle.
+     */
+    public var displayShowDone: Bool?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Stable view id (UUID string for user views; the fixed
+         * `builtin-inbox` constant for the seeded Inbox).
+         */id: String, 
+        /**
+         * Display name ("Inbox", "This week", …).
+         */name: String, 
+        /**
+         * The query DSL string the view executes.
+         */dsl: String, 
+        /**
+         * Sort position in the view switcher (ties break by id).
+         */order: Int64, 
+        /**
+         * Built-ins are editable but never deletable (sticky — an upsert
+         * can't unflag it).
+         */builtin: Bool, 
+        /**
+         * Result rendering: "list" | "table" | "kanban".
+         */displayMode: String, 
+        /**
+         * Optional grouping key (kanban columns / table groups).
+         */displayGroupBy: String?, 
+        /**
+         * Optional "include done items" toggle.
+         */displayShowDone: Bool?) {
+        self.id = id
+        self.name = name
+        self.dsl = dsl
+        self.order = order
+        self.builtin = builtin
+        self.displayMode = displayMode
+        self.displayGroupBy = displayGroupBy
+        self.displayShowDone = displayShowDone
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension ViewRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeViewRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ViewRecord {
+        return
+            try ViewRecord(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                dsl: FfiConverterString.read(from: &buf), 
+                order: FfiConverterInt64.read(from: &buf), 
+                builtin: FfiConverterBool.read(from: &buf), 
+                displayMode: FfiConverterString.read(from: &buf), 
+                displayGroupBy: FfiConverterOptionString.read(from: &buf), 
+                displayShowDone: FfiConverterOptionBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ViewRecord, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.dsl, into: &buf)
+        FfiConverterInt64.write(value.order, into: &buf)
+        FfiConverterBool.write(value.builtin, into: &buf)
+        FfiConverterString.write(value.displayMode, into: &buf)
+        FfiConverterOptionString.write(value.displayGroupBy, into: &buf)
+        FfiConverterOptionBool.write(value.displayShowDone, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeViewRecord_lift(_ buf: RustBuffer) throws -> ViewRecord {
+    return try FfiConverterTypeViewRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeViewRecord_lower(_ value: ViewRecord) -> RustBuffer {
+    return FfiConverterTypeViewRecord.lower(value)
+}
+
+
+/**
  * FFI-facing error variants. Stays narrow so consumers can match
  * exhaustively from Swift without surprises. All variants are
  * constructed from inner `SyncError`s via the `From` impl below.
@@ -2923,6 +3194,30 @@ fileprivate struct FfiConverterOptionInt64: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionBool: FfiConverterRustBuffer {
+    typealias SwiftType = Bool?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterBool.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterBool.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
     typealias SwiftType = String?
 
@@ -3013,6 +3308,31 @@ fileprivate struct FfiConverterSequenceTypeRelaySnapshotRecord: FfiConverterRust
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeRelaySnapshotRecord.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeViewRecord: FfiConverterRustBuffer {
+    typealias SwiftType = [ViewRecord]
+
+    public static func write(_ value: [ViewRecord], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeViewRecord.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ViewRecord] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ViewRecord]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeViewRecord.read(from: &buf))
         }
         return seq
     }
@@ -3209,6 +3529,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_device_hex() != 4479) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_ensure_builtin_views() != 59556) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_import_note_snapshot() != 55621) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -3237,6 +3560,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_splice_block_text() != 6907) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_views_delete() != 46309) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_views_list() != 39858) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_views_upsert() != 7706) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_constructor_relayclienthandle_new() != 60933) {

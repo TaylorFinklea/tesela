@@ -16,7 +16,7 @@ use tesela_sync::{
     encode_loro_relay_payload, encode_pairing_code as encode_pairing_code_inner,
     engine::SyncEngine, oplog::op::OpPayload, transport::relay::RelayClient, DeviceId, GroupId,
     GroupKey, Hlc, LoroDocUpdate, LoroEngine, PairingCode as InnerPairingCode, PropOp, PropScalar,
-    SyncEnvelope,
+    SyncEnvelope, ViewRecord as InnerViewRecord,
 };
 use tokio::sync::Mutex;
 
@@ -101,6 +101,64 @@ pub struct DeltaApplyOutcome {
     /// Hex (32-char) note ids carried by the frame, so the caller knows
     /// which note(s) to request a snapshot for.
     pub note_ids_hex: Vec<String>,
+}
+
+/// One saved view from the synced views registry (saved-views spec,
+/// 2026-06-10) — the Swift-friendly mirror of `tesela_sync::ViewRecord`.
+/// The registry is ONE dedicated Loro doc that syncs across devices like a
+/// note doc, so `.relay`-mode iOS reads/writes views through the engine
+/// (these FFI calls) and converges with the Mac through the normal relay
+/// streams; `.http` mode uses the server's `/views` routes instead.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ViewRecord {
+    /// Stable view id (UUID string for user views; the fixed
+    /// `builtin-inbox` constant for the seeded Inbox).
+    pub id: String,
+    /// Display name ("Inbox", "This week", …).
+    pub name: String,
+    /// The query DSL string the view executes.
+    pub dsl: String,
+    /// Sort position in the view switcher (ties break by id).
+    pub order: i64,
+    /// Built-ins are editable but never deletable (sticky — an upsert
+    /// can't unflag it).
+    pub builtin: bool,
+    /// Result rendering: "list" | "table" | "kanban".
+    pub display_mode: String,
+    /// Optional grouping key (kanban columns / table groups).
+    pub display_group_by: Option<String>,
+    /// Optional "include done items" toggle.
+    pub display_show_done: Option<bool>,
+}
+
+impl From<InnerViewRecord> for ViewRecord {
+    fn from(v: InnerViewRecord) -> Self {
+        Self {
+            id: v.id,
+            name: v.name,
+            dsl: v.dsl,
+            order: v.order,
+            builtin: v.builtin,
+            display_mode: v.display_mode,
+            display_group_by: v.display_group_by,
+            display_show_done: v.display_show_done,
+        }
+    }
+}
+
+impl From<ViewRecord> for InnerViewRecord {
+    fn from(v: ViewRecord) -> Self {
+        Self {
+            id: v.id,
+            name: v.name,
+            dsl: v.dsl,
+            order: v.order,
+            builtin: v.builtin,
+            display_mode: v.display_mode,
+            display_group_by: v.display_group_by,
+            display_show_done: v.display_show_done,
+        }
+    }
 }
 
 /// Group identity in a Swift-friendly shape: two hex strings.
@@ -830,6 +888,56 @@ impl SyncEngineHandle {
             })?;
         self.inner
             .import_authoritative_snapshot(id, &bytes)
+            .await
+            .map_err(FfiSyncError::from)
+    }
+
+    /// All saved views from the synced views registry, sorted by
+    /// `(order, id)` — deterministic across devices. Empty on a fresh
+    /// device that has neither seeded nor synced yet. The registry doc
+    /// rides the SAME relay/delta/snapshot streams the note docs do, so
+    /// no extra sync plumbing is needed on the Swift side.
+    pub async fn views_list(&self) -> Vec<ViewRecord> {
+        self.inner
+            .views_list()
+            .await
+            .into_iter()
+            .map(ViewRecord::from)
+            .collect()
+    }
+
+    /// Create or update a saved view (field-level LWW — a concurrent peer
+    /// edit of a DIFFERENT field of the same view survives the merge).
+    /// `builtin` is sticky: upserting a builtin with `builtin: false`
+    /// cannot make it deletable. The write lands in the views registry
+    /// doc and is picked up by the next outbound sync tick / WS push like
+    /// any note edit.
+    pub async fn views_upsert(&self, record: ViewRecord) -> Result<(), FfiSyncError> {
+        self.inner
+            .views_upsert(record.into())
+            .await
+            .map_err(FfiSyncError::from)
+    }
+
+    /// Delete a saved view by id. Returns `true` when removed, `false`
+    /// when no such view exists; a BUILTIN view errors (builtins are
+    /// editable, never deletable — mirror the engine API's guard in the
+    /// UI by hiding the delete affordance).
+    pub async fn views_delete(&self, view_id: String) -> Result<bool, FfiSyncError> {
+        self.inner
+            .views_delete(&view_id)
+            .await
+            .map_err(FfiSyncError::from)
+    }
+
+    /// Idempotently seed the built-in views (currently: the Inbox).
+    /// Safe to call on every launch — a registry that already carries the
+    /// Inbox (locally seeded or received via sync) is left untouched, so
+    /// user edits to the builtin survive. Concurrent seeds on two devices
+    /// write the same fixed id and converge to ONE Inbox.
+    pub async fn ensure_builtin_views(&self) -> Result<(), FfiSyncError> {
+        self.inner
+            .ensure_builtin_views()
             .await
             .map_err(FfiSyncError::from)
     }
@@ -2643,5 +2751,96 @@ mod tests {
             "the pending note is surfaced for snapshot catch-up: {rec:?}"
         );
         assert_eq!(rec.errors, 0, "pending is a gap, not an error");
+    }
+
+    // ─── Views registry through the FFI (saved-views spec, 2026-06-10) ───
+
+    #[tokio::test]
+    async fn views_seed_upsert_delete_round_trip_through_ffi() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = open_handle(dir.path(), &generate_device_id_hex()).await;
+
+        // Seed is idempotent and yields the default Inbox.
+        h.ensure_builtin_views().await.unwrap();
+        h.ensure_builtin_views().await.unwrap();
+        let views = h.views_list().await;
+        assert_eq!(views.len(), 1, "one inbox after double seed");
+        assert_eq!(views[0].id, tesela_sync::INBOX_VIEW_ID);
+        assert_eq!(views[0].dsl, tesela_sync::INBOX_DEFAULT_DSL);
+        assert!(views[0].builtin);
+
+        // Upsert a user view with display options; list sorts by order.
+        h.views_upsert(ViewRecord {
+            id: "v-board".into(),
+            name: "Board".into(),
+            dsl: "tag:project".into(),
+            order: 10,
+            builtin: false,
+            display_mode: "kanban".into(),
+            display_group_by: Some("status".into()),
+            display_show_done: Some(false),
+        })
+        .await
+        .unwrap();
+        let views = h.views_list().await;
+        assert_eq!(
+            views.iter().map(|v| v.id.as_str()).collect::<Vec<_>>(),
+            vec![tesela_sync::INBOX_VIEW_ID, "v-board"],
+            "sorted by (order, id)"
+        );
+        assert_eq!(views[1].display_group_by.as_deref(), Some("status"));
+        assert_eq!(views[1].display_show_done, Some(false));
+
+        // Builtin delete is refused; user view deletes.
+        assert!(h.views_delete(tesela_sync::INBOX_VIEW_ID.into()).await.is_err());
+        assert!(h.views_delete("v-board".into()).await.unwrap());
+        assert!(!h.views_delete("v-board".into()).await.unwrap());
+        assert_eq!(h.views_list().await.len(), 1, "inbox remains");
+    }
+
+    #[tokio::test]
+    async fn views_registry_syncs_between_handles_via_delta_frame() {
+        // The views doc rides the SAME TLR2 frames the WS/relay inbound path
+        // applies (`apply_delta_frame` → `apply_doc_update_status`): handle A
+        // seeds + edits, its views-doc snapshot framed as TLR2 lands on B,
+        // and B's registry converges — the iOS .relay-mode read path.
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a = open_handle(dir_a.path(), "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1").await;
+        let b = open_handle(dir_b.path(), "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2").await;
+
+        a.ensure_builtin_views().await.unwrap();
+        a.views_upsert(ViewRecord {
+            id: "v-week".into(),
+            name: "This week".into(),
+            dsl: "has:scheduled".into(),
+            order: 10,
+            builtin: false,
+            display_mode: "list".into(),
+            display_group_by: None,
+            display_show_done: None,
+        })
+        .await
+        .unwrap();
+
+        let update_bytes = a
+            .inner
+            .export_doc_update(tesela_sync::VIEWS_DOC_ID, None)
+            .await
+            .expect("views doc exports");
+        let frame = encode_loro_relay_payload(&[LoroDocUpdate {
+            doc: tesela_sync::VIEWS_DOC_ID,
+            update_bytes,
+        }])
+        .unwrap();
+
+        let outcome = b.apply_delta_frame(frame).await.unwrap();
+        assert_eq!(outcome.applied, 1, "views update applied");
+        assert!(!outcome.needs_catchup, "snapshot import has no causal gap");
+        assert_eq!(
+            b.views_list().await,
+            a.views_list().await,
+            "registries converge through the FFI delta path"
+        );
     }
 }
