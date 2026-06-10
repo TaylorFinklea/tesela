@@ -8,13 +8,11 @@ chromes; preserve = `lib/v4` + `lib/v5` behavior modules + everything /g imports
 **GATE STATUS: ❌ NOT GREEN.** 30 present / 14 partial / 12 missing. Blocking = the two
 sections below. B2 (default flip, `b46b756`) cleared the deep-link ordering hazard.
 
-## Gate A — import hazards (mechanical, ~½ session)
-/g compiles against files INSIDE the deletion target. Move them (lib/graphite or neutral lib/)
-before any `rm`:
-- [ ] `lib/components/v4/ColonCommandLine.svelte` (GraphiteShell:51 — `:` ex-mode + GrRail quick-capture)
-- [ ] `lib/components/v4/FullscreenOverlay.svelte` + `SettingsOverlay.svelte` (GraphiteShell:52 — settings ⌘,/gear + ⌘G graph; desktop Tauri menu depends on it)
-- [ ] `lib/components/v4/PeekPopover.svelte` (GraphiteShell:53 — ⌘I peek) + its `lib/renderers` deps `components/v4/{OutlineTab,PropertiesView}.svelte`
-- [ ] `lib/components/v5/ScratchPruneSettings.svelte` (routes/settings/data imports it → /g overlay Data tab)
+## Gate A — import hazards — ✅ DONE (`93607cb`, all moved to `lib/components/shell/`, QA'd on the static build)
+- [x] `lib/components/v4/ColonCommandLine.svelte` (GraphiteShell — `:` ex-mode + GrRail quick-capture)
+- [x] `lib/components/v4/FullscreenOverlay.svelte` + `SettingsOverlay.svelte` (settings ⌘,/gear + ⌘G graph; desktop Tauri menu)
+- [x] `lib/components/v4/PeekPopover.svelte` (⌘I peek) + its `lib/renderers` deps `{OutlineTab,PropertiesView}.svelte`
+- [x] `lib/components/v5/ScratchPruneSettings.svelte` (routes/settings/data → /g overlay Data tab)
 - [ ] `lib/v4/tokens.css` self-imports by the above (keep; lib/v4 is preserve-list anyway)
 - [ ] `ChordMenu.svelte` type export used by GrLeaderOverlay (type-only; file lives in lib/components/ root — NOT in the deletion set, just don't sweep it accidentally)
 - Preserve-list (already-safe, imported by /g): `lib/v4/commands.ts`, `lib/v5/leader-tree.svelte.ts`, `lib/fuzzy`, shared `buffer/*`, `stores/{station,colon-mode,pane-state,peek,fullscreen-overlay,toast,save-state}`, `state/shared`, `loro`, `ws-client`, `JournalView`, `BlockOutliner`, `ambients/inbox/chips`, `QueryWidgetView`/`KanbanBoard`/`CompactQueryView` (lib/components root + v5… verify final homes during the move).
