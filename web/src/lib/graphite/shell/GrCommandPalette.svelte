@@ -189,6 +189,12 @@
     }
     if (e.metaKey && e.key === 'k') {
       e.preventDefault();
+      // stopImmediatePropagation, not stopPropagation: the shell's ⌘K-open
+      // handler is a capture listener on the SAME node (document), so plain
+      // stopPropagation can't stop it — it would re-open the palette right
+      // after this close. This listener registers first (children mount
+      // before the parent shell), so halting the dispatch here works.
+      e.stopImmediatePropagation();
       closeStation();
       requestAnimationFrame(() => restoreFocus());
       return;

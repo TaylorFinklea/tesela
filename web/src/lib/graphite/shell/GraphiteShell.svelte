@@ -28,14 +28,29 @@
   import GrCommandPalette from './GrCommandPalette.svelte';
   import GrLeaderOverlay from './GrLeaderOverlay.svelte';
   import GrLayoutTree from './GrLayoutTree.svelte';
-  import { getFocusedBuffer, getFocusedLeafId, getActiveTab, moveFocus } from '$lib/buffer/state.svelte';
+  import {
+    getFocusedBuffer,
+    getFocusedLeafId,
+    getActiveTab,
+    moveFocus,
+    movePane,
+    vsplit,
+    hsplit,
+  } from '$lib/buffer/state.svelte';
+  import { makePageBuffer } from '$lib/buffer/tree';
+  import { asPageId } from '$lib/buffer/types';
   import { openStation } from '$lib/stores/station.svelte';
   import { openLeader } from '$lib/v5/leader-tree.svelte';
   import { openColonMode } from '$lib/stores/colon-mode.svelte';
   import { getVimMode } from '$lib/stores/pane-state.svelte';
-  import { openSettingsOverlay } from '$lib/stores/fullscreen-overlay.svelte';
+  import { togglePeek } from '$lib/stores/peek.svelte';
+  import {
+    openSettingsOverlay,
+    openFullscreenGraph,
+  } from '$lib/stores/fullscreen-overlay.svelte';
   import ColonCommandLine from '$lib/components/v4/ColonCommandLine.svelte';
   import FullscreenOverlay from '$lib/components/v4/FullscreenOverlay.svelte';
+  import PeekPopover from '$lib/components/v4/PeekPopover.svelte';
 
   const focusedBuffer = $derived(getFocusedBuffer());
   const focusedLeafId = $derived(getFocusedLeafId());
@@ -129,6 +144,23 @@
     }
   }
 
+  // Pane-motion chords must not steal keys from active text entry: vim
+  // insert-mode i_CTRL-W (delete word back) and plain inputs (palette,
+  // settings fields) keep Ctrl-W. Only a cm-editor in non-INSERT mode (or
+  // no text entry at all) arms the prefix — same gating the `:` handler
+  // below uses.
+  function inActiveTextEntry(target: EventTarget | null): boolean {
+    const t = target as HTMLElement | null;
+    const inCmEditor = !!t?.closest?.('.cm-editor');
+    const inPlainEntry =
+      !inCmEditor &&
+      (t?.tagName === 'INPUT' ||
+        t?.tagName === 'TEXTAREA' ||
+        !!t?.isContentEditable);
+    const inInsertMode = inCmEditor && getVimMode() === 'INSERT';
+    return inPlainEntry || inInsertMode;
+  }
+
   onMount(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey;
@@ -139,7 +171,8 @@
         !e.altKey &&
         !e.shiftKey &&
         e.ctrlKey &&
-        (e.key === 'w' || e.key === 'W')
+        (e.key === 'w' || e.key === 'W') &&
+        !inActiveTextEntry(e.target)
       ) {
         e.preventDefault();
         e.stopPropagation();
@@ -150,7 +183,10 @@
       }
       if (awaitingCtrlW) {
         const k = e.key.toLowerCase();
-        if (k === 'h' || k === 'j' || k === 'k' || k === 'l') {
+        if (
+          (k === 'h' || k === 'j' || k === 'k' || k === 'l') &&
+          !inActiveTextEntry(e.target)
+        ) {
           clearCtrlW();
           e.preventDefault();
           e.stopPropagation();
@@ -203,6 +239,41 @@
         openCommandStation();
         return;
       }
+
+      // ── chords the palette / colon line advertise (parity with v4) ──────
+      // ⌘W/⌘⇧W/⌘T are browser-reserved on macOS (preventDefault can't stop
+      // tab close / new tab), so those are NOT bound — their badges were
+      // removed from the command registry instead.
+      if (mod && e.key === '\\') {
+        e.preventDefault();
+        vsplit(makePageBuffer(asPageId('')));
+        return;
+      }
+      if (mod && e.key === '-') {
+        e.preventDefault();
+        hsplit(makePageBuffer(asPageId('')));
+        return;
+      }
+      if (mod && e.shiftKey && /^[hjklHJKL]$/.test(e.key)) {
+        const key = e.key.toLowerCase();
+        const dir =
+          key === 'h' ? 'left' : key === 'l' ? 'right' : key === 'j' ? 'down' : 'up';
+        e.preventDefault();
+        movePane(dir);
+        return;
+      }
+      // ⌘I toggles the peek popover (mounted below).
+      if (mod && !e.shiftKey && (e.key === 'i' || e.key === 'I')) {
+        e.preventDefault();
+        togglePeek(getFocusedLeafId() as unknown as string | undefined);
+        return;
+      }
+      // ⌘G opens the fullscreen graph overlay.
+      if (mod && !e.shiftKey && (e.key === 'g' || e.key === 'G')) {
+        e.preventDefault();
+        openFullscreenGraph();
+        return;
+      }
     };
     document.addEventListener('keydown', onKey, true);
 
@@ -211,6 +282,16 @@
     // editor.
     const onLeaderEvent = () => openLeader();
     document.addEventListener('tesela:leader', onLeaderEvent);
+
+    // BlockEditor's vim NORMAL-mode `g` binding dispatches this to open the
+    // leader pre-descended into "go to…". The original listener lived in the
+    // legacy root layout (deleted 2026-05-15) — without one here, `g` in
+    // NORMAL mode was a silent no-op in every /g block editor.
+    const onOpenLeaderAt = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { path?: string[] } | null;
+      openLeader(detail?.path ?? []);
+    };
+    document.addEventListener('tesela:open-leader-at', onOpenLeaderAt);
 
     // The desktop (Tauri) native menu — Settings (⌘,) — dispatches this so the
     // app's own settings overlay opens. (In the browser, ⌘K / the gear / leader
@@ -221,6 +302,7 @@
     return () => {
       document.removeEventListener('keydown', onKey, true);
       document.removeEventListener('tesela:leader', onLeaderEvent);
+      document.removeEventListener('tesela:open-leader-at', onOpenLeaderAt);
       document.removeEventListener('tesela:open-settings', onOpenSettings);
     };
   });
@@ -252,6 +334,9 @@
        desktop Settings menu all drive these via the overlay store). Was only
        mounted on /v4 — so on /g they set the store but never rendered. -->
   <FullscreenOverlay />
+  <!-- Peek popover (⌘I, leader `p`, `:peek`). Same was-only-on-/v4 disease as
+       FullscreenOverlay: the store flipped but nothing rendered on /g. -->
+  <PeekPopover />
 </div>
 
 <style>

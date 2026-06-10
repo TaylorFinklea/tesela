@@ -330,7 +330,9 @@ export function buildV4Commands(): V4Command[] {
       label: "Close focused pane",
       glyph: "×",
       category: "pane",
-      shortcut: "⌘W",
+      // No shortcut advertised: ⌘W is browser-reserved on macOS (closes the
+      // tab — preventDefault can't stop it), so a ⌘W badge was a data-loss
+      // trap. Use `:quit`, the palette, or leader `b q`.
       keywords: ["close", "quit", "kill", "pane"],
       run: () => closeFocusedLeaf(),
     },
@@ -353,7 +355,8 @@ export function buildV4Commands(): V4Command[] {
       label: "New tab",
       glyph: "+",
       category: "tab",
-      shortcut: "⌘T",
+      // ⌘T is browser-reserved (new browser tab) — not interceptable, so no
+      // badge. The top-bar `+`, `:tabnew`, and the palette all create tabs.
       keywords: ["tab", "new", "open", "window"],
       run: () => newTab(),
     },
@@ -363,7 +366,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Close current tab",
       glyph: "×",
       category: "tab",
-      shortcut: "⌘⇧W",
+      // ⌘⇧W is browser-reserved (close window) — not interceptable, no badge.
       keywords: ["tab", "close", "kill"],
       run: () => closeTab(getWorkspace().activeTabId),
     },

@@ -1816,7 +1816,9 @@
           const vs = cm?.state?.vim as { insertMode?: boolean; visualMode?: boolean } | undefined;
           if (vs?.insertMode || vs?.visualMode) return false;
           if (isPinnedTab) return false; // let gtHandler in layout arm the chord
-          document.dispatchEvent(new CustomEvent("tesela:open-leader-at", { detail: { path: ["Go to"] } }));
+          // NOTE: the path must match the v5 leader tree's exact label
+          // (leader-tree.svelte.ts) — overlays descend by label equality.
+          document.dispatchEvent(new CustomEvent("tesela:open-leader-at", { detail: { path: ["go to…"] } }));
           return true;
         },
       },

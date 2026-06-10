@@ -87,16 +87,21 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (!open) return;
+    // stopImmediatePropagation throughout: the shell's own capture-phase
+    // keydown listener lives on the SAME node (document), and same-node
+    // listeners ignore stopPropagation. Without it, `:` / Space / ⌘K leak
+    // to the shell and open the colon line / palette UNDER the open menu.
+    // This listener registers first (children mount before the parent).
     if (e.key === 'Escape' || (e.key === 'Backspace' && !inputNode)) {
       e.preventDefault();
-      e.stopPropagation();
+      e.stopImmediatePropagation();
       ascend();
       return;
     }
     if (inputNode) {
       if (e.key === 'Enter') {
         e.preventDefault();
-        e.stopPropagation();
+        e.stopImmediatePropagation();
         commitInput();
         return;
       }
@@ -107,14 +112,14 @@
     const match = currentLevel.find((n) => n.key === e.key);
     if (match) {
       e.preventDefault();
-      e.stopPropagation();
+      e.stopImmediatePropagation();
       handleSelect(match);
       return;
     }
     // Swallow every other keystroke while the menu is open — modal behavior,
     // identical to ChordMenu (arrows/vim chords must not leak to the editor).
     e.preventDefault();
-    e.stopPropagation();
+    e.stopImmediatePropagation();
   }
 
   onMount(() => {

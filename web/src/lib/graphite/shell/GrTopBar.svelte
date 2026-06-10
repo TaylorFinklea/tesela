@@ -46,7 +46,7 @@
         type="button"
         class="gr-ic gr-tab-add"
         onclick={() => newTab()}
-        title="new tab · ⌘T"
+        title="new tab"
         aria-label="New tab"
       >
         <GrIcon name="plus" size={15} />
