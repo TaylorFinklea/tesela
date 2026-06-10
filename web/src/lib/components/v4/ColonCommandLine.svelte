@@ -21,6 +21,14 @@
   } from "$lib/v4/commands";
   import { openPeek } from "$lib/stores/peek.svelte";
   import { openFullscreenGraph } from "$lib/stores/fullscreen-overlay.svelte";
+  // This strip styles with the v4 design tokens (`--v4-*`), which tokens.css
+  // scopes to `.v4-root`. On the Graphite (/g) route there is no `.v4-root`
+  // ancestor, so `--v4-bg` (and friends) resolved to nothing — the `:` line
+  // and its suggestion list rendered transparent over the editor. Import the
+  // v4 tokens here + tag both fixed elements with `.v4-root` (below) so they
+  // resolve wherever this mounts (v4 OR Graphite) — same fix as
+  // FullscreenOverlay.svelte.
+  import "$lib/v4/tokens.css";
 
   const open = $derived(isColonModeOpen());
 
@@ -203,7 +211,7 @@
 
 {#if open}
   {#if suggestions.length > 0}
-    <ul class="v4-colon-suggestions" role="listbox">
+    <ul class="v4-colon-suggestions v4-root" role="listbox">
       {#each suggestions as row, i (row.verb)}
         <li
           class:active={i === highlightedIdx}
@@ -220,7 +228,7 @@
       {/each}
     </ul>
   {/if}
-  <div class="v4-colon" role="dialog" aria-label="vim ex command">
+  <div class="v4-colon v4-root" role="dialog" aria-label="vim ex command">
     <span class="v4-colon-prompt">:</span>
     <input
       bind:this={inputEl}
@@ -245,7 +253,9 @@
     position: fixed;
     left: 0;
     right: 0;
-    bottom: 26px; /* sits just above the status bar */
+    /* Sits just above the status bar. v4's status row is 26px; Graphite's is
+       30px — the chrome overrides `--tesela-colon-bottom` (graphite/tokens.css). */
+    bottom: var(--tesela-colon-bottom, 26px);
     background: var(--v4-bg);
     border-top: 1px solid var(--v4-accent-dim);
     padding: 6px 14px;
@@ -258,7 +268,8 @@
     position: fixed;
     left: 0;
     right: 0;
-    bottom: 60px; /* sits above the input strip */
+    /* Sits above the ~34px input strip. */
+    bottom: calc(var(--tesela-colon-bottom, 26px) + 34px);
     margin: 0;
     padding: 4px 0;
     list-style: none;

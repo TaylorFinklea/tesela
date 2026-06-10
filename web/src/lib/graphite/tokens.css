@@ -7,6 +7,10 @@
   --task:#E8697F; --event:#62B8CE; --note:#E4AE66; --project:#7493E8; --person:#AE90E6; --query:#85BC63;
   --sans:'Geist','Inter Tight',system-ui,sans-serif; --mono:'JetBrains Mono',ui-monospace,monospace;
 
+  /* The shared `:` ex-mode strip (ColonCommandLine) sits above the status
+     row; Graphite's is 30px tall (vs v4's 26px). */
+  --tesela-colon-bottom:30px;
+
   background:var(--bg); color:var(--fg);
   font-family:var(--sans); font-size:13.5px; line-height:1.5;
   -webkit-font-smoothing:antialiased;

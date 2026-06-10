@@ -5,8 +5,13 @@
    * over existing stores:
    *   - Quick capture → openColonMode() (same verb the `:` keypress and
    *     v4's capture affordance use)
-   *   - Pinned → getFavorites() (page-id strings persisted in localStorage)
-   *   - Today → getRecents() (page-id strings), badge = count
+   *   - Pinned → getPinned() from the LIVE v5 workspace store
+   *     ('tesela:workspace:pinned' — written by the sidebar's pin toggle).
+   *     The legacy stores/favorites.svelte store ('tesela:favorites') has
+   *     had no writers since the legacy-chrome deletion.
+   *   - Today → getRecent() from the LIVE v5 workspace store
+   *     ('tesela:workspace:recent' — written by the focusPane chokepoint),
+   *     badge = count. Same orphan story for stores/recents.svelte.
    *   - Tasks → static placeholder rows this phase (real data = views phase)
    *   - Add widget → stub (configurability deferred)
    * The widget set is fixed for parity; configurability is the iterate phase.
@@ -15,11 +20,10 @@
   import GrRow from '$lib/graphite/GrRow.svelte';
   import GrIcon from '$lib/graphite/GrIcon.svelte';
   import { openColonMode } from '$lib/stores/colon-mode.svelte';
-  import { getFavorites } from '$lib/stores/favorites.svelte';
-  import { getRecents } from '$lib/stores/recents.svelte';
+  import { getPinned, getRecent } from '$lib/state/shared.svelte';
 
-  const favorites = $derived(getFavorites());
-  const recents = $derived(getRecents());
+  const favorites = $derived(getPinned());
+  const recents = $derived(getRecent());
 
   function addWidget() {
     // Configurable widgets are deferred to a later phase.

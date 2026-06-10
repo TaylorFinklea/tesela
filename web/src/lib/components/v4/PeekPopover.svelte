@@ -22,6 +22,12 @@
   import { createQuery } from "@tanstack/svelte-query";
   import { api } from "$lib/api-client";
   import type { Note } from "$lib/types/Note";
+  // This popover styles with the v4 design tokens (`--v4-*`), which
+  // tokens.css scopes to `.v4-root`. It now also mounts in the Graphite (/g)
+  // shell, where no `.v4-root` ancestor exists — import the tokens + tag the
+  // backdrop `.v4-root` (below) so they resolve in both chromes. Same fix as
+  // FullscreenOverlay.svelte.
+  import "$lib/v4/tokens.css";
   import {
     closePeek,
     cyclePeek,
@@ -155,7 +161,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="peek-backdrop"
+    class="peek-backdrop v4-root"
     onclick={(e) => {
       if (e.target === e.currentTarget) closePeek();
     }}

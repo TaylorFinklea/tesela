@@ -1,7 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { scoreFuzzy, highlightRuns } from "$lib/fuzzy";
-  import { getRecents } from "$lib/stores/recents.svelte";
+  // The LIVE recents store ('tesela:workspace:recent', fed by the focusPane
+  // chokepoint). The legacy $lib/stores/recents.svelte store has had no
+  // writers since the legacy-chrome deletion, so the recency boost was inert.
+  import { getRecent } from "$lib/state/shared.svelte";
 
   export type AutocompleteItem = {
     id: string;
@@ -38,7 +41,7 @@
   type Scored = { item: AutocompleteItem; score: number; positions: number[] };
 
   const scored = $derived.by((): Scored[] => {
-    const recents = getRecents();
+    const recents = getRecent();
     const recentRank = (id: string) => {
       const idx = recents.indexOf(id);
       return idx === -1 ? Infinity : idx;
