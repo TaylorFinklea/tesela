@@ -150,6 +150,28 @@ struct GrAppShell: View {
                         }
                     }
                 }
+                // Saved views (spec 2026-06-10): the Inbox tab's view
+                // switcher reads/writes the engine's synced registry doc
+                // in `.relay` mode through these seams. List seeds the
+                // builtin Inbox idempotently; the writes record + drain to
+                // the relay so other devices converge. (`.http` mode never
+                // fires these — the service hits the server's /views
+                // routes directly.)
+                mosaic.onViewsList = { [weak relayTicker] in
+                    await relayTicker?.viewsList()?.map(SavedView.init(ffi:))
+                }
+                mosaic.onViewsUpsert = { [weak relayTicker] view in
+                    guard let relayTicker else {
+                        throw URLError(.cannotWriteToFile)
+                    }
+                    try await relayTicker.viewsUpsertAndPush(view.ffiRecord)
+                }
+                mosaic.onViewsDelete = { [weak relayTicker] viewId in
+                    guard let relayTicker else {
+                        throw URLError(.cannotWriteToFile)
+                    }
+                    try await relayTicker.viewsDeleteAndPush(viewId: viewId)
+                }
                 relayTicker.onAppliedChanges = { [weak mosaic] in
                     // Route through applyRemoteChange() — NOT a direct
                     // refresh() — so the isEditingBlock + post-local-write
@@ -181,6 +203,13 @@ struct GrAppShell: View {
                 // applyRemoteChange() so it defers while editing.
                 liveSync.onNoteChange = { [mosaic] in
                     Task { await mosaic.applyRemoteChange() }
+                }
+                // `views_changed` (saved-views spec): a desktop edit to
+                // the views registry re-reads the switcher live in `.http`
+                // mode. Lighter than applyRemoteChange — no note refetch,
+                // just the views tick the Inbox tab observes.
+                liveSync.onViewsChange = { [weak mosaic] in
+                    mosaic?.noteViewsChanged()
                 }
                 // Binary frames = inbound Loro deltas. Apply through the
                 // RelayTicker (sole engine owner) for sub-second remote

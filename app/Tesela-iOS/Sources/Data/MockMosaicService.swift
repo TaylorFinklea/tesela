@@ -48,6 +48,19 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Daily doesn't need it because it renders `todayBlocks` directly.
     @Published private(set) var refreshTick: Int = 0
 
+    /// Bumped when the saved-views registry changed server-side (`.http`
+    /// mode: the `views_changed` WS event, wired in the shell). The Inbox
+    /// tab observes this to re-read the view switcher without a full note
+    /// refresh. `.relay` doesn't need it — the registry doc arrives via
+    /// the relay tick, whose apply already bumps `refreshTick`.
+    @Published private(set) var viewsTick: Int = 0
+
+    /// Signal a server-side views-registry change (the `views_changed`
+    /// WS event). Main-actor; just bumps `viewsTick`.
+    func noteViewsChanged() {
+        viewsTick += 1
+    }
+
     /// Backlinks for each page the user has opened, keyed by note id.
     /// Filled by `loadPage(id:)` from `GET /notes/{id}/backlinks`. The
     /// page outline is derived on demand from `loadedPageBlocks`, so it
@@ -188,6 +201,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Args: (slug, title, fullContent, createdAtMillis).
     var onLocalNoteWrite:
         ((_ slug: String, _ title: String, _ content: String, _ createdAtMillis: Int64) async -> Void)? = nil
+
+    /// Saved-views registry seams (saved-views spec, 2026-06-10) — the
+    /// `.relay` analog of the server's `/views` routes. Wired in
+    /// `GrAppShell` to `RelayTicker.viewsList()` /
+    /// `viewsUpsertAndPush(_:)` / `viewsDeleteAndPush(viewId:)` so the
+    /// Inbox tab's view switcher reads/writes the engine's synced
+    /// registry doc. List returns nil when the engine can't open (the
+    /// caller falls back to the builtin Inbox); the writes THROW on
+    /// rejection so the editor never pretends a save landed.
+    var onViewsList: (() async -> [SavedView]?)? = nil
+    var onViewsUpsert: ((_ view: SavedView) async throws -> Void)? = nil
+    var onViewsDelete: ((_ viewId: String) async throws -> Void)? = nil
 
     /// Callback fired whenever a note becomes visible/loaded (the daily
     /// on refresh, any opened page). Wired in both shells to
@@ -1839,6 +1864,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
         try ensureOk(response, data: data)
     }
 
+    /// DELETE with no payload. Used by the views switcher
+    /// (`DELETE /views/{id}`); non-2xx surfaces through `ensureOk` with
+    /// the server's message snippet (e.g. the builtin-delete 400).
+    private func httpDelete(_ path: String, baseURL: URL) async throws {
+        var req = URLRequest(url: endpoint(path, baseURL: baseURL))
+        req.httpMethod = "DELETE"
+        req.timeoutInterval = 8
+        let (data, response) = try await session.data(for: req)
+        try ensureOk(response, data: data)
+    }
+
     /// POST + decode JSON response. Used by the Agenda + Inbox surfaces
     /// to call `/agenda` and `/search/query` without having to
     /// hand-roll a URLRequest each time.
@@ -3232,6 +3268,158 @@ final class MockMosaicService: ObservableObject, MosaicService {
             )
         }
         return QueryResult(groups: [QueryGroup(key: "", items: items)])
+    }
+
+    // MARK: - Saved views (saved-views spec, 2026-06-10)
+
+    /// All saved views, sorted `(order, id)` — the Inbox tab's switcher
+    /// chips. `.relay` reads the engine's synced registry doc through the
+    /// shell-wired seam; `.http` hits `GET /views`; `.mock` (and every
+    /// failure path) serves the canonical builtin Inbox so the triage
+    /// surface always has a working default. Never returns empty.
+    func fetchViews() async -> [SavedView] {
+        switch currentBackend {
+        case .mock:
+            return [SavedView.fallbackInbox]
+        case .relay:
+            guard let views = await onViewsList?(), !views.isEmpty else {
+                return [SavedView.fallbackInbox]
+            }
+            return SavedViewLogic.sorted(views)
+        case .http(let baseURL):
+            do {
+                let views: [SavedView] = try await httpGet("/views", baseURL: baseURL)
+                return views.isEmpty ? [SavedView.fallbackInbox] : views
+            } catch {
+                return [SavedView.fallbackInbox]
+            }
+        }
+    }
+
+    /// Create (`isNew`) or update a saved view. `.relay` routes through
+    /// the engine seam (record + relay push, so other devices converge);
+    /// `.http` POSTs/PUTs the server's `/views` routes (which validate
+    /// the DSL again and fan out `views_changed`). Throws on rejection —
+    /// the editor sheet surfaces the message. `.mock` stays inert.
+    func saveView(_ view: SavedView, isNew: Bool) async throws {
+        switch currentBackend {
+        case .mock:
+            return
+        case .relay:
+            guard let upsert = onViewsUpsert else {
+                throw URLError(
+                    .cannotWriteToFile,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "views engine seam not wired — view not saved"
+                    ]
+                )
+            }
+            try await upsert(view)
+        case .http(let baseURL):
+            if isNew {
+                struct CreateViewReq: Encodable {
+                    let id: String
+                    let name: String
+                    let dsl: String
+                    let order: Int64
+                    let display_mode: String
+                    let display_group_by: String?
+                    let display_show_done: Bool?
+                }
+                let req = CreateViewReq(
+                    id: view.id,
+                    name: view.name,
+                    dsl: view.dsl,
+                    order: view.order,
+                    display_mode: view.displayMode,
+                    display_group_by: view.displayGroupBy,
+                    display_show_done: view.displayShowDone
+                )
+                let _: SavedView = try await httpPostJSON("/views", baseURL: baseURL, body: req)
+            } else {
+                var body: [String: Any] = [
+                    "name": view.name,
+                    "dsl": view.dsl,
+                    "order": view.order,
+                    "display_mode": view.displayMode,
+                ]
+                // Empty string clears the grouping key server-side; nil in
+                // our record means "no grouping".
+                body["display_group_by"] = view.displayGroupBy ?? ""
+                if let showDone = view.displayShowDone {
+                    body["display_show_done"] = showDone
+                }
+                try await httpPut("/views/\(view.id)", baseURL: baseURL, body: body)
+            }
+        }
+    }
+
+    /// Delete a saved view. Builtins are editable but never deletable —
+    /// the UI hides the affordance, the engine and the server both
+    /// enforce the guard, and this client-side pre-check turns a bypass
+    /// into a clear local error instead of a backend round-trip.
+    func deleteView(id: String) async throws {
+        guard id != SavedView.builtinInboxId else {
+            throw URLError(
+                .cannotWriteToFile,
+                userInfo: [
+                    NSLocalizedDescriptionKey:
+                        "the built-in Inbox cannot be deleted"
+                ]
+            )
+        }
+        switch currentBackend {
+        case .mock:
+            return
+        case .relay:
+            guard let delete = onViewsDelete else {
+                throw URLError(
+                    .cannotWriteToFile,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "views engine seam not wired — view not deleted"
+                    ]
+                )
+            }
+            try await delete(id)
+        case .http(let baseURL):
+            try await httpDelete("/views/\(id)", baseURL: baseURL)
+        }
+    }
+
+    /// Persist a new switcher order: each view's `order` becomes
+    /// `(index + 1) * 10` (the server's reorder rule). `.http` posts the
+    /// bare id array to `/views/reorder`; `.relay` upserts only the views
+    /// whose order actually changed through the engine seam.
+    func reorderViews(_ orderedViews: [SavedView]) async throws {
+        switch currentBackend {
+        case .mock:
+            return
+        case .relay:
+            guard let upsert = onViewsUpsert else {
+                throw URLError(
+                    .cannotWriteToFile,
+                    userInfo: [
+                        NSLocalizedDescriptionKey:
+                            "views engine seam not wired — order not saved"
+                    ]
+                )
+            }
+            for (idx, view) in orderedViews.enumerated() {
+                let newOrder = Int64(idx + 1) * 10
+                guard view.order != newOrder else { continue }
+                var updated = view
+                updated.order = newOrder
+                try await upsert(updated)
+            }
+        case .http(let baseURL):
+            try await httpPostNoResponse(
+                "/views/reorder",
+                baseURL: baseURL,
+                body: orderedViews.map(\.id)
+            )
+        }
     }
 
     /// Direct write to `/blocks/set-property`. Used by Agenda + Inbox

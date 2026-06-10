@@ -576,6 +576,95 @@ final class RelayTicker: ObservableObject {
         return true
     }
 
+    // ─── Saved views registry (saved-views spec, 2026-06-10) ───────────
+    //
+    // The registry is ONE dedicated Loro doc (`tesela_sync::VIEWS_DOC_ID`)
+    // that rides the coordinator's existing produce/apply streams like any
+    // note doc — inbound registry edits arrive via the normal tick (and
+    // surface through `onAppliedChanges`, which the host already wires to
+    // a refresh), so reads need no extra sync plumbing. Writes mirror
+    // `setBlockPropertyAndPush`'s tail (record into the engine, then drain
+    // the coordinator) MINUS the per-note bootstrap/push-floor steps: those
+    // are note-slug machinery for the live-WS delta path, and views writes
+    // through the engine only happen in `.relay` mode where the relay tick
+    // (not the WS) owns delivery.
+
+    /// Has this session already run the idempotent builtin seed? The
+    /// engine-side `ensureBuiltinViews` no-ops when the Inbox entry exists
+    /// (locally seeded or synced), so this flag only saves the FFI hop.
+    private var viewsSeeded = false
+
+    /// All saved views from the synced registry, sorted by `(order, id)`.
+    /// Seeds the builtin Inbox first (same bring-up posture as the
+    /// server's `ensure_builtin_views` in main.rs — idempotent,
+    /// edit-preserving, fixed id so concurrent seeds converge to ONE
+    /// Inbox). Returns nil when the engine can't open.
+    func viewsList() async -> [ViewRecord]? {
+        do {
+            try await openEngineIfNeeded()
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+        guard let engine else { return nil }
+        if !viewsSeeded {
+            do {
+                try await engine.ensureBuiltinViews()
+                viewsSeeded = true
+            } catch {
+                // Non-fatal: serve whatever the registry holds; the next
+                // list retries the seed.
+            }
+        }
+        return await engine.viewsList()
+    }
+
+    /// Create/update a saved view in the engine's registry and drain the
+    /// op to the relay so other devices converge. Throws when the engine
+    /// can't open or the upsert is rejected — the editor surfaces the
+    /// message instead of pretending the save landed.
+    func viewsUpsertAndPush(_ record: ViewRecord) async throws {
+        try await openEngineIfNeeded()
+        guard let engine else {
+            throw FfiSyncError.Other(message: "engine open failed")
+        }
+        try await engine.viewsUpsert(record: record)
+        await drainViewsWrite()
+    }
+
+    /// Delete a saved view and drain the op. The engine's builtin guard
+    /// surfaces as a thrown `FfiSyncError` (builtins are editable, never
+    /// deletable); an already-gone id is an idempotent no-op.
+    func viewsDeleteAndPush(viewId: String) async throws {
+        try await openEngineIfNeeded()
+        guard let engine else {
+            throw FfiSyncError.Other(message: "engine open failed")
+        }
+        _ = try await engine.viewsDelete(viewId: viewId)
+        await drainViewsWrite()
+    }
+
+    /// Best-effort immediate outbound tick after a views-registry write —
+    /// the same tail `setBlockPropertyAndPush` uses. In hub mode the relay
+    /// coordinator is gated off (the registry write still reaches peers:
+    /// `.http` mode routes views writes through the server, so this path
+    /// only runs in `.relay`); if the coordinator isn't ready the regular
+    /// tick loop drains the op later.
+    private func drainViewsWrite() async {
+        if hubMode { return }
+        invalidateCoordinatorIfRepaired()
+        if coordinator == nil {
+            try? await ensureCoordinator()
+        }
+        guard let coordinator else { return }
+        do {
+            let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
+            noteOutboundOutcome(outcome)
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
     /// Read a block's current engine-exact text (collab editing C1-inbound).
     /// The engine is the source of truth: after a remote splice lands via
     /// `applyInboundDelta`, the open editor reads the MERGED block text here

@@ -47,6 +47,15 @@ final class LiveSyncSocket: ObservableObject {
     /// here; the server handles fan-out.
     var onBinaryDelta: ((Data) -> Void)?
 
+    /// Invoked on the main actor when the server's saved-views registry
+    /// changed (the `views_changed` WS event, saved-views spec
+    /// 2026-06-10). The shell wires this to
+    /// `MockMosaicService.noteViewsChanged()` so the Inbox tab's view
+    /// switcher re-reads `/views` without a full note refresh. The
+    /// event's payload (the full registry) is deliberately not decoded —
+    /// iOS re-fetches, matching the note-event posture above.
+    var onViewsChange: (() -> Void)?
+
     private let session = URLSession(configuration: .default)
     private var task: URLSessionWebSocketTask?
     private var currentURL: URL?
@@ -154,6 +163,8 @@ final class LiveSyncSocket: ObservableObject {
         switch envelope.event {
         case "note_created", "note_updated", "note_deleted":
             onNoteChange?()
+        case "views_changed":
+            onViewsChange?()
         default:
             break  // deadline / scheduled notifications — not handled here
         }

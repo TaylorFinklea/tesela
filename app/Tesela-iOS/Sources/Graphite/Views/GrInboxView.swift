@@ -1,40 +1,50 @@
 import SwiftUI
 
-/// Graphite Inbox — the triage surface, re-themed over the SAME
-/// `MockMosaicService.executeQuery(_:)` + inbox-DSL helpers the legacy
-/// `InboxView` uses. No data layer is rebuilt: the active saved filter's
-/// `query::` DSL is resolved via `fetchInboxDsl(slug:)` (falling back to
-/// `defaultInboxDsl()`), parsed to chip state via `chipsFromDsl`, run
-/// through `executeQuery`, and triage actions write `status::` via
-/// `setBlockProperty`. Chip toggles rebuild the DSL via `dslFromChips`
-/// and persist through `saveInboxDsl`.
+/// Graphite Inbox — now the SAVED-VIEWS surface (saved-views spec,
+/// 2026-06-10): the tab is a view switcher whose chips are the synced
+/// views registry, with the builtin Inbox as the default selection. The
+/// selected chip's DSL drives the same query path as before
+/// (`MockMosaicService.executeQuery(_:)` — `LocalQueryEngine` over the
+/// relay-synced sandbox in `.relay`, `POST /search/query` in `.http`),
+/// and triage actions still write `status::` via `setBlockProperty`.
 ///
-/// Only the chrome is new: a `GrHeader`, a `GrChip` filter bar, and the
-/// mobile `.grm-icard` rows with leading-swipe (todo/doing) and
-/// trailing-swipe (done) triage. The active filter slug persists via
-/// `@AppStorage`, matching the web's `localStorage` key.
+/// Registry reads: `.relay` → the engine's views doc through the
+/// shell-wired seam (re-read on `refreshTick`, which the relay tick bumps
+/// when the registry doc syncs in); `.http` → `GET /views` (re-read on
+/// `viewsTick`, bumped by the `views_changed` WS event). Selection
+/// persists in UserDefaults, scoped per backend
+/// (`SavedViewLogic.selectionKey`).
+///
+/// Long-press a chip for edit / move / delete (builtins hide delete);
+/// the "+" chip opens the DSL-first editor (`GrViewEditorSheet`).
 struct GrInboxView: View {
     @ObservedObject var mosaic: MockMosaicService
     var backend: BackendSettings? = nil
 
     @Environment(\.theme) private var theme
 
+    @State private var views: [SavedView] = []
+    @State private var activeViewId: String = SavedView.builtinInboxId
     @State private var rows: [QueryItem] = []
     @State private var loading = false
-    @State private var chipState: ChipState = chipsFromDsl(defaultInboxDsl())
     @State private var navigationPath = NavigationPath()
-
-    @AppStorage("tesela.inbox.activeFilterSlug") private var activeSlug: String = "inbox"
+    @State private var editorTarget: EditorTarget? = nil
 
     /// Soft cap mirroring the web's `ROW_CAP` so a legacy mosaic with
-    /// thousands of untriaged blocks doesn't choke the renderer.
+    /// thousands of matching blocks doesn't choke the renderer.
     private let rowCap = 200
+
+    private struct EditorTarget: Identifiable {
+        let id: String
+        /// nil = creating a new view.
+        let view: SavedView?
+    }
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
             VStack(spacing: 0) {
-                GrHeader(title: "Inbox", subtitle: subtitle)
-                chipBar
+                GrHeader(title: activeView?.name ?? "Inbox", subtitle: subtitle)
+                viewChipBar
                 content
             }
             .background(theme.bg)
@@ -45,31 +55,102 @@ struct GrInboxView: View {
         }
         .task { await load() }
         // Re-query when a refresh pass lands (relay tick / WS event) —
-        // same signal that freshens Daily.
+        // same signal that freshens Daily. The relay tick also carries
+        // the views REGISTRY doc, so this re-reads the switcher too.
         .onChange(of: mosaic.refreshTick) { _, _ in Task { await load() } }
+        // `.http` registry changes arrive as the `views_changed` WS
+        // event → `viewsTick` (no note refresh involved).
+        .onChange(of: mosaic.viewsTick) { _, _ in Task { await load() } }
+        .sheet(item: $editorTarget) { target in
+            GrViewEditorSheet(
+                existing: target.view,
+                siblings: views,
+                onSave: { record, isNew in
+                    try await saveView(record, isNew: isNew)
+                },
+                onDelete: { id in
+                    try await deleteView(id: id)
+                }
+            )
+            .environment(\.theme, theme)
+            .preferredColorScheme(.dark)
+        }
+    }
+
+    private var activeView: SavedView? {
+        views.first(where: { $0.id == activeViewId })
+    }
+
+    private var isInboxActive: Bool {
+        activeViewId == SavedView.builtinInboxId
     }
 
     private var subtitle: String {
-        rows.isEmpty ? "TRIAGE" : "\(headerCount) unsorted"
+        if rows.isEmpty {
+            return isInboxActive ? "TRIAGE" : "SAVED VIEW"
+        }
+        if isInboxActive {
+            return "\(headerCount) unsorted"
+        }
+        return rows.count == 1 ? "1 result" : "\(headerCount) results"
     }
 
     private var headerCount: String {
         rows.count >= rowCap ? "\(rowCap)+" : "\(rows.count)"
     }
 
-    // ── Chip bar (.gr-chipbar over the inbox-DSL registry) ──────────────
+    /// UserDefaults key for the persisted selection, scoped per backend
+    /// so switching mosaics doesn't bleed selections across registries.
+    private var selectionKey: String {
+        SavedViewLogic.selectionKey(
+            scope: SavedViewLogic.selectionScope(
+                mode: backend?.mode.rawValue ?? "mock",
+                serverURL: backend?.serverURL ?? ""
+            )
+        )
+    }
 
-    private var chipBar: some View {
+    // ── View switcher (.gr-chipbar over the views registry) ─────────────
+
+    private var viewChipBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 7) {
-                ForEach(chipRegistry, id: \.id) { chip in
+                ForEach(views) { view in
                     GrChip(
-                        label: chip.label,
-                        active: chipState.active[chip.id] == true
+                        label: view.name,
+                        active: view.id == activeViewId
                     ) {
-                        chipState.active[chip.id] = !(chipState.active[chip.id] ?? false)
-                        Task { await commitChipState() }
+                        select(view.id)
                     }
+                    .contextMenu {
+                        Button {
+                            editorTarget = EditorTarget(id: view.id, view: view)
+                        } label: {
+                            Label("Edit view", systemImage: "pencil")
+                        }
+                        Button {
+                            move(view.id, by: -1)
+                        } label: {
+                            Label("Move left", systemImage: "arrow.left")
+                        }
+                        .disabled(views.first?.id == view.id)
+                        Button {
+                            move(view.id, by: 1)
+                        } label: {
+                            Label("Move right", systemImage: "arrow.right")
+                        }
+                        .disabled(views.last?.id == view.id)
+                        if !view.builtin {
+                            Button(role: .destructive) {
+                                Task { try? await deleteView(id: view.id) }
+                            } label: {
+                                Label("Delete view", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+                GrChip(label: "+ New") {
+                    editorTarget = EditorTarget(id: "new", view: nil)
                 }
             }
             .padding(.horizontal, 18)
@@ -89,14 +170,15 @@ struct GrInboxView: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if rows.isEmpty {
-            ContentUnavailableView {
-                Label("Inbox clear", systemImage: "checkmark.circle")
-            } description: {
-                Text("Every block has a status — nothing to triage right now.")
-            }
-            .background(theme.bg)
+            emptyState
         } else {
             List {
+                if let mode = activeView?.displayMode, mode != "list" {
+                    displayModeNote(mode)
+                        .listRowInsets(EdgeInsets(top: 6, leading: 18, bottom: 2, trailing: 18))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
                 Section {
                     ForEach(rows) { row in
                         inboxCard(row)
@@ -133,6 +215,33 @@ struct GrInboxView: View {
             .background(theme.bg)
             .refreshable { await load() }
         }
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if isInboxActive {
+            ContentUnavailableView {
+                Label("Inbox clear", systemImage: "checkmark.circle")
+            } description: {
+                Text("Nothing matches the Inbox query right now.")
+            }
+            .background(theme.bg)
+        } else {
+            ContentUnavailableView {
+                Label("No matches", systemImage: "line.3.horizontal.decrease.circle")
+            } description: {
+                Text("Nothing matches “\(activeView?.dsl ?? "")”.")
+            }
+            .background(theme.bg)
+        }
+    }
+
+    /// Honest note when the active view stores a table/kanban display
+    /// preference: iOS renders a list; the layout applies on web.
+    private func displayModeNote(_ mode: String) -> some View {
+        Text("\(mode) view — shown as a list on iOS; full layout on web")
+            .font(.system(size: 10.5, design: .monospaced))
+            .foregroundStyle(theme.fgFaint)
     }
 
     // ── Card (.grm-icard) ───────────────────────────────────────────────
@@ -198,13 +307,21 @@ struct GrInboxView: View {
         }
     }
 
-    // ── Data load + actions (same mutations as InboxView) ───────────────
+    // ── Data load + actions ─────────────────────────────────────────────
 
     private func load() async {
         loading = true
         defer { loading = false }
-        let dsl = await mosaic.fetchInboxDsl(slug: activeSlug) ?? MockMosaicService.defaultInboxDsl()
-        chipState = chipsFromDsl(dsl)
+        let fetched = await mosaic.fetchViews()
+        views = fetched
+        let persisted = UserDefaults.standard.string(forKey: selectionKey)
+        activeViewId = SavedViewLogic.resolveSelection(views: fetched, persisted: persisted)
+            ?? SavedView.builtinInboxId
+        await runActiveQuery()
+    }
+
+    private func runActiveQuery() async {
+        let dsl = activeView?.dsl ?? SavedView.fallbackInbox.dsl
         let result = await mosaic.executeQuery(dsl)
         var collected: [QueryItem] = []
         outer: for g in result.groups {
@@ -216,10 +333,42 @@ struct GrInboxView: View {
         rows = collected
     }
 
-    private func commitChipState() async {
-        let newDsl = dslFromChips(chipState)
-        try? await mosaic.saveInboxDsl(slug: activeSlug, dsl: newDsl)
+    private func select(_ id: String) {
+        activeViewId = id
+        UserDefaults.standard.set(id, forKey: selectionKey)
+        Task { await runActiveQuery() }
+    }
+
+    private func saveView(_ record: SavedView, isNew: Bool) async throws {
+        try await mosaic.saveView(record, isNew: isNew)
         await load()
+        if isNew {
+            select(record.id)
+        }
+    }
+
+    private func deleteView(id: String) async throws {
+        try await mosaic.deleteView(id: id)
+        if activeViewId == id {
+            UserDefaults.standard.removeObject(forKey: selectionKey)
+        }
+        await load()
+    }
+
+    /// Move a chip one slot left/right and persist the new order
+    /// (`POST /views/reorder` in `.http`; order upserts through the
+    /// engine seam in `.relay`).
+    private func move(_ id: String, by delta: Int) {
+        guard let idx = views.firstIndex(where: { $0.id == id }) else { return }
+        let target = idx + delta
+        guard views.indices.contains(target) else { return }
+        var reordered = views
+        reordered.swapAt(idx, target)
+        views = reordered  // optimistic; load() below re-syncs
+        Task {
+            try? await mosaic.reorderViews(reordered)
+            await load()
+        }
     }
 
     private func triage(_ row: QueryItem, status: String) async {
