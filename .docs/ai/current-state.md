@@ -1,5 +1,27 @@
 # Current State
 
+## 2026-06-09 (evening) — Ultracode audit + product review → two-stream plan
+
+**Branch:** main (un-pushed commits — remind Taylor to push at session end, adopted 2026-06-09).
+**What happened:** full-repo multi-agent bug bash + arch review (91 confirmed findings, 42 fact-checked recs). Report: `~/.harness/reports/tesela/20260609-bugbash-arch-review/` (read `artifacts/all-findings.json` for file:line evidence before fixing anything). Decisions → `decisions.md` 2026-06-09. Execution spec → `phases/2026-06-09-audit-hardening-spec.md`.
+**⚠ HOLD the TestFlight `202606091254` relay product test** — 2 confirmed criticals guarantee failure: relay seq reset black-holes desktop edits after any quiet ~5 min (the REAL #195; root cause of the 06-09 sim gap — iOS `.relay` read path exonerated), and iOS `.relay` mode is silently READ-ONLY (all 3 write gates are `.http`-only; phone edits discarded). Taylor warned via callout on harness-deck `20260609-relay-sync-rollout`.
+**⚠ Mojibake risk on the REAL mosaic today:** tag rename/delete corrupts ALL non-ASCII text (`tag_rewrite.rs` byte-as-char). Avoid tag renames until A8 lands.
+
+### Plan (two parallel streams — items detailed in the spec; pick ONE per iteration)
+- [ ] **A1** relay seq fix + conformance case + HA add-on 0.2.1. Verify: `cargo test -p tesela-relay` + conformance both impls.
+- [ ] **A2-A3** auth_key off GET /registration; poison-envelope skip-not-wedge. Verify: conformance + `cargo test -p tesela-sync`.
+- [ ] **A4-A5** cursor-past-failure family + per-(relay,group) scoped cursors (server + FFI/iOS). Verify: `cargo test --workspace` + new harness cases.
+- [ ] **A6-A7** iOS `.relay` write gates + applyRemoteChange + pairing-code resilience + Mock-seed clear; honest tick_outbound/sendDelta errors. Verify: `xcodebuild` + new iOS unit target.
+- [ ] **A8-A9** mojibake fix (+non-ASCII round-trip test); PUT-200-on-record_local-failure; note_tree non-bullet preservation. Verify: `cargo test -p tesela-core -p tesela-server`.
+- [ ] **A10** Reminders auto-sync default-OFF. Verify: `cargo test -p tesela-server`.
+- [ ] **A11-A13** CI green (`cargo fmt --all`) + CI gates + convergence harness + iOS unit target + FFI drift check. Verify: green GH Actions run.
+- [ ] **A14** ship: HA 0.2.1 + TestFlight build; replace the held product test on harness-deck. Verify: [?] Taylor's on-device product test.
+- [ ] **B1** the 7 /g parity bugs (artifact has file:line). Verify: web e2e + hands-on /g pass.
+- [ ] **B2-B3** flip /g default → parity checklist → delete v4/v5 (preserve `lib/v4`+`lib/v5` behavior modules).
+- [ ] **B4** web-editor invariant fixes (inbox-triage→engine ops; BlockOpsSaver kind-blind coalesce; remote multi-run misapply; NORMAL Enter/Backspace guard; JournalView future-dailies hang). Verify: `property-readmodel.e2e.mjs` + new cases.
+
+**After both streams → Milestone 3 (decided): finish the sync spine** (CF deploy, key/pairing min slice, cursor migration, WS-hub demotion, Reminders/recur-bump engine re-route, NoteDelete tombstone spec).
+
 ## 2026-06-08 — Multi-device sync = always-on RELAY (HA → CF), NOT a Mac-hub
 
 **Decision (Taylor):** the always-on multi-device spine is the **encrypted relay** — **Home-Assistant-hosted relay FIRST** (it's already running on his HA box, always-on; see [[project-relay-413-blocks-sync]] task #140), **then migrate to Cloudflare** (roadmap step 1). NOT a Mac-as-hub. Goal unchanged: multi-device works with the Mac off ([[project-multidevice-next-milestone]]).

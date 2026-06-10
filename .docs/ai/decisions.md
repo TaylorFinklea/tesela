@@ -4,6 +4,19 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-09 — Ultracode audit + product review: two-stream plan, relay topology, Reminders containment, full testing program
+
+**Context:** full-repo multi-agent audit (12 bug finders + adversarial verifier per finding; 7 arch lenses + fact-checkers; 169 agents). 91 confirmed findings (3 distinct criticals), 42 fact-checked recommendations. Report + per-claim file:line evidence: `~/.harness/reports/tesela/20260609-bugbash-arch-review/`. Execution spec: `phases/2026-06-09-audit-hardening-spec.md`. Taylor decided (structured product review):
+
+1. **Now = FULL hardening batch, two PARALLEL streams.** Stream A (Rust/iOS): relay seq black hole + iOS `.relay` write gates + cursor-past-failure family + scoped cursors + auth_key + data-corruption batch (mojibake/PUT-200/note_tree). Stream B (web): Graphite cutover — 7 parity bugs → flip /g default → delete v4/v5 behind a parity checklist. Rationale: streams barely overlap; the held product test gates only on A.
+2. **Relay topology:** the relay is a zero-knowledge **mailbox**, never an authority — CRDT convergence needs no mediator, so LAN P2P (step 6) is orthogonal upside, not an alternative. **HA carries sync now → the CF Worker becomes the ONE canonical production spine** once deployed/proven; the Rust relay is then conformance-frozen as a self-host option (two production implementations already diverged: the seq bug + 3-way body-limit mismatch were Rust-only). Mac-hub WS retires as a *device* transport in Milestone 3 (stays for web UI).
+3. **Apple Reminders (+ recur-bump): disable now, re-route next.** Both write around the Loro engine (`store.update`), so the engine reverts their writebacks and they never sync; auto-sync also self-retriggers every 30s and the conflict gate fails open. Auto-sync flips default-OFF in Stream A; the engine re-route is the first item of Milestone 3. General principle adopted: **every note mutation goes through the engine** (tag-rewrite, versions, etc. queue behind the same rule).
+4. **Testing = FULL program:** CI green (one `cargo fmt --all` — red since 2026-04-14 because fmt fails before clippy/tests ever run) + CI gates (workspace tests, svelte-check, web e2e, relay conformance on BOTH impls, iOS compile smoke) + cross-process relay convergence harness (built during Stream A so the fixes land locked) + iOS unit target gated in the TestFlight script + FFI regenerate-and-diff drift check.
+5. **Milestone 3 = finish the sync spine:** CF deploy (with its 1 MiB body-cap config + registration limits BEFORE public) + minimum key/pairing model (wrapped/passphrase-derived key; group keys → iOS Keychain) + HA→CF cursor migration + WS-hub demotion + Reminders re-route + NoteDelete tombstone design (deletes currently have NO wire form — never propagate, resurrect from snapshots).
+6. **Hygiene:** repo-root cleanup approved (stray tesela.db/zips/movs/screenshots); **push-at-session-end** adopted (agent reminds; Taylor pushes). RELEASE.md history purge + auto-release retirement explicitly PARKED (73 MB blob, ~87% of tracked bytes — revisit later).
+
+---
+
 ### 2026-06-08 — App Store export compliance: standard crypto = EXEMPT, but EXCLUDE FRANCE before any PUBLIC release
 
 **Fact (verified `crates/tesela-sync/src/crypto/`):** the iOS build links the Rust sync FFI, which implements app-layer encryption beyond Apple's OS — **ChaCha20-Poly1305** (AEAD) for end-to-end sync-envelope encryption with the group key, **HKDF + HMAC-SHA-256** (relay auth / KDF), **BLAKE3** hashing, **rustls** TLS. All standard published algorithms (RFC 8439 / FIPS 180 / RFC 5869). So the app DOES contain encryption — "your app uses no encryption" is false.
