@@ -42,10 +42,13 @@ if [[ "$NO_UPLOAD" == 0 && ! -f "$ASC_KEY_PATH" ]]; then
   exit 1
 fi
 
-echo "==> 1/5  Rust FFI static lib (aarch64-apple-ios, release)"
+echo "==> 1/6  Rust FFI static lib (aarch64-apple-ios, release)"
 cargo build --release -p tesela-sync-ffi --target aarch64-apple-ios
 
-echo "==> 2/5  resolve SwiftPM packages (+ heal the SwiftWhisper submodule if it flakes)"
+echo "==> 2/6  FFI binding drift check (regenerate + diff — stale bindings abort the release)"
+scripts/check-ffi-drift.sh
+
+echo "==> 3/6  resolve SwiftPM packages (+ heal the SwiftWhisper submodule if it flakes)"
 # SwiftWhisper pulls a `whisper.cpp` git submodule that SwiftPM sometimes fails
 # to clone (a CWD/tmp-pack race). If resolution fails, init the submodule by
 # hand in the checkout and retry — then SwiftPM accepts it.
@@ -55,7 +58,7 @@ if ! xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme "$SCHEME
   xcodebuild -resolvePackageDependencies -project "$PROJECT" -scheme "$SCHEME" >/dev/null 2>&1 || true
 fi
 
-echo "==> 3/5  unit tests (TeselaTests, iOS Simulator) — a red sync-logic test aborts the release"
+echo "==> 4/6  unit tests (TeselaTests, iOS Simulator) — a red sync-logic test aborts the release"
 # The test host builds for the simulator, so it links the SIM static lib —
 # build it alongside the device one (step 1) so both stay fresh.
 cargo build --release -p tesela-sync-ffi --target aarch64-apple-ios-sim
@@ -75,7 +78,7 @@ xcodebuild test \
   -project "$PROJECT" -scheme "$SCHEME" \
   -destination "platform=iOS Simulator,id=$SIM_UDID"
 
-echo "==> 4/5  stamp a unique build number + archive (Release, generic iOS)"
+echo "==> 5/6  stamp a unique build number + archive (Release, generic iOS)"
 BUILDNO="$(date +%Y%m%d%H%M)"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILDNO" "$INFO"
 echo "         CFBundleVersion = $BUILDNO  (CFBundleShortVersionString unchanged)"
@@ -96,7 +99,7 @@ if [[ "$NO_UPLOAD" == 1 ]]; then
   exit 0
 fi
 
-echo "==> 5/5  export + upload to TestFlight"
+echo "==> 6/6  export + upload to TestFlight"
 /bin/rm -rf "$EXPORT"
 xcodebuild -exportArchive \
   -archivePath "$ARCHIVE" \
