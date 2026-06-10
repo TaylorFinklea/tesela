@@ -23,6 +23,7 @@
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
   import { setFocusedBlock } from "$lib/stores/current-block.svelte";
   import { bodyHasTrailingEmpty, appendTrailingEmpty } from "$lib/ensure-trailing-empty";
+  import { prevDate, dailyWalkDates } from "$lib/journal-dates";
   import type { Note } from "$lib/types/Note";
 
   let { anchorDate }: { anchorDate: string } = $props();
@@ -209,22 +210,19 @@
     } as unknown as Note;
   }
 
-  /** Step `dateStr` back by one day. Pure UTC-friendly string math so the
-   *  calendar stays consistent regardless of TZ. */
-  function prevDate(dateStr: string): string {
-    const d = new Date(dateStr + "T12:00:00Z"); // noon UTC sidesteps DST edges
-    d.setUTCDate(d.getUTCDate() - 1);
-    const y = d.getUTCFullYear();
-    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-    const day = String(d.getUTCDate()).padStart(2, "0");
-    return `${y}-${m}-${day}`;
-  }
-
-  /** Visible list = a gap-free descending calendar from today back to
-   *  the oldest on-disk daily, then `paddingDays` of additional empty
-   *  days for "scroll into the past" UX. Days that have a real file get
-   *  the real note; days without get a synthetic empty placeholder so
+  /** Visible list = a gap-free descending calendar from today (or the
+   *  newest on-disk daily, if a peer created a future-dated one) back to
+   *  the oldest on-disk daily (or today), then `paddingDays` of additional
+   *  empty days for "scroll into the past" UX. Days that have a real file
+   *  get the real note; days without get a synthetic empty placeholder so
    *  the feed renders without visual gaps between non-adjacent entries.
+   *
+   *  The date walk lives in `dailyWalkDates` (journal-dates.ts) — bounded by
+   *  construction, so a future-dated `oldest` (every on-disk daily ahead of
+   *  the local clock, e.g. a fresh mosaic whose only daily synced from a
+   *  TZ-ahead peer) renders instead of hard-hanging the render in an
+   *  unbounded loop, and a lone future "tomorrow" renders instead of being
+   *  silently dropped.
    */
   const visibleDailies = $derived.by((): Note[] => {
     const real = onDiskVisible;
@@ -245,32 +243,18 @@
     const newest = real[0].title;
     const oldest = real[real.length - 1].title;
 
-    // Step 1: today → oldest real, gap-free. Fill the in-betweens with
-    // synthetic empties so a write on a "missed" day still has a place
-    // to land. (Earlier behaviour skipped missed days entirely, which
-    // left a confusing visual jump from "Today" to whenever the user
-    // last wrote.)
-    const out: Note[] = [];
-    let cursor = todayStr;
-    while (true) {
-      if (byDate.has(cursor)) {
-        out.push(byDate.get(cursor)!);
-      } else {
-        out.push(syntheticDaily(cursor));
-      }
-      if (cursor === oldest) break;
-      cursor = prevDate(cursor);
-    }
-    // Guard against a bogus newest > today (server clock drift, etc.):
-    // if the oldest real entry is newer than today, the loop above
-    // never reaches it. Fall back to appending the on-disk list.
-    if (!out.some((n) => n.title === oldest)) {
-      out.push(...real.filter((n) => !byDate.has(out.find((o) => o.title === n.title)?.title || "")));
-    }
+    // Step 1: max(newest, today) → min(oldest, today), gap-free. Fill the
+    // in-betweens with synthetic empties so a write on a "missed" day still
+    // has a place to land. (Earlier behaviour skipped missed days entirely,
+    // which left a confusing visual jump from "Today" to whenever the user
+    // last wrote.) Every on-disk daily in the window falls inside the walk,
+    // so no post-loop append guard is needed.
+    const walked = dailyWalkDates(todayStr, newest, oldest);
+    const out: Note[] = walked.map((d) => byDate.get(d) ?? syntheticDaily(d));
 
-    // Step 2: pad below the oldest real entry with `paddingDays` of
+    // Step 2: pad below the walk's last (oldest) day with `paddingDays` of
     // synthetic empties so infinite scroll keeps revealing more days.
-    let tail = prevDate(oldest);
+    let tail = prevDate(walked[walked.length - 1]);
     for (let i = 0; i < paddingDays; i++) {
       if (!onDiskDates.has(tail)) {
         out.push(syntheticDaily(tail));
