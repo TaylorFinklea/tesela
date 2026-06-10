@@ -78,10 +78,17 @@ xcodebuild test \
   -project "$PROJECT" -scheme "$SCHEME" \
   -destination "platform=iOS Simulator,id=$SIM_UDID"
 
-echo "==> 5/6  stamp a unique build number + archive (Release, generic iOS)"
-BUILDNO="$(date +%Y%m%d%H%M)"
+echo "==> 5/6  stamp the next build number + archive (Release, generic iOS)"
+# Plain counter (Taylor, 2026-06-10): previous+1, no timestamps. The
+# generated Info.plist carries project.yml's CFBundleVersion (xcodegen ran
+# in step 4), so read it, bump it, and persist the bump in BOTH places —
+# project.yml is the source of truth that survives the next regen.
+PREV="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")"
+BUILDNO=$((PREV + 1))
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILDNO" "$INFO"
-echo "         CFBundleVersion = $BUILDNO  (CFBundleShortVersionString unchanged)"
+/usr/bin/sed -i '' -E "s/^([[:space:]]*CFBundleVersion:).*/\1 \"$BUILDNO\"/" "$IOS/project.yml"
+APP_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")"
+echo "         version $APP_VERSION (build $BUILDNO)  — commit project.yml + Info.plist after the upload"
 mkdir -p "$OUT"
 /bin/rm -rf "$ARCHIVE"
 xcodebuild archive \

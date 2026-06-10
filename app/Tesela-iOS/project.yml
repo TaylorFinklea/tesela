@@ -116,6 +116,16 @@ targets:
       path: Info.plist
       properties:
         CFBundleDisplayName: Tesela
+        # Version scheme (Taylor, 2026-06-10): plain build counter, no
+        # timestamps. project.yml is the SOURCE OF TRUTH (xcodegen
+        # regenerates Info.plist, so plist-only stamps get reset) —
+        # scripts/ios-testflight.sh increments CFBundleVersion here AND in
+        # the generated plist each release; commit project.yml post-upload.
+        # 1.1 reset: 1.0's builds were timestamps and Apple requires
+        # ascending builds within a version. Marketing-version bumps stay
+        # MANUAL + rare.
+        CFBundleShortVersionString: "1.1"
+        CFBundleVersion: "5"
         # Export compliance: the app uses only STANDARD, published crypto
         # (ChaCha20-Poly1305 sync E2E + HKDF/HMAC-SHA256 + rustls TLS), which is
         # EXEMPT (EAR 740.17 standard-cryptography). Declaring this here stops
