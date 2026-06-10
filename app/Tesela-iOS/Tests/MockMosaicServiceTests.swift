@@ -137,4 +137,68 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertEqual(blocks[1].lineNumber, 2)
         XCTAssertEqual(blocks[2].lineNumber, 4)
     }
+
+    // MARK: - Placeholder-authoring gate (2026-06-10 product test)
+
+    /// A daily writeback consisting ONLY of bare empty blocks for a daily
+    /// that has never been materialized locally is the editable-row
+    /// placeholder state, not user content — authoring it as the note's
+    /// first synced state put a stray empty bullet ABOVE the peer's real
+    /// content after the fresh-day union (iOS: [empty, dude, empty];
+    /// desktop: [dude, empty]).
+    func testPlaceholderOnlyFreshDailyIsSuppressed() {
+        let placeholder = Block(id: "5E0A4E27-0A57-4D6B-9F6F-1B1F58A2D001", kind: .note, text: "")
+        XCTAssertTrue(MockMosaicService.isBarePlaceholder(placeholder))
+        XCTAssertTrue(
+            MockMosaicService.shouldSuppressPlaceholderAuthoring(
+                blocks: [placeholder],
+                dailyFileExists: false
+            )
+        )
+        // Vacuously-bare empty list on a fresh daily: nothing to author.
+        XCTAssertTrue(
+            MockMosaicService.shouldSuppressPlaceholderAuthoring(
+                blocks: [],
+                dailyFileExists: false
+            )
+        )
+    }
+
+    /// Once a local file exists, an all-bare state is a REAL edit (the
+    /// user deleted the last contentful block) and must flow — the gate
+    /// only applies to a never-persisted daily.
+    func testAllBareStateOnExistingDailyStillPushes() {
+        let placeholder = Block(id: "5E0A4E27-0A57-4D6B-9F6F-1B1F58A2D002", kind: .note, text: "")
+        XCTAssertFalse(
+            MockMosaicService.shouldSuppressPlaceholderAuthoring(
+                blocks: [placeholder],
+                dailyFileExists: true
+            )
+        )
+    }
+
+    /// Any real content — text, tags, properties, or task state — defeats
+    /// the gate even on a fresh daily.
+    func testContentfulFreshDailyIsAuthored() {
+        let typed = Block(id: "5E0A4E27-0A57-4D6B-9F6F-1B1F58A2D003", kind: .note, text: "hello")
+        let placeholder = Block(id: "5E0A4E27-0A57-4D6B-9F6F-1B1F58A2D004", kind: .note, text: "")
+        XCTAssertFalse(MockMosaicService.isBarePlaceholder(typed))
+        XCTAssertFalse(
+            MockMosaicService.shouldSuppressPlaceholderAuthoring(
+                blocks: [typed, placeholder],
+                dailyFileExists: false
+            )
+        )
+        // A bare-text TASK block is still task state (checkbox) — content.
+        let task = Block(id: "5E0A4E27-0A57-4D6B-9F6F-1B1F58A2D005", kind: .task, text: "")
+        XCTAssertFalse(MockMosaicService.isBarePlaceholder(task))
+        // Tags / properties count as content too.
+        let tagged = Block(
+            id: "5E0A4E27-0A57-4D6B-9F6F-1B1F58A2D006",
+            kind: .note,
+            text: "",
+            tags: ["#inbox"]
+        )
+        XCTAssertFalse(MockMosaicService.isBarePlaceholder(tagged))
+    }
 }

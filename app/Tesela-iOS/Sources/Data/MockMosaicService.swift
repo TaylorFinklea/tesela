@@ -365,6 +365,20 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // identical on every device.
             dailySlug = serverDailyId.isEmpty ? dailyId(daysAgo: 0) : serverDailyId
         }
+        // Pre-materialization window (2026-06-10): until today's daily
+        // exists as a local file, the engine may not hold this block at
+        // all — the placeholder gate in `pushTodayBlocks` defers authoring
+        // until content exists, and `spliceBlockText` cannot CREATE a
+        // block (an engine-miss splice is a silent no-op → lost
+        // keystroke). Route the edit through the whole-content writeback
+        // instead: the engine-side diff creates the block carrying this
+        // keystroke's text. Safe from collab clobber — a block that exists
+        // on no other device has no concurrent editors. Once the file
+        // materializes (one cheap stat, memoized) splices flow normally.
+        if !dailyMaterializedLocally(slug: dailySlug) {
+            scheduleWriteback()
+            return
+        }
         beginLocalWriteSuppression()
         onLocalSplice?(dailySlug, id, clampedOffset, clampedDelete, insert)
     }
@@ -2278,8 +2292,62 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return s.trimmingCharacters(in: .whitespaces)
     }
 
+    /// True when `block` carries nothing a peer would care about — no
+    /// text, tags, properties, or task state. The "Add block" editable-row
+    /// placeholder shape.
+    static func isBarePlaceholder(_ block: Block) -> Bool {
+        block.kind != .task
+            && block.tags.isEmpty
+            && block.properties.isEmpty
+            && block.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// Pure half of the placeholder-authoring gate (2026-06-10 product
+    /// test): a daily writeback consisting ONLY of bare empty blocks, for
+    /// a daily that has never been materialized locally, is the editable-
+    /// row placeholder — not user content. AUTHORING it as the note's
+    /// first synced state put a stray empty bullet ABOVE the peer's real
+    /// content after the fresh-day union (iOS showed [empty, dude, empty];
+    /// desktop [dude, empty]). Once a local file exists the gate is off:
+    /// an all-bare state is then a REAL edit (the user deleted the last
+    /// contentful block) and must flow.
+    static func shouldSuppressPlaceholderAuthoring(
+        blocks: [Block],
+        dailyFileExists: Bool
+    ) -> Bool {
+        !dailyFileExists && blocks.allSatisfy(isBarePlaceholder)
+    }
+
+    /// Memo of the last daily slug confirmed materialized in the local
+    /// sandbox, so the per-keystroke check below is one string compare
+    /// after the file first appears. A new day (new slug) re-probes.
+    private var materializedDailySlugCache: String?
+
+    /// True once `<sandbox>/notes/<slug>.md` exists — i.e. the engine has
+    /// materialized today's daily at least once (an inbound peer apply or
+    /// our own first contentful writeback).
+    private func dailyMaterializedLocally(slug: String) -> Bool {
+        if materializedDailySlugCache == slug { return true }
+        let path = localMosaicRoot()
+            .appendingPathComponent("notes")
+            .appendingPathComponent("\(slug).md")
+            .path
+        if FileManager.default.fileExists(atPath: path) {
+            materializedDailySlugCache = slug
+            return true
+        }
+        return false
+    }
+
     private func pushTodayBlocks(_ blocks: [Block]) async {
         guard !serverDailyId.isEmpty else { return }
+        // Placeholder gate — see `shouldSuppressPlaceholderAuthoring`.
+        if Self.shouldSuppressPlaceholderAuthoring(
+            blocks: blocks,
+            dailyFileExists: dailyMaterializedLocally(slug: serverDailyId)
+        ) {
+            return
+        }
         // Build the new content from cached frontmatter rather than
         // re-fetching it over HTTP — the old "fetch existing
         // frontmatter, then write" sequence introduced a 5-second
