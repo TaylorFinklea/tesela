@@ -24,6 +24,30 @@ export function isLocalOnlyId(id: string): boolean {
   return id.includes(":new-") || id.includes(":paste-");
 }
 
+/** EVERY client-minted block-id infix — the superset of `isLocalOnlyId`.
+ *  Besides `:new-`/`:paste-`, the editor mints `:split-` (the edited-original
+ *  half of an Enter split), `:merged-` (a backspace-merge survivor), and
+ *  `:tmpl-` (template-inserted blocks). None of these ids exist in any
+ *  server-canonical body (the parser mints `<noteId>:<lineNumber>`, numeric
+ *  trailing segment), so a reseed can't find them by id.
+ *
+ *  This is the predicate for DIRTY-GUARD checks ("does the editor hold local
+ *  structural edits a stale reseed could revert?") — `BlockOutliner`'s
+ *  `hasUnsavedLocalEdits` and its focused-block reseed protection. It is NOT
+ *  for op-builder gating: a `:split-`/`:merged-`/`:tmpl-` block carries a
+ *  canonical `bid` and IS a valid op target (`upsertOpForStructuralBlock`),
+ *  and an absorbed `:merged-`/`:split-` block's server row still needs a
+ *  delete op — keep using `isLocalOnlyId` there. */
+export function isClientMintedId(id: string): boolean {
+  return (
+    id.includes(":new-") ||
+    id.includes(":paste-") ||
+    id.includes(":split-") ||
+    id.includes(":merged-") ||
+    id.includes(":tmpl-")
+  );
+}
+
 /** Mirrors the Rust `BlockOp` tagged enum. Only the variants web emits from
  *  the in-place text-edit + indent paths are modelled here; deletes still go
  *  through the dedicated `DELETE /notes/{id}/blocks/{bid}` endpoint. */

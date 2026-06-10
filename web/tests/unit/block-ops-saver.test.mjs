@@ -26,6 +26,11 @@ function del(bid) {
   return { kind: "delete", bid };
 }
 
+/** Build a concrete move op for a given bid. */
+function move(bid, parent_bid = null, indent_level = 0) {
+  return { kind: "move", bid, parent_bid, indent_level };
+}
+
 /** A controllable upsert spy: records every call and lets the test resolve /
  *  reject each POST's promise, and observe whether its signal aborted. */
 function makeUpsertSpy() {
@@ -125,6 +130,81 @@ test("delete: a delete coalesces alongside a pending text edit to another block 
   assert.equal(spy.calls.length, 1, "both ride one trailing-edge POST");
   const byBid = Object.fromEntries(spy.calls[0].ops.map((o) => [o.bid, o.kind]));
   assert.deepEqual(byBid, { keep: "upsert", gone: "delete" });
+});
+
+test("kind-aware coalesce: a move over a pending upsert folds structure in, keeping the typed text", (t) => {
+  // The data-loss shape: type into a block (upsert with the final text), then
+  // Tab to indent within the 500ms window (move for the SAME bid). Blind
+  // latest-wins replaced the upsert with the text-less move — the typing
+  // burst was never sent, while lastSentBody had already advanced so the
+  // own-echo guard hid the loss until a reseed reverted it.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
+
+  saver.enqueue("noteA", [upsert("bid-1", "typed text", 0, null)]);
+  saver.enqueue("noteA", [move("bid-1", "parent-9", 1)]);
+  t.mock.timers.tick(500);
+
+  assert.equal(spy.calls.length, 1, "one trailing-edge POST");
+  assert.deepEqual(
+    spy.calls[0].ops,
+    [upsert("bid-1", "typed text", 1, "parent-9")],
+    "the upsert survives, carrying the move's parent/indent",
+  );
+});
+
+test("kind-aware coalesce: the fold preserves an upsert's after_bid positional hint", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
+
+  saver.enqueue("noteA", [{ ...upsert("bid-1", "split half"), after_bid: "pred-1" }]);
+  saver.enqueue("noteA", [move("bid-1", null, 0)]);
+  t.mock.timers.tick(500);
+
+  assert.equal(spy.calls.length, 1);
+  assert.equal(spy.calls[0].ops[0].kind, "upsert");
+  assert.equal(spy.calls[0].ops[0].text, "split half");
+  assert.equal(spy.calls[0].ops[0].after_bid, "pred-1", "positional hint survives the fold");
+});
+
+test("kind-aware coalesce: an upsert over a pending move supersedes it (text + structure ride the upsert)", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
+
+  saver.enqueue("noteA", [move("bid-1", "parent-9", 1)]);
+  saver.enqueue("noteA", [upsert("bid-1", "typed after indent", 1, "parent-9")]);
+  t.mock.timers.tick(500);
+
+  assert.equal(spy.calls.length, 1);
+  assert.deepEqual(spy.calls[0].ops, [upsert("bid-1", "typed after indent", 1, "parent-9")]);
+});
+
+test("kind-aware coalesce: a delete supersedes a pending upsert (latest-wins is correct there)", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
+
+  saver.enqueue("noteA", [upsert("bid-1", "doomed text")]);
+  saver.enqueue("noteA", [del("bid-1")]);
+  t.mock.timers.tick(500);
+
+  assert.equal(spy.calls.length, 1);
+  assert.deepEqual(spy.calls[0].ops, [del("bid-1")]);
+});
+
+test("kind-aware coalesce: a lone move (no pending upsert) flushes as a move", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const spy = makeUpsertSpy();
+  const saver = new BlockOpsSaver(spy.fn, t.mock.fn());
+
+  saver.enqueue("noteA", [move("bid-1", "parent-9", 1)]);
+  t.mock.timers.tick(500);
+
+  assert.equal(spy.calls.length, 1);
+  assert.deepEqual(spy.calls[0].ops, [move("bid-1", "parent-9", 1)]);
 });
 
 test("coalesce: edits to different blocks in one window → one POST with one op per block", (t) => {

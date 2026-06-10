@@ -42,6 +42,7 @@
     moveOpsForIds,
     deleteOpsFor,
     diffOpsForSnapshot,
+    isClientMintedId,
     type BlockOp,
   } from "$lib/block-ops";
   import { BlockOpsSaver } from "$lib/block-ops-saver";
@@ -617,22 +618,28 @@
     return new Set(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i));
   });
 
-  /** Locally-created block ids have a `:new-<timestamp>` or `:paste-`
-   *  suffix; they exist in `blocks` but not in any server-canonical
-   *  body until the next PUT round-trips back as a WS broadcast. We
-   *  use this to distinguish "in-flight local block" from "remote
-   *  delete" in `applyExternalReparse` — the former must NEVER be
-   *  dropped, the latter is the user's intent. Server-side ids carry
-   *  `<noteId>:<lineNumber>` shape (no `new-` or `paste-` infix). */
+  /** Brand-new block ids (`:new-<timestamp>` / `:paste-`): blocks the server
+   *  has never seen ANY row for. Used for op-builder-adjacent gating (e.g.
+   *  "does the absorbed block in a merge need a server delete op?" — a
+   *  `:merged-`/`:split-` block DOES carry a server-known bid, so it is NOT
+   *  in this set). The reseed dirty guards use the SUPERSET predicate
+   *  `isClientMintedId` (block-ops.ts), which also covers `:split-`/
+   *  `:merged-`/`:tmpl-`. Server-side ids carry `<noteId>:<lineNumber>`
+   *  shape (numeric trailing segment, no infix). */
   function isLocalOnlyId(id: string): boolean {
     return id.includes(":new-") || id.includes(":paste-");
   }
 
   /** True when the editor holds local structural edits the server hasn't
-   *  confirmed yet: any `:new-` / `:paste-` block is present in `blocks` but
-   *  not in any server-canonical body until its PUT round-trips back as a WS
-   *  broadcast (the echo carries the same block re-serialised with a
-   *  canonical `<noteId>:<line>` id, so the local-only id is gone).
+   *  confirmed yet: any client-minted block id (`:new-`/`:paste-`, plus the
+   *  `:split-`/`:merged-`/`:tmpl-` infixes — `isClientMintedId`, the superset
+   *  of `isLocalOnlyId`) is present in `blocks` but not in any
+   *  server-canonical body until its save round-trips back as a WS broadcast
+   *  (the echo carries the same block re-serialised with a canonical
+   *  `<noteId>:<line>` id, so the client-minted id is gone). The narrower
+   *  `:new-`/`:paste-`-only check let a stale broad-refetch reseed land right
+   *  after a backspace-merge or template insert, visually reverting it and
+   *  wiping undo history.
    *
    *  This is the dirty signal the body-sync reseed must respect — unlike the
    *  per-focused-block guard in `applyExternalReparse`, it holds even after
@@ -648,7 +655,7 @@
    *  fast-path that bypasses this guard entirely, so the held state resolves
    *  the moment our save round-trips. */
   function hasUnsavedLocalEdits(): boolean {
-    return blocks.some((b) => isLocalOnlyId(b.id));
+    return blocks.some((b) => isClientMintedId(b.id));
   }
 
   /** Apply an external body reparse. Extracted from the $effect below
@@ -685,15 +692,17 @@
       return;
     }
     // **In-flight new-block protection.** If the focused block has a
-    // local-only id (just created via Enter or paste), it cannot be
-    // in the server-canonical body yet — the PUT carrying it is in
-    // flight or queued behind the debounce. Adopting `reparsed` here
-    // would drop the new block (Daisy reported: "still deletes my new
-    // line block almost instantly"). Skip this reparse entirely; the
-    // next body change after the PUT round-trips will be a no-op
-    // because by then `body === lastSentBody`.
+    // client-minted id (just created via Enter / paste / merge / split /
+    // template insert — `isClientMintedId`), it cannot be in the
+    // server-canonical body yet — the save carrying it is in flight or
+    // queued behind the debounce. Adopting `reparsed` here would drop the
+    // new block (Daisy reported: "still deletes my new line block almost
+    // instantly"); for a `:merged-`/`:tmpl-` id the newIdx === -1 branch
+    // below would adopt the stale pre-merge body AND clear undo history.
+    // Skip this reparse entirely; the next body change after the save
+    // round-trips will be a no-op because by then `body === lastSentBody`.
     const focusedId = blocks[focusedIndex]?.id ?? "";
-    if (isLocalOnlyId(focusedId) && targetBody !== lastSentBody) {
+    if (isClientMintedId(focusedId) && targetBody !== lastSentBody) {
       // Mark the body we couldn't apply so the deferred timer doesn't
       // fire on it either. (It'll keep being re-checked as new WS
       // events arrive and update `body`.)
@@ -1094,6 +1103,19 @@
     // any incoming server reparse until typing settles. See
     // lastLocalEditAt's docstring for the why.
     lastLocalEditAt = Date.now();
+    const prev = blocks.find((b) => b.id === blockId);
+    const oldText = prev?.raw_text ?? "";
+    // No-op change: the text already matches the block state. This is the
+    // explicit `onChange(sameText)` that BlockEditor's autocomplete/slash/
+    // property commits fire AFTER their view.dispatch — the dispatch already
+    // routed the real change through the updateListener (LoroText splice +
+    // `handleLoroText` for a bound block; `onChange` → this function for an
+    // unbound one). Falling through here would enqueue a redundant whole-text
+    // upsert op for a splice-persisted edit — the double-write that re-asserts
+    // this client's view of the block over a peer splice landing in the
+    // debounce window. Nothing changed, so nothing to persist; the pending
+    // insert snapshot (if any) stays cached for the first REAL keystroke.
+    if (prev && oldText === newRawText) return;
     // First keystroke of an insert session: promote the cached pre-edit
     // snapshot onto the undo stack. Programmatic callers (status cycle,
     // tag toggle, etc.) call pushUndo() themselves and aren't in Insert
@@ -1102,8 +1124,6 @@
       history.push(pendingInsertSnapshot);
       pendingInsertSnapshot = null;
     }
-    const prev = blocks.find((b) => b.id === blockId);
-    const oldText = prev?.raw_text ?? "";
     const parsedTags = getBlockTags(newRawText);
     // P1.13 (Anytype mold): a block's `properties` are STRUCTURED — sourced from
     // the CRDT container (seeded from the materialized text on load, then

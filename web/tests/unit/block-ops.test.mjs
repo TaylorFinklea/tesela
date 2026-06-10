@@ -20,6 +20,7 @@ import {
   deleteOpsFor,
   diffOpsForSnapshot,
   isLocalOnlyId,
+  isClientMintedId,
 } from "../../src/lib/block-ops.ts";
 
 /** Minimal ParsedBlock factory — only the fields the op builders read. */
@@ -55,6 +56,38 @@ test("isLocalOnlyId flags :new- and :paste- ids", () => {
   assert.equal(isLocalOnlyId("note:new-seed"), true);
   assert.equal(isLocalOnlyId("note:paste-123"), true);
   assert.equal(isLocalOnlyId("note:5"), false);
+});
+
+test("isClientMintedId covers EVERY client-minted infix (the dirty-guard predicate)", () => {
+  // The dirty-guard gap: a `:merged-` (backspace-merge survivor) or `:tmpl-`
+  // (template insert) id slipped past the `:new-`/`:paste-`-only check, so a
+  // stale broad-refetch reseed could revert the merge/insert and wipe undo
+  // history. `:split-` was only incidentally protected by its `:new-` sibling.
+  assert.equal(isClientMintedId("note:new-1749600000000"), true);
+  assert.equal(isClientMintedId("note:new-seed"), true);
+  assert.equal(isClientMintedId("note:paste-123"), true);
+  assert.equal(isClientMintedId("note:split-1749600000001"), true);
+  assert.equal(isClientMintedId("note:merged-1749600000000"), true);
+  assert.equal(isClientMintedId("note:tmpl-1749600000000-2"), true);
+  // Server-canonical ids (numeric trailing segment) are NOT client-minted.
+  assert.equal(isClientMintedId("note:0"), false);
+  assert.equal(isClientMintedId("note:42"), false);
+  assert.equal(isClientMintedId("2026-06-10:5"), false);
+});
+
+test("isClientMintedId is a superset of isLocalOnlyId", () => {
+  for (const id of ["note:new-1", "note:paste-2", "n:new-seed"]) {
+    assert.equal(isLocalOnlyId(id), true);
+    assert.equal(isClientMintedId(id), true, `${id} must stay client-minted`);
+  }
+  // ...but NOT vice versa: merged/split/tmpl blocks carry server-known bids,
+  // so the op-builder gating (isLocalOnlyId) must keep treating them as
+  // canonical op targets (e.g. the absorbed block in a re-merge still needs
+  // its server delete op).
+  for (const id of ["note:merged-1", "note:split-1", "note:tmpl-1-0"]) {
+    assert.equal(isLocalOnlyId(id), false, `${id} must NOT be local-only`);
+    assert.equal(isClientMintedId(id), true);
+  }
 });
 
 test("parentBidFor: top-level block has null parent", () => {

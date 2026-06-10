@@ -97,13 +97,34 @@ export class BlockOpsSaver {
 
   /**
    * Enqueue a coalesced batch of concrete block ops for `noteId`. Repeated
-   * calls within the debounce window merge by `bid` (latest op per block wins)
-   * and re-arm the trailing-edge timer. The POST fires once, on the trailing
-   * edge.
+   * calls within the debounce window merge by `bid` and re-arm the
+   * trailing-edge timer. The POST fires once, on the trailing edge.
+   *
+   * Coalescing is KIND-aware, not blind latest-wins: a `move` op carries only
+   * structure (`parent_bid`/`indent_level`) while a pending `upsert` for the
+   * same bid is the sole carrier of the block's typed text — replacing the
+   * upsert with the move (type, then Tab within one debounce window) would
+   * silently drop the last typing burst, with `lastSentBody` already advanced
+   * so the own-echo guard masks the loss until a reseed reverts it. So a move
+   * over a pending upsert FOLDS its structure into the upsert (upserts carry
+   * both fields; the server applies text + position in one op). Every other
+   * pairing keeps latest-wins: an upsert already carries structure (it
+   * supersedes a pending move), and a delete supersedes everything.
    */
   enqueue(noteId: string, ops: BlockOp[]): void {
     const s = this.#getState(noteId);
-    for (const op of ops) s.ops.set(op.bid, op);
+    for (const op of ops) {
+      const pending = s.ops.get(op.bid);
+      if (op.kind === "move" && pending?.kind === "upsert") {
+        s.ops.set(op.bid, {
+          ...pending,
+          parent_bid: op.parent_bid,
+          indent_level: op.indent_level,
+        });
+      } else {
+        s.ops.set(op.bid, op);
+      }
+    }
     if (s.timer) clearTimeout(s.timer);
     s.timer = setTimeout(() => {
       void this.flush(noteId);

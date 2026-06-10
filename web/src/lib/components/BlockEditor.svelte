@@ -461,6 +461,7 @@
     spliceActiveBlock,
     isLoroUndoApplying,
   } from "$lib/loro/active-note-doc.svelte";
+  import { deltaToChanges } from "$lib/loro/text-delta";
   import type { LoroText, LoroEventBatch } from "loro-crdt";
 
   // C2.3 own-echo guard — true while a REMOTE Loro text event is being applied
@@ -1406,11 +1407,18 @@
   /** C2.3 read path. Apply a REMOTE block-text event to this view as a minimal
    *  CM ChangeSet so CM auto-remaps the caret (no hand-rolled cursor math). The
    *  Loro TextDiff is a quill delta (retain/insert/delete) in UTF-16 index space
-   *  — the SAME space as CM offsets — so positions pass straight through. The
-   *  dispatch is annotated `externalSync` + `addToHistory:false` (so it doesn't
-   *  loop through the write path or pollute per-block undo) and wrapped in the
-   *  `localApplyInProgress` guard. After applying, `onLoroText` syncs the
-   *  parent's ParsedBlock without re-saving. Ignores local-origin events. */
+   *  — the SAME space as CM offsets. `deltaToChanges` maps each delta into
+   *  ORIGINAL-doc coordinates (CM interprets every from/to in a multi-change
+   *  dispatch relative to the PRE-transaction doc — see text-delta.ts for the
+   *  coordinate contract; the previous in-line mapping inverted insert/delete
+   *  and misapplied any multi-run delta, e.g. a peer's Alt-Enter tag demote).
+   *  Each EVENT gets its own dispatch: a batch's later events are relative to
+   *  the doc AFTER the earlier ones applied, so they can't share one change
+   *  array. Dispatches are annotated `externalSync` + `addToHistory:false` (so
+   *  they don't loop through the write path or pollute per-block undo) and
+   *  wrapped in the `localApplyInProgress` guard. After applying, `onLoroText`
+   *  syncs the parent's ParsedBlock without re-saving. Ignores local-origin
+   *  events. */
   function applyRemoteTextEvent(batch: LoroEventBatch): void {
     const v = view;
     if (!v) return;
@@ -1419,41 +1427,31 @@
     // but the editor does NOT have them yet, so they must be applied here. That
     // window is flagged by the active-note-doc undo wrapper.
     if (batch.by === "local" && !isLoroUndoApplying()) return;
-    const changes: Array<{ from: number; to: number; insert: string }> = [];
-    let pos = 0;
+    let applied = false;
     for (const ev of batch.events) {
       const diff = ev.diff;
       if (diff.type !== "text") continue;
-      for (const op of diff.diff) {
-        if (typeof op.retain === "number") {
-          pos += op.retain;
-        } else if (typeof op.insert === "string") {
-          changes.push({ from: pos, to: pos, insert: op.insert });
-          pos += op.insert.length;
-        } else if (typeof op.delete === "number") {
-          changes.push({ from: pos, to: pos + op.delete, insert: "" });
-          // A delete consumes original-doc length but inserts nothing, so the
-          // running position does NOT advance past the deleted span.
-        }
+      const changes = deltaToChanges(diff.diff);
+      if (changes.length === 0) continue;
+      // Clamp to the current doc length defensively — the CM doc and LoroText
+      // should be in lock-step, but a clamp avoids a dispatch throw if a race
+      // ever leaves them briefly divergent.
+      const docLen = v.state.doc.length;
+      const safe = changes
+        .map((c) => ({ from: Math.min(c.from, docLen), to: Math.min(c.to, docLen), insert: c.insert }))
+        .filter((c) => c.from <= c.to);
+      localApplyInProgress = true;
+      try {
+        v.dispatch({
+          changes: safe,
+          annotations: [externalSync.of(true), Transaction.addToHistory.of(false)],
+        });
+      } finally {
+        localApplyInProgress = false;
       }
+      applied = true;
     }
-    if (changes.length === 0) return;
-    // Clamp to the current doc length defensively — the CM doc and LoroText
-    // should be in lock-step, but a clamp avoids a dispatch throw if a race
-    // ever leaves them briefly divergent.
-    const docLen = v.state.doc.length;
-    const safe = changes
-      .map((c) => ({ from: Math.min(c.from, docLen), to: Math.min(c.to, docLen), insert: c.insert }))
-      .filter((c) => c.from <= c.to);
-    localApplyInProgress = true;
-    try {
-      v.dispatch({
-        changes: safe,
-        annotations: [externalSync.of(true), Transaction.addToHistory.of(false)],
-      });
-    } finally {
-      localApplyInProgress = false;
-    }
+    if (!applied) return;
     onLoroText?.(v.state.doc.toString());
   }
 
@@ -1701,6 +1699,17 @@
             autocompleteRef?.handleKeydown(new KeyboardEvent("keydown", { key: "Enter" }));
             return true;
           }
+          // Outside INSERT mode, defer to cm-vim (mirrors the Escape/Ctrl-d
+          // guards: this cm6 keymap wins over cm-vim's keydown handler, so
+          // without the check a NORMAL-mode Enter would structurally SPLIT the
+          // block — and the `Vim.mapCommand("<CR>", …, "drillIntoBlock")`
+          // normal-mode mapping could never fire). The autocomplete branch
+          // stays ABOVE this guard: an open popup owns Enter regardless.
+          {
+            const cm = getCM(v);
+            const vs = cm?.state?.vim as { insertMode?: boolean } | undefined;
+            if (vs && !vs.insertMode) return false;
+          }
           if (onEnter) {
             const doc = v.state.doc.toString();
             const cursor = v.state.selection.main.head;
@@ -1825,6 +1834,13 @@
       {
         key: "Backspace",
         run: (v) => {
+          // Outside INSERT mode, defer to cm-vim (mirrors the Enter guard
+          // above): NORMAL-mode Backspace is a plain cursor-left in vim, not a
+          // structural empty-block delete or merge-into-previous. Structural
+          // deletes from NORMAL stay available via dd / backspace-after-i.
+          const cm = getCM(v);
+          const vs = cm?.state?.vim as { insertMode?: boolean } | undefined;
+          if (vs && !vs.insertMode) return false;
           if (v.state.doc.length === 0 && onBackspaceEmpty) { onBackspaceEmpty(); return true; }
           // Merge with previous block when Backspace at cursor pos 0 with content
           const cursor = v.state.selection.main.head;
