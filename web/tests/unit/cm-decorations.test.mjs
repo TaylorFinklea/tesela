@@ -16,23 +16,19 @@ import {
 
 const EMPTY = { hide: new Set(), hideEmpty: new Set() };
 
-test("findAtomicCursorRanges finds trailing-cluster #tags only (inline are editable)", () => {
-  // Tag-system Phase 5: only the trailing cluster is atomic. The mid-block
-  // `#bug` here is inline (followed by " there") — should NOT be atomic.
-  // The trailing `#urgent #end` are in the trailing cluster — should be.
+test("findAtomicCursorRanges: no #tag is atomic (Model A — prose tags stay editable)", () => {
+  // Tag redesign d33c8b1 (Model A, 2026-06-07): pills come from the
+  // committed `tags::` line ONLY; every `#tag` in prose — including a
+  // trailing cluster — is an editable inline mark, never atomic.
   const doc = "hello #bug there #urgent #end";
   const r = findAtomicCursorRanges(doc, EMPTY);
-  assert.deepEqual(r, [
-    [17, 24], // #urgent
-    [25, 29], // #end
-  ]);
+  assert.deepEqual(r, []);
 });
 
-test("findAtomicCursorRanges treats a doc that is only tags as one cluster", () => {
-  // All four tokens are at the trailing edge → all atomic.
+test("findAtomicCursorRanges: a doc that is only tags has no atomic ranges (Model A)", () => {
   const doc = "#a #b #c #d";
   const r = findAtomicCursorRanges(doc, EMPTY);
-  assert.equal(r.length, 4);
+  assert.deepEqual(r, []);
 });
 
 test("findAtomicCursorRanges treats no-trailing-cluster docs as having no atomic tag ranges", () => {
@@ -203,13 +199,14 @@ test("snap: only the first matching range fires (ranges are non-overlapping)", (
   assert.equal(snapHeadOutOfAtomicRanges(35, 0, ranges), 40);
 });
 
-test("snap: cm-vim `l` step from before-tag lands past the tag (trailing cluster)", () => {
-  // Tag-system Phase 5: only trailing-cluster tags are atomic. Use a doc
-  // whose tag is at the trailing edge.
+test("snap: cm-vim `l` step into a trailing #tag does NOT snap (Model A — tags editable)", () => {
+  // Model A (d33c8b1): trailing tags are no longer atomic, so the cursor
+  // can step into them freely. (snapHeadOutOfAtomicRanges itself is still
+  // exercised by the bid-comment tests above.)
   const doc = "abc #bug";
   const ranges = findAtomicCursorRanges(doc, EMPTY);
-  assert.deepEqual(ranges, [[4, 8]]);
-  assert.equal(snapHeadOutOfAtomicRanges(5, 4, ranges), 8);
+  assert.deepEqual(ranges, []);
+  assert.equal(snapHeadOutOfAtomicRanges(5, 4, ranges), 5);
 });
 
 // ── findTrailingClusterStart ─────────────────────────────────────────────

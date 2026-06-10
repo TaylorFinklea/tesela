@@ -11,9 +11,11 @@
  */
 import { EditorView, Decoration, WidgetType, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 import { EditorSelection, EditorState, Facet, RangeSet, RangeSetBuilder, Transaction } from "@codemirror/state";
-import { tokenizeCode } from "./code-highlight";
-import { detectTokens, resolveDetectSpec, type DetectConfig } from "./task-tokens";
-import { getBlockTags } from "./block-tags";
+// `.ts` extension so the node test runner resolves it (the repo convention
+// for relative imports; `rewriteRelativeImportExtensions` handles the build).
+import { tokenizeCode } from "./code-highlight.ts";
+import { detectTokens, resolveDetectSpec, type DetectConfig } from "./task-tokens.ts";
+import { getBlockTags } from "./block-tags.ts";
 
 class EmptyWidget extends WidgetType {
   toDOM() { return document.createElement("span"); }
@@ -117,8 +119,12 @@ function hljsMark(kind: string): Decoration {
 // Floating "copy" button for a fenced code block. Copies the code between the
 // fences. Positioned (CSS) at the top-right of the code surface.
 class CodeCopyWidget extends WidgetType {
-  constructor(readonly code: string) {
+  // Explicit field (not a TS constructor parameter property) so the node
+  // unit-test runner's strip-only TS loader can parse this module.
+  readonly code: string;
+  constructor(code: string) {
     super();
+    this.code = code;
   }
   eq(other: CodeCopyWidget) {
     return other.code === this.code;
@@ -230,8 +236,12 @@ function calloutLineDeco(type: string, first: boolean, last: boolean): Decoratio
   return deco;
 }
 class CalloutIconWidget extends WidgetType {
-  constructor(readonly type: string) {
+  // Explicit field (not a TS constructor parameter property) so the node
+  // unit-test runner's strip-only TS loader can parse this module.
+  readonly type: string;
+  constructor(type: string) {
     super();
+    this.type = type;
   }
   eq(other: CalloutIconWidget) {
     return other.type === this.type;
