@@ -5,17 +5,27 @@
 //! destination. Encryption (`age` + Keychain) and the git destination
 //! land in follow-up commits.
 //!
-//! # Shape of a backup
+//! # Shape of a backup (manifest schema v2 — authority capture)
 //!
 //! ```text
 //! <destination>/
 //!   backup-YYYYMMDD-HHMMSS/
 //!     manifest.json
-//!     notes/...
+//!     notes/...                (materialized export view)
 //!     attachments/...
+//!     .tesela/loro/*.bin       (per-note CRDT snapshots — the AUTHORITY)
+//!     .tesela/loro/_index.bin  (+ _broadcast.bin relay cursors)
+//!     .tesela/device_id.hex    (sync identity)
+//!     .tesela/group_id.hex     (group identity)
+//!     .tesela/group_key.bin    (group key — encrypted for non-local dests)
+//!     .tesela/relay_state.json (+ sync_peers.json, when present)
 //!     .tesela/config.toml
 //!     .tesela/tesela.db        (VACUUM INTO snapshot, optional)
 //! ```
+//!
+//! Restoring a v2 backup reproduces the engine's exact CRDT history and
+//! device identity — no reseed, no disjoint-lineage twin risk. v1
+//! backups (export view only) remain restorable.
 //!
 //! # Why per-file (not tarball)
 //!

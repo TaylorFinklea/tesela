@@ -14,7 +14,31 @@ use crate::manifest::{sha256_file, FileEntry, Manifest, ManifestEncryption};
 /// The SQLite DB *is* captured — but via VACUUM INTO, not file copy, so
 /// it's listed separately from this walk.
 const CAPTURE_DIRS: &[&str] = &["notes", "attachments", "templates"];
-const CAPTURE_TESELA_FILES: &[&str] = &["config.toml"];
+
+/// Directories under `.tesela/` that hold the AUTHORITY (manifest schema
+/// v2). Post-Loro-flag-day the per-note CRDT snapshots in `.tesela/loro/`
+/// ARE the source of truth — `notes/*.md` is the deterministic export.
+/// A backup without them restores to zero CRDT history, and reseeding
+/// from .md mints a disjoint lineage (the TreeID-twin clobber hazard).
+const CAPTURE_TESELA_DIRS: &[&str] = &["loro"];
+
+/// Files under `.tesela/` we capture. Beyond config, this is the sync
+/// identity: `device_id.hex` (HLC/peer identity), `group_id.hex` +
+/// `group_key.bin` (the group identity — the key that decrypts relay
+/// envelopes), plus relay/peer state so a same-machine restore resumes
+/// where it left off. All are optional-presence (a never-synced mosaic
+/// has none of them). Note: non-local destinations are always
+/// age-encrypted, so the group key never leaves the machine in
+/// plaintext; the local destination lives beside the live plaintext
+/// `.tesela/group_key.bin` it copies, so it adds no new exposure.
+const CAPTURE_TESELA_FILES: &[&str] = &[
+    "config.toml",
+    "device_id.hex",
+    "group_id.hex",
+    "group_key.bin",
+    "relay_state.json",
+    "sync_peers.json",
+];
 
 /// Walk a mosaic and copy every captured file into a staging directory,
 /// computing SHA-256 + size as we go so the manifest can be assembled
@@ -48,6 +72,31 @@ pub fn pack_mosaic(mosaic_root: &Path, staging: &Path) -> Result<Vec<FileEntry>>
 
     let tesela_dir = mosaic_root.join(".tesela");
     if tesela_dir.exists() {
+        for dir_name in CAPTURE_TESELA_DIRS {
+            let src_dir = tesela_dir.join(dir_name);
+            if !src_dir.exists() {
+                continue;
+            }
+            for entry in WalkDir::new(&src_dir).follow_links(false) {
+                let entry = entry?;
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                // The engine writes snapshots via tmp+rename; skip any
+                // in-flight `<name>.tmp.<n>` file (it may vanish or be
+                // torn mid-copy; the renamed final file is captured).
+                let name = entry.file_name().to_string_lossy();
+                if name.contains(".tmp.") {
+                    continue;
+                }
+                let rel = entry
+                    .path()
+                    .strip_prefix(mosaic_root)
+                    .expect("walk under mosaic_root")
+                    .to_path_buf();
+                copy_one(mosaic_root, staging, &rel, &mut entries)?;
+            }
+        }
         for fname in CAPTURE_TESELA_FILES {
             let src = tesela_dir.join(fname);
             if src.exists() {

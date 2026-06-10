@@ -9,7 +9,15 @@ use crate::error::{BackupError, Result};
 
 /// Manifest schema version. Bump when the on-disk format changes in a
 /// non-backward-compatible way.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// v1 — export view only: notes/, attachments/, templates/,
+///      .tesela/config.toml (+ optional VACUUM'd tesela.db).
+/// v2 — authority capture: adds `.tesela/loro/` CRDT snapshots and the
+///      sync identity (`device_id.hex`, `group_id.hex`, `group_key.bin`,
+///      `relay_state.json`, `sync_peers.json`). Restore is manifest-
+///      driven, so v1 backups remain restorable by this binary; older
+///      binaries refuse v2 (they don't know it carries the authority).
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// Backup manifest written as `manifest.json` at the backup root.
 ///
@@ -102,6 +110,19 @@ impl Manifest {
             path,
             message: e.to_string(),
         })
+    }
+
+    /// True when this backup carries Loro CRDT state (`.tesela/loro/*`) —
+    /// i.e. the authority, not just the materialized export view. A
+    /// restore of such a backup needs no reseed (no twin-lineage risk).
+    pub fn includes_loro_state(&self) -> bool {
+        self.files.iter().any(|f| f.path.starts_with(".tesela/loro/"))
+    }
+
+    /// True when this backup carries the sync identity (`device_id.hex`).
+    /// Group identity files ride along whenever they exist on disk.
+    pub fn includes_sync_identity(&self) -> bool {
+        self.files.iter().any(|f| f.path == ".tesela/device_id.hex")
     }
 }
 
