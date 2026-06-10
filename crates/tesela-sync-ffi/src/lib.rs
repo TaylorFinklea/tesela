@@ -1818,14 +1818,19 @@ mod tests {
                 .await
                 .expect("A exports a full snapshot")
         };
-        b.import_note_snapshot(slug.clone(), snapshot).await.unwrap();
+        b.import_note_snapshot(slug.clone(), snapshot)
+            .await
+            .unwrap();
 
         // B's materialized file now carries all three blocks; build the
         // post-delete content the way iOS does — the freshly-authored UI
         // state re-rendered WITHOUT the deleted block (bid markers intact).
         let b_file = dir_b.path().join("notes").join(format!("{slug}.md"));
         let prev = std::fs::read_to_string(&b_file).expect("B materialized the import");
-        assert!(prev.contains("- Y"), "precondition: Y present on disk: {prev:?}");
+        assert!(
+            prev.contains("- Y"),
+            "precondition: Y present on disk: {prev:?}"
+        );
         let without_y: String = prev
             .lines()
             .filter(|l| !l.contains(bid_y))
@@ -1859,10 +1864,7 @@ mod tests {
             .expect("B has a delta for A");
         a.apply_delta_frame(b_to_a).await.unwrap();
         let ra = a.inner.render_note(note_id).await.unwrap();
-        assert!(
-            !ra.contains("- Y"),
-            "peer must apply the delete: {ra:?}"
-        );
+        assert!(!ra.contains("- Y"), "peer must apply the delete: {ra:?}");
         assert!(
             ra.contains("X") && ra.contains("Z"),
             "peer keeps the surviving blocks: {ra:?}"
@@ -2082,7 +2084,12 @@ mod tests {
         .unwrap();
 
         let n = h
-            .set_block_property(slug.clone(), bid.to_string(), "status".into(), "done".into())
+            .set_block_property(
+                slug.clone(),
+                bid.to_string(),
+                "status".into(),
+                "done".into(),
+            )
             .await
             .unwrap();
         assert_eq!(n, 1, "property set applied");
@@ -2138,7 +2145,12 @@ mod tests {
         b.apply_delta_frame(bootstrap).await.unwrap();
 
         let n = a
-            .set_block_property(slug.clone(), bid.to_string(), "status".into(), "done".into())
+            .set_block_property(
+                slug.clone(),
+                bid.to_string(),
+                "status".into(),
+                "done".into(),
+            )
             .await
             .unwrap();
         assert_eq!(n, 1);
@@ -2174,9 +2186,14 @@ mod tests {
         )
         .await
         .unwrap();
-        h.set_block_property(slug.clone(), bid.to_string(), "status".into(), "doing".into())
-            .await
-            .unwrap();
+        h.set_block_property(
+            slug.clone(),
+            bid.to_string(),
+            "status".into(),
+            "doing".into(),
+        )
+        .await
+        .unwrap();
         assert!(h
             .inner
             .render_note(note_id)
@@ -2275,7 +2292,12 @@ mod tests {
 
         let ghost = "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b";
         let n = h
-            .set_block_property(slug.clone(), ghost.to_string(), "status".into(), "done".into())
+            .set_block_property(
+                slug.clone(),
+                ghost.to_string(),
+                "status".into(),
+                "done".into(),
+            )
             .await
             .unwrap();
         assert_eq!(n, 0, "missing block → Ok(0)");
@@ -2397,8 +2419,7 @@ mod tests {
         )
         .unwrap();
         relay.register_or_recover().await.expect("register");
-        let coord =
-            SyncCoordinator::new(engine.clone(), relay, g.group_id_hex.clone()).unwrap();
+        let coord = SyncCoordinator::new(engine.clone(), relay, g.group_id_hex.clone()).unwrap();
         (engine, coord)
     }
 
@@ -2792,7 +2813,10 @@ mod tests {
         assert_eq!(views[1].display_show_done, Some(false));
 
         // Builtin delete is refused; user view deletes.
-        assert!(h.views_delete(tesela_sync::INBOX_VIEW_ID.into()).await.is_err());
+        assert!(h
+            .views_delete(tesela_sync::INBOX_VIEW_ID.into())
+            .await
+            .is_err());
         assert!(h.views_delete("v-board".into()).await.unwrap());
         assert!(!h.views_delete("v-board".into()).await.unwrap());
         assert_eq!(h.views_list().await.len(), 1, "inbox remains");

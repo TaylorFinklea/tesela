@@ -1775,7 +1775,9 @@ impl LoroEngine {
                 let _ = entry.delete("display_show_done");
             }
         }
-        let _ = doc.get_map("meta").insert("schema_version", VIEWS_SCHEMA_VERSION);
+        let _ = doc
+            .get_map("meta")
+            .insert("schema_version", VIEWS_SCHEMA_VERSION);
         doc.commit();
         self.persist_views_doc().await;
         Ok(())
@@ -5197,7 +5199,10 @@ mod tests {
             .unwrap();
         let rendered = engine.render_note(note_id).await.unwrap();
         assert!(!rendered.contains("STALE"), "{rendered:?}");
-        assert_eq!(rendered, body, "explicit delete restores the canonical body");
+        assert_eq!(
+            rendered, body,
+            "explicit delete restores the canonical body"
+        );
     }
 
     #[tokio::test]
@@ -8728,7 +8733,9 @@ mod tests {
         let committed: Vec<([u8; 16], Vec<u8>)> =
             updates.into_iter().map(|(d, _b, vv)| (d, vv)).collect();
         let wire = encode_loro_relay_payload(&payload).unwrap();
-        let decoded = decode_loro_relay_payload(&wire).unwrap().expect("v2 payload");
+        let decoded = decode_loro_relay_payload(&wire)
+            .unwrap()
+            .expect("v2 payload");
         let pairs: Vec<([u8; 16], Vec<u8>)> = decoded
             .into_iter()
             .map(|u| (u.doc, u.update_bytes))
@@ -8987,7 +8994,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            SyncEngine::tracked_note_ids(&a).await.contains(&VIEWS_DOC_ID),
+            SyncEngine::tracked_note_ids(&a)
+                .await
+                .contains(&VIEWS_DOC_ID),
             "views doc is in the deposit walk (tracked_note_ids)"
         );
 
@@ -9080,7 +9089,10 @@ mod tests {
         // Not indexed.
         let views_hex = hex_id(&VIEWS_DOC_ID);
         assert!(
-            !e.index_entries().await.iter().any(|x| x.note_id == views_hex),
+            !e.index_entries()
+                .await
+                .iter()
+                .any(|x| x.note_id == views_hex),
             "no phantom index entry for the views doc"
         );
         // Not renderable / not a note for walkers.
@@ -9127,7 +9139,10 @@ mod tests {
             "NoteUpsert/NoteDelete at the views doc are no-ops"
         );
         assert!(
-            !e.index_entries().await.iter().any(|x| x.note_id == views_hex),
+            !e.index_entries()
+                .await
+                .iter()
+                .any(|x| x.note_id == views_hex),
             "still not indexed after the refused ops"
         );
     }
@@ -9152,12 +9167,9 @@ mod tests {
             .unwrap();
         let before = e.views_list().await;
 
-        tokio::fs::write(
-            tmp.path().join("notes").join("seeded.md"),
-            "- from disk\n",
-        )
-        .await
-        .unwrap();
+        tokio::fs::write(tmp.path().join("notes").join("seeded.md"), "- from disk\n")
+            .await
+            .unwrap();
         let count = e.reseed_from_disk(&tmp.path().join("notes")).await.unwrap();
         assert_eq!(count, 1, "reseed processed the md file");
         assert_eq!(e.views_list().await, before, "views registry untouched");
