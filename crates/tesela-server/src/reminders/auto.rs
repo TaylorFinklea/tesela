@@ -1,8 +1,18 @@
 //! Phase 12.1 slice 3.4 — auto-sync triggers.
 //!
-//! The "Sync now" button is fine but the daily-driver win is making the
-//! user not have to think about it. Three triggers fire `sync_all`
-//! automatically:
+//! **Default OFF since 2026-06-09** (audit A10 / product decision #3):
+//! the triggers below only arm when `TESELA_REMINDERS_AUTOSYNC` is set
+//! to a non-empty value. The audit found every sync rewrites each
+//! candidate's `apple_reminder_synced_at::` (fresh `Utc::now()` even
+//! when nothing changed), the fs-watcher emits `Updated` for those
+//! writes, and the edit-debounce trigger fires another sync ~30s later
+//! — a permanent self-retrigger loop, plus per-cycle EventKit
+//! saveReminder commits (iCloud churn) and pull-side fail-open clobber
+//! risk. The manual "Sync now" route (`POST /sync/reminders`) stays
+//! fully functional; it calls [`AutoSync::run_once`] directly and never
+//! touches this gate.
+//!
+//! When armed, three triggers fire `sync_all` automatically:
 //!
 //! 1. **Startup**: 10 seconds after the server starts (delay so the
 //!    initial index has settled).
@@ -100,12 +110,42 @@ impl AutoSync {
     }
 }
 
+/// Opt-in env flag for the AUTOMATIC sync triggers. Mirrors the other
+/// boolean env toggles in `main.rs` (`TESELA_LORO_RESEED` shape): any
+/// non-empty value enables; unset/empty disables. Default OFF per the
+/// 2026-06-09 decision — see the module docs for why.
+#[cfg(any(target_os = "macos", test))]
+pub const AUTOSYNC_ENV: &str = "TESELA_REMINDERS_AUTOSYNC";
+
+/// Pure flag predicate, split out so the default-OFF contract is unit-
+/// testable without env mutation.
+#[cfg(any(target_os = "macos", test))]
+fn env_flag_enabled(value: Option<&str>) -> bool {
+    matches!(value, Some(v) if !v.is_empty())
+}
+
+#[cfg(target_os = "macos")]
+fn autosync_enabled() -> bool {
+    env_flag_enabled(std::env::var(AUTOSYNC_ENV).ok().as_deref())
+}
+
+/// Arm the automatic triggers. Returns whether they actually armed —
+/// `false` when the `TESELA_REMINDERS_AUTOSYNC` opt-in is absent (the
+/// default) or on non-macOS.
 #[cfg(target_os = "macos")]
 pub fn start_triggers(
     auto: Arc<AutoSync>,
     store: Arc<dyn NoteStore>,
     note_events: broadcast::Sender<NoteEvent>,
-) {
+) -> bool {
+    if !autosync_enabled() {
+        info!(
+            "reminders auto-sync: triggers disabled (default; set \
+             {AUTOSYNC_ENV}=1 to enable). Manual sync via POST \
+             /sync/reminders still works."
+        );
+        return false;
+    }
     let startup_delay = Duration::from_secs(10);
     let interval_period = Duration::from_secs(300);
     let edit_debounce = Duration::from_secs(30);
@@ -138,6 +178,18 @@ pub fn start_triggers(
     });
 
     // (3) Edit-driven (debounced)
+    //
+    // KNOWN LOOP when armed (audit A10, 2026-06-09): `push_all` stamps a
+    // fresh `apple_reminder_synced_at::` on every pushed candidate and
+    // writes the note files via `store.update`, the Indexer watcher emits
+    // `Updated` for those self-originated writes (no suppression), and
+    // this trigger fires another sync ~30s later — forever, on any mosaic
+    // with ≥1 reminder-bearing task. The Milestone 3 fix is re-routing the
+    // reminders writebacks through the sync engine (`record_local`, like
+    // every other writer) with change-detection so a no-op sync writes
+    // nothing and self-originated events are attributable; until then the
+    // default-OFF gate above is what contains the loop. Do NOT re-enable
+    // by default without that re-route.
     let auto_e = auto;
     let store_e = store;
     let mut rx = note_events.subscribe();
@@ -179,6 +231,7 @@ pub fn start_triggers(
             }
         }
     });
+    true
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -186,9 +239,10 @@ pub fn start_triggers(
     _auto: Arc<AutoSync>,
     _store: Arc<dyn NoteStore>,
     _note_events: broadcast::Sender<NoteEvent>,
-) {
+) -> bool {
     // sync_all returns "platform unsupported" on non-macOS; firing
     // auto-triggers would just record that error every 5 minutes.
+    false
 }
 
 /// Heuristic: skip the sync if the event is for a note that obviously
@@ -201,4 +255,43 @@ pub fn start_triggers(
 /// have a syncable Task block).
 fn is_relevant(ev: &NoteEvent) -> bool {
     matches!(ev, NoteEvent::Created(_) | NoteEvent::Updated(_))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Audit A10 (decision 2026-06-09 #3): the automatic triggers must
+    /// default OFF. Without the opt-in env flag, `start_triggers` arms
+    /// nothing — no startup sync, no 5-minute interval, no edit-debounce
+    /// loop (whose self-retrigger ran a sync every ~30s forever). The
+    /// manual `POST /sync/reminders` route is unaffected (it calls
+    /// `AutoSync::run_once` directly).
+    #[tokio::test]
+    async fn triggers_do_not_arm_when_flag_unset() {
+        std::env::remove_var(AUTOSYNC_ENV);
+        let auto = Arc::new(AutoSync::new());
+        let store: Arc<dyn NoteStore> = Arc::new(
+            tesela_core::storage::filesystem::FsNoteStore::new(
+                std::path::PathBuf::from("/nonexistent-test-mosaic"),
+                tesela_core::config::StorageConfig::default(),
+            ),
+        );
+        let (tx, _) = broadcast::channel::<NoteEvent>(4);
+        let armed = start_triggers(auto, store, tx);
+        assert!(
+            !armed,
+            "auto-sync triggers must NOT arm without TESELA_REMINDERS_AUTOSYNC"
+        );
+    }
+
+    /// The opt-in flag parsing: unset and empty are OFF; any non-empty
+    /// value is ON.
+    #[test]
+    fn autosync_env_gate_parsing() {
+        assert!(!env_flag_enabled(None), "unset → off (the default)");
+        assert!(!env_flag_enabled(Some("")), "empty → off");
+        assert!(env_flag_enabled(Some("1")));
+        assert!(env_flag_enabled(Some("true")));
+    }
 }
