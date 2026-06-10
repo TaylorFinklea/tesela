@@ -252,7 +252,7 @@ pub async fn get_daily_note(
     let note = s.store.daily_note(date, &config).await?;
     if existed.is_none() {
         s.index.reindex(&note).await?;
-        record_sync_create(&s, &note).await;
+        record_sync_create(&s, &note).await?;
         let _ = s.ws_tx.send(WsEvent::NoteCreated { note: note.clone() });
     }
     Ok(Json(note))
@@ -287,7 +287,7 @@ pub async fn create_note(
         }
     }
     ensure_tag_pages(&s, &note).await;
-    record_sync_create(&s, &note).await;
+    record_sync_create(&s, &note).await?;
     let _ = s.ws_tx.send(WsEvent::NoteCreated { note: note.clone() });
     Ok(Json(note))
 }
@@ -348,7 +348,7 @@ pub async fn update_note(
     // up across the diff. `None` (older client / true whole-note rewrite
     // like create) falls back to the historical server-file→new diff.
     let stamped_base = req.base_content.as_deref().map(stamp_block_ids);
-    record_sync_update(&s, &prev_content, stamped_base.as_deref(), &note).await;
+    record_sync_update(&s, &prev_content, stamped_base.as_deref(), &note).await?;
     // Re-read to get fresh parsed metadata and checksum from the
     // file the engine just wrote. The engine's serialization is the
     // canonical form; downstream indexing should index THAT, not the
@@ -616,7 +616,7 @@ pub async fn delete_note(
     let note_id = NoteId::new(&id);
     s.store.delete(&note_id).await?;
     s.index.remove(&note_id).await?;
-    record_sync_delete(&s, &note_id).await;
+    record_sync_delete(&s, &note_id).await?;
     let _ = s.ws_tx.send(WsEvent::NoteDeleted { id });
     Ok(StatusCode::NO_CONTENT)
 }
@@ -926,7 +926,7 @@ async fn resolve_one_segment(
     );
     let created = s.store.create(&resolved_slug, &content, &[]).await?;
     s.index.reindex(&created).await?;
-    record_sync_create(s, &created).await;
+    record_sync_create(s, &created).await?;
     let _ = s.ws_tx.send(WsEvent::NoteCreated { note: created });
     Ok(SegmentResolution::Created(resolved_slug))
 }
@@ -1055,7 +1055,7 @@ pub async fn rename_tag(
         // Server-internal rewrite: `note.content` IS the base (no stale
         // client view), so the historical prev→new diff is correct. Pass
         // `None` to keep that path exactly.
-        record_sync_update(&s, &note.content, None, &updated_note).await;
+        record_sync_update(&s, &note.content, None, &updated_note).await?;
         let _ = s.ws_tx.send(WsEvent::NoteUpdated {
             note: updated_note,
         });
@@ -1067,14 +1067,14 @@ pub async fn rename_tag(
         .create(&req.to_slug, &source.content, &[])
         .await?;
     s.index.reindex(&renamed).await?;
-    record_sync_create(&s, &renamed).await;
+    record_sync_create(&s, &renamed).await?;
     let _ = s.ws_tx.send(WsEvent::NoteCreated {
         note: renamed.clone(),
     });
 
     s.store.delete(&from_id).await?;
     s.index.remove(&from_id).await?;
-    record_sync_delete(&s, &from_id).await;
+    record_sync_delete(&s, &from_id).await?;
     let _ = s.ws_tx.send(WsEvent::NoteDeleted {
         id: req.from_slug.clone(),
     });
@@ -1152,7 +1152,7 @@ pub async fn cleanup_tag_references(
         s.index.reindex(&updated_note).await?;
         // Server-internal rewrite: `note.content` IS the base. Pass `None`
         // to keep the historical prev→new diff (see the tag-rename twin).
-        record_sync_update(&s, &note.content, None, &updated_note).await;
+        record_sync_update(&s, &note.content, None, &updated_note).await?;
         let _ = s.ws_tx.send(WsEvent::NoteUpdated {
             note: updated_note,
         });
@@ -1200,7 +1200,14 @@ fn splice_body_into_content(content: &str, new_body: &str) -> String {
 /// Producer path for note creation. Emits one NoteUpsert that carries
 /// the slug, title, and full stamped content so any peer (including one
 /// that has never seen this note before) can materialize it correctly.
-async fn record_sync_create(s: &Arc<AppState>, note: &Note) {
+///
+/// Audit A9a (2026-06-09): a `record_local` failure here used to be
+/// warn-and-swallowed, so the handler returned 2xx while the sync op was
+/// silently dropped — peers never saw the note and the engine (the
+/// authoritative materializing writer) could later revert the file.
+/// Callers must propagate this error as a 5xx. The file write is NOT
+/// rolled back; the error detail says so.
+async fn record_sync_create(s: &Arc<AppState>, note: &Note) -> anyhow::Result<()> {
     let payload = OpPayload::NoteUpsert {
         note_id: stable_uuid_from_slug(note.id.as_str()),
         display_alias: Some(note.id.as_str().to_string()),
@@ -1214,7 +1221,14 @@ async fn record_sync_create(s: &Arc<AppState>, note: &Note) {
             note.id,
             e
         );
+        anyhow::bail!(
+            "note '{}' was written to disk, but its sync op could not be \
+             recorded ({e}); the note will not sync to peers and may be \
+             reverted by the engine — retry the save",
+            note.id
+        );
     }
+    Ok(())
 }
 
 /// Producer path for note updates. Emits BlockUpsert / BlockMove /
@@ -1262,12 +1276,22 @@ async fn record_sync_create(s: &Arc<AppState>, note: &Note) {
 /// AFTER the block ops so it carries the author's NEW frontmatter over the
 /// server's POST-block-op blocks (no reseed). Both edits survive. Guarded on
 /// the change check so a pure block edit never emits a redundant NoteUpsert.
+///
+/// ## Error propagation (audit A9a, 2026-06-09)
+/// `record_sync_update` is the SOLE writer on the PUT path — each
+/// `record_local` both appends the op and materializes the file. A
+/// failure used to be warn-and-swallowed, so the client got a 200 while
+/// its edit was silently dropped (never applied, never synced). Failures
+/// now propagate so the handler answers 5xx and the client retries. The
+/// op loop fails fast on the first error; a mid-loop failure leaves a
+/// partial apply already materialized (same non-transactional contract
+/// as `upsert_blocks`) — the error detail says so.
 async fn record_sync_update(
     s: &Arc<AppState>,
     prev_content: &str,
     base_content: Option<&str>,
     note: &Note,
-) {
+) -> anyhow::Result<()> {
     let note_id = stable_uuid_from_slug(note.id.as_str());
     // Base-diff: when the author sent its edit base, diff base→new (the
     // author's real changes). Otherwise diff prev_content→new (today's
@@ -1294,7 +1318,7 @@ async fn record_sync_update(
 
     if ops.is_empty() {
         if prev_content == note.content {
-            return;
+            return Ok(());
         }
         // Body parses identical (or both empty) but raw content differs:
         // frontmatter / page-property / non-bullet content changed. Fall
@@ -1319,8 +1343,14 @@ async fn record_sync_update(
                 note.id,
                 e
             );
+            anyhow::bail!(
+                "the frontmatter/property edit to note '{}' could not be \
+                 recorded by the sync engine ({e}); the edit was NOT applied \
+                 — retry the save",
+                note.id
+            );
         }
-        return;
+        return Ok(());
     }
 
     for op in ops {
@@ -1329,6 +1359,12 @@ async fn record_sync_update(
                 "sync: record_local Block op failed for {}: {}",
                 note.id,
                 e
+            );
+            anyhow::bail!(
+                "a block edit to note '{}' could not be recorded by the sync \
+                 engine ({e}); the save may be partially applied and will not \
+                 sync to peers — retry the save",
+                note.id
             );
         }
     }
@@ -1364,8 +1400,15 @@ async fn record_sync_update(
                 note.id,
                 e
             );
+            anyhow::bail!(
+                "the bundled frontmatter change to note '{}' could not be \
+                 recorded by the sync engine ({e}); the block edits applied \
+                 but the frontmatter change did not — retry the save",
+                note.id
+            );
         }
     }
+    Ok(())
 }
 
 /// Build a NoteUpsert `content` that carries the author's NEW frontmatter
@@ -1411,7 +1454,11 @@ fn stamp_block_ids(content: &str) -> String {
     serialize_note(&tree)
 }
 
-async fn record_sync_delete(s: &Arc<AppState>, note_id: &NoteId) {
+/// Producer path for note deletion. See `record_sync_create` for the
+/// A9a error-propagation contract: a swallowed failure here meant the
+/// delete never reached peers (the note resurrects) while the client
+/// got a 204.
+async fn record_sync_delete(s: &Arc<AppState>, note_id: &NoteId) -> anyhow::Result<()> {
     let slug = note_id.as_str();
     let payload = OpPayload::NoteDelete {
         note_id: stable_uuid_from_slug(slug),
@@ -1419,7 +1466,13 @@ async fn record_sync_delete(s: &Arc<AppState>, note_id: &NoteId) {
     };
     if let Err(e) = s.sync_engine.record_local(payload).await {
         tracing::warn!("sync: record_local delete failed for {}: {}", note_id, e);
+        anyhow::bail!(
+            "note '{}' was deleted on disk, but the delete sync op could not \
+             be recorded ({e}); peers will not see the deletion",
+            note_id
+        );
     }
+    Ok(())
 }
 
 /// Phase 1.5 stable note_id derivation: blake3(slug) truncated to 16
@@ -1835,7 +1888,7 @@ pub async fn set_block_property(
         let stamped = stamp_block_ids(&rolled_content);
         let mut rolled_note = cleared.clone();
         rolled_note.content = stamped;
-        record_sync_update(&s, &cleared.content, None, &rolled_note).await;
+        record_sync_update(&s, &cleared.content, None, &rolled_note).await?;
     }
 
     // Re-read the final materialized note for indexing + the response echo.
@@ -1941,6 +1994,172 @@ mod tests {
         // Non-existent line should return None.
         let bid_out_of_range = block_bid_from_suffix(content, note_id, "99");
         assert_eq!(bid_out_of_range, None);
+    }
+
+    /// Audit A9a (2026-06-09): `PUT /notes/{id}` must NOT report success
+    /// when `record_local` fails. Since the 2026-05-26 redesign,
+    /// `record_sync_update` is the SOLE writer on PUT — a swallowed
+    /// failure means the edit was silently dropped (never applied, never
+    /// synced to peers) while the client got a 200 and believed the save
+    /// stuck. These tests inject a SyncEngine whose `record_local` always
+    /// errors and assert the handlers surface a 5xx instead.
+    mod record_local_failure {
+        use super::super::*;
+        use std::sync::Arc;
+
+        use axum::response::IntoResponse;
+        use tokio::sync::broadcast;
+
+        use tesela_core::{config::StorageConfig, storage::filesystem::FsNoteStore};
+        use tesela_sync::{
+            ContentHash, DeviceId, EncodedOp, LocalCursor, OpPayload, ParkReason,
+            ParkedSummary, PeerCursor, ReplayReport, SyncEngine, SyncError, SyncResult,
+        };
+
+        /// A stub engine whose `record_local` always fails — simulates a
+        /// Loro insert/serialization failure on the producer path.
+        struct FailingRecordEngine;
+
+        #[async_trait::async_trait]
+        impl SyncEngine for FailingRecordEngine {
+            fn device(&self) -> DeviceId {
+                DeviceId::from_bytes([0xfa; 16])
+            }
+            async fn record_local(&self, _payload: OpPayload) -> SyncResult<ContentHash> {
+                Err(SyncError::Storage(
+                    "simulated record_local failure".to_string(),
+                ))
+            }
+            async fn local_cursor(&self) -> SyncResult<LocalCursor> {
+                Ok(LocalCursor::Earliest)
+            }
+            async fn peer_cursor(&self, _peer: DeviceId) -> SyncResult<PeerCursor> {
+                Ok(PeerCursor::Earliest)
+            }
+            async fn ack_peer(&self, _peer: DeviceId, _ack: PeerCursor) -> SyncResult<()> {
+                Ok(())
+            }
+            async fn park_op(&self, _op: EncodedOp, _reason: ParkReason) -> SyncResult<()> {
+                Ok(())
+            }
+            async fn replay_parked(&self) -> SyncResult<ReplayReport> {
+                Ok(ReplayReport::default())
+            }
+            async fn parked_summary(&self) -> SyncResult<ParkedSummary> {
+                Ok(ParkedSummary::default())
+            }
+        }
+
+        /// Minimal AppState over a tempdir mosaic, with the failing engine
+        /// injected. Mirrors the construction in main.rs's WS tests.
+        async fn failing_state(mosaic: &std::path::Path) -> Arc<AppState> {
+            std::fs::create_dir_all(mosaic.join("notes")).unwrap();
+            std::fs::create_dir_all(mosaic.join(".tesela")).unwrap();
+            let store = Arc::new(FsNoteStore::new(
+                mosaic.to_path_buf(),
+                StorageConfig::default(),
+            ));
+            let index = Arc::new(
+                tesela_core::db::SqliteIndex::open(&mosaic.join(".tesela").join("test.db"))
+                    .await
+                    .unwrap(),
+            );
+            let (ws_tx, _) = broadcast::channel(16);
+            let (ws_delta_tx, _) = broadcast::channel(16);
+            let group_identity = Arc::new(tokio::sync::RwLock::new(tesela_sync::GroupIdentity {
+                group_id: tesela_sync::GroupId::new_random(),
+                group_key: tesela_sync::GroupKey::random(),
+            }));
+            Arc::new(AppState {
+                mosaic_root: mosaic.to_path_buf(),
+                store,
+                index,
+                ws_tx,
+                ws_delta_tx,
+                ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
+                type_registry: tesela_core::types::TypeRegistry::load(mosaic),
+                auto_sync: Arc::new(crate::reminders::auto::AutoSync::new()),
+                sync_engine: Arc::new(FailingRecordEngine) as Arc<dyn SyncEngine>,
+                lan_discovery: None,
+                group_identity,
+                display_name: "test".into(),
+                public_url: "http://127.0.0.1:0".into(),
+                relay_url: None,
+                relay: None,
+            })
+        }
+
+        const BID: &str = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+
+        /// Block-op path: a PUT whose block diff is non-empty must surface
+        /// the dropped op as a 5xx, not a 200.
+        #[tokio::test]
+        async fn put_propagates_block_op_record_local_failure() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let state = failing_state(tmp.path()).await;
+            let seed = format!("- alpha <!-- bid:{BID} -->\n");
+            std::fs::write(tmp.path().join("notes/putfail.md"), &seed).unwrap();
+
+            let result = update_note(
+                Path("putfail".to_string()),
+                State(Arc::clone(&state)),
+                Json(UpdateNoteReq {
+                    content: format!("- alpha CHANGED <!-- bid:{BID} -->\n"),
+                    base_content: None,
+                }),
+            )
+            .await;
+
+            let err = match result {
+                Ok(_) => panic!(
+                    "PUT must NOT return 2xx when record_local fails (the sync \
+                     op was dropped; the edit was never applied)"
+                ),
+                Err(e) => e,
+            };
+            let status = err.into_response().status();
+            assert!(
+                status.is_server_error(),
+                "expected a 5xx, got {status}"
+            );
+        }
+
+        /// NoteUpsert-fallback path (frontmatter-only change, empty block
+        /// diff): the same failure must also surface as a 5xx.
+        #[tokio::test]
+        async fn put_propagates_noteupsert_fallback_record_local_failure() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let state = failing_state(tmp.path()).await;
+            let seed = format!(
+                "---\ntitle: \"Old\"\n---\n\n- alpha <!-- bid:{BID} -->\n"
+            );
+            std::fs::write(tmp.path().join("notes/fmfail.md"), &seed).unwrap();
+
+            let result = update_note(
+                Path("fmfail".to_string()),
+                State(Arc::clone(&state)),
+                Json(UpdateNoteReq {
+                    content: format!(
+                        "---\ntitle: \"New\"\n---\n\n- alpha <!-- bid:{BID} -->\n"
+                    ),
+                    base_content: None,
+                }),
+            )
+            .await;
+
+            let err = match result {
+                Ok(_) => panic!(
+                    "frontmatter-only PUT must NOT return 2xx when the \
+                     NoteUpsert fallback's record_local fails"
+                ),
+                Err(e) => e,
+            };
+            let status = err.into_response().status();
+            assert!(
+                status.is_server_error(),
+                "expected a 5xx, got {status}"
+            );
+        }
     }
 }
 
@@ -2925,8 +3144,14 @@ async fn ensure_tag_pages(s: &Arc<AppState>, note: &Note) {
                 let _ = s.index.reindex(&tag_note).await;
                 // Sync visibility: peers need a NoteUpsert in the
                 // oplog so subsequent BlockUpserts against this
-                // page can resolve its slug.
-                record_sync_create(s, &tag_note).await;
+                // page can resolve its slug. `ensure_tag_pages` is a
+                // best-effort fan-out (it must not fail the note save
+                // that triggered it), so a record failure here logs
+                // instead of propagating — unlike the handler-level
+                // `record_sync_*` call sites (audit A9a).
+                if let Err(e) = record_sync_create(s, &tag_note).await {
+                    tracing::warn!("ensure_tag_pages: {e}");
+                }
                 let _ = s.ws_tx.send(WsEvent::NoteCreated { note: tag_note });
                 tracing::info!("Auto-created tag page at slug '{}' (display name: '{}')", resolved_slug, tag);
             }

@@ -77,6 +77,9 @@ libc = "0.2"
 [dev-dependencies]
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+# Implement the #[async_trait] SyncEngine trait for in-test failing stubs
+# (record_local error propagation tests in routes/notes.rs).
+async-trait = { workspace = true }
 criterion = { workspace = true }
 reqwest = { workspace = true }
 walkdir = { workspace = true }
