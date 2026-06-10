@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! query   := token (whitespace token)*
-//! token   := negation? key ':' op? value
+//! token   := negation? key ':' op? value (',' value)*
 //! negation:= '-'
 //! key     := identifier ("kind", "tag", "status", "has", or any property name)
 //! op      := '>=' | '<=' | '>' | '<' | '!='   (optional, default '=')
@@ -19,6 +19,9 @@
 //!   - `kind:page note_type:Project` — page-kind query
 //!   - `tag:Task priority:>=3 deadline:<=2026-05-01` — comparison ops
 //!   - `has:deadline -has:status` — has/lacks-property predicates
+//!   - `status:backlog,todo` — comma multi-value: OR within the key (Eq-only;
+//!     commas must be tight — no whitespace — or the list ends). Desugars to
+//!     the same `IN` predicate as `key IN (a, b)` / legacy `tag-in:a,b`.
 //!
 //! # Special pseudo-keys
 //!
@@ -29,6 +32,16 @@
 
 use crate::block::ParsedBlock;
 use serde::{Deserialize, Serialize};
+
+/// Canonical DSL for the built-in **Inbox** saved view (views-registry
+/// spec, product-locked 2026-06-10): backlog-or-todo status, no
+/// scheduled date, no deadline. `kind:block` is implicit (the grammar's
+/// default kind), so the string is exactly what the user sees and edits
+/// in the view's query box. The server's views-registry seeding uses
+/// this verbatim; the shared conformance fixture
+/// (`tests/fixtures/query-conformance.json`) pins its semantics across
+/// the Rust / web-TS / iOS-Swift DSL implementations.
+pub const INBOX_VIEW_DSL: &str = "status:backlog,todo -has:scheduled -has:deadline";
 
 #[cfg(test)]
 use ts_rs::TS;
@@ -895,6 +908,29 @@ impl<'a> Parser<'a> {
             if key != "has" && value.is_empty() {
                 return None;
             }
+            // `key:v1,v2,…` — comma multi-value sugar: OR within the
+            // key, desugared to the same `Predicate::In` that the JQL
+            // `key IN (…)` form and the legacy `tag-in:` shape produce.
+            // Eq-only (a comma list under a comparison op has no
+            // sensible reading) and the commas must be tight — see
+            // `peek_tight_comma_continuation` for why.
+            if op == QueryOp::Eq && !value.is_empty() {
+                let mut values = vec![value.clone()];
+                while self.peek_tight_comma_continuation() {
+                    self.bump(); // consume ','
+                    match self.parse_value() {
+                        Some(v) if !v.is_empty() => values.push(v),
+                        _ => break,
+                    }
+                }
+                if values.len() > 1 {
+                    return Some(atom(Predicate::In {
+                        key,
+                        values,
+                        negated: false,
+                    }));
+                }
+            }
             return Some(atom(Predicate::Cmp { key, op, value }));
         }
 
@@ -976,6 +1012,33 @@ impl<'a> Parser<'a> {
             }
         }
         Some(buf)
+    }
+
+    /// Is the cursor at a *tight* comma-list continuation — a `,` with
+    /// no whitespace on either side, followed by a value token? Drives
+    /// the `key:v1,v2` multi-value OR sugar. Tightness matters: a comma
+    /// that touches whitespace (`status:a, b` / `status:a ,b`) is stray
+    /// punctuation, not a list separator — treating it as one would
+    /// slurp unrelated tokens (`status:done, tag:x`) into the value
+    /// list. The legacy `tag-in:` path keeps its looser whitespace-
+    /// tolerant list parsing for back-compat.
+    fn peek_tight_comma_continuation(&self) -> bool {
+        if self.pos == 0 {
+            return false;
+        }
+        let Some(comma) = self.tokens.get(self.pos) else {
+            return false;
+        };
+        if !matches!(comma.tok, Token::Comma) {
+            return false;
+        }
+        if self.tokens[self.pos - 1].end != comma.start {
+            return false; // whitespace before the comma
+        }
+        let Some(next) = self.tokens.get(self.pos + 1) else {
+            return false;
+        };
+        matches!(next.tok, Token::Word(_) | Token::Quoted(_)) && next.start == comma.end
     }
 
     /// Parse `(a, b, c)` — used for `IN (…)` / `NOT IN (…)`. Tolerates
@@ -2348,6 +2411,271 @@ mod tests {
             &q
         ));
         assert!(!block_matches(&block_with(vec![], &[]), &q));
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // Comma multi-value sugar (`key:v1,v2` = OR within the key) + the
+    // saved-views Inbox default (2026-06-10 views-registry spec).
+    // ──────────────────────────────────────────────────────────────────
+
+    /// `status:backlog,todo` desugars to `status IN (backlog, todo)` —
+    /// the same `Predicate::In` the JQL `IN (…)` form and the legacy
+    /// `tag-in:` shape produce.
+    #[test]
+    fn comma_list_parses_as_in_predicate() {
+        let q = parse_query("status:backlog,todo");
+        match &q.expr {
+            BoolExpr::Atom {
+                pred:
+                    Predicate::In {
+                        key,
+                        values,
+                        negated,
+                    },
+            } => {
+                assert_eq!(key, "status");
+                assert_eq!(values, &["backlog".to_string(), "todo".to_string()]);
+                assert!(!negated);
+            }
+            other => panic!("expected In predicate, got {other:?}"),
+        }
+        // In doesn't fit the legacy flat-filters view — callers degrade
+        // to "no SQL prefilter".
+        assert_eq!(q.filters.len(), 0);
+    }
+
+    /// Comma-OR matches any listed value, case-insensitively, and
+    /// excludes non-members and blocks missing the property.
+    #[test]
+    fn comma_list_matches_or_within_key() {
+        let q = parse_query("status:backlog,todo");
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "backlog")]),
+            &q
+        ));
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "todo")]),
+            &q
+        ));
+        // Value case-insensitivity.
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "TODO")]),
+            &q
+        ));
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "done")]),
+            &q
+        ));
+        // Missing property never matches a positive membership test.
+        assert!(!block_matches(&block_with(vec![], &[]), &q));
+    }
+
+    /// `tag:a,b` is the uniform comma-OR spelling of the legacy
+    /// `tag-in:a,b` — both must match the same blocks.
+    #[test]
+    fn comma_list_on_tag_equivalent_to_tag_in() {
+        let qa = parse_query("tag:Task,Domain,Issue");
+        let qb = parse_query("tag-in:Task,Domain,Issue");
+        for q in [&qa, &qb] {
+            assert!(block_matches(&block_with(vec!["Task"], &[]), q));
+            assert!(block_matches(&block_with(vec!["Domain"], &[]), q));
+            assert!(block_matches(&block_with(vec!["issue"], &[]), q));
+            assert!(!block_matches(&block_with(vec!["Person"], &[]), q));
+            assert!(!block_matches(&block_with(vec![], &[]), q));
+        }
+    }
+
+    /// `-key:v1,v2` negates the whole membership test — excludes every
+    /// member, passes non-members and missing-property blocks.
+    #[test]
+    fn negated_comma_list_excludes_all_members() {
+        let q = parse_query("-status:backlog,todo");
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "backlog")]),
+            &q
+        ));
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "todo")]),
+            &q
+        ));
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "done")]),
+            &q
+        ));
+        assert!(block_matches(&block_with(vec![], &[]), &q));
+    }
+
+    /// `has:scheduled,deadline` — presence of ANY listed property.
+    #[test]
+    fn comma_list_on_has_is_or_over_presence() {
+        let q = parse_query("has:scheduled,deadline");
+        assert!(block_matches(
+            &block_with(vec![], &[("scheduled", "2026-06-12")]),
+            &q
+        ));
+        assert!(block_matches(
+            &block_with(vec![], &[("deadline", "2026-06-12")]),
+            &q
+        ));
+        assert!(!block_matches(&block_with(vec![], &[]), &q));
+    }
+
+    /// Quoted values participate in comma lists: `tag:"To Read",Done`.
+    #[test]
+    fn comma_list_accepts_quoted_values() {
+        let q = parse_query(r#"tag:"To Read",Done"#);
+        assert!(block_matches(&block_with(vec!["To Read"], &[]), &q));
+        assert!(block_matches(&block_with(vec!["Done"], &[]), &q));
+        assert!(!block_matches(&block_with(vec!["Task"], &[]), &q));
+    }
+
+    /// Commas must be tight (no whitespace either side). A loose comma
+    /// is stray punctuation — the value list ends at the first value,
+    /// matching the parser's longstanding stray-comma behavior. This
+    /// keeps `status:done, tag:x` from slurping `tag:x` into the list.
+    #[test]
+    fn comma_list_requires_tight_commas() {
+        let q = parse_query("status:backlog, todo");
+        // Only `status:backlog` survives.
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "backlog")]),
+            &q
+        ));
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "todo")]),
+            &q
+        ));
+    }
+
+    /// A trailing comma degrades to the single-value Cmp — and keeps
+    /// the legacy flat-filters view populated.
+    #[test]
+    fn comma_list_trailing_comma_degrades_to_single_value() {
+        let q = parse_query("status:todo,");
+        assert_eq!(q.filters.len(), 1);
+        assert_eq!(q.filters[0].key, "status");
+        assert_eq!(q.filters[0].value, "todo");
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "todo")]),
+            &q
+        ));
+    }
+
+    /// Comma lists are Eq-only sugar — a comparison op before the value
+    /// (`priority:>=3,5`) keeps single-value semantics; the dangling
+    /// `,5` is dropped like any stray punctuation.
+    #[test]
+    fn comma_list_not_applied_to_comparison_ops() {
+        let q = parse_query("priority:>=3,5");
+        assert_eq!(q.filters.len(), 1);
+        assert_eq!(q.filters[0].op, QueryOp::Gte);
+        assert_eq!(q.filters[0].value, "3");
+        assert!(block_matches(&block_with(vec![], &[("priority", "4")]), &q));
+    }
+
+    /// Comma lists compose with surrounding clauses — the canonical
+    /// Inbox shape: membership + two property-absence negations.
+    #[test]
+    fn comma_list_composes_with_absence_negations() {
+        let q = parse_query("status:backlog,todo -has:scheduled -has:deadline");
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "backlog")]),
+            &q
+        ));
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "todo"), ("scheduled", "2026-06-12")]),
+            &q
+        ));
+    }
+
+    // ── Property-absence negation (`-has:key`) — explicit coverage ──
+
+    /// `-has:scheduled` matches blocks lacking the property and
+    /// excludes blocks carrying it, regardless of value.
+    #[test]
+    fn negated_has_matches_absence() {
+        let q = parse_query("-has:scheduled");
+        assert!(block_matches(&block_with(vec![], &[]), &q));
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "todo")]),
+            &q
+        ));
+        assert!(!block_matches(
+            &block_with(vec![], &[("scheduled", "2026-06-12")]),
+            &q
+        ));
+        // Key match is case-insensitive.
+        assert!(!block_matches(
+            &block_with(vec![], &[("Scheduled", "2026-06-12")]),
+            &q
+        ));
+    }
+
+    /// Two absence negations AND together: `-has:scheduled -has:deadline`.
+    #[test]
+    fn double_absence_negation_requires_both_absent() {
+        let q = parse_query("-has:scheduled -has:deadline");
+        assert!(block_matches(&block_with(vec![], &[]), &q));
+        assert!(!block_matches(
+            &block_with(vec![], &[("scheduled", "2026-06-12")]),
+            &q
+        ));
+        assert!(!block_matches(
+            &block_with(vec![], &[("deadline", "2026-06-12")]),
+            &q
+        ));
+        assert!(!block_matches(
+            &block_with(
+                vec![],
+                &[("scheduled", "2026-06-12"), ("deadline", "2026-06-13")],
+            ),
+            &q
+        ));
+    }
+
+    // ── The locked saved-views Inbox default ─────────────────────────
+
+    /// The canonical Inbox DSL parses with block kind (implicit) and
+    /// matches exactly: backlog-or-todo status, no scheduled, no
+    /// deadline. The server's views-registry seeding (wave 2) uses
+    /// [`INBOX_VIEW_DSL`] verbatim.
+    #[test]
+    fn inbox_view_dsl_parses_and_matches_locked_semantics() {
+        let q = parse_query(INBOX_VIEW_DSL);
+        assert_eq!(q.kind, Kind::Block);
+        assert_eq!(q.sort, None);
+        // backlog, clean → in
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "backlog")]),
+            &q
+        ));
+        // todo, clean → in
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "todo")]),
+            &q
+        ));
+        // case-insensitive status value → in
+        assert!(block_matches(
+            &block_with(vec![], &[("status", "Todo")]),
+            &q
+        ));
+        // done → out
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "done")]),
+            &q
+        ));
+        // no status at all → out
+        assert!(!block_matches(&block_with(vec![], &[]), &q));
+        // scheduled → out
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "todo"), ("scheduled", "2026-06-15")]),
+            &q
+        ));
+        // deadline → out
+        assert!(!block_matches(
+            &block_with(vec![], &[("status", "backlog"), ("deadline", "2026-06-15")]),
+            &q
+        ));
     }
 
     /// End-to-end: the user's example query parses + matches the

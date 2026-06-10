@@ -1,0 +1,644 @@
+{
+  "_contract": [
+    "Shared query-DSL conformance fixture — the ONE source of truth for DSL matching semantics",
+    "across the three implementations: Rust (crates/tesela-core/src/query.rs, consumed by",
+    "crates/tesela-core/tests/query_conformance.rs), web TS (web/src/lib/query-language.ts),",
+    "and iOS Swift (app/Tesela-iOS/Sources/Data/LocalQueryEngine.swift). Each language runs",
+    "every case through its real parser + matcher; drift here = saved views silently differ",
+    "per device. Rust is the source of truth — where implementations disagree, fix the",
+    "implementation, never the fixture (unless Rust itself changes first).",
+    "",
+    "Case shape: { name, dsl, block, expect }",
+    "  name    — unique snake/kebab id, used as the assertion message.",
+    "  dsl     — the query string fed verbatim to the language's parser.",
+    "  expect  — whether the block matches. All cases are block-kind (kind:block, the",
+    "            grammar default); page-kind matching is out of fixture scope.",
+    "",
+    "Block shape (language-neutral; adapt to your engine's native block type):",
+    "  text        — display text (first line, property lines stripped). Drives text:,",
+    "                and is what is:heading derives from.",
+    "  tags        — the block's OWN resolved tags (tags:: property values + #tag tokens,",
+    "                already merged/deduped). Inherited-ancestor-tag cases are deliberately",
+    "                absent — fixture blocks are standalone; leave inherited chains empty.",
+    "  properties  — string→string property map (e.g. {\"status\": \"todo\"}). Never",
+    "                contains a \"tags\" key (engines pop tags:: out of properties).",
+    "  isHeading   — true iff text's first non-whitespace run is 1–6 '#'s followed by",
+    "                whitespace (CommonMark heading). MUST stay consistent with text:",
+    "                Rust derives it from text and the consumer test asserts the flag",
+    "                agrees; TS/Swift may read the flag or derive — assert the same way.",
+    "  onDailyPage — true → the containing note id is a canonical YYYY-MM-DD daily id",
+    "                (adapters use \"2026-06-10\"); false → a non-date id (\"fixture-note\").",
+    "                Drives on:daily-page.",
+    "  noteType    — the containing page's note_type, null for plain pages. Drives",
+    "                on:system-pages (system = Tag | Property | Query | Template).",
+    "",
+    "Semantics pinned by these cases (Rust behavior, 2026-06-10):",
+    "  * All key/value matching is ASCII-case-insensitive.",
+    "  * key:v1,v2 = OR within the key (comma multi-value). Commas must be TIGHT — no",
+    "    whitespace on either side; a loose comma ends the list (stray punctuation).",
+    "    Comma lists are Eq-only sugar; tag-in:a,b is the back-compat alias for tag:a,b.",
+    "  * -clause / negation: -has:k matches absence; -key:v1,v2 = not-any-member;",
+    "    missing property matches any negated equality (missing != value).",
+    "  * has:k tests property presence regardless of value.",
+    "  * Unknown on:/is: values match nothing on Eq, everything on Ne (graceful degrade).",
+    "  * key: with an empty value is a dropped clause (query degrades toward match-all).",
+    "  * The Inbox default (status:backlog,todo -has:scheduled -has:deadline) is the",
+    "    seeded built-in view's DSL — pub const INBOX_VIEW_DSL in query.rs."
+  ],
+  "cases": [
+    {
+      "name": "empty_query_matches_everything",
+      "dsl": "",
+      "block": { "text": "Buy milk", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "kind_block_prefix_status_eq_match",
+      "dsl": "kind:block status:todo",
+      "block": { "text": "Buy milk", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "kind_block_prefix_status_eq_miss",
+      "dsl": "kind:block status:todo",
+      "block": { "text": "Buy milk", "tags": [], "properties": { "status": "done" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "kind_block_has_status_widget_shape",
+      "dsl": "kind:block has:status",
+      "block": { "text": "Buy milk", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "kind_block_has_status_widget_shape_miss",
+      "dsl": "kind:block has:status",
+      "block": { "text": "Buy milk", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "kind_block_lacks_status_inbox_shape",
+      "dsl": "kind:block -has:status",
+      "block": { "text": "Buy milk", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "kind_block_lacks_status_excludes_statused",
+      "dsl": "kind:block -has:status",
+      "block": { "text": "Buy milk", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "tag_eq_match",
+      "dsl": "tag:Task",
+      "block": { "text": "Fix the bug", "tags": ["Task"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "tag_eq_needle_case_insensitive",
+      "dsl": "tag:task",
+      "block": { "text": "Fix the bug", "tags": ["Task"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "tag_eq_block_tag_case_insensitive",
+      "dsl": "tag:TASK",
+      "block": { "text": "Fix the bug", "tags": ["task"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "tag_eq_miss",
+      "dsl": "tag:Task",
+      "block": { "text": "Just a note", "tags": ["Note"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "tag_eq_untagged_miss",
+      "dsl": "tag:Task",
+      "block": { "text": "Just a note", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "tag_negated_excludes_member",
+      "dsl": "-tag:Done",
+      "block": { "text": "Old thing", "tags": ["Done"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "tag_negated_passes_others",
+      "dsl": "-tag:Done",
+      "block": { "text": "New thing", "tags": ["Task"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "tag_quoted_multiword_value",
+      "dsl": "tag:\"To Read\"",
+      "block": { "text": "Some article", "tags": ["To Read"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "type_aliases_tag",
+      "dsl": "type:Task",
+      "block": { "text": "Fix the bug", "tags": ["Task"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "type_aliases_tag_miss",
+      "dsl": "type:Task",
+      "block": { "text": "A person", "tags": ["Person"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "status_eq_match",
+      "dsl": "status:doing",
+      "block": { "text": "Working on it", "tags": [], "properties": { "status": "doing" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "status_eq_value_case_insensitive",
+      "dsl": "status:DOING",
+      "block": { "text": "Working on it", "tags": [], "properties": { "status": "doing" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "status_eq_miss",
+      "dsl": "status:doing",
+      "block": { "text": "Finished", "tags": [], "properties": { "status": "done" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "status_eq_missing_property_miss",
+      "dsl": "status:doing",
+      "block": { "text": "Plain block", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "negated_status_missing_property_matches",
+      "dsl": "-status:done",
+      "block": { "text": "Plain block", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "negated_status_excludes_member",
+      "dsl": "-status:done",
+      "block": { "text": "Finished", "tags": [], "properties": { "status": "done" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "custom_property_eq",
+      "dsl": "priority:high",
+      "block": { "text": "Urgent thing", "tags": [], "properties": { "priority": "high" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "property_key_case_insensitive",
+      "dsl": "Priority:high",
+      "block": { "text": "Urgent thing", "tags": [], "properties": { "priority": "high" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "unknown_key_eq_no_match",
+      "dsl": "frobnicate:yes",
+      "block": { "text": "Plain block", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "unknown_key_negated_matches",
+      "dsl": "-frobnicate:yes",
+      "block": { "text": "Plain block", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "empty_value_clause_dropped",
+      "dsl": "status:",
+      "block": { "text": "Finished", "tags": [], "properties": { "status": "done" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "has_present",
+      "dsl": "has:deadline",
+      "block": { "text": "Ship it", "tags": [], "properties": { "deadline": "2026-07-01" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "has_absent",
+      "dsl": "has:deadline",
+      "block": { "text": "Someday", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "has_key_case_insensitive",
+      "dsl": "has:Deadline",
+      "block": { "text": "Ship it", "tags": [], "properties": { "deadline": "2026-07-01" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "neg_has_scheduled_absent_matches",
+      "dsl": "-has:scheduled",
+      "block": { "text": "Unplanned", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "neg_has_scheduled_present_excludes",
+      "dsl": "-has:scheduled",
+      "block": { "text": "Planned", "tags": [], "properties": { "scheduled": "2026-06-12" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "neg_has_deadline_absent_matches",
+      "dsl": "-has:deadline",
+      "block": { "text": "No due date", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "neg_has_deadline_present_excludes",
+      "dsl": "-has:deadline",
+      "block": { "text": "Due soon", "tags": [], "properties": { "deadline": "2026-06-12" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "double_date_absence_both_absent",
+      "dsl": "-has:scheduled -has:deadline",
+      "block": { "text": "Free-floating", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "double_date_absence_scheduled_present",
+      "dsl": "-has:scheduled -has:deadline",
+      "block": { "text": "Planned", "tags": [], "properties": { "scheduled": "2026-06-12" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "double_date_absence_deadline_present",
+      "dsl": "-has:scheduled -has:deadline",
+      "block": { "text": "Due", "tags": [], "properties": { "deadline": "2026-06-20" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "comma_or_status_first_member",
+      "dsl": "status:backlog,todo",
+      "block": { "text": "Later", "tags": [], "properties": { "status": "backlog" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "comma_or_status_second_member",
+      "dsl": "status:backlog,todo",
+      "block": { "text": "Soon", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "comma_or_status_nonmember",
+      "dsl": "status:backlog,todo",
+      "block": { "text": "Finished", "tags": [], "properties": { "status": "done" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "comma_or_status_missing_property",
+      "dsl": "status:backlog,todo",
+      "block": { "text": "Plain block", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "comma_or_values_case_insensitive",
+      "dsl": "status:Backlog,TODO",
+      "block": { "text": "Soon", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "comma_or_tag_any_member",
+      "dsl": "tag:Task,Note",
+      "block": { "text": "A note", "tags": ["Note"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "comma_or_tag_nonmember",
+      "dsl": "tag:Task,Note",
+      "block": { "text": "A person", "tags": ["Person"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "comma_or_negated_excludes_first",
+      "dsl": "-status:backlog,todo",
+      "block": { "text": "Later", "tags": [], "properties": { "status": "backlog" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "comma_or_negated_excludes_second",
+      "dsl": "-status:backlog,todo",
+      "block": { "text": "Soon", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "comma_or_negated_passes_nonmember",
+      "dsl": "-status:backlog,todo",
+      "block": { "text": "Finished", "tags": [], "properties": { "status": "done" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "comma_or_negated_passes_missing_property",
+      "dsl": "-status:backlog,todo",
+      "block": { "text": "Plain block", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "comma_or_has_presence_of_either",
+      "dsl": "has:scheduled,deadline",
+      "block": { "text": "Due", "tags": [], "properties": { "deadline": "2026-06-20" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "comma_or_has_neither_present",
+      "dsl": "has:scheduled,deadline",
+      "block": { "text": "Free-floating", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "comma_or_trailing_comma_single_value",
+      "dsl": "status:todo,",
+      "block": { "text": "Soon", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "loose_comma_first_value_survives",
+      "dsl": "status:backlog, todo",
+      "block": { "text": "Later", "tags": [], "properties": { "status": "backlog" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "loose_comma_does_not_extend_list",
+      "dsl": "status:backlog, todo",
+      "block": { "text": "Soon", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "tag_in_legacy_any_member",
+      "dsl": "tag-in:Task,Domain,Issue",
+      "block": { "text": "A domain", "tags": ["Domain"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "tag_in_legacy_nonmember",
+      "dsl": "tag-in:Task,Domain,Issue",
+      "block": { "text": "A person", "tags": ["Person"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "tag_in_legacy_case_insensitive",
+      "dsl": "tag-in:Task,Domain,Issue",
+      "block": { "text": "Lowercase tag", "tags": ["issue"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "tag_in_negated_excludes_member",
+      "dsl": "-tag-in:Task,Done",
+      "block": { "text": "Old thing", "tags": ["Done"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "tag_in_negated_passes_nonmember",
+      "dsl": "-tag-in:Task,Done",
+      "block": { "text": "A note", "tags": ["Note"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "tag_in_empty_list_matches_nothing",
+      "dsl": "tag-in:",
+      "block": { "text": "Fix the bug", "tags": ["Task"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "comma_or_tag_equivalent_to_tag_in",
+      "dsl": "tag:Task,Domain,Issue",
+      "block": { "text": "An issue", "tags": ["Issue"], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "on_daily_page_match",
+      "dsl": "on:daily-page",
+      "block": { "text": "Journal capture", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": true, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "on_daily_page_miss",
+      "dsl": "on:daily-page",
+      "block": { "text": "Reference note", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "neg_on_daily_page_excludes",
+      "dsl": "-on:daily-page",
+      "block": { "text": "Journal capture", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": true, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "neg_on_daily_page_passes_regular",
+      "dsl": "-on:daily-page",
+      "block": { "text": "Reference note", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "on_system_pages_tag_page",
+      "dsl": "on:system-pages",
+      "block": { "text": "Tag definition row", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": "Tag" },
+      "expect": true
+    },
+    {
+      "name": "on_system_pages_query_page",
+      "dsl": "on:system-pages",
+      "block": { "text": "Saved query row", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": "Query" },
+      "expect": true
+    },
+    {
+      "name": "on_system_pages_template_page",
+      "dsl": "on:system-pages",
+      "block": { "text": "Template row", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": "Template" },
+      "expect": true
+    },
+    {
+      "name": "on_system_pages_property_page",
+      "dsl": "on:system-pages",
+      "block": { "text": "Property metadata row", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": "Property" },
+      "expect": true
+    },
+    {
+      "name": "on_system_pages_project_is_not_system",
+      "dsl": "on:system-pages",
+      "block": { "text": "Project row", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": "Project" },
+      "expect": false
+    },
+    {
+      "name": "on_system_pages_null_note_type_miss",
+      "dsl": "on:system-pages",
+      "block": { "text": "Plain page row", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "neg_on_system_pages_excludes",
+      "dsl": "-on:system-pages",
+      "block": { "text": "Template row", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": "Template" },
+      "expect": false
+    },
+    {
+      "name": "on_unknown_value_matches_nothing",
+      "dsl": "on:weird",
+      "block": { "text": "Plain block", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "neg_on_unknown_value_lets_through",
+      "dsl": "-on:weird",
+      "block": { "text": "Plain block", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "is_heading_h3",
+      "dsl": "is:heading",
+      "block": { "text": "### Raw Strings", "tags": [], "properties": {}, "isHeading": true, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "is_heading_plain_text_miss",
+      "dsl": "is:heading",
+      "block": { "text": "Buy milk", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "is_heading_hashtag_is_not_heading",
+      "dsl": "is:heading",
+      "block": { "text": "#urgent thing", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "is_heading_seven_hashes_is_not_heading",
+      "dsl": "is:heading",
+      "block": { "text": "####### Too many", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "neg_is_heading_excludes_heading",
+      "dsl": "-is:heading",
+      "block": { "text": "## Section", "tags": [], "properties": {}, "isHeading": true, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "neg_is_heading_passes_plain",
+      "dsl": "-is:heading",
+      "block": { "text": "Buy milk", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "neg_is_unknown_value_lets_through",
+      "dsl": "-is:unknown",
+      "block": { "text": "Plain block", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "priority_gte_match",
+      "dsl": "priority:>=3",
+      "block": { "text": "Important", "tags": [], "properties": { "priority": "5" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "priority_gte_miss",
+      "dsl": "priority:>=3",
+      "block": { "text": "Minor", "tags": [], "properties": { "priority": "1" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "deadline_lte_iso_date_match",
+      "dsl": "deadline:<=2026-05-01",
+      "block": { "text": "Due soon", "tags": [], "properties": { "deadline": "2026-04-15" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "deadline_lte_iso_date_miss",
+      "dsl": "deadline:<=2026-05-01",
+      "block": { "text": "Due later", "tags": [], "properties": { "deadline": "2026-06-01" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "comparison_on_missing_property_miss",
+      "dsl": "priority:>=3",
+      "block": { "text": "Plain block", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "text_eq_quoted_case_insensitive",
+      "dsl": "text:\"buy milk\"",
+      "block": { "text": "Buy milk", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "text_eq_quoted_miss",
+      "dsl": "text:\"buy milk\"",
+      "block": { "text": "Buy bread", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "multi_clause_and_all_pass",
+      "dsl": "tag:Task status:todo",
+      "block": { "text": "Fix the bug", "tags": ["Task"], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "multi_clause_and_one_fails",
+      "dsl": "tag:Task status:todo",
+      "block": { "text": "Fixed the bug", "tags": ["Task"], "properties": { "status": "done" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "inbox_backlog_clean_is_in",
+      "dsl": "status:backlog,todo -has:scheduled -has:deadline",
+      "block": { "text": "Someday idea", "tags": [], "properties": { "status": "backlog" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "inbox_todo_clean_is_in",
+      "dsl": "status:backlog,todo -has:scheduled -has:deadline",
+      "block": { "text": "Unplanned task", "tags": ["Task"], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "inbox_status_case_insensitive",
+      "dsl": "status:backlog,todo -has:scheduled -has:deadline",
+      "block": { "text": "Unplanned task", "tags": [], "properties": { "status": "Todo" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": true
+    },
+    {
+      "name": "inbox_done_is_out",
+      "dsl": "status:backlog,todo -has:scheduled -has:deadline",
+      "block": { "text": "Finished task", "tags": [], "properties": { "status": "done" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "inbox_no_status_is_out",
+      "dsl": "status:backlog,todo -has:scheduled -has:deadline",
+      "block": { "text": "Plain bullet", "tags": [], "properties": {}, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "inbox_scheduled_is_out",
+      "dsl": "status:backlog,todo -has:scheduled -has:deadline",
+      "block": { "text": "Planned task", "tags": [], "properties": { "status": "todo", "scheduled": "2026-06-15" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "inbox_deadline_is_out",
+      "dsl": "status:backlog,todo -has:scheduled -has:deadline",
+      "block": { "text": "Due task", "tags": [], "properties": { "status": "backlog", "deadline": "2026-06-15" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "inbox_both_dates_is_out",
+      "dsl": "status:backlog,todo -has:scheduled -has:deadline",
+      "block": { "text": "Fully planned task", "tags": [], "properties": { "status": "todo", "scheduled": "2026-06-15", "deadline": "2026-06-20" }, "isHeading": false, "onDailyPage": false, "noteType": null },
+      "expect": false
+    },
+    {
+      "name": "inbox_daily_page_block_still_matches",
+      "dsl": "status:backlog,todo -has:scheduled -has:deadline",
+      "block": { "text": "Captured on the daily", "tags": [], "properties": { "status": "todo" }, "isHeading": false, "onDailyPage": true, "noteType": null },
+      "expect": true
+    }
+  ]
+}
