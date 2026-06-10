@@ -25,6 +25,7 @@ struct GrDailyView: View {
     @State private var navigationPath = NavigationPath()
     @State private var showDatePicker: Bool = false
     @State private var pickedDate: Date = Date()
+    @State private var loadingOlderDays: Bool = false
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -42,6 +43,9 @@ struct GrDailyView: View {
                         dayDivider(label: "Yesterday", dow: yesterdayDow, today: false)
                         yesterdaySection
                         pastDaysSection
+                        if mosaic.hasOlderDailies {
+                            olderDaysSentinel
+                        }
                         Spacer().frame(height: 96)
                     }
                     .padding(.horizontal, 10)
@@ -246,6 +250,33 @@ struct GrDailyView: View {
                     tags: block.tags
                 )
                 .opacity(0.6)
+            }
+        }
+    }
+
+    /// Infinite-scroll sentinel at the feed's bottom: appearing inside
+    /// the LazyVStack loads the next week of past dailies (repeatable —
+    /// after the feed grows, scrolling to the new bottom re-triggers it).
+    private var olderDaysSentinel: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Loading older days…")
+                .font(.system(size: 12))
+                .foregroundStyle(theme.fgFaint)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
+        // Re-key on the feed length so a batch that lands while the
+        // sentinel is STILL visible re-fires onAppear for the next batch
+        // (plain onAppear only fires once per appearance).
+        .id(mosaic.pastDailies.count)
+        .onAppear {
+            guard !loadingOlderDays else { return }
+            loadingOlderDays = true
+            Task {
+                await mosaic.loadOlderDailies()
+                loadingOlderDays = false
             }
         }
     }

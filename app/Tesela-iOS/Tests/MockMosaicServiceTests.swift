@@ -201,4 +201,113 @@ final class MockMosaicServiceTests: XCTestCase {
         )
         XCTAssertFalse(MockMosaicService.isBarePlaceholder(tagged))
     }
+
+    // MARK: - Capture insertion (append at the bottom, 2026-06-10)
+
+    /// A daily capture appends AFTER the last contentful block — never at
+    /// the top (web parity).
+    func testCaptureInsertIndexAppendsAfterContent() {
+        let a = Block(id: "a", kind: .note, text: "first")
+        let b = Block(id: "b", kind: .task, text: "second")
+        XCTAssertEqual(MockMosaicService.captureInsertIndex(in: []), 0)
+        XCTAssertEqual(MockMosaicService.captureInsertIndex(in: [a]), 1)
+        XCTAssertEqual(MockMosaicService.captureInsertIndex(in: [a, b]), 2)
+    }
+
+    /// A trailing run of bare "Add block" placeholders stays the visual
+    /// tail of the day: the capture slots in just before it.
+    func testCaptureInsertIndexSkipsTrailingPlaceholders() {
+        let content = Block(id: "a", kind: .note, text: "real")
+        let empty1 = Block(id: "b", kind: .note, text: "")
+        let empty2 = Block(id: "c", kind: .note, text: "")
+        XCTAssertEqual(
+            MockMosaicService.captureInsertIndex(in: [content, empty1]), 1
+        )
+        XCTAssertEqual(
+            MockMosaicService.captureInsertIndex(in: [content, empty1, empty2]), 1
+        )
+        // A placeholder ABOVE content does not move the index — only the
+        // trailing run matters.
+        XCTAssertEqual(
+            MockMosaicService.captureInsertIndex(in: [empty1, content]), 2
+        )
+        // All-placeholder day: capture lands first.
+        XCTAssertEqual(
+            MockMosaicService.captureInsertIndex(in: [empty1, empty2]), 0
+        )
+    }
+
+    /// End-to-end through `capture(_:target:)` on the in-memory model:
+    /// the captured block is appended after the seed's last block, not
+    /// inserted at index 0.
+    func testCaptureAppendsAtBottomOfToday() {
+        let service = MockMosaicService()
+        let countBefore = service.todayBlocks.count
+        service.capture("captured at the bottom", target: .today)
+        XCTAssertEqual(service.todayBlocks.count, countBefore + 1)
+        XCTAssertEqual(service.todayBlocks.last?.text, "captured at the bottom")
+        XCTAssertNotEqual(service.todayBlocks.first?.text, "captured at the bottom")
+        // Inbox captures append too (with the #inbox tag).
+        service.capture("inbox capture", target: .inbox)
+        XCTAssertEqual(service.todayBlocks.last?.text, "inbox capture")
+        XCTAssertEqual(service.todayBlocks.last?.tags, ["#inbox"])
+    }
+
+    // MARK: - Task toggle write path (2026-06-10 revert fix)
+
+    func testTaskStatusValue() {
+        XCTAssertEqual(MockMosaicService.taskStatusValue(done: true), "done")
+        XCTAssertEqual(MockMosaicService.taskStatusValue(done: false), "todo")
+    }
+
+    /// The toggle flips `done` AND mirrors it into the block's `status`
+    /// property — the typed `status::` write is what persists (engine
+    /// container op in `.relay` / set-property POST in `.http`); the
+    /// in-memory property keeps any later whole-note writeback
+    /// consistent with the flip.
+    func testToggleTaskFlipsDoneAndStatusProperty() {
+        let service = MockMosaicService()
+        guard let task = service.todayBlocks.first(where: { $0.kind == .task && !$0.done }) else {
+            return XCTFail("seed should contain an open task")
+        }
+        service.toggleTask(id: task.id)
+        let toggled = service.todayBlocks.first(where: { $0.id == task.id })
+        XCTAssertEqual(toggled?.done, true)
+        XCTAssertEqual(
+            toggled?.properties.first(where: { $0.key.lowercased() == "status" })?.value,
+            "done"
+        )
+        // Toggle back: status mirrors to todo.
+        service.toggleTask(id: task.id)
+        let untoggled = service.todayBlocks.first(where: { $0.id == task.id })
+        XCTAssertEqual(untoggled?.done, false)
+        XCTAssertEqual(
+            untoggled?.properties.first(where: { $0.key.lowercased() == "status" })?.value,
+            "todo"
+        )
+    }
+
+    /// Toggling a non-task block is a no-op (the checkbox only exists on
+    /// task rows).
+    func testToggleTaskIgnoresNotes() {
+        let service = MockMosaicService()
+        guard let note = service.todayBlocks.first(where: { $0.kind == .note }) else {
+            return XCTFail("seed should contain a note block")
+        }
+        service.toggleTask(id: note.id)
+        let after = service.todayBlocks.first(where: { $0.id == note.id })
+        XCTAssertEqual(after?.done, false)
+        XCTAssertTrue(after?.properties.isEmpty ?? false)
+    }
+
+    // MARK: - Daily feed pagination helpers (2026-06-10)
+
+    func testIsDailySlug() {
+        XCTAssertTrue(MockMosaicService.isDailySlug("2026-06-09"))
+        XCTAssertTrue(MockMosaicService.isDailySlug("1999-01-31"))
+        XCTAssertFalse(MockMosaicService.isDailySlug("tag-system"))
+        XCTAssertFalse(MockMosaicService.isDailySlug("2026-6-9"))
+        XCTAssertFalse(MockMosaicService.isDailySlug("2026-06-09-extra"))
+        XCTAssertFalse(MockMosaicService.isDailySlug(""))
+    }
 }

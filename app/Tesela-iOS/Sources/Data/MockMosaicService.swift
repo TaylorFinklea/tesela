@@ -28,6 +28,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Capped to a recent window; days with no blocks are dropped.
     @Published private(set) var pastDailies: [DailyEntry] = []
 
+    /// How many past-day sections (older than yesterday) the Daily feed
+    /// currently shows. Starts at one week; `loadOlderDailies()` widens
+    /// it by a week each time the user reaches the bottom of the feed.
+    private var pastDailiesWindow: Int = 7
+
+    /// Whether older dailies likely exist beyond the current window —
+    /// drives the Daily feed's load-more sentinel. `false` once a load
+    /// exhausts the local mosaic (relay) / the server's daily list.
+    @Published private(set) var hasOlderDailies: Bool = true
+
     @Published private(set) var palette: [PaletteVerb]
     @Published private(set) var searchResults: [SearchResult]
 
@@ -213,10 +223,78 @@ final class MockMosaicService: ObservableObject, MosaicService {
     func toggleTask(id: String) {
         if let idx = todayBlocks.firstIndex(where: { $0.id == id }), todayBlocks[idx].kind == .task {
             todayBlocks[idx].done.toggle()
-            scheduleWriteback()
+            let done = todayBlocks[idx].done
+            // Keep the in-memory property mirror consistent with the flip
+            // so a later whole-note writeback renders the same status.
+            upsert(&todayBlocks[idx].properties, key: "status", value: Self.taskStatusValue(done: done))
+            let slug = serverDailyId.isEmpty ? dailyId(daysAgo: 0) : serverDailyId
+            persistTaskToggle(noteId: slug, bid: id, done: done) { [weak self] in
+                self?.scheduleWriteback()
+            }
         } else if let idx = yesterdayBlocks.firstIndex(where: { $0.id == id }), yesterdayBlocks[idx].kind == .task {
             yesterdayBlocks[idx].done.toggle()
-            scheduleYesterdayWriteback()
+            let done = yesterdayBlocks[idx].done
+            upsert(&yesterdayBlocks[idx].properties, key: "status", value: Self.taskStatusValue(done: done))
+            persistTaskToggle(noteId: yesterdayId, bid: id, done: done) { [weak self] in
+                self?.scheduleYesterdayWriteback()
+            }
+        }
+    }
+
+    /// Canonical `status::` value for a task's done flag.
+    static func taskStatusValue(done: Bool) -> String { done ? "done" : "todo" }
+
+    /// Persist a checkbox toggle as a TYPED `status::` property write —
+    /// the engine container op in `.relay`, `POST /blocks/set-property`
+    /// in `.http` — NOT the whole-note writeback.
+    ///
+    /// The writeback path silently REVERTED toggles (2026-06-10 product
+    /// test): when a block's `status` lives in the engine's property
+    /// CONTAINER (any task touched by web triage / NL-lift / iOS triage),
+    /// the whole-note diff records the flipped `status:: done` line into
+    /// the block's TEXT, but the materializer's container-wins dedup
+    /// (A4) drops any in-text line whose key matches a container prop —
+    /// so the file re-renders `status:: todo` from the untouched
+    /// container and the next refresh flips the checkbox back. Only a
+    /// property op updates the container. The writeback `fallback` runs
+    /// when the bid isn't in the engine yet (a fresh, not-yet-
+    /// materialized block — which also has no container prop to shadow
+    /// the in-text line, so the legacy path is correct there).
+    private func persistTaskToggle(
+        noteId: String,
+        bid: String,
+        done: Bool,
+        fallback: @escaping @MainActor () -> Void
+    ) {
+        let status = Self.taskStatusValue(done: done)
+        switch currentBackend {
+        case .mock:
+            return
+        case .http(let baseURL):
+            beginLocalWriteSuppression()
+            Task {
+                let body = APISetBlockPropertyBody(
+                    block_id: "\(noteId):\(bid)", key: "status", value: status
+                )
+                do {
+                    try await httpPostNoResponse("/blocks/set-property", baseURL: baseURL, body: body)
+                } catch {
+                    fallback()
+                }
+            }
+        case .relay:
+            beginLocalWriteSuppression()
+            Task {
+                let applied = await onLocalPropertySet?(noteId, bid, "status", status) ?? false
+                if applied {
+                    // The engine re-materialized the file before the seam
+                    // returned — re-read so the UI reflects the durable
+                    // state (and refreshTick nudges Agenda/Inbox).
+                    await refresh(from: currentBackend)
+                } else {
+                    fallback()
+                }
+            }
         }
     }
 
@@ -553,18 +631,26 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// land in today's daily — `.inbox` adds a `#inbox` tag so the
     /// block surfaces in `InboxView`'s tagged section. `.page` appends
     /// to the named page via the existing per-page push.
+    ///
+    /// Daily captures APPEND at the bottom (matching the web client),
+    /// slotting in just before any trailing empty-placeholder run — the
+    /// old `insert(at: 0)` put every capture ABOVE the day's existing
+    /// notes (2026-06-10 product test).
     func capture(_ text: String, target: CaptureTarget) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let id = UUID().uuidString.lowercased()
         switch target {
         case .today:
-            todayBlocks.insert(Block(id: id, kind: .note, text: trimmed), at: 0)
+            todayBlocks.insert(
+                Block(id: id, kind: .note, text: trimmed),
+                at: Self.captureInsertIndex(in: todayBlocks)
+            )
             scheduleWriteback()
         case .inbox:
             todayBlocks.insert(
                 Block(id: id, kind: .note, text: trimmed, tags: ["#inbox"]),
-                at: 0
+                at: Self.captureInsertIndex(in: todayBlocks)
             )
             scheduleWriteback()
         case .page(let slug, _):
@@ -579,6 +665,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 text: trimmed
             )
         }
+    }
+
+    /// Where a daily capture lands: after the LAST contentful block,
+    /// but before any trailing run of bare placeholders (the editable
+    /// "Add block" rows the user hasn't typed into) so the empty row
+    /// stays the visual tail of the day.
+    static func captureInsertIndex(in blocks: [Block]) -> Int {
+        var idx = blocks.count
+        while idx > 0 && isBarePlaceholder(blocks[idx - 1]) {
+            idx -= 1
+        }
+        return idx
     }
 
     /// Insert a new block directly after `parentId` with indent one
@@ -1125,6 +1223,13 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // foregrounded across midnight would otherwise keep writing
             // "today's" edits into yesterday's note (review finding).
             serverDailyId = dailyId(daysAgo: 0)
+            // Older days (the feed below Yesterday) from the same local
+            // sandbox. `.relay` previously never filled `pastDailies`, so
+            // the Daily tab dead-ended at Yesterday (2026-06-10 product
+            // test). Honors the progressive `pastDailiesWindow`.
+            let past = localPastDailies(limit: pastDailiesWindow)
+            pastDailies = past.entries
+            hasOlderDailies = past.more
             // Always .ready — there's no server to wait on. Empty until the
             // relay delivers the first ops, then onAppliedChanges re-refreshes.
             connection = .ready
@@ -1158,7 +1263,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 )
                 let notes: [APINote] = try await httpGet("/notes?limit=200", baseURL: baseURL)
                 let yesterdayNote: APINote? = (try? await fetchYesterdayDaily(baseURL: baseURL))
-                let dailyNotes: [APINote] = (try? await httpGet("/notes?tag=daily&limit=40", baseURL: baseURL)) ?? []
+                // +2 covers today + yesterday, which the filter below drops.
+                let dailyFetchLimit = pastDailiesWindow + 2
+                let dailyNotes: [APINote] = (try? await httpGet("/notes?tag=daily&limit=\(dailyFetchLimit)", baseURL: baseURL)) ?? []
                 let serverTagNames: [String] = (try? await httpGet("/tags", baseURL: baseURL)) ?? []
 
                 serverDailyId = daily.id
@@ -1185,14 +1292,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     .map { mapPage($0) }
                 yesterdayBlocks = yesterdayNote.map { parseBlocks(from: $0.body, noteId: $0.id) } ?? []
                 let yesterdayId = dailyId(daysAgo: 1)
-                pastDailies = Array(
-                    dailyNotes
-                        .filter { $0.id != daily.id && $0.id != yesterdayId }
-                        .sorted { $0.id > $1.id }
-                        .map { DailyEntry(id: $0.id, blocks: parseBlocks(from: $0.body, noteId: $0.id)) }
-                        .filter { !$0.blocks.isEmpty }
-                        .prefix(30)
-                )
+                let pastEntries = dailyNotes
+                    .filter { $0.id != daily.id && $0.id != yesterdayId }
+                    .sorted { $0.id > $1.id }
+                    .map { DailyEntry(id: $0.id, blocks: parseBlocks(from: $0.body, noteId: $0.id)) }
+                    .filter { !$0.blocks.isEmpty }
+                pastDailies = Array(pastEntries.prefix(pastDailiesWindow))
+                // A full server page means more days probably exist past
+                // the window; an underfull one means we've seen them all.
+                hasOlderDailies = pastEntries.count > pastDailiesWindow
+                    || dailyNotes.count >= dailyFetchLimit
                 tags = serverTagNames.map { name in
                     let parts = name.split(separator: "/")
                     let leaf = parts.last.map(String.init) ?? name
@@ -1326,6 +1435,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
         todayBlocks = []
         yesterdayBlocks = []
         pastDailies = []
+        pastDailiesWindow = 7
+        hasOlderDailies = true
         searchResults = []
         searchHits = []
         searchError = nil
@@ -1942,6 +2053,80 @@ final class MockMosaicService: ObservableObject, MosaicService {
             ),
             modified_at: mtimeISO
         )
+    }
+
+    /// True iff `id` is a daily slug — `YYYY-MM-DD`.
+    static func isDailySlug(_ id: String) -> Bool {
+        id.range(of: #"^\d{4}-\d{2}-\d{2}$"#, options: .regularExpression) != nil
+    }
+
+    /// Enumerate the local sandbox for daily notes OLDER than yesterday,
+    /// newest first, parse up to `limit` non-empty days, and report
+    /// whether more candidate days remain beyond the window. ISO daily
+    /// slugs sort lexicographically by date, so plain string compares
+    /// order the feed. Powers the `.relay` Daily feed (and the `.http`
+    /// offline fallback) — cheap: reads at most `limit` files plus the
+    /// directory listing.
+    private func localPastDailies(limit: Int) -> (entries: [DailyEntry], more: Bool) {
+        let notesDir = localMosaicRoot().appendingPathComponent("notes")
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: notesDir.path) else {
+            return ([], false)
+        }
+        let yesterdayCutoff = dailyId(daysAgo: 1)
+        let candidateIds = files
+            .filter { $0.hasSuffix(".md") }
+            .map { String($0.dropLast(3)) }
+            .filter { Self.isDailySlug($0) && $0 < yesterdayCutoff }
+            .sorted(by: >)
+        var entries: [DailyEntry] = []
+        var scanned = 0
+        for id in candidateIds {
+            scanned += 1
+            guard let note = readLocalNote(id: id) else { continue }
+            let blocks = parseBlocks(from: note.body, noteId: id)
+            guard !blocks.isEmpty else { continue }
+            entries.append(DailyEntry(id: id, blocks: blocks))
+            if entries.count >= limit { break }
+        }
+        return (entries, scanned < candidateIds.count)
+    }
+
+    /// Widen the Daily feed's past-days window by a week and reload it —
+    /// called when the user scrolls to the feed's bottom sentinel.
+    /// `.relay` reads the local sandbox; `.http` re-fetches the server's
+    /// daily list with the larger limit (one cheap GET), falling back to
+    /// the local snapshot mirror when the server is unreachable.
+    func loadOlderDailies() async {
+        switch currentBackend {
+        case .mock:
+            hasOlderDailies = false
+        case .relay:
+            pastDailiesWindow += 7
+            let past = localPastDailies(limit: pastDailiesWindow)
+            pastDailies = past.entries
+            hasOlderDailies = past.more
+        case .http(let baseURL):
+            pastDailiesWindow += 7
+            let limit = pastDailiesWindow + 2  // today + yesterday get filtered out
+            guard let dailyNotes: [APINote] = try? await httpGet(
+                "/notes?tag=daily&limit=\(limit)", baseURL: baseURL
+            ) else {
+                let past = localPastDailies(limit: pastDailiesWindow)
+                pastDailies = past.entries
+                hasOlderDailies = past.more
+                return
+            }
+            let todayId = serverDailyId.isEmpty ? dailyId(daysAgo: 0) : serverDailyId
+            let yesterdayId = dailyId(daysAgo: 1)
+            let entries = dailyNotes
+                .filter { $0.id != todayId && $0.id != yesterdayId }
+                .sorted { $0.id > $1.id }
+                .map { DailyEntry(id: $0.id, blocks: parseBlocks(from: $0.body, noteId: $0.id)) }
+                .filter { !$0.blocks.isEmpty }
+            pastDailies = Array(entries.prefix(pastDailiesWindow))
+            hasOlderDailies = entries.count > pastDailiesWindow
+                || dailyNotes.count >= limit
+        }
     }
 
     /// Read every materialized note in the local sandbox, sorted by
@@ -2610,6 +2795,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
         todayBlocks = MockSeed.todayBlocks
         yesterdayBlocks = MockSeed.yesterdayBlocks
         pastDailies = []
+        pastDailiesWindow = 7
+        hasOlderDailies = false
         palette = MockSeed.palette
         searchResults = MockSeed.searchResults
         serverDailyId = ""
