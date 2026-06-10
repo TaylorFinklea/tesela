@@ -6,9 +6,9 @@
    * a split renders a flex container with two children sized by the split's
    * `ratio`, plus a 1px drag handle that updates the ratio via `setRatio`.
    *
-   * Structurally a Graphite-native twin of components/v5/LayoutTree.svelte —
-   * the same split/resizer/drag algebra — but it mounts the Graphite Gr*
-   * views instead of the v5 BufferShell, so /g keeps its own presentation
+   * Structurally a Graphite-native twin of the legacy v5 LayoutTree
+   * (deleted with the v5 chrome) — the same split/resizer/drag algebra —
+   * but it mounts the Graphite Gr* views, so /g keeps its own presentation
    * (and tokens) while gaining vsplit/hsplit. (decisions.md 2026-06-06.)
    */
   import type { LeafId, Node, Split } from '$lib/buffer/types';

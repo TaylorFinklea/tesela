@@ -17,11 +17,11 @@
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
   import DocumentEditor from "$lib/components/DocumentEditor.svelte";
   import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
-  import CompactQueryView from "$lib/components/v5/CompactQueryView.svelte";
+  import CompactQueryView from "$lib/components/CompactQueryView.svelte";
   import JournalView from "$lib/components/JournalView.svelte";
   import TagTable from "$lib/components/TagTable.svelte";
-  import TagPageRenderer from "$lib/components/v4/TagPageRenderer.svelte";
-  import PageTagsChips from "$lib/components/v4/PageTagsChips.svelte";
+  import TagPageRenderer from "$lib/components/TagPageRenderer.svelte";
+  import PageTagsChips from "$lib/components/PageTagsChips.svelte";
   import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
 
   let {

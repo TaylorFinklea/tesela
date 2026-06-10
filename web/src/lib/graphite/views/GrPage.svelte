@@ -37,9 +37,9 @@
   import DocumentEditor from "$lib/components/DocumentEditor.svelte";
   import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
   import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
-  import CompactQueryView from "$lib/components/v5/CompactQueryView.svelte";
-  import TagPageRenderer from "$lib/components/v4/TagPageRenderer.svelte";
-  import PageTagsChips from "$lib/components/v4/PageTagsChips.svelte";
+  import CompactQueryView from "$lib/components/CompactQueryView.svelte";
+  import TagPageRenderer from "$lib/components/TagPageRenderer.svelte";
+  import PageTagsChips from "$lib/components/PageTagsChips.svelte";
   import GrTypeTag from "$lib/graphite/GrTypeTag.svelte";
   import GrIcon from "$lib/graphite/GrIcon.svelte";
 

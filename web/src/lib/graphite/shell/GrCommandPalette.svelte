@@ -2,8 +2,8 @@
 <script lang="ts">
   /*
    * Graphite ⌘K command palette — NEW presentation over the EXISTING
-   * command registry + station behavior. This mirrors
-   * web/src/lib/components/v4/Station.svelte's palette tab exactly:
+   * command registry + station behavior. This mirrors the legacy v4
+   * Station palette tab (deleted with the v4 chrome) exactly:
    *   - open/close state from the station store (isStationOpen / closeStation
    *     / getStationInitialQuery / getStationPriorPaneId)
    *   - the command rows are buildV4Commands() (the same V4Command set the
