@@ -755,6 +755,113 @@ async fn test_snapshot_requires_auth() {
     );
 }
 
+#[tokio::test]
+async fn test_seq_allocates_above_compaction_watermark() {
+    // The #195 black hole: after a snapshot deposit covering ALL ops
+    // (full compaction → relay_ops empty), the next PUT must be
+    // assigned a seq ABOVE the compaction watermark — not restart at
+    // 1. A seq at-or-below the watermark sits beneath every caught-up
+    // consumer's cursor (poll is strictly `seq > since`), so the op is
+    // never fetched and the depositor's own next deposit deletes it:
+    // the edit becomes permanently undeliverable. The CF Worker gets
+    // this for free via AUTOINCREMENT; this case locks the behaviour
+    // into the shared suite for both implementations.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let device = random_device_id_hex();
+    let now = now_secs();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now))
+        .send()
+        .await
+        .unwrap();
+
+    // PUT 3 ops → seqs 1, 2, 3.
+    let ops_path = format!("/groups/{}/ops", hex::encode(group.id.as_bytes()));
+    for i in 0..3 {
+        let put_body =
+            json!({ "from_device": device, "payload_b64": b64(format!("op-{i}").as_bytes()) });
+        let body_bytes = serde_json::to_vec(&put_body).unwrap();
+        let headers = auth_headers(&group, &device, "PUT", &ops_path, "", &body_bytes);
+        let r = client
+            .put(format!("{}{}", relay.base_url, ops_path))
+            .headers(headers)
+            .body(body_bytes)
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success(), "PUT {} failed: {}", i, r.status());
+    }
+
+    // Deposit a snapshot covering seq 3 — FULL compaction, the op log
+    // is now empty and the watermark sits at 3.
+    let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
+    let snap_body = json!({
+        "covers_seq": 3,
+        "snapshots": [{ "stream_id_b64": b64(b"stream-A"), "payload_b64": b64(b"snap-A") }],
+    });
+    let body_bytes = serde_json::to_vec(&snap_body).unwrap();
+    let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);
+    let dep = client
+        .put(format!("{}{}", relay.base_url, snap_path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        dep.status().is_success(),
+        "snapshot deposit failed: {}",
+        dep.status()
+    );
+    let dep_body: serde_json::Value = dep.json().await.unwrap();
+    assert_eq!(dep_body["gc"].as_u64(), Some(3), "all 3 ops must be GC'd");
+
+    // PUT a NEW op. Its seq must land ABOVE the watermark (i.e. 4).
+    let put_body = json!({ "from_device": device, "payload_b64": b64(b"post-compaction-edit") });
+    let body_bytes = serde_json::to_vec(&put_body).unwrap();
+    let headers = auth_headers(&group, &device, "PUT", &ops_path, "", &body_bytes);
+    let r = client
+        .put(format!("{}{}", relay.base_url, ops_path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success(), "post-compaction PUT failed");
+    let body: serde_json::Value = r.json().await.unwrap();
+    let new_seq = body["seq"].as_i64().expect("seq is integer");
+    assert!(
+        new_seq > 3,
+        "post-compaction op must be assigned a seq above the compaction \
+         watermark (3), got {} — a caught-up consumer would never fetch it",
+        new_seq
+    );
+
+    // A caught-up consumer (cursor == watermark) must receive the new op.
+    let headers = auth_headers(&group, &device, "GET", &ops_path, "since=3", &[]);
+    let r = client
+        .get(format!("{}{}?since=3", relay.base_url, ops_path))
+        .headers(headers)
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success());
+    let rows: Vec<serde_json::Value> = r.json().await.unwrap();
+    let seqs: Vec<i64> = rows.iter().map(|v| v["seq"].as_i64().unwrap()).collect();
+    assert_eq!(
+        seqs,
+        vec![new_seq],
+        "poll(since = watermark) must deliver the post-compaction op"
+    );
+}
+
 // ─── Tests 8–13 (stage 3d) ─────────────────────────────────────────
 
 #[tokio::test]

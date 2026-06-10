@@ -161,8 +161,14 @@ impl Store {
     // ── Ops ────────────────────────────────────────────────────────
 
     /// Append one op to a group's FIFO. Assigns a monotonic seq
-    /// (per-group `MAX(seq) + 1`) inside a transaction so concurrent
-    /// PUTs from different HTTP threads can't collide.
+    /// (per-group `MAX(MAX(seq), compaction_seq) + 1`) inside a
+    /// transaction so concurrent PUTs from different HTTP threads
+    /// can't collide. The compaction watermark from `relay_group_meta`
+    /// must participate: after a full compaction `relay_ops` is empty,
+    /// and allocating from the table alone would restart at 1 — below
+    /// every caught-up consumer's cursor, making the op permanently
+    /// undeliverable (the #195 black hole). Mirrors the CF Worker's
+    /// AUTOINCREMENT, which never reuses seqs.
     /// Returns `(seq, ts)` the relay assigned.
     pub async fn insert_op(
         &self,
@@ -173,8 +179,12 @@ impl Store {
     ) -> Result<(i64, f64)> {
         let mut tx = self.pool.begin().await?;
         let next_seq: i64 = sqlx::query(
-            "SELECT COALESCE(MAX(seq), 0) + 1 AS next FROM relay_ops WHERE group_id = ?",
+            "SELECT MAX( \
+               COALESCE((SELECT MAX(seq) FROM relay_ops WHERE group_id = ?), 0), \
+               COALESCE((SELECT compaction_seq FROM relay_group_meta WHERE group_id = ?), 0) \
+             ) + 1 AS next",
         )
+        .bind(&group_id[..])
         .bind(&group_id[..])
         .fetch_one(&mut *tx)
         .await
