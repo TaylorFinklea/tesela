@@ -34,6 +34,7 @@
     getActiveTab,
     moveFocus,
     movePane,
+    openPageInFocused,
     vsplit,
     hsplit,
   } from '$lib/buffer/state.svelte';
@@ -299,11 +300,23 @@
     const onOpenSettings = () => openSettingsOverlay('general');
     document.addEventListener('tesela:open-settings', onOpenSettings);
 
+    // Mirror v4 (+layout:342): PageTagsChips' chip clicks fire
+    // `tesela:open-tag` with `{ value: <slug> }`. Open the tag's page in the
+    // focused buffer, same as the v5 `open-tag` NavigationIntent.
+    const onOpenTag = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { value?: string } | null;
+      const value = detail?.value;
+      if (!value) return;
+      openPageInFocused(asPageId(value.toLowerCase()));
+    };
+    document.addEventListener('tesela:open-tag', onOpenTag as EventListener);
+
     return () => {
       document.removeEventListener('keydown', onKey, true);
       document.removeEventListener('tesela:leader', onLeaderEvent);
       document.removeEventListener('tesela:open-leader-at', onOpenLeaderAt);
       document.removeEventListener('tesela:open-settings', onOpenSettings);
+      document.removeEventListener('tesela:open-tag', onOpenTag as EventListener);
     };
   });
 </script>

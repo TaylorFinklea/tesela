@@ -1,15 +1,27 @@
-<!-- web/src/lib/graphite/views/GrPage.svelte — Part A, Task A3.
+<!-- web/src/lib/graphite/views/GrPage.svelte — Part A, Task A3 + Gate B
+     note_type dispatch.
      Page / project outliner. REUSES BlockOutliner (the CodeMirror editing
      engine) untouched, fetching + saving the note via the same TanStack
      pattern BufferShell uses (createQuery + 500ms-debounced api.updateNote
      with optimistic setQueryData). The Graphite block look comes from A1's
      variable remap + decoration overrides (graphite-editor.css).
 
+     Typed pages dispatch like v5's NoteRenderer (which stays in the
+     deletion target, so the switch is mirrored here instead of imported):
+     Query → QueryWidgetView / CompactQueryView (narrow panes), tag →
+     TagPageRenderer (description outliner + instances-of-tag), property →
+     PropertyTypeConfig, `mode: document` → DocumentEditor, everything else
+     → BlockOutliner. PageTagsChips renders above body-text pages. Dailies
+     never reach this view (GrLeaf routes them to GrDaily). All leaf
+     components are REUSED READ-ONLY; a token shim on `.gr-outline` maps
+     their v4-/v9-era CSS variables onto Graphite tokens.
+
      Layout: a focus pane (title + GrTypeTag + meta head, `.gr-outline`
-     body hosting BlockOutliner) beside a side pane of linked references
-     (`.gr-refcard`s from api.getBacklinks) + a page-properties list
-     (`.gr-proplist`). BlockOutliner, the API, and the buffer store are
-     imported READ-ONLY. -->
+     body hosting the dispatched view) beside a side pane of linked
+     references (`.gr-refcard`s from api.getBacklinks) + a page-properties
+     list (`.gr-proplist`). Query/property pages hide the side pane — the
+     widget table/kanban and the config form take the full width.
+     BlockOutliner, the API, and the buffer store are imported READ-ONLY. -->
 <script lang="ts">
   import { onDestroy } from "svelte";
   import { createQuery, useQueryClient } from "@tanstack/svelte-query";
@@ -20,7 +32,14 @@
   import { asPageId } from "$lib/buffer/types";
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
   import { toast } from "$lib/stores/toast.svelte";
+  import { widgetFromNote } from "$lib/widget-registry.svelte";
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
+  import DocumentEditor from "$lib/components/DocumentEditor.svelte";
+  import PropertyTypeConfig from "$lib/components/PropertyTypeConfig.svelte";
+  import QueryWidgetView from "$lib/components/QueryWidgetView.svelte";
+  import CompactQueryView from "$lib/components/v5/CompactQueryView.svelte";
+  import TagPageRenderer from "$lib/components/v4/TagPageRenderer.svelte";
+  import PageTagsChips from "$lib/components/v4/PageTagsChips.svelte";
   import GrTypeTag from "$lib/graphite/GrTypeTag.svelte";
   import GrIcon from "$lib/graphite/GrIcon.svelte";
 
@@ -61,6 +80,22 @@
 
   const noteType = $derived((note?.metadata.note_type ?? "note").toLowerCase());
   const tags = $derived(note?.metadata.tags ?? []);
+
+  // ── note_type dispatch (mirror of NoteRenderer, Gate B) ────────────────
+  const isDocumentMode = $derived(note?.metadata.custom?.mode === "document");
+  /** Tag-chip strip above body-text pages. Hidden for query/property pages
+   *  (they manage their own frontmatter UI) — same rule as NoteRenderer. */
+  const showTagChips = $derived(noteType !== "query" && noteType !== "property");
+  /** Query/property pages take the full leaf width (widget table/kanban,
+   *  config form); everything else keeps the References side pane. */
+  const showSidePane = $derived(noteType !== "query" && noteType !== "property");
+
+  /** Compact cascade for Query notes in narrow panes. NoteRenderer flips at
+   *  50 cell-unit cols; BufferShell's cell is CHAR_WIDTH=7px → 350px. GrPage
+   *  has no size prop, so it measures its own body width instead. */
+  const QUERY_FULL_MIN_PX = 350;
+  let outlineWidth = $state(0);
+  const useCompactQuery = $derived(outlineWidth > 0 && outlineWidth < QUERY_FULL_MIN_PX);
 
   // Page-level properties for the side `.gr-proplist`. Pulls the flat
   // string fields from frontmatter `custom` (the freeform property bag).
@@ -152,63 +187,94 @@
     {/if}
   </div>
 
-  <div class="gr-outline">
+  <div class="gr-outline" bind:clientWidth={outlineWidth}>
     {#if noteQuery.isLoading}
       <div class="gr-empty">loading…</div>
     {:else if noteQuery.isError}
       <div class="gr-empty">could not load {pageId}</div>
     {:else if note}
       {#key pageId}
-        <BlockOutliner
-          noteId={note.id}
-          body={split.body}
-          frontmatter={split.frontmatter}
-          {paneId}
-          onContentChange={handleContentChange}
-          onCancelAndFlush={cancelAndFlush}
-        />
+        {#if showTagChips}
+          <PageTagsChips {note} onContentChange={handleContentChange} />
+        {/if}
+        {#if noteType === "query"}
+          {#if useCompactQuery}
+            <CompactQueryView {note} onOpenRow={(id) => openRef(id)} />
+          {:else}
+            <QueryWidgetView
+              widget={widgetFromNote(note)}
+              onOpenRow={(rowPageId) => openRef(rowPageId)}
+            />
+          {/if}
+        {:else if noteType === "tag"}
+          <TagPageRenderer
+            {note}
+            {paneId}
+            onContentChange={handleContentChange}
+            onCancelAndFlush={cancelAndFlush}
+          />
+        {:else if noteType === "property"}
+          <PropertyTypeConfig {note} />
+        {:else if isDocumentMode}
+          <DocumentEditor
+            body={split.body}
+            frontmatter={split.frontmatter}
+            onContentChange={handleContentChange}
+          />
+        {:else}
+          <BlockOutliner
+            noteId={note.id}
+            body={split.body}
+            frontmatter={split.frontmatter}
+            {paneId}
+            onContentChange={handleContentChange}
+            onCancelAndFlush={cancelAndFlush}
+          />
+        {/if}
       {/key}
     {/if}
   </div>
 </div>
 
-<div class="gr-pane side">
-  <div class="gr-pane-head">
-    <span class="ttl side-ttl">References</span>
-    <span class="sp"></span>
-    <span class="meta">{backlinks.length}</span>
-  </div>
-  <div class="gr-side-body">
-    {#if backlinks.length === 0}
-      <div class="gr-empty">No linked references</div>
-    {:else}
-      {#each backlinks as ref (ref.target + ":" + ref.position)}
-        <!-- svelte-ignore a11y_click_events_have_key_events -->
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="gr-refcard" onclick={() => openRef(ref.target)}>
-          <div class="src">
-            <GrIcon name="link" size={13} />
-            <span>{ref.target}</span>
-          </div>
-          {#if ref.text}<div class="snip">{ref.text}</div>{/if}
-        </div>
-      {/each}
-    {/if}
-
-    {#if pageProps.length > 0}
-      <div class="gr-proplist">
-        <div class="ph">Properties</div>
-        {#each pageProps as p (p.k)}
-          <div class="gr-prow">
-            <span class="chord"></span>
-            <span class="k">{p.k}</span>
-            <span class="v">{p.v}</span>
+{#if showSidePane}
+  <div class="gr-pane side">
+    <div class="gr-pane-head">
+      <span class="ttl side-ttl">References</span>
+      <span class="sp"></span>
+      <span class="meta">{backlinks.length}</span>
+    </div>
+    <div class="gr-side-body">
+      {#if backlinks.length === 0}
+        <div class="gr-empty">No linked references</div>
+      {:else}
+        {#each backlinks as ref (ref.target + ":" + ref.position)}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div class="gr-refcard" onclick={() => openRef(ref.target)}>
+            <div class="src">
+              <GrIcon name="link" size={13} />
+              <span>{ref.target}</span>
+            </div>
+            {#if ref.text}<div class="snip">{ref.text}</div>{/if}
           </div>
         {/each}
-      </div>
-    {/if}
+      {/if}
+
+      {#if pageProps.length > 0}
+        <div class="gr-proplist">
+          <div class="ph">Properties</div>
+          {#each pageProps as p (p.k)}
+            <div class="gr-prow">
+              <span class="chord"></span>
+              <span class="k">{p.k}</span>
+              <span class="v">{p.v}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
   </div>
-</div>
+{/if}
 
 <style>
   /* Panes mirror GrPane's `.focus` / `.side` flex ratios so GrPage drops
@@ -265,6 +331,33 @@
     overflow: auto;
     padding: 14px 18px;
     min-height: 0;
+
+    /* Token shim for the REUSED typed-page leaf components (Gate B).
+       They were written against v4 (`--v4-*`, scoped to `.v4-root`) and v9
+       (`--v9-*`, resolved at :root with the global theme) tokens — neither
+       carries Graphite values inside `.gr-root`. graphite-editor.css already
+       remaps the semantic shadcn names (`--foreground`, `--primary`, …) and a
+       few journal v9 vars; this covers the rest, scoped to the page body so
+       nothing leaks into the shell chrome. */
+    --v4-mono: var(--mono);
+    --v4-ink: var(--fg);
+    --v4-ink2: var(--fg2);
+    --v4-ink5: var(--faint);
+    --v4-hair: var(--line);
+    --v4-hair2: var(--line-2);
+    --v4-surface-lo: var(--raised);
+    --v9-bg: var(--bg);
+    --v9-bg-2: var(--raised);
+    --v9-bg-3: var(--raised-2);
+    --v9-bg-4: var(--raised-3);
+    --v9-ink: var(--fg);
+    --v9-rose: var(--task);
+    --v9-amber: var(--note);
+    --v9-ochre: var(--note);
+    --v9-indigo: var(--project);
+    --v9-sage: var(--query);
+    --v9-teal: var(--event);
+    --v9-plum: var(--person);
   }
   .gr-empty {
     color: var(--faint);
