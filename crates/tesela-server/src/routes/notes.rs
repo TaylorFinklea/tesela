@@ -1244,18 +1244,19 @@ async fn record_sync_create(s: &Arc<AppState>, note: &Note) -> anyhow::Result<()
 /// ## Frontmatter-only fallback (the subtle clobber)
 /// When the block diff is empty but the raw content changed (a
 /// frontmatter / page-property / title-only edit), we fall back to a
-/// NoteUpsert. The engine's NoteUpsert apply RESEEDS the block tree from
-/// `content` whenever the body doesn't already match the live tree
-/// (`loro_engine::tree_matches_blocks` → `clear_block_tree` +
-/// `seed_tree_from_flatblocks`). A STALE frontmatter-only PUT therefore
-/// carries the author's stale body and would reseed the tree OVER a peer's
-/// concurrent block edit — a whole-body clobber in disguise (spec
-/// invariant 2). To prevent that, when a base is present we make the
-/// NoteUpsert BODY-PRESERVING: its `content` carries the author's NEW
-/// frontmatter + page-properties but the SERVER's CURRENT blocks (rendered
-/// from the engine), so `tree_matches_blocks` stays true and the body is
-/// never reseeded. Without a base (legacy client) we keep the historical
-/// full-content NoteUpsert, which remains last-writer-wins on the body.
+/// NoteUpsert. Historically the engine's NoteUpsert apply destructively
+/// RESEEDED the block tree from `content` whenever the body drifted from
+/// the live tree, so a STALE frontmatter-only PUT carried the author's
+/// stale body and reseeded the tree OVER a peer's concurrent block edit —
+/// a whole-body clobber in disguise (spec invariant 2). Since 2026-06-10
+/// the engine's NoteUpsert apply is a NON-destructive per-bid reconcile
+/// (`loro_engine::reconcile_tree_to_blocks`: in-place text heals, no
+/// removal of absent blocks, deleted-wins on tombstoned bids), so the
+/// reseed clobber is closed engine-side. The BODY-PRESERVING NoteUpsert
+/// below (author's NEW frontmatter + the SERVER's CURRENT blocks) is kept
+/// as defense-in-depth: it also avoids needless in-place text rewrites of
+/// blocks the author didn't touch. Without a base (legacy client) we keep
+/// the historical full-content NoteUpsert.
 ///
 /// ## Bundled frontmatter + block change (block ops are NON-empty)
 /// A single PUT can change BOTH a block AND the frontmatter/page-properties.

@@ -2572,134 +2572,95 @@ fn tree_matches_blocks(tree: &LoroTree, blocks: &[tesela_core::note_tree::FlatBl
     true
 }
 
-/// Delete every live block node from the tree (tombstones them). Used
-/// before a reseed when a NoteUpsert body differs from the current tree.
-fn clear_block_tree(tree: &LoroTree) {
-    let live: Vec<TreeID> = tree
-        .children(TreeParentId::Root)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
-        .collect();
-    for node in live {
-        let _ = tree.delete(node);
-    }
-}
-
-fn seed_tree_from_flatblocks(
+/// Non-destructive NoteUpsert body reconcile (2026-06-10). Brings the live
+/// tree toward the parsed body WITHOUT clearing it:
+///
+/// - bid has a LIVE node → update prose / indent / parent in place, only
+///   when drifted (prose compared property-stripped, mirroring
+///   [`tree_matches_blocks`]). The node — and its `text_seq` / `props`
+///   containers — keeps its identity, so peers keep merging into it.
+/// - bid has NO node at all → create it (positioned after its predecessor
+///   in body order, mirroring the BlockUpsert create path).
+/// - bid has ONLY TOMBSTONED node(s) → SKIP. A whole-content upsert is not
+///   author intent about existence; re-creating a deleted bid is exactly
+///   the resurrection that reverted iOS deletes (authors never reuse bids,
+///   so a genuine re-add always arrives under a fresh id).
+/// - live nodes whose bid is ABSENT from the body → LEFT ALONE (the
+///   stale-PUT anti-clobber rule, data-loss vector #2: deletes flow only
+///   as explicit `BlockDelete` ops).
+///
+/// Ordering drift alone (same ids/text/indent, different order) is NOT
+/// healed here — cross-device order convergence belongs to `BlockMove` /
+/// Loro's movable-tree merge, and re-minting nodes to fix order is how the
+/// twin bomb started.
+fn reconcile_tree_to_blocks(
     tree: &LoroTree,
     blocks: &[tesela_core::note_tree::FlatBlock],
 ) -> SyncResult<()> {
+    // Bids that ever had a node deleted (deleted-wins set). Collected
+    // before any mutation below.
+    let tombstoned: std::collections::HashSet<String> = tree
+        .nodes()
+        .into_iter()
+        .filter(|n| matches!(tree.is_node_deleted(n), Ok(true)))
+        .filter_map(|n| read_meta_str(tree, n, "block_id"))
+        .collect();
+    let mut prev_live: Option<[u8; 16]> = None;
     for block in blocks {
-        let node = tree
-            .create(TreeParentId::Root)
-            .map_err(|e| SyncError::Storage(format!("seed tree.create: {e}")))?;
-        let meta = tree
-            .get_meta(node)
-            .map_err(|e| SyncError::Storage(format!("seed get_meta: {e}")))?;
         let block_hex = hex::encode(block.id.as_bytes());
-        meta.insert("block_id", block_hex.as_str())
-            .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
-        write_block_text(&meta, block.text.as_str())?;
-        // Eager-seed the empty `props`/`prop_keys` containers (P1.9b) so the
-        // block node carries them into SHARED history before peers diverge.
-        // Without this, each device's FIRST property set mints a RIVAL `props`
-        // map (Loro derives the child id from the creating op) and the rivals
-        // overwrite each other on merge instead of unioning. The handles are
-        // discarded — this is purely the idempotent get-or-create that fixes
-        // the child-id convergence (same discipline as `write_block_text`'s
-        // `text_seq` container). Empty Map+List materialize as no properties,
-        // so a blank bullet stays bare.
-        let _ = prop_containers::node_prop_containers(&meta)?;
-        meta.insert("indent_level", block.indent as i64)
-            .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
-        meta.insert(
-            "parent",
-            block
-                .parent
-                .map(|p| hex::encode(p.as_bytes()))
-                .unwrap_or_default(),
-        )
-        .map_err(|e| SyncError::Storage(format!("seed meta insert: {e}")))?;
-    }
-    Ok(())
-}
-
-/// Snapshot every live block's TYPED props keyed by `block_id` hex, BEFORE a
-/// reseed tombstones the nodes (P1.8). The reseed re-creates blocks from the
-/// body (which carries no typed `props`), so without capturing + replaying
-/// these the surviving blocks' properties vanish — reintroducing the
-/// data-loss class. Typed (`ResolvedValue`) so a list stays a list / text
-/// stays text on replay, not flattened to a scalar string.
-fn snapshot_tree_props(tree: &LoroTree) -> HashMap<String, Vec<(String, ResolvedValue)>> {
-    let mut out: HashMap<String, Vec<(String, ResolvedValue)>> = HashMap::new();
-    let live: Vec<TreeID> = tree
-        .children(TreeParentId::Root)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
-        .collect();
-    for node in live {
-        let Some(block_hex) = read_meta_str(tree, node, "block_id") else {
-            continue;
-        };
-        let Ok(meta) = tree.get_meta(node) else {
-            continue;
-        };
-        let Some((props, prop_keys)) = prop_containers::read_node_prop_containers(&meta) else {
-            continue;
-        };
-        let resolved = prop_containers::read_props_typed(&props, &prop_keys);
-        if !resolved.is_empty() {
-            out.insert(block_hex, resolved);
-        }
-    }
-    out
-}
-
-/// Replay a [`snapshot_tree_props`] capture onto a freshly-reseeded tree
-/// (P1.8). For every seeded block whose `block_id` was captured, re-assert
-/// each property via [`apply_prop_op`] — scalar/text as a set, list members
-/// via `AddToList` (union) — mirroring the disjoint-twin heal's re-assert. A
-/// block_id absent from the new body simply has no node to replay onto and is
-/// dropped (the body deleted it).
-fn replay_tree_props(
-    tree: &LoroTree,
-    snapshot: &HashMap<String, Vec<(String, ResolvedValue)>>,
-) -> SyncResult<()> {
-    if snapshot.is_empty() {
-        return Ok(());
-    }
-    let live: Vec<TreeID> = tree
-        .children(TreeParentId::Root)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
-        .collect();
-    for node in live {
-        let Some(block_hex) = read_meta_str(tree, node, "block_id") else {
-            continue;
-        };
-        let Some(resolved) = snapshot.get(&block_hex) else {
-            continue;
-        };
-        let meta = tree
-            .get_meta(node)
-            .map_err(|e| SyncError::Storage(format!("replay get_meta: {e}")))?;
-        let (props, prop_keys) = prop_containers::node_prop_containers(&meta)?;
-        for (key, value) in resolved {
-            match value {
-                ResolvedValue::Scalar(s) => {
-                    apply_prop_op(&props, &prop_keys, key, &PropOp::SetScalar(s.clone()))?;
+        let bid_bytes = *block.id.as_bytes();
+        match find_node_by_block_id(tree, &block_hex) {
+            Some(node) => {
+                let meta = tree
+                    .get_meta(node)
+                    .map_err(|e| SyncError::Storage(format!("reconcile get_meta: {e}")))?;
+                let (tree_prose, _) = classify_block_prose_and_props(
+                    &read_block_text(tree, node).unwrap_or_default(),
+                );
+                let (body_prose, _) = classify_block_prose_and_props(&block.text);
+                if tree_prose != body_prose {
+                    write_block_text(&meta, block.text.as_str())?;
                 }
-                ResolvedValue::Text(t) => {
-                    apply_prop_op(&props, &prop_keys, key, &PropOp::SetText(t.clone()))?;
+                if read_indent_level(tree, node).unwrap_or(0) != block.indent {
+                    meta.insert("indent_level", block.indent as i64)
+                        .map_err(|e| SyncError::Storage(format!("reconcile meta insert: {e}")))?;
                 }
-                ResolvedValue::List(members) => {
-                    for m in members {
-                        apply_prop_op(&props, &prop_keys, key, &PropOp::AddToList(m.clone()))?;
-                    }
+                let parent_hex = block
+                    .parent
+                    .map(|p| hex::encode(p.as_bytes()))
+                    .unwrap_or_default();
+                if read_meta_str(tree, node, "parent").unwrap_or_default() != parent_hex {
+                    meta.insert("parent", parent_hex.as_str())
+                        .map_err(|e| SyncError::Storage(format!("reconcile meta insert: {e}")))?;
                 }
+                prev_live = Some(bid_bytes);
+            }
+            None => {
+                if tombstoned.contains(&block_hex) {
+                    // Deleted-wins: never resurrect via a whole-content upsert.
+                    continue;
+                }
+                let node = create_block_node_positioned(tree, prev_live.as_ref())?;
+                let meta = tree
+                    .get_meta(node)
+                    .map_err(|e| SyncError::Storage(format!("reconcile get_meta: {e}")))?;
+                meta.insert("block_id", block_hex.as_str())
+                    .map_err(|e| SyncError::Storage(format!("reconcile meta insert: {e}")))?;
+                write_block_text(&meta, block.text.as_str())?;
+                // Eager-seed the props containers (P1.9b) — same discipline
+                // as `seed_tree_from_flatblocks` / the BlockUpsert arm.
+                let _ = prop_containers::node_prop_containers(&meta)?;
+                meta.insert("indent_level", block.indent as i64)
+                    .map_err(|e| SyncError::Storage(format!("reconcile meta insert: {e}")))?;
+                meta.insert(
+                    "parent",
+                    block
+                        .parent
+                        .map(|p| hex::encode(p.as_bytes()))
+                        .unwrap_or_default(),
+                )
+                .map_err(|e| SyncError::Storage(format!("reconcile meta insert: {e}")))?;
+                prev_live = Some(bid_bytes);
             }
         }
     }
@@ -3594,43 +3555,33 @@ impl LoroEngine {
                 // ops). Stored as an ordered list so render preserves
                 // their on-disk order deterministically.
                 set_page_properties(&doc, &parsed.page_properties)?;
-                // Reconcile the block tree to the parsed body. A
-                // full-content NoteUpsert is authoritative for the whole
-                // note (SqliteEngine overwrites the entire file —
-                // sqlite_engine.rs materialize). If the current tree
-                // already matches the body (the common no-op re-save),
-                // this is a fast no-op that PRESERVES block identity.
-                // When they differ — drift recovery, or a full-content
-                // rewrite the block-granular diff didn't capture — we
-                // reseed so the shadow matches the body exactly, instead
-                // of leaving stale blocks. Without this a drifted shadow
-                // never self-heals even when the user re-saves the whole
-                // note (review finding [2]).
+                // Reconcile the block tree to the parsed body —
+                // NON-DESTRUCTIVELY (2026-06-10, the iOS delete-revert
+                // product bug). The historical path here was a destructive
+                // reseed (`clear_block_tree` + `seed_tree_from_flatblocks`)
+                // gated "server-only" on `materialize_dir` — but post-Loro-
+                // cutover EVERY engine is an authoritative writer with
+                // `materialize_dir` set (iOS `open_loro`, the desktop, the
+                // server), so the gate was vacuously true everywhere and a
+                // stale full-content NoteUpsert (legacy base-less PUT, the
+                // frontmatter fallback, `reseed_from_disk`) could:
+                //   1. RESURRECT blocks the user explicitly deleted (the
+                //      stale body still carries them — data-loss vector #2's
+                //      mirror image), and
+                //   2. DELETE blocks absent from the stale body (vector #2
+                //      itself), and
+                //   3. re-mint every block node (fresh TreeIDs/container
+                //      ids) — the disjoint-twin factory.
+                // `reconcile_tree_to_blocks` instead updates matching bids
+                // in place (lineage preserved), creates only never-seen
+                // bids, SKIPS bids with a tombstoned node (deleted-wins —
+                // only an explicit BlockUpsert/BlockDelete is author intent
+                // for existence), and leaves live blocks absent from the
+                // content untouched (anti-clobber). The common no-op
+                // re-save still short-circuits via `tree_matches_blocks`.
                 let tree = doc.get_tree("blocks");
                 if !tree_matches_blocks(&tree, &parsed.blocks) {
-                    // An EMPTY tree is the FIRST-seed path (legacy note / daily
-                    // that only gets a NoteUpsert) — always seed it, on every
-                    // engine. A NON-empty tree that drifts is a destructive
-                    // RESEED: it re-mints block nodes (fresh container ids),
-                    // which on a DEVICE would mint rivals that overwrite
-                    // instead of merge across peers. So the reseed is
-                    // SERVER-ONLY (authoritative writer, materialize_dir set);
-                    // a device leaves the drift to converge via block ops / the
-                    // twin heal (P1.8). Before clearing, snapshot the surviving
-                    // blocks' typed props and replay them after the seed (the
-                    // body carries no typed `props`, so without this the reseed
-                    // would drop them).
-                    let tree_is_empty = tree
-                        .children(TreeParentId::Root)
-                        .unwrap_or_default()
-                        .into_iter()
-                        .all(|n| matches!(tree.is_node_deleted(&n), Ok(true)));
-                    if tree_is_empty || self.inner.materialize_dir.is_some() {
-                        let saved_props = snapshot_tree_props(&tree);
-                        clear_block_tree(&tree);
-                        seed_tree_from_flatblocks(&tree, &parsed.blocks)?;
-                        replay_tree_props(&tree, &saved_props)?;
-                    }
+                    reconcile_tree_to_blocks(&tree, &parsed.blocks)?;
                 }
                 doc.commit();
                 // Register this note's blocks in the block_index.
@@ -3802,6 +3753,17 @@ impl LoroEngine {
                 }
                 tree.delete(node)
                     .map_err(|e| SyncError::Storage(format!("loro tree delete: {e}")))?;
+                // Tombstone EVERY remaining live node carrying this bid, not
+                // just the first match (2026-06-10). Docs in the wild can hold
+                // same-bid twins (disjoint-lineage residue the renderer dedups
+                // via `dedup_twins_by_block_id`): deleting only one node
+                // leaves the survivor rendering, so the user's delete silently
+                // reverts on the next materialize. Author intent is bid-level
+                // — kill them all.
+                while let Some(twin) = find_node_by_block_id(&tree, &deleted_hex) {
+                    tree.delete(twin)
+                        .map_err(|e| SyncError::Storage(format!("loro tree delete: {e}")))?;
+                }
                 doc.commit();
                 Some(note_id)
             }
@@ -4804,12 +4766,16 @@ mod tests {
 
     #[tokio::test]
     async fn note_upsert_reconciles_drifted_tree() {
-        // Review finding [2]: a full-content NoteUpsert must re-sync an
-        // already-populated tree that has drifted from the body, instead
-        // of skipping. Simulate drift by injecting a stale extra block,
-        // then re-upsert the canonical body and assert the render matches.
-        // Reseed is SERVER-ONLY (P1.8 — a device reseed re-mints rival
-        // container ids), so this runs on an authoritative engine.
+        // Review finding [2], revised 2026-06-10: a full-content NoteUpsert
+        // re-syncs an already-populated tree NON-destructively — it heals
+        // the blocks its body carries (text/indent, in place, lineage
+        // preserved) but must NOT remove live blocks absent from the body
+        // (the stale-PUT anti-clobber rule; on the real fleet "absent from
+        // a whole-content save" is routinely a peer's concurrent block, and
+        // the old clear+reseed deleting it was data-loss vector #2 — and
+        // the same reseed RESURRECTED explicitly-deleted blocks, the
+        // 2026-06-10 iOS delete-revert bug). Removal flows ONLY through an
+        // explicit BlockDelete.
         let tmp = tempfile::tempdir().unwrap();
         let engine = LoroEngine::with_dirs(
             test_device(),
@@ -4831,25 +4797,56 @@ mod tests {
         engine.record_local(up(body.to_string())).await.unwrap();
         assert_eq!(engine.render_note(note_id).await.unwrap(), body);
 
-        // Drift the shadow tree out of band: append a stale block.
+        // Drift the tree out of band: a stale extra block AND a text drift
+        // on a body block.
+        let stale_bid: [u8; 16] = [0x33; 16];
         {
             let doc = engine.doc_for_note_mut(note_id).await;
             let tree = doc.get_tree("blocks");
             let n = tree.create(TreeParentId::Root).unwrap();
             let m = tree.get_meta(n).unwrap();
-            m.insert("block_id", "33333333-3333-3333-3333-333333333333")
-                .unwrap();
-            m.insert("text", "STALE").unwrap();
+            m.insert("block_id", hex_id(&stale_bid).as_str()).unwrap();
+            write_block_text(&m, "STALE").unwrap();
             m.insert("indent_level", 0i64).unwrap();
+            let drifted = find_node_by_block_id(&tree, "11111111111111111111111111111111").unwrap();
+            let dm = tree.get_meta(drifted).unwrap();
+            write_block_text(&dm, "one DRIFTED").unwrap();
             doc.commit();
+            // On a real flow a peer block arrives via import, whose
+            // `refresh_note_derived` registers it in the block_index — do
+            // the same so the explicit delete below can resolve its doc.
+            engine.refresh_note_derived(note_id, &doc).await;
         }
         assert!(engine.render_note(note_id).await.unwrap().contains("STALE"));
+        assert!(engine
+            .render_note(note_id)
+            .await
+            .unwrap()
+            .contains("one DRIFTED"));
 
-        // Re-save the canonical body — should reconcile away the drift.
+        // Re-save the canonical body: body blocks heal in place; the
+        // unknown live block SURVIVES (no destructive reseed).
         engine.record_local(up(body.to_string())).await.unwrap();
         let rendered = engine.render_note(note_id).await.unwrap();
-        assert_eq!(rendered, body, "full-content re-save heals drift");
-        assert!(!rendered.contains("STALE"));
+        assert!(
+            !rendered.contains("one DRIFTED") && rendered.contains("- one"),
+            "body-block text drift heals in place: {rendered:?}"
+        );
+        assert!(
+            rendered.contains("STALE"),
+            "a live block absent from the body must survive a whole-content save: {rendered:?}"
+        );
+
+        // Removal is explicit-only.
+        engine
+            .record_local(OpPayload::BlockDelete {
+                block_id: stale_bid,
+            })
+            .await
+            .unwrap();
+        let rendered = engine.render_note(note_id).await.unwrap();
+        assert!(!rendered.contains("STALE"), "{rendered:?}");
+        assert_eq!(rendered, body, "explicit delete restores the canonical body");
     }
 
     #[tokio::test]
@@ -5614,14 +5611,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reseed_is_server_only() {
-        // P1.8 regression: a reseed re-mints the block tree (fresh node ids),
-        // which on a DEVICE would mint rival container ids that overwrite
-        // instead of merge across peers. So `clear_block_tree` +
-        // `seed_tree_from_flatblocks` must only run on the AUTHORITATIVE
-        // writer (materialize_dir set). A non-authoritative engine that sees a
-        // drifting full-content NoteUpsert must NOT reseed — it leaves the
-        // tree to converge via block ops / the twin heal instead.
+    async fn note_upsert_never_destructively_reseeds() {
+        // P1.8 regression, generalized 2026-06-10: a destructive reseed
+        // re-mints the block tree (fresh node ids), minting rival container
+        // ids that overwrite instead of merge across peers. Post-cutover
+        // EVERY engine is an authoritative writer, so the old "server-only"
+        // materialize_dir gate was vacuous — NoteUpsert now reconciles
+        // non-destructively on every engine: a drifting full-content
+        // NoteUpsert must NOT remove blocks absent from its body; they
+        // converge via explicit block ops / the twin heal instead.
         let dev = test_device();
         let device_engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
         let note = [0x73; 16];
@@ -5676,6 +5674,112 @@ mod tests {
                 .contains("STALE"),
             "a device (non-authoritative) engine must NOT reseed on drift"
         );
+    }
+
+    #[tokio::test]
+    async fn note_upsert_does_not_delete_absent_blocks_on_authoritative_engine() {
+        // Data-loss vector #2 at the ENGINE level (2026-06-10): on an
+        // AUTHORITATIVE engine (materialize_dir set — post-cutover that is
+        // every engine: iOS, desktop, server), a stale full-content
+        // NoteUpsert whose body LACKS a block a peer added must NOT delete
+        // it. The old clear+reseed did exactly that.
+        let tmp = tempfile::tempdir().unwrap();
+        let dev = test_device();
+        let engine = LoroEngine::with_dirs(
+            dev,
+            Arc::new(Hlc::new(dev)),
+            tmp.path().join("loro"),
+            Some(tmp.path().join("notes")),
+        )
+        .await
+        .unwrap();
+        let note = blake3_note_id("anticlobber");
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("anticlobber".into()),
+                title: "A".into(),
+                content: "- mine <!-- bid:07070707-0707-0707-0707-070707070707 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        // A peer's block lands via an explicit BlockUpsert.
+        engine
+            .record_local(OpPayload::BlockUpsert {
+                block_id: [0x08; 16],
+                note_id: note,
+                parent_block_id: None,
+                order_key: "00000001".into(),
+                indent_level: 0,
+                text: "peer block".into(),
+                after_block_id: None,
+            })
+            .await
+            .unwrap();
+        // A STALE whole-content upsert (authored before the peer's block).
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("anticlobber".into()),
+                title: "A".into(),
+                content: "- mine <!-- bid:07070707-0707-0707-0707-070707070707 -->\n".into(),
+                created_at_millis: 2,
+            })
+            .await
+            .unwrap();
+        let rendered = engine.render_note(note).await.unwrap();
+        assert!(
+            rendered.contains("peer block"),
+            "a stale NoteUpsert must not delete blocks absent from its body: {rendered:?}"
+        );
+        assert!(rendered.contains("mine"), "{rendered:?}");
+    }
+
+    #[tokio::test]
+    async fn block_delete_tombstones_every_same_bid_twin() {
+        // 2026-06-10 (the iOS delete-revert product bug, twin half): docs in
+        // the wild can carry same-bid TWINS (disjoint-lineage residue) that
+        // the renderer dedups via `dedup_twins_by_block_id` — the user sees
+        // ONE block. A BlockDelete that tombstones only the first matching
+        // node leaves the survivor rendering, so the delete silently
+        // reverts on the next materialize. Author intent is bid-level.
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        let note = [0x74; 16];
+        let bid: [u8; 16] = [0x07; 16];
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("twins".into()),
+                title: "T".into(),
+                content: "- keep <!-- bid:09090909-0909-0909-0909-090909090909 -->\n- doomed <!-- bid:07070707-0707-0707-0707-070707070707 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        // Inject a rival live node with the SAME bid (what a disjoint
+        // lineage union leaves behind when the dedup can't run).
+        {
+            let doc = engine.doc_for_note_mut(note).await;
+            let tree = doc.get_tree("blocks");
+            let n = tree.create(TreeParentId::Root).unwrap();
+            let m = tree.get_meta(n).unwrap();
+            m.insert("block_id", hex_id(&bid).as_str()).unwrap();
+            write_block_text(&m, "doomed twin").unwrap();
+            m.insert("indent_level", 0i64).unwrap();
+            doc.commit();
+        }
+        engine
+            .record_local(OpPayload::BlockDelete { block_id: bid })
+            .await
+            .unwrap();
+        let rendered = engine.render_note(note).await.unwrap();
+        assert!(
+            !rendered.contains("doomed"),
+            "BlockDelete must tombstone EVERY live node carrying the bid: {rendered:?}"
+        );
+        assert!(rendered.contains("keep"), "{rendered:?}");
     }
 
     #[tokio::test]

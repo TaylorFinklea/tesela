@@ -1352,8 +1352,9 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
      * edits target distinct block ids and converge correctly.
      *
      * Returns the number of ops emitted (`0` on no-op, `1` for the
-     * frontmatter-only fallback NoteUpsert, otherwise one per block
-     * change). The 64-char hex content hash that
+     * first-author NoteUpsert (note never materialized on this device)
+     * or the frontmatter-only fallback NoteUpsert, otherwise one per
+     * block change). The 64-char hex content hash that
      * `record_note_upsert_by_slug` returned isn't useful here since
      * multiple ops may be emitted; callers that need de-dup tracking
      * should hash the new body themselves.
@@ -1736,8 +1737,9 @@ open func readBlockText(slug: String, blockIdHex: String)async throws  -> String
      * edits target distinct block ids and converge correctly.
      *
      * Returns the number of ops emitted (`0` on no-op, `1` for the
-     * frontmatter-only fallback NoteUpsert, otherwise one per block
-     * change). The 64-char hex content hash that
+     * first-author NoteUpsert (note never materialized on this device)
+     * or the frontmatter-only fallback NoteUpsert, otherwise one per
+     * block change). The 64-char hex content hash that
      * `record_note_upsert_by_slug` returned isn't useful here since
      * multiple ops may be emitted; callers that need de-dup tracking
      * should hash the new body themselves.
@@ -3089,7 +3091,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_read_block_text() != 3885) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_diff() != 20141) {
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_diff() != 37701) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_record_note_upsert() != 31930) {

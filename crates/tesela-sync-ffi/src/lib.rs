@@ -382,8 +382,9 @@ impl SyncEngineHandle {
     /// edits target distinct block ids and converge correctly.
     ///
     /// Returns the number of ops emitted (`0` on no-op, `1` for the
-    /// frontmatter-only fallback NoteUpsert, otherwise one per block
-    /// change). The 64-char hex content hash that
+    /// first-author NoteUpsert (note never materialized on this device)
+    /// or the frontmatter-only fallback NoteUpsert, otherwise one per
+    /// block change). The 64-char hex content hash that
     /// `record_note_upsert_by_slug` returned isn't useful here since
     /// multiple ops may be emitted; callers that need de-dup tracking
     /// should hash the new body themselves.
@@ -411,8 +412,8 @@ impl SyncEngineHandle {
         // Previous content is whatever the engine last materialized
         // for this note. Read it straight from disk — `record_local`
         // updates the file via `materialize` on every accepted op, so
-        // disk reflects the engine's view. Missing file → empty tree
-        // (first push for this note).
+        // disk reflects the engine's view. Missing file → first-author
+        // NoteUpsert below (seeds identity + blocks in one op).
         let prev_content = match self.notes_dir.as_ref() {
             Some(notes) => {
                 let path = notes.join(format!("{slug}.md"));
@@ -420,6 +421,31 @@ impl SyncEngineHandle {
             }
             None => String::new(),
         };
+
+        // First-author path (2026-06-10): the note was never materialized on
+        // this device — either the doc doesn't exist yet, or it exists but
+        // has no root identity (a doc created purely from block ops carries
+        // no `root.slug`, so the engine logs "cannot materialize — no slug"
+        // and the file never appears; refresh then shows nothing and peers
+        // receive a slug-less doc). Record ONE full NoteUpsert instead of
+        // bare block ops: it seeds slug/title/frontmatter AND the block tree
+        // from the content, and its apply is a NON-destructive per-bid
+        // reconcile (deleted-wins; absent blocks untouched), so a doc that
+        // is already resident with peer content is only ever ADDED to.
+        if prev_content.is_empty() {
+            let payload = OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some(slug),
+                title,
+                content: new_content,
+                created_at_millis,
+            };
+            self.inner
+                .record_local(payload)
+                .await
+                .map_err(FfiSyncError::from)?;
+            return Ok(1);
+        }
 
         let old_tree = parse_note(&prev_content);
         let new_tree = parse_note(&new_content);
@@ -1481,6 +1507,208 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_note_diff_delete_materializes_locally_and_converges_peer() {
+        // The iOS `.relay` delete flow (product test 2026-06-10): a peer
+        // (Mac/web) authored the daily; iOS imported it as its shared base;
+        // the user deletes one block on iOS → `recordNoteDiff` gets the
+        // full fresh content WITHOUT that block. The deletion must:
+        //   1. apply locally — the materialized `<slug>.md` loses the block
+        //      (otherwise the next refresh resurrects it on the deleting
+        //      device), and
+        //   2. ride the produced update so a peer converges to X,Z.
+        let dir_a = tempfile::tempdir().expect("tempdir a");
+        let dir_b = tempfile::tempdir().expect("tempdir b");
+        let a = open_handle(dir_a.path(), "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1").await;
+        let b = open_handle(dir_b.path(), "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2").await;
+
+        let slug = "2026-06-10".to_string();
+        let note_id = stable_uuid_from_slug(&slug);
+        let bid_x = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+        let bid_y = "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b";
+        let bid_z = "0c0c0c0c-0c0c-0c0c-0c0c-0c0c0c0c0c0c";
+
+        // Peer A authors the daily with blocks X, Y, Z.
+        a.record_note_upsert_by_slug(
+            slug.clone(),
+            slug.clone(),
+            format!(
+                "---\ntitle: {slug}\n---\n\n- X <!-- bid:{bid_x} -->\n- Y <!-- bid:{bid_y} -->\n- Z <!-- bid:{bid_z} -->\n"
+            ),
+            1,
+        )
+        .await
+        .unwrap();
+
+        // iOS (B) adopts A's doc as its shared base — the same authoritative
+        // snapshot import `bootstrapNoteIfNeeded` performs on-device.
+        let snapshot = {
+            let docs = a.inner.tracked_note_ids().await;
+            assert!(docs.contains(&note_id));
+            a.inner
+                .export_doc_update(note_id, None)
+                .await
+                .expect("A exports a full snapshot")
+        };
+        b.import_note_snapshot(slug.clone(), snapshot).await.unwrap();
+
+        // B's materialized file now carries all three blocks; build the
+        // post-delete content the way iOS does — the freshly-authored UI
+        // state re-rendered WITHOUT the deleted block (bid markers intact).
+        let b_file = dir_b.path().join("notes").join(format!("{slug}.md"));
+        let prev = std::fs::read_to_string(&b_file).expect("B materialized the import");
+        assert!(prev.contains("- Y"), "precondition: Y present on disk: {prev:?}");
+        let without_y: String = prev
+            .lines()
+            .filter(|l| !l.contains(bid_y))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+
+        let ops = b
+            .record_note_diff(slug.clone(), without_y.clone(), slug.clone(), 1)
+            .await
+            .unwrap();
+        assert!(ops >= 1, "the delete produced at least one op (got {ops})");
+
+        // (1) Local materialization: the deleting device's own file loses Y.
+        let after = std::fs::read_to_string(&b_file).expect("file still present");
+        assert!(
+            !after.contains(bid_y) && !after.contains("- Y"),
+            "deleted block must leave the deleting device's materialized file: {after:?}"
+        );
+        assert!(
+            after.contains("- X") && after.contains("- Z"),
+            "surviving blocks stay: {after:?}"
+        );
+
+        // (2) Peer convergence: B's produced update converges A to X,Z.
+        let a_vv = a.note_version(slug.clone()).await;
+        let b_to_a = b
+            .produce_note_delta(slug.clone(), a_vv)
+            .await
+            .unwrap()
+            .expect("B has a delta for A");
+        a.apply_delta_frame(b_to_a).await.unwrap();
+        let ra = a.inner.render_note(note_id).await.unwrap();
+        assert!(
+            !ra.contains("- Y"),
+            "peer must apply the delete: {ra:?}"
+        );
+        assert!(
+            ra.contains("X") && ra.contains("Z"),
+            "peer keeps the surviving blocks: {ra:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_note_diff_first_author_materializes_and_carries_slug() {
+        // First-author path (2026-06-10): a note authored on this device via
+        // `record_note_diff` ONLY (the iOS fresh-day daily) used to create a
+        // doc with no root identity — the engine logged "cannot materialize
+        // — no slug", the file never appeared (refresh showed nothing), and
+        // peers received a slug-less doc they couldn't materialize either.
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a = open_handle(dir_a.path(), "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1").await;
+        let b = open_handle(dir_b.path(), "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2").await;
+
+        let slug = "2026-06-11".to_string();
+        let note_id = stable_uuid_from_slug(&slug);
+        let ops = a
+            .record_note_diff(
+                slug.clone(),
+                format!(
+                    "---\ntitle: {slug}\n---\n\n- first <!-- bid:0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a -->\n"
+                ),
+                slug.clone(),
+                1,
+            )
+            .await
+            .unwrap();
+        assert!(ops >= 1);
+
+        // The authoring device materializes its own note.
+        let file_a = dir_a.path().join("notes").join(format!("{slug}.md"));
+        let on_disk = std::fs::read_to_string(&file_a)
+            .expect("first-author record_note_diff must materialize the note");
+        assert!(on_disk.contains("first"), "{on_disk:?}");
+
+        // The peer applies A's update and materializes under the same slug.
+        let frame = a
+            .produce_note_delta(slug.clone(), None)
+            .await
+            .unwrap()
+            .expect("authored doc exports");
+        b.apply_delta_frame(frame).await.unwrap();
+        let file_b = dir_b.path().join("notes").join(format!("{slug}.md"));
+        let peer_disk = std::fs::read_to_string(&file_b)
+            .expect("peer materializes the first-authored note (slug travels)");
+        assert!(peer_disk.contains("first"), "{peer_disk:?}");
+        assert_eq!(
+            a.inner.render_note(note_id).await,
+            b.inner.render_note(note_id).await
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_inbound_note_upsert_does_not_resurrect_deleted_block() {
+        // Anti-clobber guard (data-loss vector #2): an inbound STALE
+        // NoteUpsert from a peer that still carries a block the local
+        // device deleted must NOT resurrect it — author-intent deletes
+        // flow ONLY as explicit BlockDelete ops, never inferred from
+        // upsert absence, and a stale upsert's presence must not undo
+        // a newer delete.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let h = open_handle(dir.path(), "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1").await;
+        let slug = "guard-note".to_string();
+        let note_id = stable_uuid_from_slug(&slug);
+        let bid_x = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+        let bid_y = "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b";
+
+        h.record_note_upsert_by_slug(
+            slug.clone(),
+            "Guard".into(),
+            format!("- X <!-- bid:{bid_x} -->\n- Y <!-- bid:{bid_y} -->\n"),
+            1,
+        )
+        .await
+        .unwrap();
+
+        // Delete Y via the diff path (the iOS author-intent shape).
+        let file = dir.path().join("notes").join(format!("{slug}.md"));
+        let prev = std::fs::read_to_string(&file).unwrap();
+        let without_y: String = prev
+            .lines()
+            .filter(|l| !l.contains(bid_y))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        h.record_note_diff(slug.clone(), without_y, "Guard".into(), 1)
+            .await
+            .unwrap();
+        let mid = h.inner.render_note(note_id).await.unwrap();
+        assert!(!mid.contains("- Y"), "delete applied: {mid:?}");
+
+        // A stale whole-body NoteUpsert arrives (peer with old content
+        // that still includes Y). The non-destructive upsert must leave
+        // the deleted block deleted.
+        h.record_note_upsert_by_slug(
+            slug.clone(),
+            "Guard".into(),
+            format!("- X <!-- bid:{bid_x} -->\n- Y <!-- bid:{bid_y} -->\n"),
+            1,
+        )
+        .await
+        .unwrap();
+        let after = h.inner.render_note(note_id).await.unwrap();
+        assert!(
+            !after.contains("- Y"),
+            "stale NoteUpsert must NOT resurrect the deleted block: {after:?}"
+        );
+        assert!(after.contains("- X"), "live block survives: {after:?}");
+    }
+
+    #[tokio::test]
     async fn splice_block_text_through_ffi_applies_and_renders() {
         // Drive the character-level splice through the real FFI surface: seed
         // a note with one block, splice an insert via a DASHED-UUID block id
@@ -1608,6 +1836,147 @@ mod tests {
         };
         let (seq, _ts) = sender.put_envelope(env).await.expect("put envelope");
         seq
+    }
+
+    /// Full device pair (engine + relay client + coordinator) for the
+    /// morning-race scenarios — the FFI surfaces iOS actually drives.
+    async fn open_device(
+        dir: &std::path::Path,
+        dev_hex: &str,
+        relay_url: &str,
+        g: &GroupIdentityRecord,
+    ) -> (Arc<SyncEngineHandle>, Arc<SyncCoordinator>) {
+        let engine = open_handle(dir, dev_hex).await;
+        let relay = RelayClientHandle::new(
+            relay_url.into(),
+            g.group_id_hex.clone(),
+            dev_hex.into(),
+            g.group_key_hex.clone(),
+        )
+        .unwrap();
+        relay.register_or_recover().await.expect("register");
+        let coord =
+            SyncCoordinator::new(engine.clone(), relay, g.group_id_hex.clone()).unwrap();
+        (engine, coord)
+    }
+
+    #[tokio::test]
+    async fn morning_race_disjoint_daily_ios_delete_converges() {
+        // The 2026-06-10 product-test bug, device-faithful: BOTH devices
+        // author the same fresh daily slug independently before any
+        // exchange (the everyday morning race — each device creates
+        // "today" on first view, so the two docs start on DISJOINT Loro
+        // lineages), converge through real coordinator ticks over a real
+        // relay, then iOS deletes blocks via `record_note_diff` (the
+        // `.relay` writeback path). The deletes must (1) materialize
+        // locally (else the next refresh resurrects them on the deleting
+        // device) and (2) reach the peer through the relay.
+        let (url, _relay_tmp, _srv) = spawn_relay().await;
+        let g = generate_group_identity();
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        // A = desktop (server-style author), B = iOS.
+        let (a, coord_a) =
+            open_device(dir_a.path(), "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", &url, &g).await;
+        let (b, coord_b) =
+            open_device(dir_b.path(), "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2", &url, &g).await;
+
+        let slug = "2026-06-10".to_string();
+        let note_id = stable_uuid_from_slug(&slug);
+        let bid_ios_empty = "0e0e0e0e-0e0e-0e0e-0e0e-0e0e0e0e0e0e";
+        let bid_dude = "0d0d0d0d-0d0d-0d0d-0d0d-0d0d0d0d0d0d";
+        let bid_trail = "0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f";
+
+        // iOS authors FIRST — the fresh-pair daily writeback (one empty
+        // trailing block), via the same record_note_diff path the app uses.
+        b.record_note_diff(
+            slug.clone(),
+            format!("---\ntitle: {slug}\n---\n\n- <!-- bid:{bid_ios_empty} -->\n"),
+            slug.clone(),
+            1,
+        )
+        .await
+        .unwrap();
+
+        // Desktop authors ITS daily independently (disjoint lineage).
+        a.record_note_upsert_by_slug(
+            slug.clone(),
+            slug.clone(),
+            format!(
+                "---\ntitle: {slug}\n---\n\n- dude <!-- bid:{bid_dude} -->\n- <!-- bid:{bid_trail} -->\n"
+            ),
+            1,
+        )
+        .await
+        .unwrap();
+
+        // Exchange until quiescent (a few rounds of out/in on both sides).
+        for _ in 0..4 {
+            let _ = coord_a.tick_outbound(1_000_000).await.unwrap();
+            let _ = coord_b.tick_outbound(1_000_000).await.unwrap();
+            let _ = coord_a.tick_inbound().await.unwrap();
+            let _ = coord_b.tick_inbound().await.unwrap();
+        }
+
+        let ra = a.inner.render_note(note_id).await.unwrap_or_default();
+        let rb = b.inner.render_note(note_id).await.unwrap_or_default();
+        assert_eq!(
+            ra, rb,
+            "after the morning race the two devices' renders must converge"
+        );
+        assert!(
+            rb.contains("dude"),
+            "iOS sees the desktop's block after exchange: {rb:?}"
+        );
+
+        // The materialized files agree too (what refresh re-reads).
+        let file_a = dir_a.path().join("notes").join(format!("{slug}.md"));
+        let file_b = dir_b.path().join("notes").join(format!("{slug}.md"));
+        let on_disk_a = std::fs::read_to_string(&file_a).expect("desktop materialized");
+        let on_disk_b = std::fs::read_to_string(&file_b).expect("iOS materialized");
+        assert_eq!(
+            on_disk_a, on_disk_b,
+            "materialized files identical after convergence"
+        );
+        eprintln!("=== converged daily ===\n{on_disk_a}\n=== end ===");
+
+        // iOS deletes the desktop-authored 'dude' AND its own empty block
+        // — the user's delete gesture re-renders today's blocks without
+        // them and pushes the full content through record_note_diff.
+        let without: String = on_disk_b
+            .lines()
+            .filter(|l| !l.contains(bid_dude) && !l.contains(bid_ios_empty))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let ops = b
+            .record_note_diff(slug.clone(), without, slug.clone(), 1)
+            .await
+            .unwrap();
+        assert!(ops >= 1, "delete emitted ops (got {ops})");
+
+        // (1) Local materialization — the deleting device's file loses both.
+        let after_b = std::fs::read_to_string(&file_b).unwrap();
+        assert!(
+            !after_b.contains("dude") && !after_b.contains(bid_ios_empty),
+            "deleted blocks must leave iOS's own materialized file \
+             (refresh resurrects them otherwise): {after_b:?}"
+        );
+
+        // (2) Relay propagation — desktop applies the deletes.
+        for _ in 0..3 {
+            let _ = coord_b.tick_outbound(1_000_000).await.unwrap();
+            let _ = coord_a.tick_inbound().await.unwrap();
+        }
+        let after_a = std::fs::read_to_string(&file_a).unwrap();
+        assert!(
+            !after_a.contains("dude") && !after_a.contains(bid_ios_empty),
+            "the deletes must propagate to the desktop: {after_a:?}"
+        );
+        assert!(
+            after_a.contains(bid_trail),
+            "the un-deleted trailing block survives on desktop: {after_a:?}"
+        );
     }
 
     #[tokio::test]
