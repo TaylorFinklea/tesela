@@ -48,9 +48,9 @@
     openSettingsOverlay,
     openFullscreenGraph,
   } from '$lib/stores/fullscreen-overlay.svelte';
-  import ColonCommandLine from '$lib/components/v4/ColonCommandLine.svelte';
-  import FullscreenOverlay from '$lib/components/v4/FullscreenOverlay.svelte';
-  import PeekPopover from '$lib/components/v4/PeekPopover.svelte';
+  import ColonCommandLine from '$lib/components/shell/ColonCommandLine.svelte';
+  import FullscreenOverlay from '$lib/components/shell/FullscreenOverlay.svelte';
+  import PeekPopover from '$lib/components/shell/PeekPopover.svelte';
 
   const focusedBuffer = $derived(getFocusedBuffer());
   const focusedLeafId = $derived(getFocusedLeafId());

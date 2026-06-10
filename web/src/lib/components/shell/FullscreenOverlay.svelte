@@ -18,7 +18,7 @@
   import type { Note } from "$lib/types/Note";
   import type { GraphEdge } from "$lib/types/GraphEdge";
   import GraphCanvas from "$lib/components/GraphCanvas.svelte";
-  import SettingsOverlay from "$lib/components/v4/SettingsOverlay.svelte";
+  import SettingsOverlay from "$lib/components/shell/SettingsOverlay.svelte";
   // This overlay + its children style with the v4 design tokens (`--v4-*`),
   // which `tokens.css` scopes to `.v4-root`. On the Graphite (/g) route only the
   // graphite tokens are loaded, so `--v4-bg` (and friends) resolve to nothing —

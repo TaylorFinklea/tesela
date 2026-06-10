@@ -36,12 +36,12 @@
   import { makePageBuffer } from "$lib/buffer/tree";
   import { openStation } from "$lib/stores/station.svelte";
   import { getVimMode } from "$lib/stores/pane-state.svelte";
-  import ColonCommandLine from "$lib/components/v4/ColonCommandLine.svelte";
-  import FullscreenOverlay from "$lib/components/v4/FullscreenOverlay.svelte";
+  import ColonCommandLine from "$lib/components/shell/ColonCommandLine.svelte";
+  import FullscreenOverlay from "$lib/components/shell/FullscreenOverlay.svelte";
   import Journey from "$lib/components/v4/Journey.svelte";
   import LayoutTree from "$lib/components/v5/LayoutTree.svelte";
   import MigrationModal from "$lib/components/v5/MigrationModal.svelte";
-  import PeekPopover from "$lib/components/v4/PeekPopover.svelte";
+  import PeekPopover from "$lib/components/shell/PeekPopover.svelte";
   import Sidebar from "$lib/components/v5/Sidebar.svelte";
   import Station from "$lib/components/v4/Station.svelte";
   import VoiceCaptureButton from "$lib/components/v4/VoiceCaptureButton.svelte";

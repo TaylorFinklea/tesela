@@ -1,5 +1,5 @@
 <script lang="ts">
-  import OutlineTab from "$lib/components/v4/OutlineTab.svelte";
+  import OutlineTab from "$lib/components/shell/OutlineTab.svelte";
   import type { DerivedRendererProps } from "$lib/buffer/protocol";
 
   let {

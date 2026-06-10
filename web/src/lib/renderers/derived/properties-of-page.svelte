@@ -1,5 +1,5 @@
 <script lang="ts">
-  import PropertiesView from "$lib/components/v4/PropertiesView.svelte";
+  import PropertiesView from "$lib/components/shell/PropertiesView.svelte";
   import type { DerivedRendererProps } from "$lib/buffer/protocol";
 
   let {
