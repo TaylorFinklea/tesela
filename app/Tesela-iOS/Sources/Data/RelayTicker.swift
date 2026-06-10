@@ -142,11 +142,36 @@ final class RelayTicker: ObservableObject {
     /// failures, the loop still wakes every `tickIntervalSeconds * cap`
     /// to retry.
     private let maxBackoffMultiplier: UInt32 = 12  // → 60s when base is 5s
-    /// Persisted-cursor UserDefaults keys. Scoped to the device id so
-    /// switching mosaics (future) doesn't replay another mosaic's
-    /// cursors over the new one.
-    private static let inboundCursorKey = "relay.inboundCursorSeq"
-    private static let outboundCursorKey = "relay.outboundCursorNtp"
+    /// Persisted-cursor UserDefaults keys, scoped per (relay URL, group
+    /// id) — both derived from the pairing code (audit A5). Relay seqs
+    /// are a per-relay, per-group namespace restarting at 1, so a global
+    /// cursor replayed against a DIFFERENT relay/group (re-pair, relay DB
+    /// wipe, the HA→Cloudflare migration) both suppressed the snapshot
+    /// bootstrap and made the tail poll start past every op — a silent,
+    /// permanent inbound stall. A fresh identity now starts at 0, which
+    /// makes `compactionSeq > inboundCursorSeq` true → snapshot bootstrap
+    /// runs. The pre-scoping bare keys are migrated once (adopted by the
+    /// first pairing that builds a coordinator post-upgrade, so in-place
+    /// upgrades keep their progress) and then removed.
+    private static let legacyInboundCursorKey = "relay.inboundCursorSeq"
+    private static let legacyOutboundCursorKey = "relay.outboundCursorNtp"
+    private static func cursorScope(relayUrl: String, groupIdHex: String) -> String {
+        "\(relayUrl)|\(groupIdHex)"
+    }
+    private static func inboundCursorKey(scope: String) -> String {
+        "relay.inboundCursorSeq.\(scope)"
+    }
+    private static func outboundCursorKey(scope: String) -> String {
+        "relay.outboundCursorNtp.\(scope)"
+    }
+    /// The (relay URL, group id) identity the live coordinator's cursors
+    /// persist under. Set by `buildCoordinator`; nil while no coordinator.
+    private var cursorScope: String? = nil
+    /// The raw pairing code the live coordinator was built from. Compared
+    /// against the cached code each tick so adopting a NEW code (re-pair)
+    /// tears the old coordinator down instead of letting it keep ticking
+    /// the previous group (audit A5).
+    private var coordinatorPairingCode: String? = nil
     /// Cached pairing code (the long base64url blob from
     /// `/sync/peer/pairing-code`). Once we've fetched this from the Mac
     /// successfully, we reuse it forever — it encodes the stable group
@@ -374,6 +399,7 @@ final class RelayTicker: ObservableObject {
         // immediately so the other side sees it without waiting a full
         // tick. If pairing hasn't happened or the network is down, the
         // regular tick loop will catch up later.
+        invalidateCoordinatorIfRepaired()
         if coordinator == nil {
             try? await ensureCoordinator()
         }
@@ -446,6 +472,7 @@ final class RelayTicker: ObservableObject {
         // socket owns delivery (the caller pushes a delta after this
         // returns), so the relay coordinator must NOT also drain this op.
         if hubMode { return }
+        invalidateCoordinatorIfRepaired()
         if coordinator == nil {
             try? await ensureCoordinator()
         }
@@ -635,6 +662,7 @@ final class RelayTicker: ObservableObject {
         // loop is gated off (Part E2). The runLoop keeps sleeping/waking;
         // each wake is a no-op until `hubMode` flips back to false.
         guard !hubMode else { return }
+        invalidateCoordinatorIfRepaired()
         do {
             if coordinator == nil {
                 try await ensureCoordinator()
@@ -648,11 +676,14 @@ final class RelayTicker: ObservableObject {
             lastTickAt = Date()
             lastError = nil
             consecutiveErrors = 0
-            // Persist cursors so a cold launch resumes where we left
-            // off instead of re-polling the full relay history.
-            UserDefaults.standard.set(inbound.newCursorSeq, forKey: Self.inboundCursorKey)
-            if let ntp = outbound.newCursorNtp {
-                UserDefaults.standard.set(ntp, forKey: Self.outboundCursorKey)
+            // Persist cursors (scoped per relay+group, audit A5) so a
+            // cold launch resumes where we left off instead of re-polling
+            // the full relay history.
+            if let scope = cursorScope {
+                UserDefaults.standard.set(inbound.newCursorSeq, forKey: Self.inboundCursorKey(scope: scope))
+                if let ntp = outbound.newCursorNtp {
+                    UserDefaults.standard.set(ntp, forKey: Self.outboundCursorKey(scope: scope))
+                }
             }
             if inbound.applied > 0 {
                 // Tell the host UI that new data has landed in the
@@ -660,6 +691,18 @@ final class RelayTicker: ObservableObject {
                 // MockMosaicService.refresh() so the page the user is
                 // looking at updates without a manual pull-down.
                 onAppliedChanges?()
+            }
+            // Audit A4: notes the FFI flagged for an authoritative-snapshot
+            // catch-up — updates Loro left PENDING (causal gap) or per-note
+            // applies that failed past the retry budget. A delta can never
+            // heal these; import the relay's deposited snapshot for exactly
+            // those notes or they silently freeze.
+            if !inbound.needsCatchupNoteIdsHex.isEmpty, let relay, let engine {
+                await catchUpFromRelaySnapshots(
+                    idsHex: inbound.needsCatchupNoteIdsHex,
+                    relay: relay,
+                    engine: engine
+                )
             }
         } catch let err as FfiSyncError {
             lastError = err.localizedDescription
@@ -823,11 +866,23 @@ final class RelayTicker: ObservableObject {
             relay: relay,
             groupIdHex: pairing.groupIdHex
         )
-        if let inbound = UserDefaults.standard.object(forKey: Self.inboundCursorKey) as? Int64 {
+        // Restore cursors persisted for THIS (relay, group) identity only
+        // (audit A5). A different identity has no scoped keys → cursors
+        // start at 0 → the snapshot bootstrap below runs and the tail poll
+        // fetches the new group's ops from the start, instead of replaying
+        // a stale-high cursor that silently black-holes inbound forever.
+        let scope = Self.cursorScope(relayUrl: relayURL, groupIdHex: pairing.groupIdHex)
+        Self.migrateLegacyCursors(toScope: scope)
+        if let inbound = UserDefaults.standard.object(forKey: Self.inboundCursorKey(scope: scope)) as? Int64 {
             await coordinator.setInboundCursorSeq(seq: inbound)
             inboundCursorSeq = inbound
+        } else {
+            // Fresh identity: reset the published value too — the bootstrap
+            // guard below compares against it, and a stale in-session value
+            // from a previous pairing would wrongly suppress the bootstrap.
+            inboundCursorSeq = 0
         }
-        if let outbound = UserDefaults.standard.object(forKey: Self.outboundCursorKey) as? Int64 {
+        if let outbound = UserDefaults.standard.object(forKey: Self.outboundCursorKey(scope: scope)) as? Int64 {
             await coordinator.setOutboundCursorNtp(ntp: outbound)
         }
         // Bootstrap-from-snapshots (offline-bootstrap spine, phase 3): pull the
@@ -838,24 +893,86 @@ final class RelayTicker: ObservableObject {
         // inbound cursor to the relay's watermark so the next poll fetches only
         // the un-compacted tail. Guard: skip when our cursor already covers the
         // watermark (mirrors the server's `bootstrap_from_snapshots`). Best-effort
-        // — a failure just leaves the cursor as-is and the normal poll handles
-        // the (un-GC'd) tail.
+        // — a fetch failure just leaves the cursor as-is and the normal poll
+        // handles the (un-GC'd) tail.
         do {
             let snaps = try await relay.fetchSnapshots()
             if snaps.compactionSeq > inboundCursorSeq {
+                var imported = 0
+                var failed = 0
                 for s in snaps.snapshots {
-                    try? await engine.importNoteSnapshotById(noteId: s.streamId, bytes: s.payload)
+                    do {
+                        try await engine.importNoteSnapshotById(noteId: s.streamId, bytes: s.payload)
+                        imported += 1
+                    } catch {
+                        failed += 1
+                    }
                 }
-                await coordinator.setInboundCursorSeq(seq: snaps.compactionSeq)
-                inboundCursorSeq = snaps.compactionSeq
-                UserDefaults.standard.set(snaps.compactionSeq, forKey: Self.inboundCursorKey)
-                if !snaps.snapshots.isEmpty { onAppliedChanges?() }
+                if failed == 0 {
+                    // Only jump the cursor past the GC watermark when EVERY
+                    // import landed (audit A4, mirrors the server fix): the
+                    // covered ops are already GC'd, so jumping past a failed
+                    // import would skip that note permanently — and the
+                    // `compactionSeq > inboundCursorSeq` guard would make
+                    // every future bootstrap a no-op. On partial failure the
+                    // cursor holds, so the next rebuild retries the imports.
+                    await coordinator.setInboundCursorSeq(seq: snaps.compactionSeq)
+                    inboundCursorSeq = snaps.compactionSeq
+                    UserDefaults.standard.set(
+                        snaps.compactionSeq,
+                        forKey: Self.inboundCursorKey(scope: scope)
+                    )
+                } else {
+                    lastError = "snapshot bootstrap: \(failed) of \(snaps.snapshots.count) imports failed; retrying"
+                }
+                if imported > 0 { onAppliedChanges?() }
             }
         } catch {
             // Leave the cursor as-is; the regular poll handles the un-GC'd tail.
         }
         self.relay = relay
         self.coordinator = coordinator
+        self.cursorScope = scope
+        self.coordinatorPairingCode = codeStr
+    }
+
+    /// One-time migration (audit A5): cursors persisted under the
+    /// pre-scoping bare keys carry no identity, so they're treated as
+    /// belonging to the CURRENT pairing once (the first coordinator built
+    /// post-upgrade adopts them — in-place upgrades keep their progress)
+    /// and then re-keyed; the bare keys are removed either way.
+    private static func migrateLegacyCursors(toScope scope: String) {
+        let defaults = UserDefaults.standard
+        if let inbound = defaults.object(forKey: legacyInboundCursorKey) as? Int64 {
+            if defaults.object(forKey: inboundCursorKey(scope: scope)) == nil {
+                defaults.set(inbound, forKey: inboundCursorKey(scope: scope))
+            }
+            defaults.removeObject(forKey: legacyInboundCursorKey)
+        }
+        if let outbound = defaults.object(forKey: legacyOutboundCursorKey) as? Int64 {
+            if defaults.object(forKey: outboundCursorKey(scope: scope)) == nil {
+                defaults.set(outbound, forKey: outboundCursorKey(scope: scope))
+            }
+            defaults.removeObject(forKey: legacyOutboundCursorKey)
+        }
+    }
+
+    /// Tear down the live coordinator when the cached pairing code no
+    /// longer matches the one it was built from — i.e. the user adopted a
+    /// NEW code (PairScanView re-pair). Without this the old coordinator
+    /// kept ticking the PREVIOUS group until its next error (tickOnce only
+    /// rebuilds when `coordinator == nil`), and the next build would have
+    /// restored the old group's cursors (audit A5; the cursor side is now
+    /// also covered by per-identity scoping). The WS-push baselines were
+    /// earned against the old group's peers, so drop them too — the next
+    /// push re-seeds per note (`recordAndPush`/`bootstrapNoteIfNeeded`).
+    private func invalidateCoordinatorIfRepaired() {
+        guard coordinator != nil, let built = coordinatorPairingCode else { return }
+        guard let cached = UserDefaults.standard.string(forKey: Self.pairingCodeKey),
+              cached != built
+        else { return }
+        dropCoordinator()
+        lastPushedVV = [:]
     }
 
     /// Drop the coordinator + relay so the next tick rebuilds them.
@@ -866,6 +983,45 @@ final class RelayTicker: ObservableObject {
     private func dropCoordinator() {
         coordinator = nil
         relay = nil
+        cursorScope = nil
+        coordinatorPairingCode = nil
+    }
+
+    /// Audit A4 (Swift half): heal notes the inbound tick flagged via
+    /// `needsCatchupNoteIdsHex` — Loro left their updates PENDING (causal
+    /// gap) or their per-note applies failed past the retry budget. A
+    /// delta can never integrate those; only an authoritative snapshot
+    /// can. Fetch the relay's deposited snapshot set once and import the
+    /// entries for exactly those notes. Best-effort: a note without a
+    /// deposited snapshot stays broken until the depositor's next deposit
+    /// (pending notes resurface on their next inbound delta), and a fetch
+    /// failure is retried next tick.
+    private func catchUpFromRelaySnapshots(
+        idsHex: [String],
+        relay: RelayClientHandle,
+        engine: SyncEngineHandle
+    ) async {
+        let wanted = Set(idsHex.map { $0.lowercased() })
+        do {
+            let snaps = try await relay.fetchSnapshots()
+            var imported = 0
+            for s in snaps.snapshots {
+                let idHex = s.streamId.map { String(format: "%02x", $0) }.joined()
+                guard wanted.contains(idHex) else { continue }
+                do {
+                    try await engine.importNoteSnapshotById(noteId: s.streamId, bytes: s.payload)
+                    imported += 1
+                } catch {
+                    // Leave it for the next surfacing; the import is the
+                    // same authoritative re-base the bootstrap uses.
+                }
+            }
+            if imported > 0 { onAppliedChanges?() }
+        } catch {
+            // Snapshot fetch failed (network). Best-effort: a pending
+            // note resurfaces on its next inbound delta; `lastError` is
+            // not set here so a one-off blip doesn't flag the whole tick.
+        }
     }
 
     /// Drain any pending outbound ops to the relay synchronously,
@@ -881,6 +1037,7 @@ final class RelayTicker: ObservableObject {
     /// was pending" OR "we never managed to build a coordinator" —
     /// callers use the return only as a lower bound.
     func flushPendingOutbound() async -> UInt32 {
+        invalidateCoordinatorIfRepaired()
         if coordinator == nil {
             try? await ensureCoordinator()
         }
