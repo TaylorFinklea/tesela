@@ -59,6 +59,39 @@ extension Block {
     }
 }
 
+enum BlockFold {
+    static func visibleBlocks(in blocks: [Block], collapsed: Set<String>) -> [Block] {
+        guard !collapsed.isEmpty else { return blocks }
+
+        var visible: [Block] = []
+        var hiddenUntilIndentLte: Int?
+
+        for block in blocks {
+            if let foldedIndent = hiddenUntilIndentLte {
+                if block.indent > foldedIndent {
+                    continue
+                }
+                hiddenUntilIndentLte = nil
+            }
+
+            visible.append(block)
+
+            if collapsed.contains(block.id) {
+                hiddenUntilIndentLte = block.indent
+            }
+        }
+
+        return visible
+    }
+
+    static func hasChildren(block: Block, in blocks: [Block]) -> Bool {
+        guard let index = blocks.firstIndex(where: { $0.id == block.id }),
+              index < blocks.index(before: blocks.endIndex)
+        else { return false }
+        return blocks[blocks.index(after: index)].indent > block.indent
+    }
+}
+
 /// One `key:: value` property attached to a block. The web client
 /// renders these as block-properties under the parent bullet.
 struct BlockProperty: Equatable, Hashable, Codable {

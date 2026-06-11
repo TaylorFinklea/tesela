@@ -23,6 +23,7 @@ struct GrPageView: View {
     @Environment(\.captureContext) private var captureContext
 
     @State private var editingBlockId: String? = nil
+    @State private var collapsedBlockIds: Set<String> = []
 
     /// The resolved Page record (for title / type / meta). Falls back to
     /// a synthesized minimal Page when the slug isn't in `mosaic.pages`
@@ -141,7 +142,7 @@ struct GrPageView: View {
     @ViewBuilder
     private var renderedBlocks: some View {
         let blocks = mosaic.loadedPageBlocks[slug] ?? []
-        ForEach(blocks) { block in
+        ForEach(BlockFold.visibleBlocks(in: blocks, collapsed: collapsedBlockIds)) { block in
             BlockRow(
                 id: block.id,
                 kind: block.kind,
@@ -151,6 +152,9 @@ struct GrPageView: View {
                 tags: block.tags,
                 properties: block.properties,
                 isEditing: editingBlockId == block.id,
+                isFoldable: BlockFold.hasChildren(block: block, in: blocks),
+                isCollapsed: collapsedBlockIds.contains(block.id),
+                onToggleFold: { toggleFold(block.id) },
                 onToggleTask: { togglePageTask(block.id) },
                 onTap: { editingBlockId = block.id },
                 onCommitEdit: { newText in
@@ -179,6 +183,14 @@ struct GrPageView: View {
             )
         }
         addBlockRow
+    }
+
+    private func toggleFold(_ blockId: String) {
+        if collapsedBlockIds.contains(blockId) {
+            collapsedBlockIds.remove(blockId)
+        } else {
+            collapsedBlockIds.insert(blockId)
+        }
     }
 
     private var addBlockRow: some View {

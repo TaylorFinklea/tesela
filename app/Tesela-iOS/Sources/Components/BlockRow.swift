@@ -21,7 +21,10 @@ struct BlockRow: View {
     var tags: [String] = []
     var properties: [BlockProperty] = []
     var isEditing: Bool = false
+    var isFoldable: Bool = false
+    var isCollapsed: Bool = false
 
+    var onToggleFold: (() -> Void)? = nil
     var onToggleTask: (() -> Void)? = nil
     var onTap: (() -> Void)? = nil
     var onCommitEdit: ((String) -> Void)? = nil
@@ -140,6 +143,9 @@ struct BlockRow: View {
         .padding(.leading, CGFloat(18 + indent * 18))
         .padding(.trailing, 18)
         .padding(.vertical, 6)
+        .overlay(alignment: .topLeading) {
+            foldToggle
+        }
         .contentShape(Rectangle())
         .onTapGesture {
             handleTap()
@@ -177,6 +183,25 @@ struct BlockRow: View {
     }
 
     // ── Bullet (task checkbox or project dot or note dot) ───────────────
+
+    @ViewBuilder
+    private var foldToggle: some View {
+        if isFoldable {
+            Button {
+                onToggleFold?()
+            } label: {
+                Image(systemName: isCollapsed ? "chevron.right" : "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isCollapsed ? theme.accentPrimary : theme.fgFaint)
+                    .frame(width: 18, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(isCollapsed ? "Expand block" : "Collapse block")
+            .padding(.leading, CGFloat(indent * 18))
+            .padding(.top, 4)
+        }
+    }
 
     @ViewBuilder
     private var bullet: some View {

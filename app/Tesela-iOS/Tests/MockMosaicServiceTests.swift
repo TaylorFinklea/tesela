@@ -7,6 +7,48 @@ import XCTest
 @MainActor
 final class MockMosaicServiceTests: XCTestCase {
 
+    // MARK: - Block folding
+
+    func testBlockFoldVisibleBlocksHideCollapsedDescendantsOnly() {
+        let blocks = [
+            Block(id: "root", kind: .note, text: "root", indent: 0),
+            Block(id: "child-a", kind: .note, text: "child a", indent: 1),
+            Block(id: "grandchild", kind: .note, text: "grandchild", indent: 2),
+            Block(id: "child-b", kind: .note, text: "child b", indent: 1),
+            Block(id: "sibling", kind: .note, text: "sibling", indent: 0),
+        ]
+
+        let visible = BlockFold.visibleBlocks(in: blocks, collapsed: ["root"])
+
+        XCTAssertEqual(visible.map(\.id), ["root", "sibling"])
+    }
+
+    func testBlockFoldNestedCollapseResumesAtMatchingIndent() {
+        let blocks = [
+            Block(id: "root", kind: .note, text: "root", indent: 0),
+            Block(id: "child-a", kind: .note, text: "child a", indent: 1),
+            Block(id: "grandchild", kind: .note, text: "grandchild", indent: 2),
+            Block(id: "child-b", kind: .note, text: "child b", indent: 1),
+            Block(id: "sibling", kind: .note, text: "sibling", indent: 0),
+        ]
+
+        let visible = BlockFold.visibleBlocks(in: blocks, collapsed: ["child-a"])
+
+        XCTAssertEqual(visible.map(\.id), ["root", "child-a", "child-b", "sibling"])
+    }
+
+    func testBlockFoldHasChildrenUsesUnderlyingBlockOrder() {
+        let blocks = [
+            Block(id: "root", kind: .note, text: "root", indent: 0),
+            Block(id: "child", kind: .note, text: "child", indent: 1),
+            Block(id: "sibling", kind: .note, text: "sibling", indent: 0),
+        ]
+
+        XCTAssertTrue(BlockFold.hasChildren(block: blocks[0], in: blocks))
+        XCTAssertFalse(BlockFold.hasChildren(block: blocks[1], in: blocks))
+        XCTAssertFalse(BlockFold.hasChildren(block: blocks[2], in: blocks))
+    }
+
     // MARK: - parseBlocks line-number tracking
 
     /// Verify that each Block's `lineNumber` records the 0-based index of

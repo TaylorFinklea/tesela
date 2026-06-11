@@ -24,6 +24,7 @@ struct PageView: View {
     @State private var showProperties: Bool = false
     @State private var showOpenPages: Bool = false
     @State private var editingBlockId: String? = nil
+    @State private var collapsedBlockIds: Set<String> = []
 
     var body: some View {
         ScrollView {
@@ -168,7 +169,7 @@ struct PageView: View {
     @ViewBuilder
     private var renderedBlocks: some View {
         let blocks = mosaic.loadedPageBlocks[page.id] ?? []
-        ForEach(blocks) { block in
+        ForEach(BlockFold.visibleBlocks(in: blocks, collapsed: collapsedBlockIds)) { block in
             BlockRow(
                 id: block.id,
                 kind: block.kind,
@@ -178,6 +179,9 @@ struct PageView: View {
                 tags: block.tags,
                 properties: block.properties,
                 isEditing: editingBlockId == block.id,
+                isFoldable: BlockFold.hasChildren(block: block, in: blocks),
+                isCollapsed: collapsedBlockIds.contains(block.id),
+                onToggleFold: { toggleFold(block.id) },
                 onToggleTask: { togglePageTask(block.id) },
                 onTap: { editingBlockId = block.id },
                 onCommitEdit: { newText in
@@ -219,6 +223,14 @@ struct PageView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+    private func toggleFold(_ blockId: String) {
+        if collapsedBlockIds.contains(blockId) {
+            collapsedBlockIds.remove(blockId)
+        } else {
+            collapsedBlockIds.insert(blockId)
+        }
     }
 
     private var pageBodyLoading: some View {

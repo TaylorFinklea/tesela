@@ -29,6 +29,7 @@ struct DailyView: View {
     @State private var showMosaicSwitcher: Bool = false
     @State private var showSyncSettings: Bool = false
     @State private var pickedDate: Date = Date()
+    @State private var collapsedBlockIds: Set<String> = []
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -177,7 +178,7 @@ struct DailyView: View {
 
     @ViewBuilder
     private var todayBlocks: some View {
-        ForEach(mosaic.todayBlocks) { block in
+        ForEach(BlockFold.visibleBlocks(in: mosaic.todayBlocks, collapsed: collapsedBlockIds)) { block in
             BlockRow(
                 id: block.id,
                 kind: block.kind,
@@ -187,6 +188,9 @@ struct DailyView: View {
                 tags: block.tags,
                 properties: block.properties,
                 isEditing: editingBlockId == block.id,
+                isFoldable: BlockFold.hasChildren(block: block, in: mosaic.todayBlocks),
+                isCollapsed: collapsedBlockIds.contains(block.id),
+                onToggleFold: { toggleFold(block.id) },
                 onToggleTask: { mosaic.toggleTask(id: block.id) },
                 onTap: { editingBlockId = block.id },
                 onCommitEdit: { newText in
@@ -243,7 +247,7 @@ struct DailyView: View {
 
     @ViewBuilder
     private var yesterdayBlocks: some View {
-        ForEach(mosaic.yesterdayBlocks) { block in
+        ForEach(BlockFold.visibleBlocks(in: mosaic.yesterdayBlocks, collapsed: collapsedBlockIds)) { block in
             BlockRow(
                 id: block.id,
                 kind: block.kind,
@@ -253,6 +257,9 @@ struct DailyView: View {
                 tags: block.tags,
                 properties: block.properties,
                 isEditing: editingBlockId == block.id,
+                isFoldable: BlockFold.hasChildren(block: block, in: mosaic.yesterdayBlocks),
+                isCollapsed: collapsedBlockIds.contains(block.id),
+                onToggleFold: { toggleFold(block.id) },
                 onToggleTask: { mosaic.toggleTask(id: block.id) },
                 onTap: { editingBlockId = block.id },
                 onCommitEdit: { newText in
@@ -313,14 +320,17 @@ struct DailyView: View {
                 SectionEyebrow(title: dayLabel(day.id), hint: "open")
             }
             .buttonStyle(.plain)
-            ForEach(day.blocks) { block in
+            ForEach(BlockFold.visibleBlocks(in: day.blocks, collapsed: collapsedBlockIds)) { block in
                 BlockRow(
                     id: block.id,
                     kind: block.kind,
                     text: block.displayText,
                     indent: block.indent,
                     isDone: block.done,
-                    tags: block.tags
+                    tags: block.tags,
+                    isFoldable: BlockFold.hasChildren(block: block, in: day.blocks),
+                    isCollapsed: collapsedBlockIds.contains(block.id),
+                    onToggleFold: { toggleFold(block.id) }
                 )
                 .opacity(0.7)
             }
@@ -344,6 +354,14 @@ struct DailyView: View {
         mosaic.connection == .connecting
             && mosaic.todayBlocks.isEmpty
             && mosaic.yesterdayBlocks.isEmpty
+    }
+
+    private func toggleFold(_ blockId: String) {
+        if collapsedBlockIds.contains(blockId) {
+            collapsedBlockIds.remove(blockId)
+        } else {
+            collapsedBlockIds.insert(blockId)
+        }
     }
 
     /// Five placeholder bullets at varying widths. Wrapped in a
