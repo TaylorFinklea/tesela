@@ -112,6 +112,13 @@
       onDeadlineApproaching: handleDeadlineApproaching,
       onScheduledFires: handleScheduledFires,
       onRecurringRolled: handleRecurringRolled,
+      onViewsChanged: (views) => {
+        // The event carries the FULL ordered registry (mirrors note_updated
+        // carrying the whole note), so seed the cache directly — no refetch.
+        // Every mounted `["views"]` consumer (the GrInbox view switcher)
+        // re-renders immediately; an edit on another device shows up live.
+        queryClient.setQueryData(["views"], views);
+      },
       onReconnected: () => {
         // After a WebSocket drop, server-side WsEvents that fired during the
         // gap were lost. Recover by forcing an immediate broad refresh (no
@@ -120,6 +127,8 @@
         // changed while the socket was down.
         scheduleNoteRefresh(null, true);
         queryClient.invalidateQueries({ queryKey: ["note"] });
+        // A views_changed event may have fired during the gap too.
+        queryClient.invalidateQueries({ queryKey: ["views"] });
         flushNoteRefreshNow();
       },
       onBinaryDelta: (updates) => {

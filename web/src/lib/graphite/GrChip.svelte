@@ -1,7 +1,8 @@
 <!-- web/src/lib/graphite/GrChip.svelte -->
 <script lang="ts">
+  import type { HTMLButtonAttributes } from 'svelte/elements';
   let { active = false, count, children, ...rest }:
-    { active?: boolean; count?: number; children?: any } = $props();
+    { active?: boolean; count?: number; children?: any } & HTMLButtonAttributes = $props();
 </script>
 
 <button class="gr-chip" class:active {...rest}>

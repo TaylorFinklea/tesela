@@ -5,6 +5,7 @@
  * Ported from the React version (originally from Swift WebSocketClient).
  */
 import type { Note } from "$lib/types/Note";
+import type { ViewRecord } from "$lib/api-client";
 import { decodeTlr2, type LoroDocUpdate } from "$lib/loro/tlr2";
 
 export type DeadlineApproachingEvent = {
@@ -29,6 +30,14 @@ export type RecurringRolledEvent = {
   note_id: string;
   next_deadline: string;
 };
+/** Saved-views registry changed (any `/views` write — create / update /
+ *  delete / reorder). Carries the FULL ordered registry, mirroring how
+ *  `note_updated` carries the whole note, so the client refreshes the view
+ *  switcher without a refetch. */
+export type ViewsChangedEvent = {
+  event: "views_changed";
+  views: ViewRecord[];
+};
 
 type WsEvent =
   | { event: "note_created"; note: Note }
@@ -36,7 +45,8 @@ type WsEvent =
   | { event: "note_deleted"; id: string }
   | DeadlineApproachingEvent
   | ScheduledFiresEvent
-  | RecurringRolledEvent;
+  | RecurringRolledEvent
+  | ViewsChangedEvent;
 
 // Same-origin path; vite dev server proxies `/ws` → tesela-server's WS at
 // 127.0.0.1:7474. Computed at runtime so LAN clients (phones, etc.) connect
@@ -69,6 +79,7 @@ let onNoteDeleted: ((id: string) => void) | null = null;
 let onDeadlineApproaching: ((e: DeadlineApproachingEvent) => void) | null = null;
 let onScheduledFires: ((e: ScheduledFiresEvent) => void) | null = null;
 let onRecurringRolled: ((e: RecurringRolledEvent) => void) | null = null;
+let onViewsChanged: ((views: ViewRecord[]) => void) | null = null;
 /// Fires after a reconnect (NOT after the first connect). Hosts use
 /// this to invalidate any cached query state that might have missed
 /// events while the socket was down. Without this, an iOS push that
@@ -93,6 +104,7 @@ export function setHandlers(handlers: {
   onDeadlineApproaching?: (e: DeadlineApproachingEvent) => void;
   onScheduledFires?: (e: ScheduledFiresEvent) => void;
   onRecurringRolled?: (e: RecurringRolledEvent) => void;
+  onViewsChanged?: (views: ViewRecord[]) => void;
   onReconnected?: () => void;
   onBinaryDelta?: (updates: LoroDocUpdate[]) => void;
 }) {
@@ -102,6 +114,7 @@ export function setHandlers(handlers: {
   onDeadlineApproaching = handlers.onDeadlineApproaching ?? null;
   onScheduledFires = handlers.onScheduledFires ?? null;
   onRecurringRolled = handlers.onRecurringRolled ?? null;
+  onViewsChanged = handlers.onViewsChanged ?? null;
   onReconnected = handlers.onReconnected ?? null;
   onBinaryDelta = handlers.onBinaryDelta ?? null;
 }
@@ -229,6 +242,9 @@ function handleMessage(raw: unknown) {
       break;
     case "recurring_rolled":
       onRecurringRolled?.(event);
+      break;
+    case "views_changed":
+      onViewsChanged?.(event.views);
       break;
   }
 }

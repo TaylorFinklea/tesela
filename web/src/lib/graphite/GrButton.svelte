@@ -17,6 +17,7 @@
     align-items:center;gap:6px;white-space:nowrap;cursor:pointer;font-family:var(--sans);
     background:var(--raised);border:1px solid var(--line-2);color:var(--fg2);transition:all .14s;}
   .gr-btn:hover{background:var(--raised-2);color:var(--fg);}
+  .gr-btn:disabled{opacity:.45;cursor:default;pointer-events:none;}
   .gr-btn.cta{background:var(--coral);color:#10110f;border-color:transparent;font-weight:600;}
   .gr-btn.ic{width:30px;height:30px;padding:0;justify-content:center;background:transparent;
     border-color:transparent;color:var(--subtle);}

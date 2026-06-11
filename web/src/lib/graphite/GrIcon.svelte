@@ -5,7 +5,8 @@
     IconBolt, IconPin, IconSun, IconSquareCheck, IconChevronDown, IconChevronRight,
     IconFlame, IconFolder, IconLayoutSidebar, IconAdjustments, IconHash, IconClock,
     IconCornerDownRight, IconInbox, IconCalendar, IconCircleDot, IconUser, IconLink,
-    IconFileText, IconDotsVertical, IconArrowLeft
+    IconFileText, IconDotsVertical, IconArrowLeft, IconPencil, IconTrash, IconX,
+    IconArrowUp, IconArrowDown, IconRestore
   } from '@tabler/icons-svelte';
 
   const MAP: Record<string, any> = {
@@ -15,7 +16,9 @@
     folder: IconFolder, 'layout-sidebar': IconLayoutSidebar, adjustments: IconAdjustments,
     hash: IconHash, clock: IconClock, 'corner-down-right': IconCornerDownRight, inbox: IconInbox,
     calendar: IconCalendar, 'circle-dot': IconCircleDot, user: IconUser, link: IconLink,
-    'file-text': IconFileText, 'dots-vertical': IconDotsVertical, 'arrow-left': IconArrowLeft
+    'file-text': IconFileText, 'dots-vertical': IconDotsVertical, 'arrow-left': IconArrowLeft,
+    pencil: IconPencil, trash: IconTrash, x: IconX, 'arrow-up': IconArrowUp,
+    'arrow-down': IconArrowDown, restore: IconRestore
   };
   let { name, size = 16, stroke = 1.75 }: { name: string; size?: number; stroke?: number } = $props();
   const Cmp = $derived(MAP[name]);

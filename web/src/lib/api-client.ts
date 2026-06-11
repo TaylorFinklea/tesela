@@ -12,6 +12,7 @@ import type { QueryResult } from "$lib/types/QueryResult";
 import type { CalendarMarks } from "$lib/types/CalendarMarks";
 import type { NoteVersion } from "$lib/types/NoteVersion";
 import type { AgendaRow } from "$lib/types/AgendaRow";
+import type { PropertyDef } from "$lib/types/PropertyDef";
 import { recordLocalSave } from "$lib/ws-refresh-coordinator";
 import type { BlockOp } from "$lib/block-ops";
 import { buildUpdateNoteBody } from "$lib/api-request-bodies";
@@ -147,6 +148,47 @@ export const api = {
   },
   executeQuery: (dsl: string, group?: string | null, sort?: string | null) =>
     post<QueryResult>("/search/query", { dsl, group: group ?? null, sort: sort ?? null }),
+
+  // Saved-views registry (spec 2026-06-10). Thin wrappers over the
+  // server's `/views` routes (crates/tesela-server/src/routes/views.rs);
+  // every write fires a `views_changed` WS event carrying the full
+  // ordered registry, so callers can rely on the `["views"]` query being
+  // refreshed without an explicit refetch.
+  listViews: () => get<ViewRecord[]>("/views"),
+  createView: (req: {
+    name: string;
+    dsl: string;
+    display_mode?: string;
+    display_group_by?: string;
+    display_show_done?: boolean;
+  }) => post<ViewRecord>("/views", req),
+  updateView: (
+    id: string,
+    req: {
+      name?: string;
+      dsl?: string;
+      order?: number;
+      display_mode?: string;
+      display_group_by?: string;
+      display_show_done?: boolean;
+    },
+  ) => put<ViewRecord>(`/views/${encodeURIComponent(id)}`, req),
+  deleteView: (id: string) =>
+    fetch(`${BASE_URL}/views/${encodeURIComponent(id)}`, { method: "DELETE" }).then(
+      async (r) => {
+        if (!r.ok)
+          throw new ApiError(r.status, await r.text(), `${BASE_URL}/views/${id}`);
+        return (await r.json()) as { deleted: boolean; id: string };
+      },
+    ),
+  /** Body is the bare id array in the new order; every id must exist or
+   *  the server rejects the whole reorder. Responds with the re-sorted
+   *  registry. */
+  reorderViews: (ids: string[]) => post<ViewRecord[]>("/views/reorder", ids),
+
+  /** All property definitions (Property pages) — the views editor uses
+   *  the names as DSL key autocomplete candidates. */
+  listProperties: () => get<PropertyDef[]>("/properties"),
   getCalendarMarks: (from: string, to: string) => {
     const q = new URLSearchParams({ from, to });
     return get<CalendarMarks>(`/calendar/marks?${q.toString()}`);
@@ -355,6 +397,23 @@ export const api = {
     post<{ config_path: string; default_mosaic: string }>("/mosaics/switch", { path }),
   restartServer: () => post<{ respawn_used: boolean }>("/server/restart", {}),
 };
+
+/** One saved view in the synced views registry. Mirrors the Rust
+ *  `tesela_sync::ViewRecord` (flat display fields, serde snake_case) as
+ *  returned by `GET /views` (sorted by `(order, id)`) and carried by the
+ *  `views_changed` WS event. Builtins (the seeded Inbox, fixed id
+ *  `builtin-inbox`) are editable but never deletable. */
+export interface ViewRecord {
+  id: string;
+  name: string;
+  dsl: string;
+  order: number;
+  builtin: boolean;
+  /** "list" | "table" | "kanban". */
+  display_mode: string;
+  display_group_by: string | null;
+  display_show_done: boolean | null;
+}
 
 export interface CurrentMosaicResponse {
   path: string;
