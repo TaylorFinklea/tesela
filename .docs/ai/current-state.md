@@ -1,5 +1,15 @@
 # Current State
 
+## 2026-06-10 (night) — SAVED VIEWS shipped end-to-end (4 waves, ~6h); build 8 cutting
+
+The full feature from `phases/2026-06-10-views-registry-spec.md` (Taylor's 3 locked decisions): **synced views registry + DSL-first editing + views-are-inbox**, all platforms.
+- **W1 core/engine:** `c3afb69` DSL comma-OR (tight-comma In-lists) + `INBOX_VIEW_DSL` const + the **99-case shared conformance fixture** (Rust=truth; all 3 implementations consume it — drift structurally impossible). `f02b5b2`/`267c981`/`9e60b80` synced views doc (`VIEWS_DOC_ID = b"tesela.views.reg"` IN the docs map → rides relay streams with zero wire changes; excluded from ALL note machinery; reseed-survives; 15 convergence tests) + FFI viewsList/Upsert/Delete.
+- **W2 parity:** `615317c` server /views CRUD+reorder+`views_changed` WS+bring-up seed (validation = non-empty DSL parsing to zero predicates → 400; parser is deliberately total). `b221ceb` web parser = full Rust port (99/99; kanban op-encoding call-site fixed). `7e38d00` iOS LocalQueryEngine 99/99 (Inbox default now works in .relay).
+- **W3 surfaces:** `da3e9f4` web GrInbox → Views switcher + inline DSL editor (live validation, chip inserters via `view-dsl.ts` toggleClausesInDsl, autocomplete, reorder, display modes via synthetic-Widget QWV) + `dc0881f` (pre-existing unit-suite loader breakage fixed — was masking 3 stale Model-A tests since ~Jun 7). `b672221` iOS Inbox tab → view chips + GrViewEditorSheet (engine-routed writes via RelayTicker seams; selection scoped per backend; relaunch-persistence sim-proven).
+- **W4 review (2 reviewers):** architecture CLEAN; 2 importants FIXED: `36cb13b` builtin seed = byte-identical reserved-peer-0 ops (concurrent seeds are the SAME ops — no LWW race; migration direction favors edit-preservation) + seed gated AFTER relay bootstrap (server main.rs + iOS shouldSeedBuiltinViews(coordinator!=nil)); `84ef2eb` iOS ORDER BY carve-out structural (parseSimpleDsl surfaces sort) not substring. Suites: 248 Rust / 142 iOS / 281 web, all green.
+- ⚠ **Fleet-migration wart (review note):** OLD builds (≤7) receiving the views doc show a harmless phantom empty-named note + warn logs (un-guarded refresh_note_derived index entry); heals on update. Taylor should update devices to build 8 promptly. Other accepted notes: `kind:block` match-all carve-out is deliberate; reorder = N snapshot writes (inefficiency); kanban falls back to table unless tag-scoped (pre-existing QWV).
+- Debug server + web bundle rebuilt (desktop relaunch serves Views); **build 8** cutting in background.
+
 ## 2026-06-10 (evening) — Round-2 feedback: ALL 9 items shipped; cutover COMPLETE; build 7 cut
 
 Taylor's round-2 list (9 items) → all addressed same-day; test card: harness-deck `20260610-round3` (ask `round3-result`).
