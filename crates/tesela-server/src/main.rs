@@ -297,17 +297,6 @@ async fn main() -> Result<()> {
         Arc::new(loro)
     };
 
-    // Saved-views registry (spec 2026-06-10): idempotently seed the built-in
-    // views (the Inbox) at bring-up — after the engine opens (a registry
-    // restored from snapshots or received via sync is visible here and left
-    // untouched, so user edits to the builtin survive restarts), before
-    // serving. Convergence-safe: the builtin's FIXED id makes concurrent
-    // seeds on other devices write the same entry → one Inbox group-wide.
-    // Non-fatal on error — a peer's seed converges the registry anyway.
-    if let Err(e) = sync_engine.ensure_builtin_views().await {
-        warn!("views: ensure_builtin_views at bring-up failed: {e}");
-    }
-
     let addr = resolve_bind_addr();
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let bound_port = listener.local_addr().map(|a| a.port()).unwrap_or(7474);
@@ -403,6 +392,21 @@ async fn main() -> Result<()> {
         backup_status: backup_status.clone(),
     };
     let app_state = bring_up_relay_if_configured(app_state, &mosaic).await;
+
+    // Saved-views registry (spec 2026-06-10; adversarial-review fix):
+    // idempotently seed the built-in views (the Inbox) AFTER relay
+    // bring-up, so a fresh/reinstalled device joining an existing group
+    // runs `bootstrap_from_snapshots` first — the seed then sees the
+    // synced registry (including a user-edited builtin) and no-ops,
+    // instead of authoring a default entry that races the group's. A
+    // device with no relay configured reaches here immediately (bring-up
+    // is a no-op) and still seeds before serving. The seed itself is also
+    // deterministic engine-side (fixed seed peer), so even a seed that
+    // slips past a failed bring-up can't clobber a remote edit.
+    // Non-fatal on error — a peer's seed converges the registry anyway.
+    if let Err(e) = app_state.sync_engine.ensure_builtin_views().await {
+        warn!("views: ensure_builtin_views at bring-up failed: {e}");
+    }
 
     // Scheduled backups (audit 2026-06-09 "Back up the authority"):
     // one backup after bring-up + a periodic cadence, both env-tunable.

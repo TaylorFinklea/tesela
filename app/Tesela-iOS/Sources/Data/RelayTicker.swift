@@ -594,11 +594,31 @@ final class RelayTicker: ObservableObject {
     /// (locally seeded or synced), so this flag only saves the FFI hop.
     private var viewsSeeded = false
 
+    /// Pure half of the builtin-views seed gate (adversarial review,
+    /// 2026-06-10 — same ordering rule as the server's main.rs): a device
+    /// with a pairing must NOT seed before the snapshot bootstrap has run,
+    /// or a first-launch list on a fresh install would author a default
+    /// Inbox entry while the group's registry (possibly user-edited) is
+    /// still in flight. `coordinator != nil` IS the bootstrap-completed
+    /// signal — `buildCoordinator` runs the snapshot-bootstrap step inline
+    /// and only assigns the coordinator after it (the step itself no-ops
+    /// when the persisted cursor already covers the relay's watermark). A
+    /// device with no cached pairing has no group to receive from — it
+    /// seeds immediately, like a relay-less server. Hub-mode consequence:
+    /// the coordinator is gated off there, so a paired hub device defers
+    /// the seed; the UI's `SavedView.fallbackInbox` covers reads, and a
+    /// builtin edit still lands safely (the engine routes it through the
+    /// deterministic seed container).
+    static func shouldSeedBuiltinViews(hasPairing: Bool, bootstrapCompleted: Bool) -> Bool {
+        !hasPairing || bootstrapCompleted
+    }
+
     /// All saved views from the synced registry, sorted by `(order, id)`.
-    /// Seeds the builtin Inbox first (same bring-up posture as the
-    /// server's `ensure_builtin_views` in main.rs — idempotent,
-    /// edit-preserving, fixed id so concurrent seeds converge to ONE
-    /// Inbox). Returns nil when the engine can't open.
+    /// Seeds the builtin Inbox first when `shouldSeedBuiltinViews` allows
+    /// it (same bring-up posture as the server's `ensure_builtin_views`
+    /// in main.rs — idempotent, edit-preserving, deferred until after the
+    /// snapshot bootstrap when a pairing exists). Returns nil when the
+    /// engine can't open.
     func viewsList() async -> [ViewRecord]? {
         do {
             try await openEngineIfNeeded()
@@ -607,7 +627,12 @@ final class RelayTicker: ObservableObject {
             return nil
         }
         guard let engine else { return nil }
-        if !viewsSeeded {
+        let hasPairing = UserDefaults.standard.string(forKey: Self.pairingCodeKey) != nil
+        if !viewsSeeded,
+           Self.shouldSeedBuiltinViews(
+               hasPairing: hasPairing,
+               bootstrapCompleted: coordinator != nil
+           ) {
             do {
                 try await engine.ensureBuiltinViews()
                 viewsSeeded = true

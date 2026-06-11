@@ -110,6 +110,49 @@ pub const INBOX_DEFAULT_DSL: &str = tesela_core::query::INBOX_VIEW_DSL;
 /// though the views doc is authoritative CRDT state, never rebuilt).
 const VIEWS_SCHEMA_VERSION: i64 = 1;
 
+/// The Loro PeerID every device uses to author the deterministic
+/// builtin-views seed ops (`builtin_views_seed_update`). Reserved: a real
+/// engine can never collide — `LoroEngine::peer_id` masks the top bit AND
+/// maps a masked 0 to 1, so no device doc ever writes as peer 0. And at
+/// equal lamport Loro's map LWW picks the GREATER `(lamport, peer)`
+/// (`MapValue::cmp`), so a seed container also LOSES any tie against a
+/// pre-fix randomly-peered container — the migration-safe direction (the
+/// container that may carry user edits wins).
+const BUILTIN_VIEWS_SEED_PEER: u64 = 0;
+
+/// The builtin-views seed as ONE deterministic Loro update: a scratch doc
+/// with the reserved seed peer (and timestamp recording off) authors the
+/// Inbox entry + `meta.schema_version`, byte-identical on every device.
+/// Two devices that seed independently therefore author the SAME op IDs —
+/// there is no same-key `insert_container` race for a later merge to
+/// resolve by dropping one container (and its user edits) wholesale; the
+/// adversarial-review fresh-device-clobber vector (2026-06-10).
+fn builtin_views_seed_update() -> SyncResult<Vec<u8>> {
+    let doc = LoroDoc::new();
+    // Default is already false; pinned explicitly because a recorded
+    // wall-clock timestamp would make the seed ops differ per device.
+    doc.set_record_timestamp(false);
+    doc.set_peer_id(BUILTIN_VIEWS_SEED_PEER)
+        .map_err(|e| SyncError::Storage(format!("views seed peer: {e}")))?;
+    let views = doc.get_map("views");
+    let entry = views
+        .insert_container(INBOX_VIEW_ID, loro::LoroMap::new())
+        .map_err(|e| SyncError::Storage(format!("views seed insert_container: {e}")))?;
+    let ins = |e: loro::LoroError| SyncError::Storage(format!("views seed insert: {e}"));
+    entry.insert("id", INBOX_VIEW_ID).map_err(ins)?;
+    entry.insert("name", "Inbox").map_err(ins)?;
+    entry.insert("dsl", INBOX_DEFAULT_DSL).map_err(ins)?;
+    entry.insert("order", 0i64).map_err(ins)?;
+    entry.insert("builtin", true).map_err(ins)?;
+    entry.insert("display_mode", "list").map_err(ins)?;
+    doc.get_map("meta")
+        .insert("schema_version", VIEWS_SCHEMA_VERSION)
+        .map_err(ins)?;
+    doc.commit();
+    doc.export(ExportMode::all_updates())
+        .map_err(|e| SyncError::Storage(format!("views seed export: {e}")))
+}
+
 /// Join a multi-valued index field with the collision-free separator.
 fn join_list(items: &[String]) -> String {
     items.join(&INDEX_LIST_SEP.to_string())
@@ -1645,14 +1688,19 @@ impl LoroEngine {
 // by id) — a CRDT list would add tombstone/move complexity for a registry
 // of 6–12 entries whose reorders are rare whole-renumber writes.
 //
-// Known boundary (documented, accepted): two devices that INDEPENDENTLY
-// first-create the same view id (e.g. a fresh device seeding the builtin
-// before its first sync) race on the map key's container register — the
-// losing container's fields are dropped wholesale. For the builtin seed
-// both containers are identical so convergence is unaffected; the
-// seed-vs-concurrent-edit window only exists on a brand-new device that
-// has never synced, and `ensure_builtin_views` no-ops once the entry
-// arrives, keeping the window to that first boot.
+// Known boundary (adversarial review 2026-06-10): two devices that
+// INDEPENDENTLY first-create the same view id race on the map key's
+// container register — the losing container's fields are dropped
+// wholesale. For USER views the UUID ids make that collision impossible.
+// For BUILTINS the race is closed structurally: every device authors the
+// seed as the SAME deterministic ops (`builtin_views_seed_update`,
+// reserved peer 0, no timestamps), and `views_upsert` routes a missing
+// builtin entry through that seed too — so concurrent first-writes share
+// one canonical container and merge FIELD-wise, never container-wise.
+// Belt-and-braces, the call sites also order seed AFTER bootstrap
+// (server main.rs; iOS `RelayTicker.shouldSeedBuiltinViews`) so a fresh
+// device joining a group usually receives the registry and no-ops the
+// seed entirely.
 impl LoroEngine {
     /// True when the id addresses the views registry doc (not a note).
     fn is_views_doc(note_id: &[u8; 16]) -> bool {
@@ -1745,6 +1793,24 @@ impl LoroEngine {
         let views = doc.get_map("views");
         let entry = match views.get(&record.id) {
             Some(loro::ValueOrContainer::Container(loro::Container::Map(m))) => m,
+            // First write to a BUILTIN on a device that never seeded or
+            // synced (e.g. an iOS hub-mode edit of the fallback Inbox
+            // pre-bootstrap): import the deterministic seed first so the
+            // fields land in THE canonical seed container — never a fresh
+            // same-key container that races the group's and drops the
+            // loser's fields (incl. user edits) wholesale on merge.
+            _ if record.id == INBOX_VIEW_ID => {
+                doc.import(&builtin_views_seed_update()?)
+                    .map_err(|e| SyncError::Storage(format!("views seed import: {e}")))?;
+                match views.get(&record.id) {
+                    Some(loro::ValueOrContainer::Container(loro::Container::Map(m))) => m,
+                    _ => {
+                        return Err(SyncError::Storage(
+                            "views: builtin seed import did not materialize the entry".into(),
+                        ))
+                    }
+                }
+            }
             _ => views
                 .insert_container(&record.id, loro::LoroMap::new())
                 .map_err(|e| SyncError::Storage(format!("views insert_container: {e}")))?,
@@ -1824,10 +1890,13 @@ impl LoroEngine {
     /// Idempotently seed the built-in views (currently: Inbox). No-op when
     /// the Inbox entry already exists — whether seeded locally or received
     /// via sync — so a reseed never clobbers the user's edits to the
-    /// builtin's dsl/display. Concurrent first-seeds on two devices write
-    /// the SAME fixed id with the SAME field values, so whichever
-    /// container wins the map-key LWW the group converges to one
-    /// identical Inbox (TDD'd in `concurrent_seed_converges_to_one_inbox`).
+    /// builtin's dsl/display. The seed itself is imported as the
+    /// DETERMINISTIC update from `builtin_views_seed_update` (reserved
+    /// seed peer, identical op IDs on every device), so concurrent
+    /// first-seeds are literally the same ops — no same-key container
+    /// race exists for a later merge to drop one side's edits
+    /// (TDD'd in `offline_first_seed_then_sync_preserves_remote_builtin_edit`
+    /// and `concurrent_seed_converges_to_one_inbox`).
     pub async fn ensure_builtin_views(&self) -> SyncResult<()> {
         {
             let docs = self.inner.docs.read().await;
@@ -1837,17 +1906,12 @@ impl LoroEngine {
                 }
             }
         }
-        self.views_upsert(crate::engine::ViewRecord {
-            id: INBOX_VIEW_ID.to_string(),
-            name: "Inbox".to_string(),
-            dsl: INBOX_DEFAULT_DSL.to_string(),
-            order: 0,
-            builtin: true,
-            display_mode: "list".to_string(),
-            display_group_by: None,
-            display_show_done: None,
-        })
-        .await
+        let seed = builtin_views_seed_update()?;
+        let doc = self.doc_for_note_mut(VIEWS_DOC_ID).await;
+        doc.import(&seed)
+            .map_err(|e| SyncError::Storage(format!("views seed import: {e}")))?;
+        self.persist_views_doc().await;
+        Ok(())
     }
 }
 
@@ -8846,9 +8910,9 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_seed_converges_to_one_inbox() {
-        // Two devices both seed BEFORE ever syncing — the fixed view id
-        // means both write the same entry, and the group converges to ONE
-        // Inbox with the default fields whichever container wins.
+        // Two devices both seed BEFORE ever syncing — the deterministic
+        // seed means both author the SAME ops, and the group converges to
+        // ONE Inbox with the default fields (no container race at all).
         let dev_a = DeviceId::from_bytes([0xa1; 16]);
         let dev_b = DeviceId::from_bytes([0xb2; 16]);
         let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
@@ -8867,6 +8931,138 @@ mod tests {
         assert_eq!(va[0].id, INBOX_VIEW_ID);
         assert_eq!(va[0].dsl, INBOX_DEFAULT_DSL);
         assert!(va[0].builtin);
+    }
+
+    #[tokio::test]
+    async fn fresh_device_that_syncs_before_seeding_noops_and_preserves_edit() {
+        // The bring-up ordering contract (main.rs / RelayTicker.viewsList):
+        // a relay-configured fresh device bootstraps BEFORE seeding, so the
+        // seed sees the group's registry — including a user-edited builtin
+        // — and no-ops instead of authoring anything.
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let dev_c = DeviceId::from_bytes([0xc3; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        let c = LoroEngine::new(dev_c, Arc::new(Hlc::new(dev_c)));
+        a.ensure_builtin_views().await.unwrap();
+        let mut edited = a.views_list().await[0].clone();
+        edited.dsl = "status:todo -has:deadline".to_string();
+        a.views_upsert(edited.clone()).await.unwrap();
+
+        // C receives the group state FIRST (bootstrap-before-seed)…
+        ship_relay(&a, &c).await;
+        // …so its seed no-ops and A's edit survives on both.
+        c.ensure_builtin_views().await.unwrap();
+        ship_relay(&c, &a).await;
+        let va = a.views_list().await;
+        let vc = c.views_list().await;
+        assert_eq!(va, vc, "engines converge");
+        assert_eq!(va.len(), 1, "exactly ONE inbox");
+        assert_eq!(va[0].dsl, edited.dsl, "A's edit survives the join");
+    }
+
+    #[tokio::test]
+    async fn offline_first_seed_then_sync_preserves_remote_builtin_edit() {
+        // The INVERTED order: C seeds while truly offline-never-synced,
+        // then joins. Every device authors the seed as the SAME
+        // deterministic ops (fixed seed peer, no timestamps), so there is
+        // no same-key container race to lose — A's edit must survive for
+        // BOTH peer orderings, not just the one where A's container wins
+        // the map-key LWW coin flip.
+        for (bytes_a, bytes_c) in [([0xa1u8; 16], [0xc3u8; 16]), ([0xc3u8; 16], [0xa1u8; 16])] {
+            let dev_a = DeviceId::from_bytes(bytes_a);
+            let dev_c = DeviceId::from_bytes(bytes_c);
+            let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+            let c = LoroEngine::new(dev_c, Arc::new(Hlc::new(dev_c)));
+            a.ensure_builtin_views().await.unwrap();
+            let mut edited = a.views_list().await[0].clone();
+            edited.dsl = "status:todo -has:deadline".to_string();
+            a.views_upsert(edited.clone()).await.unwrap();
+
+            // C seeds with no shared history at all, then syncs.
+            c.ensure_builtin_views().await.unwrap();
+            ship_relay(&a, &c).await;
+            ship_relay(&c, &a).await;
+            ship_relay(&a, &c).await;
+
+            let va = a.views_list().await;
+            let vc = c.views_list().await;
+            assert_eq!(va, vc, "engines converge (A={bytes_a:02x?})");
+            assert_eq!(va.len(), 1, "exactly ONE inbox (A={bytes_a:02x?})");
+            assert_eq!(
+                va[0].dsl, edited.dsl,
+                "A's edit survives an offline-first seed (A={bytes_a:02x?})"
+            );
+            assert!(va[0].builtin);
+        }
+    }
+
+    #[tokio::test]
+    async fn builtin_seed_ops_are_identical_across_devices() {
+        // Determinism pin: two devices seeding independently author
+        // byte-identical seed updates (reserved peer, no timestamps), so a
+        // one-way ship leaves the receiver unchanged — its version vector
+        // already covers the seed ops.
+        assert_eq!(
+            builtin_views_seed_update().unwrap(),
+            builtin_views_seed_update().unwrap(),
+            "seed update bytes are deterministic"
+        );
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let dev_b = DeviceId::from_bytes([0xb2; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+        a.ensure_builtin_views().await.unwrap();
+        b.ensure_builtin_views().await.unwrap();
+        let before = b.views_list().await;
+        ship_relay(&a, &b).await;
+        assert_eq!(b.views_list().await, before, "A's seed is already known");
+        assert_eq!(before.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn builtin_upsert_on_unseeded_device_routes_through_seed_container() {
+        // iOS hub-mode shape: a never-synced device EDITS the builtin
+        // directly (views_upsert, no prior seed — the UI edits the
+        // fallback Inbox). The upsert must land its fields in THE
+        // deterministic seed container so a later join field-merges with
+        // the group instead of racing whole containers — for BOTH peer
+        // orderings, not just the one where C's container would win.
+        for (bytes_a, bytes_c) in [([0xa1u8; 16], [0xc3u8; 16]), ([0xc3u8; 16], [0xa1u8; 16])] {
+            let dev_a = DeviceId::from_bytes(bytes_a);
+            let dev_c = DeviceId::from_bytes(bytes_c);
+            let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+            let c = LoroEngine::new(dev_c, Arc::new(Hlc::new(dev_c)));
+            a.ensure_builtin_views().await.unwrap();
+            let mut a_edit = a.views_list().await[0].clone();
+            a_edit.dsl = "status:todo".to_string();
+            a.views_upsert(a_edit).await.unwrap();
+
+            // C renames the builtin with no seed and no shared history.
+            let mut c_record = user_view(INBOX_VIEW_ID, "Triage", INBOX_DEFAULT_DSL, 0);
+            c_record.builtin = true;
+            c.views_upsert(c_record).await.unwrap();
+
+            ship_relay(&a, &c).await;
+            ship_relay(&c, &a).await;
+            ship_relay(&a, &c).await;
+
+            let va = a.views_list().await;
+            assert_eq!(va, c.views_list().await, "engines converge");
+            assert_eq!(va.len(), 1, "exactly ONE inbox");
+            // Field-level merge, not wholesale container loss: C's rename
+            // survives; dsl (written concurrently by BOTH upserts) resolves
+            // to one deterministic LWW winner — never a third value.
+            assert_eq!(
+                va[0].name, "Triage",
+                "C's rename survives (A={bytes_a:02x?})"
+            );
+            assert!(
+                va[0].dsl == "status:todo" || va[0].dsl == INBOX_DEFAULT_DSL,
+                "dsl is one LWW winner: {}",
+                va[0].dsl
+            );
+            assert!(va[0].builtin);
+        }
     }
 
     #[tokio::test]

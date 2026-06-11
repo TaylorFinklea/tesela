@@ -37,6 +37,31 @@ final class RelayBootstrapRuleTests: XCTestCase {
         XCTAssertFalse(RelayTicker.shouldJumpBootstrapCursor(failedImports: 17))
     }
 
+    // MARK: Builtin-views seed gate (adversarial review, 2026-06-10)
+
+    func testViewsSeedRunsImmediatelyWithoutPairing() {
+        // No pairing → no group to receive a registry from; the device
+        // seeds its Inbox right away (mirrors a relay-less server).
+        XCTAssertTrue(
+            RelayTicker.shouldSeedBuiltinViews(hasPairing: false, bootstrapCompleted: false)
+        )
+        XCTAssertTrue(
+            RelayTicker.shouldSeedBuiltinViews(hasPairing: false, bootstrapCompleted: true)
+        )
+    }
+
+    func testViewsSeedDefersUntilBootstrapWhenPaired() {
+        // A paired fresh install must let the snapshot bootstrap land the
+        // group's registry (possibly a user-edited Inbox) BEFORE seeding —
+        // the engine seed then no-ops instead of authoring a default entry.
+        XCTAssertFalse(
+            RelayTicker.shouldSeedBuiltinViews(hasPairing: true, bootstrapCompleted: false)
+        )
+        XCTAssertTrue(
+            RelayTicker.shouldSeedBuiltinViews(hasPairing: true, bootstrapCompleted: true)
+        )
+    }
+
     // MARK: Daily slug derivation (date → yyyy-MM-dd)
 
     private func date(_ y: Int, _ m: Int, _ d: Int) -> Date {
