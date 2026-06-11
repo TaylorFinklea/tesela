@@ -8,6 +8,7 @@ mod backfill_task;
 mod import_logseq;
 mod import_obsidian;
 mod import_org;
+mod mosaic_notes;
 mod recover_logseq_dates;
 use tesela_core::{
     config::Config,
@@ -193,9 +194,12 @@ enum Commands {
     },
     /// Add #Task to every status-bearing block that lacks it (dry-run unless --apply)
     BackfillTask {
-        /// Actually write the tags. Default: dry-run — list affected blocks + a count.
+        /// Actually write the tags. Default: dry-run — summary + per-note rollup.
         #[arg(long)]
         apply: bool,
+        /// Also print the full per-block list (can run to thousands of lines).
+        #[arg(long)]
+        verbose: bool,
     },
     /// One-off recovery: restore timed/repeating SCHEDULED/DEADLINE stamps the
     /// old Logseq importer dropped, by re-reading the original vault (dry-run
@@ -1059,8 +1063,8 @@ async fn main() -> Result<()> {
     }
 
     // Backfill #Task — needs the Loro engine over the mosaic, not a full Ctx.
-    if let Commands::BackfillTask { apply } = cli.command {
-        return backfill_task::run(&mosaic, apply).await;
+    if let Commands::BackfillTask { apply, verbose } = cli.command {
+        return backfill_task::run(&mosaic, apply, verbose).await;
     }
 
     // Recover dropped Logseq dates — Loro engine over the mosaic, no Ctx.

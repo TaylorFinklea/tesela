@@ -40,7 +40,10 @@ use std::path::Path;
 use std::sync::{Arc, LazyLock};
 use tesela_sync::{Hlc, LoroEngine, OpPayload, PropOp, PropScalar, SyncEngine};
 
-use crate::backfill_task::{acquire_mosaic_lock, hex16, line_property_key, load_device_id};
+use crate::backfill_task::{acquire_mosaic_lock, line_property_key, load_device_id};
+use crate::mosaic_notes::{
+    hydrate_note, read_non_resident_notes, resident_notes, stable_uuid_from_slug,
+};
 
 /// Logseq planning timestamp with the pieces the old importer dropped.
 /// Mirrors the NEW `LOGSEQ_DATE_RE` (date, optional weekday, optional
@@ -369,35 +372,6 @@ fn block_has_property(block_text: &str, key: &str) -> bool {
         .any(|l| line_property_key(l).as_deref() == Some(key))
 }
 
-/// System-wide stable note id: blake3(slug) truncated to 16 bytes —
-/// mirrors the server's `stable_uuid_from_slug` (routes/notes.rs) and
-/// the engine's `reseed_from_disk`, so the CLI addresses the SAME doc
-/// every other surface does.
-fn stable_uuid_from_slug(slug: &str) -> [u8; 16] {
-    let hash = blake3::hash(slug.as_bytes());
-    let mut out = [0u8; 16];
-    out.copy_from_slice(&hash.as_bytes()[..16]);
-    out
-}
-
-/// `title:` from a YAML frontmatter block (mirrors the engine's reseed
-/// title extraction); `None` if absent.
-fn frontmatter_title(content: &str) -> Option<String> {
-    let mut lines = content.lines();
-    if lines.next()?.trim_end_matches('\r') != "---" {
-        return None;
-    }
-    for line in lines {
-        if line.trim_end_matches('\r') == "---" {
-            return None;
-        }
-        if let Some(v) = line.strip_prefix("title:") {
-            return Some(v.trim().trim_matches('"').to_string());
-        }
-    }
-    None
-}
-
 /// One matchable block, from either source of truth.
 struct Candidate {
     note_id: [u8; 16],
@@ -427,28 +401,15 @@ pub async fn recover(
     // text line (engine render is authority for resident notes).
     let mut index: HashMap<String, Vec<usize>> = HashMap::new();
     let mut candidates: Vec<Candidate> = Vec::new();
-    let slugs: HashMap<String, String> = engine
-        .index_entries()
-        .await
-        .into_iter()
-        .map(|e| (e.note_id, e.slug))
-        .collect();
     let mut resident_slugs: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for note_id in engine.note_ids().await {
-        let Some(md) = engine.render_note_full(note_id).await else {
-            continue;
-        };
-        let slug = slugs
-            .get(&hex16(&note_id))
-            .cloned()
-            .unwrap_or_else(|| hex16(&note_id));
-        resident_slugs.insert(slug.clone());
-        let tree = tesela_core::note_tree::parse_note(&md);
+    for note in resident_notes(engine).await {
+        resident_slugs.insert(note.slug.clone());
+        let tree = tesela_core::note_tree::parse_note(&note.md);
         for block in &tree.blocks {
             candidates.push(Candidate {
-                note_id,
+                note_id: note.note_id,
                 block_id: *block.id.as_bytes(),
-                slug: slug.clone(),
+                slug: note.slug.clone(),
                 block_text: block.text.clone(),
                 hydrate_content: None,
             });
@@ -457,34 +418,17 @@ pub async fn recover(
     // Pass 1b — non-resident notes: the engine's materialized `.md`
     // files are the canonical content; match from disk, hydrate on apply.
     if let Some(dir) = notes_dir {
-        if dir.is_dir() {
-            let mut paths: Vec<_> = std::fs::read_dir(dir)
-                .with_context(|| format!("read notes dir {}", dir.display()))?
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("md"))
-                .collect();
-            paths.sort();
-            for path in paths {
-                let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-                    continue;
-                };
-                if resident_slugs.contains(stem) {
-                    continue; // engine version already indexed
-                }
-                let content = std::fs::read_to_string(&path)
-                    .with_context(|| format!("read {}", path.display()))?;
-                let note_id = stable_uuid_from_slug(stem);
-                let tree = tesela_core::note_tree::parse_note(&content);
-                for block in &tree.blocks {
-                    candidates.push(Candidate {
-                        note_id,
-                        block_id: *block.id.as_bytes(),
-                        slug: stem.to_string(),
-                        block_text: block.text.clone(),
-                        hydrate_content: Some(content.clone()),
-                    });
-                }
+        for (stem, content) in read_non_resident_notes(dir, &resident_slugs)? {
+            let note_id = stable_uuid_from_slug(&stem);
+            let tree = tesela_core::note_tree::parse_note(&content);
+            for block in &tree.blocks {
+                candidates.push(Candidate {
+                    note_id,
+                    block_id: *block.id.as_bytes(),
+                    slug: stem.clone(),
+                    block_text: block.text.clone(),
+                    hydrate_content: Some(content.clone()),
+                });
             }
         }
     }
@@ -555,16 +499,7 @@ pub async fn recover(
                 let (slug, content) = hydrate_by_note
                     .get(note_id)
                     .expect("needs_hydration implies recorded content");
-                engine
-                    .record_local(OpPayload::NoteUpsert {
-                        note_id: *note_id,
-                        display_alias: Some(slug.clone()),
-                        title: frontmatter_title(content).unwrap_or_else(|| slug.clone()),
-                        content: content.clone(),
-                        created_at_millis: 0,
-                    })
-                    .await
-                    .map_err(|e| anyhow::anyhow!("hydrate note {slug}: {e}"))?;
+                hydrate_note(engine, *note_id, slug, content).await?;
                 hydrated.insert(*note_id);
                 report.hydrated_notes += 1;
             }

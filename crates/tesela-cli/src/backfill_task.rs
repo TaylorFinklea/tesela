@@ -9,56 +9,121 @@
 //! later clash with the container (the dual-write dup this whole property
 //! milestone avoids). `AddToList` is union/idempotent, so re-running is safe.
 //!
-//! Dry-run by default (list affected blocks + a count, write nothing); only
-//! `--apply` mutates. This is a DATA migration — it must never auto-run, and it
-//! refuses to run while `tesela-server` holds the mosaic (single-writer).
+//! Dry-run by default (summary + per-note rollup, write nothing; `--verbose`
+//! for the full block list); only `--apply` mutates. This is a DATA migration —
+//! it must never auto-run, and it refuses to run while `tesela-server` holds
+//! the mosaic (single-writer).
+//!
+//! Residency: the Loro engine only holds docs for notes that have flowed
+//! through it; on a lazily-resident mosaic the canonical content for
+//! everything else is the engine's own materialized `<mosaic>/notes/<slug>.md`
+//! files. The scan therefore reads BOTH — engine render for resident notes,
+//! the materialized file otherwise — and `--apply` hydrates a non-resident
+//! note first (`mosaic_notes::hydrate_note`, the same `NoteUpsert` per-bid
+//! reconcile every editor save records) before the structured tag-add.
 
 use anyhow::{Context, Result};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use tesela_sync::{DeviceId, Hlc, LoroEngine, OpPayload, PropOp, PropScalar, SyncEngine};
+
+use crate::mosaic_notes::{
+    hydrate_note, read_non_resident_notes, resident_notes, stable_uuid_from_slug,
+};
 
 /// One block that carries a status but no Task tag.
 pub struct Candidate {
     pub note_id: [u8; 16],
     pub block_id: [u8; 16],
+    /// Note slug (display alias) for human-readable output.
+    pub slug: String,
     /// The block's first text line, for human-readable dry-run output.
     pub preview: String,
+    /// The note is not Loro-resident — apply records a `NoteUpsert` of the
+    /// materialized file first (per-bid reconcile, the op every save uses).
+    pub needs_hydration: bool,
 }
 
 #[derive(Default)]
 pub struct BackfillReport {
     pub candidates: Vec<Candidate>,
     pub applied: usize,
+    /// Notes hydrated into the engine (NoteUpsert) during apply.
+    pub hydrated_notes: usize,
 }
 
 /// Core scan + (optional) apply over an open engine. Read-only first pass
 /// collects candidates so enumeration never races our own writes; the apply
-/// pass adds the tag via a structured `BlockPropertySet`. Pure over the engine
-/// so it is unit-testable with an in-process `LoroEngine`.
-pub async fn backfill(engine: &LoroEngine, apply: bool) -> Result<BackfillReport> {
+/// pass adds the tag via a structured `BlockPropertySet`. `notes_dir` is the
+/// engine's own materialized notes directory — blocks in notes the engine
+/// doesn't hold resident are scanned from their `.md` files and hydrated on
+/// apply (see module docs). Pure over the engine so it is unit-testable with
+/// an in-process `LoroEngine`.
+pub async fn backfill(
+    engine: &LoroEngine,
+    notes_dir: Option<&Path>,
+    apply: bool,
+) -> Result<BackfillReport> {
     let mut report = BackfillReport::default();
 
-    // Pass 1 — scan every note's blocks (read-only).
-    for note_id in engine.note_ids().await {
-        let Some(md) = engine.render_note_full(note_id).await else {
-            continue;
-        };
-        let tree = tesela_core::note_tree::parse_note(&md);
+    // Pass 1a — scan every Loro-resident note's blocks (read-only).
+    let mut resident_slugs: HashSet<String> = HashSet::new();
+    for note in resident_notes(engine).await {
+        resident_slugs.insert(note.slug.clone());
+        let tree = tesela_core::note_tree::parse_note(&note.md);
         for block in &tree.blocks {
             if has_status(&block.text) && !has_task(&block.text) {
                 report.candidates.push(Candidate {
-                    note_id,
+                    note_id: note.note_id,
                     block_id: *block.id.as_bytes(),
+                    slug: note.slug.clone(),
                     preview: block.text.lines().next().unwrap_or("").trim().to_string(),
+                    needs_hydration: false,
                 });
             }
         }
     }
 
-    // Pass 2 — apply the structured tag-add (union/idempotent).
+    // Pass 1b — non-resident notes: the engine's materialized `.md` files
+    // are the canonical content; scan from disk, hydrate on apply.
+    let mut hydrate_by_note: HashMap<[u8; 16], (String, String)> = HashMap::new();
+    if let Some(dir) = notes_dir {
+        for (stem, content) in read_non_resident_notes(dir, &resident_slugs)? {
+            let note_id = stable_uuid_from_slug(&stem);
+            let tree = tesela_core::note_tree::parse_note(&content);
+            let mut hit = false;
+            for block in &tree.blocks {
+                if has_status(&block.text) && !has_task(&block.text) {
+                    report.candidates.push(Candidate {
+                        note_id,
+                        block_id: *block.id.as_bytes(),
+                        slug: stem.clone(),
+                        preview: block.text.lines().next().unwrap_or("").trim().to_string(),
+                        needs_hydration: true,
+                    });
+                    hit = true;
+                }
+            }
+            if hit {
+                hydrate_by_note.insert(note_id, (stem, content));
+            }
+        }
+    }
+
+    // Pass 2 — apply: hydrate non-resident notes once, then the structured
+    // tag-add (union/idempotent).
     if apply {
+        let mut hydrated: HashSet<[u8; 16]> = HashSet::new();
         for c in &report.candidates {
+            if c.needs_hydration && !hydrated.contains(&c.note_id) {
+                let (slug, content) = hydrate_by_note
+                    .get(&c.note_id)
+                    .expect("needs_hydration implies recorded content");
+                hydrate_note(engine, c.note_id, slug, content).await?;
+                hydrated.insert(c.note_id);
+                report.hydrated_notes += 1;
+            }
             engine
                 .record_local(OpPayload::BlockPropertySet {
                     note_id: c.note_id,
@@ -77,8 +142,10 @@ pub async fn backfill(engine: &LoroEngine, apply: bool) -> Result<BackfillReport
 
 /// CLI entry: lock the mosaic (refuse if the server holds it), open the Loro
 /// engine over the mosaic's existing snapshots (no reseed — load only, matching
-/// the server's default), run the backfill, and print the report.
-pub async fn run(mosaic: &Path, apply: bool) -> Result<()> {
+/// the server's default), run the backfill, and print the report —
+/// summary-first (counts + per-note rollup); the full per-block list can run
+/// to thousands of lines on a big mosaic, so it hides behind `--verbose`.
+pub async fn run(mosaic: &Path, apply: bool, verbose: bool) -> Result<()> {
     let _lock = acquire_mosaic_lock(mosaic).context(
         "could not lock the mosaic — is tesela-server (or the desktop app) running on it? \
          Stop it before running backfill-task (single-writer).",
@@ -88,31 +155,63 @@ pub async fn run(mosaic: &Path, apply: bool) -> Result<()> {
     let snapshot_dir = mosaic.join(".tesela").join("loro");
     let notes_dir = mosaic.join("notes");
     let hlc = Arc::new(Hlc::new(device));
-    let engine = LoroEngine::with_dirs(device, hlc, snapshot_dir, Some(notes_dir))
+    let engine = LoroEngine::with_dirs(device, hlc, snapshot_dir, Some(notes_dir.clone()))
         .await
         .map_err(|e| anyhow::anyhow!("open loro engine: {e}"))?;
 
-    let report = backfill(&engine, apply).await?;
+    let report = backfill(&engine, Some(&notes_dir), apply).await?;
 
     if report.candidates.is_empty() {
         println!("backfill-task: no status-bearing blocks are missing #Task — nothing to do.");
         return Ok(());
     }
 
+    // Summary first.
+    let mut by_note: BTreeMap<&str, usize> = BTreeMap::new();
+    for c in &report.candidates {
+        *by_note.entry(c.slug.as_str()).or_default() += 1;
+    }
+    let hydrating: HashSet<&str> = report
+        .candidates
+        .iter()
+        .filter(|c| c.needs_hydration)
+        .map(|c| c.slug.as_str())
+        .collect();
     if apply {
-        println!("backfill-task: added #Task to {} block(s):", report.applied);
+        println!(
+            "backfill-task: added #Task to {} block(s) across {} note(s) ({} note(s) hydrated).",
+            report.applied,
+            by_note.len(),
+            report.hydrated_notes
+        );
     } else {
         println!(
-            "backfill-task (DRY RUN — re-run with --apply to write): {} block(s) would get #Task:",
-            report.candidates.len()
+            "backfill-task (DRY RUN — re-run with --apply to write): {} block(s) across {} note(s) would get #Task ({} non-resident note(s) would be hydrated).",
+            report.candidates.len(),
+            by_note.len(),
+            hydrating.len()
         );
     }
-    for c in &report.candidates {
+
+    println!("\nPer-note rollup:");
+    for (slug, n) in &by_note {
+        let hydrate = if hydrating.contains(slug) {
+            "  [hydrates]"
+        } else {
+            ""
+        };
+        println!("  {n:>5}  {slug}{hydrate}");
+    }
+
+    if verbose {
+        println!("\nBlocks:");
+        for c in &report.candidates {
+            println!("  {}:{}  {}", c.slug, hex16(&c.block_id), c.preview);
+        }
+    } else {
         println!(
-            "  {}:{}  {}",
-            hex16(&c.note_id),
-            hex16(&c.block_id),
-            c.preview
+            "\n({} block(s) total — re-run with --verbose for the full per-block list.)",
+            report.candidates.len()
         );
     }
     if !apply {
@@ -230,6 +329,8 @@ pub(crate) fn hex16(bytes: &[u8; 16]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     fn engine() -> LoroEngine {
         let dev = DeviceId::from_bytes([7u8; 16]);
@@ -262,7 +363,7 @@ mod tests {
         )
         .await;
 
-        let report = backfill(&e, false).await.unwrap();
+        let report = backfill(&e, None, false).await.unwrap();
 
         assert_eq!(report.candidates.len(), 1, "one status block lacks #Task");
         assert_eq!(report.applied, 0, "dry-run writes nothing");
@@ -280,7 +381,7 @@ mod tests {
         )
         .await;
 
-        let report = backfill(&e, true).await.unwrap();
+        let report = backfill(&e, None, true).await.unwrap();
 
         assert_eq!(report.applied, 1);
         let md = e.render_note_full(NOTE_A).await.unwrap();
@@ -306,8 +407,8 @@ mod tests {
         )
         .await;
 
-        backfill(&e, true).await.unwrap();
-        let second = backfill(&e, true).await.unwrap();
+        backfill(&e, None, true).await.unwrap();
+        let second = backfill(&e, None, true).await.unwrap();
 
         assert_eq!(
             second.candidates.len(),
@@ -334,7 +435,7 @@ mod tests {
         )
         .await;
 
-        let report = backfill(&e, false).await.unwrap();
+        let report = backfill(&e, None, false).await.unwrap();
 
         assert_eq!(
             report.candidates.len(),
@@ -348,11 +449,81 @@ mod tests {
         let e = engine();
         upsert(&e, NOTE_A, &format!("- just a note <!-- bid:{BID} -->\n")).await;
 
-        let report = backfill(&e, true).await.unwrap();
+        let report = backfill(&e, None, true).await.unwrap();
 
         assert_eq!(report.candidates.len(), 0);
         let md = e.render_note_full(NOTE_A).await.unwrap();
         assert!(!md.contains("tags:: Task"));
+    }
+
+    #[tokio::test]
+    async fn materialized_non_resident_status_block_is_found() {
+        // THE BUG (2026-06-10): on a lazily-resident mosaic the engine only
+        // holds docs for notes that have flowed through it — the canonical
+        // content for everything else is the materialized notes/<slug>.md.
+        // The live run printed "nothing to do" on ~3,951 task blocks because
+        // the scan only saw the ~9 resident docs. The scan must also read
+        // the materialized files.
+        let temp = TempDir::new().unwrap();
+        let notes = temp.path().join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        fs::write(
+            notes.join("2026-01-02.md"),
+            format!(
+                "---\ntitle: \"2026-01-02\"\n---\n\n- buy milk <!-- bid:{BID} -->\n  status:: doing\n"
+            ),
+        )
+        .unwrap();
+        let e = engine(); // fresh — NOTHING resident
+
+        let report = backfill(&e, Some(&notes), false).await.unwrap();
+
+        assert_eq!(
+            report.candidates.len(),
+            1,
+            "a status block in a materialized-but-not-resident note must be found"
+        );
+        assert!(report.candidates[0].needs_hydration);
+        assert_eq!(report.candidates[0].slug, "2026-01-02");
+        assert_eq!(report.applied, 0, "dry-run writes nothing");
+        assert_eq!(report.hydrated_notes, 0, "dry-run hydrates nothing");
+    }
+
+    #[tokio::test]
+    async fn non_resident_note_hydrates_on_apply_preserves_content_and_is_idempotent() {
+        let temp = TempDir::new().unwrap();
+        let notes = temp.path().join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        fs::write(
+            notes.join("2026-01-02.md"),
+            format!(
+                "---\ntitle: \"2026-01-02\"\n---\n\n- buy milk <!-- bid:{BID} -->\n  status:: doing\n"
+            ),
+        )
+        .unwrap();
+        let e = engine();
+
+        // Apply hydrates under the stable blake3(slug) id, then tags.
+        let report = backfill(&e, Some(&notes), true).await.unwrap();
+        assert_eq!(report.applied, 1);
+        assert_eq!(report.hydrated_notes, 1);
+        let note_id = crate::mosaic_notes::stable_uuid_from_slug("2026-01-02");
+        let md = e.render_note_full(note_id).await.unwrap();
+        assert!(md.contains("buy milk"), "content preserved: {md:?}");
+        assert!(md.contains("status:: doing"), "props preserved: {md:?}");
+        assert_eq!(
+            md.matches("tags:: Task").count(),
+            1,
+            "exactly one tags:: Task line: {md:?}"
+        );
+
+        // Now the note is resident — a re-run scans the ENGINE copy (no
+        // resident+disk double match) and finds nothing to do.
+        let second = backfill(&e, Some(&notes), true).await.unwrap();
+        assert_eq!(second.candidates.len(), 0, "idempotent");
+        assert_eq!(second.hydrated_notes, 0);
+        let md = e.render_note_full(note_id).await.unwrap();
+        assert_eq!(md.matches("tags:: Task").count(), 1, "{md:?}");
     }
 
     #[tokio::test]
@@ -365,7 +536,7 @@ mod tests {
         )
         .await;
 
-        let report = backfill(&e, false).await.unwrap();
+        let report = backfill(&e, None, false).await.unwrap();
 
         assert_eq!(
             report.candidates.len(),
