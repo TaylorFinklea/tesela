@@ -125,7 +125,7 @@ pub async fn run(mosaic: &Path, apply: bool) -> Result<()> {
 /// engine's materialized continuation-line form), or `None`. Conservative: the
 /// whole trimmed line must be `key:: value` with a bare-identifier key and a
 /// non-empty value — mirrors the engine's `solely_property_line`.
-fn line_property_key(line: &str) -> Option<String> {
+pub(crate) fn line_property_key(line: &str) -> Option<String> {
     let trimmed = line.trim();
     let (key, value) = trimmed.split_once(":: ")?;
     if value.is_empty() {
@@ -172,7 +172,7 @@ fn has_task(text: &str) -> bool {
 /// Read the mosaic's existing device id (no write — the backfill must not mint
 /// a `device_id.hex`); fall back to a random id if absent/malformed (harmless
 /// for the union/idempotent tag-add).
-fn load_device_id(mosaic: &Path) -> DeviceId {
+pub(crate) fn load_device_id(mosaic: &Path) -> DeviceId {
     let path = mosaic.join(".tesela").join("device_id.hex");
     if let Ok(bytes) = std::fs::read(&path) {
         let s = String::from_utf8_lossy(&bytes);
@@ -201,7 +201,7 @@ fn load_device_id(mosaic: &Path) -> DeviceId {
 /// lock the server holds, so the backfill refuses to run while a server is up
 /// (the CLI engine has no lock of its own). Mirrors the server's
 /// `acquire_mosaic_lock`. The returned `File` must stay alive for the duration.
-fn acquire_mosaic_lock(mosaic: &Path) -> Result<std::fs::File> {
+pub(crate) fn acquire_mosaic_lock(mosaic: &Path) -> Result<std::fs::File> {
     use std::os::unix::io::AsRawFd;
     let tesela_dir = mosaic.join(".tesela");
     std::fs::create_dir_all(&tesela_dir)?;
@@ -219,7 +219,7 @@ fn acquire_mosaic_lock(mosaic: &Path) -> Result<std::fs::File> {
     Ok(file)
 }
 
-fn hex16(bytes: &[u8; 16]) -> String {
+pub(crate) fn hex16(bytes: &[u8; 16]) -> String {
     let mut s = String::with_capacity(32);
     for b in bytes {
         s.push_str(&format!("{b:02x}"));
