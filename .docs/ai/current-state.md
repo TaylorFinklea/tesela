@@ -1,5 +1,12 @@
 # Current State
 
+## 2026-06-10 (late night) — Logseq tasks LIVE in Tesela: backfill + date recovery applied to the real mosaic
+
+- **`recover-logseq-dates` applied: 13/13** timed/repeating stamps the old importer dropped — incl. repeater→`recurring::` conversions (yearly house maintenance, monthly heartworm, biweekly tithing). Tool: `c40ea34` (crates/tesela-cli/src/recover_logseq_dates.rs; dry-run default; disk-match + NoteUpsert hydration for non-resident notes).
+- **`backfill-task` applied: 897 blocks across 241 notes** (234 hydrated) — ALL status-bearing blocks now carry #Task; re-run → "nothing to do" (idempotent, live-verified). ⚠ The original backfill scanned only RESIDENT engine docs (~9 of 515 post-re-import — lazy acquisition) and found NOTHING on the live run; retrofit `1bed829` scans materialized .md + hydrates via the shared `mosaic_notes.rs` machinery (extracted from the recovery tool). Rehearsed on a full mosaic copy first (matched exactly).
+- **Desktop relaunched by me** (`open -a Tesela`); embed child = newest debug server on a DYNAMIC port (63648 this launch — NOT 7474; 7474 is only the standalone default). `GET /backup/status` on the embed port: **schema v2 backup taken at relaunch — includes_loro_state: true, includes_sync_identity: true (group_key.bin + device/group ids + relay_state), 253 loro docs, 515 notes** — Taylor's "100% certain backups" requirement now has a live receipt.
+- Remaining user checks (harness-deck `20260610-saved-views` ask `views-result` + the round-3 card): tasks now populate /p/tasks + Agenda + his views on desktop AND phone (build 8); the 2 degenerate stamp-text blocks from 2024 can just be deleted when seen; raw leftover `SCHEDULED: <...>` text lines in recovered blocks = cosmetic, cleanup pass later if wanted.
+
 ## 2026-06-10 (night) — SAVED VIEWS shipped end-to-end (4 waves, ~6h); build 8 cutting
 
 The full feature from `phases/2026-06-10-views-registry-spec.md` (Taylor's 3 locked decisions): **synced views registry + DSL-first editing + views-are-inbox**, all platforms.
