@@ -505,14 +505,34 @@ pub async fn tick(
     }
     if due && state.inbound_cursor > 0 && state.catchup_notes.is_empty() {
         match deposit_snapshots(engine, &handle.client, state.inbound_cursor).await {
-            Ok(gc) => {
+            Ok(report) => {
+                // Stamp the cadence even on a partial (skipped-notes)
+                // deposit: retrying every tick can't shrink an oversize
+                // snapshot, it would just re-upload the mosaic in a loop.
                 state.last_snapshot_at = Some(now);
-                if gc > 0 {
-                    tracing::debug!(
-                        "relay snapshot deposit: covers seq {}, relay GC'd {} ops",
-                        state.inbound_cursor,
-                        gc
+                if report.complete() {
+                    if report.gc > 0 {
+                        tracing::debug!(
+                            "relay snapshot deposit: covers seq {} in {} chunk(s), relay GC'd {} ops",
+                            state.inbound_cursor,
+                            report.chunks_sent,
+                            report.gc
+                        );
+                    }
+                } else {
+                    let skipped: Vec<String> = report
+                        .skipped_streams
+                        .iter()
+                        .map(|s| hex::encode(s))
+                        .collect();
+                    let msg = format!(
+                        "relay snapshot deposit: {} note snapshot(s) exceed the relay body cap \
+                         and were SKIPPED ({:?}) — compaction watermark NOT advanced",
+                        skipped.len(),
+                        skipped
                     );
+                    tracing::warn!("{msg}");
+                    state.last_error = Some(msg);
                 }
             }
             Err(e) => {
@@ -536,12 +556,19 @@ pub async fn tick(
 
 /// Deposit a full per-note snapshot set covering relay-seq `covers_seq`
 /// (every tracked note's full Loro snapshot, keyed by note_id = stream_id).
-/// Returns the number of ops the relay compacted as a result. Idempotent.
+/// Idempotent.
+///
+/// Chunked under [`deposit_chunk_budget_bytes`] so a whole-mosaic deposit
+/// (hundreds of notes) can't 413 against the relay's request-body cap as
+/// one giant PUT. Only the FINAL chunk carries the real `covers_seq` (=
+/// relay GC + watermark advance); intermediate chunks deposit with
+/// `covers_seq = 0`, which both relay impls treat as inert, so a crash
+/// mid-deposit leaves the op log intact and the next deposit heals it.
 async fn deposit_snapshots(
     engine: &dyn tesela_sync::SyncEngine,
     client: &RelayClient,
     covers_seq: i64,
-) -> Result<u64, String> {
+) -> Result<tesela_sync::transport::relay::SnapshotDepositReport, String> {
     let note_ids = engine.tracked_note_ids().await;
     let mut snapshots: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(note_ids.len());
     for id in note_ids {
@@ -551,10 +578,10 @@ async fn deposit_snapshots(
         }
     }
     if snapshots.is_empty() {
-        return Ok(0);
+        return Ok(Default::default());
     }
     client
-        .put_snapshots(covers_seq, snapshots)
+        .put_snapshots_chunked(covers_seq, snapshots, deposit_chunk_budget_bytes())
         .await
         .map_err(|e| e.to_string())
 }
@@ -687,6 +714,18 @@ fn snapshot_interval_secs() -> i64 {
         .ok()
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(300)
+}
+
+/// Per-request body budget for chunked snapshot deposits. Env-tunable
+/// (`TESELA_RELAY_DEPOSIT_CHUNK_BYTES`); defaults to 4 MiB of serialized
+/// payload — comfortable headroom under the HA relay's 16 MiB cap while
+/// the 413-adaptive halving in `put_snapshots_chunked` degrades to fit
+/// tighter caps (e.g. the CF Worker's 1 MiB default) automatically.
+fn deposit_chunk_budget_bytes() -> usize {
+    std::env::var("TESELA_RELAY_DEPOSIT_CHUNK_BYTES")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(4 * 1024 * 1024)
 }
 
 /// One-time bring-up: register on the relay (idempotent / recovery

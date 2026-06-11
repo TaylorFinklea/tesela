@@ -628,6 +628,107 @@ async fn test_snapshot_deposit_compacts_oplog() {
 }
 
 #[tokio::test]
+async fn test_snapshot_covers_seq_zero_is_inert() {
+    // covers_seq = 0 is the chunked-deposit contract (every chunk except
+    // the last): the per-stream snapshot upserts MUST apply, but the
+    // compaction watermark MUST NOT advance and NO ops may be GC'd —
+    // a client crash between chunks leaves the op log fully intact.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let device = random_device_id_hex();
+    let now = now_secs();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now))
+        .send()
+        .await
+        .unwrap();
+
+    let ops_path = format!("/groups/{}/ops", hex::encode(group.id.as_bytes()));
+    for i in 0..2 {
+        let put_body =
+            json!({ "from_device": device, "payload_b64": b64(format!("op-{i}").as_bytes()) });
+        let body_bytes = serde_json::to_vec(&put_body).unwrap();
+        let headers = auth_headers(&group, &device, "PUT", &ops_path, "", &body_bytes);
+        client
+            .put(format!("{}{}", relay.base_url, ops_path))
+            .headers(headers)
+            .body(body_bytes)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Deposit a snapshot with covers_seq = 0 (a non-final chunk).
+    let stream_id = b"chunk-stream-key-Z";
+    let snap_payload = b"opaque-encrypted-snapshot-Z";
+    let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
+    let snap_body = json!({
+        "covers_seq": 0,
+        "snapshots": [{ "stream_id_b64": b64(stream_id), "payload_b64": b64(snap_payload) }],
+    });
+    let body_bytes = serde_json::to_vec(&snap_body).unwrap();
+    let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);
+    let dep = client
+        .put(format!("{}{}", relay.base_url, snap_path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        dep.status().is_success(),
+        "covers_seq=0 deposit must be accepted: {}",
+        dep.status()
+    );
+    let dep_body: serde_json::Value = dep.json().await.unwrap();
+    assert_eq!(dep_body["ok"], true);
+    assert_eq!(
+        dep_body["gc"].as_u64(),
+        Some(0),
+        "covers_seq=0 must GC nothing"
+    );
+
+    // The op log is fully intact.
+    let headers = auth_headers(&group, &device, "GET", &ops_path, "since=0", &[]);
+    let r = client
+        .get(format!("{}{}?since=0", relay.base_url, ops_path))
+        .headers(headers)
+        .send()
+        .await
+        .unwrap();
+    let rows: Vec<serde_json::Value> = r.json().await.unwrap();
+    let seqs: Vec<i64> = rows.iter().map(|v| v["seq"].as_i64().unwrap()).collect();
+    assert_eq!(seqs, vec![1, 2], "no op may be GC'd by a covers_seq=0 deposit");
+
+    // The watermark did NOT move, but the snapshot upsert DID apply.
+    let snaps_path = format!("/groups/{}/snapshots", hex::encode(group.id.as_bytes()));
+    let headers = auth_headers(&group, &device, "GET", &snaps_path, "", &[]);
+    let r = client
+        .get(format!("{}{}", relay.base_url, snaps_path))
+        .headers(headers)
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_success());
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(
+        body["compaction_seq"].as_i64(),
+        Some(0),
+        "covers_seq=0 must not advance the watermark"
+    );
+    let snaps = body["snapshots"].as_array().expect("snapshots array");
+    assert_eq!(snaps.len(), 1, "the snapshot upsert still applies");
+    assert_eq!(snaps[0]["stream_id_b64"], b64(stream_id));
+    assert_eq!(snaps[0]["payload_b64"], b64(snap_payload));
+}
+
+#[tokio::test]
 async fn test_snapshots_roundtrip() {
     // Deposit two snapshots with distinct stream_ids; GET /snapshots
     // returns both with byte-identical payloads.

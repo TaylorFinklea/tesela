@@ -380,6 +380,134 @@ impl RelayClient {
         covers_seq: i64,
         snapshots: Vec<(Vec<u8>, Vec<u8>)>,
     ) -> SyncResult<u64> {
+        let entries = self.seal_snapshot_entries(&snapshots)?;
+        let wire: Vec<serde_json::Value> = entries.into_iter().map(|e| e.wire).collect();
+        match self.send_snapshot_batch(covers_seq, &wire).await? {
+            SnapshotSendStatus::Accepted(gc) => Ok(gc),
+            SnapshotSendStatus::TooLarge => Err(SyncError::Crypto(format!(
+                "put_snapshots: relay returned {}",
+                StatusCode::PAYLOAD_TOO_LARGE
+            ))),
+        }
+    }
+
+    /// Chunked variant of [`put_snapshots`](Self::put_snapshots) for full-
+    /// mosaic deposits that would blow past a relay's request-body cap as
+    /// one PUT (the live 413 on ~250 resident notes).
+    ///
+    /// Packs the sealed snapshot entries into size-bounded chunks (at most
+    /// `budget_bytes` of serialized request body each, base64 inflation
+    /// included) and deposits them as a sequence of `PUT /snapshot` calls.
+    ///
+    /// ## GC safety invariant
+    ///
+    /// Every chunk EXCEPT the last is deposited with `covers_seq = 0`,
+    /// which both relay implementations treat as inert: the per-stream
+    /// snapshot upserts apply, but the compaction watermark only moves
+    /// forward (`MAX(existing, 0)` = no advance) and `DELETE … seq <= 0`
+    /// GCs nothing (seqs start at 1). ONLY the final chunk carries the
+    /// real `covers_seq`. A crash between chunks therefore leaves the
+    /// relay's op log un-GC'd and the watermark unmoved — the partial
+    /// upserts are harmless and the next full deposit heals everything.
+    ///
+    /// ## Adaptive degrade on 413
+    ///
+    /// The effective relay cap isn't known client-side (HA self-host
+    /// defaults differ from the CF Worker's 1 MiB), so on a 413 the chunk
+    /// budget is HALVED and the chunk re-packed + retried — down to a
+    /// floor of [`SNAPSHOT_CHUNK_FLOOR_BYTES`], after which entries are
+    /// sent one at a time. Nothing about the degraded budget is persisted;
+    /// the next deposit starts from the configured budget again.
+    ///
+    /// A SINGLE entry whose request alone still 413s can never succeed by
+    /// retrying (halving the budget doesn't shrink it), so it is skipped
+    /// with a loud warn and reported in
+    /// [`SnapshotDepositReport::skipped_streams`]. When anything was
+    /// skipped the final chunk is ALSO sent with `covers_seq = 0`:
+    /// advancing the watermark would GC ops whose content the deposited
+    /// snapshot set lacks (the skipped note), destroying them group-wide.
+    pub async fn put_snapshots_chunked(
+        &self,
+        covers_seq: i64,
+        snapshots: Vec<(Vec<u8>, Vec<u8>)>,
+        budget_bytes: usize,
+    ) -> SyncResult<SnapshotDepositReport> {
+        let mut report = SnapshotDepositReport::default();
+        if snapshots.is_empty() {
+            return Ok(report);
+        }
+        let mut queue: std::collections::VecDeque<SealedSnapshotEntry> =
+            self.seal_snapshot_entries(&snapshots)?.into();
+        // Headroom for the `{"covers_seq":…,"snapshots":[…]}` wrapper.
+        const ENVELOPE_OVERHEAD: usize = 64;
+        let mut budget = budget_bytes.max(1);
+        while let Some(first) = queue.pop_front() {
+            // Greedy pack: always at least one entry, then more while the
+            // serialized body stays under the current budget.
+            let mut size = ENVELOPE_OVERHEAD + first.size;
+            let mut chunk = vec![first];
+            while let Some(next) = queue.front() {
+                if size + next.size > budget {
+                    break;
+                }
+                size += next.size;
+                chunk.push(queue.pop_front().expect("front exists"));
+            }
+            // The real covers_seq rides ONLY on the final chunk, and only
+            // when no entry was skipped (see GC safety invariant above).
+            let covers = if queue.is_empty() && report.skipped_streams.is_empty() {
+                covers_seq
+            } else {
+                0
+            };
+            let wire: Vec<serde_json::Value> = chunk.iter().map(|e| e.wire.clone()).collect();
+            match self.send_snapshot_batch(covers, &wire).await? {
+                SnapshotSendStatus::Accepted(gc) => {
+                    report.gc += gc;
+                    report.chunks_sent += 1;
+                }
+                SnapshotSendStatus::TooLarge if chunk.len() == 1 => {
+                    // Retrying an identical single-entry request can never
+                    // succeed — the entry itself exceeds the relay's cap.
+                    let entry = chunk.into_iter().next().expect("one entry");
+                    tracing::warn!(
+                        stream_id = %hex::encode(&entry.stream_id),
+                        size_bytes = entry.size,
+                        "relay snapshot deposit: single snapshot exceeds the relay body cap — \
+                         SKIPPED (compaction watermark will NOT advance this deposit)"
+                    );
+                    report.skipped_streams.push(entry.stream_id);
+                }
+                SnapshotSendStatus::TooLarge => {
+                    // Adaptive degrade: halve the budget and re-pack this
+                    // chunk's entries (front of the queue keeps order). At
+                    // the floor, fall back to one-entry-per-request so a
+                    // tiny relay cap can't loop a same-size chunk forever.
+                    budget = if budget > SNAPSHOT_CHUNK_FLOOR_BYTES {
+                        (budget / 2).max(SNAPSHOT_CHUNK_FLOOR_BYTES)
+                    } else {
+                        1
+                    };
+                    tracing::warn!(
+                        new_budget_bytes = budget,
+                        chunk_entries = chunk.len(),
+                        "relay snapshot deposit: 413 on chunk — halving budget and retrying"
+                    );
+                    for entry in chunk.into_iter().rev() {
+                        queue.push_front(entry);
+                    }
+                }
+            }
+        }
+        Ok(report)
+    }
+
+    /// AEAD-seal each `(stream_id, plaintext)` snapshot into its wire-ready
+    /// JSON entry, with the serialized size pre-measured for chunk packing.
+    fn seal_snapshot_entries(
+        &self,
+        snapshots: &[(Vec<u8>, Vec<u8>)],
+    ) -> SyncResult<Vec<SealedSnapshotEntry>> {
         // Snapshots are sealed under a GROUP-only AAD (not the per-device
         // envelope AAD): unlike `/ops`, the `/snapshots` GET response does
         // not echo a depositing-device field, so the opener can't
@@ -388,7 +516,7 @@ impl RelayClient {
         // authenticating the ciphertext to this group's key.
         let aad = snapshot_aad(self.group_id.as_bytes());
         let mut entries = Vec::with_capacity(snapshots.len());
-        for (stream_id, plaintext) in &snapshots {
+        for (stream_id, plaintext) in snapshots {
             let sealed = aead_seal(&self.group_key, plaintext, &aad)?;
             let outer = OuterPayload {
                 nonce: sealed.nonce,
@@ -396,11 +524,33 @@ impl RelayClient {
             };
             let outer_bytes = postcard::to_allocvec(&outer)
                 .map_err(|e| SyncError::Other(format!("postcard serialize outer: {e}")))?;
-            entries.push(serde_json::json!({
+            let wire = serde_json::json!({
                 "stream_id_b64": base64_std(stream_id),
                 "payload_b64": base64_std(&outer_bytes),
-            }));
+            });
+            // Exact serialized footprint of this entry in the request body
+            // (+1 for the separating comma) — base64 inflation included.
+            let size = serde_json::to_vec(&wire)
+                .map_err(|e| SyncError::Other(format!("json entry: {e}")))?
+                .len()
+                + 1;
+            entries.push(SealedSnapshotEntry {
+                stream_id: stream_id.clone(),
+                wire,
+                size,
+            });
         }
+        Ok(entries)
+    }
+
+    /// One authenticated `PUT /groups/{id}/snapshot` carrying pre-sealed
+    /// wire entries. Distinguishes 413 (so the chunked deposit can adapt)
+    /// from other failures (propagated as errors).
+    async fn send_snapshot_batch(
+        &self,
+        covers_seq: i64,
+        entries: &[serde_json::Value],
+    ) -> SyncResult<SnapshotSendStatus> {
         let body = serde_json::json!({
             "covers_seq": covers_seq,
             "snapshots": entries,
@@ -436,6 +586,9 @@ impl RelayClient {
             .send()
             .await
             .map_err(net_err("put_snapshots"))?;
+        if resp.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            return Ok(SnapshotSendStatus::TooLarge);
+        }
         if !resp.status().is_success() {
             return Err(SyncError::Crypto(format!(
                 "put_snapshots: relay returned {}",
@@ -446,7 +599,7 @@ impl RelayClient {
             .json()
             .await
             .map_err(net_err("put_snapshots response body"))?;
-        Ok(ack.gc)
+        Ok(SnapshotSendStatus::Accepted(ack.gc))
     }
 
     /// Fetch the latest encrypted snapshot per opaque stream plus the
@@ -576,6 +729,51 @@ impl RelayClient {
         rand::thread_rng().fill_bytes(&mut bytes);
         base64_std(&bytes)
     }
+}
+
+/// Floor for the adaptive 413-halving in
+/// [`RelayClient::put_snapshots_chunked`]. Once the budget reaches this,
+/// the next 413 degrades to one-entry-per-request rather than re-packing
+/// a same-size chunk forever against a relay cap below the floor.
+pub const SNAPSHOT_CHUNK_FLOOR_BYTES: usize = 256 * 1024;
+
+/// Outcome of one [`RelayClient::put_snapshots_chunked`] deposit.
+#[derive(Debug, Default)]
+pub struct SnapshotDepositReport {
+    /// Total ops the relay GC'd (non-zero only when the final chunk's
+    /// real `covers_seq` landed — covers_seq=0 chunks never GC).
+    pub gc: u64,
+    /// Number of `PUT /snapshot` requests that succeeded.
+    pub chunks_sent: u32,
+    /// Stream ids (note ids) whose snapshot alone exceeded the relay's
+    /// body cap and were SKIPPED. Non-empty ⇒ the compaction watermark
+    /// was NOT advanced (the deposit withheld the real covers_seq) —
+    /// callers must surface this loudly.
+    pub skipped_streams: Vec<Vec<u8>>,
+}
+
+impl SnapshotDepositReport {
+    /// True when the deposit was complete (no oversize snapshot skipped)
+    /// and the final chunk carried the real `covers_seq`.
+    pub fn complete(&self) -> bool {
+        self.skipped_streams.is_empty()
+    }
+}
+
+/// A snapshot entry sealed + serialized once up front, so 413 retries
+/// re-send identical bytes instead of re-sealing (idempotent upserts).
+struct SealedSnapshotEntry {
+    stream_id: Vec<u8>,
+    wire: serde_json::Value,
+    size: usize,
+}
+
+/// Result of one `PUT /snapshot` request: accepted (with the relay's GC
+/// count) or rejected as over the body cap (the only failure the chunked
+/// deposit adapts to; everything else is an error).
+enum SnapshotSendStatus {
+    Accepted(u64),
+    TooLarge,
 }
 
 /// One [`RelayClient::poll`] batch.
