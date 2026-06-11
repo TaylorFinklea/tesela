@@ -1,5 +1,12 @@
 # Current State
 
+## 2026-06-11 — Relay 413 (snapshot deposit) FIXED live; LAN-direct question answered
+
+- Taylor hit `put_snapshots: relay returned 413` post-backfill (253 resident docs blew the un-chunked whole-mosaic deposit past the 16 MiB cap — the audit's deferred high finding made real). **Live sync was never down** (polls/puts/cursor all advancing) — only compaction housekeeping failed.
+- **Fix `22e7e95`**: client-side chunked deposits (`TESELA_RELAY_DEPOSIT_CHUNK_BYTES` default 4 MiB; greedy packing by exact serialized size; adaptive halving on 413 down to 256 KiB then per-entry; oversize single snapshot → skip + warn + watermark WITHHELD). **GC safety: covers_seq=0 on all but the LAST chunk** (verified inert on BOTH impls — watermark MAX + `seq<=0` GC; crash-between-chunks proof in `crates/tesela-relay/tests/snapshot_chunking.rs`). Conformance 22/22 vs both impls. Zero relay/Worker/HA changes.
+- **Applied live**: I quit+relaunched the desktop (embed = newest debug server, dynamic port — 52469 this launch); verified `/sync/relay/status` clean through a FULL deposit cycle (`last_error:null`, cursor 134→147).
+- **LAN-direct (Taylor asked to bypass the relay):** does NOT exist today — peer_sync was retired at the Loro cutover; LAN-over-Loro = roadmap step 6 rebuild. Answered honestly; he may want step 6 pulled forward after the CF spine — raise at the next roadmap conversation.
+
 ## 2026-06-10 (late night) — Logseq tasks LIVE in Tesela: backfill + date recovery applied to the real mosaic
 
 - **`recover-logseq-dates` applied: 13/13** timed/repeating stamps the old importer dropped — incl. repeater→`recurring::` conversions (yearly house maintenance, monthly heartworm, biweekly tithing). Tool: `c40ea34` (crates/tesela-cli/src/recover_logseq_dates.rs; dry-run default; disk-match + NoteUpsert hydration for non-resident notes).
