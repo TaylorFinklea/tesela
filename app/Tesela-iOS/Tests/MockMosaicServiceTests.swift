@@ -49,6 +49,30 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertFalse(BlockFold.hasChildren(block: blocks[2], in: blocks))
     }
 
+    // MARK: - Past daily editing
+
+    func testEditPastDailyBlockUpdatesFeedEntryAndLoadedPage() async {
+        let service = MockMosaicService()
+        service.testableSetPastDailies([
+            DailyEntry(
+                id: "2026-06-08",
+                blocks: [
+                    Block(id: "old-root", kind: .note, text: "old root"),
+                    Block(id: "old-child", kind: .note, text: "old child", indent: 1),
+                ]
+            )
+        ])
+
+        service.editPastDailyBlock(dayId: "2026-06-08", blockId: "old-child", text: "edited child #done")
+        await service.testableWaitForPendingTasks()
+
+        XCTAssertEqual(service.pastDailies[0].blocks[1].text, "edited child")
+        XCTAssertEqual(service.pastDailies[0].blocks[1].rawText, "edited child")
+        XCTAssertEqual(service.pastDailies[0].blocks[1].tags, ["#done"])
+        XCTAssertEqual(service.loadedPageBlocks["2026-06-08"]?[1].text, "edited child")
+        XCTAssertEqual(service.loadedPageBlocks["2026-06-08"]?[1].tags, ["#done"])
+    }
+
     // MARK: - parseBlocks line-number tracking
 
     /// Verify that each Block's `lineNumber` records the 0-based index of

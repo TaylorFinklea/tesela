@@ -23,9 +23,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
     @Published private(set) var todayBlocks: [Block]
     @Published private(set) var yesterdayBlocks: [Block]
 
-    /// Daily notes older than yesterday, newest first — rendered as
-    /// dimmed, display-only sections below Yesterday in the Daily feed.
-    /// Capped to a recent window; days with no blocks are dropped.
+    /// Daily notes older than yesterday, newest first. Capped to a
+    /// recent window; days with no blocks are dropped.
     @Published private(set) var pastDailies: [DailyEntry] = []
 
     /// How many past-day sections (older than yesterday) the Daily feed
@@ -381,6 +380,72 @@ final class MockMosaicService: ObservableObject, MosaicService {
         guard !slug.isEmpty else { return }
         let snapshot = yesterdayBlocks
         Task { await pushPage(id: slug, blocks: snapshot) }
+    }
+
+    // MARK: - Past daily edits
+
+    /// Older dailies are cached in `pastDailies`, not `loadedPageBlocks`,
+    /// until their full page is opened. Mutate the feed cache first so the
+    /// inline editor updates immediately, then route the same snapshot
+    /// through `pushPage` so persistence stays on the normal page path.
+    private func updatePastDaily(dayId: String, _ mutate: (inout [Block]) -> Void) {
+        guard let dayIdx = pastDailies.firstIndex(where: { $0.id == dayId }) else { return }
+        var blocks = pastDailies[dayIdx].blocks
+        mutate(&blocks)
+        pastDailies[dayIdx] = DailyEntry(id: dayId, blocks: blocks)
+        Task { await pushPage(id: dayId, blocks: blocks) }
+    }
+
+    func togglePastDailyTask(dayId: String, blockId: String) {
+        guard let dayIdx = pastDailies.firstIndex(where: { $0.id == dayId }) else { return }
+        var blocks = pastDailies[dayIdx].blocks
+        guard let idx = blocks.firstIndex(where: { $0.id == blockId }),
+              blocks[idx].kind == .task
+        else { return }
+        blocks[idx].done.toggle()
+        let done = blocks[idx].done
+        upsert(
+            &blocks[idx].properties,
+            key: "status",
+            value: Self.taskStatusValue(done: done)
+        )
+        pastDailies[dayIdx] = DailyEntry(id: dayId, blocks: blocks)
+        persistTaskToggle(noteId: dayId, bid: blockId, done: done) { [weak self] in
+            Task { await self?.pushPage(id: dayId, blocks: blocks) }
+        }
+    }
+
+    func editPastDailyBlock(dayId: String, blockId: String, text: String) {
+        updatePastDaily(dayId: dayId) { blocks in
+            guard let idx = blocks.firstIndex(where: { $0.id == blockId }) else { return }
+            let (body, tags) = Self.splitInlineTags(text)
+            blocks[idx].text = body.components(separatedBy: "\n").first ?? body
+            blocks[idx].rawText = body
+            blocks[idx].tags = tags
+        }
+    }
+
+    @discardableResult
+    func appendPastDailyBlock(dayId: String, kind: BlockKind = .note) -> String {
+        let id = UUID().uuidString.lowercased()
+        updatePastDaily(dayId: dayId) { blocks in
+            blocks.append(Block(id: id, kind: kind, text: "", noteId: dayId))
+        }
+        return id
+    }
+
+    func deletePastDailyBlock(dayId: String, blockId: String) {
+        updatePastDaily(dayId: dayId) { blocks in
+            blocks.removeAll { $0.id == blockId }
+        }
+    }
+
+    func indentPastDailyBlock(dayId: String, blockId: String, by delta: Int) {
+        updatePastDaily(dayId: dayId) { blocks in
+            guard let idx = blocks.firstIndex(where: { $0.id == blockId }) else { return }
+            let maxIndent = idx > 0 ? blocks[idx - 1].indent + 1 : 0
+            blocks[idx].indent = max(0, min(maxIndent, blocks[idx].indent + delta))
+        }
     }
 
     /// Cycle a block's status: note → open task → done task → note.
@@ -3522,6 +3587,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// lines) through parse → render without going over HTTP.
     func testableRenderBody(from blocks: [Block]) -> String {
         renderBody(from: blocks)
+    }
+
+    func testableSetPastDailies(_ entries: [DailyEntry]) {
+        pastDailies = entries
+    }
+
+    func testableWaitForPendingTasks() async {
+        try? await Task.sleep(nanoseconds: 1_000_000)
     }
 }
 

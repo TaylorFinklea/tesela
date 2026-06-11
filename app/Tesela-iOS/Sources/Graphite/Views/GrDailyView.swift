@@ -73,18 +73,15 @@ struct GrDailyView: View {
                 // own, so a remote splice arriving in that gap finds a nil
                 // inserter (no-op) rather than the wrong block's text view.
                 mosaic.openBlockInserter = nil
-                if let id = newValue,
-                   let block = mosaic.todayBlocks.first(where: { $0.id == id })
-                    ?? mosaic.yesterdayBlocks.first(where: { $0.id == id })
-                {
+                if let id = newValue, let target = focusedBlock(for: id) {
                     captureContext.focusedBlock = CaptureBlockRef(
-                        id: id, preview: block.text, pageSlug: nil
+                        id: id, preview: target.block.text, pageSlug: target.pageSlug
                     )
                 } else {
                     captureContext.focusedBlock = nil
                 }
             }
-            .onChange(of: mosaic.todayBlocks.map(\.id) + mosaic.yesterdayBlocks.map(\.id)) { _, newIds in
+            .onChange(of: visibleBlockIds) { _, newIds in
                 if let editing = editingBlockId, !newIds.contains(editing) {
                     editingBlockId = nil
                 }
@@ -235,7 +232,7 @@ struct GrDailyView: View {
         }
     }
 
-    // ── Past days (display-only; header pushes the editable page) ────────
+    // ── Past days ───────────────────────────────────────────────────────
 
     @ViewBuilder
     private var pastDaysSection: some View {
@@ -255,12 +252,45 @@ struct GrDailyView: View {
                     indent: block.indent,
                     isDone: block.done,
                     tags: block.tags,
+                    properties: block.properties,
+                    isEditing: editingBlockId == block.id,
                     isFoldable: BlockFold.hasChildren(block: block, in: day.blocks),
                     isCollapsed: collapsedBlockIds.contains(block.id),
-                    onToggleFold: { toggleFold(block.id) }
+                    onToggleFold: { toggleFold(block.id) },
+                    onToggleTask: {
+                        mosaic.togglePastDailyTask(dayId: day.id, blockId: block.id)
+                    },
+                    onTap: { editingBlockId = block.id },
+                    onCommitEdit: { newText in
+                        mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: newText)
+                        editingBlockId = nil
+                    },
+                    onTextChanged: { newText in
+                        mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: newText)
+                    },
+                    onMenuAction: { action in handlePastDailyAction(action, on: block, dayId: day.id) },
+                    onSplitToNewBlock: { committedText in
+                        mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: committedText)
+                        let newId = mosaic.appendPastDailyBlock(dayId: day.id, kind: .note)
+                        editingBlockId = newId
+                    },
+                    onIndent: { delta in
+                        mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: delta)
+                    }
                 )
                 .opacity(0.6)
             }
+        }
+    }
+
+    private func handlePastDailyAction(_ action: BlockAction, on block: Block, dayId: String) {
+        switch action {
+        case .edit:        editingBlockId = block.id
+        case .delete:      mosaic.deletePastDailyBlock(dayId: dayId, blockId: block.id)
+        case .yankLink:    UIPasteboard.general.string = "tesela://block/\(block.id)"
+        case .indent:      mosaic.indentPastDailyBlock(dayId: dayId, blockId: block.id, by: 1)
+        case .archive:     mosaic.deletePastDailyBlock(dayId: dayId, blockId: block.id)
+        case .promote, .convertToTag, .moveTo: break
         }
     }
 
@@ -297,6 +327,27 @@ struct GrDailyView: View {
         } else {
             collapsedBlockIds.insert(blockId)
         }
+    }
+
+    private var visibleBlockIds: [String] {
+        mosaic.todayBlocks.map(\.id)
+            + mosaic.yesterdayBlocks.map(\.id)
+            + mosaic.pastDailies.flatMap { $0.blocks.map(\.id) }
+    }
+
+    private func focusedBlock(for id: String) -> (block: Block, pageSlug: String?)? {
+        if let block = mosaic.todayBlocks.first(where: { $0.id == id }) {
+            return (block, nil)
+        }
+        if let block = mosaic.yesterdayBlocks.first(where: { $0.id == id }) {
+            return (block, nil)
+        }
+        for day in mosaic.pastDailies {
+            if let block = day.blocks.first(where: { $0.id == id }) {
+                return (block, day.id)
+            }
+        }
+        return nil
     }
 
     // ── Graphite day divider (.gr-dayhdr) ───────────────────────────────

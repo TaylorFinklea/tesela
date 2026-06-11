@@ -85,24 +85,20 @@ struct DailyView: View {
                 // edited so an incoming WS event can't replace the text
                 // out from under the cursor.
                 mosaic.isEditingBlock = (newValue != nil)
-                if let id = newValue, let block = mosaic.todayBlocks.first(where: { $0.id == id })
-                    ?? mosaic.yesterdayBlocks.first(where: { $0.id == id })
-                {
+                if let id = newValue, let target = focusedBlock(for: id) {
                     captureContext.focusedBlock = CaptureBlockRef(
                         id: id,
-                        preview: block.text,
-                        pageSlug: nil
+                        preview: target.block.text,
+                        pageSlug: target.pageSlug
                     )
                 } else {
                     captureContext.focusedBlock = nil
                 }
             }
-            .onChange(of: mosaic.todayBlocks.map(\.id) + mosaic.yesterdayBlocks.map(\.id)) { _, newIds in
+            .onChange(of: visibleBlockIds) { _, newIds in
                 // If the day rolled over (or a remote delete dropped the
-                // block we were editing), the previously-focused block id
-                // no longer exists in either visible section. Clear focus
-                // so the keyboard doesn't latch onto a stale id from a
-                // prior day's blocks.
+                // block we were editing), clear focus so the keyboard
+                // doesn't latch onto a stale id from a prior day's blocks.
                 if let editing = editingBlockId, !newIds.contains(editing) {
                     editingBlockId = nil
                 }
@@ -308,8 +304,8 @@ struct DailyView: View {
         }
     }
 
-    /// Daily notes older than yesterday — dimmed, display-only. The
-    /// date header is tappable and pushes the full editable daily page.
+    /// Daily notes older than yesterday. The date header still pushes the
+    /// full page, while rows can be edited inline like Yesterday.
     @ViewBuilder
     private var pastDays: some View {
         ForEach(mosaic.pastDailies) { day in
@@ -328,12 +324,51 @@ struct DailyView: View {
                     indent: block.indent,
                     isDone: block.done,
                     tags: block.tags,
+                    properties: block.properties,
+                    isEditing: editingBlockId == block.id,
                     isFoldable: BlockFold.hasChildren(block: block, in: day.blocks),
                     isCollapsed: collapsedBlockIds.contains(block.id),
-                    onToggleFold: { toggleFold(block.id) }
+                    onToggleFold: { toggleFold(block.id) },
+                    onToggleTask: {
+                        mosaic.togglePastDailyTask(dayId: day.id, blockId: block.id)
+                    },
+                    onTap: { editingBlockId = block.id },
+                    onCommitEdit: { newText in
+                        mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: newText)
+                        editingBlockId = nil
+                    },
+                    onTextChanged: { newText in
+                        mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: newText)
+                    },
+                    onMenuAction: { action in handlePastDailyAction(action, on: block, dayId: day.id) },
+                    onSplitToNewBlock: { committedText in
+                        mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: committedText)
+                        let newId = mosaic.appendPastDailyBlock(dayId: day.id, kind: .note)
+                        editingBlockId = newId
+                    },
+                    onIndent: { delta in
+                        mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: delta)
+                    }
                 )
                 .opacity(0.7)
             }
+        }
+    }
+
+    private func handlePastDailyAction(_ action: BlockAction, on block: Block, dayId: String) {
+        switch action {
+        case .edit:
+            editingBlockId = block.id
+        case .delete:
+            mosaic.deletePastDailyBlock(dayId: dayId, blockId: block.id)
+        case .yankLink:
+            UIPasteboard.general.string = "tesela://block/\(block.id)"
+        case .indent:
+            mosaic.indentPastDailyBlock(dayId: dayId, blockId: block.id, by: 1)
+        case .archive:
+            mosaic.deletePastDailyBlock(dayId: dayId, blockId: block.id)
+        case .promote, .convertToTag, .moveTo:
+            break
         }
     }
 
@@ -362,6 +397,27 @@ struct DailyView: View {
         } else {
             collapsedBlockIds.insert(blockId)
         }
+    }
+
+    private var visibleBlockIds: [String] {
+        mosaic.todayBlocks.map(\.id)
+            + mosaic.yesterdayBlocks.map(\.id)
+            + mosaic.pastDailies.flatMap { $0.blocks.map(\.id) }
+    }
+
+    private func focusedBlock(for id: String) -> (block: Block, pageSlug: String?)? {
+        if let block = mosaic.todayBlocks.first(where: { $0.id == id }) {
+            return (block, nil)
+        }
+        if let block = mosaic.yesterdayBlocks.first(where: { $0.id == id }) {
+            return (block, nil)
+        }
+        for day in mosaic.pastDailies {
+            if let block = day.blocks.first(where: { $0.id == id }) {
+                return (block, day.id)
+            }
+        }
+        return nil
     }
 
     /// Five placeholder bullets at varying widths. Wrapped in a
