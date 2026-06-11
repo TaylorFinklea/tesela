@@ -40,10 +40,32 @@ final class SavedViewsTests: XCTestCase {
     }
 
     func testValidationCarveOuts() {
-        // Server parity: a lone `kind:` selector and a bare ORDER BY are
-        // valid queries with an empty predicate tree.
+        // Server parity: a lone `kind:` selector and a sort-only ORDER BY
+        // query are valid queries with an empty predicate tree.
         XCTAssertNil(SavedViewLogic.dslValidationError("kind:block"))
         XCTAssertNil(SavedViewLogic.dslValidationError("ORDER BY created"))
+    }
+
+    func testValidationOrderByCarveOutIsStructuralNotSubstring() {
+        // Adversarial-review fix (2026-06-10): the carve-out keys off
+        // whether an ORDER BY with at least one field ACTUALLY parsed —
+        // the server rule (`parse_query(...).sort.is_some()`, views.rs) —
+        // never off a substring. In `.relay` mode this check is the ONLY
+        // gate, so a substring would persist match-everything views.
+        //
+        // The substring trap: "reorder bytes" contains "order by".
+        XCTAssertNotNil(SavedViewLogic.dslValidationError("reorder bytes"))
+        // ORDER BY with no sort field parses to NO sort (Rust
+        // `parse_order_by` returns None on empty parts) → rejected.
+        XCTAssertNotNil(SavedViewLogic.dslValidationError("order by"))
+        XCTAssertNotNil(SavedViewLogic.dslValidationError("ORDER BY"))
+        // "order" without "by" is just a dropped bareword.
+        XCTAssertNotNil(SavedViewLogic.dslValidationError("order created"))
+        // Parsed sorts pass — server parity for case, direction, and
+        // multi-key shapes.
+        XCTAssertNil(SavedViewLogic.dslValidationError("order by created desc"))
+        XCTAssertNil(SavedViewLogic.dslValidationError("Order By status, deadline desc"))
+        XCTAssertNil(SavedViewLogic.dslValidationError("status:todo ORDER BY deadline"))
     }
 
     // MARK: - Fragment insertion (chips write into the DSL string)

@@ -35,6 +35,48 @@ final class LocalQueryEngineTests: XCTestCase {
         XCTAssertTrue(parsed.clauses.allSatisfy { $0.negated })
     }
 
+    // MARK: - ORDER BY surfacing (mirrors parse_query's `sort`)
+
+    /// Mirrors the Rust `parse_order_by` contract (query.rs): `sort` is
+    /// populated only when an `ORDER BY` with at least one field actually
+    /// parsed — the structural signal `SavedViewLogic.dslValidationError`
+    /// gates its carve-out on (adversarial-review fix, 2026-06-10).
+    func testOrderBySingleFieldDefaultAscending() {
+        XCTAssertEqual(LocalQueryEngine.parseSimpleDsl("ORDER BY deadline").sort, "deadline")
+    }
+
+    func testOrderByWithDirectionAndMultiKey() {
+        XCTAssertEqual(
+            LocalQueryEngine.parseSimpleDsl("status:todo ORDER BY deadline DESC").sort,
+            "deadline desc"
+        )
+        XCTAssertEqual(
+            LocalQueryEngine.parseSimpleDsl("order by status, deadline desc").sort,
+            "status, deadline desc"
+        )
+        XCTAssertEqual(
+            LocalQueryEngine.parseSimpleDsl("status = todo order by deadline asc").sort,
+            "deadline asc"
+        )
+    }
+
+    func testOrderByAbsentOrFieldlessLeavesSortNil() {
+        XCTAssertNil(LocalQueryEngine.parseSimpleDsl("status:todo").sort)
+        // Bare ORDER BY with no field → no sort (Rust: empty parts → None).
+        XCTAssertNil(LocalQueryEngine.parseSimpleDsl("order by").sort)
+        // The substring trap: "reorder bytes" is two dropped barewords,
+        // not an ORDER BY clause.
+        XCTAssertNil(LocalQueryEngine.parseSimpleDsl("reorder bytes").sort)
+        // "order" without "by" is a dropped bareword too.
+        XCTAssertNil(LocalQueryEngine.parseSimpleDsl("order created").sort)
+    }
+
+    func testOrderByDoesNotEatPredicates() {
+        let parsed = LocalQueryEngine.parseSimpleDsl("tag:project ORDER BY created")
+        XCTAssertEqual(parsed.clauses.count, 1)
+        XCTAssertEqual(parsed.sort, "created")
+    }
+
     // MARK: - Inbox filtering (mirrors block_matches)
 
     func testUntriagedProseBlockLandsInInbox() {

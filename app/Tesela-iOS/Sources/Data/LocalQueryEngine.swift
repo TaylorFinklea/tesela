@@ -385,6 +385,13 @@ enum LocalQueryEngine {
         }
         var kind: Kind
         var clauses: [Clause]
+        /// Mirror of Rust `Query.sort`: the pre-composed `ORDER BY`
+        /// string ("deadline desc", "status, deadline desc"), or nil when
+        /// no ORDER BY with at least one field parsed. Not evaluated
+        /// locally (sorting stays server-side) — surfaced so validation
+        /// can apply the server's structural sort-only carve-out
+        /// (`SavedViewLogic.dslValidationError`).
+        var sort: String? = nil
     }
 
     /// Mirror of `tokenize` (query.rs): punctuation + quoted strings +
@@ -475,10 +482,14 @@ enum LocalQueryEngine {
     ///     token with the negation still pending, mirroring how
     ///     Rust's outer `Not` wraps whatever the inner retry returns.
     ///   * `OR` / parens / JQL (`IN (…)`, `LIKE`, `BETWEEN`,
-    ///     `IS NULL`, `ORDER BY`) aren't evaluated locally: paren
-    ///     tokens are skipped (so a single parenthesized group
-    ///     degrades to its inner clauses), JQL keywords drop as
-    ///     barewords, and `or` ends the clause list.
+    ///     `IS NULL`) aren't evaluated locally: paren tokens are
+    ///     skipped (so a single parenthesized group degrades to its
+    ///     inner clauses), JQL keywords drop as barewords, and `or`
+    ///     ends the clause list.
+    ///   * `ORDER BY` stops the clause list (mirroring Rust
+    ///     `parse_unary`'s stop) so `parseOrderBy` can surface the
+    ///     sort spec at the top level — sorting itself stays
+    ///     server-side; the spec exists for validation parity.
     private struct DslParser {
         let tokens: [SpannedDslToken]
         let bytes: [UInt8]
@@ -490,6 +501,20 @@ enum LocalQueryEngine {
         func peekKeyword(_ kw: String) -> Bool {
             if case .word(let w)? = peek { return w.lowercased() == kw }
             return false
+        }
+
+        /// Mirror of `peek_order_by` — is the upcoming two-token
+        /// sequence `ORDER BY` (case-insensitive)? Stops expression
+        /// parsing so the trailing sort clause is picked up by
+        /// `parseOrderBy` at the top level.
+        var peekOrderBy: Bool {
+            guard case .word(let order)? = peek, order.lowercased() == "order" else {
+                return false
+            }
+            guard pos + 1 < tokens.count, case .word(let by) = tokens[pos + 1].tok else {
+                return false
+            }
+            return by.lowercased() == "by"
         }
 
         /// Mirror of `peek_starts_unary` — `(`, `-`, or a word that
@@ -523,6 +548,10 @@ enum LocalQueryEngine {
         mutating func parseUnary() -> SimpleDsl.Clause? {
             var negated = false
             while true {
+                // Mirror of Rust `parse_unary`'s ORDER BY stop: without
+                // it, ORDER / BY / the field names would be consumed as
+                // dropped barewords and the sort never populated.
+                if peekOrderBy { return nil }
                 if peekKeyword("not") || peek == .minus {
                     pos += 1
                     negated.toggle()
@@ -664,6 +693,35 @@ enum LocalQueryEngine {
             }
         }
 
+        /// Mirror of `parse_order_by` (query.rs): a trailing
+        /// `ORDER BY field [ASC|DESC] [, field [ASC|DESC]] …` clause,
+        /// pre-composed into the comma-separated string shape Rust's
+        /// `Query.sort` carries (lowercased keys; omitted direction =
+        /// ascending). nil when no `ORDER BY` sits at the cursor OR no
+        /// field word followed it — "order by" alone is NOT a sort,
+        /// which is what makes the validation carve-out structural.
+        mutating func parseOrderBy() -> String? {
+            guard peekOrderBy else { return nil }
+            pos += 2 // consume ORDER BY
+            var parts: [String] = []
+            while pos < tokens.count {
+                guard case .word(let key) = tokens[pos].tok else { break }
+                pos += 1
+                var part = key.lowercased()
+                if peekKeyword("desc") {
+                    pos += 1
+                    part += " desc"
+                } else if peekKeyword("asc") {
+                    pos += 1
+                    part += " asc"
+                }
+                parts.append(part)
+                guard peek == .comma else { break }
+                pos += 1 // consume comma
+            }
+            return parts.isEmpty ? nil : parts.joined(separator: ", ")
+        }
+
         /// Mirror of `parse_comma_list_until_whitespace` (the legacy
         /// `tag-in:` list) — words/quoted + commas until any other
         /// token; empty entries (trailing comma) stripped.
@@ -691,7 +749,10 @@ enum LocalQueryEngine {
         let (tokens, bytes) = tokenizeDsl(dsl)
         var parser = DslParser(tokens: tokens, bytes: bytes)
         let clauses = parser.parseClauses()
-        return SimpleDsl(kind: parser.kind, clauses: clauses)
+        // Same top-level sequencing as Rust `parse_query`: the sort is
+        // parsed at wherever expression parsing stopped.
+        let sort = parser.parseOrderBy()
+        return SimpleDsl(kind: parser.kind, clauses: clauses, sort: sort)
     }
 
     /// Per-block evaluation context: the parsed block enriched with the

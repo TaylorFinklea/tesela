@@ -113,19 +113,21 @@ enum SavedViewLogic {
     /// "unparseable" means a NON-EMPTY input from which the parser
     /// recognized ZERO predicates — saving it would silently create a
     /// match-everything view. Carve-outs (server parity): a lone
-    /// `kind:…` selector and a bare `ORDER BY` clause are valid queries
-    /// with an empty predicate tree. Returns the error message, or nil
-    /// when the DSL is saveable.
+    /// `kind:…` selector, and an `ORDER BY` that ACTUALLY parsed a sort
+    /// field (`parsed.sort != nil`, mirroring the server's
+    /// `parsed.sort.is_none()` gate) — STRUCTURAL, never a substring:
+    /// in `.relay` mode this check is the only gate (the engine's
+    /// views_upsert doesn't validate DSL), and a substring would let
+    /// "reorder bytes" persist a match-everything view fleet-wide.
+    /// Returns the error message, or nil when the DSL is saveable.
     static func dslValidationError(_ dsl: String) -> String? {
         let trimmed = dsl.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             return "Query must not be empty"
         }
         let parsed = LocalQueryEngine.parseSimpleDsl(trimmed)
-        let lowered = trimmed.lowercased()
-        let mentionsKind = lowered.contains("kind:")
-        let mentionsOrderBy = lowered.contains("order by")
-        if parsed.clauses.isEmpty && !mentionsKind && !mentionsOrderBy {
+        let mentionsKind = trimmed.lowercased().contains("kind:")
+        if parsed.clauses.isEmpty && parsed.sort == nil && !mentionsKind {
             return "No filters recognized in “\(trimmed)” — use key:value "
                 + "filters like status:todo, tag:project, -has:scheduled"
         }
