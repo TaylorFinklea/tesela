@@ -19,6 +19,7 @@ use tesela_core::{
     config::{Config, ServerConfig},
     db::SqliteIndex,
     indexer::{Indexer, NoteEvent},
+    link::extract_wiki_links,
     storage::filesystem::FsNoteStore,
     traits::{link_graph::LinkGraph, note_store::NoteStore, search_index::SearchIndex},
     types::TypeRegistry,
@@ -146,7 +147,6 @@ async fn main() -> Result<()> {
 
     let indexer =
         Indexer::new(store_dyn, index_dyn, graph_dyn).with_notify_tx(note_event_tx.clone());
-    indexer.initial_index().await?;
 
     // Auto-create tag pages for any tags that don't have a corresponding page
     {
@@ -219,6 +219,9 @@ async fn main() -> Result<()> {
             }
         }
     }
+
+    let indexed = rebuild_query_index_from_files(&store, &index).await?;
+    info!("Initial index complete: {} notes indexed", indexed);
 
     let indexer_handle = indexer.start().await?;
 
@@ -857,6 +860,10 @@ async fn bring_up_relay_if_configured(
         // before the first poll, so a device whose ops the relay already GC'd
         // still converges (the subsequent `?since=` poll collects the tail).
         sync_relay::bootstrap_from_snapshots(&*state.sync_engine, &handle).await;
+        match rebuild_query_index_from_files(&state.store, &state.index).await {
+            Ok(n) => tracing::info!("relay bootstrap: rebuilt query index from {n} file(s)"),
+            Err(e) => tracing::warn!("relay bootstrap: query index rebuild failed: {e}"),
+        }
     }
 
     // Spawn the periodic tick. Single task; runs alongside the LAN
@@ -951,6 +958,16 @@ fn load_config(mosaic: &std::path::Path) -> Config {
     }
 }
 
+async fn rebuild_query_index_from_files(store: &FsNoteStore, index: &SqliteIndex) -> Result<usize> {
+    let notes = store.list(None, usize::MAX, 0).await?;
+    index.rebuild_from_notes(&notes).await?;
+    for note in &notes {
+        let links = extract_wiki_links(&note.content);
+        index.update_links(&note.id, &links).await?;
+    }
+    Ok(notes.len())
+}
+
 fn find_mosaic() -> Result<PathBuf> {
     // 1. Explicit env override — CI / dev scripts / power users.
     if let Ok(env) = std::env::var("TESELA_DEFAULT_MOSAIC") {
@@ -1038,6 +1055,44 @@ mod tests {
         assert!(!is_tailscale_cgnat(&Ipv4Addr::new(100, 128, 0, 0)));
         assert!(!is_tailscale_cgnat(&Ipv4Addr::new(10, 15, 109, 184)));
         assert!(!is_tailscale_cgnat(&Ipv4Addr::new(192, 168, 1, 5)));
+    }
+
+    #[tokio::test]
+    async fn rebuild_query_index_from_files_backfills_saved_view_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mosaic = tmp.path().to_path_buf();
+        std::fs::create_dir_all(mosaic.join(".tesela")).unwrap();
+        std::fs::create_dir_all(mosaic.join("notes")).unwrap();
+        std::fs::write(
+            mosaic.join("notes").join("2026-06-11.md"),
+            "---\ntitle: 2026-06-11\ntags: [daily]\n---\n- Write release notes <!-- bid:11111111-1111-1111-1111-111111111111 -->\n  tags:: Task\n  status:: todo\n",
+        )
+        .unwrap();
+
+        let store = FsNoteStore::new(
+            mosaic.clone(),
+            tesela_core::config::StorageConfig::default(),
+        );
+        let index = SqliteIndex::open(&mosaic.join(".tesela").join("test.db"))
+            .await
+            .unwrap();
+        let before = index
+            .execute_query(&tesela_core::query::parse_query("tag:Task"), None, None)
+            .await
+            .unwrap();
+        assert_eq!(before.groups[0].items.len(), 0);
+
+        let count = rebuild_query_index_from_files(&store, &index)
+            .await
+            .unwrap();
+        let after = index
+            .execute_query(&tesela_core::query::parse_query("tag:Task"), None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert_eq!(after.groups[0].items.len(), 1);
+        assert_eq!(after.groups[0].items[0].text, "Write release notes");
     }
 
     /// End-to-end real-socket round-trip for the Phase A bidirectional WS:

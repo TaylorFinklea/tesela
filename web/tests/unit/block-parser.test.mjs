@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 
-import { splitInlineAndTrailingTags } from "../../src/lib/block-parser.ts";
+import { parseBlocks, splitInlineAndTrailingTags } from "../../src/lib/block-parser.ts";
 
 test("split: no tags → empty arrays", () => {
   const r = splitInlineAndTrailingTags("just text");
@@ -80,4 +80,18 @@ test("split: same #tag both inline and trailing yields both entries", () => {
   const r = splitInlineAndTrailingTags("#foo bar #foo");
   assert.deepEqual(r.inline, ["foo"]);
   assert.deepEqual(r.trailing, ["foo"]);
+});
+
+test("parseBlocks strips bid comments out of editor raw_text", () => {
+  const bid = "6ae83fc1-9ee9-4626-9efe-58e0d83e7176";
+  const blocks = parseBlocks(
+    "2026-06-11",
+    `- Figure <!-- bid:${bid} --> out finances <!-- bid:${bid} -->\n  tags:: Issue`,
+  );
+
+  assert.equal(blocks.length, 1);
+  assert.equal(blocks[0].bid, bid);
+  assert.equal(blocks[0].text, "Figure out finances");
+  assert.equal(blocks[0].raw_text, "Figure out finances\ntags:: Issue");
+  assert.deepEqual(blocks[0].tags, ["Issue"]);
 });

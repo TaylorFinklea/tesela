@@ -7,6 +7,7 @@ import type { ParsedBlock } from "$lib/types/ParsedBlock";
 const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
 const PROPERTY_RE = /([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)/g;
 const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+const BID_COMMENT_RE = /[ \t]*<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->[ \t]*/g;
 
 export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
   const lines = body.split("\n");
@@ -58,7 +59,8 @@ export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
 }
 
 function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText: string, inherited_tags: string[]): ParsedBlock {
-  const properties = extractProperties(rawText);
+  const cleanRawText = stripBidComments(rawText);
+  const properties = extractProperties(cleanRawText);
 
   // Merge tags from `tags::` property (new format) and inline `#tag` (legacy).
   // tags:: owns the slot — remove from properties so the right-sidebar
@@ -72,31 +74,31 @@ function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText
     }
     delete properties.tags;
   }
-  for (const t of extractTags(rawText)) {
+  for (const t of extractTags(cleanRawText)) {
     const k = t.toLowerCase();
     if (!seen.has(k)) { seen.add(k); tags.push(t); }
   }
 
-  const firstLine = rawText.split("\n")[0] ?? rawText;
+  const firstLineWithBid = rawText.split("\n")[0] ?? rawText;
   // Pull the bid out of the `<!-- bid:UUID -->` marker if present, so
   // we can re-emit it on save. Without this the save would strip the
   // bid (it only round-trips raw_text-with-stripped-bid), the server
   // would re-stamp a fresh UUID for the bid-less line, and
   // apply_block_upsert would append a duplicate file row.
-  const bidMatch = firstLine.match(/<!--\s*bid:([0-9a-fA-F-]{32,36})\s*-->/);
+  const bidMatch = firstLineWithBid.match(/<!--\s*bid:([0-9a-fA-F-]{32,36})\s*-->/);
   const bid = bidMatch?.[1] ?? null;
+  const firstLine = cleanRawText.split("\n")[0] ?? cleanRawText;
   const text = firstLine
-    .replace(/<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->/g, "")
     .replace(TAG_RE, "")
     .trim();
 
-  const { inline: inline_tags, trailing: trailing_tags } = splitInlineAndTrailingTags(rawText);
+  const { inline: inline_tags, trailing: trailing_tags } = splitInlineAndTrailingTags(cleanRawText);
 
   return {
     id: `${noteId}:${lineNum}`,
     bid,
     text,
-    raw_text: rawText,
+    raw_text: cleanRawText,
     tags,
     inline_tags,
     trailing_tags,
@@ -111,6 +113,18 @@ function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText
     // is safe — local parsers don't run those predicates.
     parent_note_type: null,
   };
+}
+
+function stripBidComments(text: string): string {
+  return text
+    .split("\n")
+    .map((line) =>
+      line
+        .replace(BID_COMMENT_RE, " ")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim(),
+    )
+    .join("\n");
 }
 
 /** Split `#tag` tokens into (inline, trailing). Mirrors the Rust impl in

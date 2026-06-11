@@ -2517,6 +2517,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
                     kind = .task
                 }
             }
+            let tagsFromProperty = properties
+                .first(where: { $0.key.lowercased() == "tags" })?
+                .value
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty } ?? []
+            properties.removeAll { $0.key.lowercased() == "tags" }
+            let tags = mergedSourceTags(parsed.tags, tagsFromProperty.map(sourceTag))
 
             let rawText: String
             if continuationLines.isEmpty {
@@ -2532,13 +2540,38 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 rawText: rawText,
                 done: done,
                 indent: indent,
-                tags: parsed.tags,
+                tags: tags,
                 properties: properties,
                 lineNumber: blockLineNumber,
                 noteId: noteId
             ))
         }
         return blocks
+    }
+
+    private func sourceTag(_ tag: String) -> String {
+        let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
+        return name.isEmpty ? "" : "#\(name)"
+    }
+
+    private func canonicalTagName(_ tag: String) -> String {
+        let trimmed = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.hasPrefix("#") ? String(trimmed.dropFirst()) : trimmed
+    }
+
+    private func mergedSourceTags(_ first: [String], _ second: [String]) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for tag in first + second {
+            let source = sourceTag(tag)
+            guard !source.isEmpty else { continue }
+            let key = source.lowercased()
+            if seen.insert(key).inserted {
+                out.append(source)
+            }
+        }
+        return out
     }
 
     /// Parses one `- ` bullet line into (bid, text, tags, base kind).
@@ -2769,7 +2802,6 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // client's behaviour.
         for block in blocks {
             let indent = String(repeating: "  ", count: block.indent)
-            let trailingTags = block.tags.isEmpty ? "" : " " + block.tags.joined(separator: " ")
             // Only emit a bid comment for ids that look like real UUIDs.
             // The Rust core's `stamp_block_ids` appends *new* bids
             // without removing existing ones, so emitting placeholder
@@ -2793,7 +2825,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // the body round-trips losslessly.
             let bodyLines = block.displayText.components(separatedBy: "\n")
             let firstLine = bodyLines.first ?? ""
-            out.append("\(indent)- \(firstLine)\(trailingTags)\(bidSuffix)")
+            out.append("\(indent)- \(firstLine)\(bidSuffix)")
             let continuationIndent = "\(indent)  "
             for line in bodyLines.dropFirst() {
                 out.append("\(continuationIndent)\(line)")
@@ -2812,23 +2844,47 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// etc.).
     private func renderProperties(for block: Block, indent: String) -> [String] {
         var merged = block.properties
+        var tagNames = merged
+            .filter { $0.key.lowercased() == "tags" }
+            .flatMap { $0.value.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) } }
+            .filter { !$0.isEmpty }
+        for tag in block.tags {
+            let name = canonicalTagName(tag)
+            guard !name.isEmpty else { continue }
+            if !tagNames.contains(where: { $0.lowercased() == name.lowercased() }) {
+                tagNames.append(name)
+            }
+        }
+        merged.removeAll { $0.key.lowercased() == "tags" }
 
         // Update or insert status:: and tags:: for task blocks.
         if block.kind == .task {
             upsert(&merged, key: "status", value: block.done ? "done" : "todo")
-            if !merged.contains(where: { $0.key.lowercased() == "tags" }) {
-                merged.append(BlockProperty(key: "tags", value: "Task"))
+            if !tagNames.contains(where: { $0.lowercased() == "task" }) {
+                tagNames.append("Task")
             }
         } else {
             // Non-task block: strip any inherited task-state properties
             // so converting a task → note doesn't leave stale state.
-            merged.removeAll {
-                $0.key.lowercased() == "status" ||
-                ($0.key.lowercased() == "tags" && $0.value.lowercased() == "task")
+            merged.removeAll { $0.key.lowercased() == "status" }
+            tagNames.removeAll { $0.lowercased() == "task" }
+        }
+
+        if !tagNames.isEmpty {
+            let tagProperty = BlockProperty(key: "tags", value: tagNames.joined(separator: ", "))
+            if block.kind == .task,
+               let statusIndex = merged.firstIndex(where: { $0.key.lowercased() == "status" }) {
+                merged.insert(tagProperty, at: merged.index(after: statusIndex))
+            } else {
+                merged.insert(tagProperty, at: 0)
             }
         }
 
-        return merged.map { "\(indent)  \($0.key):: \($0.value)" }
+        return merged.map {
+            $0.value.isEmpty
+                ? "\(indent)  \($0.key)::"
+                : "\(indent)  \($0.key):: \($0.value)"
+        }
     }
 
     private func upsert(_ props: inout [BlockProperty], key: String, value: String) {

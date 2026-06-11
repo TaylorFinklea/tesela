@@ -187,6 +187,31 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertEqual(rendered, body)
     }
 
+    /// `tags:: Issue` is the canonical block-tag form emitted by the
+    /// desktop/web engine. iOS should surface it as a visible tag chip,
+    /// keep it out of generic properties, and write it back as `tags::`
+    /// rather than converting it to an inline `#Issue`.
+    func testParseBlocksPromotesTagsPropertyToTagsAndPreservesCanonicalRender() {
+        let body = """
+        - Figure out finances <!-- bid:6AE83FC1-9EE9-4626-9EFE-58E0D83E7176 -->
+          tags:: Issue
+          IssueStatus::
+        """
+
+        let service = MockMosaicService()
+        let blocks = service.testableParseBlocks(from: body, noteId: "2026-06-11")
+
+        XCTAssertEqual(blocks.count, 1)
+        XCTAssertEqual(blocks[0].text, "Figure out finances")
+        XCTAssertEqual(blocks[0].tags, ["#Issue"])
+        XCTAssertFalse(blocks[0].properties.contains { $0.key.lowercased() == "tags" })
+        XCTAssertEqual(
+            blocks[0].properties.first(where: { $0.key == "IssueStatus" })?.value,
+            ""
+        )
+        XCTAssertEqual(service.testableRenderBody(from: blocks), body)
+    }
+
     /// Blocks separated only by blank lines should get correct line numbers.
     func testParseBlocksWithBlankLines() {
         let body = """
