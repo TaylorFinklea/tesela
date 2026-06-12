@@ -616,7 +616,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
   - **tier_floor** - `junior`
   - **complexity** - `S`
 
-- [ ] **Add an app-level regression for date-slug dailies without `daily` tags.**
+- [x] **Add an app-level regression for date-slug dailies without `daily` tags.** — pi mono `opencode-go/minimax-m3` (Junior, T3), landed 2026-06-12 in commit `9329d78` (see `.docs/ai/phases/2026-06-12-codex-pi-batch-report.md` Item 7).
   - **Scope** - Add server or web coverage proving a real `YYYY-MM-DD.md` daily without `tags: [daily]` is included in the journal data path, not replaced by an empty synthetic gap day.
   - **Files** - Prefer `crates/tesela-server/tests/` if an integration-test harness already exists; otherwise add focused web coverage under `web/tests/` using a temp mosaic. Read `crates/tesela-core/src/storage/filesystem.rs` for the core behavior first.
   - **Acceptance** - A fixture containing `2026-06-10.md` with body blocks but no `daily` tag returns/renders those body blocks through the journal-facing path.
