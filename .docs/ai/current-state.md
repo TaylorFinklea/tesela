@@ -1,5 +1,11 @@
 # Current State
 
+## 2026-06-12 — Web journal hides blank future placeholders
+
+- Root: live mosaic had real `notes/2026-06-13.md` created 10:17:52 with only frontmatter + one bid-stamped empty bullet; JournalView intentionally starts at newest future real daily, so Saturday rendered above Today.
+- Fix: default journal feed filters future dailies whose body is only blank/bid-stamped bullets; future dailies with content still render, and explicit anchor `/p/YYYY-MM-DD` still renders.
+- Verify: `node --test tests/unit/journal-dates.test.mjs tests/unit/ensure-trailing-empty.test.mjs`, `pnpm --dir web check`, `pnpm --dir web build`, `git diff --check`.
+
 ## 2026-06-12 — Web j/k no longer reuses auto-insert intent
 
 - Web editor j/k focus path hardened: `startInInsert` now ignores decorative/navigation autofocus and insert intent is child-consumed after Vim enters Insert.

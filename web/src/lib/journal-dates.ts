@@ -51,3 +51,30 @@ export function dailyWalkDates(todayStr: string, newest: string, oldest: string)
   }
   return out;
 }
+
+type DailyLike = { title: string; body?: string | null };
+
+const BID_COMMENT_RE = /\s*<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->/g;
+
+function isBlankDailyBody(body: string | null | undefined): boolean {
+  const raw = (body ?? "").trim();
+  if (raw === "") return true;
+  return raw
+    .split(/\r?\n/)
+    .every((line) => {
+      const cleaned = line.replace(BID_COMMENT_RE, "").trim();
+      return cleaned === "" || cleaned === "-";
+    });
+}
+
+export function filterDisplayableDailies<T extends DailyLike>(
+  todayStr: string,
+  notes: T[],
+  anchorDate?: string,
+): T[] {
+  return notes.filter((note) => {
+    if (note.title <= todayStr) return true;
+    if (anchorDate && note.title === anchorDate) return true;
+    return !isBlankDailyBody(note.body);
+  });
+}

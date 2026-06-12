@@ -23,7 +23,7 @@
   import { setSaving, setSaved, setSaveError } from "$lib/stores/save-state.svelte";
   import { setFocusedBlock } from "$lib/stores/current-block.svelte";
   import { bodyHasTrailingEmpty, appendTrailingEmpty } from "$lib/ensure-trailing-empty";
-  import { prevDate, dailyWalkDates } from "$lib/journal-dates";
+  import { prevDate, dailyWalkDates, filterDisplayableDailies } from "$lib/journal-dates";
   import type { Note } from "$lib/types/Note";
 
   let { anchorDate }: { anchorDate: string } = $props();
@@ -58,6 +58,9 @@
     ((notesQuery.data ?? []) as Note[])
       .filter((n) => /^\d{4}-\d{2}-\d{2}$/.test(n.title))
       .sort((a, b) => b.title.localeCompare(a.title)),
+  );
+  const displayableDailies: Note[] = $derived(
+    filterDisplayableDailies(todayStr, dailies, anchorDate),
   );
 
   // Make sure both today and the anchor are present even if the file doesn't
@@ -170,12 +173,12 @@
   // Always include the anchor in the visible window even if it's past the
   // current paging horizon.
   const onDiskVisible = $derived.by((): Note[] => {
-    const pool = dailies.slice(0, visibleCount);
+    const pool = displayableDailies.slice(0, visibleCount);
     if (pool.some((n) => n.title === anchorDate)) return pool;
-    const idx = dailies.findIndex((n) => n.title === anchorDate);
+    const idx = displayableDailies.findIndex((n) => n.title === anchorDate);
     if (idx < 0) return pool;
     // Extend visibleCount so the anchor is on screen.
-    return dailies.slice(0, Math.max(visibleCount, idx + 1));
+    return displayableDailies.slice(0, Math.max(visibleCount, idx + 1));
   });
 
   /** Generate a synthetic Note placeholder for a daily that doesn't exist
@@ -239,7 +242,7 @@
     }
 
     const byDate = new Map(real.map((n) => [n.title, n]));
-    const onDiskDates = new Set(dailies.map((n) => n.title));
+    const onDiskDates = new Set(displayableDailies.map((n) => n.title));
     const newest = real[0].title;
     const oldest = real[real.length - 1].title;
 
@@ -264,7 +267,7 @@
 
     return out;
   });
-  const hasMore = $derived(onDiskVisible.length < dailies.length);
+  const hasMore = $derived(onDiskVisible.length < displayableDailies.length);
 
   function loadMore() {
     if (!hasMore) {
@@ -276,8 +279,8 @@
       fetchLimit = fetchLimit + PAGE * 2;
       return;
     }
-    visibleCount = Math.min(dailies.length, visibleCount + PAGE);
-    if (dailies.length - visibleCount < PAGE) {
+    visibleCount = Math.min(displayableDailies.length, visibleCount + PAGE);
+    if (displayableDailies.length - visibleCount < PAGE) {
       fetchLimit = fetchLimit + PAGE * 2;
     }
   }

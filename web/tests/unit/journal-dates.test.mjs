@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { prevDate, dailyWalkDates } from "../../src/lib/journal-dates.ts";
+import { prevDate, dailyWalkDates, filterDisplayableDailies } from "../../src/lib/journal-dates.ts";
 
 // The contract under test: JournalView's date walk must be bounded for EVERY
 // relation between today and the on-disk window. The in-component
@@ -77,4 +77,34 @@ test("walk always contains today and every date in [oldest, newest]", () => {
       assert.equal(walk[i], prevDate(walk[i - 1]));
     }
   }
+});
+
+test("blank future placeholder dailies are hidden from the default journal feed", () => {
+  const notes = [
+    { title: "2026-06-13", body: "- <!-- bid:019ebc57-e8a1-7fa1-9836-ff6c34dcbf07 -->" },
+    { title: "2026-06-12", body: "- Today" },
+    { title: "2026-06-11", body: "- Yesterday" },
+  ];
+
+  assert.deepEqual(
+    filterDisplayableDailies("2026-06-12", notes).map((n) => n.title),
+    ["2026-06-12", "2026-06-11"],
+  );
+});
+
+test("contentful or explicitly anchored future dailies remain displayable", () => {
+  const notes = [
+    { title: "2026-06-14", body: "- Future task" },
+    { title: "2026-06-13", body: "- <!-- bid:019ebc57-e8a1-7fa1-9836-ff6c34dcbf07 -->" },
+    { title: "2026-06-12", body: "- Today" },
+  ];
+
+  assert.deepEqual(
+    filterDisplayableDailies("2026-06-12", notes).map((n) => n.title),
+    ["2026-06-14", "2026-06-12"],
+  );
+  assert.deepEqual(
+    filterDisplayableDailies("2026-06-12", notes, "2026-06-13").map((n) => n.title),
+    ["2026-06-14", "2026-06-13", "2026-06-12"],
+  );
 });
