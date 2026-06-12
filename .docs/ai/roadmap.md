@@ -664,6 +664,56 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
   - **tier_floor** - `senior`
   - **complexity** - `M`
 
+### Codex/pi mono coordinator batch (2026-06-12)
+
+- [ ] **Make the Graphite command palette screen-reader addressable.**
+  - **Scope** - Add semantic dialog/listbox structure to the Graphite command palette without changing command scoring, ordering, shortcuts, or execution behavior.
+  - **Files** - `web/src/lib/graphite/shell/GrCommandPalette.svelte`; add `web/tests/command-palette-a11y.e2e.mjs` mirroring the existing standalone Playwright style in `web/tests/jk-normal-mode.e2e.mjs`.
+  - **Acceptance** - When the palette is open, the scrim exposes a modal dialog label, the input points at the active option via `aria-activedescendant`, command/note rows expose stable ids with `role="option"` and `aria-selected`, the empty state is announced, Escape and click-out still restore pane focus, and command execution behavior remains byte-for-byte equivalent.
+  - **Verify** - `node web/tests/command-palette-a11y.e2e.mjs`; `pnpm --dir web check`.
+  - **tier_floor** - `junior`
+  - **complexity** - `S`
+
+- [ ] **Add Vim-style overlay navigation aliases in the TUI.**
+  - **Scope** - Add `Ctrl+j` / `Ctrl+k` navigation aliases where single-letter `j/k` must remain text input: fuzzy finder, tag picker, and search results. Do not change plain `j/k` behavior in `Mode::Search`.
+  - **Files** - `crates/tesela-tui/src/handler.rs`; `crates/tesela-tui/src/view/status_bar.rs`.
+  - **Acceptance** - Fuzzy finder and tag picker accept arrows and `Ctrl+j/k`; search mode still types plain `j/k` into the query but accepts `Ctrl+j/k` for result navigation; status bar hints mention the aliases; existing handler tests stay green.
+  - **Verify** - `cargo test -p tesela-tui handler`; `cargo fmt --all --check`.
+  - **tier_floor** - `junior`
+  - **complexity** - `S`
+
+- [ ] **Lock iOS keyboard-toolbar encoding with pure tests.**
+  - **Scope** - Add Swift tests for the pure keyboard-toolbar preference codec so toolbar customization stays stable while view polish continues.
+  - **Files** - `app/Tesela-iOS/Sources/Data/KeyboardToolbarItem.swift`; create `app/Tesela-iOS/Tests/KeyboardToolbarItemTests.swift`.
+  - **Acceptance** - Tests cover default raw value order, round-trip encode/decode, duplicate removal preserving first occurrence, unknown value dropping, and empty raw string behavior as currently implemented. Do not change toolbar UI or edit sync.
+  - **Verify** - `xcodebuild -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 16' test`.
+  - **tier_floor** - `junior`
+  - **complexity** - `S`
+
+- [ ] **Improve Graphite saved-view chip accessibility on iOS.**
+  - **Scope** - Add view-layer accessibility labels/hints/traits to the iOS Graphite Inbox saved-view chip bar and New View chip. Keep registry reads/writes and query execution untouched.
+  - **Files** - `app/Tesela-iOS/Sources/Graphite/Views/GrInboxView.swift`; `app/Tesela-iOS/Sources/Graphite/GrChip.swift`.
+  - **Acceptance** - VoiceOver distinguishes the selected saved view, announces the New View action, and exposes edit/reorder/delete context-menu affordances without changing visual layout, saved-view ordering, or triage behavior.
+  - **Verify** - `xcodebuild -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 16' build`; launch with `-graphite` in the iPhone 16 simulator and capture a screenshot path with `xcrun simctl io <sim> screenshot <path>`.
+  - **tier_floor** - `senior`
+  - **complexity** - `S`
+
+- [ ] **ESCALATE (Opus/Fable): iOS onboarding and RelayTicker race hardening.**
+  - **Scope** - The existing iOS onboarding pass includes `RelayTicker.connect(mosaic:)`, scene-phase startup, pairing, and sync-ready state. Those are sync-adjacent and explicitly off-limits for the Codex/pi batch.
+  - **Files** - `app/Tesela-iOS/Sources/Views/OnboardingView.swift`; `app/Tesela-iOS/Sources/Data/RelayTicker.swift`; pairing and relay-related call sites discovered while scoping.
+  - **Acceptance** - Lead owner re-scopes into safe slices before implementation; no Senior/Junior agent starts this from the current batch.
+  - **Verify** - Lead-defined.
+  - **tier_floor** - `lead` — ESCALATE (Opus/Fable)
+  - **complexity** - `XL`
+
+- [ ] **ESCALATE (Opus/Fable): property FFI page-property remainder.**
+  - **Scope** - P1.11 still notes page-property set/clear FFI functions. All FFI/UniFFI bindings and generated iOS binding surfaces are off-limits for this coordinator batch.
+  - **Files** - `crates/tesela-sync-ffi/`; `app/Tesela-iOS/Generated/`; `app/Tesela-iOS/CFFI/`.
+  - **Acceptance** - Lead owner decides whether/when to expose page-property FFI and updates fleet-migration notes before any implementation.
+  - **Verify** - Lead-defined.
+  - **tier_floor** - `lead` — ESCALATE (Opus/Fable)
+  - **complexity** - `XL`
+
 ### Web editor — discovered during B4 (2026-06-10)
 
 - [x] **Split + immediate merge-back orphans the absorbed block's server row.** DONE 2026-06-12: `handleBackspaceMerge` now emits the absorbed-block delete whenever the absorbed block has a bid, even if its temporary editor id is still `:new-…`; unknown deletes are harmless before the creating upsert lands, and required after it lands. Regression `web/tests/split-merge-back.e2e.mjs` proves split mid-text → wait >600ms → Backspace col-0 merge leaves ONE on-disk block with merged text. Verified: red e2e reproduced duplicate; green e2e 3/3; `node --test tests/unit/block-ops.test.mjs tests/unit/block-ops-saver.test.mjs`; `pnpm --dir web check`; `pnpm --dir web build`; `git diff --check`.
