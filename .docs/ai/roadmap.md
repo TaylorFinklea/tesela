@@ -666,7 +666,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
 
 ### Codex/pi mono coordinator batch (2026-06-12)
 
-- [ ] **Make the Graphite command palette screen-reader addressable.**
+- [x] **Make the Graphite command palette screen-reader addressable.**
   - **Scope** - Add semantic dialog/listbox structure to the Graphite command palette without changing command scoring, ordering, shortcuts, or execution behavior.
   - **Files** - `web/src/lib/graphite/shell/GrCommandPalette.svelte`; add `web/tests/command-palette-a11y.e2e.mjs` mirroring the existing standalone Playwright style in `web/tests/jk-normal-mode.e2e.mjs`.
   - **Acceptance** - When the palette is open, the scrim exposes a modal dialog label, the input points at the active option via `aria-activedescendant`, command/note rows expose stable ids with `role="option"` and `aria-selected`, the empty state is announced, Escape and click-out still restore pane focus, and command execution behavior remains byte-for-byte equivalent.

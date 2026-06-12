@@ -42,6 +42,14 @@
   type NoteRow = { kind: 'note'; key: string; note: Note; score: number };
   type PaletteRow = CmdRow | NoteRow;
 
+  /** Stable DOM ids for screen readers (aria-activedescendant, listbox child
+   *  references). The row key (`c:<cmdId>` / `n:<noteId>`) is already unique
+   *  and stable per-build — we just sanitize `:` so it's a valid HTML id. */
+  const LISTBOX_ID = 'gr-cmdk-listbox';
+  function rowId(row: PaletteRow): string {
+    return 'gr-cmdk-row-' + row.key.replace(/[^a-zA-Z0-9_-]/g, '-');
+  }
+
   const MAX_NOTES_IN_PALETTE = 12;
 
   const allCommands = buildV4Commands();
@@ -107,6 +115,9 @@
   // Flat row list in DISPLAY order — the index space `selectedIdx`, the ⌘N
   // badges, and the keyboard nav all share.
   const displayRows = $derived(groups.flatMap((g) => g.rows.map((r) => r.row)));
+  // id of the currently-active row, for the input's aria-activedescendant.
+  const activeRow = $derived(displayRows[selectedIdx]);
+  const activeRowId = $derived(activeRow ? rowId(activeRow) : undefined);
 
   function rowLabel(row: PaletteRow): string {
     return row.kind === 'cmd' ? row.cmd.label : (row.note.title || row.note.id);
@@ -243,7 +254,14 @@
   <div class="gr-scrim" onclick={() => { closeStation(); requestAnimationFrame(() => restoreFocus()); }}>
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="gr-cmdk" onclick={(e) => e.stopPropagation()}>
+    <div
+      class="gr-cmdk"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Command palette"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}
+    >
       <div class="gr-cmdk-in">
         <GrIcon name="search" size={18} />
         <!-- svelte-ignore a11y_autofocus -->
@@ -254,27 +272,41 @@
           placeholder="Search or run a command…"
           autocomplete="off"
           spellcheck="false"
+          role="combobox"
+          aria-controls={LISTBOX_ID}
+          aria-expanded="true"
+          aria-autocomplete="list"
+          aria-activedescendant={activeRowId}
         />
       </div>
-      <div class="gr-cmdk-body">
+      <div
+        class="gr-cmdk-body"
+        id={LISTBOX_ID}
+        role="listbox"
+        aria-label="Commands and notes"
+      >
         {#each groups as group (group.label)}
-          <div class="gr-cmdk-grp">{group.label}</div>
+          <div class="gr-cmdk-grp" aria-hidden="true">{group.label}</div>
           {#each group.rows as { row, idx } (row.key)}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="gr-cmdk-row"
               class:sel={idx === selectedIdx}
+              id={rowId(row)}
+              role="option"
+              tabindex="-1"
+              aria-selected={idx === selectedIdx}
               onmouseenter={() => (selectedIdx = idx)}
               onclick={() => void runRow(row)}
             >
-              <span class="gl">{rowGlyph(row)}</span>
+              <span class="gl" aria-hidden="true">{rowGlyph(row)}</span>
               <span class="lb">
                 {#each highlightRuns(rowLabel(row), query.trim() ? scoreFuzzy(rowLabel(row), query.trim()).positions : []) as run}
                   {#if run.match}<b>{run.ch}</b>{:else}{run.ch}{/if}
                 {/each}
               </span>
-              <span class="rk">
+              <span class="rk" aria-hidden="true">
                 {#if idx < 9}
                   <kbd>⌘{idx + 1}</kbd>
                 {/if}
@@ -286,7 +318,7 @@
           {/each}
         {/each}
         {#if filteredRows.length === 0}
-          <div class="gr-cmdk-empty">No matches</div>
+          <div class="gr-cmdk-empty" role="status" aria-live="polite">No matches</div>
         {/if}
       </div>
       <div class="gr-cmdk-foot">

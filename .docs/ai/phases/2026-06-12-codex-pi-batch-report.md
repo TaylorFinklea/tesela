@@ -19,7 +19,8 @@ Rules in force:
 - Shakiness / follow-up: current-state was oversized before this batch; coordinator is reducing it to loop state only.
 
 ### Item 1: Make the Graphite command palette screen-reader addressable
-- Status: queued for pi mono.
-- Commit: pending.
-- Verify: pending.
-- Shakiness / follow-up: review must confirm no command registry behavior drift and no route/live-mosaic usage.
+- Status: landed.
+- What landed: Graphite command palette now exposes a modal dialog, combobox/listbox wiring, stable option ids, selected-row state, and announced empty state; added a Playwright e2e covering the ARIA contract and close paths.
+- Commit: pending in this atomic item commit.
+- Verify: `REPRO_URL=http://127.0.0.1:7788/g node web/tests/command-palette-a11y.e2e.mjs` PASS 22/22; `pnpm --dir web check` PASS (0 errors, 42 pre-existing warnings); `pnpm --dir web build` PASS (pre-existing warnings); `git diff --check` PASS.
+- Shakiness / follow-up: no command registry/scoring/execution code changed; verified against temp mosaic `/tmp/cmdk-a11y-qa.tpsvl9`, not live data.
