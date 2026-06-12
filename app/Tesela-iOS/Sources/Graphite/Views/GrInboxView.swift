@@ -116,42 +116,9 @@ struct GrInboxView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 7) {
                 ForEach(views) { view in
-                    GrChip(
-                        label: view.name,
-                        active: view.id == activeViewId
-                    ) {
-                        select(view.id)
-                    }
-                    .contextMenu {
-                        Button {
-                            editorTarget = EditorTarget(id: view.id, view: view)
-                        } label: {
-                            Label("Edit view", systemImage: "pencil")
-                        }
-                        Button {
-                            move(view.id, by: -1)
-                        } label: {
-                            Label("Move left", systemImage: "arrow.left")
-                        }
-                        .disabled(views.first?.id == view.id)
-                        Button {
-                            move(view.id, by: 1)
-                        } label: {
-                            Label("Move right", systemImage: "arrow.right")
-                        }
-                        .disabled(views.last?.id == view.id)
-                        if !view.builtin {
-                            Button(role: .destructive) {
-                                Task { try? await deleteView(id: view.id) }
-                            } label: {
-                                Label("Delete view", systemImage: "trash")
-                            }
-                        }
-                    }
+                    savedViewChip(view)
                 }
-                GrChip(label: "+ New") {
-                    editorTarget = EditorTarget(id: "new", view: nil)
-                }
+                newViewChip
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 11)
@@ -160,6 +127,69 @@ struct GrInboxView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(theme.lineSoft).frame(height: 1)
         }
+    }
+
+    /// One saved-view chip with its context menu. Extracted to keep
+    /// the chip bar's view-builder shallow and to give the compiler a
+    /// narrower expression to type-check.
+    @ViewBuilder
+    private func savedViewChip(_ view: SavedView) -> some View {
+        let isSelected = view.id == activeViewId
+        GrChip(
+            label: view.name,
+            active: isSelected,
+            action: { select(view.id) },
+            accessibilityLabelOverride: a11ySavedViewLabel(view, isSelected: isSelected),
+            accessibilityHint: "Double-tap to switch to this view. Long-press for edit, move, or delete.",
+            accessibilityIdentifier: "gr-saved-view-\(view.id)"
+        )
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .contextMenu {
+            Button {
+                editorTarget = EditorTarget(id: view.id, view: view)
+            } label: {
+                Label("Edit view", systemImage: "pencil")
+            }
+            Button {
+                move(view.id, by: -1)
+            } label: {
+                Label("Move left", systemImage: "arrow.left")
+            }
+            .disabled(views.first?.id == view.id)
+            Button {
+                move(view.id, by: 1)
+            } label: {
+                Label("Move right", systemImage: "arrow.right")
+            }
+            .disabled(views.last?.id == view.id)
+            if !view.builtin {
+                Button(role: .destructive) {
+                    Task { try? await deleteView(id: view.id) }
+                } label: {
+                    Label("Delete view", systemImage: "trash")
+                }
+            }
+        }
+    }
+
+    /// The "+ New" chip that opens the view editor. Has no context
+    /// menu (it can only create, never reorder/delete).
+    private var newViewChip: some View {
+        GrChip(
+            label: "+ New",
+            action: { editorTarget = EditorTarget(id: "new", view: nil) },
+            accessibilityLabelOverride: "New saved view",
+            accessibilityHint: "Opens the editor to create a new saved view.",
+            accessibilityIdentifier: "gr-new-view"
+        )
+    }
+
+    /// VoiceOver label for a saved-view chip. "Selected" is appended
+    /// when the chip is the active view, so users hear the same state
+    /// the visual styling conveys.
+    private func a11ySavedViewLabel(_ view: SavedView, isSelected: Bool) -> String {
+        let builtinPrefix = view.builtin ? "Built-in saved view: " : "Saved view: "
+        return builtinPrefix + view.name + (isSelected ? ", selected" : "")
     }
 
     // ── Content ─────────────────────────────────────────────────────────

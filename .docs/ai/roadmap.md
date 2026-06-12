@@ -684,7 +684,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
   - **tier_floor** - `junior`
   - **complexity** - `S`
 
-- [ ] **Improve Graphite saved-view chip accessibility on iOS.**
+- [x] **Improve Graphite saved-view chip accessibility on iOS.**
   - **Scope** - Add view-layer accessibility labels/hints/traits to the iOS Graphite Inbox saved-view chip bar and New View chip. Keep registry reads/writes and query execution untouched.
   - **Files** - `app/Tesela-iOS/Sources/Graphite/Views/GrInboxView.swift`; `app/Tesela-iOS/Sources/Graphite/GrChip.swift`.
   - **Acceptance** - VoiceOver distinguishes the selected saved view, announces the New View action, and exposes edit/reorder/delete context-menu affordances without changing visual layout, saved-view ordering, or triage behavior.
