@@ -1,7 +1,7 @@
 # Current State
 
 ## Branch
-- `main`; TUI overlay-nav aliases landed `3c91ba9`; keyboard-toolbar codec tests landed `3544b33`; SHA stamp `57645cc`; Graphite inbox chip a11y landed `0fc76b7`; repair-daily-tags landed `d6bfd68`.
+- `main`; TUI overlay-nav aliases landed `3c91ba9`; keyboard-toolbar codec tests landed `3544b33`; SHA stamp `57645cc`; Graphite inbox chip a11y landed `0fc76b7`; repair-daily-tags landed `d6bfd68`; journal placeholder previews landed (pending SHA).
 - Codex self-tier: Senior (T2). Assign only `tier_floor: senior|junior`; escalate `lead`, `XL`, and off-limits.
 
 ## Plan

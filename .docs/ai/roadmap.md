@@ -608,7 +608,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
   - **tier_floor** - `senior`
   - **complexity** - `M`
 
-- [ ] **Improve web journal placeholder previews.**
+- [x] **Improve web journal placeholder previews.**
   - **Scope** - When a journal day is virtualized/unmounted, show a meaningful preview of real block text instead of raw metadata, bid comments, property-only lines, or blank placeholder bullets.
   - **Files** - `web/src/lib/components/JournalView.svelte`; create a pure helper such as `web/src/lib/journal-preview.ts`; add `web/tests/unit/journal-preview.test.mjs`.
   - **Acceptance** - Preview strips `<!-- bid:... -->`; skips property-only lines such as `tags::` and `status::`; skips malformed metadata-looking continuation lines; preserves normal top-level block text; mounted `BlockOutliner` editing behavior is unchanged.

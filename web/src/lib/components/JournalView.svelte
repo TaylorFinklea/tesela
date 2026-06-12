@@ -24,6 +24,7 @@
   import { setFocusedBlock } from "$lib/stores/current-block.svelte";
   import { bodyHasTrailingEmpty, appendTrailingEmpty } from "$lib/ensure-trailing-empty";
   import { prevDate, dailyWalkDates, filterDisplayableDailies } from "$lib/journal-dates";
+  import { previewLines } from "$lib/journal-preview";
   import type { Note } from "$lib/types/Note";
 
   let { anchorDate }: { anchorDate: string } = $props();
@@ -632,18 +633,18 @@
                No cm-editor is mounted yet — keeps initial paint fast on
                large imported journals (e.g. 459 Logseq dailies). A
                synthetic day previews as a single empty bullet. -->
+          {@const preview = isSynthetic ? [] : previewLines(split.body)}
           <div class="day-placeholder">
             {#if isSynthetic}
               <div class="placeholder-line">•</div>
+            {:else if preview.length === 0}
+              <!-- Body was only bid stamps / property continuations /
+                   malformed metadata — show nothing rather than surface
+                   structural noise as a "preview". -->
             {:else}
-              {#each split.body.split("\n").slice(0, 6) as line}
-                {#if line.trim().length > 0}
-                  <div class="placeholder-line">{line.replace(/^\s*-\s?/, "• ")}</div>
-                {/if}
+              {#each preview as line}
+                <div class="placeholder-line">• {line.text}</div>
               {/each}
-              {#if split.body.split("\n").length > 6}
-                <div class="placeholder-more">…</div>
-              {/if}
             {/if}
           </div>
         {/if}
