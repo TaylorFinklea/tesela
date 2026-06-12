@@ -1,5 +1,11 @@
 # Current State
 
+## 2026-06-12 — iOS Daily no longer freezes Today at launch date
+
+- Root: `MockMosaicService.todayDate` was captured once in `init`; an app left alive across midnight kept resolving `dailyId(daysAgo: 0)` to yesterday, so relay refresh rendered June 11 as “Today” and stale/missing blocks looked like a desktop mismatch.
+- Fix: `todayDate` now reads from an injectable current-date provider; local relay fallback clears stale Today/Yesterday sections when the new slug has no file yet and resets the write target to the current day slug.
+- Verify: XcodeBuildMCP `test_sim` full iOS simulator suite — 149/149.
+
 ## 2026-06-12 — Web journal hides blank future placeholders
 
 - Root: live mosaic had real `notes/2026-06-13.md` created 10:17:52 with only frontmatter + one bid-stamped empty bullet; JournalView intentionally starts at newest future real daily, so Saturday rendered above Today.

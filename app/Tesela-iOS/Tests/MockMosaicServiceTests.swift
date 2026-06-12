@@ -73,6 +73,50 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertEqual(service.loadedPageBlocks["2026-06-08"]?[1].tags, ["#done"])
     }
 
+    func testRelayRefreshUsesCurrentCalendarDayAfterServiceStayedAliveAcrossMidnight() async throws {
+        let previousDay = "2099-06-11"
+        let currentDay = "2099-06-12"
+        try resetLocalDailyFixtures([previousDay, currentDay])
+        defer { try? resetLocalDailyFixtures([previousDay, currentDay]) }
+        try writeLocalDaily(id: previousDay, body: "- old launch-day block")
+        try writeLocalDaily(id: currentDay, body: "- current calendar-day block")
+
+        var now = date(2099, 6, 11)
+        let service = MockMosaicService(now: { now })
+
+        await service.refresh(from: .relay)
+        XCTAssertEqual(service.todayDailySlug, previousDay)
+        XCTAssertEqual(service.todayBlocks.map(\.text), ["old launch-day block"])
+
+        now = date(2099, 6, 12)
+        await service.refresh(from: .relay)
+
+        XCTAssertEqual(service.todayDailySlug, currentDay)
+        XCTAssertEqual(service.todayBlocks.map(\.text), ["current calendar-day block"])
+        XCTAssertEqual(service.yesterdayBlocks.map(\.text), ["old launch-day block"])
+    }
+
+    func testRelayRefreshClearsStaleTodayBlocksWhenNewDayHasNoLocalDailyYet() async throws {
+        let previousDay = "2099-06-13"
+        let currentDay = "2099-06-14"
+        try resetLocalDailyFixtures([previousDay, currentDay])
+        defer { try? resetLocalDailyFixtures([previousDay, currentDay]) }
+        try writeLocalDaily(id: previousDay, body: "- previous day block")
+
+        var now = date(2099, 6, 13)
+        let service = MockMosaicService(now: { now })
+
+        await service.refresh(from: .relay)
+        XCTAssertEqual(service.todayBlocks.map(\.text), ["previous day block"])
+
+        now = date(2099, 6, 14)
+        await service.refresh(from: .relay)
+
+        XCTAssertEqual(service.todayDailySlug, currentDay)
+        XCTAssertTrue(service.todayBlocks.isEmpty)
+        XCTAssertEqual(service.yesterdayBlocks.map(\.text), ["previous day block"])
+    }
+
     // MARK: - parseBlocks line-number tracking
 
     /// Verify that each Block's `lineNumber` records the 0-based index of
@@ -227,6 +271,48 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertEqual(blocks[0].lineNumber, 0)
         XCTAssertEqual(blocks[1].lineNumber, 2)
         XCTAssertEqual(blocks[2].lineNumber, 4)
+    }
+
+    private func date(_ y: Int, _ m: Int, _ d: Int) -> Date {
+        var components = DateComponents()
+        components.year = y
+        components.month = m
+        components.day = d
+        components.hour = 12
+        components.minute = 0
+        components.second = 0
+        return Calendar.current.date(from: components)!
+    }
+
+    private func writeLocalDaily(id: String, body: String) throws {
+        let notesDir = localFixtureNotesDir()
+        try FileManager.default.createDirectory(at: notesDir, withIntermediateDirectories: true)
+        let content = """
+        ---
+        title: \(id)
+        tags: [daily]
+        created: \(id)T00:00:00Z
+        ---
+
+        \(body)
+        """
+        try content.write(to: notesDir.appendingPathComponent("\(id).md"), atomically: true, encoding: .utf8)
+    }
+
+    private func resetLocalDailyFixtures(_ ids: [String]) throws {
+        let notesDir = localFixtureNotesDir()
+        for id in ids {
+            let path = notesDir.appendingPathComponent("\(id).md")
+            if FileManager.default.fileExists(atPath: path.path) {
+                try FileManager.default.removeItem(at: path)
+            }
+        }
+    }
+
+    private func localFixtureNotesDir() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("sync-ios-mosaic")
+            .appendingPathComponent("notes")
     }
 
     // MARK: - Placeholder-authoring gate (2026-06-10 product test)

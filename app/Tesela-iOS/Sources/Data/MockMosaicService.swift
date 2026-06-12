@@ -71,7 +71,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// the Peek graph lens.
     @Published private(set) var loadedLinks: [String: [Backlink]] = [:]
 
-    let todayDate: Date
+    private let now: () -> Date
+    var todayDate: Date { now() }
 
     var todayLabel: String {
         let formatter = DateFormatter()
@@ -229,9 +230,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
     private let iso = ISO8601DateFormatter()
     private var serverDailyId: String = ""
 
-    init() {
-        let today = Date()
-        self.todayDate = today
+    init(now: @escaping () -> Date = { Date() }) {
+        self.now = now
         self.pages = MockSeed.pages
         self.tags = MockSeed.tags
         self.recent = MockSeed.recent
@@ -1469,11 +1469,17 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // tags / properties (the most recent state the engine
             // applied to disk is the most reliable source we have).
             loadedDailyFrontmatter = extractFrontmatter(from: daily.content)
+        } else {
+            serverDailyId = todayId
+            todayBlocks = []
+            loadedDailyFrontmatter = nil
         }
         // Yesterday's daily similarly.
         let yesterdayId = dailyId(daysAgo: 1)
         if let y = loadedNotes.first(where: { $0.id == yesterdayId }) {
             yesterdayBlocks = parseBlocks(from: y.body, noteId: y.id)
+        } else {
+            yesterdayBlocks = []
         }
         // All other notes become pages.
         pages = loadedNotes
