@@ -632,7 +632,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
   - **tier_floor** - `senior`
   - **complexity** - `S`
 
-- [x] **Fix web verification script drift.** — pi mono `opencode-go/minimax-m3` (Junior, T3), landed 2026-06-12 in commit `<pending>` (see `.docs/ai/phases/2026-06-12-codex-pi-batch-report.md` Item 8).
+- [x] **Fix web verification script drift.** — pi mono `opencode-go/minimax-m3` (Junior, T3), landed 2026-06-12 in commit `7613293` (see `.docs/ai/phases/2026-06-12-codex-pi-batch-report.md` Item 8).
   - **Scope** - Make the documented `pnpm --dir web lint` command real, or update repo docs to the actual supported command if `check` is intentionally the only static verifier.
   - **Files** - `web/package.json`; `.docs/ai/roadmap.md`; check root/project instructions before editing docs.
   - **Acceptance** - A fresh agent can run the documented web verification commands without hitting "missing script: lint"; no behavior code changes.

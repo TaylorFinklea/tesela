@@ -1,7 +1,7 @@
 # Current State
 
 ## Branch
-- `main`; TUI overlay-nav aliases landed `3c91ba9`; keyboard-toolbar codec tests landed `3544b33`; SHA stamp `57645cc`; Graphite inbox chip a11y landed `0fc76b7`; repair-daily-tags landed `d6bfd68`; journal placeholder previews landed `de30db8`; daily-filter date-slug regression landed `71c94af`.
+- `main`; TUI overlay-nav aliases landed `3c91ba9`; keyboard-toolbar codec tests landed `3544b33`; SHA stamp `57645cc`; Graphite inbox chip a11y landed `0fc76b7`; repair-daily-tags landed `d6bfd68`; journal placeholder previews landed `de30db8`; daily-filter date-slug regression landed `71c94af`; web lint-script fix landed `7613293`.
 - pi mono self-tier: Junior (T3) — model is `opencode-go/minimax-m3`, not Codex/GPT-5. Picks only `tier_floor: junior` items; never attempts `senior` / `lead` / `XL` work from this harness.
 
 ## Plan
