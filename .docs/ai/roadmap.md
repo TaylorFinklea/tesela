@@ -674,13 +674,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
   - **tier_floor** - `junior`
   - **complexity** - `S`
 
-- [ ] **Add Vim-style overlay navigation aliases in the TUI.**
-  - **Scope** - Add `Ctrl+j` / `Ctrl+k` navigation aliases where single-letter `j/k` must remain text input: fuzzy finder, tag picker, and search results. Do not change plain `j/k` behavior in `Mode::Search`.
-  - **Files** - `crates/tesela-tui/src/handler.rs`; `crates/tesela-tui/src/view/status_bar.rs`.
-  - **Acceptance** - Fuzzy finder and tag picker accept arrows and `Ctrl+j/k`; search mode still types plain `j/k` into the query but accepts `Ctrl+j/k` for result navigation; status bar hints mention the aliases; existing handler tests stay green.
-  - **Verify** - `cargo test -p tesela-tui handler`; `cargo fmt --all --check`.
-  - **tier_floor** - `junior`
-  - **complexity** - `S`
+- [x] **Add Vim-style overlay navigation aliases in the TUI.**
 
 - [ ] **Lock iOS keyboard-toolbar encoding with pure tests.**
   - **Scope** - Add Swift tests for the pure keyboard-toolbar preference codec so toolbar customization stays stable while view polish continues.

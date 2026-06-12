@@ -95,17 +95,21 @@ fn handle_listing(state: &AppState, key: &KeyEvent) -> Vec<Action> {
 }
 
 fn handle_tag_picker(state: &AppState, key: &KeyEvent) -> Vec<Action> {
-    match key.code {
-        KeyCode::Esc => vec![Action::ToggleTagPicker],
-        KeyCode::Enter => vec![Action::TagPickerSelect],
-        KeyCode::Down => vec![Action::TagPickerNext],
-        KeyCode::Up => vec![Action::TagPickerPrev],
-        KeyCode::Backspace => {
+    match (key.modifiers, key.code) {
+        (KeyModifiers::CONTROL, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+            vec![Action::TagPickerNext]
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+            vec![Action::TagPickerPrev]
+        }
+        (_, KeyCode::Esc) => vec![Action::ToggleTagPicker],
+        (_, KeyCode::Enter) => vec![Action::TagPickerSelect],
+        (_, KeyCode::Backspace) => {
             let mut q = state.tag_picker.query.clone();
             q.pop();
             vec![Action::TagPickerQuery(q)]
         }
-        KeyCode::Char(c) => {
+        (_, KeyCode::Char(c)) => {
             vec![Action::TagPickerQuery(format!(
                 "{}{}",
                 state.tag_picker.query, c
@@ -116,23 +120,27 @@ fn handle_tag_picker(state: &AppState, key: &KeyEvent) -> Vec<Action> {
 }
 
 fn handle_search(state: &AppState, key: &KeyEvent) -> Vec<Action> {
-    match key.code {
-        // Arrow keys navigate results
-        KeyCode::Down => vec![Action::SelectNext],
-        KeyCode::Up => vec![Action::SelectPrev],
+    match (key.modifiers, key.code) {
+        // Arrow keys + Ctrl+j/k navigate results; plain j/k still types into the query
+        (KeyModifiers::CONTROL, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+            vec![Action::SelectNext]
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+            vec![Action::SelectPrev]
+        }
         // All chars (including j/k) type into the query
-        KeyCode::Char(c) => {
+        (_, KeyCode::Char(c)) => {
             vec![Action::UpdateSearchQuery(format!(
                 "{}{}",
                 state.search.query, c
             ))]
         }
-        KeyCode::Backspace => {
+        (_, KeyCode::Backspace) => {
             let mut q = state.search.query.clone();
             q.pop();
             vec![Action::UpdateSearchQuery(q)]
         }
-        KeyCode::Enter => {
+        (_, KeyCode::Enter) => {
             if !state.search.results.is_empty() {
                 let hit = &state.search.results[state.search.selected];
                 vec![
@@ -143,7 +151,9 @@ fn handle_search(state: &AppState, key: &KeyEvent) -> Vec<Action> {
                 vec![]
             }
         }
-        KeyCode::Esc => vec![Action::ClearSearch, Action::EnterMode(Mode::MainMenu)],
+        (_, KeyCode::Esc) => {
+            vec![Action::ClearSearch, Action::EnterMode(Mode::MainMenu)]
+        }
         _ => vec![],
     }
 }
@@ -229,17 +239,21 @@ fn handle_new_note(state: &AppState, key: &KeyEvent) -> Vec<Action> {
 }
 
 fn handle_fuzzy(state: &AppState, key: &KeyEvent) -> Vec<Action> {
-    match key.code {
-        KeyCode::Esc => vec![Action::ToggleFuzzy],
-        KeyCode::Enter => vec![Action::FuzzySelect],
-        KeyCode::Down => vec![Action::FuzzySelectNext],
-        KeyCode::Up => vec![Action::FuzzySelectPrev],
-        KeyCode::Backspace => {
+    match (key.modifiers, key.code) {
+        (KeyModifiers::CONTROL, KeyCode::Char('j')) | (_, KeyCode::Down) => {
+            vec![Action::FuzzySelectNext]
+        }
+        (KeyModifiers::CONTROL, KeyCode::Char('k')) | (_, KeyCode::Up) => {
+            vec![Action::FuzzySelectPrev]
+        }
+        (_, KeyCode::Esc) => vec![Action::ToggleFuzzy],
+        (_, KeyCode::Enter) => vec![Action::FuzzySelect],
+        (_, KeyCode::Backspace) => {
             let mut q = state.fuzzy.query.clone();
             q.pop();
             vec![Action::FuzzyQuery(q)]
         }
-        KeyCode::Char(c) => {
+        (_, KeyCode::Char(c)) => {
             vec![Action::FuzzyQuery(format!("{}{}", state.fuzzy.query, c))]
         }
         _ => vec![],
@@ -598,6 +612,66 @@ mod tests {
         let actions = handle(&state, &key(KeyCode::Char('a')));
         assert!(actions.iter().any(|a| matches!(a, Action::EditInput(_))));
         assert!(!actions.iter().any(|a| matches!(a, Action::Quit)));
+    }
+
+    #[test]
+    fn test_fuzzy_ctrl_jk_navigate_results() {
+        let mut state = AppState::default();
+        state.fuzzy.active = true;
+        let down = handle(&state, &ctrl(KeyCode::Char('j')));
+        assert!(down.iter().any(|a| matches!(a, Action::FuzzySelectNext)));
+        let up = handle(&state, &ctrl(KeyCode::Char('k')));
+        assert!(up.iter().any(|a| matches!(a, Action::FuzzySelectPrev)));
+    }
+
+    #[test]
+    fn test_fuzzy_plain_j_still_types_into_query() {
+        let mut state = AppState::default();
+        state.fuzzy.active = true;
+        let actions = handle(&state, &key(KeyCode::Char('j')));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::FuzzyQuery(q) if q.contains('j'))));
+        assert!(!actions.iter().any(|a| matches!(a, Action::FuzzySelectNext)));
+    }
+
+    #[test]
+    fn test_tag_picker_ctrl_jk_navigate() {
+        let mut state = AppState {
+            mode: Mode::Listing,
+            ..AppState::default()
+        };
+        state.tag_picker.active = true;
+        let down = handle(&state, &ctrl(KeyCode::Char('j')));
+        assert!(down.iter().any(|a| matches!(a, Action::TagPickerNext)));
+        let up = handle(&state, &ctrl(KeyCode::Char('k')));
+        assert!(up.iter().any(|a| matches!(a, Action::TagPickerPrev)));
+    }
+
+    #[test]
+    fn test_tag_picker_plain_j_still_types_into_query() {
+        let mut state = AppState {
+            mode: Mode::Listing,
+            ..AppState::default()
+        };
+        state.tag_picker.active = true;
+        let actions = handle(&state, &key(KeyCode::Char('j')));
+        assert!(actions
+            .iter()
+            .any(|a| matches!(a, Action::TagPickerQuery(q) if q.contains('j'))));
+        assert!(!actions.iter().any(|a| matches!(a, Action::TagPickerNext)));
+    }
+
+    #[test]
+    fn test_search_ctrl_jk_navigate_results() {
+        let state = AppState {
+            mode: Mode::Search,
+            ..AppState::default()
+        };
+        let down = handle(&state, &ctrl(KeyCode::Char('j')));
+        assert!(down.iter().any(|a| matches!(a, Action::SelectNext)));
+        let up = handle(&state, &ctrl(KeyCode::Char('k')));
+        assert!(up.iter().any(|a| matches!(a, Action::SelectPrev)));
     }
 
     fn make_note_view_state() -> AppState {

@@ -7,9 +7,9 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     let msg = if state.help_active {
         "?: close help  Esc: close help".to_string()
     } else if state.fuzzy.active {
-        "↑↓: navigate  Enter: open  Esc: close".to_string()
+        "↑↓/^j/^k: navigate  Enter: open  Esc: close".to_string()
     } else if state.tag_picker.active {
-        "↑↓: navigate  Enter: select  type to filter  Esc: close".to_string()
+        "↑↓/^j/^k: navigate  Enter: select  type to filter  Esc: close".to_string()
     } else if state.confirm_delete.is_some() {
         "Press D again to confirm delete, any other key to cancel".to_string()
     } else if let Some(err) = &state.error_message {
@@ -25,7 +25,10 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
                 "j/k: navigate  Enter: open  t: filter  c: new  /: search  ^P: find  Esc: back"
                     .to_string()
             }
-            Mode::Search => "type to search  ↑↓: navigate  Enter: open  Esc: cancel".to_string(),
+            Mode::Search => {
+                "type to search (j/k types into query)  ↑↓/^j/^k: navigate  Enter: open  Esc: cancel"
+                    .to_string()
+            }
             Mode::NoteView => {
                 "i: edit  e: $EDITOR  g: graph  D: delete  [/]: prev/next  j/k: scroll  Esc: back"
                     .to_string()
