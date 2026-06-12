@@ -150,6 +150,235 @@ pub fn generate_frontmatter(
     fm
 }
 
+/// Add `tag` to the YAML frontmatter's `tags:` array. Returns `Some(updated_content)`
+/// if a change was made, or `None` if the tag was already present (or the input is
+/// unparseable / the tag is empty).
+///
+/// Preserves the body byte-for-byte and leaves every other frontmatter field
+/// untouched. Only the `tags:` line (or a newly appended one) is modified.
+///
+/// Handles the forms produced by `generate_frontmatter` and the importers:
+/// - `tags: []`                                       → `tags: ["tag"]`
+/// - `tags: [a]`                                      → `tags: [a, "tag"]`
+/// - `tags: [a, b]`                                   → `tags: [a, b, "tag"]`
+/// - `tags: ["a", "b"]`                               → `tags: ["a", "b", "tag"]`
+/// - `tags: a` / `tags: a, b` (no brackets, rare)     → `tags: a, tag` / `tags: a, b, tag`
+/// - `tags:` block-style (items on subsequent lines)  → appends a new `- tag` line
+/// - No `tags:` line at all                           → appends `tags: ["tag"]\n`
+/// - No frontmatter at all                            → prepends `---\ntags: ["tag"]\n---\n`
+pub fn add_tag_to_frontmatter(content: &str, tag: &str) -> Option<String> {
+    if tag.is_empty() {
+        return None;
+    }
+
+    // Use the existing parser to check for the tag — handles every quoting form
+    // uniformly so idempotency is automatic.
+    let (parsed_meta, _) = parse_frontmatter(content).ok()?;
+    if parsed_meta.tags.iter().any(|t| t == tag) {
+        return None;
+    }
+
+    // No frontmatter → prepend a minimal one.
+    if !content.starts_with("---\n") {
+        let mut out = String::with_capacity(content.len() + tag.len() + 16);
+        out.push_str("---\ntags: [\"");
+        out.push_str(tag);
+        out.push_str("\"]\n---\n");
+        out.push_str(content);
+        return Some(out);
+    }
+
+    // Locate the frontmatter block: the opening `---\n` and the closing `---` line.
+    let (header_end, body_start) = locate_frontmatter_block(content)?;
+
+    // Modify the existing tags line, or append a new one if absent.
+    let frontmatter = &content[header_end..body_start];
+    let new_frontmatter = upsert_tags_line(frontmatter, tag)?;
+
+    let mut out = String::with_capacity(content.len() + 32);
+    out.push_str(&content[..header_end]);
+    out.push_str(&new_frontmatter);
+    out.push_str(&content[body_start..]);
+    Some(out)
+}
+
+/// Returns `(header_end, body_start)` byte indices into `content` such that:
+/// - `content[..header_end]` is the opening `---\n`
+/// - `content[header_end..body_start]` is the frontmatter body
+/// - `content[body_start..]` is the closing `---` line and the rest of the file
+fn locate_frontmatter_block(content: &str) -> Option<(usize, usize)> {
+    const OPEN: &str = "---\n";
+    if !content.starts_with(OPEN) {
+        return None;
+    }
+    let rest = &content[OPEN.len()..];
+    let mut consumed = 0usize;
+    for line in rest.split_inclusive('\n') {
+        let stripped = line.trim_end_matches('\n').trim_end_matches('\r');
+        if stripped == "---" {
+            return Some((OPEN.len(), OPEN.len() + consumed));
+        }
+        consumed += line.len();
+    }
+    None
+}
+
+/// Walk the frontmatter, rewriting the first `tags:` line to include `tag` (or
+/// appending a new `tags:` line if none is present). Preserves every other line
+/// byte-for-byte, including its trailing newline.
+fn upsert_tags_line(frontmatter: &str, tag: &str) -> Option<String> {
+    let lines: Vec<&str> = frontmatter.split_inclusive('\n').collect();
+    let mut out = String::with_capacity(frontmatter.len() + tag.len() + 16);
+    let mut found = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if !found && is_tags_line(line) {
+            if is_block_style_start(line) {
+                // Block-style: re-emit the `tags:` line, walk past any
+                // existing `- item` lines, then append a new item with the
+                // same indent as the first existing one.
+                out.push_str(line);
+                i += 1;
+                let item_indent = if i < lines.len() {
+                    block_item_indent(lines[i])
+                } else {
+                    "  ".to_string()
+                };
+                while i < lines.len() && is_block_item_line(lines[i]) {
+                    out.push_str(lines[i]);
+                    i += 1;
+                }
+                out.push_str(&item_indent);
+                out.push_str("- ");
+                out.push_str(tag);
+                out.push('\n');
+                found = true;
+            } else {
+                out.push_str(&modify_tags_line(line, tag));
+                i += 1;
+                found = true;
+            }
+        } else {
+            out.push_str(line);
+            i += 1;
+        }
+    }
+    if !found {
+        // No tags line — append a new one at the end of the frontmatter.
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out.push_str("tags: [\"");
+        out.push_str(tag);
+        out.push_str("\"]\n");
+    }
+    Some(out)
+}
+
+fn is_block_style_start(line: &str) -> bool {
+    // `tags:` alone on a line, with items on subsequent `- ` lines.
+    line.trim_start().trim_end() == "tags:"
+}
+
+fn is_block_item_line(line: &str) -> bool {
+    // A list item: optional indent, then `- ` (or trailing `-`).
+    let trimmed = line.trim_start();
+    trimmed.starts_with("- ") || trimmed.trim_end() == "-"
+}
+
+fn block_item_indent(line: &str) -> String {
+    // Re-use the indent of the first existing item so we match the user's
+    // chosen list-item indent (typically 2 spaces).
+    let trimmed = line.trim_start();
+    let indent_len = line.len() - trimmed.len();
+    line[..indent_len].to_string()
+}
+
+fn is_tags_line(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    // Match `tags:` but NOT `tags::` (the engine's materialized continuation
+    // syntax for the `tags` block property — those are per-block, not page-level).
+    trimmed.starts_with("tags:") && !trimmed.starts_with("tags::")
+}
+
+fn modify_tags_line(line: &str, tag: &str) -> String {
+    let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+    let trimmed = line.trim_start().trim_end();
+    let trailing = &line[line.trim_end_matches('\n').len()..];
+    let after_colon = trimmed.strip_prefix("tags:").unwrap_or("").trim_start();
+
+    if after_colon.is_empty() {
+        // Block-style: `tags:` alone, items follow on `- ` lines.
+        let mut out = String::with_capacity(line.len() + tag.len() + 8);
+        out.push_str(&indent);
+        out.push_str("tags:\n");
+        out.push_str(&indent);
+        out.push_str("  - ");
+        out.push_str(tag);
+        out.push('\n');
+        out.push_str(trailing);
+        return out;
+    }
+
+    if after_colon.starts_with('[') {
+        // Bracket form. Find the closing bracket on the same line.
+        if let Some(close_idx) = after_colon.find(']') {
+            let inner = after_colon[1..close_idx].trim();
+            // Match the existing quoting style: if any item is quoted, quote the new one too.
+            // An empty array has no style preference — emit the canonical quoted form.
+            let uses_quotes = inner.is_empty() || inner.contains('"') || inner.contains('\'');
+            let new_item = if uses_quotes {
+                let q = if inner.contains('\'') && !inner.contains('"') {
+                    '\''
+                } else {
+                    '"'
+                };
+                let mut s = String::with_capacity(tag.len() + 2);
+                s.push(q);
+                s.push_str(tag);
+                s.push(q);
+                s
+            } else {
+                tag.to_string()
+            };
+            let new_inner = if inner.is_empty() {
+                new_item
+            } else {
+                let mut s = String::with_capacity(inner.len() + new_item.len() + 2);
+                s.push_str(inner.trim_end_matches(','));
+                s.push_str(", ");
+                s.push_str(&new_item);
+                s
+            };
+            let mut out = String::with_capacity(line.len() + tag.len() + 4);
+            out.push_str(&indent);
+            out.push_str("tags: [");
+            out.push_str(&new_inner);
+            out.push(']');
+            out.push_str(trailing);
+            return out;
+        }
+        // Multi-line bracket form is rare and ambiguous — return the line unchanged.
+        return line.to_string();
+    }
+
+    // No brackets: `tags: a` or `tags: a, b`. Append `, tag` (no quote to match the unquoted style).
+    let value = after_colon.trim();
+    let mut out = String::with_capacity(line.len() + tag.len() + 2);
+    out.push_str(&indent);
+    out.push_str("tags: ");
+    if value.is_empty() {
+        out.push_str(tag);
+    } else {
+        out.push_str(value);
+        out.push_str(", ");
+        out.push_str(tag);
+    }
+    out.push_str(trailing);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -247,5 +476,104 @@ Body content here."#;
         let links = extract_links_from_body(body);
         assert_eq!(links.len(), 2);
         assert_eq!(links[0].target, "other-note");
+    }
+
+    // --- add_tag_to_frontmatter ---
+
+    #[test]
+    fn test_add_tag_to_frontmatter_already_present_returns_none() {
+        let content = "---\ntitle: \"t\"\ntags: [\"daily\"]\n---\nbody\n";
+        assert!(add_tag_to_frontmatter(content, "daily").is_none());
+    }
+
+    #[test]
+    fn test_add_tag_to_frontmatter_appends_to_quoted_list() {
+        let content = "---\ntitle: \"t\"\ntags: [\"a\", \"b\"]\n---\nbody\n";
+        let updated = add_tag_to_frontmatter(content, "daily").unwrap();
+        assert!(updated.contains("tags: [\"a\", \"b\", \"daily\"]"));
+        assert!(updated.contains("body\n"));
+    }
+
+    #[test]
+    fn test_add_tag_to_frontmatter_appends_to_unquoted_list() {
+        let content = "---\ntitle: \"t\"\ntags: [a, b]\n---\nbody\n";
+        let updated = add_tag_to_frontmatter(content, "daily").unwrap();
+        // Unquoted style is preserved — no quotes on the appended tag.
+        assert!(updated.contains("tags: [a, b, daily]"));
+    }
+
+    #[test]
+    fn test_add_tag_to_frontmatter_empty_brackets() {
+        let content = "---\ntitle: \"t\"\ntags: []\n---\nbody\n";
+        let updated = add_tag_to_frontmatter(content, "daily").unwrap();
+        assert!(updated.contains("tags: [\"daily\"]"));
+    }
+
+    #[test]
+    fn test_add_tag_to_frontmatter_no_tags_line_appends() {
+        let content = "---\ntitle: \"t\"\ncreated: 2026-06-10T00:00:00Z\n---\nbody\n";
+        let updated = add_tag_to_frontmatter(content, "daily").unwrap();
+        // Other fields are preserved exactly.
+        assert!(updated.contains("title: \"t\""));
+        assert!(updated.contains("created: 2026-06-10T00:00:00Z"));
+        // The new tags line is appended at the end of the frontmatter.
+        assert!(updated.contains("tags: [\"daily\"]\n---\nbody\n"));
+    }
+
+    #[test]
+    fn test_add_tag_to_frontmatter_no_frontmatter_prepends() {
+        let content = "just a body line\n";
+        let updated = add_tag_to_frontmatter(content, "daily").unwrap();
+        assert!(updated.starts_with("---\ntags: [\"daily\"]\n---\n"));
+        assert!(updated.contains("just a body line"));
+    }
+
+    #[test]
+    fn test_add_tag_to_frontmatter_preserves_body_and_other_fields() {
+        let content = "\
+---
+title: \"2026-06-10\"
+created: 2026-06-10T00:00:00Z
+aliases: [\"journal-2026-06-10\"]
+---
+
+- visible journal block
+  - child
+";
+        let updated = add_tag_to_frontmatter(content, "daily").unwrap();
+        // Every other field is preserved exactly.
+        assert!(updated.contains("title: \"2026-06-10\""));
+        assert!(updated.contains("created: 2026-06-10T00:00:00Z"));
+        assert!(updated.contains("aliases: [\"journal-2026-06-10\"]"));
+        // Body is byte-for-byte identical to the original body.
+        let body_start = updated.find("- visible journal block").unwrap();
+        assert_eq!(
+            &updated[body_start..],
+            "- visible journal block\n  - child\n"
+        );
+    }
+
+    #[test]
+    fn test_add_tag_to_frontmatter_block_style_appends_dash_line() {
+        let content = "---\ntitle: \"t\"\ntags:\n  - a\n  - b\n---\nbody\n";
+        let updated = add_tag_to_frontmatter(content, "daily").unwrap();
+        assert!(updated.contains("tags:\n  - a\n  - b\n  - daily\n"));
+    }
+
+    #[test]
+    fn test_add_tag_to_frontmatter_empty_tag_returns_none() {
+        let content = "---\ntitle: \"t\"\ntags: []\n---\nbody\n";
+        assert!(add_tag_to_frontmatter(content, "").is_none());
+    }
+
+    #[test]
+    fn test_add_tag_to_frontmatter_idempotent_via_parser() {
+        // The accepted form is parsed and re-detected on a second run, so a
+        // caller that always canonicalizes through this function gets
+        // idempotency for free.
+        let content = "---\ntitle: \"t\"\n---\nbody\n";
+        let once = add_tag_to_frontmatter(content, "daily").unwrap();
+        let twice = add_tag_to_frontmatter(&once, "daily");
+        assert!(twice.is_none(), "second run is a no-op: got {twice:?}");
     }
 }

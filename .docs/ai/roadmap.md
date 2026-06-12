@@ -600,7 +600,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
 
 ### Opencode-ready reliability polish (2026-06-12)
 
-- [ ] **Add a dry-run repair for date-slug dailies missing `daily` tags.**
+- [x] **Add a dry-run repair for date-slug dailies missing `daily` tags.**
   - **Scope** - Add a CLI repair command that finds canonical `YYYY-MM-DD.md` notes that do not have the `daily` tag and optionally adds it. Default must be dry-run; `--apply` must be explicit.
   - **Files** - `crates/tesela-cli/src/main.rs`; likely create `crates/tesela-cli/src/repair_daily_tags.rs`; reuse storage/frontmatter helpers from `crates/tesela-core/src/storage/markdown.rs` and `crates/tesela-core/src/storage/filesystem.rs`.
   - **Acceptance** - Dry-run lists only valid date-slug notes missing `daily`; `--apply` adds `daily` without changing the note body or dropping existing frontmatter fields; a second `--apply` reports no changes.

@@ -10,6 +10,7 @@ mod import_obsidian;
 mod import_org;
 mod mosaic_notes;
 mod recover_logseq_dates;
+mod repair_daily_tags;
 use tesela_core::{
     config::Config,
     daily::DailyNoteConfig,
@@ -209,6 +210,13 @@ enum Commands {
         #[arg(long)]
         source: PathBuf,
         /// Actually write the properties. Default: dry-run — print the recovery table.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// One-off repair: find canonical YYYY-MM-DD.md dailies whose frontmatter
+    /// is missing the `daily` tag and add it (dry-run unless --apply).
+    RepairDailyTags {
+        /// Actually write the tags. Default: dry-run — list the candidates.
         #[arg(long)]
         apply: bool,
     },
@@ -1072,6 +1080,12 @@ async fn main() -> Result<()> {
         return recover_logseq_dates::run(&mosaic, &source, apply).await;
     }
 
+    // Repair missing `daily` tags on date-slug dailies — pure filesystem walk,
+    // no Ctx / no Loro engine required.
+    if let Commands::RepairDailyTags { apply } = cli.command {
+        return repair_daily_tags::run(&mosaic, apply).await;
+    }
+
     let ctx = Ctx::new(mosaic).await?;
 
     match cli.command {
@@ -1090,7 +1104,8 @@ async fn main() -> Result<()> {
         | Commands::ImportObsidian { .. }
         | Commands::ImportOrg { .. }
         | Commands::BackfillTask { .. }
-        | Commands::RecoverLogseqDates { .. } => unreachable!(),
+        | Commands::RecoverLogseqDates { .. }
+        | Commands::RepairDailyTags { .. } => unreachable!(),
         Commands::New {
             title,
             tags,
