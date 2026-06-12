@@ -1,7 +1,7 @@
 # Current State
 
 ## Branch
-- `main`; coordinator docs committed `3266f05`; command-palette a11y item verified and ready to commit.
+- `main`; coordinator docs committed `3266f05`; command-palette a11y item landed `0b15b70`.
 - Codex self-tier: Senior (T2). Assign only `tier_floor: senior|junior`; escalate `lead`, `XL`, and off-limits.
 
 ## Plan
