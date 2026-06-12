@@ -13,11 +13,17 @@ Self-identify your tier before work. If you are Codex/GPT-5, treat yourself as S
 
 ## Item selection
 
-Pick exactly ONE unchecked item from roadmap section `### Codex/pi mono coordinator batch (2026-06-12)`.
+Pick exactly ONE unchecked backlog item from `.docs/ai/roadmap.md`.
+
+Priority order:
+1. `### Codex/pi mono coordinator batch (2026-06-12)`
+2. `### Opencode-ready reliability polish (2026-06-12)`
+3. Any later `## Backlog` item only if it has the full fields below and is clearly inside the safe zones.
 
 Allowed:
 - `tier_floor` is `junior` or `senior`
 - `complexity` is `S` or `M`
+- the item has explicit `Scope`, `Files`, `Acceptance`, and `Verify` fields
 - the item is not marked `ESCALATE`
 - the files are outside the off-limits list below
 
@@ -26,6 +32,7 @@ Forbidden:
 - `complexity: XL`
 - any `ESCALATE (Opus/Fable)` item
 - sync hot path, RelayTicker behavior, pairing, FFI/UniFFI, generated bindings, signing, TestFlight, `project.yml`, real mosaic data, or large refactors
+- old mechanical backlog bullets that do not carry `Scope` / `Files` / `Acceptance` / `Verify` / `tier_floor` / `complexity`
 
 If no allowed unchecked items remain, mark the current-state loop complete and stop.
 
