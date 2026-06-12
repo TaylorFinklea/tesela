@@ -676,7 +676,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
 
 - [x] **Add Vim-style overlay navigation aliases in the TUI.**
 
-- [ ] **Lock iOS keyboard-toolbar encoding with pure tests.**
+- [x] **Lock iOS keyboard-toolbar encoding with pure tests.**
   - **Scope** - Add Swift tests for the pure keyboard-toolbar preference codec so toolbar customization stays stable while view polish continues.
   - **Files** - `app/Tesela-iOS/Sources/Data/KeyboardToolbarItem.swift`; create `app/Tesela-iOS/Tests/KeyboardToolbarItemTests.swift`.
   - **Acceptance** - Tests cover default raw value order, round-trip encode/decode, duplicate removal preserving first occurrence, unknown value dropping, and empty raw string behavior as currently implemented. Do not change toolbar UI or edit sync.
