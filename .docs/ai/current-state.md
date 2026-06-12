@@ -1,5 +1,12 @@
 # Current State
 
+## 2026-06-12 — Web split/merge-back orphan fixed
+
+- Backlog item "Split + immediate merge-back orphans the absorbed block's server row" fixed.
+- Root: `handleBackspaceMerge` skipped absorbed-block delete when the split half still had a `:new-…` editor id, even after its bid-backed upsert had landed; disk kept duplicate second-half row.
+- Fix: emit merge delete whenever absorbed block has a bid; unknown BlockDelete is safe before upsert lands, required after.
+- Verify: new `web/tests/split-merge-back.e2e.mjs` red→green (3/3), `node --test tests/unit/block-ops.test.mjs tests/unit/block-ops-saver.test.mjs`, `pnpm --dir web check`, `pnpm --dir web build`, `git diff --check`.
+
 ## 2026-06-11 — Relay 413 (snapshot deposit) FIXED live; LAN-direct question answered
 
 - Taylor hit `put_snapshots: relay returned 413` post-backfill (253 resident docs blew the un-chunked whole-mosaic deposit past the 16 MiB cap — the audit's deferred high finding made real). **Live sync was never down** (polls/puts/cursor all advancing) — only compaction housekeeping failed.

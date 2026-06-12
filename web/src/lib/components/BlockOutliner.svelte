@@ -618,22 +618,10 @@
     return new Set(Array.from({ length: hi - lo + 1 }, (_, i) => lo + i));
   });
 
-  /** Brand-new block ids (`:new-<timestamp>` / `:paste-`): blocks the server
-   *  has never seen ANY row for. Used for op-builder-adjacent gating (e.g.
-   *  "does the absorbed block in a merge need a server delete op?" — a
-   *  `:merged-`/`:split-` block DOES carry a server-known bid, so it is NOT
-   *  in this set). The reseed dirty guards use the SUPERSET predicate
-   *  `isClientMintedId` (block-ops.ts), which also covers `:split-`/
-   *  `:merged-`/`:tmpl-`. Server-side ids carry `<noteId>:<lineNumber>`
-   *  shape (numeric trailing segment, no infix). */
-  function isLocalOnlyId(id: string): boolean {
-    return id.includes(":new-") || id.includes(":paste-");
-  }
-
   /** True when the editor holds local structural edits the server hasn't
    *  confirmed yet: any client-minted block id (`:new-`/`:paste-`, plus the
-   *  `:split-`/`:merged-`/`:tmpl-` infixes — `isClientMintedId`, the superset
-   *  of `isLocalOnlyId`) is present in `blocks` but not in any
+   *  `:split-`/`:merged-`/`:tmpl-` infixes — `isClientMintedId`) is present
+   *  in `blocks` but not in any
    *  server-canonical body until its save round-trips back as a WS broadcast
    *  (the echo carries the same block re-serialised with a canonical
    *  `<noteId>:<line>` id, so the client-minted id is gone). The narrower
@@ -1574,10 +1562,14 @@
     // merge. If the survivor can't be expressed as an upsert (no bid),
     // `mergeOpsForBackspace`/`upsertOpForStructuralBlock` returns null →
     // `saveBlocksViaOps` falls back to the whole-body PUT. One path per save.
-    if (!isLocalOnlyId(current.id) && current.bid) {
+    if (current.bid) {
       // `mergeOpsForBackspace` returns null when the survivor isn't a clean
       // upsert; map that to a `[null]` batch so `saveBlocksViaOps` takes its
-      // whole-body-PUT fallback rather than POSTing a half-batch.
+      // whole-body-PUT fallback rather than POSTing a half-batch. A just-split
+      // block still has a `:new-` editor id after its creating POST flushes,
+      // but its bid is the server row identity. Emitting the delete is safe
+      // before that row exists (unknown BlockDelete is ignored) and required
+      // after it exists, otherwise merge-back leaves the split half orphaned.
       saveBlocksViaOps(
         blocks,
         mergeOpsForBackspace(blocks, mergedBlock.id, current.bid) ?? [null],
