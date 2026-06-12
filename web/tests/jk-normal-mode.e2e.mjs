@@ -2,7 +2,9 @@
 //
 // Regression target: one-shot "start in insert" hints for newly-created or
 // split blocks must be consumed by the creation focus only. Later j/k
-// navigation back onto that block should land in NORMAL mode.
+// navigation back onto that block should land in NORMAL mode — across every
+// focus path the user can take (Esc transitions, command palette open/close,
+// quick-capture `:` open/close, blur-via-click and refocus).
 //
 // PREREQUISITES: static-serving tesela-server on :7788, same as the vim e2es:
 //   pnpm build
@@ -88,6 +90,90 @@ check(
   s.normal && s.txt === "split_right",
   JSON.stringify(s),
 );
+
+// Scenario 3: ⌘K command palette open/close must not push focus back into
+// INSERT. The palette is a modal dialog that steals DOM focus; when it
+// closes, focus returns to the cm-editor and the focused block's effect
+// re-runs. Without the `appliedAutoInsert` one-shot gate + the parent's
+// hint-consume, j/k after the close would land the user in INSERT.
+const openPalette = async () => {
+  await page.keyboard.press("Meta+k");
+  await page.waitForTimeout(200);
+  let n = await page.locator('[role="dialog"]').count();
+  if (n === 0) {
+    await esc();
+    await page.waitForTimeout(80);
+    await page.keyboard.press("Control+k");
+    await page.waitForTimeout(200);
+    n = await page.locator('[role="dialog"]').count();
+  }
+  return n;
+};
+let dialogN = await openPalette();
+check("⌘K opens the command palette", dialogN === 1, "count=" + dialogN);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(240);
+s = await focused();
+check("cm-editor still focused after ⌘K close", s.txt !== null, JSON.stringify(s));
+check("cm-editor in NORMAL after ⌘K close", s.normal, JSON.stringify(s));
+await vim("j");
+s = await focused();
+check("j after ⌘K close stays in NORMAL", s.normal, JSON.stringify(s));
+
+// Scenario 4: `:` quick-capture (colon command line) open/close must not push
+// focus back into INSERT. Same shape as ⌘K, but for the `:` ex-mode input
+// reachable from the rail "Quick capture" widget AND from NORMAL-mode `:`.
+// NOTE: the colon command line currently does NOT auto-restore DOM focus
+// to the cm-editor on close (focus falls back to <body>). The test
+// simulates the user's next action — clicking back on .cm-content — so
+// the j/k-after-focus-steal path is what the "stale insert intent" fix
+// actually owns. Follow-up: restore focus in ColonCommandLine on close.
+await esc();
+await page.waitForTimeout(80);
+let cmFocusedBefore = await page.evaluate(() => !!document.querySelector(".cm-editor.cm-focused"));
+check("cm-editor focused before `:`", cmFocusedBefore, "cm-focused=" + cmFocusedBefore);
+await page.keyboard.press(":");
+await page.waitForTimeout(200);
+let cmFocusedDuringColon = await page.evaluate(() => !!document.querySelector(".cm-editor.cm-focused"));
+check("cm-editor loses DOM focus while `:` input is open", !cmFocusedDuringColon, "cm-focused=" + cmFocusedDuringColon);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(240);
+// The colon command line does not auto-restore focus (known follow-up).
+// Refocus the cm-editor the way the user would — by clicking it.
+await page.click(".cm-content");
+await page.waitForTimeout(220);
+s = await focused();
+check("cm-editor refocused after `:` close + click", s.txt !== null, JSON.stringify(s));
+check("cm-editor in NORMAL after `:` close + click", s.normal, JSON.stringify(s));
+await vim("j");
+s = await focused();
+check("j after `:` close + refocus stays in NORMAL", s.normal, JSON.stringify(s));
+
+// Scenario 5: blur cm-editor via click on a non-editor element, then
+// refocus by clicking back on the cm-content, then j/k. Tests that the
+// effect that re-fires on `view.hasFocus` flip → true does not push the
+// user back into INSERT.
+await esc();
+await page.waitForTimeout(80);
+let cmFocusedBeforeBlur = await page.evaluate(() => !!document.querySelector(".cm-editor.cm-focused"));
+check("cm-editor focused before blur click", cmFocusedBeforeBlur, "cm-focused=" + cmFocusedBeforeBlur);
+// Click on a non-editor surface. The status bar is a non-focusable div at
+// the bottom of the shell — clicking it moves the mouse outside any editor
+// and the cm-editor's contenteditable loses DOM focus.
+await page.locator(".gr-status").click();
+await page.waitForTimeout(180);
+let cmFocusedAfterBlur = await page.evaluate(() => !!document.querySelector(".cm-editor.cm-focused"));
+check("cm-editor blurred after click on status bar", !cmFocusedAfterBlur, "cm-focused=" + cmFocusedAfterBlur);
+// Refocus by clicking the cm-content. The focusedIndex prop is unchanged
+// (the click is inside an existing block), so only the DOM focus flips.
+await page.click(".cm-content");
+await page.waitForTimeout(220);
+s = await focused();
+check("cm-editor refocused after click", s.txt !== null, JSON.stringify(s));
+check("cm-editor in NORMAL after re-focus", s.normal, JSON.stringify(s));
+await vim("j");
+s = await focused();
+check("j after blur+refocus stays in NORMAL", s.normal, JSON.stringify(s));
 
 console.log("=== PAGE ERRORS (" + errs.length + ") ===");
 for (const e of errs) console.log(e);

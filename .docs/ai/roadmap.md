@@ -640,7 +640,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
   - **tier_floor** - `junior`
   - **complexity** - `S`
 
-- [ ] **Expand the web normal-mode `j/k` regression suite.**
+- [x] **Expand the web normal-mode `j/k` regression suite.**
   - **Scope** - Add coverage around the recent stale insert-intent fix so navigation does not re-enter Insert after command palette focus, quick capture focus, textarea/editor blur, or Esc transitions.
   - **Files** - `web/tests/jk-normal-mode.e2e.mjs`; read `web/src/lib/components/BlockEditor.svelte` and `web/src/lib/components/BlockOutliner.svelte` before changing behavior.
   - **Acceptance** - `j/k` navigates only in normal mode; stale auto-insert intent is not reused after focus moves through non-editor UI; existing split/new-block Insert behavior still works when intentionally creating a block.
