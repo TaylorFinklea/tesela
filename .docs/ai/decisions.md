@@ -4,6 +4,21 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-12 — Agent-pipeline roles: Opus = planner; Codex/Pi execute; Opus implements only L items
+
+**Decision (Taylor), effective when Opus's rate limits recover (~1 week):** lock in a standing division of labor across the agent fleet.
+
+- **Opus (Lead/T1) = PLANNER.** Default job is to spec/triage/architect work as self-contained backlog items for Codex + Pi Mono to execute — NOT to implement broadly. Opus owns the roadmap, decisions, and item decomposition.
+- **Opus implements personally ONLY the `L` (and up — `XL`) complexity items** — the genuinely hard/risky ones (sync hot path, Loro/CRDT, FFI, crypto, architecture). Everything `S`/`M` is specced down, never hand-built by Opus.
+- **Codex (Senior/T2) + Pi Mono (Senior/T2) = EXECUTE** the S/M items Opus plans. Interim arrangement (this week, while Opus is limited): Codex plans + reviews + merges, Pi implements — see the 2026-06-12 Codex/Pi batch report ledger. Once Opus is back, planning reverts to Opus and Codex/Pi go back to pure execution (+ peer review).
+- **Fable** remains available for hard/complex work alongside Opus.
+
+**Why:** conserve Opus's scarce capacity for the high-leverage work only it can do well (planning + L/XL implementation); keep the cheaper Senior agents saturated on safe S/M throughput. Routing stays backlog-driven per AGENTS.md Tiered model routing — this just sets Opus's *default mode* to planner.
+
+**How to apply (future Opus, on return):** don't reflexively start implementing. Plan first: decompose into backlog items with tier_floor/complexity, hand S/M to Codex/Pi, and only pick up `L`/`XL` yourself. First task back: review the Codex/Pi batch (ledger at `.docs/ai/phases/2026-06-12-codex-pi-batch-report.md`) and clean up before planning new work. See [[project-emacs2-northstar]].
+
+---
+
 ### 2026-06-12 — North star: Tesela = emacs 2.0; keyboard + command registry ALWAYS first; stay Svelte (no Zed fork)
 
 **Context (Taylor):** "I'm wanting Tesela to be my personal emacs 2.0 so I can do everything purely from the keyboard on desktop — but one that has a real mobile and RTC experience, not just a pretty website." Asked whether to stay on SvelteKit web (Tauri desktop) + SwiftUI iOS, or pivot desktop to a **forked Zed**.
