@@ -4,6 +4,30 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-12 — North star: Tesela = emacs 2.0; keyboard + command registry ALWAYS first; stay Svelte (no Zed fork)
+
+**Context (Taylor):** "I'm wanting Tesela to be my personal emacs 2.0 so I can do everything purely from the keyboard on desktop — but one that has a real mobile and RTC experience, not just a pretty website." Asked whether to stay on SvelteKit web (Tauri desktop) + SwiftUI iOS, or pivot desktop to a **forked Zed**.
+
+**Decision:**
+1. **Keyboard-first and the command registry are the permanent #1 priority** — above any view, theme, or feature. Every action is reachable/driveable without the mouse; new surfaces ship keyboard-complete.
+2. **The command registry is the architectural spine.** Every action = a named, metadata-carrying command. ⌘K palette, keybindings, leader/which-key chords, and the slash menu are all *dispatchers* into the one registry — never per-feature handlers. Rebindability, introspection, and eventual plugin extensibility hang off it. This is the emacs-ness, and it's a *command-system* property, not a renderer property.
+3. **Stay SvelteKit web (Tauri desktop) + native SwiftUI iOS + Rust/Loro core. Do NOT fork Zed.**
+
+**Why not fork Zed (the two headline "wins" evaporate):**
+- **"RTC already built" — wrong CRDT.** Zed's collab is its own rope/clock CRDT, *not* Loro. We've committed to Loro as the canonical sync spine ([[project-loro-migration-committed]], relay + iOS + convergence work). A fork forces ripping out Loro (throwing away the convergence work *and* breaking iOS, which can't use Zed's CRDT) or ripping out Zed's collab (so "RTC free" gave nothing). It collides head-on with our most-invested subsystem.
+- **"Neovim-like editor" — wrong data model.** Zed is a *text/rope* editor (lines, LSP, multibuffers). Tesela is a *block outliner* (nested blocks, properties, refs, transclusion, tiles). You'd fight GPUI on every feature that makes Tesela Tesela. Vim *navigation over an outliner* we already have in CodeMirror; that's not the hard part.
+- **iOS stays Swift either way** → a fork buys zero mobile unification, and it *splits* today's "web == desktop" (one Tauri-wrapped renderer) into three renderers (GPUI desktop / SwiftUI iOS / web).
+- **Fork cost:** owning ~500k+ lines of fast-moving Rust on bespoke GPUI, forever, understood by one person.
+- **Emacs-ness specifically argues *against* a fork:** uniform command dispatch + total rebindability + extensibility are *frontend command-architecture* you want to own outright — not inherit from a code editor's code-centric command set.
+
+**The legitimate pull (parked, not now):** Rust-all-the-way-down + native perf + a future where Savanne co-edits over the exact same Loro core. The right expression of that is **a thin GPUI shell over Tesela's own Loro-backed block core** (borrow Zed crates like vim, don't fork the editor), evaluated *after* the M3 spine is done and RTC co-editing is a near-term goal. Mine Zed, don't marry it.
+
+**Clean test:** fork the thing whose data model matches yours. Zed is a text editor; Tesela is a block outliner — so own the command system in Svelte. **Tauri (not raw browser) is load-bearing** for the keyboard goal: it lets us suppress the webview's built-in shortcuts and claim the native keymap the browser would otherwise steal.
+
+See [[project-tesela-vision]] + roadmap "What Tesela Is" / "Product Vision".
+
+---
+
 ### 2026-06-10 — Backups capture the AUTHORITY (Loro state + sync identity); scheduled in-server; provable via /backup/status
 
 **Context:** audit rec (l4.json "Back up the authority, not the export view") + Taylor: must be 100% certain backups happen before fully leaving Logseq. Pre-change, backups held only the materialized export view (`notes/` etc.) — a restore had zero CRDT history + no device/group identity → reseed → disjoint-lineage twin hazard.

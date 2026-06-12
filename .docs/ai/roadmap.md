@@ -142,20 +142,27 @@ Without this, users have to spin up a second `tesela-server` on a different port
 
 ## What Tesela Is
 
-Keyboard-first note-taking system (org-mode successor). Rust backend + SvelteKit web frontend. Taylor's daily-driver tool — reliability matters more than features.
+**North star (locked 2026-06-12, Taylor): Tesela is Taylor's personal emacs 2.0 — but one with a real mobile and RTC story, not just a pretty website.** The whole point is *do everything from the keyboard*. That makes two things the permanent #1 priority, ahead of any view, theme, or feature:
+
+1. **Keyboard-first, always.** Every action must be reachable and driveable without the mouse. New surfaces ship keyboard-complete or they don't ship.
+2. **The command registry comes first.** Every action is a named, metadata-carrying command; the palette (⌘K), keybindings, leader/which-key chords, and slash menu are all just *dispatchers* into that one registry. Build the registry as the architectural spine, not as per-feature handlers. Rebindability + introspection ("what's bound to this key?") + eventual extensibility (plugins) all hang off it — that's the emacs-ness, and it's a *command-system* property, not a renderer property.
+
+This is why the stack is **SvelteKit web (Tauri-wrapped desktop) + native SwiftUI iOS + Rust/Loro core**, and *not* a forked Zed: emacs 2.0 needs a command system we own outright over a block-outliner data model, plus a real native-mobile + real-time-collab story. A code editor's text/rope core and its own CRDT (≠ our committed Loro) give us neither, and a fork wouldn't unify iOS anyway. See `decisions.md` 2026-06-12 for the full reasoning. Tauri (not raw browser) is load-bearing here — it lets us claim the native keymap the browser would otherwise steal.
+
+Keyboard-first note-taking system (org-mode/emacs successor). Rust backend + SvelteKit web frontend + native SwiftUI iOS. Taylor's daily-driver tool — reliability matters more than features.
 
 **Core principle:** Database-first, files are export format. Everything is a page.
 
-**Design quality bar:** Linear × Logseq × Zed — craft, restraint, keyboard-first, dark-mode default.
+**Design quality bar:** Linear × Logseq × Zed — craft, restraint, keyboard-first, dark-mode default. (Zed is a *quality/feel* reference, never a fork target.)
 
 ## Product Vision
 
-Tesela is NOT just an outliner. The long-term vision is a personal knowledge operating system with:
+Tesela is NOT just an outliner. It's a personal knowledge operating system — Taylor's **emacs 2.0** — real on desktop, mobile, AND in real-time collaboration. Keyboard reach + the command registry (items 2–4) are the spine everything else plugs into:
 
 1. **Block outliner with Vim mode** — Zed-quality keybindings, per-block editing, block drill-in
-2. **Command palette (⌘K)** — Alfred/Raycast-style universal launcher: search pages, run commands, create notes, navigate
-3. **Slash commands (/)** — in-block quick actions: change block type, insert template, add property, convert to task
-4. **Space/Leader commands** — Neovim which-key-style hierarchical command menu from Normal mode: `Space f` → file commands, `Space s` → search, `Space g` → graph
+2. **Command palette (⌘K)** — Alfred/Raycast-style universal launcher over the command registry: search pages, run commands, create notes, navigate
+3. **Slash commands (/)** — in-block quick actions (same registry): change block type, insert template, add property, convert to task
+4. **Space/Leader commands** — Neovim which-key-style hierarchical command menu from Normal mode (same registry, user-rebindable): `Space f` → file commands, `Space s` → search, `Space g` → graph
 5. **Anytype-style type system** — types, relations, and properties are all pages. Tags are classes. Properties are global entities. Blocks inherit property schemas from their tags. Table/kanban/list views per type.
 6. **Sidebar + right panel** — Logseq DB layout: left sidebar (pages, recents, favorites, graph, tiles), right sidebar (backlinks, forward links, properties, pinned pages)
 7. **Graph view** — force-directed note relationship graph with click-to-navigate
