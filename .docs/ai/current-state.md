@@ -1,7 +1,7 @@
 # Current State
 
 ## Branch
-- `main`; coordinator docs committed `3266f05`; command-palette a11y item landed `0b15b70`.
+- `main`; TUI overlay-nav aliases landed `3c91ba9`; keyboard-toolbar codec tests landed `3544b33`; SHA stamp `57645cc`.
 - Codex self-tier: Senior (T2). Assign only `tier_floor: senior|junior`; escalate `lead`, `XL`, and off-limits.
 
 ## Plan
