@@ -1597,6 +1597,10 @@
       if (recentlyCreatedBlockId === blockId) recentlyCreatedBlockId = null;
     });
   }
+  function consumeStartInsertHint(blockId: string) {
+    if (mountHint?.blockId === blockId) mountHint = null;
+    if (recentlyCreatedBlockId === blockId) recentlyCreatedBlockId = null;
+  }
 
   // Block clipboard for yy/p (array to support multi-block visual yank)
   let blockClipboard = $state<ParsedBlock[]>([]);
@@ -2150,6 +2154,7 @@
             onbackspacemerge={(text: string) => handleBackspaceMerge(vi, text)}
             initialCursorPos={mountHint?.blockId === block.id ? mountHint.pos : undefined}
             startininsert={(mountHint?.blockId === block.id && mountHint.startInInsert) || (block.id === recentlyCreatedBlockId && block.raw_text === "")}
+            onstartinsertconsumed={() => consumeStartInsertHint(block.id)}
             autofocused={autoFocused}
             onleader={onLeader}
             oncyclestatus={() => blockVisualMode ? bulkCycleStatus() : handleStatusCycle(vi)}

@@ -524,6 +524,7 @@
     bid,
     onlorotext: onLoroText,
     onsetproperty: onSetProperty,
+    onstartinsertconsumed: onStartInsertConsumed,
   }: {
     initialText: string;
     onblur: () => void;
@@ -614,6 +615,7 @@
      *  container op + optimistic update; the editor only strips its trigger
      *  text and never writes a `key:: value` line. */
     onsetproperty?: (p: { key: string; value: string }) => void;
+    onstartinsertconsumed?: () => void;
   } = $props();
 
   const hiddenKeysCompartment = new Compartment();
@@ -1243,10 +1245,13 @@
       sameRegion = activeInDrawer === myRegionIsDrawer;
     }
     if (!view.hasFocus && !autoFocused && (isBody || sameRegion)) view.focus();
-    if (startInInsert && !appliedAutoInsert) {
-      appliedAutoInsert = true;
+    if (startInInsert && !autoFocused && !appliedAutoInsert) {
       const cm = getCM(view);
-      if (cm) Vim.handleKey(cm, "i", "mapping");
+      if (cm) {
+        appliedAutoInsert = true;
+        Vim.handleKey(cm, "i", "mapping");
+        onStartInsertConsumed?.();
+      }
     }
   });
 
@@ -1995,7 +2000,10 @@
         }
         if (shouldStartInInsert) {
           const cm2 = getCM(view);
-          if (cm2) Vim.handleKey(cm2, "i", "mapping");
+          if (cm2) {
+            Vim.handleKey(cm2, "i", "mapping");
+            onStartInsertConsumed?.();
+          }
         }
       });
     }

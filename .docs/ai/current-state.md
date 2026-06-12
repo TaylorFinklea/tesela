@@ -1,5 +1,12 @@
 # Current State
 
+## 2026-06-12 — Web j/k no longer reuses auto-insert intent
+
+- Web editor j/k focus path hardened: `startInInsert` now ignores decorative/navigation autofocus and insert intent is child-consumed after Vim enters Insert.
+- Inferred root: split/new-empty/fresh-note insert hints were parent state, not one-shot from the editor's perspective; a later focus/remount could reuse the hint and drop navigation into Insert.
+- Coverage: `web/tests/jk-normal-mode.e2e.mjs` covers j back onto fresh empty block + Enter-split block; both stay NORMAL after Esc+k+j.
+- Verify: `node tests/jk-normal-mode.e2e.mjs`, `node tests/split-merge-back.e2e.mjs`, `node --test tests/unit/block-ops.test.mjs tests/unit/block-ops-saver.test.mjs`, `pnpm --dir web check`, `pnpm --dir web build`, `git diff --check`. `pnpm --dir web lint` is stale: no `lint` script in `web/package.json`.
+
 ## 2026-06-12 — Web split/merge-back orphan fixed
 
 - Backlog item "Split + immediate merge-back orphans the absorbed block's server row" fixed.
