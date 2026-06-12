@@ -589,7 +589,73 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
 
 ## Backlog
 
-> Self-contained items any agent can pick up. First agent to start it executes it. Tier hints are advice, not gating.
+> Self-contained items any agent can pick up. First agent to start it executes it. Honor each item's `tier_floor` gate before starting; `complexity` is sizing only.
+
+### Opencode-ready reliability polish (2026-06-12)
+
+- [ ] **Add a dry-run repair for date-slug dailies missing `daily` tags.**
+  - **Scope** - Add a CLI repair command that finds canonical `YYYY-MM-DD.md` notes that do not have the `daily` tag and optionally adds it. Default must be dry-run; `--apply` must be explicit.
+  - **Files** - `crates/tesela-cli/src/main.rs`; likely create `crates/tesela-cli/src/repair_daily_tags.rs`; reuse storage/frontmatter helpers from `crates/tesela-core/src/storage/markdown.rs` and `crates/tesela-core/src/storage/filesystem.rs`.
+  - **Acceptance** - Dry-run lists only valid date-slug notes missing `daily`; `--apply` adds `daily` without changing the note body or dropping existing frontmatter fields; a second `--apply` reports no changes.
+  - **Verify** - `cargo test -p tesela-cli repair_daily_tags`; `cargo test -p tesela-core --lib`; `cargo fmt --all --check`.
+  - **tier_floor** - `senior`
+  - **complexity** - `M`
+
+- [ ] **Improve web journal placeholder previews.**
+  - **Scope** - When a journal day is virtualized/unmounted, show a meaningful preview of real block text instead of raw metadata, bid comments, property-only lines, or blank placeholder bullets.
+  - **Files** - `web/src/lib/components/JournalView.svelte`; create a pure helper such as `web/src/lib/journal-preview.ts`; add `web/tests/unit/journal-preview.test.mjs`.
+  - **Acceptance** - Preview strips `<!-- bid:... -->`; skips property-only lines such as `tags::` and `status::`; skips malformed metadata-looking continuation lines; preserves normal top-level block text; mounted `BlockOutliner` editing behavior is unchanged.
+  - **Verify** - `node --test web/tests/unit/journal-preview.test.mjs`; `pnpm --dir web check`.
+  - **tier_floor** - `junior`
+  - **complexity** - `S`
+
+- [ ] **Add an app-level regression for date-slug dailies without `daily` tags.**
+  - **Scope** - Add server or web coverage proving a real `YYYY-MM-DD.md` daily without `tags: [daily]` is included in the journal data path, not replaced by an empty synthetic gap day.
+  - **Files** - Prefer `crates/tesela-server/tests/` if an integration-test harness already exists; otherwise add focused web coverage under `web/tests/` using a temp mosaic. Read `crates/tesela-core/src/storage/filesystem.rs` for the core behavior first.
+  - **Acceptance** - A fixture containing `2026-06-10.md` with body blocks but no `daily` tag returns/renders those body blocks through the journal-facing path.
+  - **Verify** - `cargo test -p tesela-server daily_filter_includes_date_slug_daily_without_tag`; `cargo test -p tesela-core storage::filesystem::tests::test_daily_filter_includes_date_slug_notes_without_daily_tag`; `cargo build -p tesela-server`.
+  - **tier_floor** - `junior`
+  - **complexity** - `S`
+
+- [ ] **Harden malformed property-line parsing in web block rendering.**
+  - **Scope** - Prevent corrupted property-looking text such as `Deadline::cheduled::` from being treated as a valid property chip or hidden metadata.
+  - **Files** - `web/src/lib/block-parser.ts`; `web/tests/unit/block-parser.test.mjs`; inspect `web/src/lib/components/BlockOutliner.svelte` only to confirm display behavior.
+  - **Acceptance** - Valid property lines still parse/render normally; malformed property-looking text remains visible/editable as text and is not converted into a chip or silently dropped.
+  - **Verify** - `node --test web/tests/unit/block-parser.test.mjs`; `pnpm --dir web check`.
+  - **tier_floor** - `senior`
+  - **complexity** - `S`
+
+- [ ] **Fix web verification script drift.**
+  - **Scope** - Make the documented `pnpm --dir web lint` command real, or update repo docs to the actual supported command if `check` is intentionally the only static verifier.
+  - **Files** - `web/package.json`; `.docs/ai/roadmap.md`; check root/project instructions before editing docs.
+  - **Acceptance** - A fresh agent can run the documented web verification commands without hitting "missing script: lint"; no behavior code changes.
+  - **Verify** - `pnpm --dir web lint`; `pnpm --dir web check`.
+  - **tier_floor** - `junior`
+  - **complexity** - `S`
+
+- [ ] **Expand the web normal-mode `j/k` regression suite.**
+  - **Scope** - Add coverage around the recent stale insert-intent fix so navigation does not re-enter Insert after command palette focus, quick capture focus, textarea/editor blur, or Esc transitions.
+  - **Files** - `web/tests/jk-normal-mode.e2e.mjs`; read `web/src/lib/components/BlockEditor.svelte` and `web/src/lib/components/BlockOutliner.svelte` before changing behavior.
+  - **Acceptance** - `j/k` navigates only in normal mode; stale auto-insert intent is not reused after focus moves through non-editor UI; existing split/new-block Insert behavior still works when intentionally creating a block.
+  - **Verify** - `node web/tests/jk-normal-mode.e2e.mjs`; `pnpm --dir web check`.
+  - **tier_floor** - `junior`
+  - **complexity** - `S`
+
+- [ ] **Render fenced code blocks cleanly in web read mode.**
+  - **Scope** - Web-only first pass: render fenced markdown code blocks as preformatted code in read/display mode while preserving raw markdown in edit mode.
+  - **Files** - Start with `web/src/lib/block-parser.ts`, `web/src/lib/components/QueryBlock.svelte`, `web/src/lib/components/CollectionBlock.svelte`, and the block text/render component currently responsible for read-mode segments; add focused unit tests under `web/tests/unit/`.
+  - **Acceptance** - Fenced code displays monospaced and preserves line breaks; tags and wikilinks inside fences are not parsed; editing the block still shows and saves the raw markdown fence.
+  - **Verify** - `node --test web/tests/unit/block-parser.test.mjs`; `pnpm --dir web check`.
+  - **tier_floor** - `senior`
+  - **complexity** - `M`
+
+- [ ] **Add task-toggle stale-state regression coverage.**
+  - **Scope** - Add targeted tests around checkbox/task-status updates from web and mobile-shaped payloads so a stale desktop/web view cannot overwrite an already-completed task with old unchecked state.
+  - **Files** - `crates/tesela-server/src/routes/notes.rs`; server tests around block/property mutation routes; web side only if the failing path requires `web/src/lib/property-update.ts` or `web/src/lib/components/BlockOutliner.svelte`.
+  - **Acceptance** - Toggling a task updates the intended block/status property only; unrelated concurrent block text or task status changes survive; tests exercise the protected block-granular path rather than a whole-note rewrite.
+  - **Verify** - `cargo test -p tesela-server task_toggle_does_not_reassert_stale_state`; `cargo test -p tesela-server`; `node --test web/tests/unit/block-ops.test.mjs web/tests/unit/block-ops-saver.test.mjs` if web code is touched.
+  - **tier_floor** - `senior`
+  - **complexity** - `M`
 
 ### Web editor — discovered during B4 (2026-06-10)
 
