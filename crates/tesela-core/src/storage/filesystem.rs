@@ -157,6 +157,17 @@ impl FsNoteStore {
             false
         }
     }
+
+    fn matches_tag_filter(note: &Note, tag: &str) -> bool {
+        if note.metadata.tags.iter().any(|t| t == tag) {
+            return true;
+        }
+        tag == "daily" && Self::is_canonical_daily_id(note.id.as_str())
+    }
+
+    fn is_canonical_daily_id(id: &str) -> bool {
+        id.len() == 10 && NaiveDate::parse_from_str(id, "%Y-%m-%d").is_ok()
+    }
 }
 
 #[async_trait]
@@ -266,7 +277,7 @@ impl NoteStore for FsNoteStore {
                 match self.parse_note_from_file(path) {
                     Ok(note) => {
                         if let Some(tag) = tag_filter {
-                            if note.metadata.tags.iter().any(|t| t == tag) {
+                            if Self::matches_tag_filter(&note, tag) {
                                 notes.push(note);
                             }
                         } else {
@@ -381,6 +392,43 @@ mod tests {
 
         let alpha = store.list(Some("alpha"), 100, 0).await.unwrap();
         assert_eq!(alpha.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_daily_filter_includes_date_slug_notes_without_daily_tag() {
+        let (store, _tmp) = create_test_store();
+
+        store
+            .create(
+                "2026-06-10",
+                "---\ntitle: 2026-06-10\n---\n\n- visible journal block\n",
+                &[],
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                "2026-06-11",
+                "---\ntitle: 2026-06-11\ntags: [daily]\n---\n\n- tagged daily block\n",
+                &[],
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                "regular-note",
+                "---\ntitle: regular-note\n---\n\n- not daily\n",
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let daily = store.list(Some("daily"), 100, 0).await.unwrap();
+        let ids: Vec<_> = daily.iter().map(|n| n.id.as_str()).collect();
+
+        assert!(ids.contains(&"2026-06-10"));
+        assert!(ids.contains(&"2026-06-11"));
+        assert!(!ids.contains(&"regular-note"));
     }
 
     #[tokio::test]

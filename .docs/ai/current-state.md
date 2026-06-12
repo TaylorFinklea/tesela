@@ -1,5 +1,11 @@
 # Current State
 
+## 2026-06-12 — Web journal includes date-slug dailies missing frontmatter tag
+
+- Root: live `notes/2026-06-10.md` was a canonical daily slug with real body blocks but no `tags: [daily]`; `/notes?tag=daily` omitted it, so JournalView gap-filled Wednesday with a synthetic empty day.
+- Fix: filesystem store treats valid `YYYY-MM-DD` note ids as daily when filtering `tag=daily`; non-date untagged notes remain excluded.
+- Verify: red→green `cargo test -p tesela-core storage::filesystem::tests::test_daily_filter_includes_date_slug_notes_without_daily_tag`; `cargo test -p tesela-core --lib`; `node --test tests/unit/journal-dates.test.mjs tests/unit/ensure-trailing-empty.test.mjs`; `cargo build -p tesela-server`; temp-mosaic HTTP smoke for `/notes?tag=daily`.
+
 ## 2026-06-12 — iOS Daily no longer freezes Today at launch date
 
 - Root: `MockMosaicService.todayDate` was captured once in `init`; an app left alive across midnight kept resolving `dailyId(daysAgo: 0)` to yesterday, so relay refresh rendered June 11 as “Today” and stale/missing blocks looked like a desktop mismatch.
