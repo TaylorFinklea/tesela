@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// Renders a block's body. Plain prose gets inline `[[wiki-link]]` and
-/// `**bold**` styling; fenced ```` ``` ```` spans are lifted out and drawn
+/// Renders a block's body. Plain prose gets inline `[[wiki-link]]`,
+/// `**bold**`, and `*italic*` styling; leading ATX headings get sized up.
+/// Fenced ```` ``` ```` spans are lifted out and drawn
 /// as a monospaced, themed code surface. Wiki-links are encoded as
 /// tappable `tesela://page/<title>` links via `AttributedString`, so
 /// callers can intercept them through
@@ -29,10 +30,10 @@ struct BlockText: View {
             Text(buildAttributed(only))
         } else {
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
+                ForEach(Array(segments.enumerated()), id: \.offset) { index, segment in
                     switch segment {
                     case .prose(let prose):
-                        Text(buildAttributed(prose))
+                        Text(buildAttributed(prose, allowHeading: index == 0))
                             .frame(maxWidth: .infinity, alignment: .leading)
                     case .code(let language, let codeBody):
                         codeSurface(language: language, body: codeBody)
@@ -131,34 +132,86 @@ struct BlockText: View {
 
     // MARK: - Inline prose parsing
 
-    private func buildAttributed(_ text: String) -> AttributedString {
-        var attributed = AttributedString()
-        let pattern = try? NSRegularExpression(pattern: #"(\[\[[^\]]+\]\]|\*\*[^*]+\*\*)"#)
-        guard let re = pattern else {
-            return AttributedString(text)
+    private struct HeadingStyle {
+        let prefix: String
+        let font: Font
+        let boldFont: Font
+        let italicFont: Font
+    }
+
+    private func headingStyle(for text: String) -> HeadingStyle? {
+        if text.hasPrefix("### ") {
+            return HeadingStyle(
+                prefix: "### ",
+                font: .system(size: 16, weight: .semibold),
+                boldFont: .system(size: 16, weight: .semibold),
+                italicFont: .system(size: 16, weight: .semibold).italic()
+            )
         }
-        let ns = text as NSString
-        let matches = re.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        if text.hasPrefix("## ") {
+            return HeadingStyle(
+                prefix: "## ",
+                font: .system(size: 19, weight: .bold),
+                boldFont: .system(size: 19, weight: .bold),
+                italicFont: .system(size: 19, weight: .bold).italic()
+            )
+        }
+        if text.hasPrefix("# ") {
+            return HeadingStyle(
+                prefix: "# ",
+                font: .system(size: 22, weight: .bold),
+                boldFont: .system(size: 22, weight: .bold),
+                italicFont: .system(size: 22, weight: .bold).italic()
+            )
+        }
+        return nil
+    }
+
+    private func buildAttributed(_ text: String, allowHeading: Bool = true) -> AttributedString {
+        let heading = allowHeading ? headingStyle(for: text) : nil
+        let source = heading.map { String(text.dropFirst($0.prefix.count)) } ?? text
+
+        var attributed = AttributedString()
+        let pattern = try? NSRegularExpression(pattern: #"(\[\[[^\]]+\]\]|\*\*[^*]+\*\*|\*[^*]+\*)"#)
+        guard let re = pattern else {
+            var fallback = AttributedString(source)
+            fallback.font = heading?.font
+            return fallback
+        }
+        let ns = source as NSString
+        let matches = re.matches(in: source, range: NSRange(location: 0, length: ns.length))
         var cursor = 0
+
+        func appendPlain(_ plain: String) {
+            var span = AttributedString(plain)
+            span.font = heading?.font
+            attributed += span
+        }
+
         for m in matches {
             if m.range.location > cursor {
                 let plain = ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor))
-                attributed += AttributedString(plain)
+                appendPlain(plain)
             }
             let raw = ns.substring(with: m.range)
             if raw.hasPrefix("[[") {
                 let title = String(raw.dropFirst(2).dropLast(2))
-                attributed += wikiAttributed(title: title)
-            } else {
+                attributed += wikiAttributed(title: title, font: heading?.font)
+            } else if raw.hasPrefix("**") {
                 let inner = String(raw.dropFirst(2).dropLast(2))
                 var boldSpan = AttributedString(inner)
-                boldSpan.font = .system(size: 15, weight: .semibold)
+                boldSpan.font = heading?.boldFont ?? .system(size: 15, weight: .semibold)
                 attributed += boldSpan
+            } else {
+                let inner = String(raw.dropFirst().dropLast())
+                var italicSpan = AttributedString(inner)
+                italicSpan.font = heading?.italicFont ?? .system(size: 15).italic()
+                attributed += italicSpan
             }
             cursor = m.range.location + m.range.length
         }
         if cursor < ns.length {
-            attributed += AttributedString(ns.substring(from: cursor))
+            appendPlain(ns.substring(from: cursor))
         }
         return attributed
     }
@@ -166,8 +219,9 @@ struct BlockText: View {
     /// Build a tappable AttributedString span for a wiki-link. The
     /// link uses `tesela://page/<slug>` so callers can route via
     /// `OpenURLAction`.
-    private func wikiAttributed(title: String) -> AttributedString {
+    private func wikiAttributed(title: String, font: Font? = nil) -> AttributedString {
         var span = AttributedString(title)
+        span.font = font
         span.foregroundColor = theme.accentPrimary
         span.underlineStyle = .single
         let slug = title
