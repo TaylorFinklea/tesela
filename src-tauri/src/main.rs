@@ -184,15 +184,23 @@ fn static_dir() -> PathBuf {
 }
 
 /// Block until the child is accepting connections on `port`, or `timeout`.
-fn wait_for_port(port: u16, timeout: Duration) -> bool {
+/// Returns `Err(reason)` early if the child has already exited — listening
+/// on a dead child for the full timeout would mask the real failure (flock
+/// conflict, bad binary, panic) behind a misleading "20s timeout" error.
+fn wait_for_port(child: &mut Child, port: u16, timeout: Duration) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return true;
+            return Ok(());
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            return Err(format!(
+                "server child exited before binding (status: {status})"
+            ));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    false
+    Err(format!("server did not start within {timeout:?}"))
 }
 
 fn spawn_server(bind: &str) -> std::io::Result<Child> {
@@ -254,7 +262,7 @@ fn main() {
     let port = pick_free_loopback_port();
     let bind = format!("127.0.0.1:{port}");
 
-    let child = match spawn_server(&bind) {
+    let mut child = match spawn_server(&bind) {
         Ok(c) => c,
         Err(e) => {
             eprintln!(
@@ -265,17 +273,20 @@ fn main() {
         }
     };
 
-    if !wait_for_port(port, Duration::from_secs(20)) {
-        // The server never came up. The likeliest cause is the single-writer
-        // lock being held — another tesela-server (a second app launch, or a
-        // standalone server) already owns this mosaic. Don't open a window onto
-        // a dead port (a blank "connection refused" page); reap + exit clearly.
-        let mut child = child;
+    if let Err(reason) = wait_for_port(&mut child, port, Duration::from_secs(20)) {
+        // The server never came up. wait_for_port distinguishes two flavors:
+        //   - timed out binding — the single-writer lock is likely held by
+        //     another tesela-server already running on this mosaic.
+        //   - the child already exited (flock conflict, bad binary, panic,
+        //     missing mosaic path) — try_wait() inside the loop surfaced
+        //     this so we don't burn the full 20s on a dead process.
+        // Reap + exit clearly in both cases; don't open a window onto a
+        // dead port (a blank "connection refused" page).
         let _ = child.kill();
         let _ = child.wait();
         eprintln!(
-            "tesela-desktop: the embedded tesela-server didn't start on {bind} \
-             within 20s — another instance may already be running on this mosaic. Exiting."
+            "tesela-desktop: the embedded tesela-server didn't start on {bind}: {reason}. \
+             If another instance is running on this mosaic, close it first. Exiting."
         );
         std::process::exit(1);
     }
@@ -370,8 +381,18 @@ fn run_app(url: String, child: Option<Child>) {
                         unsafe {
                             libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
                         }
+                        // The server's graceful shutdown runs VACUUM INTO +
+                        // a validated backup (auto-on-quit, default on), which
+                        // can exceed 5s on a real mosaic. Give it 30s before
+                        // the SIGKILL backstop so the backup isn't killed
+                        // mid-flight.
+                        eprintln!(
+                            "tesela-desktop: sending SIGTERM to embedded server; \
+                             waiting up to 30s for graceful shutdown \
+                             (auto-backup running if enabled)..."
+                        );
                         let mut exited = false;
-                        for _ in 0..50 {
+                        for _ in 0..300 {
                             if matches!(child.try_wait(), Ok(Some(_))) {
                                 exited = true;
                                 break;
@@ -379,6 +400,9 @@ fn run_app(url: String, child: Option<Child>) {
                             std::thread::sleep(Duration::from_millis(100));
                         }
                         if !exited {
+                            eprintln!(
+                                "tesela-desktop: server did not exit within 30s; sending SIGKILL."
+                            );
                             let _ = child.kill();
                         }
                         let _ = child.wait();
