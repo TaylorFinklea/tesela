@@ -103,3 +103,28 @@ Rules in force:
   - The 2 ESCALATE items (iOS onboarding + RelayTicker, property FFI page-property) are flagged `lead` / `XL` and need Opus/Fable scope before any implementation. They were marked ESCALATE up front and remain `[ ]` by design.
   - The mechanical/architectural one-liners in the lower Backlog sections should be folded into proper `Scope` / `Files` / `Acceptance` / `Verify` / `tier_floor` / `complexity` shapes by a Lead if they want to be pickable from this loop. The current shapes are junior-safe by their very terseness (any of them is a 1–3 line change) but they fail the field-completeness check that the loop-prompt enforces.
   - No code, no tests, no docs in the project were touched. Only `.docs/ai/current-state.md` was updated to mark the plan `[x]` and surface the remaining senior items.
+
+### Coordinator validation pass before Senior loop
+- Status: complete.
+- Owner: Codex, self-identified Senior (T2).
+- What landed: no code changes; reviewed the Junior Ralph batch diffs for scope, off-limits contact, and obvious correctness before allowing additional Senior-loop code changes. Scope stayed in safe zones (TUI handler/status text, iOS view/test files, CLI/core markdown repair helper, server/web tests, web lint script, journal placeholder helper). No sync hot path, FFI/UniFFI, RelayTicker, pairing, signing/TestFlight, project.yml, or live mosaic use found.
+- Commit: docs-only validation note (`docs(ai): record junior loop validation`).
+- Verify re-run:
+  - `cargo test -p tesela-tui handler` PASS 33/33.
+  - `cargo test -p tesela-cli repair_daily_tags` PASS 5/5.
+  - `cargo test -p tesela-core --lib` PASS 325/325.
+  - `cargo test -p tesela-server daily_filter_includes_date_slug_daily_without_tag` PASS 1/1.
+  - `cargo test -p tesela-core storage::filesystem::tests::test_daily_filter_includes_date_slug_notes_without_daily_tag` PASS 1/1.
+  - `cargo build -p tesela-server` PASS.
+  - `node --test web/tests/unit/journal-preview.test.mjs` PASS 18/18.
+  - `pnpm --dir web lint` PASS, 0 errors / 43 pre-existing warnings.
+  - `pnpm --dir web check` PASS, 0 errors / 43 pre-existing warnings.
+  - `pnpm --dir web build` PASS, pre-existing Svelte/build warnings only.
+  - `REPRO_URL=http://127.0.0.1:7791/g node web/tests/jk-normal-mode.e2e.mjs` PASS 16/16, 0 page errors, against sandbox mosaic `/tmp/tesela-jk-audit.qDwmKV` and temp server on `127.0.0.1:7791`.
+  - `xcodebuild -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 16' test -quiet` PASS by exit 0 after clean simulator retry.
+  - `git diff --check 3c91ba9^..4fd9559` PASS.
+- Shakiness / follow-up:
+  - First full iOS test attempt hung during simulator install and, after stopping the verifier, ended with CoreSimulator `Invalid device state` / `BUILD INTERRUPTED`; clean retry from shutdown passed by exit 0. Treat this as simulator-state flake, not code failure.
+  - `cargo fmt --all --check` still fails on pre-existing unrelated rustfmt drift in `tesela-backup`, `tesela-cli` importer helpers, `tesela-core` import/query tests, `tesela-relay` tests, and `tesela-server` files. This was already recorded by Items 2/5/7; do not let Senior loop "fix" it incidentally.
+  - Review concern to consider later: `repair-daily-tags` currently uses `WalkDir::follow_links(true)`, so a symlink under `notes/` could cause `--apply` to modify a date-slug `.md` target outside the mosaic. No evidence this affects normal use, but a future hardening item could remove symlink following or assert canonical paths stay under `notes/`.
+  - Existing follow-up remains: `ColonCommandLine.svelte` does not restore editor focus on `:` + Esc; the j/k e2e documents the workaround rather than fixing it.
