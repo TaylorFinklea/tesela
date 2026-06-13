@@ -6,8 +6,12 @@
  * churn; will move to `lib/v5/` in Phase 13.
  */
 
+import { commandRegistry, type Command as RegistryCommand } from "$lib/command-registry.svelte";
 import { api } from "$lib/api-client";
 import { apiBase } from "$lib/runtime-base";
+import { openPeek } from "$lib/stores/peek.svelte";
+import { openFullscreenGraph } from "$lib/stores/fullscreen-overlay.svelte";
+import { openStation } from "$lib/stores/station.svelte";
 import { getAppQueryClient } from "$lib/app-query-client.svelte";
 import { getFocusedBlock } from "$lib/stores/current-block.svelte";
 import { toast } from "$lib/stores/toast.svelte";
@@ -39,8 +43,8 @@ import {
   type SettingsSlug,
 } from "$lib/stores/fullscreen-overlay.svelte";
 
-const SETTINGS_PAGES: { slug: SettingsSlug; label: string }[] = [
-  { slug: "general", label: "General" },
+const SETTINGS_PAGES: { slug: SettingsSlug; label: string; chord?: string[] }[] = [
+  { slug: "general", label: "General", chord: [","] },
   { slug: "devices", label: "Devices" },
   { slug: "sync", label: "Sync" },
   { slug: "mosaic", label: "Mosaic" },
@@ -55,13 +59,13 @@ const DERIVED_RENDERERS: { name: string; label: string; verb: string; glyph: str
   { name: "local-graph-of-page", label: "Local graph (follow)", verb: "graph-local", glyph: "✦" },
 ];
 
-const AMBIENTS: { name: string; label: string; verb: string; glyph: string }[] = [
-  { name: "calendar", label: "Calendar", verb: "calendar", glyph: "📅" },
-  { name: "today-in-progress", label: "Today in progress", verb: "in-progress", glyph: "⏱" },
-  { name: "workspace-dashboard", label: "Workspace dashboard", verb: "dashboard", glyph: "▦" },
-  { name: "ai-workspace", label: "AI workspace", verb: "ai", glyph: "✺" },
-  { name: "agenda", label: "Agenda", verb: "agenda", glyph: "📋" },
-  { name: "inbox", label: "Inbox", verb: "inbox", glyph: "📥" },
+const AMBIENTS: { name: string; label: string; verb: string; glyph: string; chord: string[] }[] = [
+  { name: "calendar", label: "Calendar", verb: "calendar", glyph: "📅", chord: ["g", "c"] },
+  { name: "today-in-progress", label: "Today in progress", verb: "in-progress", glyph: "⏱", chord: ["g", "i"] },
+  { name: "workspace-dashboard", label: "Workspace dashboard", verb: "dashboard", glyph: "▦", chord: ["g", "h"] },
+  { name: "ai-workspace", label: "AI workspace", verb: "ai", glyph: "✺", chord: ["g", "a"] },
+  { name: "agenda", label: "Agenda", verb: "agenda", glyph: "📋", chord: ["g", "A"] },
+  { name: "inbox", label: "Inbox", verb: "inbox", glyph: "📥", chord: ["g", "I"] },
 ];
 
 export type V4Command = {
@@ -71,6 +75,8 @@ export type V4Command = {
   glyph: string;
   category: "pane" | "tab" | "tile" | "create" | "navigate" | "derived" | "ambient";
   shortcut?: string;
+  /** Leader chord path, e.g. ['g','d'] for Space → g → d. */
+  chord?: string[];
   keywords: string[];
   argPrompt?: string;
   run: (arg?: string) => void | Promise<void>;
@@ -79,6 +85,23 @@ export type V4Command = {
 async function jumpToDaily() {
   const daily = await api.getDailyNote();
   openPageInFocused(asPageId(daily.id));
+}
+
+async function jumpRelative(days: number): Promise<void> {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + days);
+  const note = await api.getDailyNote(fmtDate(d));
+  openPageInFocused(asPageId(note.id));
+  const qc = getAppQueryClient();
+  if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
+}
+
+function fmtDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 
 /** Validate + normalize a user-supplied date arg to YYYY-MM-DD. Accepts
@@ -116,8 +139,15 @@ function resolveDateArg(arg: string): string | null {
 }
 
 async function jumpToDate(arg: string | undefined): Promise<void> {
-  const target = arg ? resolveDateArg(arg) : null;
-  if (!target) return;
+  let target = arg ? resolveDateArg(arg) : null;
+  if (!target) {
+    const raw = window.prompt(
+      "date — YYYY-MM-DD, today, yesterday, tomorrow, or ±Nd",
+    );
+    if (!raw) return;
+    target = resolveDateArg(raw);
+    if (!target) return;
+  }
   // getDailyNote(date) auto-creates the file if missing. After it lands
   // we open it as a page-buffer; the daily cascade decides whether to
   // render it as JournalView (anchored to this date) or a single-day
@@ -301,8 +331,10 @@ function followBinding(): DerivedBinding {
   return { mode: "follow" };
 }
 
+let v4CommandsRegistered = false;
+
 export function buildV4Commands(): V4Command[] {
-  return [
+  const commands: V4Command[] = [
     // ── pane ────────────────────────────────────────────────────────────
     {
       id: "vsplit",
@@ -311,6 +343,7 @@ export function buildV4Commands(): V4Command[] {
       glyph: "│",
       category: "pane",
       shortcut: "⌘\\",
+      chord: ["b", "v"],
       keywords: ["split", "vsplit", "vertical", "right", "pane"],
       run: () => vsplit(makePageBuffer(asPageId(""))),
     },
@@ -321,6 +354,7 @@ export function buildV4Commands(): V4Command[] {
       glyph: "─",
       category: "pane",
       shortcut: "⌘-",
+      chord: ["b", "h"],
       keywords: ["split", "hsplit", "horizontal", "below", "pane"],
       run: () => hsplit(makePageBuffer(asPageId(""))),
     },
@@ -330,6 +364,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Close focused pane",
       glyph: "×",
       category: "pane",
+      chord: ["b", "q"],
       // No shortcut advertised: ⌘W is browser-reserved on macOS (closes the
       // tab — preventDefault can't stop it), so a ⌘W badge was a data-loss
       // trap. Use `:quit`, the palette, or leader `b q`.
@@ -444,6 +479,7 @@ export function buildV4Commands(): V4Command[] {
       label: `Open ${a.label}`,
       glyph: a.glyph,
       category: "ambient" as const,
+      chord: a.chord,
       keywords: [a.verb, "ambient", a.name],
       run: () => vsplit(makeAmbientBuffer(a.name)),
     })),
@@ -455,6 +491,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Today's daily note",
       glyph: "☀",
       category: "navigate",
+      chord: ["g", "d"],
       keywords: ["daily", "today", "journal"],
       run: () => jumpToDaily(),
     },
@@ -464,6 +501,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Jump to a date (YYYY-MM-DD, today, yesterday, tomorrow, ±Nd)",
       glyph: "→",
       category: "navigate",
+      chord: ["g", "D"],
       keywords: ["goto", "go", "jump", "date", "day", "daily"],
       argPrompt: "date: YYYY-MM-DD, today, yesterday, tomorrow, ±Nd",
       run: (arg) => {
@@ -477,6 +515,7 @@ export function buildV4Commands(): V4Command[] {
       glyph: "✎",
       category: "create",
       shortcut: "Space n s",
+      chord: ["n", "s"],
       keywords: ["scratch", "draft", "throwaway", "new"],
       run: () => createScratchAndJump(),
     },
@@ -556,12 +595,13 @@ export function buildV4Commands(): V4Command[] {
         if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
       },
     },
-    ...SETTINGS_PAGES.map(({ slug, label }) => ({
+    ...SETTINGS_PAGES.map(({ slug, label, chord }) => ({
       id: `settings-${slug}`,
       verb: `settings-${slug}`,
       label: `Settings · ${label}`,
       glyph: "⚙",
       category: "navigate" as const,
+      chord,
       keywords: ["settings", "preferences", "config", slug, label.toLowerCase()],
       run: () => openSettingsOverlay(slug),
     })),
@@ -571,11 +611,71 @@ export function buildV4Commands(): V4Command[] {
       label: "New note…",
       glyph: "✎",
       category: "create",
+      chord: ["n", "n"],
       keywords: ["new", "create", "note", "page"],
       argPrompt: "note title",
       run: (arg) => {
         if (arg) return createNoteAndJump(arg);
       },
+    },
+
+    // ── leader-only registry entries (no palette shortcut) ────────────────
+    {
+      id: "peek",
+      verb: "peek",
+      label: "Open Peek popover",
+      glyph: "i",
+      category: "tile",
+      chord: ["p"],
+      shortcut: "⌘I",
+      keywords: ["peek", "backlinks", "popover"],
+      run: () => openPeek("backlinks-of-page"),
+    },
+    {
+      id: "fullscreen-graph",
+      verb: "graph",
+      label: "Fullscreen graph",
+      glyph: "✦",
+      category: "navigate",
+      chord: ["g", "g"],
+      shortcut: "⌘G",
+      keywords: ["graph", "fullscreen", "visual"],
+      run: () => openFullscreenGraph(),
+    },
+    {
+      id: "command-station",
+      verb: "station",
+      label: "Open command station",
+      glyph: "⌘",
+      category: "navigate",
+      chord: ["/"],
+      shortcut: "⌘K",
+      keywords: ["command", "station", "palette", "cmdk"],
+      run: () =>
+        openStation({
+          tab: "palette",
+          priorPaneId: undefined,
+        }),
+    },
+    {
+      id: "yesterday-daily",
+      verb: "yesterday",
+      label: "Yesterday's daily note",
+      glyph: "←",
+      category: "navigate",
+      chord: ["g", "y"],
+      keywords: ["yesterday", "daily", "journal"],
+      run: () => jumpRelative(-1),
+    },
+    {
+      id: "tomorrow-daily",
+      verb: "tomorrow",
+      label: "Tomorrow's daily note",
+      glyph: "→",
+      category: "navigate",
+      chord: ["g", "t"],
+      keywords: ["tomorrow", "daily", "journal"],
+      run: () => jumpRelative(1),
     },
 
     // ── recurrence ─────────────────────────────────────────────────────────
@@ -596,6 +696,15 @@ export function buildV4Commands(): V4Command[] {
       },
     },
   ];
+
+  if (!v4CommandsRegistered) {
+    for (const cmd of commands) {
+      commandRegistry.register(cmd as RegistryCommand);
+    }
+    v4CommandsRegistered = true;
+  }
+
+  return commands;
 }
 
 export function matchesV4Command(cmd: V4Command, query: string): boolean {
@@ -607,6 +716,8 @@ export function matchesV4Command(cmd: V4Command, query: string): boolean {
 }
 
 export function findCommandByVerb(verb: string): V4Command | undefined {
-  const v = verb.toLowerCase();
-  return buildV4Commands().find((c) => c.verb === v || c.id === v);
+  return commandRegistry.findByVerb(verb) as V4Command | undefined;
 }
+
+// Register the V4 command set into the unified registry on module load.
+buildV4Commands();

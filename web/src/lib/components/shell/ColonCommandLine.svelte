@@ -13,12 +13,8 @@
     closeColonMode,
     isColonModeOpen,
   } from "$lib/stores/colon-mode.svelte";
-  import {
-    buildV4Commands,
-    findCommandByVerb,
-    matchesV4Command,
-    type V4Command,
-  } from "$lib/v4/commands";
+  import { commandRegistry, type Command } from "$lib/command-registry.svelte";
+  import { findCommandByVerb, matchesV4Command } from "$lib/v4/commands";
   import { openPeek } from "$lib/stores/peek.svelte";
   import { openFullscreenGraph } from "$lib/stores/fullscreen-overlay.svelte";
   // This strip styles with the v4 design tokens (`--v4-*`), which tokens.css
@@ -38,7 +34,7 @@
   let highlightedIdx = $state(0);
 
   // The full registry of verbs, computed once per open.
-  const allCommands = $derived.by(() => (open ? buildV4Commands() : []));
+  const allCommands = $derived.by(() => (open ? commandRegistry.all() : []));
 
   // Built-in non-registry verbs (peek, graph) surface as autocomplete rows too.
   const BUILTINS = [
@@ -51,7 +47,7 @@
     label: string;
     glyph: string;
     shortcut?: string;
-    cmd?: V4Command;
+    cmd?: Command;
   };
 
   const suggestions = $derived.by<Row[]>(() => {

@@ -21,10 +21,10 @@
 
 ### B1 — Unified command registry shape + port palette/leader
 
-- Status: not started
-- Commit: —
-- Verify result: —
-- Notes: —
+- Status: done
+- Commit: `TBD-after-commit`
+- Verify result: `pnpm --dir web check` → 0 errors; `cargo clippy --workspace -- -D warnings` → green; `cargo test --workspace` → all passed.
+- Notes: Implemented directly by orchestrator (Pi) because the `kimi-k2.7-code` ralph loop advanced iterations without committing. New `web/src/lib/command-registry.svelte.ts` singleton; `v4/commands.ts` registers commands on module load; `GrCommandPalette`, `GrLeaderOverlay`, `ColonCommandLine`, and `getLeaderTree()` read from the registry. Leader chords are now derived from `Command.chord` metadata.
 
 ### B2 — Keymap introspection + conflict detection
 

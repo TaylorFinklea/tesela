@@ -9,24 +9,7 @@
  * BlockEditor's vim binding) all read the same source.
  */
 
-import { api } from "$lib/api-client";
-import { getAppQueryClient } from "$lib/app-query-client.svelte";
-import {
-  closeFocusedLeaf,
-  getWorkspace,
-  hsplit,
-  openPageInFocused,
-  vsplit,
-} from "$lib/buffer/state.svelte";
-import { asPageId } from "$lib/buffer/types";
-import {
-  makeAmbientBuffer,
-  makePageBuffer,
-} from "$lib/buffer/tree";
-import { openStation } from "$lib/stores/station.svelte";
-import { openPeek } from "$lib/stores/peek.svelte";
-import { openFullscreenGraph } from "$lib/stores/fullscreen-overlay.svelte";
-import { openSettingsOverlay } from "$lib/stores/fullscreen-overlay.svelte";
+import { commandRegistry, type Command } from "$lib/command-registry.svelte";
 // Type-only import via the `<script module>` block of ChordMenu.svelte.
 // Svelte's TS support exports the module-script types via the .svelte
 // path with a side-effect import.
@@ -56,171 +39,70 @@ export function getLeaderInitialPath(): string[] {
   return initialPath;
 }
 
-async function jumpDaily() {
-  const d = await api.getDailyNote();
-  openPageInFocused(asPageId(d.id));
+const CHORD_GROUP_LABELS: Record<string, string> = {
+  n: "new…",
+  g: "go to…",
+  b: "buffer…",
+};
+
+function buildChordTree(
+  commands: Command[],
+  depth: number,
+): ChordNode[] {
+  const groups = new Map<string, Command[]>();
+  for (const cmd of commands) {
+    if (!cmd.chord || cmd.chord.length <= depth) continue;
+    const key = cmd.chord[depth];
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(cmd);
+  }
+
+  const nodes: ChordNode[] = [];
+  for (const [key, group] of groups) {
+    const leaf = group.find((cmd) => cmd.chord!.length === depth + 1);
+    const branches = group.filter((cmd) => cmd.chord!.length > depth + 1);
+
+    if (leaf && branches.length === 0) {
+      nodes.push({
+        key,
+        label: leaf.label,
+        action: () => void leaf.run(),
+      });
+    } else if (leaf && branches.length > 0) {
+      // Both a leaf and a subtree share this key — show the leaf as the first
+      // entry and the subtree below it.
+      nodes.push({
+        key,
+        label: leaf.label,
+        action: () => void leaf.run(),
+      });
+      const children = buildChordTree(branches, depth + 1);
+      if (children.length > 0) {
+        nodes.push({
+          key,
+          label: `${leaf.label}…`,
+          children,
+        });
+      }
+    } else {
+      const children = buildChordTree(branches, depth + 1);
+      if (children.length > 0) {
+        nodes.push({
+          key,
+          label: CHORD_GROUP_LABELS[key] ?? children.map((c) => c.label).join(" / "),
+          children,
+        });
+      }
+    }
+  }
+
+  // Stable order: sort by key (case-sensitive so 'D' comes after 'd').
+  nodes.sort((a, b) => a.key.localeCompare(b.key));
+  return nodes;
 }
 
-function fmtDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-async function jumpRelative(days: number): Promise<void> {
-  const d = new Date();
-  d.setHours(12, 0, 0, 0);
-  d.setDate(d.getDate() + days);
-  const note = await api.getDailyNote(fmtDate(d));
-  openPageInFocused(asPageId(note.id));
-  const qc = getAppQueryClient();
-  if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
-}
-
-async function jumpPromptDate(): Promise<void> {
-  const raw = window.prompt(
-    "date — YYYY-MM-DD, today, yesterday, tomorrow, or ±Nd",
-  );
-  if (!raw) return;
-  const a = raw.trim().toLowerCase();
-  const today = new Date();
-  today.setHours(12, 0, 0, 0);
-  let target: string | null = null;
-  if (a === "today") target = fmtDate(today);
-  else if (a === "yesterday") {
-    const d = new Date(today);
-    d.setDate(d.getDate() - 1);
-    target = fmtDate(d);
-  } else if (a === "tomorrow") {
-    const d = new Date(today);
-    d.setDate(d.getDate() + 1);
-    target = fmtDate(d);
-  } else if (/^[+-]?\d+d$/.test(a)) {
-    const d = new Date(today);
-    d.setDate(d.getDate() + Number(a.replace(/d$/, "")));
-    target = fmtDate(d);
-  } else if (/^\d{4}-\d{2}-\d{2}$/.test(a)) target = a;
-  if (!target) return;
-  const note = await api.getDailyNote(target);
-  openPageInFocused(asPageId(note.id));
-  const qc = getAppQueryClient();
-  if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
-}
-
-async function newScratch() {
-  const d = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const stamp = `scratch/${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}`;
-  const content = `---\ntitle: "${stamp}"\ntype: scratch\ntags: []\n---\n- \n`;
-  const note = await api.createNote(stamp, content);
-  openPageInFocused(asPageId(note.id));
-  const qc = getAppQueryClient();
-  if (qc) qc.invalidateQueries({ queryKey: ["notes"] });
-}
-
-async function newNote() {
-  const title = window.prompt("note title")?.trim();
-  if (!title) return;
-  const note = await api.createNote(title, "");
-  openPageInFocused(asPageId(note.id));
-}
-
-/** The chord tree the menu walks. Mirrors common spacemacs leader groups. */
+/** The chord tree the menu walks. Derived from the unified command registry. */
 export function getLeaderTree(): ChordNode[] {
-  return [
-    {
-      key: "n",
-      label: "new…",
-      children: [
-        { key: "s", label: "scratch", action: () => void newScratch() },
-        { key: "n", label: "note", action: () => void newNote() },
-        { key: "d", label: "daily", action: () => void jumpDaily() },
-      ],
-    },
-    {
-      key: "g",
-      label: "go to…",
-      children: [
-        { key: "d", label: "today's daily", action: () => void jumpDaily() },
-        {
-          key: "y",
-          label: "yesterday's daily",
-          action: () => void jumpRelative(-1),
-        },
-        {
-          key: "t",
-          label: "tomorrow's daily",
-          action: () => void jumpRelative(1),
-        },
-        {
-          key: "D",
-          label: "date prompt…",
-          action: () => void jumpPromptDate(),
-        },
-        {
-          key: "c",
-          label: "calendar",
-          action: () => vsplit(makeAmbientBuffer("calendar")),
-        },
-        {
-          key: "i",
-          label: "in-progress",
-          action: () => vsplit(makeAmbientBuffer("today-in-progress")),
-        },
-        {
-          key: "h",
-          label: "dashboard (home)",
-          action: () => vsplit(makeAmbientBuffer("workspace-dashboard")),
-        },
-        {
-          key: "g",
-          label: "graph",
-          action: () => openFullscreenGraph(),
-        },
-      ],
-    },
-    {
-      key: "b",
-      label: "buffer…",
-      children: [
-        {
-          key: "v",
-          label: "vsplit (empty)",
-          action: () => vsplit(makePageBuffer(asPageId(""))),
-        },
-        {
-          key: "h",
-          label: "hsplit (empty)",
-          action: () => hsplit(makePageBuffer(asPageId(""))),
-        },
-        {
-          key: "q",
-          label: "close pane",
-          action: () => closeFocusedLeaf(),
-        },
-      ],
-    },
-    {
-      key: "p",
-      label: "peek (⌘I)",
-      action: () => openPeek("backlinks-of-page"),
-    },
-    {
-      key: "/",
-      label: "command station (⌘K)",
-      action: () =>
-        openStation({
-          tab: "palette",
-          priorPaneId: getWorkspace().tabs.find(
-            (t) => t.id === getWorkspace().activeTabId,
-          )?.lastFocusedLeafId as unknown as string | undefined,
-        }),
-    },
-    {
-      key: ",",
-      label: "settings",
-      action: () => openSettingsOverlay("general"),
-    },
-  ];
+  const commands = commandRegistry.all().filter((cmd) => cmd.chord && cmd.chord.length > 0);
+  return buildChordTree(commands, 0);
 }

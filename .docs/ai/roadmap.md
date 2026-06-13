@@ -801,7 +801,7 @@ Orchestrator: Pi. Spec: `phases/command-registry-spec.md`. Run A1 and B1 in para
   - **complexity** — `S`
   - **ralph_model** — `opencode-go/minimax-m3`
 
-- [ ] **B1 — Unified command registry shape + port palette/leader.**
+- [x] **B1 — Unified command registry shape + port palette/leader.**
   - **Scope** — Create `web/src/lib/command-registry.svelte.ts` with a `Command` type and singleton registry. Port `buildV4Commands()` entries to register themselves. Update `GrCommandPalette` and `getLeaderTree()` to read from the registry. Keep colon verb dispatch working via `findCommandByVerb`.
   - **Files** — new `web/src/lib/command-registry.svelte.ts`; modify `web/src/lib/v4/commands.ts`, `web/src/lib/v5/leader-tree.svelte.ts`, `web/src/lib/graphite/shell/GrCommandPalette.svelte`, `web/src/lib/graphite/shell/GrLeaderOverlay.svelte`, `web/src/lib/components/shell/ColonCommandLine.svelte`.
   - **Acceptance** — ⌘K palette, Space leader, and `:` verbs behave identically to before; `pnpm --dir web check` is clean.

@@ -29,7 +29,8 @@
   } from '$lib/stores/station.svelte';
   import { focusLeaf, openPageInFocused } from '$lib/buffer/state.svelte';
   import { asPageId, type LeafId } from '$lib/buffer/types';
-  import { buildV4Commands, matchesV4Command, type V4Command } from '$lib/v4/commands';
+  import { commandRegistry, type Command } from '$lib/command-registry.svelte';
+  import { matchesV4Command } from '$lib/v4/commands';
   import { scoreFuzzy, highlightRuns } from '$lib/fuzzy';
 
   const open = $derived(isStationOpen());
@@ -38,7 +39,7 @@
   let inputEl = $state<HTMLInputElement | undefined>();
   let selectedIdx = $state(0);
 
-  type CmdRow = { kind: 'cmd'; key: string; cmd: V4Command; score: number };
+  type CmdRow = { kind: 'cmd'; key: string; cmd: Command; score: number };
   type NoteRow = { kind: 'note'; key: string; note: Note; score: number };
   type PaletteRow = CmdRow | NoteRow;
 
@@ -52,7 +53,7 @@
 
   const MAX_NOTES_IN_PALETTE = 12;
 
-  const allCommands = buildV4Commands();
+  const allCommands = commandRegistry.all();
 
   const notesQuery = createQuery(() => ({
     queryKey: ['notes', { limit: 500 }] as const,
@@ -158,7 +159,7 @@
     if (prior) focusLeaf(prior as LeafId);
   }
 
-  async function runCommand(cmd: V4Command) {
+  async function runCommand(cmd: Command) {
     // Most verbs operate on the focused pane — restore that focus first.
     restoreFocus();
     let arg: string | undefined;

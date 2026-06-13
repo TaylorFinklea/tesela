@@ -6,7 +6,7 @@
 
 ## Plan
 - [x] A1 — Fix clippy errors. Verify: `cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
-- [ ] B1 — Unified command registry shape + port palette/leader. Verify: `pnpm --dir web check` + manual palette/leader/colon QA (kimi-k2.7-code ralph loop).
+- [x] B1 — Unified command registry shape + port palette/leader. Verify: `pnpm --dir web check` + manual palette/leader/colon QA.
 - [ ] B2 — Keymap introspection + conflict detection. Verify: unit tests + `pnpm --dir web check` + `:keymap` QA (kimi-k2.7-code).
 - [ ] B3 — Context-aware command dispatch. Verify: `pnpm --dir web check` + full keyboard QA matrix (kimi-k2.7-code).
 
