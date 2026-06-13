@@ -86,3 +86,98 @@ class CommandRegistry {
 }
 
 export const commandRegistry = new CommandRegistry();
+
+// ── keymap introspection (B2) ─────────────────────────────────────────────
+
+export type BindingConflict = {
+  kind: 'shortcut' | 'chord' | 'browser-reserved';
+  key: string;
+  commands: RegisteredCommand[];
+};
+
+/** Static list of browser-reserved macOS shortcuts that pages should not
+ *  claim, because preventDefault cannot stop them from closing/switching tabs. */
+export const BROWSER_RESERVED_KEYS = new Set([
+  '⌘T', '⌘W', '⌘⇧W', '⌘N', '⌘Q', '⌘R',
+]);
+
+export function buildKeymapIndex(registry: CommandRegistry = commandRegistry) {
+  const shortcuts = new Map<string, RegisteredCommand[]>();
+  const chords = new Map<string, RegisteredCommand[]>();
+
+  for (const cmd of registry.all()) {
+    if (cmd.shortcut) {
+      const list = shortcuts.get(cmd.shortcut) ?? [];
+      list.push(cmd);
+      shortcuts.set(cmd.shortcut, list);
+    }
+    if (cmd.chord && cmd.chord.length > 0) {
+      const key = cmd.chord.join(' ');
+      const list = chords.get(key) ?? [];
+      list.push(cmd);
+      chords.set(key, list);
+    }
+  }
+
+  return { shortcuts, chords };
+}
+
+export function findConflicts(registry: CommandRegistry = commandRegistry): BindingConflict[] {
+  const { shortcuts, chords } = buildKeymapIndex(registry);
+  const conflicts: BindingConflict[] = [];
+
+  for (const [key, commands] of shortcuts) {
+    if (commands.length > 1 || BROWSER_RESERVED_KEYS.has(key)) {
+      conflicts.push({
+        kind: commands.length > 1 ? 'shortcut' : 'browser-reserved',
+        key,
+        commands,
+      });
+    }
+  }
+
+  for (const [key, commands] of chords) {
+    if (commands.length > 1) {
+      conflicts.push({ kind: 'chord', key, commands });
+    }
+  }
+
+  return conflicts;
+}
+
+export function formatKeymap(registry: CommandRegistry = commandRegistry): string {
+  const { shortcuts, chords } = buildKeymapIndex(registry);
+  const conflicts = findConflicts(registry);
+  const conflictKeys = new Set(conflicts.map((c) => `${c.kind}:${c.key}`));
+
+  const lines: string[] = [];
+  lines.push('== Command Registry Keymap ==');
+  lines.push('');
+
+  lines.push('-- shortcuts --');
+  for (const [key, commands] of [...shortcuts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const flag = conflictKeys.has(`shortcut:${key}`) || conflictKeys.has(`browser-reserved:${key}`) ? ' ⚠' : '';
+    for (const cmd of commands) {
+      lines.push(`${key}${flag} → ${cmd.id} (${cmd.label})`);
+    }
+  }
+
+  lines.push('');
+  lines.push('-- chords --');
+  for (const [key, commands] of [...chords.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const flag = conflictKeys.has(`chord:${key}`) ? ' ⚠' : '';
+    for (const cmd of commands) {
+      lines.push(`${key}${flag} → ${cmd.id} (${cmd.label})`);
+    }
+  }
+
+  if (conflicts.length > 0) {
+    lines.push('');
+    lines.push('-- conflicts --');
+    for (const c of conflicts) {
+      lines.push(`${c.kind}:${c.key} → ${c.commands.map((cmd) => cmd.id).join(', ')}`);
+    }
+  }
+
+  return lines.join('\n');
+}

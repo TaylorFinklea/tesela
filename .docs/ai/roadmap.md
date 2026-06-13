@@ -810,7 +810,7 @@ Orchestrator: Pi. Spec: `phases/command-registry-spec.md`. Run A1 and B1 in para
   - **complexity** — `M`
   - **ralph_model** — `opencode-go/kimi-k2.7-code`
 
-- [ ] **B2 — Keymap introspection + conflict detection.**
+- [x] **B2 — Keymap introspection + conflict detection.**
   - **Scope** — Build a keymap index from the registry (shortcuts, chords, browser-reserved keys). Detect collisions. Add `:keymap` colon command that lists bindings + conflicts.
   - **Files** — `web/src/lib/command-registry.svelte.ts`; new `web/tests/unit/command-registry.test.mjs`; update `web/src/lib/components/shell/ColonCommandLine.svelte`.
   - **Acceptance** — `:keymap` prints every registered command with its shortcut/chord; conflicts and browser-reserved bindings are flagged.

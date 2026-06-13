@@ -6,7 +6,11 @@
  * churn; will move to `lib/v5/` in Phase 13.
  */
 
-import { commandRegistry, type Command as RegistryCommand } from "$lib/command-registry.svelte";
+import {
+  commandRegistry,
+  formatKeymap,
+  type Command as RegistryCommand,
+} from "$lib/command-registry.svelte";
 import { api } from "$lib/api-client";
 import { apiBase } from "$lib/runtime-base";
 import { openPeek } from "$lib/stores/peek.svelte";
@@ -676,6 +680,19 @@ export function buildV4Commands(): V4Command[] {
       chord: ["g", "t"],
       keywords: ["tomorrow", "daily", "journal"],
       run: () => jumpRelative(1),
+    },
+
+    {
+      id: "keymap",
+      verb: "keymap",
+      label: "Show keymap index and conflicts",
+      glyph: "⌘",
+      category: "navigate",
+      keywords: ["keymap", "bindings", "conflicts", "keyboard"],
+      run: () => {
+        // eslint-disable-next-line no-console
+        console.log(formatKeymap());
+      },
     },
 
     // ── recurrence ─────────────────────────────────────────────────────────
