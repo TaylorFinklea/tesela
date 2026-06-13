@@ -188,14 +188,15 @@ Rules in force:
 - Shakiness / follow-up: first browser attempt used the default `/api` base and produced 405s, then was discarded and rerun with the same init injection used by existing e2es. First collection fixture used the server bid-address form; web collections use parsed line ids, so the fixture was corrected before the passing CollectionBlock check. Screenshots are intentionally left in `/tmp`, not committed.
 
 ### Real release pass: desktop + iOS (2026-06-13)
-- Status: shipped/uploaded; release source bump pending in commit with this note.
+- Status: shipped/uploaded.
 - Owner: Codex, self-identified Senior (T2), acting on Taylor's explicit release/signing/push instruction.
 - Desktop:
   - `pnpm --dir web build` PASS; `cargo build --release -p tesela-server` PASS.
-  - `pnpm dlx @tauri-apps/cli@2 build` built `target/release/bundle/macos/Tesela.app` and `target/release/tesela-desktop`, then failed only in `bundle_dmg.sh` during DMG layout packaging.
+  - Initial `pnpm dlx @tauri-apps/cli@2 build` built `target/release/bundle/macos/Tesela.app` and `target/release/tesela-desktop`, then failed only in `bundle_dmg.sh` during DMG layout packaging.
+  - Desktop version bumped to `0.1.1` in `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml`; rebuilt with `pnpm dlx @tauri-apps/cli@2 build --bundles app` PASS.
   - Signed `target/release/bundle/macos/Tesela.app` with `Developer ID Application: Taylor Finklea (K7CBQW6MPG)` and hardened runtime; `codesign --verify --deep --strict --verbose=2 target/release/bundle/macos/Tesela.app` PASS.
-  - Notarization submitted as ZIP with App Store Connect API key; submission `b29d703e-fa3f-401e-b356-ac0b6de06b23` ACCEPTED; `xcrun stapler staple target/release/bundle/macos/Tesela.app` PASS; `spctl -a -vv target/release/bundle/macos/Tesela.app` PASS (`source=Notarized Developer ID`).
-  - Final local artifact: `build/desktop-release/Tesela_0.1.0_aarch64_notarized.zip`; SHA-256 `aacdfc6d3d2f04e88ee5bce4e7e4ff7e496e5fbc14d5d9b8d4c0bcc5a95d7760`.
+  - Notarization submitted as ZIP with App Store Connect API key; final submission `e2997404-ee9f-46a0-96c3-e2809ae69f25` ACCEPTED; `xcrun stapler staple target/release/bundle/macos/Tesela.app` PASS; `spctl -a -vv target/release/bundle/macos/Tesela.app` PASS (`source=Notarized Developer ID`).
+  - Final local artifact: `build/desktop-release/Tesela_0.1.1_aarch64_notarized.zip`; SHA-256 `eee0b821b6ba2852060f88cf9b3b7663f188f7874b96909aa0a5c5595ac8748b`.
 - iOS:
   - Ran `scripts/ios-testflight.sh` with upload enabled.
   - FFI device build PASS; FFI binding drift check PASS (`bindings in sync (5 files)`); simulator FFI build PASS.

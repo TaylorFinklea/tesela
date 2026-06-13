@@ -1,8 +1,8 @@
 # Current State
 
 ## Branch
-- `main`; Ralph-loop code validated; iOS TestFlight build `1.1 (12)` uploaded; desktop `.app` Developer-ID signed/notarized.
-- Release commit includes iOS build bump + handoff docs only; build artifacts remain ignored.
+- `main`; Ralph-loop code validated; iOS TestFlight build `1.1 (12)` uploaded; desktop `0.1.1` Developer-ID signed/notarized.
+- Release commits include iOS/desktop version bumps + handoff docs only; build artifacts remain ignored.
 
 ## Plan
 - [x] REAL RELEASE: desktop notarized ZIP + iOS TestFlight upload. Verify: release commands in batch report.
