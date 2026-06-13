@@ -6,7 +6,7 @@
 
 ## Plan
 - [x] A1/B1–B3 — command-registry foundation (done).
-- [ ] A2 — MCP unwraps → `.expect()`. Verify: `cargo test -p tesela-mcp; cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
+- [x] A2 — MCP unwraps → `.expect()`. Verify: `cargo test -p tesela-mcp; cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
 - [ ] A3 — Logseq importer unwraps → `.expect()`. Verify: `cargo test -p tesela-cli --lib import_logseq; cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
 - [ ] A4 — Backup retention constants. Verify: `cargo test -p tesela-backup; cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
 

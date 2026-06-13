@@ -147,7 +147,7 @@ impl ToolRegistry {
             .collect();
 
         Ok(json!({
-            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&results).unwrap() }]
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&results).expect("serializing a Vec<serde_json::Value> is infallible (no IO, all Values serialize)") }]
         }))
     }
 
@@ -233,7 +233,7 @@ impl ToolRegistry {
             .collect();
 
         Ok(json!({
-            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&results).unwrap() }]
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&results).expect("serializing a Vec<serde_json::Value> is infallible (no IO, all Values serialize)") }]
         }))
     }
 
@@ -257,7 +257,7 @@ impl ToolRegistry {
             .collect();
 
         Ok(json!({
-            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&results).unwrap() }]
+            "content": [{ "type": "text", "text": serde_json::to_string_pretty(&results).expect("serializing a Vec<serde_json::Value> is infallible (no IO, all Values serialize)") }]
         }))
     }
 

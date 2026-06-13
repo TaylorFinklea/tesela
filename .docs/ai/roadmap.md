@@ -823,7 +823,7 @@ Orchestrator: Pi. Spec: `phases/command-registry-spec.md`. Run A1 and B1 in para
 
 ### 2026-06-13 follow-up — junior mechanical items for minimax-m3
 
-- [ ] **A2 — Replace `serde_json::to_string_pretty` unwraps in MCP tools with explicit `.expect()`.**
+- [x] **A2 — Replace `serde_json::to_string_pretty` unwraps in MCP tools with explicit `.expect()`.**
   - **Scope** — Replace 3 bare `.unwrap()` calls in `crates/tesela-mcp/src/tools.rs:150,236,260` with `.expect("...")` documenting why serialization is infallible for JSON `Value` results.
   - **Files** — `crates/tesela-mcp/src/tools.rs`.
   - **Acceptance** — No bare unwraps remain at those call sites; MCP tests still pass.
