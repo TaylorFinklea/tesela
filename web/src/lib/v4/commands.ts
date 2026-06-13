@@ -44,6 +44,7 @@ import {
   makePageBuffer,
 } from "$lib/buffer/tree";
 import {
+  openKeymapOverlay,
   openSettingsOverlay,
   type SettingsSlug,
 } from "$lib/stores/fullscreen-overlay.svelte";
@@ -692,8 +693,7 @@ export function buildV4Commands(): V4Command[] {
       category: "navigate",
       keywords: ["keymap", "bindings", "conflicts", "keyboard"],
       run: () => {
-        // eslint-disable-next-line no-console
-        console.log(formatKeymap());
+        openKeymapOverlay(formatKeymap());
       },
     },
 

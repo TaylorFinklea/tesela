@@ -29,6 +29,7 @@
   import {
     closeOverlay,
     getActiveOverlay,
+    getKeymapText,
     isOverlayOpen,
   } from "$lib/stores/fullscreen-overlay.svelte";
   import { openPageInFocused } from "$lib/buffer/state.svelte";
@@ -53,6 +54,7 @@
   }));
   const notes = $derived((notesQuery.data ?? []) as Note[]);
   const edges = $derived((edgesQuery.data ?? []) as GraphEdge[]);
+  const keymapText = $derived(getKeymapText());
 
   function onKey(e: KeyboardEvent) {
     if (!open) return;
@@ -90,6 +92,17 @@
 {:else if open && kind === "settings"}
   <div class="overlay v4-root">
     <SettingsOverlay />
+  </div>
+{:else if open && kind === "keymap"}
+  <div class="overlay v4-root">
+    <header class="overlay-head">
+      <span class="overlay-label">keymap</span>
+      <span class="overlay-hint">esc closes</span>
+      <button class="overlay-close" type="button" onclick={closeOverlay} title="close · Esc">×</button>
+    </header>
+    <div class="overlay-body">
+      <pre class="keymap-pre">{keymapText}</pre>
+    </div>
   </div>
 {/if}
 
@@ -139,5 +152,17 @@
     flex: 1;
     min-height: 0;
     position: relative;
+  }
+  .keymap-pre {
+    height: 100%;
+    margin: 0;
+    padding: 16px 20px;
+    overflow: auto;
+    font-family: var(--v4-mono);
+    font-size: 12.5px;
+    line-height: 1.5;
+    color: var(--v4-ink);
+    white-space: pre;
+    background: var(--v4-bg);
   }
 </style>
