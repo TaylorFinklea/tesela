@@ -8,7 +8,7 @@
 import { test } from "node:test";
 import { strict as assert } from "node:assert";
 
-import { parseBlocks, splitInlineAndTrailingTags } from "../../src/lib/block-parser.ts";
+import { blockDisplayText, parseBlocks, segmentText, splitInlineAndTrailingTags } from "../../src/lib/block-parser.ts";
 
 test("split: no tags → empty arrays", () => {
   const r = splitInlineAndTrailingTags("just text");
@@ -94,4 +94,50 @@ test("parseBlocks strips bid comments out of editor raw_text", () => {
   assert.equal(blocks[0].text, "Figure out finances");
   assert.equal(blocks[0].raw_text, "Figure out finances\ntags:: Issue");
   assert.deepEqual(blocks[0].tags, ["Issue"]);
+});
+
+test("segmentText renders fenced code as a literal code segment", () => {
+  const segments = segmentText("before [[Page]]\n```ts\nconst tag = '#not-a-tag';\n[[literal]]\n```\nafter");
+
+  assert.deepEqual(segments, [
+    { type: "text", value: "before " },
+    { type: "link", value: "Page", href: "/p/page" },
+    { type: "text", value: "\n" },
+    { type: "code", lang: "ts", value: "const tag = '#not-a-tag';\n[[literal]]" },
+    { type: "text", value: "\nafter" },
+  ]);
+});
+
+test("segmentText treats an unclosed fenced code block as literal code to the end", () => {
+  const segments = segmentText("```bash\necho [[not-a-link]] #not-a-tag");
+
+  assert.deepEqual(segments, [
+    { type: "code", lang: "bash", value: "echo [[not-a-link]] #not-a-tag" },
+  ]);
+});
+
+test("blockDisplayText keeps fenced code but omits property lines outside fences", () => {
+  const block = {
+    text: "Example",
+    raw_text: "Example #visible\n```js\nconst x = 1;\n```\nstatus:: todo\ndeadline:: [[2026-06-12]]",
+  };
+
+  assert.equal(blockDisplayText(block), "Example\n```js\nconst x = 1;\n```");
+});
+
+test("blockDisplayText preserves existing first-line display for blocks without fences", () => {
+  const block = {
+    text: "Example",
+    raw_text: "Example\nstatus:: todo",
+  };
+
+  assert.equal(blockDisplayText(block), "Example");
+});
+
+test("parseBlocks does not extract tags or properties from fenced code", () => {
+  const blocks = parseBlocks("note", "- Example #visible\n  ```js\n  const tag = '#hidden';\n  status:: done\n  ```\n  status:: todo");
+
+  assert.deepEqual(blocks[0].tags, ["visible"]);
+  assert.deepEqual(blocks[0].inline_tags, ["visible"]);
+  assert.deepEqual(blocks[0].properties, { status: "todo" });
 });

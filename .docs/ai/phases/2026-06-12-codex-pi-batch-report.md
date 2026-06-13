@@ -128,3 +128,11 @@ Rules in force:
   - `cargo fmt --all --check` still fails on pre-existing unrelated rustfmt drift in `tesela-backup`, `tesela-cli` importer helpers, `tesela-core` import/query tests, `tesela-relay` tests, and `tesela-server` files. This was already recorded by Items 2/5/7; do not let Senior loop "fix" it incidentally.
   - Review concern to consider later: `repair-daily-tags` currently uses `WalkDir::follow_links(true)`, so a symlink under `notes/` could cause `--apply` to modify a date-slug `.md` target outside the mosaic. No evidence this affects normal use, but a future hardening item could remove symlink following or assert canonical paths stay under `notes/`.
   - Existing follow-up remains: `ColonCommandLine.svelte` does not restore editor focus on `:` + Esc; the j/k e2e documents the workaround rather than fixing it.
+
+### Item 10: Render fenced code blocks cleanly in web read mode
+- Status: landed.
+- Owner: pi mono `gpt-5.5`, self-identified Senior (T2). `tier_floor: senior` met; `complexity: M` within Senior ceiling.
+- What landed: `segmentText` now emits literal fenced-code segments, suppressing wikilink parsing inside fences; `parseBlocks` ignores tags/properties inside fenced code while preserving normal tags/properties outside. New `blockDisplayText` keeps raw fenced markdown for read-mode display but strips out property lines and outside-code tags so existing block-display behavior is preserved. Query and Collection read-mode surfaces render those code segments as monospaced preformatted panels while edit mode continues to use the raw `BlockEditor` markdown fence.
+- Commit: pending (this atomic commit; exact SHA available after commit).
+- Verify: `node --test web/tests/unit/block-parser.test.mjs` PASS 18/18; `pnpm --dir web check` PASS with 0 errors / 43 pre-existing warnings; `git diff --check` PASS.
+- Shakiness / follow-up: web-only read-mode first pass; no syntax highlighting in Query/Collection read surfaces, only monospaced preformatted rendering. Did not run against live mosaic. Main editable outliner already had CodeMirror fence decoration and was not changed.

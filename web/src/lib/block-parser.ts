@@ -8,6 +8,14 @@ const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
 const PROPERTY_RE = /([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)/g;
 const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
 const BID_COMMENT_RE = /[ \t]*<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->[ \t]*/g;
+const PROPERTY_LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)$/;
+
+type CodeFenceSpan = {
+  from: number;
+  to: number;
+  lang: string;
+  value: string;
+};
 
 export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
   const lines = body.split("\n");
@@ -60,7 +68,8 @@ export function parseBlocks(noteId: string, body: string): ParsedBlock[] {
 
 function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText: string, inherited_tags: string[]): ParsedBlock {
   const cleanRawText = stripBidComments(rawText);
-  const properties = extractProperties(cleanRawText);
+  const markupText = textOutsideCodeFences(cleanRawText);
+  const properties = extractProperties(markupText);
 
   // Merge tags from `tags::` property (new format) and inline `#tag` (legacy).
   // tags:: owns the slot — remove from properties so the right-sidebar
@@ -74,7 +83,7 @@ function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText
     }
     delete properties.tags;
   }
-  for (const t of extractTags(cleanRawText)) {
+  for (const t of extractTags(markupText)) {
     const k = t.toLowerCase();
     if (!seen.has(k)) { seen.add(k); tags.push(t); }
   }
@@ -92,7 +101,7 @@ function makeBlock(noteId: string, lineNum: number, indentLevel: number, rawText
     .replace(TAG_RE, "")
     .trim();
 
-  const { inline: inline_tags, trailing: trailing_tags } = splitInlineAndTrailingTags(cleanRawText);
+  const { inline: inline_tags, trailing: trailing_tags } = splitInlineAndTrailingTags(markupText);
 
   return {
     id: `${noteId}:${lineNum}`,
@@ -197,12 +206,68 @@ export function extractWikiLinks(text: string): Array<{ target: string; display:
 
 export type TextSegment =
   | { type: "text"; value: string }
-  | { type: "link"; value: string; href: string };
+  | { type: "link"; value: string; href: string }
+  | { type: "code"; value: string; lang: string };
 
-/** Split text into plain segments and wikilink segments for rendering. */
-export function segmentText(text: string): TextSegment[] {
+function findCodeFenceSpans(text: string): CodeFenceSpan[] {
+  const spans: CodeFenceSpan[] = [];
+  const lines = text.split("\n");
+  let offset = 0;
+  let open: { from: number; contentStart: number; lang: string } | null = null;
+
+  for (const line of lines) {
+    const lineStart = offset;
+    const lineEnd = lineStart + line.length;
+    if (open === null) {
+      const trimmedStart = line.trimStart();
+      if (trimmedStart.startsWith("```")) {
+        open = {
+          from: lineStart,
+          contentStart: lineEnd < text.length ? lineEnd + 1 : lineEnd,
+          lang: trimmedStart.replace(/^`+/, "").trim(),
+        };
+      }
+    } else if (line.trim() === "```") {
+      const contentEnd = Math.max(open.contentStart, lineStart - 1);
+      spans.push({
+        from: open.from,
+        to: lineEnd,
+        lang: open.lang,
+        value: text.slice(open.contentStart, contentEnd),
+      });
+      open = null;
+    }
+    offset = lineEnd + 1;
+  }
+
+  if (open !== null) {
+    spans.push({
+      from: open.from,
+      to: text.length,
+      lang: open.lang,
+      value: text.slice(open.contentStart),
+    });
+  }
+
+  return spans;
+}
+
+function textOutsideCodeFences(text: string): string {
+  const spans = findCodeFenceSpans(text);
+  if (spans.length === 0) return text;
+  let out = "";
+  let cursor = 0;
+  for (const span of spans) {
+    out += text.slice(cursor, span.from);
+    cursor = span.to;
+  }
+  out += text.slice(cursor);
+  return out;
+}
+
+function segmentInlineText(text: string): TextSegment[] {
   const links = extractWikiLinks(text);
-  if (links.length === 0) return [{ type: "text", value: text }];
+  if (links.length === 0) return text ? [{ type: "text", value: text }] : [];
   const out: TextSegment[] = [];
   let cursor = 0;
   for (const link of links) {
@@ -220,4 +285,42 @@ export function segmentText(text: string): TextSegment[] {
     out.push({ type: "text", value: text.slice(cursor) });
   }
   return out;
+}
+
+/** Split text into plain, wikilink, and fenced-code segments for rendering. */
+export function segmentText(text: string): TextSegment[] {
+  const codeSpans = findCodeFenceSpans(text);
+  if (codeSpans.length === 0) return segmentInlineText(text);
+  const out: TextSegment[] = [];
+  let cursor = 0;
+  for (const span of codeSpans) {
+    if (span.from > cursor) {
+      out.push(...segmentInlineText(text.slice(cursor, span.from)));
+    }
+    out.push({ type: "code", lang: span.lang, value: span.value });
+    cursor = span.to;
+  }
+  if (cursor < text.length) {
+    out.push(...segmentInlineText(text.slice(cursor)));
+  }
+  return out.length > 0 ? out : [{ type: "text", value: text }];
+}
+
+export function blockDisplayText(block: Pick<ParsedBlock, "text" | "raw_text">): string {
+  if (findCodeFenceSpans(block.raw_text).length === 0) return block.text;
+  const spans = findCodeFenceSpans(block.raw_text);
+  const isInsideCode = (index: number) => spans.some((span) => index >= span.from && index < span.to);
+  const lines = block.raw_text.split("\n");
+  const kept: string[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    const lineStart = offset;
+    if (isInsideCode(lineStart)) {
+      kept.push(line);
+    } else if (!PROPERTY_LINE_RE.test(line)) {
+      kept.push(line.replace(TAG_RE, "").trimEnd());
+    }
+    offset += line.length + 1;
+  }
+  return kept.join("\n").trimEnd();
 }

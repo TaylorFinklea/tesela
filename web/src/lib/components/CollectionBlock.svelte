@@ -2,7 +2,7 @@
   import { createQuery } from "@tanstack/svelte-query";
   import { goto } from "$app/navigation";
   import { api } from "$lib/api-client";
-  import { parseBlocks, segmentText } from "$lib/block-parser";
+  import { blockDisplayText, parseBlocks, segmentText } from "$lib/block-parser";
   import {
     IconTable,
     IconLayoutGrid,
@@ -209,6 +209,8 @@
     {#each segmentText(text) as seg}
       {#if seg.type === "link"}
         <a href={seg.href} class="text-primary/80 underline decoration-primary/30 underline-offset-2 hover:decoration-primary" onclick={(e) => e.stopPropagation()}>{seg.value}</a>
+      {:else if seg.type === "code"}
+        <pre class="my-1 overflow-x-auto rounded border border-border/50 bg-muted/40 px-2 py-1 font-mono text-[11px] leading-relaxed whitespace-pre-wrap"><code>{seg.value}</code></pre>
       {:else}
         <span>{seg.value}</span>
       {/if}
@@ -280,7 +282,7 @@
             ondrop={(e) => handleDrop(e, m.block.id)}
             ondragend={handleDragEnd}
             onclick={() => navigateToBlock(m.noteId, m.block.id)}>
-            <td class="px-2 py-1.5 text-foreground/85 font-medium">{@render segmentRender(m.block.text)}</td>
+            <td class="px-2 py-1.5 text-foreground/85 font-medium">{@render segmentRender(blockDisplayText(m.block))}</td>
             <td class="px-2 py-1.5 text-muted-foreground/70">
               <a href="/p/{m.noteId}" class="hover:text-primary transition-colors" onclick={(e) => e.stopPropagation()}>{m.noteTitle}</a>
             </td>
@@ -318,7 +320,7 @@
           <span class="text-[14px] font-mono leading-none mt-1 {statusColorClass(status)}">{statusIcon(status)}</span>
           <div class="flex-1 min-w-0">
             <div class="text-[13px] text-foreground/90 font-medium">
-              {@render segmentRender(m.block.text)}
+              {@render segmentRender(blockDisplayText(m.block))}
               {#each m.block.tags as t}
                 <span class="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/10 text-primary/70 ml-1">{t}</span>
               {/each}
@@ -356,7 +358,7 @@
           onclick={() => navigateToBlock(m.noteId, m.block.id)}
         >
           <span class="text-[14px] font-mono leading-none w-3 shrink-0 {statusColorClass(status)}">{statusIcon(status)}</span>
-          <div class="text-[12px] text-foreground/85 flex-1 min-w-0 truncate">{@render segmentRender(m.block.text)}</div>
+          <div class="text-[12px] text-foreground/85 flex-1 min-w-0 truncate">{@render segmentRender(blockDisplayText(m.block))}</div>
           <a href="/p/{m.noteId}" class="text-[10px] text-muted-foreground/60 shrink-0 hover:text-primary transition-colors" onclick={(e) => e.stopPropagation()}>{m.noteTitle}</a>
           {@render rowControls(m.block.id, idx)}
         </div>
@@ -382,7 +384,7 @@
             <span class="block text-[12px] leading-none font-mono w-[14px] text-center">{statusIcon(status)}</span>
           </span>
           <div class="flex-1 min-w-0 py-1">
-            <div class="text-[14px] text-foreground/90 font-mono">{@render segmentRender(m.block.text)}</div>
+            <div class="text-[14px] text-foreground/90 font-mono">{@render segmentRender(blockDisplayText(m.block))}</div>
             <div class="text-[11px] text-muted-foreground/60 mt-0.5 flex items-center flex-wrap gap-x-2">
               <span class="text-muted-foreground/40">↳</span>
               <a href="/p/{m.noteId}" class="hover:text-primary transition-colors" onclick={(e) => e.stopPropagation()}>{m.noteTitle}</a>
@@ -430,7 +432,7 @@
                 class="block p-2 rounded bg-surface border border-border/40 hover:border-primary/40 transition-colors cursor-pointer"
                 onclick={() => navigateToBlock(m.noteId, m.block.id)}
               >
-                <div class="text-[12px] text-foreground/80 line-clamp-2">{@render segmentRender(m.block.text)}</div>
+                <div class="text-[12px] text-foreground/80 line-clamp-2">{@render segmentRender(blockDisplayText(m.block))}</div>
                 <div class="flex items-center gap-1 mt-1 text-[9px] text-muted-foreground/60">
                   <span>{m.noteTitle}</span>
                 </div>

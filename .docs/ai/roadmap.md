@@ -648,7 +648,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
   - **tier_floor** - `junior`
   - **complexity** - `S`
 
-- [ ] **Render fenced code blocks cleanly in web read mode.**
+- [x] **Render fenced code blocks cleanly in web read mode.**
   - **Scope** - Web-only first pass: render fenced markdown code blocks as preformatted code in read/display mode while preserving raw markdown in edit mode.
   - **Files** - Start with `web/src/lib/block-parser.ts`, `web/src/lib/components/QueryBlock.svelte`, `web/src/lib/components/CollectionBlock.svelte`, and the block text/render component currently responsible for read-mode segments; add focused unit tests under `web/tests/unit/`.
   - **Acceptance** - Fenced code displays monospaced and preserves line breaks; tags and wikilinks inside fences are not parsed; editing the block still shows and saves the raw markdown fence.
