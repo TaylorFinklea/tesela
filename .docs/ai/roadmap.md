@@ -788,6 +788,46 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
 - [ ] Extract hardcoded server bind address `"127.0.0.1:7474"` into a named constant
 - [ ] Extract hardcoded backup-retention magic numbers into named constants
 
+### 2026-06-13 Ralph batch — command registry foundation (keyboard-first spine)
+
+Orchestrator: Pi. Spec: `phases/command-registry-spec.md`. Run A1 and B1 in parallel (different models/tiers), then B2, then B3.
+
+- [ ] **A1 — Fix clippy errors.**
+  - **Scope** — Fix two clippy warnings breaking `cargo clippy --workspace -- -D warnings`: `redundant_closure` in `crates/tesela-core/src/db/sqlite.rs:1129`; `while_let_loop` in `crates/tesela-core/src/query.rs:589`.
+  - **Files** — `crates/tesela-core/src/db/sqlite.rs`; `crates/tesela-core/src/query.rs`.
+  - **Acceptance** — `cargo clippy --workspace -- -D warnings` passes; no behavioral change.
+  - **Verify** — `cargo clippy --workspace -- -D warnings`
+  - **tier_floor** — `junior`
+  - **complexity** — `S`
+  - **ralph_model** — `opencode-go/minimax-m3`
+
+- [ ] **B1 — Unified command registry shape + port palette/leader.**
+  - **Scope** — Create `web/src/lib/command-registry.svelte.ts` with a `Command` type and singleton registry. Port `buildV4Commands()` entries to register themselves. Update `GrCommandPalette` and `getLeaderTree()` to read from the registry. Keep colon verb dispatch working via `findCommandByVerb`.
+  - **Files** — new `web/src/lib/command-registry.svelte.ts`; modify `web/src/lib/v4/commands.ts`, `web/src/lib/v5/leader-tree.svelte.ts`, `web/src/lib/graphite/shell/GrCommandPalette.svelte`, `web/src/lib/graphite/shell/GrLeaderOverlay.svelte`, `web/src/lib/components/shell/ColonCommandLine.svelte`.
+  - **Acceptance** — ⌘K palette, Space leader, and `:` verbs behave identically to before; `pnpm --dir web check` is clean.
+  - **Verify** — `pnpm --dir web check` + manual palette/leader/colon QA.
+  - **tier_floor** — `senior`
+  - **complexity** — `M`
+  - **ralph_model** — `opencode-go/kimi-k2.7-code`
+
+- [ ] **B2 — Keymap introspection + conflict detection.**
+  - **Scope** — Build a keymap index from the registry (shortcuts, chords, browser-reserved keys). Detect collisions. Add `:keymap` colon command that lists bindings + conflicts.
+  - **Files** — `web/src/lib/command-registry.svelte.ts`; new `web/tests/unit/command-registry.test.mjs`; update `web/src/lib/components/shell/ColonCommandLine.svelte`.
+  - **Acceptance** — `:keymap` prints every registered command with its shortcut/chord; conflicts and browser-reserved bindings are flagged.
+  - **Verify** — `node --test web/tests/unit/command-registry.test.mjs`; `pnpm --dir web check`; manual `:keymap` QA.
+  - **tier_floor** — `senior`
+  - **complexity** — `M`
+  - **ralph_model** — `opencode-go/kimi-k2.7-code`
+
+- [ ] **B3 — Context-aware command dispatch.**
+  - **Scope** — Add `CommandContext` capture (route, focused buffer kind, vim mode, focused block, split state) and `when` predicates to commands. Filter palette/leader availability from the registry; colon dispatches verbs from the registry.
+  - **Files** — `web/src/lib/command-registry.svelte.ts`, `web/src/lib/graphite/shell/GraphiteShell.svelte`, `web/src/lib/graphite/shell/GrCommandPalette.svelte`, `web/src/lib/graphite/shell/GrLeaderOverlay.svelte`, `web/src/lib/components/shell/ColonCommandLine.svelte`.
+  - **Acceptance** — Commands that don't apply in the current context are hidden from palette/leader; context changes update availability reactively; existing behavior is preserved.
+  - **Verify** — `pnpm --dir web check` + full keyboard QA matrix (palette/leader/slash/colon across page/daily/inbox/agenda contexts).
+  - **tier_floor** — `senior`
+  - **complexity** — `L`
+  - **ralph_model** — `opencode-go/kimi-k2.7-code`
+
 ### iOS bugs
 
 - [ ] **Yesterday block delete flicker** — Tapping rapid deletes on yesterday's blocks (`editYesterdayBlock` family) on iOS occasionally re-shows the deleted block for a tick before it disappears again. Almost certainly an optimistic-UI vs stale-snapshot race: the `BlockDelete` materializes, then a queued snapshot/reparse from before the delete lands and re-renders the pre-delete state, then the next render hides it. Web's `BlockOutliner` has "in-flight new-block protection" for the create side — iOS likely needs the symmetric "in-flight delete protection" on the yesterday-edit path. Repro: open yesterday on Roshar, mash delete on a few blocks fast. Reported 2026-05-27 by Taylor; not a sync correctness issue (dual-write divergence log stayed clean throughout).

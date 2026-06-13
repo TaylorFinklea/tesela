@@ -5,8 +5,12 @@
 - Release commits include iOS/desktop version bumps + handoff docs only; build artifacts remain ignored.
 
 ## Plan
-- [x] REAL RELEASE: desktop notarized ZIP + iOS TestFlight upload. Verify: release commands in batch report.
-- [x] NEXT NON-LEAD BATCH: append safe Senior/Junior backlog items dated 2026-06-13.
+- [ ] A1 — Fix clippy errors. Verify: `cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
+- [ ] B1 — Unified command registry shape + port palette/leader. Verify: `pnpm --dir web check` + manual palette/leader/colon QA (kimi-k2.7-code ralph loop).
+- [ ] B2 — Keymap introspection + conflict detection. Verify: unit tests + `pnpm --dir web check` + `:keymap` QA (kimi-k2.7-code).
+- [ ] B3 — Context-aware command dispatch. Verify: `pnpm --dir web check` + full keyboard QA matrix (kimi-k2.7-code).
+
+Spec: `.docs/ai/phases/command-registry-spec.md`.
 
 ## Blockers
 - Tauri DMG bundling failed in `bundle_dmg.sh`; notarized ZIP shipped instead.
