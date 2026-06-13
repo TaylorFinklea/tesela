@@ -26,7 +26,19 @@ to commit it (an orchestration risk), or breach scope. Both inform ownership.
 
 ---
 
-## Live Roster (evidence-based — overrides tiers.md illustrative roster)
+## Methodology & anti-bias (Taylor 2026-06-13)
+
+**No Claude favoritism.** Kimi-k2.7, Minimax-m3, GPT-5.5, **Sonnet-4.6, and Opus-4.8** are rated on one axis, against each other. Opus is NOT assumed best; it must earn rank like everyone else.
+
+**Two evidence grades** (the `source` field in `model-bench.jsonl`):
+1. `reviewer-judgment` — a single model reviewed another's output. Fast but **bias-prone** (esp. a Claude model judging others) and it *guesses* whether a different model would've done better. All current Live-Roster numbers are this grade — treat as **preliminary**.
+2. `head-to-head` — the gold standard. The SAME bounded task is attempted by every candidate model (incl. Opus + Sonnet) in **isolated git worktrees**; each output's **objective Verify** is run; then a **blind judge** (model identity hidden; prefer a mixed / non-Claude panel) ranks the diffs. This actually *measures* who did better. Merge the best passing diff (real work); log all attempts as benchmark data.
+
+**Deterministic store:** `model-bench.jsonl` (append-only, git-tracked, SQLite-loadable: `sqlite3 :memory: -cmd '.mode json' "..."` or import) is the structured source of truth; this MD is the narrative. Conversational memory is NOT a store.
+
+> ⚠️ The Live Roster below is grade-1 (preliminary, Sonnet-judged). Head-to-head runs will confirm or overturn it — especially Sonnet & Opus, which have NO implementer data yet this cycle.
+
+## Live Roster (PRELIMINARY — grade-1 reviewer-judgment; pending head-to-head validation)
 
 _Last updated: 2026-06-13 (after recon review of the 06-12 codex-pi batch + 06-13 ralph batch)._
 
