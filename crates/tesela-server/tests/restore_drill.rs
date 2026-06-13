@@ -180,7 +180,10 @@ async fn seed_two_peer_mosaic(mosaic: &Path) -> SeededMosaic {
             note_id,
             display_alias: Some(DRILL_SLUG.into()),
             title: "Drill Note".into(),
-            content: format!("- alpha\n- beta\n- gamma added later\n- {}\n", DEVICE_B_LINE),
+            content: format!(
+                "- alpha\n- beta\n- gamma added later\n- {}\n",
+                DEVICE_B_LINE
+            ),
             created_at_millis: 1_750_000_000_000,
         })
         .await

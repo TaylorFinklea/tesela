@@ -116,7 +116,9 @@ impl Manifest {
     /// i.e. the authority, not just the materialized export view. A
     /// restore of such a backup needs no reseed (no twin-lineage risk).
     pub fn includes_loro_state(&self) -> bool {
-        self.files.iter().any(|f| f.path.starts_with(".tesela/loro/"))
+        self.files
+            .iter()
+            .any(|f| f.path.starts_with(".tesela/loro/"))
     }
 
     /// True when this backup carries the sync identity (`device_id.hex`).

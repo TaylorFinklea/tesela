@@ -347,10 +347,7 @@ fn convert_org_to_markdown(raw: &str, log: &mut Vec<String>, rel_str: &str) -> S
                             if key == "tags" && task_tag_pending {
                                 task_tag_pending = false;
                                 if !v.split(',').any(|t| t.trim().eq_ignore_ascii_case("task")) {
-                                    out.push_str(&format!(
-                                        "{}tags:: {}, Task\n",
-                                        prop_indent, v
-                                    ));
+                                    out.push_str(&format!("{}tags:: {}, Task\n", prop_indent, v));
                                     i += 1;
                                     continue;
                                 }

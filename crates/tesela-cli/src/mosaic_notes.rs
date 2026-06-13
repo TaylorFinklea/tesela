@@ -77,8 +77,8 @@ pub(crate) fn read_non_resident_notes(
         if resident_slugs.contains(stem) {
             continue; // engine version is authority
         }
-        let content = std::fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let content =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         out.push((stem.to_string(), content));
     }
     Ok(out)

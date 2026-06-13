@@ -79,7 +79,7 @@ pub fn diff_note_trees_with_options(
     // Deletions: anything in old that is missing from new. Suppressed
     // when the diff source isn't authoritative about absence.
     if opts.emit_deletes {
-        for (id, _) in &old_index {
+        for id in old_index.keys() {
             if !new_index.contains_key(id) {
                 ops.push(OpPayload::BlockDelete {
                     block_id: uuid_to_bytes(*id),

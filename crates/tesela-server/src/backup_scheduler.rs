@@ -298,7 +298,12 @@ async fn run_once(
                 outcome.path.display(),
                 outcome.manifest.files.len(),
                 total_bytes,
-                outcome.manifest.validated.as_ref().map(|v| v.ok).unwrap_or(false),
+                outcome
+                    .manifest
+                    .validated
+                    .as_ref()
+                    .map(|v| v.ok)
+                    .unwrap_or(false),
                 outcome.pruned.removed.len(),
             );
             status

@@ -1126,7 +1126,7 @@ impl SearchIndex for SqliteIndex {
 
             // Recurrence setup.
             let recurrence_str = props.get("recurring").cloned();
-            let rec = recurrence_str.as_deref().and_then(|s| recurrence::parse(s));
+            let rec = recurrence_str.as_deref().and_then(recurrence::parse);
             let done_so_far_start: u32 = props
                 .get("recurrence_done")
                 .and_then(|s| s.parse().ok())

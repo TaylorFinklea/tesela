@@ -1130,7 +1130,10 @@ tags:: idea, project
         let out = convert_content("- TODO buy milk\n  tags:: Task\n");
         assert_eq!(out.matches("Task").count(), 1, "{out}");
         let out = convert_content("- TODO buy milk #Task\n");
-        assert!(!out.contains("tags::"), "inline #Task already marks it: {out}");
+        assert!(
+            !out.contains("tags::"),
+            "inline #Task already marks it: {out}"
+        );
     }
 
     #[test]

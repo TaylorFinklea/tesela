@@ -15,6 +15,7 @@ use loro::{LoroDoc, LoroTree};
 use uuid::Uuid;
 
 #[derive(Debug)]
+#[allow(clippy::enum_variant_names)]
 enum FakeOp {
     BlockUpsert {
         id: Uuid,

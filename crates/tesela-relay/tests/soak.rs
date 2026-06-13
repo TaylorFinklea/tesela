@@ -192,7 +192,9 @@ async fn push_with_retry(
             }
         }
     }
-    Err(format!("push failed after {OP_RETRIES} attempts: {last_err}"))
+    Err(format!(
+        "push failed after {OP_RETRIES} attempts: {last_err}"
+    ))
 }
 
 /// Mirror of `tick`'s inbound Loro branch (`relay_pull` in the
@@ -282,7 +284,10 @@ async fn wait_converged(
     let start = Instant::now();
     loop {
         if let Err(e) = pull_once(dst, dst_client, dst_cursor, dst_dev).await {
-            println!("[{}] {label}: transient poll error (retrying): {e}", now_log());
+            println!(
+                "[{}] {label}: transient poll error (retrying): {e}",
+                now_log()
+            );
         }
         let rs = src.render_note(note).await;
         let rd = dst.render_note(note).await;

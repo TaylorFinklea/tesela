@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 /// Pure translator from one op schema version to the next.
 pub trait OpTranslator: Send + Sync {
     /// Schema version the translator accepts as input.
-    fn from_version(&self) -> u32;
+    fn source_version(&self) -> u32;
     /// Schema version the translator produces.
     fn to_version(&self) -> u32;
     /// Translate one payload.
@@ -34,7 +34,7 @@ impl TranslatorRegistry {
     /// Register a translator. Later registrations replace earlier ones
     /// for the same `(from, to)` pair.
     pub fn register(&mut self, t: Box<dyn OpTranslator>) {
-        self.by_from.insert((t.from_version(), t.to_version()), t);
+        self.by_from.insert((t.source_version(), t.to_version()), t);
     }
 
     /// Find the chain of translators that takes `from` to `to`. Phase 1
@@ -76,7 +76,7 @@ mod tests {
 
     struct Bump(u32, u32);
     impl OpTranslator for Bump {
-        fn from_version(&self) -> u32 {
+        fn source_version(&self) -> u32 {
             self.0
         }
         fn to_version(&self) -> u32 {

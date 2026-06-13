@@ -704,7 +704,11 @@ async fn test_snapshot_covers_seq_zero_is_inert() {
         .unwrap();
     let rows: Vec<serde_json::Value> = r.json().await.unwrap();
     let seqs: Vec<i64> = rows.iter().map(|v| v["seq"].as_i64().unwrap()).collect();
-    assert_eq!(seqs, vec![1, 2], "no op may be GC'd by a covers_seq=0 deposit");
+    assert_eq!(
+        seqs,
+        vec![1, 2],
+        "no op may be GC'd by a covers_seq=0 deposit"
+    );
 
     // The watermark did NOT move, but the snapshot upsert DID apply.
     let snaps_path = format!("/groups/{}/snapshots", hex::encode(group.id.as_bytes()));

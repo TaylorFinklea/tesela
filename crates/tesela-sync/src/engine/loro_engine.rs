@@ -209,7 +209,7 @@ fn extract_index_metadata(
     // `tags::` page property (comma- or space-separated).
     for (k, v) in page_properties {
         if k == "tags" {
-            for t in v.split(|c| c == ',' || c == ' ') {
+            for t in v.split([',', ' ']) {
                 let t = t.trim().trim_start_matches('#');
                 if !t.is_empty() {
                     tags.insert(t.to_string());
@@ -1341,10 +1341,10 @@ impl LoroEngine {
     /// Render the *complete* `.md` file the engine writes to disk as the
     /// authoritative writer: verbatim frontmatter (root `frontmatter` meta)
     /// + page properties + blocks. Identical to
-    /// [`render_note`](Self::render_note) except the frontmatter is
-    /// included, so this is the exact byte stream materialization emits.
-    /// Delegates to [`doc_full_markdown`], which also handles pre-dedup docs
-    /// that still carry the full markdown on root `content`.
+    ///   [`render_note`](Self::render_note) except the frontmatter is
+    ///   included, so this is the exact byte stream materialization emits.
+    ///   Delegates to [`doc_full_markdown`], which also handles pre-dedup docs
+    ///   that still carry the full markdown on root `content`.
     ///
     /// A note whose frontmatter never reached the doc materializes
     /// body-only.
@@ -1388,12 +1388,13 @@ impl LoroEngine {
     /// BlockUpsert lands.
     async fn doc_for_note_mut(&self, note_id: [u8; 16]) -> LoroDoc {
         let mut docs = self.inner.docs.write().await;
-        if !docs.contains_key(&note_id) {
-            let doc = LoroDoc::new();
-            self.set_doc_peer(&doc);
-            docs.insert(note_id, doc);
-        }
-        docs.get(&note_id).expect("just inserted").clone()
+        docs.entry(note_id)
+            .or_insert_with(|| {
+                let doc = LoroDoc::new();
+                self.set_doc_peer(&doc);
+                doc
+            })
+            .clone()
     }
 
     /// Locate the doc + tree node hosting a given block id by walking
@@ -3486,7 +3487,7 @@ fn reconcile_orphaned_prop_containers(doc: &LoroDoc, owner: &str) -> Vec<(String
 ///     to "Awesome sweet"), and
 ///   - drop the peer's GENUINE edit (keep the server's twin when the peer
 ///     authored a real new value).
-/// The resolved target below covers both.
+///     The resolved target below covers both.
 ///
 /// ## The discriminator
 /// 1. `server_vv = auth.oplog_vv()`. Fork the auth doc, import the frame into

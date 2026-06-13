@@ -139,7 +139,7 @@ impl LanDiscovery {
             .filter(|p| now.duration_since(p.last_seen) <= max_age)
             .cloned()
             .collect();
-        out.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
+        out.sort_by_key(|b| std::cmp::Reverse(b.last_seen));
         out
     }
 

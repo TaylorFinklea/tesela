@@ -227,13 +227,13 @@ pub fn encode_pairing_code(
     display_name: String,
 ) -> Result<String, FfiSyncError> {
     let group_id = parse_hex_16(&group_id_hex).ok_or_else(|| FfiSyncError::Other {
-        message: format!("group_id_hex must be 32-char hex"),
+        message: "group_id_hex must be 32-char hex".to_string(),
     })?;
     let group_key = parse_hex_32(&group_key_hex).ok_or_else(|| FfiSyncError::Other {
-        message: format!("group_key_hex must be 64-char hex"),
+        message: "group_key_hex must be 64-char hex".to_string(),
     })?;
     let device_id = parse_hex_16(&device_id_hex).ok_or_else(|| FfiSyncError::Other {
-        message: format!("device_id_hex must be 32-char hex"),
+        message: "device_id_hex must be 32-char hex".to_string(),
     })?;
     let code = InnerPairingCode {
         group_id: GroupId::from_bytes(group_id),
@@ -289,7 +289,7 @@ fn parse_hex_32(s: &str) -> Option<[u8; 32]> {
 }
 
 fn parse_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(s.len() / 2);
@@ -1297,7 +1297,7 @@ impl SyncCoordinator {
                                 report.failed.len(),
                                 pairs.len()
                             );
-                            if blocked_at.map_or(true, |b| seq < b) {
+                            if blocked_at.is_none_or(|b| seq < b) {
                                 blocked_at = Some(seq);
                             }
                         }

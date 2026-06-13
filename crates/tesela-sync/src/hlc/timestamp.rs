@@ -44,7 +44,7 @@ impl HlcTimestamp {
     /// for ordering (ordering uses [`Self::ntp64`] directly).
     pub fn physical_millis(&self) -> i64 {
         let secs = (self.ntp64 >> 32) as i64;
-        let frac = (self.ntp64 & 0xFFFF_FFFF) as u64;
+        let frac = self.ntp64 & 0xFFFF_FFFF;
         let millis_in_frac = ((frac * 1000) >> 32) as i64;
         secs * 1000 + millis_in_frac
     }

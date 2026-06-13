@@ -131,9 +131,7 @@ async fn scheduled_backup_appears_in_status_with_authority() {
             .await
             .expect("status json");
         let latest = &status["latest"];
-        if latest.is_object()
-            && latest["includes_loro_state"] == serde_json::Value::Bool(true)
-        {
+        if latest.is_object() && latest["includes_loro_state"] == serde_json::Value::Bool(true) {
             break status;
         }
         tokio::time::sleep(Duration::from_millis(300)).await;

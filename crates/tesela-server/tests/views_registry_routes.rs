@@ -183,7 +183,10 @@ async fn views_crud_round_trip_ordered_list_and_reorder() {
     let week: serde_json::Value = resp.json().await.expect("created json");
     let week_id = week["id"].as_str().expect("minted id").to_string();
     assert!(!week_id.is_empty() && week_id != "builtin-inbox");
-    assert_eq!(week["builtin"], false, "HTTP-created views are never builtin");
+    assert_eq!(
+        week["builtin"], false,
+        "HTTP-created views are never builtin"
+    );
 
     // Create WITH an explicit id + display options.
     let resp = client

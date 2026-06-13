@@ -586,11 +586,8 @@ impl<'a> Parser<'a> {
         self.bump(); // consume "ORDER"
         self.bump(); // consume "BY"
         let mut parts: Vec<String> = Vec::new();
-        loop {
-            let key = match self.bump() {
-                Some(Token::Word(k)) => k.to_ascii_lowercase(),
-                _ => break,
-            };
+        while let Some(Token::Word(k)) = self.bump() {
+            let key = k.to_ascii_lowercase();
             let suffix = if self.peek_keyword("desc") {
                 self.bump();
                 " desc"

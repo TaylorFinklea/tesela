@@ -371,9 +371,8 @@ async fn main() -> Result<()> {
     // Backup scheduler status — shared with the `/backup/status` route.
     // Knobs resolved once from the environment (cadence, startup backup,
     // retention); the task itself is spawned after relay bring-up below.
-    let backup_status = backup_scheduler::BackupStatusHandle::new(
-        backup_scheduler::SchedulerConfig::from_env(),
-    );
+    let backup_status =
+        backup_scheduler::BackupStatusHandle::new(backup_scheduler::SchedulerConfig::from_env());
 
     let app_state = AppState {
         mosaic_root: mosaic_for_shutdown.clone(),
@@ -497,10 +496,10 @@ fn parse_hex_device_id(hex: &str) -> Option<DeviceId> {
         return None;
     }
     let mut out = [0u8; 16];
-    for i in 0..16 {
+    for (i, out_byte) in out.iter_mut().enumerate() {
         let hi = char_to_nibble(hex.as_bytes()[i * 2])?;
         let lo = char_to_nibble(hex.as_bytes()[i * 2 + 1])?;
-        out[i] = (hi << 4) | lo;
+        *out_byte = (hi << 4) | lo;
     }
     Some(DeviceId(out))
 }

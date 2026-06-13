@@ -479,8 +479,7 @@ async fn write_peers(mosaic_root: &Path, peers: &[Peer]) -> Result<(), std::io::
     let tesela_dir = mosaic_root.join(".tesela");
     tokio::fs::create_dir_all(&tesela_dir).await?;
     let path = peers_path(mosaic_root);
-    let bytes = serde_json::to_vec_pretty(peers)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let bytes = serde_json::to_vec_pretty(peers).map_err(std::io::Error::other)?;
     tokio::fs::write(path, bytes).await
 }
 

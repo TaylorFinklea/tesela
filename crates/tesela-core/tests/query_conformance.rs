@@ -128,7 +128,11 @@ fn case_names_are_unique() {
     let fixture = load_fixture();
     let mut seen = std::collections::HashSet::new();
     for case in &fixture.cases {
-        assert!(seen.insert(case.name.clone()), "duplicate case name: {}", case.name);
+        assert!(
+            seen.insert(case.name.clone()),
+            "duplicate case name: {}",
+            case.name
+        );
     }
 }
 

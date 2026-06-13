@@ -410,8 +410,8 @@ pub struct AckRequest {
 /// "Known members" = devices that have touched this group within the
 /// last 30 days (`KNOWN_MEMBER_TTL_SECS`); see `state::touch_device`
 /// + `state::known_members_hex`. This means a phone offline more than
-/// 30 days loses its backlog — fine for the deposit-box model, where
-/// the authoritative source is the desktop's on-disk state.
+///   30 days loses its backlog — fine for the deposit-box model, where
+///   the authoritative source is the desktop's on-disk state.
 pub async fn post_ack(
     State(state): State<AppState>,
     Path(group_id_hex): Path<String>,

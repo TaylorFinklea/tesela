@@ -161,10 +161,10 @@ fn parse_hex_16(s: &str) -> Option<[u8; 16]> {
         return None;
     }
     let mut out = [0u8; 16];
-    for i in 0..16 {
+    for (i, out_byte) in out.iter_mut().enumerate() {
         let hi = nibble(s.as_bytes()[i * 2])?;
         let lo = nibble(s.as_bytes()[i * 2 + 1])?;
-        out[i] = (hi << 4) | lo;
+        *out_byte = (hi << 4) | lo;
     }
     Some(out)
 }

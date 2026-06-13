@@ -792,9 +792,9 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
 
 Orchestrator: Pi. Spec: `phases/command-registry-spec.md`. Run A1 and B1 in parallel (different models/tiers), then B2, then B3.
 
-- [ ] **A1 — Fix clippy errors.**
-  - **Scope** — Fix two clippy warnings breaking `cargo clippy --workspace -- -D warnings`: `redundant_closure` in `crates/tesela-core/src/db/sqlite.rs:1129`; `while_let_loop` in `crates/tesela-core/src/query.rs:589`.
-  - **Files** — `crates/tesela-core/src/db/sqlite.rs`; `crates/tesela-core/src/query.rs`.
+- [x] **A1 — Fix clippy errors.**
+  - **Scope** — Fix two clippy warnings breaking `cargo clippy --workspace -- -D warnings`: `redundant_closure` in `crates/tesela-core/src/db/sqlite.rs:1129`; `while_let_loop` in `crates/tesela-core/src/query.rs:589`. Actual run exposed additional warnings across the workspace; all were fixed mechanically (no behavior change).
+  - **Files** — `crates/tesela-core/src/db/sqlite.rs`; `crates/tesela-core/src/query.rs` (plus fmt fallout across 25 files).
   - **Acceptance** — `cargo clippy --workspace -- -D warnings` passes; no behavioral change.
   - **Verify** — `cargo clippy --workspace -- -D warnings`
   - **tier_floor** — `junior`

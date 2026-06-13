@@ -352,7 +352,7 @@ pub async fn tick(
                                     attempts,
                                     MAX_APPLY_RETRIES
                                 );
-                                if blocked_at.map_or(true, |b| seq < b) {
+                                if blocked_at.is_none_or(|b| seq < b) {
                                     blocked_at = Some(seq);
                                 }
                             }
@@ -490,7 +490,7 @@ pub async fn tick(
     let now = now_secs_i64();
     let due = state
         .last_snapshot_at
-        .map_or(true, |t| now - t >= snapshot_interval_secs());
+        .is_none_or(|t| now - t >= snapshot_interval_secs());
     if due && state.inbound_cursor > 0 && !state.catchup_notes.is_empty() {
         // Don't deposit (→ relay GC) while notes we failed to integrate are
         // still queued: covers_seq = our cursor, and the deposited snapshots
@@ -520,11 +520,8 @@ pub async fn tick(
                         );
                     }
                 } else {
-                    let skipped: Vec<String> = report
-                        .skipped_streams
-                        .iter()
-                        .map(|s| hex::encode(s))
-                        .collect();
+                    let skipped: Vec<String> =
+                        report.skipped_streams.iter().map(hex::encode).collect();
                     let msg = format!(
                         "relay snapshot deposit: {} note snapshot(s) exceed the relay body cap \
                          and were SKIPPED ({:?}) — compaction watermark NOT advanced",
