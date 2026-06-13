@@ -178,6 +178,23 @@ impl SqliteIndex {
 
     /// Remove a note from the index.
     pub async fn remove_note(&self, id: &NoteId) -> Result<()> {
+        // Clear cached type definitions for this note explicitly. The FK
+        // (migration 005) cascades these deletes on its own, but we do it
+        // here too so the cleanup intent is local to the operation and
+        // survives any future schema drift. Without this, a `note_id=NULL`
+        // row would linger in the type-def tables (old SET NULL FK) and
+        // keep surfacing in `GET /types` and the resolver.
+        sqlx::query("DELETE FROM tag_defs WHERE note_id = ?")
+            .bind(id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to remove tag defs for note", e))?;
+        sqlx::query("DELETE FROM property_defs WHERE note_id = ?")
+            .bind(id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to remove property defs for note", e))?;
+
         sqlx::query("DELETE FROM notes WHERE id = ?")
             .bind(id.as_str())
             .execute(&self.pool)
@@ -189,6 +206,23 @@ impl SqliteIndex {
 
     /// Index type system info: if note is a Tag or Property page, cache its definition.
     async fn index_type_info(&self, note: &Note) -> Result<()> {
+        // Clear any cached type defs for this note first. This covers the
+        // type-change path (Tag → not-typed, Tag → Property, Property →
+        // Tag, etc.) so a reclassified note doesn't leave a stale row
+        // under the old type. The match below re-inserts a fresh row when
+        // the new type is Tag/Property; the `_ =>` arm leaves both tables
+        // empty for the note.
+        sqlx::query("DELETE FROM tag_defs WHERE note_id = ?")
+            .bind(note.id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to clear old tag def", e))?;
+        sqlx::query("DELETE FROM property_defs WHERE note_id = ?")
+            .bind(note.id.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| db_err("Failed to clear old property def", e))?;
+
         match note.metadata.note_type.as_deref() {
             Some("Tag") => {
                 // Extract tag_properties from frontmatter custom fields
@@ -2248,5 +2282,134 @@ mod tests {
         // mid-string brackets weren't blindly stripped.
         let order: Vec<&str> = items.iter().map(|i| i.text.as_str()).collect();
         assert_eq!(order, vec!["b", "a"]);
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // type-def cache hygiene (regression: stale tag_defs / property_defs)
+    //
+    // Bug: `remove_note` only deleted from `notes`; with the old
+    // `ON DELETE SET NULL` FK, the cached type_def row survived with
+    // `note_id=NULL` and kept surfacing in `GET /types` and the
+    // resolver. The `_ =>` arm in `index_type_info` had the same
+    // failure mode when a note's `note_type` changed away from
+    // Tag/Property.
+    // ────────────────────────────────────────────────────────────────
+
+    /// Deleting a Tag/Property page must remove its cached
+    /// type-definition row. Without the explicit `DELETE` in
+    /// `remove_note` (and the CASCADE FK from migration 005), a
+    /// `note_id=NULL` ghost would linger in the cache and surface in
+    /// `get_all_tag_defs` / `get_all_property_defs`.
+    #[tokio::test]
+    async fn remove_note_clears_cached_type_defs() {
+        use crate::traits::search_index::SearchIndex as _;
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+
+        // Index a Tag page and a Property page.
+        let mut tag_note = make_test_note("rm-tag", "TaskTag", "- a tag page", &[]);
+        tag_note.metadata.note_type = Some("Tag".to_string());
+        index.reindex(&tag_note).await.unwrap();
+
+        let mut prop_note = make_test_note("rm-prop", "Status", "- a property page", &[]);
+        prop_note.metadata.note_type = Some("Property".to_string());
+        index.reindex(&prop_note).await.unwrap();
+
+        // Sanity: both cached rows exist.
+        let tag_defs = index.get_all_tag_defs().await.unwrap();
+        assert_eq!(tag_defs.len(), 1, "tag_defs should hold the cached Tag row");
+        assert_eq!(tag_defs[0].name, "TaskTag");
+        let prop_defs = index.get_all_property_defs().await.unwrap();
+        assert_eq!(
+            prop_defs.len(),
+            1,
+            "property_defs should hold the cached Property row"
+        );
+        assert_eq!(prop_defs[0].name, "Status");
+
+        // Remove the Tag page → its cached row must be gone.
+        index.remove_note(&NoteId::new("rm-tag")).await.unwrap();
+        let tag_defs = index.get_all_tag_defs().await.unwrap();
+        assert!(
+            tag_defs.is_empty(),
+            "tag_defs should be empty after remove_note; got {tag_defs:?}"
+        );
+        // Property cache must be untouched.
+        let prop_defs = index.get_all_property_defs().await.unwrap();
+        assert_eq!(
+            prop_defs.len(),
+            1,
+            "property_defs should still hold the Property row"
+        );
+
+        // Remove the Property page → its cached row must be gone too.
+        index.remove_note(&NoteId::new("rm-prop")).await.unwrap();
+        let prop_defs = index.get_all_property_defs().await.unwrap();
+        assert!(
+            prop_defs.is_empty(),
+            "property_defs should be empty after remove_note; got {prop_defs:?}"
+        );
+    }
+
+    /// A note's `note_type` flipping away from Tag/Property (or
+    /// across the Tag ↔ Property boundary) must drop the old cached
+    /// row. A re-tag with a new name must also leave exactly one
+    /// row — no ghost under the old name.
+    #[tokio::test]
+    async fn reindex_clears_stale_type_defs_on_type_change() {
+        use crate::traits::search_index::SearchIndex as _;
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+
+        // Start as a Tag page named "OldName".
+        let mut note = make_test_note("rt-1", "OldName", "- body", &[]);
+        note.metadata.note_type = Some("Tag".to_string());
+        index.reindex(&note).await.unwrap();
+        let tag_defs = index.get_all_tag_defs().await.unwrap();
+        assert_eq!(tag_defs.len(), 1);
+        assert_eq!(tag_defs[0].name, "OldName");
+
+        // Reindex with a different type — the stale tag row must be
+        // gone, and no property row should appear.
+        note.metadata.note_type = Some("Project".to_string());
+        index.reindex(&note).await.unwrap();
+        let tag_defs = index.get_all_tag_defs().await.unwrap();
+        assert!(
+            tag_defs.is_empty(),
+            "tag_defs should be empty after Tag → Project; got {tag_defs:?}"
+        );
+        let prop_defs = index.get_all_property_defs().await.unwrap();
+        assert!(
+            prop_defs.is_empty(),
+            "property_defs should be empty after Tag → Project; got {prop_defs:?}"
+        );
+
+        // Flip to Property — property_defs gets the row, tag_defs
+        // stays empty.
+        note.metadata.note_type = Some("Property".to_string());
+        index.reindex(&note).await.unwrap();
+        let prop_defs = index.get_all_property_defs().await.unwrap();
+        assert_eq!(prop_defs.len(), 1);
+        assert_eq!(prop_defs[0].name, "OldName");
+        let tag_defs = index.get_all_tag_defs().await.unwrap();
+        assert!(tag_defs.is_empty());
+
+        // Now flip back to a Tag with a NEW title — the property
+        // cache must be cleared, and the tag cache must contain
+        // exactly one row, under the new name. No ghost under
+        // "OldName".
+        note.title = "NewName".to_string();
+        note.metadata.note_type = Some("Tag".to_string());
+        index.reindex(&note).await.unwrap();
+        let tag_defs = index.get_all_tag_defs().await.unwrap();
+        assert_eq!(
+            tag_defs.len(),
+            1,
+            "rename should leave exactly one tag_defs row; got {tag_defs:?}"
+        );
+        assert_eq!(tag_defs[0].name, "NewName");
+        let prop_defs = index.get_all_property_defs().await.unwrap();
+        assert!(
+            prop_defs.is_empty(),
+            "property_defs should be cleared on Property → Tag; got {prop_defs:?}"
+        );
     }
 }

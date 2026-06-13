@@ -1,6 +1,6 @@
 //! SQLite schema definitions and migrations for Tesela
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub const CREATE_MIGRATIONS_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -161,6 +161,43 @@ END"#,
         r#"CREATE TABLE IF NOT EXISTS group_keys (
     group_id        BLOB    PRIMARY KEY,
     group_sym_key   BLOB    NOT NULL
+)"#,
+    ],
+), (
+    // Type-definition FKs: switch `tag_defs.note_id` and
+    // `property_defs.note_id` from `ON DELETE SET NULL` to
+    // `ON DELETE CASCADE` so cached Tag/Property pages don't outlive
+    // their source note. The application-level fix in
+    // `SqliteIndex::remove_note` and `index_type_info` is the primary
+    // cleanup path; this migration hardens the schema as a defense in
+    // depth. SQLite can't ALTER a FK, so we drop and recreate the two
+    // tables. Cached rows are caches of note content — they get
+    // repopulated on the next reindex.
+    "005_type_defs_cascade_fks",
+    &[
+        r#"DROP TABLE IF EXISTS tag_defs"#,
+        r#"CREATE TABLE tag_defs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    extends TEXT,
+    icon TEXT DEFAULT '📄',
+    color TEXT DEFAULT '#808080',
+    properties_json TEXT NOT NULL DEFAULT '[]',
+    note_id TEXT,
+    FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
+)"#,
+        r#"DROP TABLE IF EXISTS property_defs"#,
+        r#"CREATE TABLE property_defs (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    value_type TEXT NOT NULL DEFAULT 'text',
+    choices_json TEXT,
+    default_value TEXT,
+    multiple_values BOOLEAN NOT NULL DEFAULT 0,
+    hide_empty BOOLEAN NOT NULL DEFAULT 0,
+    description TEXT,
+    note_id TEXT,
+    FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
 )"#,
     ],
 )];
