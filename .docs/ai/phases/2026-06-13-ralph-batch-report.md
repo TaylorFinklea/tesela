@@ -29,7 +29,7 @@
 ### B2 — Keymap introspection + conflict detection
 
 - Status: done
-- Commit: `TBD-after-commit`
+- Commit: `012a556`
 - Verify result: `node --test web/tests/unit/command-registry.test.mjs` → 6/6; `pnpm --dir web check` → 0 errors; `cargo clippy --workspace -- -D warnings` → green.
 - Notes: Added `buildKeymapIndex`, `findConflicts`, `formatKeymap` to `command-registry.svelte.ts`; added `:keymap` registry command that prints bindings + conflicts to the console; added 6 unit tests.
 
