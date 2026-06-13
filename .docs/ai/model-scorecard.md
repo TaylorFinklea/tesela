@@ -57,6 +57,13 @@ _Last updated: 2026-06-13 (after the command-registry B1–B4 head-to-head: gpt-
 
 ## Batch Log (append-only)
 
+### 2026-06-13 — FLEET DISPATCH Wave 1 (Opus-orchestrated, real merged work)
+
+- First self-dispatched fleet batch via the worktree→model→Verify→Opus-review→merge→score loop (`source:fleet-dispatch` in jsonl). Both merged to main.
+- **gpt-5.5 — DSK1 (5/5, `a4f81b03`):** 3 desktop audit bugs in `src-tauri/main.rs` (Reopen visibility guard, spawn_server `env_remove` of inherited DISABLE_RELAY, TOML inline-comment strip). The comment-stripper came out quote/escape-aware (beyond spec); zero-dep; no scope creep. Cleanest possible.
+- **minimax-m3 — PROP1 (4.5/5, `7390af30`):** purge stale `tag_defs`/`property_defs` on delete + type-change/rename; FK→CASCADE migration 005; **two** thorough regression tests (incl. rename-leaves-no-ghost). Only ding: migration drops+recreates the cache tables → needs a reindex after deploy (noted in commit).
+- **Takeaway:** the head-to-head ranking holds in real work — both co-leads produced mergeable, well-tested diffs first-try. Pipeline confirmed; scaling to wave 2.
+
 ### 2026-06-13 — HEAD-TO-HEAD (grade-2) — command-registry B1–B4 — 5 models, blind panel
 
 - **The gold-standard run.** Same bounded task (4 command-registry gaps, `.bench/task.md`), 5 models in isolated worktrees, objective Verify, then a **blind 4-judge panel** (2× Sonnet + gpt-5.5 + minimax, identities hidden as cand A–E) + a de-anonymized adversarial pre-merge check. Fable judge unavailable. Raw votes: `.bench/blind/`.
