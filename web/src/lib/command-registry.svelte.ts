@@ -11,9 +11,9 @@
  */
 
 export type CommandContext = {
-  route?: string;
+  route?: string | null;
   bufferKind?: 'page' | 'derived' | 'ambient' | null;
-  vimMode?: 'normal' | 'insert' | 'visual' | null;
+  vimMode?: string | null;
   focusedBlock?: { id: string; properties: Record<string, string> } | null;
   splitOpen?: boolean;
 };

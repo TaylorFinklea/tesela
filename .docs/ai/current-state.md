@@ -8,7 +8,7 @@
 - [x] A1 — Fix clippy errors. Verify: `cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
 - [x] B1 — Unified command registry shape + port palette/leader. Verify: `pnpm --dir web check` + manual palette/leader/colon QA.
 - [x] B2 — Keymap introspection + conflict detection. Verify: unit tests + `pnpm --dir web check` + `:keymap` QA.
-- [ ] B3 — Context-aware command dispatch. Verify: `pnpm --dir web check` + full keyboard QA matrix (kimi-k2.7-code).
+- [x] B3 — Context-aware command dispatch. Verify: `pnpm --dir web check` + full keyboard QA matrix.
 
 Spec: `.docs/ai/phases/command-registry-spec.md`.
 

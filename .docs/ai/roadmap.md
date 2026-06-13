@@ -819,7 +819,7 @@ Orchestrator: Pi. Spec: `phases/command-registry-spec.md`. Run A1 and B1 in para
   - **complexity** — `M`
   - **ralph_model** — `opencode-go/kimi-k2.7-code`
 
-- [ ] **B3 — Context-aware command dispatch.**
+- [x] **B3 — Context-aware command dispatch.**
   - **Scope** — Add `CommandContext` capture (route, focused buffer kind, vim mode, focused block, split state) and `when` predicates to commands. Filter palette/leader availability from the registry; colon dispatches verbs from the registry.
   - **Files** — `web/src/lib/command-registry.svelte.ts`, `web/src/lib/graphite/shell/GraphiteShell.svelte`, `web/src/lib/graphite/shell/GrCommandPalette.svelte`, `web/src/lib/graphite/shell/GrLeaderOverlay.svelte`, `web/src/lib/components/shell/ColonCommandLine.svelte`.
   - **Acceptance** — Commands that don't apply in the current context are hidden from palette/leader; context changes update availability reactively; existing behavior is preserved.

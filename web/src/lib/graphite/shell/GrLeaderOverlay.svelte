@@ -17,6 +17,7 @@
    */
   import { onMount } from 'svelte';
   import type { ChordNode } from '$lib/components/ChordMenu.svelte';
+  import type { CommandContext } from '$lib/command-registry.svelte';
   import {
     isLeaderOpen,
     closeLeader,
@@ -24,8 +25,13 @@
     getLeaderTree,
   } from '$lib/v5/leader-tree.svelte';
 
+  interface Props {
+    ctx: CommandContext;
+  }
+  let { ctx }: Props = $props();
+
   const open = $derived(isLeaderOpen());
-  const tree = $derived(getLeaderTree());
+  const tree = $derived(getLeaderTree(ctx));
 
   // Seed the breadcrumb from the store's initial path each time it opens.
   let breadcrumb = $state<string[]>([]);

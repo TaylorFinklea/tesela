@@ -21,6 +21,7 @@
    * Ctrl-W pane motion).
    */
   import { onMount, onDestroy } from 'svelte';
+  import { page } from '$app/stores';
   import { openActiveNoteDoc } from '$lib/loro/active-note-doc.svelte';
   import GrTopBar from './GrTopBar.svelte';
   import GrRail from './GrRail.svelte';
@@ -49,6 +50,8 @@
     openSettingsOverlay,
     openFullscreenGraph,
   } from '$lib/stores/fullscreen-overlay.svelte';
+  import { getFocusedBlock } from '$lib/stores/current-block.svelte';
+  import type { CommandContext } from '$lib/command-registry.svelte';
   import ColonCommandLine from '$lib/components/shell/ColonCommandLine.svelte';
   import FullscreenOverlay from '$lib/components/shell/FullscreenOverlay.svelte';
   import PeekPopover from '$lib/components/shell/PeekPopover.svelte';
@@ -58,6 +61,18 @@
 
   // The active tab's pane tree + a shared drag flag for the resizers.
   const tab = $derived(getActiveTab());
+
+  // Command context drives context-aware filtering in the unified registry.
+  const commandCtx = $derived<CommandContext>({
+    route: $page.route?.id,
+    bufferKind: focusedBuffer?.kind ?? null,
+    vimMode: getVimMode(),
+    focusedBlock: (() => {
+      const b = getFocusedBlock();
+      return b ? { id: b.id, properties: b.properties ?? {} } : null;
+    })(),
+    splitOpen: tab?.layout?.type === 'split',
+  });
   const dragRef = $state({ value: false });
   // Only show the per-pane focus accent when the layout is actually split —
   // a lone pane renders exactly as the pre-split shell did.
@@ -340,8 +355,8 @@
 
   <GrStatus path={paneTitle} />
 
-  <GrCommandPalette />
-  <GrLeaderOverlay />
+  <GrCommandPalette ctx={commandCtx} />
+  <GrLeaderOverlay ctx={commandCtx} />
   <ColonCommandLine />
   <!-- Settings / graph fullscreen overlays (the gear, ⌘G, leader `,`, and the
        desktop Settings menu all drive these via the overlay store). Was only

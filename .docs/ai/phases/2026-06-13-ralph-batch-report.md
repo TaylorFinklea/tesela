@@ -35,7 +35,7 @@
 
 ### B3 — Context-aware command dispatch
 
-- Status: not started
-- Commit: —
-- Verify result: —
-- Notes: —
+- Status: done
+- Commit: `TBD-after-commit`
+- Verify result: `pnpm --dir web check` → 0 errors; `cargo clippy --workspace -- -D warnings` → green; unit tests → 6/6.
+- Notes: Added reactive `CommandContext` in `GraphiteShell`; `GrCommandPalette` filters via `commandRegistry.available(ctx)`; `GrLeaderOverlay`/`getLeaderTree(ctx)` prune unavailable branches; `skip-occurrence` now declares `when: (ctx) => !!ctx.focusedBlock?.properties['recurring']` as the first context-gated command.

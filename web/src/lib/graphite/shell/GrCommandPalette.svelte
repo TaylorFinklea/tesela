@@ -29,9 +29,18 @@
   } from '$lib/stores/station.svelte';
   import { focusLeaf, openPageInFocused } from '$lib/buffer/state.svelte';
   import { asPageId, type LeafId } from '$lib/buffer/types';
-  import { commandRegistry, type Command } from '$lib/command-registry.svelte';
+  import {
+    commandRegistry,
+    type Command,
+    type CommandContext,
+  } from '$lib/command-registry.svelte';
   import { matchesV4Command } from '$lib/v4/commands';
   import { scoreFuzzy, highlightRuns } from '$lib/fuzzy';
+
+  interface Props {
+    ctx: CommandContext;
+  }
+  let { ctx }: Props = $props();
 
   const open = $derived(isStationOpen());
 
@@ -53,7 +62,7 @@
 
   const MAX_NOTES_IN_PALETTE = 12;
 
-  const allCommands = commandRegistry.all();
+  const allCommands = $derived(commandRegistry.available(ctx));
 
   const notesQuery = createQuery(() => ({
     queryKey: ['notes', { limit: 500 }] as const,

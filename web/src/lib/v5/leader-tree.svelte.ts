@@ -9,7 +9,11 @@
  * BlockEditor's vim binding) all read the same source.
  */
 
-import { commandRegistry, type Command } from "$lib/command-registry.svelte";
+import {
+  commandRegistry,
+  type Command,
+  type CommandContext,
+} from "$lib/command-registry.svelte";
 // Type-only import via the `<script module>` block of ChordMenu.svelte.
 // Svelte's TS support exports the module-script types via the .svelte
 // path with a side-effect import.
@@ -48,9 +52,22 @@ const CHORD_GROUP_LABELS: Record<string, string> = {
 function buildChordTree(
   commands: Command[],
   depth: number,
+  ctx?: CommandContext,
 ): ChordNode[] {
+  const available = ctx
+    ? commands.filter((cmd) => {
+        if (!cmd.when) return true;
+        try {
+          return cmd.when(ctx);
+        } catch (e) {
+          console.warn(`leader-tree: when() threw for "${cmd.id}"`, e);
+          return false;
+        }
+      })
+    : commands;
+
   const groups = new Map<string, Command[]>();
-  for (const cmd of commands) {
+  for (const cmd of available) {
     if (!cmd.chord || cmd.chord.length <= depth) continue;
     const key = cmd.chord[depth];
     if (!groups.has(key)) groups.set(key, []);
@@ -76,7 +93,7 @@ function buildChordTree(
         label: leaf.label,
         action: () => void leaf.run(),
       });
-      const children = buildChordTree(branches, depth + 1);
+      const children = buildChordTree(branches, depth + 1, ctx);
       if (children.length > 0) {
         nodes.push({
           key,
@@ -85,7 +102,7 @@ function buildChordTree(
         });
       }
     } else {
-      const children = buildChordTree(branches, depth + 1);
+      const children = buildChordTree(branches, depth + 1, ctx);
       if (children.length > 0) {
         nodes.push({
           key,
@@ -102,7 +119,7 @@ function buildChordTree(
 }
 
 /** The chord tree the menu walks. Derived from the unified command registry. */
-export function getLeaderTree(): ChordNode[] {
+export function getLeaderTree(ctx?: CommandContext): ChordNode[] {
   const commands = commandRegistry.all().filter((cmd) => cmd.chord && cmd.chord.length > 0);
-  return buildChordTree(commands, 0);
+  return buildChordTree(commands, 0, ctx);
 }

@@ -10,6 +10,7 @@ import {
   commandRegistry,
   formatKeymap,
   type Command as RegistryCommand,
+  type CommandContext,
 } from "$lib/command-registry.svelte";
 import { api } from "$lib/api-client";
 import { apiBase } from "$lib/runtime-base";
@@ -83,6 +84,7 @@ export type V4Command = {
   chord?: string[];
   keywords: string[];
   argPrompt?: string;
+  when?: (ctx: CommandContext) => boolean;
   run: (arg?: string) => void | Promise<void>;
 };
 
@@ -702,6 +704,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Skip to Next Occurrence",
       glyph: "⏭",
       category: "tile",
+      when: (ctx) => !!ctx.focusedBlock?.properties["recurring"],
       keywords: ["skip", "recurrence", "recurring", "next", "occurrence"],
       run: async () => {
         const block = getFocusedBlock();
