@@ -51,7 +51,7 @@
 ### A3 — Replace bare regex `caps.get(1).unwrap()` calls in the Logseq importer with explicit `.expect()`
 
 - Status: done
-- Commit: `<pending>`
+- Commit: `9240a71`
 - Verify result:
   - `cargo test -p tesela-core --lib import_logseq` → 11/11 pass.
   - `cargo test -p tesela-cli` → 13/13 pass (includes the `logseq_import_backup_restore_byte_exact_round_trip` integration test).
