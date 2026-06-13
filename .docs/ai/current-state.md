@@ -1,20 +1,23 @@
 # Current State
 
 ## Branch
-- `main`; Ralph-loop code validated; iOS TestFlight build `1.1 (12)` uploaded; desktop `0.1.1` Developer-ID signed/notarized.
-- Release commits include iOS/desktop version bumps + handoff docs only; build artifacts remain ignored.
+- `main` (ahead of origin; `08f8448` test-flakiness hardening this session — unpushed).
+- Opus back as orchestrator (2026-06-13). Roles: Opus = triage/spec/review/Lead-impl; cheap fleet (minimax-m3, gpt-5.5, kimi) via pi/ralph for S/M/L. Evidence = `model-scorecard.md`.
 
 ## Plan
-- [x] A1/B1–B3 — command-registry foundation (done).
-- [x] A2 — MCP unwraps → `.expect()`. Verify: `cargo test -p tesela-mcp; cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
-- [x] A3 — Logseq importer unwraps → `.expect()`. Verify: `cargo test -p tesela-core --lib import_logseq; cargo test -p tesela-cli; cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
-- [x] A4 — Backup retention constants. Verify: `cargo test -p tesela-backup; cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
+- [x] Recon + model review + ratings + docs-vs-code reconcile (workflow).
+- [x] Fix flaky `tesela-server` tests pass-1 (`08f8448`); residual port-collision → backlog.
+- [x] Web/desktop smoke (Chrome DevTools vs real-mosaic copy on :7474).
+- [x] iOS shell/mock smoke (sim launches, Graphite renders).
+- [ ] Product questioning session → rebuild roadmap Now/Next/Later. **NEXT.**
+- [ ] Write tiered backlog (corrective actions in report) + first fleet dispatch.
 
-Spec: `.docs/ai/phases/command-registry-spec.md`. Report: `.docs/ai/phases/2026-06-13-ralph-batch-report.md`.
+Report: `phases/2026-06-13-opus-return-report.md`. Scorecard: `model-scorecard.md`.
 
 ## Blockers
-- Tauri DMG bundling failed in `bundle_dmg.sh`; notarized ZIP shipped instead.
-- Lead/XL sync/FFI/pairing items remain reserved for Opus/Fable.
+- Roadmap "Now" is STALE: Stream A + Stream B both fully shipped; reality is in the report. Rebuild after product session.
+- Residual test port-collision flakiness (1/3 workspace runs) → fleet Verify gates use `-p <pkg>` scope until fixed.
+- Milestone 3 sync spine = all Lead/XL (Opus); CF deploy needs Taylor's CF account.
 
 ## Open Questions
-- None.
+- Product session pending (priorities; keyboard-first colon+slash gap; iOS deep pass).
