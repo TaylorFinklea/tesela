@@ -1,8 +1,8 @@
-# Tesela Backlog Loop Prompt
+# Tesela Senior Backlog Loop Prompt
 
 You are running one headless `ralph` iteration in `/Users/tfinklea/git/tesela`.
 
-Self-identify your tier before work. If you are Codex/GPT-5, treat yourself as Senior (T2). If your model is lower than an item's `tier_floor`, stop and report instead of starting it.
+Self-identify your tier before work. If you are Codex/GPT-5.5, Codex/GPT-5, or another equivalent frontier coding model, treat yourself as Senior (T2). If your model is lower than an item's `tier_floor`, stop and report instead of starting it.
 
 ## Non-negotiable startup
 
@@ -16,12 +16,12 @@ Self-identify your tier before work. If you are Codex/GPT-5, treat yourself as S
 Pick exactly ONE unchecked backlog item from `.docs/ai/roadmap.md`.
 
 Priority order:
-1. `### Codex/pi mono coordinator batch (2026-06-12)`
-2. `### Opencode-ready reliability polish (2026-06-12)`
+1. Senior-safe unchecked items in `### Opencode-ready reliability polish (2026-06-12)`, preferring `complexity: M` before `complexity: S`.
+2. Senior-safe unchecked items in `### Codex/pi mono coordinator batch (2026-06-12)`, preferring `complexity: M` before `complexity: S`.
 3. Any later `## Backlog` item only if it has the full fields below and is clearly inside the safe zones.
 
 Allowed:
-- `tier_floor` is `junior` or `senior`
+- `tier_floor` is `senior`; `junior` is allowed only if all Senior-safe items are complete
 - `complexity` is `S` or `M`
 - the item has explicit `Scope`, `Files`, `Acceptance`, and `Verify` fields
 - the item is not marked `ESCALATE`
@@ -35,6 +35,13 @@ Forbidden:
 - old mechanical backlog bullets that do not carry `Scope` / `Files` / `Acceptance` / `Verify` / `tier_floor` / `complexity`
 
 If no allowed unchecked items remain, mark the current-state loop complete and stop.
+
+Expected remaining Senior-safe candidates at the start of this run:
+- `Harden malformed property-line parsing in web block rendering` (`senior` / `S`)
+- `Render fenced code blocks cleanly in web read mode` (`senior` / `M`)
+- `Add task-toggle stale-state regression coverage` (`senior` / `M`)
+
+If these names drift, trust the current roadmap fields rather than this hint.
 
 ## Work rules
 

@@ -1,14 +1,14 @@
 # Current State
 
 ## Branch
-- `main`; pi-mono loop complete at `3c53598`. All `tier_floor: junior` items in priority groups 1 + 2 of the Backlog are landed.
-- pi mono self-tier: Junior (T3) — model is `opencode-go/minimax-m3`, not Codex/GPT-5. Picks only `tier_floor: junior` items; never attempts `senior` / `lead` / `XL` work from this harness.
+- `main`; pi-mono Junior loop complete at `031b75e`; Senior loop queued for pi mono using `gpt-5.5`.
+- Senior self-tier: Codex/GPT-5.5 = Senior (T2). Pick only safe `tier_floor: senior`/`junior` S/M backlog items; never `lead` / `XL` / ESCALATE.
 
 ## Plan
-- [x] RALPH BACKLOG LOOP: complete for Junior (T3) tier. Remaining unchecked Backlog items are all `tier_floor: senior` or `lead` (ESCALATE) — see `.docs/ai/roadmap.md` "Opencode-ready reliability polish" + "Codex/pi mono coordinator batch". A Senior run (e.g. Codex/GPT-5) is needed to drain the senior backlog; the iOS onboarding + FFI escalations need Lead/Opus-Fable scope.
+- [ ] SENIOR RALPH BACKLOG LOOP: run `.docs/ai/loop-prompt.md` with `RALPH_PI_MODEL=gpt-5.5 ralph -n 5 -t pi`; each iteration picks one safe fully-shaped unchecked Senior backlog item (`tier_floor: senior`, `complexity: S|M`, prefer M), implements it, runs that item's Verify, updates roadmap/report/current-state, commits, and stops. Verify: selected backlog item's Verify command(s).
 
 ## Blockers
-- None for this tier. Senior/Lead tiers are blocked only on a higher-tier agent picking up the loop.
+- None for Senior-safe backlog. Lead/XL ESCALATE items remain reserved for Opus/Fable.
 
 ## Open Questions
 - None.
