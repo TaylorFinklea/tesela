@@ -438,6 +438,7 @@
     type HiddenKeysConfig,
   } from "$lib/cm-decorations";
   import { toggleBlockTag, getBlockTags } from "$lib/block-tags";
+  import { findStrongFuzzyMatch } from "$lib/fuzzy";
   import { detectTaskTokens, resolveDetectSpec, type DetectConfig } from "$lib/task-tokens";
   import type { PropertyDefinition } from "$lib/property-registry";
   import { assignChords } from "$lib/chord-keys";
@@ -453,6 +454,7 @@
   import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
   import ChordMenu, { type ChordNode } from "./ChordMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
+  import NewEntityGuard from "./NewEntityGuard.svelte";
   import DatePicker from "./DatePicker.svelte";
   import { prefs } from "$lib/preferences.svelte";
   import { browser } from "$app/environment";
@@ -660,6 +662,13 @@
   let autocompleteType = $state<"tag" | "link" | "tagmanage" | "templatepick">("tag");
   let tagManageItems = $state<AutocompleteItem[]>([]);
   let templatePickItems = $state<AutocompleteItem[]>([]);
+  let pendingNewEntity = $state<{
+    input: string;
+    match: string;
+    position: { x: number; y: number };
+    useExisting: () => void;
+    createNew: () => void;
+  } | null>(null);
 
   // Date picker state
   let showDatePicker = $state(false);
@@ -687,6 +696,7 @@
    *  apply handler can detect it.
    */
   const CREATE_TAG_ID_PREFIX = "__create_tag__:";
+  const CREATE_LINK_ID_PREFIX = "__create_link__:";
   const autocompleteItems: AutocompleteItem[] = $derived.by(() => {
     const list = notesList ?? [];
     if (autocompleteType === "tag") {
@@ -709,12 +719,64 @@
       return tags;
     }
     // [[ link mode — all pages with type-chip disambiguation.
-    return list.map((n) => ({
+    const pages = list.map((n) => ({
       id: n.id,
       label: n.title,
       secondary: (n.note_type ?? "note").toLowerCase(),
     }));
+    if (prefs.newEntityGuard && autocompleteFilter.trim().length > 0) {
+      pages.push({
+        id: `${CREATE_LINK_ID_PREFIX}${autocompleteFilter.trim()}`,
+        label: `Create "${autocompleteFilter.trim()}"`,
+        secondary: "new",
+      });
+    }
+    return pages;
   });
+
+  function clearAutocompleteState() {
+    showAutocomplete = false;
+    autocompleteFilter = "";
+    autocompleteStartPos = -1;
+  }
+
+  function openNewEntityGuard(
+    input: string,
+    existingLabels: Iterable<string>,
+    position: { x: number; y: number },
+    useExisting: (label: string) => void,
+    createNew: () => void,
+  ): boolean {
+    if (!prefs.newEntityGuard) return false;
+    const match = findStrongFuzzyMatch(input, existingLabels);
+    if (!match) return false;
+    pendingNewEntity = {
+      input,
+      match: match.label,
+      position,
+      useExisting: () => {
+        pendingNewEntity = null;
+        useExisting(match.label);
+        view?.focus();
+      },
+      createNew: () => {
+        pendingNewEntity = null;
+        createNew();
+        view?.focus();
+      },
+    };
+    return true;
+  }
+
+  function tagLabels(): string[] {
+    return (notesList ?? [])
+      .filter((n) => (n.note_type ?? "").toLowerCase() === "tag")
+      .map((n) => n.title);
+  }
+
+  function pageLabels(): string[] {
+    return (notesList ?? []).map((n) => n.title);
+  }
 
   function applyAutocomplete(item: AutocompleteItem, mode: "chip" | "inline" = "chip") {
     if (!view || autocompleteStartPos < 0) return;
@@ -778,6 +840,8 @@
     let insertedName = item.label;
     if (item.id.startsWith(CREATE_TAG_ID_PREFIX)) {
       insertedName = item.id.slice(CREATE_TAG_ID_PREFIX.length);
+    } else if (item.id.startsWith(CREATE_LINK_ID_PREFIX)) {
+      insertedName = item.id.slice(CREATE_LINK_ID_PREFIX.length);
     }
 
     // Tag commit gesture (Model A, 2026-06-07): ↵ commits the tag to a CHIP —
@@ -786,45 +850,74 @@
     // inline (the `else` insert path below). Strip the typed `#filter` first,
     // exactly like the `tagmanage` branch. (Links ignore mode.)
     if (autocompleteType === "tag" && mode === "chip") {
-      const cleaned = doc.slice(0, autocompleteStartPos) + after;
-      // PROP6 — `autocompleteType === "tag"` is a commit-to-chip gesture
-      // (the user just typed `#tag` to add a tag). Mirror the tagmanage
-      // add-vs-remove detection: if the tag was already on the block, the
-      // `toggleBlockTag` below is effectively a REMOVE — do not fill defaults
-      // in that case (idempotency is the parent's job; this is just the
-      // ADD-only signal).
-      const wasPresent = getBlockTags(cleaned).some(
-        (t) => t.toLowerCase() === insertedName.toLowerCase(),
-      );
-      const fillNames = autoFillNames?.(insertedName) ?? [];
-      const newText = toggleBlockTag(cleaned, insertedName, fillNames);
-      view.dispatch({
-        changes: { from: 0, to: doc.length, insert: newText },
-        selection: { anchor: Math.min(autocompleteStartPos, newText.length) },
-      });
-      onChange(newText);
-      if (!wasPresent) onTagAdded?.(insertedName);
-      showAutocomplete = false;
-      autocompleteFilter = "";
-      autocompleteStartPos = -1;
+      const startPos = autocompleteStartPos;
+      const commitTagChip = (tagName: string) => {
+        const cleaned = doc.slice(0, startPos) + after;
+        // PROP6 — `autocompleteType === "tag"` is a commit-to-chip gesture
+        // (the user just typed `#tag` to add a tag). Mirror the tagmanage
+        // add-vs-remove detection: if the tag was already on the block, the
+        // `toggleBlockTag` below is effectively a REMOVE — do not fill defaults
+        // in that case (idempotency is the parent's job; this is just the
+        // ADD-only signal).
+        const wasPresent = getBlockTags(cleaned).some(
+          (t) => t.toLowerCase() === tagName.toLowerCase(),
+        );
+        const fillNames = autoFillNames?.(tagName) ?? [];
+        const newText = toggleBlockTag(cleaned, tagName, fillNames);
+        view?.dispatch({
+          changes: { from: 0, to: doc.length, insert: newText },
+          selection: { anchor: Math.min(startPos, newText.length) },
+        });
+        onChange(newText);
+        if (!wasPresent) onTagAdded?.(tagName);
+      };
+      clearAutocompleteState();
+      if (item.id.startsWith(CREATE_TAG_ID_PREFIX) && openNewEntityGuard(
+        insertedName,
+        tagLabels(),
+        autocompletePosition,
+        commitTagChip,
+        () => commitTagChip(insertedName),
+      )) {
+        return;
+      }
+      commitTagChip(insertedName);
       return;
     }
 
-    let insert: string;
-    if (autocompleteType === "tag") {
-      insert = before + "#" + insertedName + after;
-    } else {
-      insert = before + "[[" + insertedName + "]]" + after;
-    }
+    const commitInline = (name: string) => {
+      const insert = autocompleteType === "tag"
+        ? before + "#" + name + after
+        : before + "[[" + name + "]]" + after;
+      view?.dispatch({
+        changes: { from: 0, to: doc.length, insert },
+        selection: { anchor: insert.length - after.length },
+      });
+      onChange(insert);
+    };
 
-    view.dispatch({
-      changes: { from: 0, to: doc.length, insert },
-      selection: { anchor: insert.length - after.length },
-    });
-    onChange(insert);
-    showAutocomplete = false;
-    autocompleteFilter = "";
-    autocompleteStartPos = -1;
+    clearAutocompleteState();
+    const isNewTag = autocompleteType === "tag" && item.id.startsWith(CREATE_TAG_ID_PREFIX);
+    const isNewLink = autocompleteType === "link" && item.id.startsWith(CREATE_LINK_ID_PREFIX);
+    if (isNewTag && openNewEntityGuard(
+      insertedName,
+      tagLabels(),
+      autocompletePosition,
+      commitInline,
+      () => commitInline(insertedName),
+    )) {
+      return;
+    }
+    if (isNewLink && openNewEntityGuard(
+      insertedName,
+      pageLabels(),
+      autocompletePosition,
+      commitInline,
+      () => commitInline(insertedName),
+    )) {
+      return;
+    }
+    commitInline(insertedName);
   }
 
   function statusIcon(s: string): string {
@@ -913,14 +1006,12 @@
    * `upsertBlockProperty` (instead of raw append) is what keeps the doc
    * and the bottom drawer in lock-step — both surfaces edit the same line.
    */
-  function writePropertyContinuation(key: string, value: string) {
-    if (!view || slashStartPos < 0) return;
-    const doc = view.state.doc.toString();
-    const cursorPos = view.state.selection.main.head;
+  function writePropertyContinuationAt(key: string, value: string, doc: string, cursorPos: number, slashPos: number) {
+    if (!view || slashPos < 0) return;
     // Drop the `/p…` chars and any horizontal whitespace immediately
     // preceding the slash so the trigger doesn't leave a trailing space
     // on the block-content line.
-    let triggerStart = slashStartPos;
+    let triggerStart = slashPos;
     while (triggerStart > 0 && (doc[triggerStart - 1] === " " || doc[triggerStart - 1] === "\t")) {
       triggerStart--;
     }
@@ -937,6 +1028,17 @@
     showSlashMenu = false;
     slashStartPos = -1;
     view.focus();
+  }
+
+  function writePropertyContinuation(key: string, value: string) {
+    if (!view || slashStartPos < 0) return;
+    writePropertyContinuationAt(
+      key,
+      value,
+      view.state.doc.toString(),
+      view.state.selection.main.head,
+      slashStartPos,
+    );
   }
   /**
    * Phase 10.4 — build the `/p` Property chord submenu from the block's
@@ -957,6 +1059,18 @@
    * property page's `value_chord_keys:` map first (with conflict detection
    * via `assignChords`), then fall back to first-letter.
    */
+  function commitNewSelectValue(def: PropertyDefinition, value: string) {
+    if (!view || slashStartPos < 0) return;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const doc = view.state.doc.toString();
+    const cursorPos = view.state.selection.main.head;
+    const slashPos = slashStartPos;
+    const commit = (v: string) => writePropertyContinuationAt(def.name, v, doc, cursorPos, slashPos);
+    if (openNewEntityGuard(trimmed, def.choices, slashPosition, commit, () => commit(trimmed))) return;
+    commit(trimmed);
+  }
+
   function buildPropertyNode(def: PropertyDefinition, parentKey: string): ChordNode {
     const node: ChordNode = { key: parentKey, label: def.name, hint: def.value_type };
     if (def.value_type === "select" || def.value_type === "multi-select") {
@@ -978,6 +1092,18 @@
         if (a.conflictWith) child.conflictWith = a.conflictWith;
         return child;
       });
+      if (prefs.newEntityGuard) {
+        node.children.push({
+          key: "+",
+          label: "New value",
+          hint: `${def.name}:: …`,
+          input: {
+            placeholder: `${def.name} value`,
+            initial: "",
+            onSubmit: (v) => commitNewSelectValue(def, v),
+          },
+        });
+      }
     } else if (def.value_type === "checkbox") {
       node.children = [
         { key: "t", label: "true",  action: () => writePropertyContinuation(def.name, "true") },
@@ -2151,6 +2277,16 @@
       onselect={(item) => applyAutocomplete(item, "chip")}
       onselectInline={(item) => applyAutocomplete(item, "inline")}
       onclose={() => { showAutocomplete = false; autocompleteFilter = ""; autocompleteStartPos = -1; }}
+    />
+  {/if}
+
+  {#if pendingNewEntity}
+    <NewEntityGuard
+      input={pendingNewEntity.input}
+      match={pendingNewEntity.match}
+      position={pendingNewEntity.position}
+      onuseexisting={pendingNewEntity.useExisting}
+      oncreatenew={pendingNewEntity.createNew}
     />
   {/if}
 

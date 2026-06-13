@@ -41,6 +41,16 @@ class Preferences {
     this.bareDateField = v;
     save("bareDateField", v);
   }
+
+  // Opt-in (default off): the near-match confirmation changes the
+  // type-a-tag/link flow, so existing muscle memory stays untouched until
+  // the user enables it in Settings. (Opus, wave5 merge — was default-on.)
+  newEntityGuard = $state(load<boolean>("newEntityGuard", false));
+
+  setNewEntityGuard(v: boolean): void {
+    this.newEntityGuard = v;
+    save("newEntityGuard", v);
+  }
 }
 
 export const prefs = new Preferences();

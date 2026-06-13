@@ -94,6 +94,17 @@
     </button>
     <span class="text-[13px]">Vim mode</span>
   </label>
+  <label class="flex items-center gap-3 cursor-pointer mt-3">
+    <button
+      class="w-9 h-5 rounded-full transition-colors {prefs.newEntityGuard ? 'bg-primary' : 'bg-muted'}"
+      onclick={() => prefs.setNewEntityGuard(!prefs.newEntityGuard)}
+      aria-label="Toggle new entity confirmation"
+    >
+      <span class="block w-3.5 h-3.5 rounded-full bg-background transition-transform {prefs.newEntityGuard ? 'translate-x-4.5' : 'translate-x-0.5'}"></span>
+    </button>
+    <span class="text-[13px]">Confirm near-match tags, links, and select values</span>
+  </label>
+  <p class="text-[11px] text-muted-foreground/40 mt-1.5">When on, typo-like new entities ask before creating. Esc/click-away creates the typed value.</p>
 </section>
 
 <section>

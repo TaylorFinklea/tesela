@@ -21,6 +21,34 @@ export type FuzzyMatch = {
   positions: number[];
 };
 
+export type StrongFuzzyMatch = FuzzyMatch & {
+  label: string;
+};
+
+const STRONG_NEAR_MATCH_SCORE = 40;
+const STRONG_NEAR_MATCH_MIN_INPUT = 3;
+
+export function findStrongFuzzyMatch(
+  input: string,
+  labels: Iterable<string>,
+): StrongFuzzyMatch | null {
+  const filter = input.trim();
+  if (filter.length < STRONG_NEAR_MATCH_MIN_INPUT) return null;
+
+  const exact = filter.toLowerCase();
+  let best: StrongFuzzyMatch | null = null;
+  for (const label of labels) {
+    const candidate = label.trim();
+    if (!candidate || candidate.toLowerCase() === exact) return null;
+    const match = scoreFuzzy(candidate, filter);
+    if (match.score < STRONG_NEAR_MATCH_SCORE) continue;
+    if (!best || match.score > best.score || (match.score === best.score && candidate.length < best.label.length)) {
+      best = { label: candidate, score: match.score, positions: match.positions };
+    }
+  }
+  return best;
+}
+
 export function scoreFuzzy(label: string, filter: string): FuzzyMatch {
   if (!filter) return { score: 0, positions: [] };
   const llabel = label.toLowerCase();
