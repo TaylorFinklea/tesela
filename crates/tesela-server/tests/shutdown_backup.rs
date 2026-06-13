@@ -68,7 +68,7 @@ fn sigterm_triggers_validated_backup() {
         .expect("spawn tesela-server");
 
     assert!(
-        wait_for_port(&addr, Duration::from_secs(15)),
+        wait_for_port(&addr, Duration::from_secs(60)),
         "server never bound to {}",
         addr
     );

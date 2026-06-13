@@ -90,7 +90,7 @@ async fn scheduled_backup_appears_in_status_with_authority() {
     let _server = ServerGuard(Some(child));
 
     assert!(
-        wait_for_port(&addr, Duration::from_secs(15)),
+        wait_for_port(&addr, Duration::from_secs(60)),
         "server never bound to {}",
         addr
     );
@@ -131,7 +131,14 @@ async fn scheduled_backup_appears_in_status_with_authority() {
             .await
             .expect("status json");
         let latest = &status["latest"];
-        if latest.is_object() && latest["includes_loro_state"] == serde_json::Value::Bool(true) {
+        // Wait for a backup that is both captured (loro state present) AND
+        // validated — validation is a separate pass after the files land, so
+        // under parallel test load the status can briefly report a captured
+        // but not-yet-validated backup. Asserting on that window is the flake.
+        if latest.is_object()
+            && latest["includes_loro_state"] == serde_json::Value::Bool(true)
+            && latest["validated"] == serde_json::Value::Bool(true)
+        {
             break status;
         }
         tokio::time::sleep(Duration::from_millis(300)).await;

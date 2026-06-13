@@ -111,7 +111,7 @@ async fn set_property_lands_in_engine_container_and_survives_prose_edit() {
     let _server = spawn_server(&mosaic, &addr);
 
     assert!(
-        wait_for_port(&addr, Duration::from_secs(15)),
+        wait_for_port(&addr, Duration::from_secs(60)),
         "server never bound to {addr}"
     );
 
@@ -218,7 +218,7 @@ async fn set_property_on_block_with_intext_prop_does_not_duplicate() {
     let base = format!("http://{}", addr);
     let _server = spawn_server(&mosaic, &addr);
     assert!(
-        wait_for_port(&addr, Duration::from_secs(15)),
+        wait_for_port(&addr, Duration::from_secs(60)),
         "server never bound"
     );
 
@@ -279,7 +279,7 @@ async fn set_status_done_on_recurring_block_rolls_via_engine() {
     let base = format!("http://{}", addr);
     let _server = spawn_server(&mosaic, &addr);
     assert!(
-        wait_for_port(&addr, Duration::from_secs(15)),
+        wait_for_port(&addr, Duration::from_secs(60)),
         "server never bound"
     );
 

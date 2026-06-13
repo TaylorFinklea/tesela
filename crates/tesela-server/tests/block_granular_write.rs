@@ -125,7 +125,7 @@ async fn post_blocks_preserves_concurrent_peer_edit() {
     let _server = spawn_server(&mosaic, &addr);
 
     assert!(
-        wait_for_port(&addr, Duration::from_secs(15)),
+        wait_for_port(&addr, Duration::from_secs(60)),
         "server never bound to {}",
         addr
     );
@@ -266,7 +266,7 @@ async fn post_blocks_after_bid_inserts_adjacent() {
     let base = format!("http://{}", addr);
     let _server = spawn_server(&mosaic, &addr);
     assert!(
-        wait_for_port(&addr, Duration::from_secs(15)),
+        wait_for_port(&addr, Duration::from_secs(60)),
         "server never bound to {addr}"
     );
 

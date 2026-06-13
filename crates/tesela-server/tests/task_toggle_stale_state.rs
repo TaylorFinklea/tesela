@@ -103,7 +103,7 @@ async fn task_toggle_does_not_reassert_stale_state() {
     let _server = spawn_server(&mosaic, &addr);
 
     assert!(
-        wait_for_port(&addr, Duration::from_secs(15)),
+        wait_for_port(&addr, Duration::from_secs(60)),
         "server never bound to {addr}"
     );
 

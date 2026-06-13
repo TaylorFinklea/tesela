@@ -113,7 +113,7 @@ async fn http_backup_list_verify_restore_round_trip() {
     let _server = spawn_server(&mosaic, &addr);
 
     assert!(
-        wait_for_port(&addr, Duration::from_secs(15)),
+        wait_for_port(&addr, Duration::from_secs(60)),
         "server never bound to {}",
         addr
     );

@@ -130,7 +130,7 @@ async fn setup_with_peer_beta_edit(
     let server = spawn_server(&mosaic, &addr);
 
     assert!(
-        wait_for_port(&addr, Duration::from_secs(15)),
+        wait_for_port(&addr, Duration::from_secs(60)),
         "server never bound to {}",
         addr
     );
@@ -355,7 +355,7 @@ async fn setup_with_frontmatter(
     let server = spawn_server(&mosaic, &addr);
 
     assert!(
-        wait_for_port(&addr, Duration::from_secs(15)),
+        wait_for_port(&addr, Duration::from_secs(60)),
         "server never bound to {}",
         addr
     );

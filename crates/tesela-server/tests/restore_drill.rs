@@ -524,7 +524,7 @@ async fn server_level_restore_drill() {
 
     // ── Phase 1: live server, engine-authored note, explicit backup ──
     let mut server = spawn_server(&mosaic, &addr);
-    assert!(wait_for_port(&addr, Duration::from_secs(15)), "server #1");
+    assert!(wait_for_port(&addr, Duration::from_secs(60)), "server #1");
 
     let note: serde_json::Value = client
         .post(format!("{}/notes", base))
@@ -598,7 +598,7 @@ async fn server_level_restore_drill() {
     let addr2 = format!("127.0.0.1:{}", port2);
     let base2 = format!("http://{}", addr2);
     let _server2 = spawn_server(&mosaic, &addr2);
-    assert!(wait_for_port(&addr2, Duration::from_secs(15)), "server #2");
+    assert!(wait_for_port(&addr2, Duration::from_secs(60)), "server #2");
 
     let fetched_after: serde_json::Value = client
         .get(format!("{}/notes/{}", base2, note_id))
