@@ -1252,6 +1252,20 @@ fn maybe_respawn_detached(pinned_mosaic: Option<&str>) -> anyhow::Result<bool> {
     // sh -c so we can `sleep` before re-exec. The intermediate sh
     // becomes the parent of the new server, then exits via exec.
     // `nohup` + redirected stdio detaches us from the terminal too.
+    std::process::Command::new("nohup")
+        .args(["sh", "-c"])
+        .arg(respawn_detached_shell_command(&exe_str, pinned_mosaic))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    Ok(true)
+}
+
+#[cfg(unix)]
+fn respawn_detached_shell_command(exe_str: &str, pinned_mosaic: Option<&str>) -> String {
+    // Clear the desktop embed parent-death watchdog before exec: after nohup/sh
+    // detaches, the respawned server is no longer parented by Tauri.
     //
     // The env-var assignment in front of `exec` is the load-bearing
     // bit for the Switch flow — without it the respawned server's
@@ -1261,18 +1275,11 @@ fn maybe_respawn_detached(pinned_mosaic: Option<&str>) -> anyhow::Result<bool> {
         Some(m) => format!("TESELA_DEFAULT_MOSAIC={} ", shell_escape(m)),
         None => String::new(),
     };
-    std::process::Command::new("nohup")
-        .args(["sh", "-c"])
-        .arg(format!(
-            "sleep 2 && {}exec {}",
-            prefix,
-            shell_escape(&exe_str)
-        ))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
-    Ok(true)
+    format!(
+        "sleep 2 && unset TESELA_EXIT_WITH_PARENT TESELA_PARENT_PID; {}exec {}",
+        prefix,
+        shell_escape(exe_str)
+    )
 }
 
 #[cfg(unix)]
@@ -1301,4 +1308,19 @@ fn internal_io(e: std::io::Error) -> (StatusCode, String) {
 }
 fn server_error<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, format!("{}", e))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn respawn_detached_command_clears_parent_watchdog_env_before_exec() {
+        let command = respawn_detached_shell_command("/tmp/tesela-server", Some("/tmp/my mosaic"));
+
+        assert!(command.starts_with("sleep 2 && unset TESELA_EXIT_WITH_PARENT TESELA_PARENT_PID; "));
+        assert!(
+            command.contains("TESELA_DEFAULT_MOSAIC='/tmp/my mosaic' exec '/tmp/tesela-server'")
+        );
+    }
 }
