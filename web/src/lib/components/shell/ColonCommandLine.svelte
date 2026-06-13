@@ -11,12 +11,19 @@
   import { onMount, tick } from "svelte";
   import {
     closeColonMode,
+    getColonPriorPaneId,
     isColonModeOpen,
   } from "$lib/stores/colon-mode.svelte";
-  import { commandRegistry, type Command } from "$lib/command-registry.svelte";
+  import {
+    commandRegistry,
+    type Command,
+    type CommandContext,
+  } from "$lib/command-registry.svelte";
   import { findCommandByVerb, matchesV4Command } from "$lib/v4/commands";
   import { openPeek } from "$lib/stores/peek.svelte";
   import { openFullscreenGraph } from "$lib/stores/fullscreen-overlay.svelte";
+  import { focusLeaf } from "$lib/buffer/state.svelte";
+  import type { LeafId } from "$lib/buffer/types";
   // This strip styles with the v4 design tokens (`--v4-*`), which tokens.css
   // scopes to `.v4-root`. On the Graphite (/g) route there is no `.v4-root`
   // ancestor, so `--v4-bg` (and friends) resolved to nothing — the `:` line
@@ -26,6 +33,11 @@
   // FullscreenOverlay.svelte.
   import "$lib/v4/tokens.css";
 
+  interface Props {
+    ctx: CommandContext;
+  }
+  let { ctx }: Props = $props();
+
   const open = $derived(isColonModeOpen());
 
   let value = $state("");
@@ -33,8 +45,8 @@
   let inputEl = $state<HTMLInputElement | undefined>();
   let highlightedIdx = $state(0);
 
-  // The full registry of verbs, computed once per open.
-  const allCommands = $derived.by(() => (open ? commandRegistry.all() : []));
+  // The context-filtered registry of verbs, computed once per open.
+  const allCommands = $derived.by(() => (open ? commandRegistry.available(ctx) : []));
 
   // Built-in non-registry verbs (peek, graph) surface as autocomplete rows too.
   const BUILTINS = [
@@ -97,6 +109,11 @@
       highlightedIdx = n - 1;
     }
   });
+
+  function restoreFocus() {
+    const prior = getColonPriorPaneId();
+    if (prior) focusLeaf(prior as LeafId);
+  }
 
   async function runVerb(verb: string, arg?: string) {
     if (verb === "peek") {
@@ -166,6 +183,7 @@
       e.preventDefault();
       e.stopPropagation();
       closeColonMode();
+      requestAnimationFrame(() => restoreFocus());
       return;
     }
     if (e.key === "Enter") {

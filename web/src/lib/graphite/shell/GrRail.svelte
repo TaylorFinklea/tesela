@@ -20,6 +20,7 @@
   import GrRow from '$lib/graphite/GrRow.svelte';
   import GrIcon from '$lib/graphite/GrIcon.svelte';
   import { openColonMode } from '$lib/stores/colon-mode.svelte';
+  import { getFocusedLeafId } from '$lib/buffer/state.svelte';
   import { getPinned, getRecent } from '$lib/state/shared.svelte';
 
   const favorites = $derived(getPinned());
@@ -36,7 +37,7 @@
     <GrWidget title="Quick capture" icon="bolt">
       <!-- svelte-ignore a11y_click_events_have_key_events -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="gr-capture" onclick={() => openColonMode()}>
+      <div class="gr-capture" onclick={() => openColonMode({ priorPaneId: getFocusedLeafId() as unknown as string | undefined })}>
         <span class="pl">Capture a thought…</span>
         <span class="pk">C</span>
       </div>

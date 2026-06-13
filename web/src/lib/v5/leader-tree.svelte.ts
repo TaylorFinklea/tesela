@@ -49,25 +49,9 @@ const CHORD_GROUP_LABELS: Record<string, string> = {
   b: "buffer…",
 };
 
-function buildChordTree(
-  commands: Command[],
-  depth: number,
-  ctx?: CommandContext,
-): ChordNode[] {
-  const available = ctx
-    ? commands.filter((cmd) => {
-        if (!cmd.when) return true;
-        try {
-          return cmd.when(ctx);
-        } catch (e) {
-          console.warn(`leader-tree: when() threw for "${cmd.id}"`, e);
-          return false;
-        }
-      })
-    : commands;
-
+function buildChordTree(commands: Command[], depth: number): ChordNode[] {
   const groups = new Map<string, Command[]>();
-  for (const cmd of available) {
+  for (const cmd of commands) {
     if (!cmd.chord || cmd.chord.length <= depth) continue;
     const key = cmd.chord[depth];
     if (!groups.has(key)) groups.set(key, []);
@@ -93,7 +77,7 @@ function buildChordTree(
         label: leaf.label,
         action: () => void leaf.run(),
       });
-      const children = buildChordTree(branches, depth + 1, ctx);
+      const children = buildChordTree(branches, depth + 1);
       if (children.length > 0) {
         nodes.push({
           key,
@@ -102,7 +86,7 @@ function buildChordTree(
         });
       }
     } else {
-      const children = buildChordTree(branches, depth + 1, ctx);
+      const children = buildChordTree(branches, depth + 1);
       if (children.length > 0) {
         nodes.push({
           key,
@@ -120,6 +104,8 @@ function buildChordTree(
 
 /** The chord tree the menu walks. Derived from the unified command registry. */
 export function getLeaderTree(ctx?: CommandContext): ChordNode[] {
-  const commands = commandRegistry.all().filter((cmd) => cmd.chord && cmd.chord.length > 0);
-  return buildChordTree(commands, 0, ctx);
+  const commands = (ctx ? commandRegistry.available(ctx) : commandRegistry.all()).filter(
+    (cmd) => cmd.chord && cmd.chord.length > 0,
+  );
+  return buildChordTree(commands, 0);
 }

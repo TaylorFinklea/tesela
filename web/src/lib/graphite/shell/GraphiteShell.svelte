@@ -230,7 +230,7 @@
         if (!inPlainEntry && !inInsertMode) {
           e.preventDefault();
           e.stopPropagation();
-          openColonMode();
+          openColonMode({ priorPaneId: getFocusedLeafId() as unknown as string | undefined });
           return;
         }
       }
@@ -357,7 +357,7 @@
 
   <GrCommandPalette ctx={commandCtx} />
   <GrLeaderOverlay ctx={commandCtx} />
-  <ColonCommandLine />
+  <ColonCommandLine ctx={commandCtx} />
   <!-- Settings / graph fullscreen overlays (the gear, ⌘G, leader `,`, and the
        desktop Settings menu all drive these via the overlay store). Was only
        mounted on /v4 — so on /g they set the store but never rendered. -->

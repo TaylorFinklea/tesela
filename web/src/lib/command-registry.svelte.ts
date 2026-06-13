@@ -10,6 +10,8 @@
  * V4 command set so existing consumers keep working.
  */
 
+import { BUILTIN_SLASH_CHORDS } from "./chord-keys.ts";
+
 export type CommandContext = {
   route?: string | null;
   bufferKind?: 'page' | 'derived' | 'ambient' | null;
@@ -104,6 +106,18 @@ export const BROWSER_RESERVED_KEYS = new Set([
 export function buildKeymapIndex(registry: CommandRegistry = commandRegistry) {
   const shortcuts = new Map<string, RegisteredCommand[]>();
   const chords = new Map<string, RegisteredCommand[]>();
+
+  for (const [key, label] of BUILTIN_SLASH_CHORDS) {
+    chords.set(`/ ${key}`, [{
+      id: `slash:${key}`,
+      label,
+      glyph: "/",
+      category: "ambient",
+      keywords: ["slash", label.toLowerCase()],
+      registeredAt: 0,
+      run: () => {},
+    }]);
+  }
 
   for (const cmd of registry.all()) {
     if (cmd.shortcut) {

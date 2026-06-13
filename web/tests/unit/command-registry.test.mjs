@@ -5,6 +5,7 @@ import test from "node:test";
 // The singleton registry is populated as a side effect of importing v4/commands,
 // so tests that need a clean registry call _reset().
 const mod = await import("../../src/lib/command-registry.svelte.ts");
+const { BUILTIN_SLASH_CHORDS } = await import("../../src/lib/chord-keys.ts");
 
 const {
   commandRegistry,
@@ -60,6 +61,18 @@ test("buildKeymapIndex groups shortcuts and chords", () => {
   assert.equal(idx.shortcuts.get("⌘A")?.length, 1);
   assert.equal(idx.chords.get("g a")?.length, 1);
   assert.equal(idx.chords.get("g b")?.length, 1);
+});
+
+test("buildKeymapIndex includes builtin slash chords", () => {
+  commandRegistry._reset();
+  const idx = buildKeymapIndex();
+
+  for (const [key, label] of BUILTIN_SLASH_CHORDS) {
+    const commands = idx.chords.get(`/ ${key}`);
+    assert.ok(commands, `expected slash chord / ${key}`);
+    assert.equal(commands[0].id, `slash:${key}`);
+    assert.equal(commands[0].label, label);
+  }
 });
 
 test("findConflicts detects duplicate shortcuts and chords", () => {
