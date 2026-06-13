@@ -5,11 +5,12 @@
 - Opus = orchestrator/Lead. Fleet = gpt-5.5 + minimax via pi/ralph; Claude subagents via Workflow. Evidence: `model-scorecard.md` + `model-bench.jsonl`.
 
 ## Plan
-- [x] Head-to-head benchmark (5 models, blind panel) → **gpt-5.5 WON** → merged `4766111` (cmd-registry B1–B4). Evidence recorded.
-- [ ] **Product session (IN PROGRESS)** — cycle focus = all 4 fleet areas in parallel (keyboard spine / app stability / editor-render / properties); Opus takes sync. Build thorough roadmap.
-- [ ] Grounding pass — drive real e2e/smoke (web re-confirm + iOS real-data on a sim I drive + desktop launch) → triaged cross-platform bug inventory.
-- [ ] Rebuild roadmap Now/Next/Later (Stream A+B shipped) + write tiered backlog (Lead→Opus; S/M→fleet).
-- [ ] Dispatch fleet loops + Opus starts sync spine (Milestone 3).
+- [x] Head-to-head benchmark → **gpt-5.5 WON** → merged `4766111` (cmd-registry B1–B4). Evidence recorded.
+- [x] Grounding triage (5-agent) → tiered backlog **`phases/2026-06-13-backlog.md`**. Properties UNBLOCKED (3 product calls already resolved 06-05); iOS reports fixed thru build 12; colon/heading "bugs" were CDP artifacts (→ H1/H2).
+- [x] Cycle focus: all 4 fleet areas in parallel; Opus = sync (HA-first, defer CF).
+- [ ] **Fleet Wave 1 dispatched** (DSK1→gpt-5.5, PROP1→minimax, B5→minimax; isolated worktrees, objective Verify) → on completion: review + merge + score each → `model-bench.jsonl` → next wave.
+- [ ] Opus Lead: **L1** sync (min key/pairing + cursor migration, HA-first) + **L2** slash-as-registry spec (north-star #1).
+- [ ] Taylor: **H1–H4** confirms (real browser + Roshar); product decisions as they arise.
 
 ## Blockers
 - (RESOLVED) Opus CAN self-dispatch the fleet: `pi` via Bash + Claude subagents via Workflow. Only `claude --dangerously-skip-permissions` self-grant is blocked (not needed).

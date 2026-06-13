@@ -31,6 +31,9 @@ Taylor's proposed order, refined together. Arc = **infra → platform → featur
 Active items. Trim as completed.
 
 ### Now
+
+> **▶▶ CURRENT (2026-06-13): see [`phases/2026-06-13-backlog.md`](phases/2026-06-13-backlog.md)** — the live tier-routed backlog. Stream A + Stream B below are **SHIPPED** (historical). Command-registry B1–B4 merged (`4766111`). Opus = Lead/XL + review; fleet (gpt-5.5/minimax) = S/M. Opus on sync (HA-first, defer CF).
+
 **▶▶ ACTIVE (2026-06-09 audit + product review): TWO PARALLEL STREAMS — spec [`phases/2026-06-09-audit-hardening-spec.md`](phases/2026-06-09-audit-hardening-spec.md).** Ultracode bug bash (91 confirmed findings, adversarially verified) + arch review (42 fact-checked recs); full report `~/.harness/reports/tesela/20260609-bugbash-arch-review/`. Product-review decisions in `decisions.md` 2026-06-09.
 - [ ] **Stream A — relay hardening + data integrity** (gates the held product test): relay seq black hole (the REAL #195 — confirmed root cause of the 06-09 live-sync gap), iOS `.relay` write gates (shipped TestFlight build is silently READ-ONLY — phone edits discarded), cursor-past-failure family, scoped cursors, auth_key endpoint, poison-envelope skip, mojibake (tag rename corrupts non-ASCII on the REAL mosaic), PUT-200-on-failure, note_tree body loss, Reminders auto-sync default-OFF + FULL testing program (CI green+gates, convergence harness, iOS unit target, FFI drift check) → HA add-on 0.2.1 + new TestFlight → product test. ⚠ HOLD the `202606091254` relay test until A14.
 - [ ] **Stream B — Graphite cutover** (parallel, web): 7 confirmed /g parity bugs → flip default to /g → parity checklist → delete v4/v5 (preserve behavior modules) + web-editor invariant fixes (inbox-triage whole-note PUTs, BlockOpsSaver move-drops-upsert, remote multi-run misapply, NORMAL-mode Enter/Backspace, JournalView hang).
