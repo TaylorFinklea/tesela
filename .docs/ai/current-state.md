@@ -7,7 +7,7 @@
 ## Plan
 - [x] A1/B1–B3 — command-registry foundation (done).
 - [x] A2 — MCP unwraps → `.expect()`. Verify: `cargo test -p tesela-mcp; cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
-- [ ] A3 — Logseq importer unwraps → `.expect()`. Verify: `cargo test -p tesela-cli --lib import_logseq; cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
+- [x] A3 — Logseq importer unwraps → `.expect()`. Verify: `cargo test -p tesela-core --lib import_logseq; cargo test -p tesela-cli; cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
 - [ ] A4 — Backup retention constants. Verify: `cargo test -p tesela-backup; cargo clippy --workspace -- -D warnings` (minimax-m3 ralph loop).
 
 Spec: `.docs/ai/phases/command-registry-spec.md`. Report: `.docs/ai/phases/2026-06-13-ralph-batch-report.md`.

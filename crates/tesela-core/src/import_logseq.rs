@@ -684,7 +684,12 @@ fn convert_content(content: &str) -> String {
                 "scheduled"
             };
             if let Some(caps) = LOGSEQ_DATE_RE.captures(trimmed) {
-                let date = caps.get(1).unwrap().as_str();
+                // LOGSEQ_DATE_RE is `<(\d{4}-\d{2}-\d{2})...>` — group 1 is the
+                // date and is always present when the regex matches.
+                let date = caps
+                    .get(1)
+                    .expect("LOGSEQ_DATE_RE always has group 1 when it matches")
+                    .as_str();
                 // Keep an HH:MM time when present (the agenda parses
                 // "YYYY-MM-DD HH:MM"); repeaters etc. are dropped.
                 result = match caps.get(2) {
@@ -802,7 +807,13 @@ fn strip_task_marker(line: &str) -> Option<(String, String)> {
 
 fn extract_priority(text: &str) -> (Option<String>, String) {
     if let Some(caps) = PRIORITY_RE.captures(text) {
-        let priority = match caps.get(1).unwrap().as_str() {
+        // PRIORITY_RE is `\[#([ABC])\]\s*` — group 1 is the priority
+        // letter and is always present when the regex matches.
+        let priority = match caps
+            .get(1)
+            .expect("PRIORITY_RE always has group 1 when it matches")
+            .as_str()
+        {
             "A" => "high",
             "B" => "medium",
             "C" => "low",

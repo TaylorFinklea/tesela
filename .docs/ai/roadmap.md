@@ -832,7 +832,7 @@ Orchestrator: Pi. Spec: `phases/command-registry-spec.md`. Run A1 and B1 in para
   - **complexity** — `S`
   - **ralph_model** — `opencode-go/minimax-m3`
 
-- [ ] **A3 — Replace regex-capture unwraps in Logseq importer with `.expect()`.**
+- [x] **A3 — Replace regex-capture unwraps in Logseq importer with `.expect()`.**
   - **Scope** — Annotate 2 regex-capture `.unwrap()` calls in `crates/tesela-cli/src/import_logseq.rs:202,244` with `.expect("...")` describing the invariant.
   - **Files** — `crates/tesela-cli/src/import_logseq.rs`.
   - **Acceptance** — No bare unwraps remain; Logseq importer tests still pass.

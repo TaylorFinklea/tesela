@@ -47,3 +47,13 @@
 - Commit: `5396822`
 - Verify result: `cargo test -p tesela-mcp` → 4 integration tests pass; `cargo clippy --workspace -- -D warnings` → green.
 - Notes: Three bare `serde_json::to_string_pretty(&results).unwrap()` call sites in `crates/tesela-mcp/src/tools.rs` (lines 150/236/260 — `search_notes`, `list_notes`, `get_backlinks`) replaced with `.expect("serializing a Vec<serde_json::Value> is infallible (no IO, all Values serialize)")`. The expect message documents the invariant: serializing a `Value` cannot produce IO errors and any `Value` always serializes successfully. Output JSON is byte-equivalent. No behavior change.
+
+### A3 — Replace bare regex `caps.get(1).unwrap()` calls in the Logseq importer with explicit `.expect()`
+
+- Status: done
+- Commit: `<pending>`
+- Verify result:
+  - `cargo test -p tesela-core --lib import_logseq` → 11/11 pass.
+  - `cargo test -p tesela-cli` → 13/13 pass (includes the `logseq_import_backup_restore_byte_exact_round_trip` integration test).
+  - `cargo clippy --workspace -- -D warnings` → green.
+- Notes: The original Verify listed `cargo test -p tesela-cli --lib import_logseq`, but `tesela-cli` is a binary-only crate (no lib target — the `import_logseq.rs` in the CLI is a thin re-export of `tesela-core::import_logseq`). The intent of the Verify (run the import_logseq tests) is satisfied by the two test commands above; the unit tests live in `tesela-core` and the end-to-end import test lives in `tesela-cli`. Two production-code bare unwraps in `crates/tesela-core/src/import_logseq.rs` (lines 687 and 805) replaced with `.expect()` calls that document the regex invariant: `LOGSEQ_DATE_RE` is `<(\d{4}-\d{2}-\d{2})...>` (group 1 = date) and `PRIORITY_RE` is `\[#([ABC])\]\s*` (group 1 = priority letter); both regexes always have a group 1 when they match, so the `caps.get(1)` unwrap is safe. Test-code unwraps inside the `#[cfg(test)] mod tests` block (TempDir creation, file IO, expected-matched regex `find()` lookups, etc.) were intentionally left alone — those are scaffolding assertions about test setup, not production invariants.
