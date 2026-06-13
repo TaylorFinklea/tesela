@@ -418,7 +418,7 @@
 
 <script lang="ts">
   import { onMount } from "svelte";
-  import { Annotation, Compartment, EditorState, Transaction } from "@codemirror/state";
+  import { Annotation, Compartment, EditorState, Transaction, type TransactionSpec } from "@codemirror/state";
 
   // Tags transactions dispatched by the prop→cm6 sync $effect (e.g. when
   // outliner-undo restores blocks[i].body). The updateListener skips these
@@ -471,6 +471,16 @@
   // listener also honors; this flag additionally covers the brief window the
   // dispatch is in flight.
   let localApplyInProgress = false;
+
+  function dispatchWithLocalApplyGuard(spec: TransactionSpec): void {
+    if (!view) return;
+    localApplyInProgress = true;
+    try {
+      view.dispatch(spec);
+    } finally {
+      localApplyInProgress = false;
+    }
+  }
 
   let {
     initialText,
@@ -852,7 +862,7 @@
       triggerStart--;
     }
     const cleaned = doc.slice(0, triggerStart) + doc.slice(cursorPos);
-    view.dispatch({
+    dispatchWithLocalApplyGuard({
       changes: { from: 0, to: doc.length, insert: cleaned },
       selection: { anchor: triggerStart },
     });
@@ -889,7 +899,7 @@
     // P1.13 structured-first: strip the `/p…` trigger from the text ONLY, then
     // emit the property as a CONTAINER op (parent → setBlockPropertyStructured).
     // No `key:: value` line is written — the server materializes it exactly once.
-    view.dispatch({
+    dispatchWithLocalApplyGuard({
       changes: { from: 0, to: doc.length, insert: cleaned },
       selection: { anchor: triggerStart },
     });
@@ -1123,7 +1133,7 @@
           const cleaned = before.trimEnd();
           const queryHead = cleaned + "\nquery:: tag:";
           insert = queryHead + "\nview:: table" + after;
-          view.dispatch({
+          dispatchWithLocalApplyGuard({
             changes: { from: 0, to: doc.length, insert },
             selection: { anchor: queryHead.length },
           });
@@ -1138,7 +1148,7 @@
           // note that becomes a saved widget in the rail. Navigates to the
           // new note for editing the DSL.
           insert = before + after;
-          view.dispatch({
+          dispatchWithLocalApplyGuard({
             changes: { from: 0, to: doc.length, insert },
             selection: { anchor: before.length },
           });
@@ -1197,7 +1207,7 @@
       }
     }
 
-    view.dispatch({
+    dispatchWithLocalApplyGuard({
       changes: { from: 0, to: doc.length, insert },
       selection: { anchor: insert.length - after.length },
     });
