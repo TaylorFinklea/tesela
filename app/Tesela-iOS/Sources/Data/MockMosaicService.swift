@@ -1812,9 +1812,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Spin up a background loop that retries `refresh(from:)` on
     /// exponentially growing delays. Subsequent calls cancel the
     /// previous loop. The loop only runs while `connection == .failed`
-    /// for an `.http` backend — mock mode never retries.
+    /// for a non-mock backend (`.http` and `.relay`) — mock mode
+    /// never retries.
     private func startReconnectLoop() {
-        guard case .http = currentBackend else { return }
+        guard currentBackend != .mock else { return }
         reconnectTask?.cancel()
         reconnectTask = Task { [weak self] in
             var delaySecs: UInt64 = 2
