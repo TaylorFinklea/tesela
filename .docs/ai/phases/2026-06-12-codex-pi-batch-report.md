@@ -144,3 +144,18 @@ Rules in force:
 - Commit: this commit (self-referential SHA not embedded; use `git log -1 --oneline`).
 - Verify: `cargo test -p tesela-server task_toggle_does_not_reassert_stale_state` PASS 1/1; `cargo test -p tesela-server` PASS 68/68; `rustfmt --edition 2021 --check crates/tesela-server/tests/task_toggle_stale_state.rs` PASS; `git diff --check` PASS.
 - Shakiness / follow-up: coverage-only item; the new regression passed against the existing protected route behavior, so no production code changed. Did not touch web code or run web block-ops tests. Test uses temp mosaic and local server only; no live mosaic.
+
+### Item 12: Harden malformed property-line parsing in web block rendering
+- Status: landed.
+- Owner: pi mono `gpt-5.5`, self-identified Senior (T2). `tier_floor: senior` met; `complexity: S` within Senior ceiling.
+- What landed: Tightened the web block parser so property extraction only accepts full property lines where non-empty values are separated from `::` by whitespace, while still allowing empty `key::` lines for autofill/editing. Malformed property-looking text such as `Deadline::cheduled::` now remains plain block text/raw text and is not emitted in `block.properties`; valid lines such as `status:: todo` still parse normally. Added regression coverage for malformed first-line and continuation-line cases.
+- Commit: this commit (self-referential SHA not embedded; use `git log -1 --oneline`).
+- Verify: `node --test web/tests/unit/block-parser.test.mjs` PASS 20/20; `pnpm --dir web check` PASS with 0 errors / 43 pre-existing warnings.
+- Shakiness / follow-up: scoped to the web parser and unit coverage; did not touch CodeMirror decoration regexes or run a browser/UI smoke. Exact malformed examples no longer enter `hiddenKeysFor` via `block.properties`, so the normal property-chip path does not hide them. No live mosaic used.
+
+### Final iteration: loop complete for Senior (T2) tier
+- Status: complete after Item 12.
+- Owner: pi mono `gpt-5.5`, self-identified Senior (T2).
+- What landed: the last safe fully-shaped Senior backlog item in `Opencode-ready reliability polish (2026-06-12)` is complete and marked `[x]` in the roadmap. Remaining unchecked items are Lead/XL ESCALATE, sync-hot-path/off-limits, or older backlog bullets without the required loop fields.
+- Verify: completion based on Item 12 verify above plus roadmap audit of unchecked items.
+- Shakiness / follow-up: leave Lead/XL ESCALATE items for Opus/Fable; do not route sync hot-path LoroText follow-ups through this Senior-safe loop.

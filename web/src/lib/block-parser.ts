@@ -5,10 +5,9 @@
 import type { ParsedBlock } from "$lib/types/ParsedBlock";
 
 const TAG_RE = /#([A-Za-z0-9_/-]+)/g;
-const PROPERTY_RE = /([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)/g;
 const WIKI_LINK_RE = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
 const BID_COMMENT_RE = /[ \t]*<!--\s*bid:[0-9a-fA-F-]{32,36}\s*-->[ \t]*/g;
-const PROPERTY_LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)::[ \t]?(.*)$/;
+const PROPERTY_LINE_RE = /^([A-Za-z_][A-Za-z0-9_]*)::(?:[ \t]+(.*)|[ \t]*)$/;
 
 type CodeFenceSpan = {
   from: number;
@@ -183,9 +182,10 @@ function extractTags(text: string): string[] {
 
 function extractProperties(text: string): Record<string, string> {
   const props: Record<string, string> = {};
-  PROPERTY_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = PROPERTY_RE.exec(text)) !== null) props[m[1]] = m[2];
+  for (const line of text.split("\n")) {
+    const m = PROPERTY_LINE_RE.exec(line);
+    if (m !== null) props[m[1]] = m[2] ?? "";
+  }
   return props;
 }
 

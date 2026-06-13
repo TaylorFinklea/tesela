@@ -141,3 +141,19 @@ test("parseBlocks does not extract tags or properties from fenced code", () => {
   assert.deepEqual(blocks[0].inline_tags, ["visible"]);
   assert.deepEqual(blocks[0].properties, { status: "todo" });
 });
+
+test("parseBlocks leaves malformed property-looking first-line text visible", () => {
+  const blocks = parseBlocks("note", "- Deadline::cheduled::");
+
+  assert.equal(blocks[0].text, "Deadline::cheduled::");
+  assert.equal(blocks[0].raw_text, "Deadline::cheduled::");
+  assert.deepEqual(blocks[0].properties, {});
+});
+
+test("parseBlocks does not convert malformed property-looking continuation lines into properties", () => {
+  const blocks = parseBlocks("note", "- Task #Task\n  Deadline::cheduled::\n  status:: todo");
+
+  assert.equal(blocks[0].raw_text, "Task #Task\nDeadline::cheduled::\nstatus:: todo");
+  assert.deepEqual(blocks[0].tags, ["Task"]);
+  assert.deepEqual(blocks[0].properties, { status: "todo" });
+});

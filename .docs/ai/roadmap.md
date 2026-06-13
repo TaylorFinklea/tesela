@@ -624,7 +624,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
   - **tier_floor** - `junior`
   - **complexity** - `S`
 
-- [ ] **Harden malformed property-line parsing in web block rendering.**
+- [x] **Harden malformed property-line parsing in web block rendering.**
   - **Scope** - Prevent corrupted property-looking text such as `Deadline::cheduled::` from being treated as a valid property chip or hidden metadata.
   - **Files** - `web/src/lib/block-parser.ts`; `web/tests/unit/block-parser.test.mjs`; inspect `web/src/lib/components/BlockOutliner.svelte` only to confirm display behavior.
   - **Acceptance** - Valid property lines still parse/render normally; malformed property-looking text remains visible/editable as text and is not converted into a chip or silently dropped.
