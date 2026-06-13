@@ -15,7 +15,7 @@
 ### A1 — Fix clippy errors
 
 - Status: done
-- Commit: `507286c68ed4b26239ba23bf6400fb64db94c9fb`
+- Commit: `9c1e2d8`
 - Verify result: `cargo clippy --workspace -- -D warnings` → green; `cargo test --workspace` → all passed (837 tests); `cargo fmt --all` applied.
 - Notes: Spec listed two warnings, but the Verify command exposed ~14 additional clippy errors across `tesela-sync`, `tesela-relay`, `tesela-sync-ffi`, `tesela-server`, and `tesela-loro-spike`. All were fixed mechanically (no behavior change). Key non-obvious change: renamed `OpTranslator::from_version` → `source_version` in `tesela-sync/src/migrate/mod.rs` to satisfy `wrong_self_convention`; all call sites + test impls updated.
 
