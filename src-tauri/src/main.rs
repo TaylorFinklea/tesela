@@ -24,7 +24,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use tauri::menu::{Menu, MenuItem, Submenu};
-use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder};
+use tauri::tray::TrayIconBuilder;
+use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 /// Holds the embedded server child so the app can reap it on exit.
 struct ServerChild(Mutex<Option<Child>>);
@@ -322,6 +323,12 @@ fn run_app(url: String, child: Option<Child>) {
             }
             _ => {}
         })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(move |app| {
             // Default app menu + Settings (⌘,) and a View ▸ Reload (Cmd+R) item.
             // The menu is owned by the (always-alive) app process, so the
@@ -346,6 +353,30 @@ fn run_app(url: String, child: Option<Child>) {
             // (the embedded server serves API + UI on this one origin).
             .initialization_script("window.__TESELA_API_BASE__ = '';")
             .build()?;
+
+            let show = MenuItem::with_id(app, "tray-show", "Show Tesela", true, None::<&str>)?;
+            let hide = MenuItem::with_id(app, "tray-hide", "Hide", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show, &hide, &quit])?;
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().cloned().expect("default window icon"))
+                .menu(&tray_menu)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "tray-show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "tray-hide" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.hide();
+                        }
+                    }
+                    "tray-quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)?;
             Ok(())
         })
         .build(tauri::generate_context!())
