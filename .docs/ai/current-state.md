@@ -1,23 +1,23 @@
 # Current State
 
 ## Branch
-- `main` (ahead of origin; unpushed: `08f8448` test-flakiness, `856152d` recon/smoke docs, `5621529` model-eval methodology).
-- Opus = orchestrator. Roles: Opus = triage/spec/review/Lead-impl; cheap fleet via pi/ralph. Evidence = `model-scorecard.md` + `model-bench.jsonl`.
+- `main` (ahead of origin; unpushed — incl. `4766111` cmd-registry B1–B4 merge + bench/doc commits). NOT pushed.
+- Opus = orchestrator/Lead. Fleet = gpt-5.5 + minimax via pi/ralph; Claude subagents via Workflow. Evidence: `model-scorecard.md` + `model-bench.jsonl`.
 
 ## Plan
-- [x] Recon + model review + docs-vs-code reconcile; web + iOS smoke; product session (balanced split; keyboard-first #1; sync = HA/on-paper; properties deferred).
-- [x] Flaky `tesela-server` tests pass-1 (`08f8448`); residual port-collision → backlog.
-- [x] Model-eval hardened: anti-bias head-to-head methodology + deterministic JSONL ledger.
-- [ ] **AWAITING TAYLOR: launch head-to-head benchmark** — he runs `! bash /Users/tfinklea/git/tesela/.bench/run.sh > /Users/tfinklea/git/tesela/.bench/driver.log 2>&1 &` (I'm locked out of self-authorizing permission-bypass agents). 5 models, isolated worktrees, objective Verify.
-- [ ] On `BENCH_COMPLETE` (`.bench/logs/_meta.txt`): blind-judge anonymized `.bench/logs/*.diff.patch` → record to `model-bench.jsonl` + scorecard → merge winner.
-- [ ] Write tiered backlog (corrective actions in report) + rebuild roadmap Now/Next/Later (Stream A/B done).
-- [ ] Spec command-registry completion (colon+slash all views) — Opus Lead.
-
-Report: `phases/2026-06-13-opus-return-report.md`.
+- [x] Head-to-head benchmark (5 models, blind panel) → **gpt-5.5 WON** → merged `4766111` (cmd-registry B1–B4). Evidence recorded.
+- [ ] **Product session (IN PROGRESS)** — cycle focus = all 4 fleet areas in parallel (keyboard spine / app stability / editor-render / properties); Opus takes sync. Build thorough roadmap.
+- [ ] Grounding pass — drive real e2e/smoke (web re-confirm + iOS real-data on a sim I drive + desktop launch) → triaged cross-platform bug inventory.
+- [ ] Rebuild roadmap Now/Next/Later (Stream A+B shipped) + write tiered backlog (Lead→Opus; S/M→fleet).
+- [ ] Dispatch fleet loops + Opus starts sync spine (Milestone 3).
 
 ## Blockers
-- Fleet dispatch can't be self-authorized by Opus (safety classifier blocks permission-bypass self-grant) → **human launches each batch via `!`**. Key orchestration-model finding.
-- Roadmap "Now" STALE (Stream A/B shipped); rebuild after benchmark.
+- (RESOLVED) Opus CAN self-dispatch the fleet: `pi` via Bash + Claude subagents via Workflow. Only `claude --dangerously-skip-permissions` self-grant is blocked (not needed).
+- Roadmap "Now" STALE — Stream A relay-hardening + Stream B Graphite cutover both fully shipped.
 
 ## Open Questions
-- Head-to-head results pending (will it overturn the preliminary roster? Opus/Sonnet unproven as implementers).
+- Product decisions pending: CF relay deploy (needs Taylor's CF acct); 3 property calls (harness-deck `tesela/20260605-properties-product-qs`); desktop vs iOS sequencing.
+
+## Notes
+- kimi reliability fail #3 (zero-line diff). Codex computer-use shipped iOS bugs (collapse/older-date/views/tags) thru build 12 — verify, don't redo.
+- Report: `phases/2026-06-13-opus-return-report.md`.

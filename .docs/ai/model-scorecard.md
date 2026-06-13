@@ -36,25 +36,37 @@ to commit it (an orchestration risk), or breach scope. Both inform ownership.
 
 **Deterministic store:** `model-bench.jsonl` (append-only, git-tracked, SQLite-loadable: `sqlite3 :memory: -cmd '.mode json' "..."` or import) is the structured source of truth; this MD is the narrative. Conversational memory is NOT a store.
 
-> ⚠️ The Live Roster below is grade-1 (preliminary, Sonnet-judged). Head-to-head runs will confirm or overturn it — especially Sonnet & Opus, which have NO implementer data yet this cycle.
+> ✅ **First head-to-head landed (2026-06-13, command-registry B1–B4, 5 models, blind panel).** It largely CONFIRMED the grade-1 roster and added the missing implementer data for Sonnet & Opus. Headlines: **gpt-5.5 WON** (most consistent, merged `4766111`); **minimax held its own** vs the Claude models; **Opus is high-ceiling-but-divisive** (shipped a real Esc-focus bug a *blind cheap-model judge caught* → not a safe default for bounded T3); **kimi produced a zero-line diff** (reliability fail #3). Rows: `model-bench.jsonl` (`source:head-to-head`).
 
-## Live Roster (PRELIMINARY — grade-1 reviewer-judgment; pending head-to-head validation)
+## Live Roster (grade-1 reviewer-judgment + first grade-2 head-to-head on command-registry B1–B4)
 
-_Last updated: 2026-06-13 (after recon review of the 06-12 codex-pi batch + 06-13 ralph batch)._
+_Last updated: 2026-06-13 (after the command-registry B1–B4 head-to-head: gpt-5.5 won; Opus & Sonnet now have implementer data)._
 
 | Model | Dispatch ID | Tier (owns) | Ceiling | Reliability | Notes |
 |---|---|---|---|---|---|
-| **minimax-m3** | `opencode-go/minimax-m3` | **Senior** | M | high | Strongest cheap performer to date (4.1 + 3.8). Idiomatic Rust, textbook ARIA, careful text-surgery. **3x rate-limit grace right now → preferred workhorse** for S/M across both tiers. |
-| **gpt-5.5** | `openai-codex/gpt-5.5` (pi) / `gpt-5.5` (codex) | **Senior** | M | high | Clean + correct, slightly rougher edge-case handling than minimax. Best at surgical, well-bounded fixes. Also the strongest **coordinator/reviewer/release** model (Codex role: 4.0). |
-| **kimi-k2.7-code** | `opencode-go/kimi-k2.7-code` | **Junior** ⬇ (was Senior) | M | **low** | DEMOTED on evidence: spec misses + dead code + duplicated logic (3.0), AND a commit-reliability failure (ralph loop advanced without committing; Pi had to rescue B1). Only with orchestrator-enforced commit checkpoints + a senior review gate. Avoid multi-silo synthesis items. |
+| **gpt-5.5** | `openai-codex/gpt-5.5` (pi) / `gpt-5.5` (codex) | **Senior** | M | high | **WON the 2026-06-13 head-to-head** (4.25, most consistent of 5; merged). Clean + correct + surgical; the only contestant to patch BOTH colon open-paths. Confirmed reaches T3. Also strongest **coordinator/reviewer/release** model (Codex role 4.0). |
+| **minimax-m3** | `opencode-go/minimax-m3` | **Senior** | M | high | Strongest cheap performer (4.1 + 3.8); **H2H confirmed** — held its own vs Opus/Sonnet (3.5; one judge's #1). Idiomatic Rust, textbook ARIA, careful text-surgery. **3x rate-limit grace right now → preferred workhorse** for S/M across both tiers. |
+| **sonnet-4.6** | (Claude / Workflow subagent) | Senior | L | high | **H2H: first implementer data — mid-pack (3.5)**; competent but cut the same conflict-detection corner as minimax. M proven (L unproven). Also a fair blind reviewer/recon subagent. |
+| **opus-4.8** | (Claude / main loop) | **Lead** | XL | high | **H2H: high-ceiling but DIVISIVE (4.0)** — two judges rated it the cleanest design (only one with cross-surface conflict detection), two dinged a real Esc-focus bug + scope creep. **NOT a safe default for bounded T3.** Reserve for Lead/XL (sync spine, Loro, FFI, pairing, architecture) + review. |
+| **kimi-k2.7-code** | `opencode-go/kimi-k2.7-code` | **Junior** ⬇ | M | **very low** | **Reliability fail #3: a zero-line diff in the head-to-head** (gates pass vacuously). Prior: spec misses + dead code (3.0) + a ralph no-commit incident. AVOID for durable work; Junior-S mechanical only, with an enforced commit checkpoint + senior review. |
 | **qwen-3.7-max** | `opencode-go/qwen3.7-max` | Senior (unproven) | M (assumed) | unknown | Not yet exercised on this repo. 1M ctx / 65K out. Trial on a bounded M item to place it. |
-| **sonnet-4.6** | (Claude / Workflow subagent) | Senior | L | high | Used as recon/review subagent here (good, fair reviews). Implementer tier from tiers.md; not yet rated as a Tesela implementer in this cycle. |
 
-**Routing implication:** for fan-out, prefer **minimax-m3** (quality + rate-limit grace), then **gpt-5.5**. Use **kimi** only for Junior-S mechanical items with a commit checkpoint. Reserve Opus/Fable for Lead/XL (sync spine, FFI, pairing, architecture).
+**Routing implication:** for fan-out, **gpt-5.5 and minimax-m3 are co-leads** — gpt-5.5 won the head-to-head; minimax has 3× rate-limit grace, so prefer minimax while the grace applies, else gpt-5.5. Use **kimi** sparingly (Junior-S mechanical only, enforced commit checkpoint — 3 durable-output failures). Reserve **Opus** for Lead/XL (sync spine, Loro, FFI, pairing, architecture) + review; it is neither cost-effective nor even the safest choice for bounded T3.
 
 ---
 
 ## Batch Log (append-only)
+
+### 2026-06-13 — HEAD-TO-HEAD (grade-2) — command-registry B1–B4 — 5 models, blind panel
+
+- **The gold-standard run.** Same bounded task (4 command-registry gaps, `.bench/task.md`), 5 models in isolated worktrees, objective Verify, then a **blind 4-judge panel** (2× Sonnet + gpt-5.5 + minimax, identities hidden as cand A–E) + a de-anonymized adversarial pre-merge check. Fable judge unavailable. Raw votes: `.bench/blind/`.
+- **Result (avg / Borda / final rank): gpt-5.5 4.25/16/🥇 · Opus 4.0/16/2 · minimax 3.5/12/3 · Sonnet 3.5/12/4 · kimi 1.0/4/5.**
+- **gpt-5.5 WON → merged (`4766111`).** All 4 reqs met by every judge; most consistent; both colon open-paths patched; no scope creep. Nit: slash chords injected as synthetic command stubs vs a dedicated map → follow-up Junior-S cleanup.
+- **Opus tied on Borda but LOST on correctness:** never patches the GrRail rail-click open path, so Esc drops focus after a rail-initiated colon open (real partial req-3 miss) — caught by a *blind cheap-model judge (gpt-5.5)*. High ceiling (two judges: cleanest design, only cross-surface slash↔leader conflict detection) but divisive. **Lesson: Opus is not a safe default for bounded T3; reserve for genuinely hard work.**
+- **minimax** held its own vs the Claude models (one judge's #1); req-1 partial (findConflicts doesn't consume slash chords) + dead union member. Senior T2/T3 confirmed.
+- **Sonnet** (first implementer data this cycle): mid-pack (3.5), competent, cut the same conflict-detection corner as minimax. T2.
+- **kimi: reliability failure #3** — a *zero-line diff* in a fully-specced isolated worktree (gates pass vacuously on baseline). After the ralph no-commit incident, this is a pattern, not an incident. Avoid for durable work.
+- **Anti-bias validation:** judging was blind; the **minimax judge ranked its own (blind) diff 4th** → no self-favoritism. A cheap open model topping Opus is therefore a credible signal, not Claude-deprecation noise.
 
 ### 2026-06-13 — `minimax-m3` — A1–A4 mechanical Rust batch (Junior loop, ralph)
 
