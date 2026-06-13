@@ -11,6 +11,7 @@
  */
 
 import { BUILTIN_SLASH_CHORDS } from "./chord-keys.ts";
+import type { SlashContext } from "./editor/slash-context.ts";
 
 export type CommandContext = {
   route?: string | null;
@@ -18,6 +19,7 @@ export type CommandContext = {
   vimMode?: string | null;
   focusedBlock?: { id: string; properties: Record<string, string> } | null;
   splitOpen?: boolean;
+  editor?: SlashContext;
 };
 
 export type Command = {
@@ -25,15 +27,17 @@ export type Command = {
   verb?: string;
   label: string;
   glyph: string;
-  category: 'pane' | 'tab' | 'tile' | 'create' | 'navigate' | 'derived' | 'ambient';
+  category: 'pane' | 'tab' | 'tile' | 'create' | 'navigate' | 'derived' | 'ambient' | 'editor';
   shortcut?: string;
   /** Chord path, e.g. ['g','d'] for "g d" in the leader menu. */
   chord?: string[];
+  surface?: 'global' | 'editor';
+  slashKey?: string;
   keywords: string[];
   argPrompt?: string;
   /** Optional predicate controlling whether the command is available. */
   when?: (ctx: CommandContext) => boolean;
-  run: (arg?: string) => void | Promise<void>;
+  run: (arg?: string, ctx?: CommandContext) => void | Promise<void>;
 };
 
 export type RegisteredCommand = Command & { registeredAt: number };
@@ -65,6 +69,7 @@ class CommandRegistry {
 
   available(ctx: CommandContext): RegisteredCommand[] {
     return this.all().filter((cmd) => {
+      if (cmd.surface === 'editor' && !ctx.editor) return false;
       if (!cmd.when) return true;
       try {
         return cmd.when(ctx);

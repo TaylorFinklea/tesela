@@ -133,7 +133,7 @@
     }
     closeColonMode();
     try {
-      await cmd.run(arg);
+      await cmd.run(arg, ctx);
     } catch (e) {
       console.error("v4 colon: command failed", verb, e);
     }

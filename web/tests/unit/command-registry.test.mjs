@@ -180,3 +180,27 @@ test("available filters by when predicate", () => {
   assert.equal(commandRegistry.available({ bufferKind: "page" }).length, 2);
   assert.equal(commandRegistry.available({ bufferKind: "ambient" }).length, 1);
 });
+
+test("available filters editor-surface commands without editor context", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "global-cmd",
+    label: "Global",
+    glyph: "g",
+    category: "navigate",
+    keywords: [],
+    run: () => {},
+  });
+  commandRegistry.register({
+    id: "editor-cmd",
+    label: "Editor",
+    glyph: "e",
+    category: "editor",
+    surface: "editor",
+    keywords: [],
+    run: () => {},
+  });
+
+  assert.deepEqual(commandRegistry.available({}).map((cmd) => cmd.id), ["global-cmd"]);
+  assert.deepEqual(commandRegistry.available({ editor: {} }).map((cmd) => cmd.id), ["global-cmd", "editor-cmd"]);
+});

@@ -79,14 +79,16 @@ export type V4Command = {
   verb?: string;
   label: string;
   glyph: string;
-  category: "pane" | "tab" | "tile" | "create" | "navigate" | "derived" | "ambient";
+  category: "pane" | "tab" | "tile" | "create" | "navigate" | "derived" | "ambient" | "editor";
   shortcut?: string;
   /** Leader chord path, e.g. ['g','d'] for Space → g → d. */
   chord?: string[];
+  surface?: "global" | "editor";
+  slashKey?: string;
   keywords: string[];
   argPrompt?: string;
   when?: (ctx: CommandContext) => boolean;
-  run: (arg?: string) => void | Promise<void>;
+  run: (arg?: string, ctx?: CommandContext) => void | Promise<void>;
 };
 
 async function jumpToDaily() {

@@ -49,7 +49,7 @@ const CHORD_GROUP_LABELS: Record<string, string> = {
   b: "buffer…",
 };
 
-function buildChordTree(commands: Command[], depth: number): ChordNode[] {
+function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext): ChordNode[] {
   const groups = new Map<string, Command[]>();
   for (const cmd of commands) {
     if (!cmd.chord || cmd.chord.length <= depth) continue;
@@ -67,7 +67,7 @@ function buildChordTree(commands: Command[], depth: number): ChordNode[] {
       nodes.push({
         key,
         label: leaf.label,
-        action: () => void leaf.run(),
+        action: () => void leaf.run(undefined, ctx),
       });
     } else if (leaf && branches.length > 0) {
       // Both a leaf and a subtree share this key — show the leaf as the first
@@ -75,9 +75,9 @@ function buildChordTree(commands: Command[], depth: number): ChordNode[] {
       nodes.push({
         key,
         label: leaf.label,
-        action: () => void leaf.run(),
+        action: () => void leaf.run(undefined, ctx),
       });
-      const children = buildChordTree(branches, depth + 1);
+      const children = buildChordTree(branches, depth + 1, ctx);
       if (children.length > 0) {
         nodes.push({
           key,
@@ -86,7 +86,7 @@ function buildChordTree(commands: Command[], depth: number): ChordNode[] {
         });
       }
     } else {
-      const children = buildChordTree(branches, depth + 1);
+      const children = buildChordTree(branches, depth + 1, ctx);
       if (children.length > 0) {
         nodes.push({
           key,
@@ -107,5 +107,5 @@ export function getLeaderTree(ctx?: CommandContext): ChordNode[] {
   const commands = (ctx ? commandRegistry.available(ctx) : commandRegistry.all()).filter(
     (cmd) => cmd.chord && cmd.chord.length > 0,
   );
-  return buildChordTree(commands, 0);
+  return buildChordTree(commands, 0, ctx);
 }
