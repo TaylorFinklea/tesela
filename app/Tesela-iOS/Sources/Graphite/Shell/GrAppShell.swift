@@ -47,16 +47,18 @@ struct GrAppShell: View {
     @State private var captureContext: CaptureContext = .init()
     @State private var showSettings: Bool = false
 
+    @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        shell
-            // Force the Graphite theme regardless of the user's saved
-            // appearance — this is the Graphite shell. (Cutover folds it
-            // back into the appearance controller.)
-            .environment(\.theme, .graphite)
-            .preferredColorScheme(.dark)
-            .task {
+        if onboardingComplete {
+            shell
+                // Force the Graphite theme regardless of the user's saved
+                // appearance — this is the Graphite shell. (Cutover folds it
+                // back into the appearance controller.)
+                .environment(\.theme, .graphite)
+                .preferredColorScheme(.dark)
+                .task {
                 // ONE-TIME wiring: bind the ticker to the mosaic and install
                 // the event closures. The BACKEND-dependent bring-up
                 // (attach/refresh/hubMode/WS-connect/bootstrap/start) lives in
@@ -253,6 +255,16 @@ struct GrAppShell: View {
                 composer.append(transcript)
                 streamRecorder.lastTranscript = nil
             }
+        } else {
+            OnboardingView(
+                onboardingComplete: $onboardingComplete,
+                backend: backend,
+                mosaic: mosaic,
+                registry: mosaicRegistry
+            )
+            .environment(\.theme, .graphite)
+            .preferredColorScheme(.dark)
+        }
     }
 
     /// Identity of the current backend (mode + server URL). Drives the
