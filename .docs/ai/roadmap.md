@@ -708,6 +708,64 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
   - **tier_floor** - `lead` — ESCALATE (Opus/Fable)
   - **complexity** - `XL`
 
+### Next Senior/Junior batch (2026-06-13)
+
+- [ ] **Restore editor focus after `:` command-line cancel.**
+  - **Scope** - Fix the Graphite/v4 ex-command line so `:` then Escape returns focus to the active CodeMirror editor, matching the command palette focus-restore behavior. Keep command execution, autocomplete ordering, and verb registry behavior unchanged.
+  - **Files** - `web/src/lib/components/shell/ColonCommandLine.svelte`; read `web/src/lib/graphite/shell/GrCommandPalette.svelte` for the local `restoreFocus()` pattern; update `web/tests/jk-normal-mode.e2e.mjs`.
+  - **Acceptance** - `:` opens the command line; Escape closes it and leaves `.cm-editor.cm-focused` true without an extra click; subsequent `j/k` navigation stays in NORMAL mode; Enter/Tab/autocomplete behavior is unchanged.
+  - **Verify** - `pnpm --dir web build`; run `target/debug/tesela-server` against a temp mosaic with `TESELA_STATIC_DIR=$PWD/web/build TESELA_DISABLE_MDNS=1 TESELA_DISABLE_RELAY=1 TESELA_DISABLE_PEER_SYNC=1 TESELA_SERVER_BIND=127.0.0.1:7793`, then `REPRO_URL=http://127.0.0.1:7793/g node web/tests/jk-normal-mode.e2e.mjs`; `pnpm --dir web check`.
+  - **tier_floor** - `senior`
+  - **complexity** - `S`
+
+- [ ] **Trim two concrete Svelte a11y warnings.**
+  - **Scope** - Fix the known warnings for the context menu focus contract and the backup auto-on-quit toggle label/state without changing visual styling or backup behavior.
+  - **Files** - `web/src/lib/components/ContextMenu.svelte`; `web/src/lib/components/BackupSettings.svelte`.
+  - **Acceptance** - The `role="menu"` container is keyboard-focusable and still closes on Escape/outside click; the auto-backup toggle exposes a clear accessible name plus pressed/checked state; no unrelated warning cleanup or design changes.
+  - **Verify** - `pnpm --dir web check`.
+  - **tier_floor** - `junior`
+  - **complexity** - `S`
+
+- [ ] **Harden `repair-daily-tags` against symlink escape.**
+  - **Scope** - Stop the repair walker from following symlinks out of the mosaic notes tree, and add regression coverage for a symlinked external date-slug file.
+  - **Files** - `crates/tesela-cli/src/repair_daily_tags.rs`.
+  - **Acceptance** - Real nested note directories are still scanned; symlinked files/directories are ignored; `--apply` cannot mutate a date-slug file outside `<mosaic>/notes`; existing dry-run/apply/idempotency tests keep passing.
+  - **Verify** - `cargo test -p tesela-cli repair_daily_tags`; `rustfmt --edition 2021 --check crates/tesela-cli/src/repair_daily_tags.rs`.
+  - **tier_floor** - `senior`
+  - **complexity** - `S`
+
+- [ ] **Make MCP JSON formatting unwraps explicit.**
+  - **Scope** - Replace the three `serde_json::to_string_pretty(&results).unwrap()` call sites with explicit `.expect(...)` messages that document why serialization is considered infallible for JSON `Value` results. No MCP response shape changes.
+  - **Files** - `crates/tesela-mcp/src/tools.rs:150`; `crates/tesela-mcp/src/tools.rs:236`; `crates/tesela-mcp/src/tools.rs:260`.
+  - **Acceptance** - The three bare unwraps are gone; output JSON is byte-equivalent for normal tool responses; no broader MCP refactor.
+  - **Verify** - `cargo test -p tesela-mcp`; `rustfmt --edition 2021 --check crates/tesela-mcp/src/tools.rs`.
+  - **tier_floor** - `junior`
+  - **complexity** - `S`
+
+- [ ] **Add a notarized desktop ZIP release recipe.**
+  - **Scope** - Codify the desktop release path proven on 2026-06-13: build web static, build Tauri with `--bundles app` to avoid the hanging DMG layout step, sign with the configured Developer ID identity, optionally notarize/staple, and write a ZIP artifact. Do not change runtime code, bundle identifier, version, or any secrets.
+  - **Files** - create `scripts/desktop-release.sh`; read `src-tauri/tauri.conf.json` and `src-tauri/Cargo.toml` for product/version values; no changes to `src-tauri/src/main.rs`.
+  - **Acceptance** - Script has a safe no-notarize path for local verification; full path uses environment-overridable signing/notary inputs; artifact naming includes product/version/arch; DMG packaging remains out of scope.
+  - **Verify** - `bash -n scripts/desktop-release.sh`; `scripts/desktop-release.sh --skip-notarize`; `codesign --verify --deep --strict --verbose=2 target/release/bundle/macos/Tesela.app`.
+  - **tier_floor** - `senior`
+  - **complexity** - `M`
+
+- [ ] **Label Graphite iOS icon-only header buttons.**
+  - **Scope** - Add view-layer accessibility labels/identifiers for icon-only Graphite buttons in the Daily and Agenda headers while keeping the primitive's visual metrics unchanged.
+  - **Files** - `app/Tesela-iOS/Sources/Graphite/GrButton.swift`; `app/Tesela-iOS/Sources/Graphite/Views/GrDailyView.swift`; `app/Tesela-iOS/Sources/Graphite/Views/GrAgendaView.swift`; read `app/Tesela-iOS/Sources/Graphite/Shell/GrHeader.swift`.
+  - **Acceptance** - VoiceOver announces the Daily date picker, Daily settings, and Agenda jump-to-today actions with human labels; icon-only buttons retain 30x30 layout; no data/sync/service code touched.
+  - **Verify** - `xcodebuild -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 16' -derivedDataPath /tmp/tesela-ios-grbutton-a11y build`; `xcrun simctl boot "iPhone 16" || true`; `xcrun simctl install booted /tmp/tesela-ios-grbutton-a11y/Build/Products/Debug-iphonesimulator/Tesela.app`; `xcrun simctl launch booted app.tesela.ios -graphite`; `xcrun simctl io booted screenshot /tmp/tesela-ios-grbutton-a11y.png`.
+  - **tier_floor** - `senior`
+  - **complexity** - `S`
+
+- [ ] **Tighten Graphite Settings VoiceOver semantics.**
+  - **Scope** - Improve view-layer accessibility in Graphite Settings only: server-mode segmented buttons, URL/device text fields, active mosaic rows, and edit affordances. Do not touch `RelayTicker`, `MosaicService`, pairing, registry persistence, or save/disconnect logic.
+  - **Files** - `app/Tesela-iOS/Sources/Graphite/Views/GrSettingsView.swift`; read `app/Tesela-iOS/Sources/Graphite/GrRow.swift` before deciding whether the row primitive needs an additive accessibility hook.
+  - **Acceptance** - VoiceOver can tell which server mode is selected, identify/edit the server URL and device name fields, distinguish the active mosaic, and find the mosaic edit action; visual layout and all backend/sync behavior are unchanged.
+  - **Verify** - `xcodebuild -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination 'platform=iOS Simulator,name=iPhone 16' -derivedDataPath /tmp/tesela-ios-settings-a11y build`; `xcrun simctl boot "iPhone 16" || true`; `xcrun simctl install booted /tmp/tesela-ios-settings-a11y/Build/Products/Debug-iphonesimulator/Tesela.app`; `xcrun simctl launch booted app.tesela.ios -graphite`; `xcrun simctl io booted screenshot /tmp/tesela-ios-settings-a11y.png`.
+  - **tier_floor** - `senior`
+  - **complexity** - `M`
+
 ### Web editor — discovered during B4 (2026-06-10)
 
 - [x] **Split + immediate merge-back orphans the absorbed block's server row.** DONE 2026-06-12: `handleBackspaceMerge` now emits the absorbed-block delete whenever the absorbed block has a bid, even if its temporary editor id is still `:new-…`; unknown deletes are harmless before the creating upsert lands, and required after it lands. Regression `web/tests/split-merge-back.e2e.mjs` proves split mid-text → wait >600ms → Backspace col-0 merge leaves ONE on-disk block with merged text. Verified: red e2e reproduced duplicate; green e2e 3/3; `node --test tests/unit/block-ops.test.mjs tests/unit/block-ops-saver.test.mjs`; `pnpm --dir web check`; `pnpm --dir web build`; `git diff --check`.

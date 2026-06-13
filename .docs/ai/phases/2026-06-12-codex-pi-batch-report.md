@@ -186,3 +186,23 @@ Rules in force:
   - j/k normal-mode browser flow PASS: `REPRO_URL=http://127.0.0.1:7792/g node tests/jk-normal-mode.e2e.mjs` passed 16/16, covering fresh empty block, Enter-split block, command palette close, `:` quick-capture close + refocus, and blur/refocus paths.
 - Non-browser-applicable Ralph items: `repair-daily-tags` CLI, `web/package.json` lint script, server coverage-only tests, and the iOS SwiftUI a11y item do not have meaningful web-browser QA surfaces. Their command/simulator verifies remain the proof of done; the journal browser QA indirectly exercises the date-slug daily filter behavior that Item 7 protected.
 - Shakiness / follow-up: first browser attempt used the default `/api` base and produced 405s, then was discarded and rerun with the same init injection used by existing e2es. First collection fixture used the server bid-address form; web collections use parsed line ids, so the fixture was corrected before the passing CollectionBlock check. Screenshots are intentionally left in `/tmp`, not committed.
+
+### Real release pass: desktop + iOS (2026-06-13)
+- Status: shipped/uploaded; release source bump pending in commit with this note.
+- Owner: Codex, self-identified Senior (T2), acting on Taylor's explicit release/signing/push instruction.
+- Desktop:
+  - `pnpm --dir web build` PASS; `cargo build --release -p tesela-server` PASS.
+  - `pnpm dlx @tauri-apps/cli@2 build` built `target/release/bundle/macos/Tesela.app` and `target/release/tesela-desktop`, then failed only in `bundle_dmg.sh` during DMG layout packaging.
+  - Signed `target/release/bundle/macos/Tesela.app` with `Developer ID Application: Taylor Finklea (K7CBQW6MPG)` and hardened runtime; `codesign --verify --deep --strict --verbose=2 target/release/bundle/macos/Tesela.app` PASS.
+  - Notarization submitted as ZIP with App Store Connect API key; submission `b29d703e-fa3f-401e-b356-ac0b6de06b23` ACCEPTED; `xcrun stapler staple target/release/bundle/macos/Tesela.app` PASS; `spctl -a -vv target/release/bundle/macos/Tesela.app` PASS (`source=Notarized Developer ID`).
+  - Final local artifact: `build/desktop-release/Tesela_0.1.0_aarch64_notarized.zip`; SHA-256 `aacdfc6d3d2f04e88ee5bce4e7e4ff7e496e5fbc14d5d9b8d4c0bcc5a95d7760`.
+- iOS:
+  - Ran `scripts/ios-testflight.sh` with upload enabled.
+  - FFI device build PASS; FFI binding drift check PASS (`bindings in sync (5 files)`); simulator FFI build PASS.
+  - `xcodebuild test -project app/Tesela-iOS/Tesela-iOS.xcodeproj -scheme Tesela -destination "platform=iOS Simulator,id=46C0244E-6B87-4AAE-97D6-FA274B1D7F3C"` PASS (unit test output showed all listed suites passing before archive).
+  - Script bumped iOS `CFBundleVersion` from `11` to `12` in both `app/Tesela-iOS/Info.plist` and `app/Tesela-iOS/project.yml`; marketing version remains `1.1`.
+  - `** ARCHIVE SUCCEEDED **`; upload log ended `Uploaded Tesela` and `** EXPORT SUCCEEDED **`; App Store Connect/TestFlight processing started.
+- Shakiness / follow-up:
+  - Desktop DMG packaging is not fixed; use the notarized ZIP for this release. New Senior backlog item added to script the `--bundles app` notarized-ZIP path and keep DMG out of the default release flow.
+  - iOS archive signed with the configured Apple Development identity and automatic provisioning during archive/export; upload succeeded. Existing Swift warnings remain (transcription Sendable/deprecated AVAudio APIs, SearchView Text `+` deprecations, one MockMosaicService no-op `await`), not release blockers.
+  - No live mosaic was launched by this release pass; build/package/sign/upload only.

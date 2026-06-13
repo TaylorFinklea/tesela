@@ -1,14 +1,16 @@
 # Current State
 
 ## Branch
-- `main`; pi-mono Junior loop complete at `031b75e`; Senior GPT-5.5 loop complete at `b8e07e9`; coordinator validation + browser QA complete.
-- Senior self-tier: Codex/GPT-5.5 = Senior (T2). Remaining unchecked items are `lead` / `XL` / ESCALATE or not loop-shaped.
+- `main`; Ralph-loop code validated; iOS TestFlight build `1.1 (12)` uploaded; desktop `.app` Developer-ID signed/notarized.
+- Release commit includes iOS build bump + handoff docs only; build artifacts remain ignored.
 
 ## Plan
-- [x] SENIOR RALPH BACKLOG LOOP: no safe fully-shaped unchecked Senior backlog items remain after current iteration. Verify: selected backlog item's Verify command(s).
+- [x] REAL RELEASE: desktop notarized ZIP + iOS TestFlight upload. Verify: release commands in batch report.
+- [x] NEXT NON-LEAD BATCH: append safe Senior/Junior backlog items dated 2026-06-13.
 
 ## Blockers
-- Lead/XL ESCALATE items remain reserved for Opus/Fable.
+- Tauri DMG bundling failed in `bundle_dmg.sh`; notarized ZIP shipped instead.
+- Lead/XL sync/FFI/pairing items remain reserved for Opus/Fable.
 
 ## Open Questions
 - None.
