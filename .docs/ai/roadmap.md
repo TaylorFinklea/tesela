@@ -820,6 +820,35 @@ Orchestrator: Pi. Spec: `phases/command-registry-spec.md`. Run A1 and B1 in para
   - **ralph_model** — `opencode-go/kimi-k2.7-code`
 
 - [x] **B3 — Context-aware command dispatch.**
+
+### 2026-06-13 follow-up — junior mechanical items for minimax-m3
+
+- [ ] **A2 — Replace `serde_json::to_string_pretty` unwraps in MCP tools with explicit `.expect()`.**
+  - **Scope** — Replace 3 bare `.unwrap()` calls in `crates/tesela-mcp/src/tools.rs:150,236,260` with `.expect("...")` documenting why serialization is infallible for JSON `Value` results.
+  - **Files** — `crates/tesela-mcp/src/tools.rs`.
+  - **Acceptance** — No bare unwraps remain at those call sites; MCP tests still pass.
+  - **Verify** — `cargo test -p tesela-mcp`; `cargo clippy --workspace -- -D warnings`.
+  - **tier_floor** — `junior`
+  - **complexity** — `S`
+  - **ralph_model** — `opencode-go/minimax-m3`
+
+- [ ] **A3 — Replace regex-capture unwraps in Logseq importer with `.expect()`.**
+  - **Scope** — Annotate 2 regex-capture `.unwrap()` calls in `crates/tesela-cli/src/import_logseq.rs:202,244` with `.expect("...")` describing the invariant.
+  - **Files** — `crates/tesela-cli/src/import_logseq.rs`.
+  - **Acceptance** — No bare unwraps remain; Logseq importer tests still pass.
+  - **Verify** — `cargo test -p tesela-cli --lib import_logseq`; `cargo clippy --workspace -- -D warnings`.
+  - **tier_floor** — `junior`
+  - **complexity** — `S`
+  - **ralph_model** — `opencode-go/minimax-m3`
+
+- [ ] **A4 — Extract hardcoded backup-retention magic numbers into named constants.**
+  - **Scope** — Find magic retention counts/days in backup code and extract them into named constants at the top of the file or module.
+  - **Files** — `crates/tesela-backup/src/lib.rs` (and any related files).
+  - **Acceptance** — No magic numbers for retention remain inline; backup tests still pass.
+  - **Verify** — `cargo test -p tesela-backup`; `cargo clippy --workspace -- -D warnings`.
+  - **tier_floor** — `junior`
+  - **complexity** — `S`
+  - **ralph_model** — `opencode-go/minimax-m3`
   - **Scope** — Add `CommandContext` capture (route, focused buffer kind, vim mode, focused block, split state) and `when` predicates to commands. Filter palette/leader availability from the registry; colon dispatches verbs from the registry.
   - **Files** — `web/src/lib/command-registry.svelte.ts`, `web/src/lib/graphite/shell/GraphiteShell.svelte`, `web/src/lib/graphite/shell/GrCommandPalette.svelte`, `web/src/lib/graphite/shell/GrLeaderOverlay.svelte`, `web/src/lib/components/shell/ColonCommandLine.svelte`.
   - **Acceptance** — Commands that don't apply in the current context are hidden from palette/leader; context changes update availability reactively; existing behavior is preserved.

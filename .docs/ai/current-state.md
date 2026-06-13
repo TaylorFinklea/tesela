@@ -5,12 +5,10 @@
 - Release commits include iOS/desktop version bumps + handoff docs only; build artifacts remain ignored.
 
 ## Plan
-(batch complete — 2026-06-13 command-registry foundation)
-
-- [x] A1 — Fix clippy errors. Verify: `cargo clippy --workspace -- -D warnings`.
-- [x] B1 — Unified command registry shape + port palette/leader. Verify: `pnpm --dir web check` + manual palette/leader/colon QA.
-- [x] B2 — Keymap introspection + conflict detection. Verify: unit tests + `pnpm --dir web check` + `:keymap` QA.
-- [x] B3 — Context-aware command dispatch. Verify: `pnpm --dir web check` + full keyboard QA matrix.
+- [x] A1/B1–B3 — command-registry foundation (done).
+- [ ] A2 — MCP unwraps → `.expect()` (minimax-m3 ralph loop).
+- [ ] A3 — Logseq importer unwraps → `.expect()` (minimax-m3 ralph loop).
+- [ ] A4 — Backup retention constants (minimax-m3 ralph loop).
 
 Spec: `.docs/ai/phases/command-registry-spec.md`. Report: `.docs/ai/phases/2026-06-13-ralph-batch-report.md`.
 
