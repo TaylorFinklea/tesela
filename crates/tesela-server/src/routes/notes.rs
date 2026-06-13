@@ -1780,13 +1780,36 @@ pub async fn set_block_property(
     let block_id = parse_bid(&block_bid)?;
     let doc_note_id = stable_uuid_from_slug(note_id_str);
 
+    // Choose the PropOp from the property's registry value_type, then emit it
+    // through the engine. Multi-value clears then re-adds each item so a
+    // route-driven set replaces the list deterministically.
+    let prop_ops = prop_ops_for_set(&s, &key, &req.value).await;
+    for value in prop_ops {
+        let payload = OpPayload::BlockPropertySet {
+            note_id: doc_note_id,
+            block_id,
+            key: key.clone(),
+            value,
+        };
+        if let Err(e) = s.sync_engine.record_local(payload).await {
+            tracing::warn!(
+                "sync: record_local BlockPropertySet failed for {}: {e}",
+                req.block_id
+            );
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "Failed to record BlockPropertySet: {e}"
+            )));
+        }
+    }
+
     // Migrate-on-write for THIS key only: if the block still carries `key` as
     // a legacy in-text continuation line (the common case — notes are seeded
     // from markdown, so block props start life in `text_seq`), strip that one
-    // line from the block's prose first. Otherwise the container value and the
-    // stale in-text line would BOTH materialize, duplicating the property.
-    // Scoped to the single key being written so OTHER in-text props (still
-    // readable by old peers) are untouched — not the fleet-wide P1.6 migrate.
+    // line from the block's prose after the container write succeeds.
+    // Otherwise the container value and the stale in-text line would BOTH
+    // materialize, duplicating the property. Scoped to the single key being
+    // written so OTHER in-text props (still readable by old peers) are
+    // untouched — not the fleet-wide P1.6 migrate.
     if let Some(stripped) = strip_block_intext_prop(&prev_content, &block_bid, &key) {
         let payload = OpPayload::BlockUpsert {
             block_id,
@@ -1807,28 +1830,6 @@ pub async fn set_block_property(
             );
             return Err(AppError::Internal(anyhow::anyhow!(
                 "Failed to strip in-text property: {e}"
-            )));
-        }
-    }
-
-    // Choose the PropOp from the property's registry value_type, then emit it
-    // through the engine. Multi-value clears then re-adds each item so a
-    // route-driven set replaces the list deterministically.
-    let prop_ops = prop_ops_for_set(&s, &key, &req.value).await;
-    for value in prop_ops {
-        let payload = OpPayload::BlockPropertySet {
-            note_id: doc_note_id,
-            block_id,
-            key: key.clone(),
-            value,
-        };
-        if let Err(e) = s.sync_engine.record_local(payload).await {
-            tracing::warn!(
-                "sync: record_local BlockPropertySet failed for {}: {e}",
-                req.block_id
-            );
-            return Err(AppError::Internal(anyhow::anyhow!(
-                "Failed to record BlockPropertySet: {e}"
             )));
         }
     }
@@ -2008,7 +2009,10 @@ mod tests {
     /// errors and assert the handlers surface a 5xx instead.
     mod record_local_failure {
         use super::super::*;
-        use std::sync::Arc;
+        use std::{
+            path::PathBuf,
+            sync::{Arc, Mutex},
+        };
 
         use axum::response::IntoResponse;
         use tokio::sync::broadcast;
@@ -2155,6 +2159,166 @@ mod tests {
             };
             let status = err.into_response().status();
             assert!(status.is_server_error(), "expected a 5xx, got {status}");
+        }
+
+        struct StripAppliesPropertyFailsEngine {
+            note_path: PathBuf,
+            bid: String,
+            calls: Arc<Mutex<Vec<&'static str>>>,
+        }
+
+        impl StripAppliesPropertyFailsEngine {
+            fn write_stripped_block(&self, indent_level: u16, text: &str) -> SyncResult<()> {
+                let mut lines = Vec::new();
+                let mut text_lines = text.lines();
+                let first = text_lines.next().unwrap_or_default();
+                let bullet_indent = "  ".repeat(indent_level as usize);
+                let continuation_indent = "  ".repeat(indent_level as usize + 1);
+                lines.push("---".to_string());
+                lines.push("title: \"Ordering\"".to_string());
+                lines.push("tags: []".to_string());
+                lines.push("---".to_string());
+                lines.push(format!(
+                    "{bullet_indent}- {first} <!-- bid:{} -->",
+                    self.bid
+                ));
+                for line in text_lines {
+                    lines.push(format!("{continuation_indent}{line}"));
+                }
+                std::fs::write(&self.note_path, lines.join("\n") + "\n")
+                    .map_err(|e| SyncError::Storage(format!("write stripped block: {e}")))
+            }
+        }
+
+        #[async_trait::async_trait]
+        impl SyncEngine for StripAppliesPropertyFailsEngine {
+            fn device(&self) -> DeviceId {
+                DeviceId::from_bytes([0xfb; 16])
+            }
+            async fn record_local(&self, payload: OpPayload) -> SyncResult<ContentHash> {
+                match payload {
+                    OpPayload::BlockUpsert {
+                        indent_level, text, ..
+                    } => {
+                        self.calls.lock().unwrap().push("BlockUpsert");
+                        self.write_stripped_block(indent_level, &text)?;
+                        Ok(ContentHash([0x11; 32]))
+                    }
+                    OpPayload::BlockPropertySet { .. } => {
+                        self.calls.lock().unwrap().push("BlockPropertySet");
+                        Err(SyncError::Storage(
+                            "simulated BlockPropertySet failure".to_string(),
+                        ))
+                    }
+                    _ => Ok(ContentHash([0x22; 32])),
+                }
+            }
+            async fn local_cursor(&self) -> SyncResult<LocalCursor> {
+                Ok(LocalCursor::Earliest)
+            }
+            async fn peer_cursor(&self, _peer: DeviceId) -> SyncResult<PeerCursor> {
+                Ok(PeerCursor::Earliest)
+            }
+            async fn ack_peer(&self, _peer: DeviceId, _ack: PeerCursor) -> SyncResult<()> {
+                Ok(())
+            }
+            async fn park_op(&self, _op: EncodedOp, _reason: ParkReason) -> SyncResult<()> {
+                Ok(())
+            }
+            async fn replay_parked(&self) -> SyncResult<ReplayReport> {
+                Ok(ReplayReport::default())
+            }
+            async fn parked_summary(&self) -> SyncResult<ParkedSummary> {
+                Ok(ParkedSummary::default())
+            }
+        }
+
+        async fn state_with_engine(
+            mosaic: &std::path::Path,
+            sync_engine: Arc<dyn SyncEngine>,
+        ) -> Arc<AppState> {
+            std::fs::create_dir_all(mosaic.join("notes")).unwrap();
+            std::fs::create_dir_all(mosaic.join(".tesela")).unwrap();
+            let store = Arc::new(FsNoteStore::new(
+                mosaic.to_path_buf(),
+                StorageConfig::default(),
+            ));
+            let index = Arc::new(
+                tesela_core::db::SqliteIndex::open(&mosaic.join(".tesela").join("test.db"))
+                    .await
+                    .unwrap(),
+            );
+            let (ws_tx, _) = broadcast::channel(16);
+            let (ws_delta_tx, _) = broadcast::channel(16);
+            let group_identity = Arc::new(tokio::sync::RwLock::new(tesela_sync::GroupIdentity {
+                group_id: tesela_sync::GroupId::new_random(),
+                group_key: tesela_sync::GroupKey::random(),
+            }));
+            Arc::new(AppState {
+                mosaic_root: mosaic.to_path_buf(),
+                store,
+                index,
+                ws_tx,
+                ws_delta_tx,
+                ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
+                type_registry: tesela_core::types::TypeRegistry::load(mosaic),
+                auto_sync: Arc::new(crate::reminders::auto::AutoSync::new()),
+                sync_engine,
+                lan_discovery: None,
+                group_identity,
+                display_name: "test".into(),
+                public_url: "http://127.0.0.1:0".into(),
+                relay_url: None,
+                relay: None,
+                backup_status: crate::backup_scheduler::BackupStatusHandle::new(
+                    crate::backup_scheduler::SchedulerConfig::from_env(),
+                ),
+            })
+        }
+
+        #[tokio::test]
+        async fn set_block_property_leaves_intext_property_when_container_write_fails() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            std::fs::create_dir_all(tmp.path().join("notes")).unwrap();
+            let note_path = tmp.path().join("notes/ordering-fail.md");
+            let seed = format!(
+                "---\ntitle: \"Ordering\"\ntags: []\n---\n- task <!-- bid:{BID} -->\n  status:: todo\n"
+            );
+            std::fs::write(&note_path, seed).unwrap();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let engine = Arc::new(StripAppliesPropertyFailsEngine {
+                note_path: note_path.clone(),
+                bid: BID.to_string(),
+                calls: Arc::clone(&calls),
+            }) as Arc<dyn SyncEngine>;
+            let state = state_with_engine(tmp.path(), engine).await;
+
+            let result = set_block_property(
+                State(state),
+                Json(SetBlockPropertyReq {
+                    block_id: format!("ordering-fail:{BID}"),
+                    key: "status".to_string(),
+                    value: "done".to_string(),
+                }),
+            )
+            .await;
+
+            let err = match result {
+                Ok(_) => panic!("set-property must surface the injected container write failure"),
+                Err(e) => e,
+            };
+            let status = err.into_response().status();
+            assert!(status.is_server_error(), "expected a 5xx, got {status}");
+            let content = std::fs::read_to_string(&note_path).unwrap();
+            assert!(
+                content.contains("status:: todo"),
+                "a failed container write must not strip the only in-text property value; got:\n{content}"
+            );
+            assert_eq!(
+                calls.lock().unwrap().as_slice(),
+                &["BlockPropertySet"],
+                "the container write must be attempted before any prose strip"
+            );
         }
     }
 }
