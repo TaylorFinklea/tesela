@@ -295,13 +295,6 @@ struct GrAppShell: View {
         }
         do { try await relayTicker.openEngineIfNeeded() }
         catch { /* surfaced via relayTicker.lastError */ }
-        // Start the relay tick loop here (idempotent) — `activateBackend` runs on
-        // launch (via `.task`) AND on every backend change, with `hubMode` set
-        // just above. `.onChange(of: scenePhase) → .active` ALSO calls start(),
-        // but `.onChange` does NOT fire for the initial value, so a fresh launch
-        // straight into `.active` never started the loop — fatal for .relay mode
-        // (the tick is the only sync path; hub mode just no-ops the loop).
-        relayTicker.start()
         // Point the live-sync socket at the active server (or tear it down in
         // mock mode). Re-entrant — same URL → no-op, new URL → reconnect.
         if case .http = backend.backend {
@@ -312,6 +305,12 @@ struct GrAppShell: View {
         // Bootstrap the currently-visible daily as a shared base (T2), now
         // that the engine + socket point at this backend.
         await relayTicker.bootstrapNoteIfNeeded(slug: mosaic.todayDailySlug)
+        // Start the relay tick loop here (idempotent) — `activateBackend` runs on
+        // launch (via `.task`) AND on every backend change, with `hubMode` set
+        // just above. `.onChange(of: scenePhase) → .active` ALSO calls start(),
+        // but `.onChange` does NOT fire for the initial value, so a fresh launch
+        // straight into `.active` never started the loop — fatal for .relay mode
+        // (the tick is the only sync path; hub mode just no-ops the loop).
         relayTicker.start()
     }
 
