@@ -144,11 +144,28 @@ fn desktop_config_value(env_var: &str, key: &str) -> Option<String> {
             {
                 continue;
             }
-            let val = rest
+            let raw = rest
                 .trim_start_matches(|c: char| c == '=' || c.is_whitespace())
-                .trim()
-                .trim_matches('"')
                 .trim();
+            let mut in_quotes = false;
+            let mut escaped = false;
+            let mut comment_start = raw.len();
+            for (idx, ch) in raw.char_indices() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                match ch {
+                    '\\' if in_quotes => escaped = true,
+                    '"' => in_quotes = !in_quotes,
+                    '#' if !in_quotes => {
+                        comment_start = idx;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            let val = raw[..comment_start].trim().trim_matches('"').trim();
             if !val.is_empty() {
                 return Some(val.to_string());
             }
@@ -208,6 +225,7 @@ fn spawn_server(bind: &str) -> std::io::Result<Child> {
     // same mosaic (two relay participants under one device_id corrupts cursors).
     match resolve_embed_relay_url() {
         Some(url) => {
+            cmd.env_remove("TESELA_DISABLE_RELAY");
             cmd.env("TESELA_RELAY_URL", url);
         }
         None => {
@@ -322,15 +340,22 @@ fn run_app(url: String, child: Option<Child>) {
         .build(tauri::generate_context!())
         .expect("error while building tesela-desktop")
         .run(|app, event| {
-            // Dock-icon re-open (macOS `applicationShouldHandleReopen`) reloads
-            // the webview. If the window ever went blank, clicking the Dock icon
-            // recovers it — instead of just refocusing a dead page (the trap
-            // where "relaunching does nothing").
-            if let RunEvent::Reopen { .. } = event {
+            // Dock-icon re-open (macOS `applicationShouldHandleReopen`) normally
+            // only focuses an existing window. If no window is visible, reload +
+            // show as a blank-screen recovery path.
+            if let RunEvent::Reopen {
+                has_visible_windows,
+                ..
+            } = event
+            {
                 if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                    let _ = w.reload();
+                    if has_visible_windows {
+                        let _ = w.set_focus();
+                    } else {
+                        let _ = w.reload();
+                        let _ = w.show();
+                        let _ = w.set_focus();
+                    }
                 }
             }
             // Reap the embedded server when the app exits so it doesn't outlive
