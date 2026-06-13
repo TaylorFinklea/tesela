@@ -8,12 +8,12 @@
 - [x] Waves 1–3 DONE (10 items). ED1 held — Lead `ED1-fix` (ViewPlugin can't line-break-replace; salvage in `.bench/wave3/logs/ed1.diff.patch`).
 - [x] **Wave 4 DONE — 5/6 merged+scored:** DSK5(minimax 5 `9aec7bc9`), DSK6(gpt-5.5 5 `c4820230`), DSK7(gpt-5.5 5 `58e974bb`), PROP2(gpt-5.5 5 `9f14b254`), PROP4(minimax 4.5 `b1090353`). **PROP5 non-attempt** (minimax rate-limited 2064 → 0 lines) → re-dispatched wave5 on gpt-5.5.
 - [x] **L2 slash-registry spec DONE** — `phases/2026-06-13-slash-registry-spec.md` (verb-only SlashContext, additive `run(arg?,ctx?)`, surface-gating, gut-don't-delete+grep gate). → B-impl-1..4 in backlog (unblocked, sequential senior chain). 4 keyboard-first open Qs for Taylor in spec (non-blocking).
-- [~] **Wave 5 RUNNING** (bg) — iOS IOS1/ED2→gpt-5.5, IOS2/IOS3→minimax (verify=true; Opus runs INCREMENTAL xcodebuild in main at review — fresh worktree = cold whisper.cpp) + PROP5→gpt-5.5 (real pnpm verify). `.bench/wave5/`.
-- [ ] **Next (Opus Lead):** review/merge/score wave 5 → then **L1** sync (min key/pairing + cursor migration, HA-first; big, fresh-context) and/or **ED1-fix** (bounded, salvage ready) and/or **B-impl-1** (slash-registry impl).
-- [ ] Taylor: **H1–H4** confirms (real browser + Roshar); push when ready; 4 L2 keyboard Qs; green-light chezmoi items.
+- [x] **Wave 5 DONE — 5/5 merged+scored:** IOS1(gpt-5.5 5 `7e5bf379`), IOS2(minimax 5 `312d7e8f`), IOS3(minimax 5 `ba413d26`), ED2(gpt-5.5 5 `892e0ccc`) — combined incremental xcodebuild GREEN; all compiled first-try unaided. **PROP5**(gpt-5.5 5 `45d834cd`) — re-dispatch succeeded where minimax rate-limited; Opus flipped default ON→OFF (opt-in) + excluded its stale .docs edits.
+- [ ] **Next (Opus Lead, fresh focus):** **B-impl-1** (slash-registry impl, unblocked, sequential) · **ED1-fix** (bounded, salvage in `.bench/wave3/logs/ed1.diff.patch`) · **L1** sync (min key/pairing + cursor migration, HA-first — big, design = Taylor's call). PROP5 re-dispatch prompt+infra in `.bench/wave5/`.
+- [ ] Taylor: **H1–H4** confirms (real browser + Roshar); push when ready (18 new commits); 4 L2 keyboard Qs; PROP5 default-OFF — flip on if wanted; green-light chezmoi items.
 
-## Scorecard tally (waves 1–4)
-- gpt-5.5 = **7/7 clean** (all 5/5). minimax = 6/8 (4.5–5 on output; **2 load-fails this wave** — prop4 errored-after-completion, prop5 zero-diff). minimax reliability-under-load is the emerging signal.
+## Scorecard tally (waves 1–5, `model-bench.jsonl` 32 rows)
+- gpt-5.5 = **10/10 clean** (every item 5/5 — Rust, TS, Swift, bash; incl. the hardest UX item unaided). minimax = 8/10 quality 4.5–5 BUT **2 load-fails wave4** (prop4 errored-after-completing, prop5 zero-diff → re-dispatched to gpt-5.5). **Routing rule: minimax output is solid but it hits `2064` high-load errors under volume → gpt-5.5 for must-land/hard items, minimax for S mechanical.**
 
 ## Blockers
 - None active. Roadmap "Now" STALE (Stream A/B shipped). minimax hitting 2064 high-load errors — prefer gpt-5.5 for must-land items.
