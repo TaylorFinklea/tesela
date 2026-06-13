@@ -301,6 +301,19 @@ fn main() {
 /// nothing to reap, no lock taken).
 fn run_app(url: String, child: Option<Child>) {
     tauri::Builder::default()
+        // Single-instance: a 2nd launch hands its argv/cwd to the running
+        // process and exits. We focus the existing "main" window so the user
+        // gets a come-forward UX instead of a parallel process — the embedded
+        // server holds a single-writer flock on the mosaic, so a 2nd process
+        // would deadlock on `flock` startup and report a misleading 20s bind
+        // timeout (#202). MUST be the first `.plugin(...)` per Tauri v2.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(ServerChild(Mutex::new(child)))
         // Cmd+R reloads the webview — the one-keystroke recovery if the page
         // ever goes blank (a crashed WebKit content process, a transient

@@ -12,6 +12,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# Single-instance: a 2nd launch focuses the existing window instead of
+# spawning a parallel process. The embedded server holds a single-writer
+# flock on the mosaic, so a 2nd process would deadlock on startup (#202).
+tauri-plugin-single-instance = { version = "2", features = [] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
