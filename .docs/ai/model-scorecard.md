@@ -57,6 +57,14 @@ _Last updated: 2026-06-13 (after the command-registry B1–B4 head-to-head: gpt-
 
 ## Batch Log (append-only)
 
+### 2026-06-13 — FLEET DISPATCH Wave 2 (4 items, all merged)
+
+- **gpt-5.5 — DSK4 (5/5, `754bd7ba`):** clear parent-death watchdog env before detached respawn; extracted a testable helper + **added a unit test**. Exemplary again.
+- **minimax-m3 — DSK2/3 (5/5, `b8952ebf`):** wait_for_port fail-fast on child exit (clean `Result` signature) + 30s SIGTERM deadline with logging; even removed a redundant rebind.
+- **minimax-m3 — B5 (4.5/5, `ee78107f`):** `:keymap` fullscreen overlay mirroring the graph/settings pattern, themed.
+- **minimax-m3 — PROP3 (4.5/5, `47c03aea`):** wired the orphaned TagPropertyConfig into Tag pages; nit: one unstyled divider class.
+- **Running totals (fleet-dispatch):** gpt-5.5 = 5,5,5 (3 items); minimax = 4.5,5,4.5,4.5 (4 items). Both co-leads are reliable first-try on well-specced bounded items. No bad batches; kimi remains benched.
+
 ### 2026-06-13 — FLEET DISPATCH Wave 1 (Opus-orchestrated, real merged work)
 
 - First self-dispatched fleet batch via the worktree→model→Verify→Opus-review→merge→score loop (`source:fleet-dispatch` in jsonl). Both merged to main.

@@ -8,8 +8,8 @@
 - [x] Head-to-head benchmark → **gpt-5.5 WON** → merged `4766111` (cmd-registry B1–B4). Evidence recorded.
 - [x] Grounding triage (5-agent) → tiered backlog **`phases/2026-06-13-backlog.md`**. Properties UNBLOCKED (3 product calls already resolved 06-05); iOS reports fixed thru build 12; colon/heading "bugs" were CDP artifacts (→ H1/H2).
 - [x] Cycle focus: all 4 fleet areas in parallel; Opus = sync (HA-first, defer CF).
-- [x] **Fleet Wave 1 DONE** — DSK1→gpt-5.5 (5/5 `a4f81b03`), PROP1→minimax (4.5/5 `7390af30`) merged + scored. Pipeline validated end-to-end.
-- [ ] **Fleet Wave 2 launched** (async, non-iOS) — DSK2+3→minimax, DSK4→gpt-5.5, B5→minimax, PROP3→minimax → review+merge+score on completion → wave 3 (iOS via submodule-aware worktree + remaining web/desktop).
+- [x] **Fleet Waves 1+2 DONE** — 6 items merged + scored (DSK1, DSK2/3, DSK4, PROP1, B5, PROP3). gpt-5.5 = 5/5×3; minimax = 4.5–5. Loop proven 2×.
+- [ ] **Fleet Wave 3 RUNNING** (async) — B6→gpt-5.5, ED1→minimax, PROP6→minimax. On completion: **review+merge+score per the routine in `phases/2026-06-13-backlog.md`** (logs `.bench/wave3/logs/`). Then iOS wave (submodule-aware worktree) + remaining web/desktop (DSK5/6/7, PROP2/4/5).
 - [ ] Opus Lead: **L1** sync (min key/pairing + cursor migration, HA-first) + **L2** slash-as-registry spec (north-star #1).
 - [ ] Taylor: **H1–H4** confirms (real browser + Roshar); product decisions as they arise.
 
