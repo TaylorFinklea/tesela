@@ -170,6 +170,43 @@
   }
 
   /**
+   * PROP6 — when a tag is ADDED to a block, auto-fill the tag's property
+   * defaults as STRUCTURED container properties (via the existing
+   * `setBlockPropertyStructured` path — same mechanism as `/p`, `/s`, and
+   * the date picker, NOT a new write path). For each property the tag
+   * declares with a non-null `default` that the block doesn't already have
+   * a non-empty value for, emit one `BlockPropertySet` op (the optimistic
+   * `block.properties` update lands instantly so the chip renders the
+   * default value with no round-trip flicker).
+   *
+   * Idempotency: re-adding the same tag does NOT duplicate or reset
+   * already-set values. The check is `block.properties[k] && .trim()` —
+   * truthy and non-empty — so the empty `key:: ` placeholder line
+   * `toggleBlockTag` already appended is treated as "not set" and gets
+   * filled (which is the whole point), while a user-typed value
+   * (`status:: done`) or a prior structured write (`status: doing` from
+   * the chip) is preserved. P1.13 keeps `block.properties` stable across
+   * prose edits, so the structured-only value survives the `tags::` toggle.
+   *
+   * Properties without a default are skipped — the empty placeholder line
+   * is the existing "nudge the user" affordance for those (no value to
+   * auto-fill; the user fills it via /p or the chip UI). Mirrors the
+   * "default_value" semantics the API exposes for resolved tag defs:
+   * `default: string | null` per property.
+   */
+  function autoFillTagDefaults(blockId: string, tagName: string) {
+    const block = blocks.find((b) => b.id === blockId);
+    if (!block) return;
+    for (const def of getTagPropertyDefs(tagName, allNotes, propertyRegistry, inheritanceMap)) {
+      const k = def.name.toLowerCase();
+      if (def.default === null || def.default === undefined) continue;
+      const existing = block.properties[k];
+      if (existing && existing.trim() !== "") continue;
+      void setBlockPropertyStructured(block.id, k, def.default);
+    }
+  }
+
+  /**
    * Compute the keys to hide in this block's editor based on the block's
    * inherited tag chain. A key gets `hide_by_default` if any tag-property def
    * has that flag; same for `hide_empty`.
@@ -1264,7 +1301,15 @@
       // materialized lines). Status goes to the container below. Model B: the
       // NL token lift happens on BLUR, not here — ⌘↵ just tags, so it doesn't
       // rewrite the line while the user is still editing.
+      // PROP6 — ⌘↵ just promoted this block to a #Task. Fill the tag's OTHER
+      // property defaults (Priority, Scheduled, …) as structured container ops
+      // alongside the Status op below. Status is set explicitly right after,
+      // so `autoFillTagDefaults` skips it (existing value `next` is non-empty).
+      // The check is read from the post-toggle `block` snapshot returned by
+      // `handleBlockChange`; the new state lands synchronously in Svelte 5.
       handleBlockChange(block.id, toggleBlockTag(block.raw_text, "Task", []));
+      const post = blocks.find((b) => b.id === block.id) ?? block;
+      autoFillTagDefaults(post.id, "Task");
     }
     void setBlockPropertyStructured(block.id, "status", next);
   }
@@ -1852,6 +1897,17 @@
     // non-candidate block (no server bid / brand-new local insert) makes
     // `saveBlocksViaOps` fall back to the whole-body PUT. One path per save.
     if (changedIds.size === 0) return;
+    // PROP6 — for the ADD branch (anyHas === false), each flipped block just
+    // gained the tag. Fire-and-forget the structured `BlockPropertySet` ops
+    // for the tag's property defaults (one per property with a non-null
+    // `default` that the block doesn't already have set — idempotent on
+    // re-add). Runs in parallel with the `saveBlocksViaOps` text save below;
+    // the container op and the text op are independent, so no race. Skipped
+    // for the REMOVE branch (anyHas === true) — removing a tag must never
+    // re-write the block's properties.
+    if (!anyHas) {
+      for (const id of changedIds) autoFillTagDefaults(id, tagName);
+    }
     saveBlocksViaOps(
       blocks,
       [...changedIds].map((id) => upsertOpForBlock(blocks, id)),
@@ -2146,6 +2202,7 @@
             bid={block.bid ?? undefined}
             onlorotext={(text) => handleLoroText(block.id, text)}
             onsetproperty={(p) => setBlockPropertyStructured(block.id, p.key, p.value)}
+            ontagadded={(tagName) => autoFillTagDefaults(block.id, tagName)}
             onnavigate={handleNavigate}
             onescape={() => {}}
             onenter={(textAfter: string) => handleEnter(vi, textAfter)}

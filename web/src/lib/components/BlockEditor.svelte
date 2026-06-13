@@ -535,6 +535,13 @@
     onlorotext: onLoroText,
     onsetproperty: onSetProperty,
     onstartinsertconsumed: onStartInsertConsumed,
+    /** PROP6 — fires AFTER `onchange` for a tag-add (autocomplete tag chip,
+     *  tagmanage commit, or `/task` slash) so the parent (BlockOutliner) can
+     *  emit structured `BlockPropertySet` ops for the tag's property defaults
+     *  via the existing `setBlockPropertyStructured` path. The parent decides
+     *  whether to fill or skip (idempotency lives there, on parsed
+     *  `block.properties`). NOT fired for tag removes — only ADDs. */
+    ontagadded: onTagAdded,
   }: {
     initialText: string;
     onblur: () => void;
@@ -626,6 +633,9 @@
      *  text and never writes a `key:: value` line. */
     onsetproperty?: (p: { key: string; value: string }) => void;
     onstartinsertconsumed?: () => void;
+    /** PROP6 — fired after a tag is ADDED (not removed) so the parent can
+     *  auto-fill structured property defaults for the new tag. */
+    ontagadded?: (tagName: string) => void;
   } = $props();
 
   const hiddenKeysCompartment = new Compartment();
@@ -715,6 +725,14 @@
       // before toggling — otherwise the filter chars end up as block content.
       const cursorPos = view.state.selection.main.head;
       const cleaned = doc.slice(0, autocompleteStartPos) + doc.slice(cursorPos);
+      // PROP6 — tagmanage toggles; we only auto-fill defaults on ADD. Detect
+      // by checking the cleaned text (the typed `#tag` is already stripped):
+      // if the tag was already in the `tags::` line, the toggle is a REMOVE
+      // and we MUST NOT fire onTagAdded (re-adding is fine; the parent's
+      // idempotency check handles that case; removing must not fill defaults).
+      const wasPresent = getBlockTags(cleaned).some(
+        (t) => t.toLowerCase() === item.label.toLowerCase(),
+      );
       const fillNames = autoFillNames?.(item.label) ?? [];
       const newText = toggleBlockTag(cleaned, item.label, fillNames);
       view.dispatch({
@@ -722,6 +740,7 @@
         selection: { anchor: Math.min(autocompleteStartPos, newText.length) },
       });
       onChange(newText);
+      if (!wasPresent) onTagAdded?.(item.label);
       // Refresh active indicators and keep menu open
       const activeTags = new Set(getBlockTags(newText).map((t) => t.toLowerCase()));
       tagManageItems = tagManageItems.map((t) => ({
@@ -768,6 +787,15 @@
     // exactly like the `tagmanage` branch. (Links ignore mode.)
     if (autocompleteType === "tag" && mode === "chip") {
       const cleaned = doc.slice(0, autocompleteStartPos) + after;
+      // PROP6 — `autocompleteType === "tag"` is a commit-to-chip gesture
+      // (the user just typed `#tag` to add a tag). Mirror the tagmanage
+      // add-vs-remove detection: if the tag was already on the block, the
+      // `toggleBlockTag` below is effectively a REMOVE — do not fill defaults
+      // in that case (idempotency is the parent's job; this is just the
+      // ADD-only signal).
+      const wasPresent = getBlockTags(cleaned).some(
+        (t) => t.toLowerCase() === insertedName.toLowerCase(),
+      );
       const fillNames = autoFillNames?.(insertedName) ?? [];
       const newText = toggleBlockTag(cleaned, insertedName, fillNames);
       view.dispatch({
@@ -775,6 +803,7 @@
         selection: { anchor: Math.min(autocompleteStartPos, newText.length) },
       });
       onChange(newText);
+      if (!wasPresent) onTagAdded?.(insertedName);
       showAutocomplete = false;
       autocompleteFilter = "";
       autocompleteStartPos = -1;
@@ -1062,6 +1091,12 @@
     // inserts) is collected here and emitted as a container op AFTER the text
     // dispatch — never written as a `key:: value` line.
     let pendingProp: { key: string; value: string } | null = null;
+    // PROP6 — same "dispatched after the text commit" pattern as `pendingProp`.
+    // The `/task` slash sets this to "Task" when the block didn't already have
+    // it; null otherwise. Fires `onTagAdded` after `onChange` below so the
+    // parent (BlockOutliner) can emit structured `BlockPropertySet` ops for
+    // the tag's property defaults via the existing setter.
+    let tagAddedThisSlash: string | null = null;
     const allStatuses = statusChoices ?? ["todo", "doing", "done"];
     if (allStatuses.includes(command)) {
       insert = before.trimEnd() + after;
@@ -1071,6 +1106,15 @@
         case "task": {
           const cleaned = before + after;
           const hasTask = getBlockTags(cleaned).some((t) => t.toLowerCase() === "task");
+          // PROP6 — the `/task` slash is an ADD-only gesture: when the block
+          // already has #Task we just strip the slash text (no toggle, no
+          // auto-fill). When the block doesn't have it, `toggleBlockTag` adds
+          // the tag — fire onTagAdded AFTER `onChange` so the parent can emit
+          // structured `BlockPropertySet` ops for the tag's property defaults.
+          // Tracked via a local flag and dispatched below the switch (alongside
+          // the existing `pendingProp` route) to keep the post-dispatch code
+          // path single.
+          tagAddedThisSlash = !hasTask ? "Task" : null;
           insert = hasTask ? cleaned : toggleBlockTag(cleaned, "Task", autoFillNames?.("Task") ?? []);
           break;
         }
@@ -1213,6 +1257,7 @@
     });
     onChange(insert);
     if (pendingProp) onSetProperty?.(pendingProp);
+    if (tagAddedThisSlash) onTagAdded?.(tagAddedThisSlash);
     showSlashMenu = false;
     slashStartPos = -1;
     onSlashCommand?.(command);
