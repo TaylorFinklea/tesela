@@ -50,7 +50,9 @@ pub mod validate;
 pub use destination::Destination;
 pub use error::{BackupError, Result};
 pub use manifest::{Manifest, ManifestEncryption, SCHEMA_VERSION};
-pub use retention::{prune_gfs, GfsPolicy, PruneOutcome};
+pub use retention::{
+    prune_gfs, GfsPolicy, PruneOutcome, DEFAULT_DAILY, DEFAULT_MONTHLY, DEFAULT_WEEKLY,
+};
 
 /// Options for a single `backup()` call.
 pub struct BackupOptions {
@@ -66,8 +68,9 @@ pub struct BackupOptions {
     /// crate doesn't depend on sqlx) and hand it over here.
     pub extra_files: Vec<(String, std::path::PathBuf)>,
     /// GFS retention to apply after a successful backup. Use
-    /// `Some(GfsPolicy::default())` for the standard 7/4/6 cadence,
-    /// or `None` to skip pruning (e.g. during tests).
+    /// `Some(GfsPolicy::default())` for the standard
+    /// `DEFAULT_DAILY`/`DEFAULT_WEEKLY`/`DEFAULT_MONTHLY` cadence
+    /// (7/4/6), or `None` to skip pruning (e.g. during tests).
     pub retention: Option<GfsPolicy>,
     /// Encryption mode. `None` (default) writes plaintext on disk.
     /// `Age { recipient }` runs each captured file through `age` after

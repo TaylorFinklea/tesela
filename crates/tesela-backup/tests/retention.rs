@@ -5,7 +5,7 @@
 use chrono::{Duration, Local};
 use std::fs;
 use tempfile::TempDir;
-use tesela_backup::{prune_gfs, GfsPolicy};
+use tesela_backup::{prune_gfs, GfsPolicy, DEFAULT_DAILY, DEFAULT_MONTHLY, DEFAULT_WEEKLY};
 
 #[test]
 fn gfs_keeps_seven_daily_then_weekly_then_monthly() {
@@ -20,21 +20,13 @@ fn gfs_keeps_seven_daily_then_weekly_then_monthly() {
         fs::create_dir_all(root.join(&name)).unwrap();
     }
 
-    let outcome = prune_gfs(
-        root,
-        GfsPolicy {
-            daily: 7,
-            weekly: 4,
-            monthly: 6,
-        },
-        false,
-    )
-    .unwrap();
+    let outcome = prune_gfs(root, GfsPolicy::default(), false).unwrap();
 
-    // 7 daily + 4 weekly + 6 monthly = 17 survivors at most. The
-    // monthly tier may collide with the weekly tier on month
-    // boundaries, so the actual upper bound is exactly 17 when the
-    // window is wide enough to fit all three tiers without overlap.
+    // DEFAULT_DAILY + DEFAULT_WEEKLY + DEFAULT_MONTHLY = 17 survivors
+    // at most. The monthly tier may collide with the weekly tier on
+    // month boundaries, so the actual upper bound is exactly 17 when
+    // the window is wide enough to fit all three tiers without
+    // overlap.
     assert!(
         outcome.kept.len() >= 13 && outcome.kept.len() <= 17,
         "expected ~13-17 survivors, got {}",
@@ -46,8 +38,8 @@ fn gfs_keeps_seven_daily_then_weekly_then_monthly() {
         "every directory should be classified"
     );
 
-    // The 7 most recent must all be kept.
-    for day in 0..7 {
+    // The DEFAULT_DAILY most recent must all be kept.
+    for day in 0..DEFAULT_DAILY as i64 {
         let when = now - Duration::days(day);
         let name = format!("backup-{}", when.format("%Y%m%d-%H%M%S"));
         let expected = root.join(&name);
@@ -79,16 +71,19 @@ fn gfs_dry_run_does_not_delete() {
         fs::create_dir_all(root.join(&name)).unwrap();
     }
 
-    let outcome = prune_gfs(
-        root,
-        GfsPolicy {
-            daily: 7,
-            weekly: 4,
-            monthly: 6,
-        },
-        true,
-    )
-    .unwrap();
+    // Drive the test off the named constants so a future change to
+    // the default cadence doesn't silently leave the test lagging
+    // behind production.
+    assert!(DEFAULT_DAILY > 0);
+    assert!(DEFAULT_WEEKLY > 0);
+    assert!(DEFAULT_MONTHLY > 0);
+    let policy = GfsPolicy {
+        daily: DEFAULT_DAILY,
+        weekly: DEFAULT_WEEKLY,
+        monthly: DEFAULT_MONTHLY,
+    };
+
+    let outcome = prune_gfs(root, policy, true).unwrap();
     assert!(!outcome.removed.is_empty());
     for path in &outcome.removed {
         assert!(path.exists(), "dry run kept {} on disk", path.display());

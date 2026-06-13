@@ -4,9 +4,19 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Result;
 
+/// GFS retention defaults: keep this many daily, weekly, and monthly
+/// backups. Approved by the 2026-06-10 backup-scheduler plan; the
+/// `backup-scheduler` server crate reads the same numbers from
+/// `TESELA_BACKUP_KEEP_DAILY` / `_WEEKLY` / `_MONTHLY` env vars and
+/// falls back to these when the env is unset.
+pub const DEFAULT_DAILY: usize = 7;
+pub const DEFAULT_WEEKLY: usize = 4;
+pub const DEFAULT_MONTHLY: usize = 6;
+
 /// GFS retention: keep N daily, M weekly, K monthly.
 ///
-/// Defaults match the approved plan: 7 daily, 4 weekly, 6 monthly.
+/// Defaults match the approved plan: `DEFAULT_DAILY` daily,
+/// `DEFAULT_WEEKLY` weekly, `DEFAULT_MONTHLY` monthly.
 #[derive(Debug, Clone, Copy)]
 pub struct GfsPolicy {
     pub daily: usize,
@@ -17,9 +27,9 @@ pub struct GfsPolicy {
 impl Default for GfsPolicy {
     fn default() -> Self {
         Self {
-            daily: 7,
-            weekly: 4,
-            monthly: 6,
+            daily: DEFAULT_DAILY,
+            weekly: DEFAULT_WEEKLY,
+            monthly: DEFAULT_MONTHLY,
         }
     }
 }

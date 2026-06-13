@@ -841,7 +841,7 @@ Orchestrator: Pi. Spec: `phases/command-registry-spec.md`. Run A1 and B1 in para
   - **complexity** — `S`
   - **ralph_model** — `opencode-go/minimax-m3`
 
-- [ ] **A4 — Extract hardcoded backup-retention magic numbers into named constants.**
+- [x] **A4 — Extract hardcoded backup-retention magic numbers into named constants.**
   - **Scope** — Find magic retention counts/days in backup code and extract them into named constants at the top of the file or module.
   - **Files** — `crates/tesela-backup/src/lib.rs` (and any related files).
   - **Acceptance** — No magic numbers for retention remain inline; backup tests still pass.
