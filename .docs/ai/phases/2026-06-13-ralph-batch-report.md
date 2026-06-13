@@ -7,6 +7,8 @@
 
 - [x] A1 — Fix clippy errors (`minimax-m3`)
 - [x] A2 — Replace `serde_json::to_string_pretty` unwraps in MCP tools with explicit `.expect()` (`minimax-m3`)
+- [x] A3 — Replace regex-capture unwraps in Logseq importer with `.expect()` (`minimax-m3`)
+- [x] A4 — Extract hardcoded backup-retention magic numbers into named constants (`minimax-m3`)
 - [x] B1 — Unified command registry shape + port palette/leader (`kimi-k2.7-code`)
 - [x] B2 — Keymap introspection + conflict detection (`kimi-k2.7-code`)
 - [x] B3 — Context-aware command dispatch (`kimi-k2.7-code`)
@@ -61,7 +63,7 @@
 ### A4 — Extract hardcoded backup-retention magic numbers into named constants
 
 - Status: done
-- Commit: TBD
+- Commit: `dcce557`
 - Verify result:
   - `cargo test -p tesela-backup` → 17/17 pass (8 unit + 4 authority_capture + 2 git_destination + 3 retention).
   - `cargo clippy --workspace -- -D warnings` → green.
