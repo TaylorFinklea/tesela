@@ -6,9 +6,10 @@
 ## Batch Items
 
 - [x] A1 — Fix clippy errors (`minimax-m3`)
-- [ ] B1 — Unified command registry shape + port palette/leader (`kimi-k2.7-code`)
-- [ ] B2 — Keymap introspection + conflict detection (`kimi-k2.7-code`)
-- [ ] B3 — Context-aware command dispatch (`kimi-k2.7-code`)
+- [x] A2 — Replace `serde_json::to_string_pretty` unwraps in MCP tools with explicit `.expect()` (`minimax-m3`)
+- [x] B1 — Unified command registry shape + port palette/leader (`kimi-k2.7-code`)
+- [x] B2 — Keymap introspection + conflict detection (`kimi-k2.7-code`)
+- [x] B3 — Context-aware command dispatch (`kimi-k2.7-code`)
 
 ## Item Reports
 
@@ -39,3 +40,10 @@
 - Commit: `6b1cb33`
 - Verify result: `pnpm --dir web check` → 0 errors; `cargo clippy --workspace -- -D warnings` → green; unit tests → 6/6.
 - Notes: Added reactive `CommandContext` in `GraphiteShell`; `GrCommandPalette` filters via `commandRegistry.available(ctx)`; `GrLeaderOverlay`/`getLeaderTree(ctx)` prune unavailable branches; `skip-occurrence` now declares `when: (ctx) => !!ctx.focusedBlock?.properties['recurring']` as the first context-gated command.
+
+### A2 — Replace `serde_json::to_string_pretty` unwraps in MCP tools with explicit `.expect()`
+
+- Status: done
+- Commit: `5396822`
+- Verify result: `cargo test -p tesela-mcp` → 4 integration tests pass; `cargo clippy --workspace -- -D warnings` → green.
+- Notes: Three bare `serde_json::to_string_pretty(&results).unwrap()` call sites in `crates/tesela-mcp/src/tools.rs` (lines 150/236/260 — `search_notes`, `list_notes`, `get_backlinks`) replaced with `.expect("serializing a Vec<serde_json::Value> is infallible (no IO, all Values serialize)")`. The expect message documents the invariant: serializing a `Value` cannot produce IO errors and any `Value` always serializes successfully. Output JSON is byte-equivalent. No behavior change.
