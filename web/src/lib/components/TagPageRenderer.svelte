@@ -14,6 +14,7 @@
   import type { Note } from "$lib/types/Note";
   import BlockOutliner from "$lib/components/BlockOutliner.svelte";
   import InstancesOfTag from "$lib/renderers/derived/instances-of-tag.svelte";
+  import TagPropertyConfig from "./TagPropertyConfig.svelte";
   import { openPageInFocused } from "$lib/buffer/state.svelte";
   import { asPageId } from "$lib/buffer/types";
 
@@ -102,6 +103,12 @@
       onNavigate={handleEmbeddedNavigate}
     />
   </section>
+
+  <div class="tag-page-divider"></div>
+
+  <section class="tag-page-properties">
+    <TagPropertyConfig tagName={tagValue} noteId={note.id} />
+  </section>
 </div>
 
 <style>
@@ -116,6 +123,9 @@
     margin: 4px 0;
   }
   .tag-page-instances {
+    padding: 6px 0 16px 0;
+  }
+  .tag-page-properties {
     padding: 6px 0 16px 0;
   }
 </style>
