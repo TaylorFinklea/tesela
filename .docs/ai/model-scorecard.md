@@ -57,6 +57,13 @@ _Last updated: 2026-06-13 (after the command-registry B1–B4 head-to-head: gpt-
 
 ## Batch Log (append-only)
 
+### 2026-06-13 — FLEET DISPATCH Wave 3 (3 items: 2 merged, 1 held)
+
+- **gpt-5.5 — B6 (5/5, `89100bd6`):** clean `dispatchWithLocalApplyGuard` helper reusing the existing flag; killed the slash/property double-save; preserved the Loro path; added an introspection test.
+- **minimax-m3 — PROP6 (4.5/5, `555472fa`):** auto-fill tag property defaults as structured ops across 5 tag-add gestures, idempotent, ADD-only; found the existing structured-write path. Senior-level. (3-way merged over B6.)
+- **minimax-m3 — ED1 (3.0, NOT MERGED):** GFM table render — *excellent* parser + widget + 14 tests + CSS, but a **runtime bug review caught**: a multi-line `Decoration.replace` from the `teselaDecorations` ViewPlugin, which CM6 forbids (must be a StateField). Type-check + pure-fn tests passed and missed it. → ED1-fix (Lead) reuses the salvageable parts.
+- **KEY EVIDENCE:** first fleet diff that passed objective Verify but was **runtime-broken** on a subtle framework constraint — caught only by Opus review. Validates the "Opus = review gate" role; objective gates alone are NOT sufficient for framework-API-edge work. Cheap models excel at well-bounded surgical work but can miss host-framework lore.
+
 ### 2026-06-13 — FLEET DISPATCH Wave 2 (4 items, all merged)
 
 - **gpt-5.5 — DSK4 (5/5, `754bd7ba`):** clear parent-death watchdog env before detached respawn; extracted a testable helper + **added a unit test**. Exemplary again.

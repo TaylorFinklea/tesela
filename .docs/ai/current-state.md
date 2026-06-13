@@ -9,7 +9,9 @@
 - [x] Grounding triage (5-agent) → tiered backlog **`phases/2026-06-13-backlog.md`**. Properties UNBLOCKED (3 product calls already resolved 06-05); iOS reports fixed thru build 12; colon/heading "bugs" were CDP artifacts (→ H1/H2).
 - [x] Cycle focus: all 4 fleet areas in parallel; Opus = sync (HA-first, defer CF).
 - [x] **Fleet Waves 1+2 DONE** — 6 items merged + scored (DSK1, DSK2/3, DSK4, PROP1, B5, PROP3). gpt-5.5 = 5/5×3; minimax = 4.5–5. Loop proven 2×.
-- [ ] **Fleet Wave 3 RUNNING** (async) — B6→gpt-5.5, ED1→minimax, PROP6→minimax. On completion: **review+merge+score per the routine in `phases/2026-06-13-backlog.md`** (logs `.bench/wave3/logs/`). Then iOS wave (submodule-aware worktree) + remaining web/desktop (DSK5/6/7, PROP2/4/5).
+- [x] **Fleet Wave 3 DONE** — B6→gpt-5.5 (5/5 `89100bd6`), PROP6→minimax (4.5/5 `555472fa`) merged. **ED1 (gfm-table) NOT MERGED** — review caught a runtime bug (ViewPlugin can't do line-break-replacing decorations); → `ED1-fix` (Lead), parser/tests salvageable in `.bench/wave3/logs/ed1.diff.patch`.
+- [ ] **Next:** iOS wave (submodule-aware worktree: IOS1/2/3, ED2) + remaining web/desktop (DSK5/6/7, PROP2/4/5). Then Opus Lead: L2 slash-registry spec → L1 sync (HA-first) → ED1-fix.
+- 10 fleet items merged this session (waves 1–3); gpt-5.5 = 5/5×4, minimax = 4.5/5×4 + one held (ed1, 3.0). Opus review is the safety gate (caught ed1).
 - [ ] Opus Lead: **L1** sync (min key/pairing + cursor migration, HA-first) + **L2** slash-as-registry spec (north-star #1).
 - [ ] Taylor: **H1–H4** confirms (real browser + Roshar); product decisions as they arise.
 
