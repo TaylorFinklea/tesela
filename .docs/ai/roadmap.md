@@ -656,7 +656,7 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
   - **tier_floor** - `senior`
   - **complexity** - `M`
 
-- [ ] **Add task-toggle stale-state regression coverage.**
+- [x] **Add task-toggle stale-state regression coverage.**
   - **Scope** - Add targeted tests around checkbox/task-status updates from web and mobile-shaped payloads so a stale desktop/web view cannot overwrite an already-completed task with old unchecked state.
   - **Files** - `crates/tesela-server/src/routes/notes.rs`; server tests around block/property mutation routes; web side only if the failing path requires `web/src/lib/property-update.ts` or `web/src/lib/components/BlockOutliner.svelte`.
   - **Acceptance** - Toggling a task updates the intended block/status property only; unrelated concurrent block text or task status changes survive; tests exercise the protected block-granular path rather than a whole-note rewrite.

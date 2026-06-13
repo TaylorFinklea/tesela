@@ -133,6 +133,14 @@ Rules in force:
 - Status: landed.
 - Owner: pi mono `gpt-5.5`, self-identified Senior (T2). `tier_floor: senior` met; `complexity: M` within Senior ceiling.
 - What landed: `segmentText` now emits literal fenced-code segments, suppressing wikilink parsing inside fences; `parseBlocks` ignores tags/properties inside fenced code while preserving normal tags/properties outside. New `blockDisplayText` keeps raw fenced markdown for read-mode display but strips out property lines and outside-code tags so existing block-display behavior is preserved. Query and Collection read-mode surfaces render those code segments as monospaced preformatted panels while edit mode continues to use the raw `BlockEditor` markdown fence.
-- Commit: pending (this atomic commit; exact SHA available after commit).
+- Commit: `6ec40cd`.
 - Verify: `node --test web/tests/unit/block-parser.test.mjs` PASS 18/18; `pnpm --dir web check` PASS with 0 errors / 43 pre-existing warnings; `git diff --check` PASS.
 - Shakiness / follow-up: web-only read-mode first pass; no syntax highlighting in Query/Collection read surfaces, only monospaced preformatted rendering. Did not run against live mosaic. Main editable outliner already had CodeMirror fence decoration and was not changed.
+
+### Item 11: Add task-toggle stale-state regression coverage
+- Status: landed.
+- Owner: pi mono `gpt-5.5`, self-identified Senior (T2). `tier_floor: senior` met; `complexity: M` within Senior ceiling.
+- What landed: Added HTTP integration regression `crates/tesela-server/tests/task_toggle_stale_state.rs` proving task status toggles stay block-granular. The scenario seeds three explicit-bid blocks, completes a sibling task through direct-bid `/blocks/set-property`, lands an unrelated text edit through `/notes/{id}/blocks`, then simulates a stale web line-id task toggle on another block. Assertions verify the intended toggle lands while the sibling's already-completed status and the unrelated text edit survive.
+- Commit: this commit (self-referential SHA not embedded; use `git log -1 --oneline`).
+- Verify: `cargo test -p tesela-server task_toggle_does_not_reassert_stale_state` PASS 1/1; `cargo test -p tesela-server` PASS 68/68; `rustfmt --edition 2021 --check crates/tesela-server/tests/task_toggle_stale_state.rs` PASS; `git diff --check` PASS.
+- Shakiness / follow-up: coverage-only item; the new regression passed against the existing protected route behavior, so no production code changed. Did not touch web code or run web block-ops tests. Test uses temp mosaic and local server only; no live mosaic.
