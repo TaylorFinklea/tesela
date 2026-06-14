@@ -11,7 +11,9 @@
 - [x] **Wave 5 DONE — 5/5 merged+scored:** IOS1(gpt-5.5 5 `7e5bf379`), IOS2(minimax 5 `312d7e8f`), IOS3(minimax 5 `ba413d26`), ED2(gpt-5.5 5 `892e0ccc`) — combined incremental xcodebuild GREEN; all compiled first-try unaided. **PROP5**(gpt-5.5 5 `45d834cd`) — re-dispatch succeeded where minimax rate-limited; Opus flipped default ON→OFF (opt-in) + excluded its stale .docs edits.
 - [x] **B-impl-1 DONE** (wave6, gpt-5.5 5/5) — registry types widened (editor?/surface/slashKey, `run(arg?,ctx?)`), ctx threaded through colon/palette/leader, `slash-context.ts` SlashContext type. Purely additive.
 - [x] **B-impl-2+3 DONE** (wave7, gpt-5.5 5/5) — `buildSlashContext()` producer + heading/date verbs dispatch through the unified registry (slash now shares the registry with `:`/⌘K/leader — north-star milestone). Opus-reviewed all 7 spec hard constraints + proved heading caret byte-identical. 11 verbs still on the legacy switch.
-- [ ] **Next:** (1) runtime self-QA `/heading`+`/date` in a real browser BEFORE porting more · (2) **B-impl-4** (migrate remaining 11 verbs + delete switch under grep gate — lower-risk now the machinery's proven) · **ED1-fix** (salvage `.bench/wave3/logs/ed1.diff.patch`) · **L1** sync (HA-first — big, design = Taylor's call).
+- [x] **Runtime self-QA PASSED** (2026-06-13, real browser /g) — slash menu heading+date first (no dupes), 11 legacy intact; /heading→`# `; /date→picker; editor.date filtered from ⌘K; zero console errors. North-star slash-via-registry CONFIRMED working.
+- [~] **B-impl-4 NEXT** (migrate remaining 11 verbs + delete legacy switch under grep gate). **ROUTING CHANGE (2026-06-13): gpt-5.5 OUT OF LIMITS → use Sonnet 4.6 (`pi --model openrouter/anthropic/claude-sonnet-4.6`) or an opencode model. minimax still flaky under load.**
+- [ ] **Then:** **ED1-fix** (salvage `.bench/wave3/logs/ed1.diff.patch`) · **L1** sync (HA-first — big, design = Taylor's call).
 - [ ] Taylor: **H1–H4** confirms (real browser + Roshar); push when ready (18 new commits); 4 L2 keyboard Qs; PROP5 default-OFF — flip on if wanted; green-light chezmoi items.
 
 ## Scorecard tally (waves 1–5, `model-bench.jsonl` 32 rows)
