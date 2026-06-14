@@ -3,6 +3,13 @@ name = "tesela-server"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "tesela_server"
+path = "src/lib.rs"
+# The unit tests (helpers, in-process route checks) live in the lib now;
+# keep them out of the bench harness pass like the bin below.
+bench = false
+
 [[bin]]
 name = "tesela-server"
 path = "src/main.rs"
