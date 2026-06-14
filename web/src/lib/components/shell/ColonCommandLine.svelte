@@ -16,9 +16,11 @@
   } from "$lib/stores/colon-mode.svelte";
   import {
     commandRegistry,
+    effectiveShortcut,
     type Command,
     type CommandContext,
   } from "$lib/command-registry.svelte";
+  import * as keybindings from "$lib/stores/keybindings.svelte";
   import { findCommandByVerb, matchesV4Command } from "$lib/v4/commands";
   import { openPeek } from "$lib/stores/peek.svelte";
   import { openFullscreenGraph } from "$lib/stores/fullscreen-overlay.svelte";
@@ -76,6 +78,7 @@
         });
       }
     }
+    const overrides = keybindings.snapshot();
     for (const cmd of allCommands) {
       if (!cmd.verb) continue;
       if (matchesV4Command(cmd, q)) {
@@ -83,7 +86,7 @@
           verb: cmd.verb,
           label: cmd.label,
           glyph: cmd.glyph,
-          shortcut: cmd.shortcut,
+          shortcut: effectiveShortcut(cmd, overrides),
           cmd,
         });
       }

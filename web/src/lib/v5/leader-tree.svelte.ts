@@ -11,9 +11,11 @@
 
 import {
   commandRegistry,
+  effectiveChord,
   type Command,
   type CommandContext,
 } from "$lib/command-registry.svelte";
+import * as keybindings from "$lib/stores/keybindings.svelte";
 // Type-only import via the `<script module>` block of ChordMenu.svelte.
 // Svelte's TS support exports the module-script types via the .svelte
 // path with a side-effect import.
@@ -50,18 +52,20 @@ const CHORD_GROUP_LABELS: Record<string, string> = {
 };
 
 function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext): ChordNode[] {
+  const overrides = keybindings.snapshot();
   const groups = new Map<string, Command[]>();
   for (const cmd of commands) {
-    if (!cmd.chord || cmd.chord.length <= depth) continue;
-    const key = cmd.chord[depth];
+    const chord = effectiveChord(cmd, overrides);
+    if (!chord || chord.length <= depth) continue;
+    const key = chord[depth];
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key)!.push(cmd);
   }
 
   const nodes: ChordNode[] = [];
   for (const [key, group] of groups) {
-    const leaf = group.find((cmd) => cmd.chord!.length === depth + 1);
-    const branches = group.filter((cmd) => cmd.chord!.length > depth + 1);
+    const leaf = group.find((cmd) => effectiveChord(cmd, overrides)!.length === depth + 1);
+    const branches = group.filter((cmd) => effectiveChord(cmd, overrides)!.length > depth + 1);
 
     if (leaf && branches.length === 0) {
       nodes.push({
@@ -104,8 +108,12 @@ function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext
 
 /** The chord tree the menu walks. Derived from the unified command registry. */
 export function getLeaderTree(ctx?: CommandContext): ChordNode[] {
+  const overrides = keybindings.snapshot();
   const commands = (ctx ? commandRegistry.available(ctx) : commandRegistry.all()).filter(
-    (cmd) => cmd.chord && cmd.chord.length > 0,
+    (cmd) => {
+      const chord = effectiveChord(cmd, overrides);
+      return chord && chord.length > 0;
+    },
   );
   return buildChordTree(commands, 0, ctx);
 }

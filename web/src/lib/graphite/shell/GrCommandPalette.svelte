@@ -31,9 +31,11 @@
   import { asPageId, type LeafId } from '$lib/buffer/types';
   import {
     commandRegistry,
+    effectiveShortcut,
     type Command,
     type CommandContext,
   } from '$lib/command-registry.svelte';
+  import * as keybindings from '$lib/stores/keybindings.svelte';
   import { matchesV4Command } from '$lib/v4/commands';
   import { scoreFuzzy, highlightRuns } from '$lib/fuzzy';
 
@@ -136,7 +138,7 @@
     return row.kind === 'cmd' ? row.cmd.glyph : '→';
   }
   function rowShortcut(row: PaletteRow): string | undefined {
-    return row.kind === 'cmd' ? row.cmd.shortcut : undefined;
+    return row.kind === 'cmd' ? effectiveShortcut(row.cmd, keybindings.snapshot()) : undefined;
   }
 
   // Seed query + focus input when the palette opens (mirrors Station's effect).
