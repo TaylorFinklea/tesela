@@ -30,6 +30,7 @@ target
 
 # Git worktrees
 .worktrees/
+.claude/worktrees/
 
 # Tesela runtime artifacts
 *.db
