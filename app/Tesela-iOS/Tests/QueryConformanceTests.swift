@@ -33,6 +33,9 @@ final class QueryConformanceTests: XCTestCase {
         let dsl: String
         let block: FixtureBlock
         let expect: Bool
+        /// L5 optional registry: property name → value_type. Absent ⇒ the
+        /// registry-free heuristic; present ⇒ the typed matcher.
+        let propertyTypes: [String: String]?
     }
 
     private struct FixtureBlock: Decodable {
@@ -91,7 +94,11 @@ final class QueryConformanceTests: XCTestCase {
         var failures: [String] = []
         for c in fixture.cases {
             let dsl = LocalQueryEngine.parseSimpleDsl(c.dsl)
-            let got = LocalQueryEngine.blockMatches(dsl, ctx: context(for: c.block))
+            // L5: build the lowercased name → value_type registry; absent ⇒ empty
+            // ⇒ the registry-free heuristic (existing cases unchanged).
+            var types: [String: String] = [:]
+            for (k, v) in (c.propertyTypes ?? [:]) { types[k.lowercased()] = v }
+            let got = LocalQueryEngine.blockMatches(dsl, ctx: context(for: c.block), propertyTypes: types)
             if got != c.expect {
                 failures.append("  \(c.name) — dsl \"\(c.dsl)\": expected \(c.expect), got \(got)")
             }

@@ -58,11 +58,21 @@ function toParsedBlock(b) {
   };
 }
 
+// L5: build the `lowercased-name → value_type` registry from a case's
+// optional `propertyTypes`; absent/empty → the registry-free heuristic.
+function typesFor(c) {
+  const m = new Map();
+  for (const [k, v] of Object.entries(c.propertyTypes ?? {})) {
+    m.set(k.toLowerCase(), v);
+  }
+  return m;
+}
+
 test("all conformance cases pass through the real parser + matcher", () => {
   const failures = [];
   for (const c of fixture.cases) {
     const q = parseQuery(c.dsl);
-    const got = blockMatches(toParsedBlock(c.block), q);
+    const got = blockMatches(toParsedBlock(c.block), q, typesFor(c));
     if (got !== c.expect) {
       failures.push(
         `  ${c.name} — dsl ${JSON.stringify(c.dsl)}: expected ${c.expect}, got ${got}`,

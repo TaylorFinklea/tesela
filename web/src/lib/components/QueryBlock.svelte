@@ -4,6 +4,7 @@
   import { api } from "$lib/api-client";
   import { blockDisplayText, parseBlocks, segmentText } from "$lib/block-parser";
   import { parseQuery, blockMatches } from "$lib/query-language";
+  import { buildRegistry } from "$lib/property-registry";
   import {
     IconTable,
     IconLayoutGrid,
@@ -140,6 +141,17 @@
   });
   const parsedQuery = $derived(parseQuery(combinedQueryText));
 
+  // L5: typed-comparison registry — lowercased property name → value_type,
+  // derived from the Property pages so query comparisons compare typed values
+  // (numeric/date/bool) instead of guessing from the strings. Mirrors the
+  // server's `property_type_map` (built from property_defs).
+  const propertyTypes = $derived.by(() => {
+    const notes = (allNotesQuery.data ?? []) as Note[];
+    const m = new Map<string, string>();
+    for (const [name, def] of buildRegistry(notes)) m.set(name, def.value_type);
+    return m;
+  });
+
   type Match = { block: ParsedBlock; noteTitle: string; noteId: string };
   const matches: Match[] = $derived.by(() => {
     if (!queryText) return [];
@@ -148,7 +160,7 @@
     for (const n of notes) {
       const noteBlocks = parseBlocks(n.id, n.body);
       for (const b of noteBlocks) {
-        if (blockMatches(b, parsedQuery)) {
+        if (blockMatches(b, parsedQuery, propertyTypes)) {
           out.push({ block: b, noteTitle: n.title, noteId: n.id });
         }
       }

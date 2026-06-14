@@ -497,6 +497,26 @@ impl SqliteIndex {
             .collect())
     }
 
+    /// Build the `lowercased-name → ValueType` map the typed query matcher
+    /// (L5) consults so property comparisons are typed (numeric/date/bool)
+    /// rather than string-guessed. One small `SELECT` per query execution;
+    /// callers build it once and pass it to `block_matches_typed`.
+    async fn property_type_map(
+        &self,
+    ) -> Result<std::collections::HashMap<String, crate::property::ValueType>> {
+        Ok(self
+            .get_all_property_defs()
+            .await?
+            .into_iter()
+            .map(|d| {
+                (
+                    d.name.to_ascii_lowercase(),
+                    crate::property::ValueType::parse(&d.value_type),
+                )
+            })
+            .collect())
+    }
+
     /// Get a single tag definition with resolved property schemas (walks extends chain).
     pub async fn get_resolved_tag_def(
         &self,
@@ -1241,7 +1261,10 @@ impl SqliteIndex {
         query: &crate::query::ParsedQuery,
     ) -> Result<Vec<crate::query::QueryItem>> {
         use crate::block::parse_blocks;
-        use crate::query::{block_matches, Kind, QueryItem, QueryOp};
+        use crate::query::{block_matches_typed, Kind, QueryItem, QueryOp};
+
+        // L5: typed-comparison registry — built once, consulted per block.
+        let types = self.property_type_map().await?;
 
         // Pick the first positive `tag:` filter as the broad SQL prefilter.
         // Negative tag filters and other property filters refine in-memory.
@@ -1306,7 +1329,7 @@ impl SqliteIndex {
             }
             // Refine each block in-memory.
             for (idx, block) in blocks.iter().enumerate() {
-                if !block_matches(block, query) {
+                if !block_matches_typed(block, query, &types) {
                     continue;
                 }
                 // Walk back through earlier blocks at lower indent_level to
@@ -1357,8 +1380,11 @@ impl SqliteIndex {
         query: &crate::query::ParsedQuery,
     ) -> Result<Vec<crate::query::QueryItem>> {
         use crate::block::ParsedBlock;
-        use crate::query::{block_matches, Kind, QueryItem};
+        use crate::query::{block_matches_typed, Kind, QueryItem};
         use std::collections::HashMap;
+
+        // L5: typed-comparison registry — built once, consulted per page-block.
+        let types = self.property_type_map().await?;
 
         // SELECT id, title, tags, note_type, plus full content for property parsing.
         let rows = sqlx::query(
@@ -1419,7 +1445,7 @@ impl SqliteIndex {
                 // on this field don't make sense for page queries.
                 parent_note_type: None,
             };
-            if !block_matches(&pseudo, query) {
+            if !block_matches_typed(&pseudo, query, &types) {
                 continue;
             }
             out.push(QueryItem {

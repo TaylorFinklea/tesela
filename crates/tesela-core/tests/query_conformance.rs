@@ -23,7 +23,8 @@ use std::collections::HashMap;
 
 use serde::Deserialize;
 use tesela_core::block::ParsedBlock;
-use tesela_core::query::{block_matches, parse_query, INBOX_VIEW_DSL};
+use tesela_core::property::ValueType;
+use tesela_core::query::{block_matches, block_matches_typed, parse_query, INBOX_VIEW_DSL};
 
 #[derive(Deserialize)]
 struct Fixture {
@@ -38,6 +39,11 @@ struct Case {
     dsl: String,
     block: FixtureBlock,
     expect: bool,
+    /// L5 optional registry: lowercased property name → value_type string.
+    /// Absent/empty ⇒ the registry-free matcher (heuristic); present ⇒ the
+    /// typed matcher (`block_matches_typed`).
+    #[serde(default, rename = "propertyTypes")]
+    property_types: HashMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -86,7 +92,16 @@ fn all_conformance_cases_pass_through_real_matcher() {
     for case in &fixture.cases {
         let q = parse_query(&case.dsl);
         let block = to_parsed_block(&case.block);
-        let got = block_matches(&block, &q);
+        let got = if case.property_types.is_empty() {
+            block_matches(&block, &q)
+        } else {
+            let types: HashMap<String, ValueType> = case
+                .property_types
+                .iter()
+                .map(|(k, v)| (k.to_ascii_lowercase(), ValueType::parse(v)))
+                .collect();
+            block_matches_typed(&block, &q, &types)
+        };
         if got != case.expect {
             failures.push(format!(
                 "  {} — dsl {:?}: expected {}, got {}",

@@ -760,32 +760,121 @@ function applyOp(actual: string, op: QueryOp, expected: string): boolean {
   return cmp <= 0; // Lte
 }
 
-/** Check whether a parsed block matches the query's expression tree. */
-export function blockMatches(block: ParsedBlock, query: ParsedQuery): boolean {
-  return evalExpr(block, query.expr);
+/**
+ * Map a `value_type` string onto the four comparison buckets. Both the
+ * server `ValueType` vocabulary (`multiselect`, `node`, …) and the web
+ * `PropertyType` vocabulary (`multi-select`, `email`, `phone`, `object`)
+ * collapse here — only number / date-like / checkbox differ from the
+ * default string bucket. Mirror of `query.rs:compare_typed`'s match arms.
+ */
+function valueTypeBucket(vt: string): "number" | "date" | "checkbox" | "string" {
+  switch (vt.toLowerCase()) {
+    case "number":
+      return "number";
+    case "date":
+    case "datetime":
+      return "date";
+    case "checkbox":
+      return "checkbox";
+    default:
+      return "string"; // text/url/select/multi-select/multiselect/node/email/phone/object
+  }
+}
+
+/** Registry-typed comparison (L5) — mirror of `query.rs:compare_typed`. */
+function compareTyped(a: string, b: string, vt: string): number {
+  switch (valueTypeBucket(vt)) {
+    case "number": {
+      const an = numericValue(a);
+      const bn = numericValue(b);
+      if (an !== null && bn !== null) return an < bn ? -1 : an > bn ? 1 : 0;
+      // either side isn't a number → case-folded string (no date promotion)
+      const al = asciiLower(a);
+      const bl = asciiLower(b);
+      return al < bl ? -1 : al > bl ? 1 : 0;
+    }
+    case "checkbox": {
+      const ab = eqIgnoreAsciiCase(a.trim(), "true");
+      const bb = eqIgnoreAsciiCase(b.trim(), "true");
+      return ab === bb ? 0 : ab ? 1 : -1; // false < true
+    }
+    case "date": {
+      if (isIsoDate(a) && isIsoDate(b)) return a < b ? -1 : a > b ? 1 : 0;
+      const al = asciiLower(a);
+      const bl = asciiLower(b);
+      return al < bl ? -1 : al > bl ? 1 : 0;
+    }
+    default: {
+      // string bucket — NO numeric promotion (a select "10" stays text).
+      const al = asciiLower(a);
+      const bl = asciiLower(b);
+      return al < bl ? -1 : al > bl ? 1 : 0;
+    }
+  }
+}
+
+/** `applyOp` routed through `compareTyped` — mirror of `query.rs:apply_op_typed`. */
+function applyOpTyped(actual: string, op: QueryOp, expected: string, vt: string): boolean {
+  if (op === "Like") return likeMatches(actual, expected);
+  if (op === "NotLike") return !likeMatches(actual, expected);
+  if (op === "Eq") return compareTyped(actual, expected, vt) === 0;
+  if (op === "Ne") return compareTyped(actual, expected, vt) !== 0;
+  const cmp = compareTyped(actual, expected, vt);
+  if (op === "Gt") return cmp > 0;
+  if (op === "Lt") return cmp < 0;
+  if (op === "Gte") return cmp >= 0;
+  return cmp <= 0; // Lte
+}
+
+/** Shared empty registry for the untyped `blockMatches` path. */
+const EMPTY_TYPES: ReadonlyMap<string, string> = new Map();
+
+/**
+ * Check whether a parsed block matches the query's expression tree.
+ *
+ * `types` (L5) maps a **lowercased** property name to its declared
+ * `value_type` string; when present, property comparisons are typed
+ * (numeric/date/bool) instead of string-guessed. Omit it (or pass an empty
+ * map) for the registry-free heuristic — identical to the pre-L5 behavior.
+ * Mirror of `query.rs:block_matches` / `block_matches_typed`.
+ */
+export function blockMatches(
+  block: ParsedBlock,
+  query: ParsedQuery,
+  types: ReadonlyMap<string, string> = EMPTY_TYPES,
+): boolean {
+  return evalExpr(block, query.expr, types);
 }
 
 /** Walk the tree, short-circuiting. Empty `and` matches everything. */
-function evalExpr(block: ParsedBlock, expr: BoolExpr): boolean {
-  if (expr.op === "and") return expr.args.every((a) => evalExpr(block, a));
-  if (expr.op === "or") return expr.args.some((a) => evalExpr(block, a));
-  if (expr.op === "not") return !evalExpr(block, expr.arg);
-  return predMatches(block, expr.pred);
+function evalExpr(block: ParsedBlock, expr: BoolExpr, types: ReadonlyMap<string, string>): boolean {
+  if (expr.op === "and") return expr.args.every((a) => evalExpr(block, a, types));
+  if (expr.op === "or") return expr.args.some((a) => evalExpr(block, a, types));
+  if (expr.op === "not") return !evalExpr(block, expr.arg, types);
+  return predMatches(block, expr.pred, types);
 }
 
-function predMatches(block: ParsedBlock, pred: Predicate): boolean {
+function predMatches(
+  block: ParsedBlock,
+  pred: Predicate,
+  types: ReadonlyMap<string, string>,
+): boolean {
   if (pred.kind === "cmp") {
-    return filterMatches(block, { key: pred.key, op: pred.op, value: pred.value });
+    return filterMatches(block, { key: pred.key, op: pred.op, value: pred.value }, types);
   }
   // `key in (a, b, c)` is OR over `key = v`; `not in` negates. Routes
   // through the same per-key matcher so semantics line up exactly.
   const anyMatch = pred.values.some((v) =>
-    filterMatches(block, { key: pred.key, op: "Eq", value: v }),
+    filterMatches(block, { key: pred.key, op: "Eq", value: v }, types),
   );
   return pred.negated ? !anyMatch : anyMatch;
 }
 
-function filterMatches(block: ParsedBlock, f: QueryFilter): boolean {
+function filterMatches(
+  block: ParsedBlock,
+  f: QueryFilter,
+  types: ReadonlyMap<string, string>,
+): boolean {
   // `tag:` (default), `type:` (alias), `pagetag:` (frontmatter alias),
   // `blocktag:` (excludes inherited).
   if (f.key === "tag" || f.key === "type" || f.key === "pagetag" || f.key === "blocktag") {
@@ -877,5 +966,10 @@ function filterMatches(block: ParsedBlock, f: QueryFilter): boolean {
   // matches any `Ne` ("missing != value") and nothing else.
   const entry = Object.entries(block.properties).find(([k]) => asciiLower(k) === f.key);
   if (!entry) return f.op === "Ne";
-  return applyOp(entry[1], f.op, f.value);
+  // L5: if the registry declares this property's type, compare typed
+  // (numeric/date/bool); otherwise keep the string heuristic.
+  const vt = types.get(asciiLower(f.key));
+  return vt !== undefined
+    ? applyOpTyped(entry[1], f.op, f.value, vt)
+    : applyOp(entry[1], f.op, f.value);
 }

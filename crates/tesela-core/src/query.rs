@@ -31,7 +31,10 @@
 //! - `tag:foo` — block's resolved tag chain (direct + inherited) includes `foo`.
 
 use crate::block::ParsedBlock;
+use crate::property::ValueType;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::LazyLock;
 
 /// Canonical DSL for the built-in **Inbox** saved view (views-registry
 /// spec, product-locked 2026-06-10): backlog-or-todo status, no
@@ -1275,28 +1278,115 @@ fn apply_op(actual: &str, op: QueryOp, expected: &str) -> bool {
     }
 }
 
+/// Registry-typed comparison (L5): coerce both operands to the property's
+/// declared `ValueType` before ordering, instead of guessing from the strings
+/// like [`compare`]. Mirrors `query-language.ts:compareTyped`. The branch is on
+/// the SEMANTIC category, not the exact variant, so the Rust and TS type
+/// vocabularies (which spell e.g. `multiselect` vs `multi-select`) stay in
+/// parity — only `Number` / `Date|DateTime` / `Checkbox` differ from the plain
+/// string bucket. Crucially the string bucket does NOT promote numeric-looking
+/// strings, so a `select` storing `"10"` sorts lexicographically.
+fn compare_typed(a: &str, b: &str, vt: ValueType) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match vt {
+        // numeric: both must parse, else fall back to case-folded string
+        // (coerce-and-keep — a number-typed value that isn't a number must
+        // not silently become a date or a 0).
+        ValueType::Number => match (a.trim().parse::<f64>(), b.trim().parse::<f64>()) {
+            (Ok(an), Ok(bn)) => an.partial_cmp(&bn).unwrap_or(Ordering::Equal),
+            _ => a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()),
+        },
+        // boolean: `false < true`
+        ValueType::Checkbox => {
+            let ab = a.trim().eq_ignore_ascii_case("true");
+            let bb = b.trim().eq_ignore_ascii_case("true");
+            ab.cmp(&bb)
+        }
+        // date-like: ISO strings sort lexicographically (and a full-string
+        // compare preserves datetime ordering within a day); else case-fold.
+        // Same shape as the untyped `compare` date branch, so typed-date and
+        // heuristic-date agree and TS parity is exact.
+        ValueType::Date | ValueType::DateTime => {
+            if is_iso_date(a) && is_iso_date(b) {
+                a.cmp(b)
+            } else {
+                a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase())
+            }
+        }
+        // string bucket: Text / Url / Select / MultiSelect / Node — case-folded
+        // string compare, NO numeric promotion.
+        _ => a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()),
+    }
+}
+
+/// [`apply_op`] but routed through [`compare_typed`] for a known property type.
+/// Eq/Ne are defined as `compare_typed(..) == Equal` so they coerce
+/// consistently with ordering for Number/Checkbox (`count = 3` matches `3.0`,
+/// `done = true` matches `True`); for the string/date buckets that reduces to
+/// the same case-fold/ISO equality the untyped path uses. Mirrors
+/// `query-language.ts:applyOpTyped`.
+fn apply_op_typed(actual: &str, op: QueryOp, expected: &str, vt: ValueType) -> bool {
+    use std::cmp::Ordering;
+    match op {
+        QueryOp::Like => like_matches(actual, expected),
+        QueryOp::NotLike => !like_matches(actual, expected),
+        QueryOp::Eq => compare_typed(actual, expected, vt) == Ordering::Equal,
+        QueryOp::Ne => compare_typed(actual, expected, vt) != Ordering::Equal,
+        op => {
+            let cmp = compare_typed(actual, expected, vt);
+            match op {
+                QueryOp::Gt => cmp == Ordering::Greater,
+                QueryOp::Lt => cmp == Ordering::Less,
+                QueryOp::Gte => cmp != Ordering::Less,
+                QueryOp::Lte => cmp != Ordering::Greater,
+                _ => unreachable!(),
+            }
+        }
+    }
+}
+
+/// Shared empty type map for the registry-free [`block_matches`] path, so the
+/// hot in-memory refine loop doesn't reinitialize a `HashMap` (RandomState
+/// seed) per block.
+static EMPTY_TYPES: LazyLock<HashMap<String, ValueType>> = LazyLock::new(HashMap::new);
+
 /// Check whether a parsed block matches every filter in the query. Used by
 /// callers that already have blocks in memory (e.g. the indexer's broad-filter
 /// → in-memory-refine pattern in `SqliteIndex::get_typed_blocks`).
 pub fn block_matches(block: &ParsedBlock, q: &ParsedQuery) -> bool {
-    eval_expr(block, &q.expr)
+    eval_expr(block, &q.expr, &EMPTY_TYPES)
+}
+
+/// [`block_matches`] with a property-type registry (L5): `types` maps a
+/// **lowercased** property name to its declared [`ValueType`], so ordering and
+/// equality on property predicates compare typed values (numeric/date/bool)
+/// rather than guessing from the strings. Property keys absent from the map —
+/// and all built-in keys (`tag`, `text`, `is`, …) — fall back to the untyped
+/// path, so callers without a registry get identical behavior to
+/// [`block_matches`].
+pub fn block_matches_typed(
+    block: &ParsedBlock,
+    q: &ParsedQuery,
+    types: &HashMap<String, ValueType>,
+) -> bool {
+    eval_expr(block, &q.expr, types)
 }
 
 /// Walk the `BoolExpr` tree, short-circuiting AND/OR. Empty `And` matches
 /// everything (the identity); empty `Or` matches nothing.
-fn eval_expr(block: &ParsedBlock, expr: &BoolExpr) -> bool {
+fn eval_expr(block: &ParsedBlock, expr: &BoolExpr, types: &HashMap<String, ValueType>) -> bool {
     match expr {
-        BoolExpr::And { args } => args.iter().all(|a| eval_expr(block, a)),
-        BoolExpr::Or { args } => args.iter().any(|a| eval_expr(block, a)),
-        BoolExpr::Not { arg } => !eval_expr(block, arg),
-        BoolExpr::Atom { pred } => pred_matches(block, pred),
+        BoolExpr::And { args } => args.iter().all(|a| eval_expr(block, a, types)),
+        BoolExpr::Or { args } => args.iter().any(|a| eval_expr(block, a, types)),
+        BoolExpr::Not { arg } => !eval_expr(block, arg, types),
+        BoolExpr::Atom { pred } => pred_matches(block, pred, types),
     }
 }
 
 /// Evaluate a leaf predicate. Routes `Cmp` to the existing per-key
 /// filter logic (preserved verbatim from the legacy parser so behavior
 /// stays identical); `In` walks the value list and short-circuits.
-fn pred_matches(block: &ParsedBlock, pred: &Predicate) -> bool {
+fn pred_matches(block: &ParsedBlock, pred: &Predicate, types: &HashMap<String, ValueType>) -> bool {
     match pred {
         Predicate::Cmp { key, op, value } => {
             // Build a transient QueryFilter so we can reuse the existing
@@ -1308,7 +1398,7 @@ fn pred_matches(block: &ParsedBlock, pred: &Predicate) -> bool {
                 op: *op,
                 value: value.clone(),
             };
-            filter_matches(block, &f)
+            filter_matches(block, &f, types)
         }
         Predicate::In {
             key,
@@ -1325,7 +1415,7 @@ fn pred_matches(block: &ParsedBlock, pred: &Predicate) -> bool {
                     op: QueryOp::Eq,
                     value: v.clone(),
                 };
-                filter_matches(block, &f)
+                filter_matches(block, &f, types)
             });
             if *negated {
                 !any_match
@@ -1336,7 +1426,7 @@ fn pred_matches(block: &ParsedBlock, pred: &Predicate) -> bool {
     }
 }
 
-fn filter_matches(block: &ParsedBlock, f: &QueryFilter) -> bool {
+fn filter_matches(block: &ParsedBlock, f: &QueryFilter, types: &HashMap<String, ValueType>) -> bool {
     match f.key.as_str() {
         // Tag-system Phase 16 DSL extensions:
         //   `tag:foo`      — either page-level or block-level (current default)
@@ -1515,10 +1605,16 @@ fn filter_matches(block: &ParsedBlock, f: &QueryFilter) -> bool {
                 .iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case(key))
                 .map(|(_, v)| v.as_str());
+            // L5: if the registry declares this property's type, compare typed
+            // (numeric/date/bool); otherwise keep the string heuristic.
+            let vt = types.get(&key.to_ascii_lowercase()).copied();
             match (actual, f.op) {
                 (None, QueryOp::Ne) => true, // missing != value matches
                 (None, _) => false,
-                (Some(a), op) => apply_op(a, op, &f.value),
+                (Some(a), op) => match vt {
+                    Some(vt) => apply_op_typed(a, op, &f.value, vt),
+                    None => apply_op(a, op, &f.value),
+                },
             }
         }
     }
@@ -1553,6 +1649,75 @@ mod tests {
             note_id: "n".into(),
             parent_note_type: None,
         }
+    }
+
+    /// Build a one-property typed registry for the typed-matcher tests.
+    fn types1(key: &str, vt: ValueType) -> HashMap<String, ValueType> {
+        let mut m = HashMap::new();
+        m.insert(key.to_ascii_lowercase(), vt);
+        m
+    }
+
+    #[test]
+    fn compare_typed_number_is_numeric_not_lexicographic() {
+        use std::cmp::Ordering;
+        // "10" vs "9": numeric Greater (lexicographic would be Less).
+        assert_eq!(compare_typed("10", "9", ValueType::Number), Ordering::Greater);
+        assert_eq!(compare_typed("2", "10", ValueType::Number), Ordering::Less);
+        // Non-parseable number coerces to case-folded string, never panics.
+        assert_eq!(compare_typed("n/a", "n/a", ValueType::Number), Ordering::Equal);
+    }
+
+    #[test]
+    fn compare_typed_string_bucket_never_promotes_numbers() {
+        use std::cmp::Ordering;
+        // A select/text "10" must sort lexicographically: '1' < '9'.
+        assert_eq!(compare_typed("10", "9", ValueType::Select), Ordering::Less);
+        assert_eq!(compare_typed("10", "9", ValueType::Text), Ordering::Less);
+    }
+
+    #[test]
+    fn compare_typed_checkbox_orders_false_before_true() {
+        use std::cmp::Ordering;
+        assert_eq!(compare_typed("true", "false", ValueType::Checkbox), Ordering::Greater);
+        assert_eq!(compare_typed("False", "True", ValueType::Checkbox), Ordering::Less);
+        assert_eq!(compare_typed("true", "TRUE", ValueType::Checkbox), Ordering::Equal);
+    }
+
+    #[test]
+    fn compare_typed_date_uses_iso_ordering() {
+        use std::cmp::Ordering;
+        assert_eq!(
+            compare_typed("2026-06-01", "2026-07-01", ValueType::Date),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn apply_op_typed_eq_coerces_number_float() {
+        // The headline coercion: `estimate = 3` matches a stored "3.0".
+        assert!(apply_op_typed("3.0", QueryOp::Eq, "3", ValueType::Number));
+        assert!(!apply_op_typed("3.0", QueryOp::Ne, "3", ValueType::Number));
+        // …but the untyped Eq would NOT (proves the typed path differs).
+        assert!(!apply_op("3.0", QueryOp::Eq, "3"));
+    }
+
+    #[test]
+    fn block_matches_typed_number_excludes_lexicographic_false_positive() {
+        // A text-typed `code` "10" must NOT satisfy `code:>9` (no numeric
+        // promotion); the untyped heuristic WOULD wrongly match it.
+        let block = block_with(vec![], &[("code", "10")]);
+        let q = parse_query("code:>9");
+        assert!(block_matches(&block, &q)); // untyped heuristic: numeric 10>9
+        assert!(!block_matches_typed(&block, &q, &types1("code", ValueType::Text)));
+    }
+
+    #[test]
+    fn block_matches_typed_number_orders_correctly() {
+        let q = parse_query("priority:>5");
+        let types = types1("priority", ValueType::Number);
+        assert!(block_matches_typed(&block_with(vec![], &[("priority", "10")]), &q, &types));
+        assert!(!block_matches_typed(&block_with(vec![], &[("priority", "2")]), &q, &types));
     }
 
     #[test]

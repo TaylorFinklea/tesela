@@ -908,22 +908,92 @@ enum LocalQueryEngine {
         }
     }
 
+    /// Map a `value_type` string onto the four comparison buckets — both
+    /// the server `ValueType` vocabulary (`multiselect`, `node`, …) and any
+    /// other collapse here, only number / date-like / checkbox differ from
+    /// the default string bucket. Mirror of `query.rs:compare_typed` arms.
+    private static func valueTypeBucket(_ vt: String) -> String {
+        switch vt.lowercased() {
+        case "number": return "number"
+        case "date", "datetime": return "date"
+        case "checkbox": return "checkbox"
+        default: return "string"
+        }
+    }
+
+    /// Registry-typed comparison (L5) — coerce both operands to the
+    /// property's declared type before ordering. Mirror of
+    /// `query.rs:compare_typed` / `query-language.ts:compareTyped`.
+    static func compareValuesTyped(_ a: String, _ b: String, _ vt: String) -> ComparisonResult {
+        switch valueTypeBucket(vt) {
+        case "number":
+            if let an = Double(a.trimmingCharacters(in: .whitespaces)),
+               let bn = Double(b.trimmingCharacters(in: .whitespaces)) {
+                if an < bn { return .orderedAscending }
+                if an > bn { return .orderedDescending }
+                return .orderedSame
+            }
+            // either side isn't a number → case-folded string (no date promotion)
+            return lexicographic(a.lowercased(), b.lowercased())
+        case "checkbox":
+            let ab = a.trimmingCharacters(in: .whitespaces).lowercased() == "true"
+            let bb = b.trimmingCharacters(in: .whitespaces).lowercased() == "true"
+            if ab == bb { return .orderedSame }
+            return ab ? .orderedDescending : .orderedAscending // false < true
+        case "date":
+            if isIsoDateShaped(a) && isIsoDateShaped(b) {
+                return lexicographic(a, b)
+            }
+            return lexicographic(a.lowercased(), b.lowercased())
+        default:
+            // string bucket — NO numeric promotion (a select "10" stays text).
+            return lexicographic(a.lowercased(), b.lowercased())
+        }
+    }
+
+    /// `applyOp` routed through `compareValuesTyped` for a known type —
+    /// mirror of `query.rs:apply_op_typed`. Eq/Ne are defined as
+    /// `compare == orderedSame` so they coerce consistently with ordering
+    /// (`count:3` matches `3.0`, `done:true` matches `True`).
+    static func applyOpTyped(_ actual: String, _ op: SimpleDsl.Op, _ expected: String, _ vt: String) -> Bool {
+        switch op {
+        case .eq: return compareValuesTyped(actual, expected, vt) == .orderedSame
+        case .ne: return compareValuesTyped(actual, expected, vt) != .orderedSame
+        case .gt: return compareValuesTyped(actual, expected, vt) == .orderedDescending
+        case .lt: return compareValuesTyped(actual, expected, vt) == .orderedAscending
+        case .gte: return compareValuesTyped(actual, expected, vt) != .orderedAscending
+        case .lte: return compareValuesTyped(actual, expected, vt) != .orderedDescending
+        }
+    }
+
     /// Mirror of `pred_matches` (query.rs): `cmp` routes to the per-key
     /// matcher; `inList` is OR over per-value Eq through the same
     /// matcher (so `status:a,b` ≡ `tag-in:`-style membership exactly).
-    static func clauseMatches(_ clause: SimpleDsl.Clause, ctx: BlockContext) -> Bool {
+    static func clauseMatches(
+        _ clause: SimpleDsl.Clause,
+        ctx: BlockContext,
+        propertyTypes: [String: String] = [:]
+    ) -> Bool {
         switch clause {
         case .cmp(let negated, let key, let op, let value):
-            let matched = cmpMatches(key: key, op: op, value: value, ctx: ctx)
+            let matched = cmpMatches(key: key, op: op, value: value, ctx: ctx, propertyTypes: propertyTypes)
             return negated ? !matched : matched
         case .inList(let negated, let key, let values):
-            let matched = values.contains { cmpMatches(key: key, op: .eq, value: $0, ctx: ctx) }
+            let matched = values.contains {
+                cmpMatches(key: key, op: .eq, value: $0, ctx: ctx, propertyTypes: propertyTypes)
+            }
             return negated ? !matched : matched
         }
     }
 
     /// Mirror of `filter_matches` (query.rs) for one `key OP value`.
-    private static func cmpMatches(key: String, op: SimpleDsl.Op, value: String, ctx: BlockContext) -> Bool {
+    private static func cmpMatches(
+        key: String,
+        op: SimpleDsl.Op,
+        value: String,
+        ctx: BlockContext,
+        propertyTypes: [String: String] = [:]
+    ) -> Bool {
         switch key {
         case "tag", "type", "pagetag", "blocktag":
             let needle = value.lowercased()
@@ -971,6 +1041,11 @@ enum LocalQueryEngine {
             // matches Ne ("missing != value") and fails everything else.
             let actual = ctx.properties.first { $0.key.lowercased() == key }?.value
             guard let actual else { return op == .ne }
+            // L5: if the registry declares this property's type, compare typed
+            // (numeric/date/bool); otherwise keep the string heuristic.
+            if let vt = propertyTypes[key.lowercased()] {
+                return applyOpTyped(actual, op, value, vt)
+            }
             return applyOp(actual, op, value)
         }
     }
@@ -985,8 +1060,12 @@ enum LocalQueryEngine {
         }
     }
 
-    static func blockMatches(_ dsl: SimpleDsl, ctx: BlockContext) -> Bool {
-        dsl.clauses.allSatisfy { clauseMatches($0, ctx: ctx) }
+    static func blockMatches(
+        _ dsl: SimpleDsl,
+        ctx: BlockContext,
+        propertyTypes: [String: String] = [:]
+    ) -> Bool {
+        dsl.clauses.allSatisfy { clauseMatches($0, ctx: ctx, propertyTypes: propertyTypes) }
     }
 
     /// Build the QueryItems contributed by one note for a block-kind
