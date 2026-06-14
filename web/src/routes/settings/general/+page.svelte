@@ -3,6 +3,9 @@
   import { prefs, type BulletStyle, type BareDateField } from "$lib/preferences.svelte";
   import { theme } from "$lib/theme.svelte";
   import { THEMES } from "$lib/themes";
+  import { commandRegistry, effectiveShortcut, effectiveChord, checkRebind } from "$lib/command-registry.svelte";
+  import { eventToShortcutGlyph } from "$lib/shortcut-glyph";
+  import * as keybindings from "$lib/stores/keybindings.svelte";
 
   function loadSetting(key: string, fallback: string): string {
     if (!browser) return fallback;
@@ -27,6 +30,73 @@
   function handleServerUrlChange(value: string) {
     serverUrl = value;
     saveSetting("serverUrl", value);
+  }
+
+  // ── Keyboard Shortcuts section state ────────────────────────────────────
+  // Which command id is currently in "press keys…" capture mode
+  let capturingId = $state<string | null>(null);
+  // Per-command inline caption (conflict warning / reserved error)
+  let captions = $state<Record<string, { kind: 'warn' | 'error'; text: string }>>({});
+
+  // Commands that have a shortcut or chord defined (compiled-in or overridden)
+  let shortcutCommands = $derived(
+    commandRegistry.all().filter((c) => {
+      const ovr = keybindings.snapshot();
+      return effectiveShortcut(c, ovr) !== undefined || (effectiveChord(c, ovr)?.length ?? 0) > 0;
+    })
+  );
+
+  function startCapture(id: string) {
+    capturingId = id;
+    captions = { ...captions, [id]: { kind: 'warn', text: '' } };
+    // clear caption once capturing starts
+    const { [id]: _, ...rest } = captions;
+    captions = rest;
+  }
+
+  function cancelCapture() {
+    capturingId = null;
+  }
+
+  function handleRebindKey(e: KeyboardEvent, cmdId: string) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.key === 'Escape') {
+      cancelCapture();
+      return;
+    }
+
+    if (e.key === 'Backspace' || e.key === 'Delete') {
+      keybindings.setShortcut(cmdId, null);
+      cancelCapture();
+      // clear any caption
+      const { [cmdId]: _, ...rest } = captions;
+      captions = rest;
+      return;
+    }
+
+    const glyph = eventToShortcutGlyph(e);
+    if (!glyph) return; // bare modifier key — wait for a real combo
+
+    const ovr = keybindings.snapshot();
+    const result = checkRebind(cmdId, 'shortcut', glyph, ovr);
+
+    if (result.ok) {
+      keybindings.setShortcut(cmdId, glyph);
+      cancelCapture();
+      const { [cmdId]: _, ...rest } = captions;
+      captions = rest;
+    } else if (result.reason === 'reserved') {
+      // Refuse and show inline error — stay in capture mode so user can try again
+      captions = { ...captions, [cmdId]: { kind: 'error', text: `macOS reserves ${glyph} — pick another` } };
+    } else if (result.reason === 'taken') {
+      // Allow but warn
+      keybindings.setShortcut(cmdId, glyph);
+      cancelCapture();
+      const names = result.by.map((c) => c.label).join(', ');
+      captions = { ...captions, [cmdId]: { kind: 'warn', text: `⚠ Taken by ${names}` } };
+    }
   }
 </script>
 
@@ -144,36 +214,77 @@
 
 <section>
   <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">Keyboard Shortcuts</h2>
-  <div class="space-y-1.5 text-[12px]">
-    {#each [
-      ["⌘K", "Command palette"],
-      ["Space", "Leader menu (outside editors)"],
-      ["/", "Search / filter"],
-      ["1 / b", "Toggle bottom drawer"],
-      ["⌃w h/j/k/l", "Focus rail / bottom / focus / right"],
-      ["[  ]", "Navigate back / forward"],
-      ["j / k", "Rail / drawer: move selection"],
-      ["Enter", "Rail / drawer: open selected"],
-      ["i", "Vim: Insert mode"],
-      ["Esc", "Vim: Normal mode"],
-      ["dd", "Vim: Delete block"],
-      ["yy / p", "Vim: Yank / paste block"],
-      ["o / O", "Vim: New block below / above"],
-      [">> / <<", "Vim: Indent / outdent"],
-      ["Ctrl+w s", "Split: toggle Kanban split"],
-      ["Ctrl+w j / k", "Split: focus bottom / top pane"],
-      ["Ctrl+w q", "Split: close split"],
-      ["Ctrl+w =", "Split: equalize panes"],
-      ["Ctrl+w + / -", "Split: resize panes"],
-      ["j / k", "Kanban: prev / next card in column"],
-      ["h / l", "Kanban: prev / next column"],
-      ["Enter", "Kanban: open focused card's note"],
-      ["m", "Kanban: move card to another column"],
-    ] as [key, desc]}
-      <div class="flex items-center gap-3">
-        <kbd class="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded text-muted-foreground min-w-[48px] text-center">{key}</kbd>
-        <span class="text-muted-foreground/70">{desc}</span>
-      </div>
-    {/each}
-  </div>
+  {#if shortcutCommands.length === 0}
+    <p class="text-[11px] text-muted-foreground/40">No commands with shortcuts registered yet.</p>
+  {:else}
+    <div class="space-y-1 text-[12px]">
+      {#each shortcutCommands as cmd (cmd.id)}
+        {@const ovr = keybindings.snapshot()}
+        {@const effShortcut = effectiveShortcut(cmd, ovr)}
+        {@const effChord = effectiveChord(cmd, ovr)}
+        {@const isCapturing = capturingId === cmd.id}
+        {@const isOverridden = cmd.id in ovr}
+        {@const caption = captions[cmd.id]}
+        <div class="flex flex-col gap-0.5">
+          <div class="flex items-center gap-2 min-h-[28px]">
+            <!-- Label -->
+            <span class="flex-1 text-muted-foreground/70 truncate">{cmd.label}</span>
+
+            <!-- Effective binding badge(s) -->
+            <div class="flex items-center gap-1 shrink-0">
+              {#if effShortcut}
+                <kbd class="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded text-muted-foreground">{effShortcut}</kbd>
+              {:else if !effChord}
+                <span class="text-[10px] text-muted-foreground/30 font-mono">unbound</span>
+              {/if}
+              {#if effChord && effChord.length > 0}
+                <kbd class="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded text-muted-foreground">{effChord.join(' ')}</kbd>
+              {/if}
+            </div>
+
+            <!-- Rebind capture button -->
+            {#if isCapturing}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <span
+                class="text-[10px] px-2 py-0.5 rounded border border-primary/40 bg-primary/5 text-primary font-mono outline-none min-w-[72px] text-center"
+                role="status"
+                tabindex="0"
+                onkeydown={(e) => handleRebindKey(e, cmd.id)}
+                onblur={() => cancelCapture()}
+              >press keys…</span>
+            {:else}
+              <button
+                type="button"
+                class="text-[10px] px-2 py-0.5 rounded border border-border/40 text-muted-foreground/50 hover:text-foreground hover:border-border transition-colors"
+                onclick={() => startCapture(cmd.id)}
+              >Rebind</button>
+            {/if}
+
+            <!-- Reset button — only when overridden -->
+            {#if isOverridden}
+              <button
+                type="button"
+                class="text-[10px] px-1.5 py-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+                onclick={() => keybindings.reset(cmd.id)}
+                title="Reset to default"
+              >↺</button>
+            {/if}
+          </div>
+
+          <!-- Inline caption (conflict / reserved warning) -->
+          {#if caption && caption.text}
+            <p class="text-[10px] pl-1 {caption.kind === 'error' ? 'text-destructive' : 'text-amber-500'}">{caption.text}</p>
+          {/if}
+        </div>
+      {/each}
+    </div>
+
+    <div class="mt-3 flex justify-end">
+      <button
+        type="button"
+        class="text-[11px] px-2.5 py-1 rounded border border-border/40 text-muted-foreground/50 hover:text-foreground hover:border-border transition-colors"
+        onclick={() => keybindings.resetAll()}
+      >Reset all to defaults</button>
+    </div>
+  {/if}
 </section>
