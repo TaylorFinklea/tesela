@@ -1201,6 +1201,17 @@ pub async fn switch_mosaic(
 /// cwd-walk — otherwise re-execing from the same working directory
 /// finds the old mosaic and the Switch silently no-ops.
 pub async fn restart_server() -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // L4: when running IN-PROCESS in the desktop (TESELA_EMBEDDED), `current_exe`
+    // is the Tauri shell, not a server binary — a re-exec would relaunch the
+    // whole app and the self-SIGTERM would kill the window. The embedder owns
+    // its lifecycle; refuse rather than misbehave.
+    if std::env::var_os("TESELA_EMBEDDED").is_some() {
+        return Err((
+            StatusCode::CONFLICT,
+            "server restart is unavailable in the embedded desktop — quit and relaunch the app"
+                .to_string(),
+        ));
+    }
     #[cfg(unix)]
     {
         // Read the freshly-written config so we can pin the respawn

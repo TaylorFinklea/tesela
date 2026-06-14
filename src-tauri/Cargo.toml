@@ -16,6 +16,12 @@ serde_json = { workspace = true }
 # spawning a parallel process. The embedded server holds a single-writer
 # flock on the mosaic, so a 2nd process would deadlock on startup (#202).
 tauri-plugin-single-instance = { version = "2", features = [] }
+# L4: the server runs IN-PROCESS via `tesela_server::serve` on our own tokio
+# runtime, instead of being spawned as a child binary. Pulls whisper-rs/objc2
+# into this binary's link (previously linked only into the child).
+tesela-server = { path = "../crates/tesela-server" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

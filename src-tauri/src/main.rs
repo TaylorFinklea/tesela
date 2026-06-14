@@ -1,8 +1,9 @@
-// Tesela desktop — a native (Tauri) window around the `/g` web UI, with an
-// embedded `tesela-server` child bound to LOOPBACK ONLY. The child serves both
-// the API and the static UI on one origin, so the webview just loads
-// `http://127.0.0.1:<port>/g` — same-origin, no CORS, and the UI's existing
-// host-derived WS URL works unchanged.
+// Tesela desktop — a native (Tauri) window around the `/g` web UI. The
+// `tesela-server` now runs IN-PROCESS on our own tokio runtime via
+// `tesela_server::serve` (L4 Phase B), instead of being spawned as a child
+// binary: no sidecar to locate, no port TOCTOU, no child to reap. The server
+// binds LOOPBACK ONLY and the webview loads `http://127.0.0.1:<port>/g` —
+// same-origin, no CORS, the UI's host-derived WS URL works unchanged.
 //
 // Design rule (sync model): the embedded server is a LOOPBACK Loro-replica
 // node, NOT a hub. It binds 127.0.0.1 only and mDNS is disabled — other devices
@@ -11,15 +12,17 @@
 //
 // REMOTE MODE: when a remote URL is configured (env `TESELA_DESKTOP_REMOTE_URL`
 // or `remote_url` in `~/Library/Application Support/tesela/desktop.toml`), the
-// desktop does NOT embed a server — it just wraps that external server's `/g`
-// (a LAN/Tailscale hub, or the cloud relay). The native window keeps the full
-// Vim experience while sharing one server with iOS. This is the desktop acting
-// as a thin client of the spine, the multi-device endgame.
+// desktop does NOT run a server — it just wraps that external server's `/g`.
+//
+// Lifecycle: `serve` is spawned inside Tauri `.setup()` (AFTER the single-
+// instance plugin, so only the primary instance ever takes the flock); it holds
+// the single-writer flock for the whole app lifetime and releases it when the
+// shutdown future resolves. On `RunEvent::Exit` we fire that future and block on
+// `serve` returning, so the graceful drain + auto-backup completes before exit
+// (same guarantee the old 30s SIGTERM grace gave the child).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process::{Child, Command};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -27,17 +30,13 @@ use tauri::menu::{Menu, MenuItem, Submenu};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
-/// Holds the embedded server child so the app can reap it on exit.
-struct ServerChild(Mutex<Option<Child>>);
+use tesela_server::{serve, ServeConfig};
 
-/// Ask the OS for a free loopback port by binding `:0` then dropping it. A tiny
-/// TOCTOU window exists before the child re-binds; acceptable for a local app.
-fn pick_free_loopback_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .expect("bind ephemeral loopback port")
-        .local_addr()
-        .expect("local_addr")
-        .port()
+/// Owns the in-process server's shutdown trigger + join handle so the Exit
+/// handler can stop it gracefully and wait for the drain/backup to finish.
+struct EmbedHandle {
+    shutdown: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    join: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 /// Workspace root = parent of this crate's dir (`src-tauri/`).
@@ -46,39 +45,6 @@ fn workspace_root() -> PathBuf {
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("."))
-}
-
-/// Locate the `tesela-server` binary. `TESELA_SERVER_BIN` overrides; otherwise
-/// pick whichever of `target/release/` or `target/debug/` was built MOST
-/// RECENTLY. (A bundled release will ship it as a Tauri sidecar resource —
-/// that's a packaging follow-up.)
-///
-/// Newest-by-mtime, not release-preferred: a stale release binary built before
-/// a server feature landed must never shadow a fresher debug build. That exact
-/// mismatch — a release `tesela-server` predating `TESELA_STATIC_DIR` support —
-/// served a static-less server to the desktop, so `/g` 404'd and the window
-/// rendered blank. mtime tracks "what I last compiled," which is what should run.
-fn tesela_server_bin() -> PathBuf {
-    if let Ok(p) = std::env::var("TESELA_SERVER_BIN") {
-        return PathBuf::from(p);
-    }
-    let root = workspace_root();
-    let release = root.join("target").join("release").join("tesela-server");
-    let debug = root.join("target").join("debug").join("tesela-server");
-    let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
-    match (mtime(&release), mtime(&debug)) {
-        (Some(r), Some(d)) => {
-            if r >= d {
-                release
-            } else {
-                debug
-            }
-        }
-        (Some(_), None) => release,
-        // Neither present → return the debug path so the spawn error names a
-        // concrete build target.
-        (None, _) => debug,
-    }
 }
 
 /// Resolve the mosaic the embedded server should open. `TESELA_MOSAIC` wins;
@@ -95,11 +61,9 @@ fn resolve_mosaic() -> Option<PathBuf> {
 }
 
 /// If the desktop should connect to an EXTERNAL tesela-server (a LAN/Tailscale
-/// hub or the relay) instead of embedding its own loopback node, return its base
+/// hub or the relay) instead of running its own loopback node, return its base
 /// URL. Source: `TESELA_DESKTOP_REMOTE_URL` env (wins, for terminal launches),
-/// else a `remote_url = "..."` line in
-/// `~/Library/Application Support/tesela/desktop.toml` (works for Finder/Dock
-/// launches, which don't inherit shell env). `None` → embed (default).
+/// else a `remote_url = "..."` line in `desktop.toml`. `None` → embed (default).
 fn resolve_remote_url() -> Option<String> {
     desktop_config_value("TESELA_DESKTOP_REMOTE_URL", "remote_url")
 }
@@ -107,11 +71,9 @@ fn resolve_remote_url() -> Option<String> {
 /// If the EMBEDDED server should JOIN the relay (the spine) directly — instead
 /// of the default loopback-only Loro-replica — return the relay base URL.
 /// Source: `TESELA_EMBED_RELAY_URL` env, else `relay_url = "..."` in
-/// desktop.toml. When set, `spawn_server` drops `TESELA_DISABLE_RELAY` and
-/// points the child at this URL (mDNS stays off — it's a relay participant, not
-/// a LAN hub). `None` → embed stays loopback-only (default).
-/// ⚠ Only opt in when this embed is the SOLE writer for the mosaic — never
-/// alongside a standalone server, or two relay participants share one device_id.
+/// desktop.toml. ⚠ Only opt in when this embed is the SOLE writer for the mosaic
+/// — never alongside a standalone server, or two relay participants share one
+/// device_id. `None` → embed stays loopback-only (default).
 fn resolve_embed_relay_url() -> Option<String> {
     desktop_config_value("TESELA_EMBED_RELAY_URL", "relay_url")
 }
@@ -184,129 +146,73 @@ fn static_dir() -> PathBuf {
     workspace_root().join("web").join("build")
 }
 
-/// Block until the child is accepting connections on `port`, or `timeout`.
-/// Returns `Err(reason)` early if the child has already exited — listening
-/// on a dead child for the full timeout would mask the real failure (flock
-/// conflict, bad binary, panic) behind a misleading "20s timeout" error.
-fn wait_for_port(child: &mut Child, port: u16, timeout: Duration) -> Result<(), String> {
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if TcpStream::connect(("127.0.0.1", port)).is_ok() {
-            return Ok(());
-        }
-        if let Ok(Some(status)) = child.try_wait() {
-            return Err(format!(
-                "server child exited before binding (status: {status})"
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    Err(format!("server did not start within {timeout:?}"))
-}
-
-fn spawn_server(bind: &str) -> std::io::Result<Child> {
-    let mut cmd = Command::new(tesela_server_bin());
-    cmd.env("TESELA_SERVER_BIND", bind)
-        .env("TESELA_STATIC_DIR", static_dir())
-        // Loopback node — never advertise on the LAN (we are not a hub). This
-        // stays set REGARDLESS of relay opt-in: the embed binds 127.0.0.1 and
-        // must never mDNS-advertise.
-        .env("TESELA_DISABLE_MDNS", "1")
-        // The LAN peer data-plane is retired; the embed never LAN-peer-writes.
-        .env("TESELA_DISABLE_PEER_SYNC", "1")
-        // Belt to the shell's suspenders: if THIS process dies non-gracefully
-        // (crash/SIGKILL, where our Exit handler never runs), the server exits
-        // itself rather than orphaning. The explicit pid closes the spawn-race
-        // where the parent dies before the child observes its ppid.
-        .env("TESELA_EXIT_WITH_PARENT", "1")
-        .env("TESELA_PARENT_PID", std::process::id().to_string())
-        .env(
-            "RUST_LOG",
-            std::env::var("RUST_LOG").unwrap_or_else(|_| "info,loro=warn".to_string()),
-        );
-    // Relay participation. DEFAULT: the embed is a loopback-only Loro-replica
-    // (cross-device sync flows through the spine, reached via a standalone hub
-    // or remote mode) — so it sets TESELA_DISABLE_RELAY to avoid being a second
-    // writer under the shared device_id. OPTED IN (relay_url in desktop.toml /
-    // TESELA_EMBED_RELAY_URL): the embed becomes a first-class relay participant
-    // — drop the disable + point it at the relay. mDNS stays off; it's still not
-    // a LAN hub. ⚠ Never run an opted-in embed AND a standalone server on the
-    // same mosaic (two relay participants under one device_id corrupts cursors).
+/// Set the process env the in-process `serve` reads, mirroring what the old
+/// `spawn_server` set on the child — minus the parent-death watchdog vars (no
+/// child to orphan) and plus `TESELA_EMBEDDED` (lets the server disable the
+/// `/server/restart` re-exec, which would relaunch THIS binary, not a server).
+fn set_embed_env() {
+    // Ephemeral loopback port; the real one comes back via `on_bound`.
+    std::env::set_var("TESELA_SERVER_BIND", "127.0.0.1:0");
+    std::env::set_var("TESELA_STATIC_DIR", static_dir());
+    // Loopback node — never mDNS-advertise, never LAN-peer-write.
+    std::env::set_var("TESELA_DISABLE_MDNS", "1");
+    std::env::set_var("TESELA_DISABLE_PEER_SYNC", "1");
+    // In-process: a UI-triggered server restart can't re-exec a child.
+    std::env::set_var("TESELA_EMBEDDED", "1");
+    // Relay participation (see resolve_embed_relay_url). DEFAULT loopback-only.
     match resolve_embed_relay_url() {
         Some(url) => {
-            cmd.env_remove("TESELA_DISABLE_RELAY");
-            cmd.env("TESELA_RELAY_URL", url);
+            std::env::remove_var("TESELA_DISABLE_RELAY");
+            std::env::set_var("TESELA_RELAY_URL", url);
         }
         None => {
-            cmd.env("TESELA_DISABLE_RELAY", "1");
+            std::env::set_var("TESELA_DISABLE_RELAY", "1");
         }
     }
-    // Explicit `TESELA_MOSAIC`, else the user's primary mosaic when launched
-    // from Finder, else let the server's find_mosaic decide.
-    if let Some(mosaic) = resolve_mosaic() {
-        cmd.env("TESELA_DEFAULT_MOSAIC", mosaic);
+    if std::env::var_os("RUST_LOG").is_none() {
+        std::env::set_var("RUST_LOG", "info,loro=warn");
     }
-    cmd.spawn()
+}
+
+/// Run mode, resolved once in `main`.
+enum Mode {
+    /// Wrap an external hub/relay's `/g` — no server, no flock.
+    Remote(String),
+    /// Default: a loopback Loro-replica node served in-process.
+    Embedded,
 }
 
 fn main() {
-    // Remote mode: wrap an external hub/relay's `/g` instead of embedding a
-    // loopback server. No child to spawn, no single-writer lock to take — the
-    // hub owns the mosaic; this window is just a native client of it.
-    if let Some(remote) = resolve_remote_url() {
-        let url = format!("{}/g", remote.trim_end_matches('/'));
-        run_app(url, None);
-        return;
-    }
-
-    // Embedded mode (default): a loopback Loro-replica node.
-    let port = pick_free_loopback_port();
-    let bind = format!("127.0.0.1:{port}");
-
-    let mut child = match spawn_server(&bind) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!(
-                "tesela-desktop: failed to spawn {} ({e}). Build it first: `cargo build -p tesela-server`.",
-                tesela_server_bin().display()
-            );
-            std::process::exit(1);
+    let mode = match resolve_remote_url() {
+        Some(remote) => Mode::Remote(format!("{}/g", remote.trim_end_matches('/'))),
+        None => {
+            set_embed_env();
+            Mode::Embedded
         }
     };
-
-    if let Err(reason) = wait_for_port(&mut child, port, Duration::from_secs(20)) {
-        // The server never came up. wait_for_port distinguishes two flavors:
-        //   - timed out binding — the single-writer lock is likely held by
-        //     another tesela-server already running on this mosaic.
-        //   - the child already exited (flock conflict, bad binary, panic,
-        //     missing mosaic path) — try_wait() inside the loop surfaced
-        //     this so we don't burn the full 20s on a dead process.
-        // Reap + exit clearly in both cases; don't open a window onto a
-        // dead port (a blank "connection refused" page).
-        let _ = child.kill();
-        let _ = child.wait();
-        eprintln!(
-            "tesela-desktop: the embedded tesela-server didn't start on {bind}: {reason}. \
-             If another instance is running on this mosaic, close it first. Exiting."
-        );
-        std::process::exit(1);
-    }
-
-    let url = format!("http://127.0.0.1:{port}/g");
-    run_app(url, Some(child));
+    run(mode);
 }
 
-/// Build + run the Tauri window pointed at `url`. `child` is the embedded server
-/// to reap on exit; `None` in remote mode (the external hub owns its lifecycle —
-/// nothing to reap, no lock taken).
-fn run_app(url: String, child: Option<Child>) {
-    tauri::Builder::default()
-        // Single-instance: a 2nd launch hands its argv/cwd to the running
-        // process and exits. We focus the existing "main" window so the user
-        // gets a come-forward UX instead of a parallel process — the embedded
-        // server holds a single-writer flock on the mosaic, so a 2nd process
-        // would deadlock on `flock` startup and report a misleading 20s bind
-        // timeout (#202). MUST be the first `.plugin(...)` per Tauri v2.
+/// Single Tauri entry point for both modes (so `generate_context!` is expanded
+/// exactly once). Embedded mode spawns `serve` inside `.setup()` — AFTER the
+/// single-instance plugin, so only the primary instance ever takes the flock.
+fn run(mode: Mode) {
+    // A dedicated multi-thread runtime owns the server + its daemons for the
+    // app's lifetime. Leaked so its `Handle` is `'static` for the Exit closure;
+    // the OS reclaims it on process exit. Remote mode leaves it idle.
+    let runtime = Box::leak(Box::new(
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("build tokio runtime for the embedded server"),
+    ));
+    let handle = runtime.handle().clone();
+    let setup_handle = handle.clone();
+
+    let app = tauri::Builder::default()
+        // Single-instance FIRST: a 2nd launch focuses the existing window and
+        // exits before `.setup()` — so only the primary ever reaches `serve`
+        // and takes the single-writer flock (#202). MUST be the first plugin.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.unminimize();
@@ -314,28 +220,7 @@ fn run_app(url: String, child: Option<Child>) {
                 let _ = window.set_focus();
             }
         }))
-        .manage(ServerChild(Mutex::new(child)))
-        // Cmd+R reloads the webview — the one-keystroke recovery if the page
-        // ever goes blank (a crashed WebKit content process, a transient
-        // asset-load hiccup). `reload()` is native (runs in the app process),
-        // so it works even when the page's own JS is dead.
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "reload" => {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ = w.reload();
-                }
-            }
-            // Settings (⌘,): tell the UI to open its own settings overlay. The
-            // SPA's GraphiteShell listens for this event (same surface ⌘K / the
-            // gear / leader `,` open).
-            "settings" => {
-                if let Some(w) = app.get_webview_window("main") {
-                    let _ =
-                        w.eval("document.dispatchEvent(new CustomEvent('tesela:open-settings'))");
-                }
-            }
-            _ => {}
-        })
+        .on_menu_event(menu_event)
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
@@ -343,115 +228,170 @@ fn run_app(url: String, child: Option<Child>) {
             }
         })
         .setup(move |app| {
-            // Default app menu + Settings (⌘,) and a View ▸ Reload (Cmd+R) item.
-            // The menu is owned by the (always-alive) app process, so the
-            // accelerators fire even when the webview content process has died.
-            let settings =
-                MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
-            let reload = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
-            let view = Submenu::with_items(app, "View", true, &[&settings, &reload])?;
-            let menu = Menu::default(app.handle())?;
-            menu.append(&view)?;
-            app.set_menu(menu)?;
-
-            WebviewWindowBuilder::new(
-                app,
-                "main",
-                WebviewUrl::External(url.parse().expect("valid server url")),
-            )
-            .title("Tesela")
-            .inner_size(1280.0, 860.0)
-            .min_inner_size(900.0, 600.0)
-            // Runs before the served bundle: tells the UI to use same-origin
-            // (the embedded server serves API + UI on this one origin).
-            .initialization_script("window.__TESELA_API_BASE__ = '';")
-            .build()?;
-
-            let show = MenuItem::with_id(app, "tray-show", "Show Tesela", true, None::<&str>)?;
-            let hide = MenuItem::with_id(app, "tray-hide", "Hide", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
-            let tray_menu = Menu::with_items(app, &[&show, &hide, &quit])?;
-            TrayIconBuilder::new()
-                .icon(app.default_window_icon().cloned().expect("default window icon"))
-                .menu(&tray_menu)
-                .on_menu_event(|app, event| match event.id().as_ref() {
-                    "tray-show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
-                        }
-                    }
-                    "tray-hide" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.hide();
-                        }
-                    }
-                    "tray-quit" => app.exit(0),
-                    _ => {}
-                })
-                .build(app)?;
+            let url = match mode {
+                Mode::Remote(url) => url,
+                Mode::Embedded => start_embedded_server(app, &setup_handle)?,
+            };
+            build_main_window(app, &url)?;
+            build_tray(app)?;
             Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("error while building tesela-desktop")
-        .run(|app, event| {
-            // Dock-icon re-open (macOS `applicationShouldHandleReopen`) normally
-            // only focuses an existing window. If no window is visible, reload +
-            // show as a blank-screen recovery path.
-            if let RunEvent::Reopen {
-                has_visible_windows,
-                ..
-            } = event
-            {
+        .expect("error while building tesela-desktop");
+
+    app.run(move |app, event| {
+        if let RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } = event
+        {
+            if let Some(w) = app.get_webview_window("main") {
+                if has_visible_windows {
+                    let _ = w.set_focus();
+                } else {
+                    let _ = w.reload();
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            }
+        }
+        // Graceful shutdown of the in-process server (no-op in remote mode,
+        // where no `EmbedHandle` was managed): fire the shutdown future and
+        // block until `serve` returns (drain + auto-backup), so a real mosaic's
+        // VACUUM-INTO backup isn't cut off — the in-process equivalent of the
+        // old 30s SIGTERM grace given the child.
+        if let RunEvent::Exit = event {
+            if let Some(state) = app.try_state::<EmbedHandle>() {
+                if let Some(tx) = state.shutdown.lock().unwrap().take() {
+                    let _ = tx.send(());
+                }
+                if let Some(join) = state.join.lock().unwrap().take() {
+                    eprintln!(
+                        "tesela-desktop: stopping embedded server; waiting up to 30s for \
+                         graceful shutdown (auto-backup running if enabled)..."
+                    );
+                    let _ = handle
+                        .block_on(async { tokio::time::timeout(Duration::from_secs(30), join).await });
+                }
+            }
+        }
+    });
+}
+
+/// Spawn `serve` on `handle`, wait for it to bind, manage the shutdown handle,
+/// and return the `http://127.0.0.1:<port>/g` URL. Errors (flock conflict, boot
+/// failure, timeout) bubble out of `.setup()` so Tauri reports them and exits.
+fn start_embedded_server(
+    app: &mut tauri::App,
+    handle: &tokio::runtime::Handle,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let config = ServeConfig::resolve(resolve_mosaic()).map_err(|e| format!("resolve mosaic: {e}"))?;
+    let (bound_tx, bound_rx) = std::sync::mpsc::channel::<std::net::SocketAddr>();
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    let join = handle.spawn(async move {
+        if let Err(e) = serve(
+            config,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            move |addr| {
+                let _ = bound_tx.send(addr);
+            },
+        )
+        .await
+        {
+            eprintln!("tesela-desktop: embedded server exited with error: {e}");
+        }
+    });
+
+    // Wait for the bind. Bail fast if `serve` returned before binding — a flock
+    // conflict (another writer on this mosaic) or a boot error — rather than
+    // burning the whole timeout on a dead task.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let addr = loop {
+        if let Ok(addr) = bound_rx.try_recv() {
+            break addr;
+        }
+        if join.is_finished() {
+            return Err("the embedded tesela-server failed to start (is another instance \
+                        already open on this mosaic?)"
+                .into());
+        }
+        if Instant::now() >= deadline {
+            return Err("the embedded tesela-server did not bind within 20s".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    app.manage(EmbedHandle {
+        shutdown: Mutex::new(Some(shutdown_tx)),
+        join: Mutex::new(Some(join)),
+    });
+    Ok(format!("http://{addr}/g"))
+}
+
+fn menu_event(app: &tauri::AppHandle, event: tauri::menu::MenuEvent) {
+    match event.id().as_ref() {
+        "reload" => {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.reload();
+            }
+        }
+        "settings" => {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.eval("document.dispatchEvent(new CustomEvent('tesela:open-settings'))");
+            }
+        }
+        _ => {}
+    }
+}
+
+fn build_main_window(app: &mut tauri::App, url: &str) -> tauri::Result<()> {
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+    let reload = MenuItem::with_id(app, "reload", "Reload", true, Some("CmdOrCtrl+R"))?;
+    let view = Submenu::with_items(app, "View", true, &[&settings, &reload])?;
+    let menu = Menu::default(app.handle())?;
+    menu.append(&view)?;
+    app.set_menu(menu)?;
+
+    WebviewWindowBuilder::new(
+        app,
+        "main",
+        WebviewUrl::External(url.parse().expect("valid server url")),
+    )
+    .title("Tesela")
+    .inner_size(1280.0, 860.0)
+    .min_inner_size(900.0, 600.0)
+    // Tells the UI to use same-origin (server serves API + UI on one origin).
+    .initialization_script("window.__TESELA_API_BASE__ = '';")
+    .build()?;
+    Ok(())
+}
+
+fn build_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let show = MenuItem::with_id(app, "tray-show", "Show Tesela", true, None::<&str>)?;
+    let hide = MenuItem::with_id(app, "tray-hide", "Hide", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "tray-quit", "Quit", true, None::<&str>)?;
+    let tray_menu = Menu::with_items(app, &[&show, &hide, &quit])?;
+    TrayIconBuilder::new()
+        .icon(app.default_window_icon().cloned().expect("default window icon"))
+        .menu(&tray_menu)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "tray-show" => {
                 if let Some(w) = app.get_webview_window("main") {
-                    if has_visible_windows {
-                        let _ = w.set_focus();
-                    } else {
-                        let _ = w.reload();
-                        let _ = w.show();
-                        let _ = w.set_focus();
-                    }
+                    let _ = w.show();
+                    let _ = w.set_focus();
                 }
             }
-            // Reap the embedded server when the app exits so it doesn't outlive
-            // the window (and free its loopback port). Prefer SIGTERM so the
-            // server runs its graceful shutdown (drain + auto-backup); fall back
-            // to SIGKILL if it doesn't exit promptly.
-            if let RunEvent::Exit = event {
-                if let Some(state) = app.try_state::<ServerChild>() {
-                    if let Some(mut child) = state.0.lock().unwrap().take() {
-                        #[cfg(unix)]
-                        // SAFETY: child.id() is this process's direct child pid.
-                        unsafe {
-                            libc::kill(child.id() as libc::pid_t, libc::SIGTERM);
-                        }
-                        // The server's graceful shutdown runs VACUUM INTO +
-                        // a validated backup (auto-on-quit, default on), which
-                        // can exceed 5s on a real mosaic. Give it 30s before
-                        // the SIGKILL backstop so the backup isn't killed
-                        // mid-flight.
-                        eprintln!(
-                            "tesela-desktop: sending SIGTERM to embedded server; \
-                             waiting up to 30s for graceful shutdown \
-                             (auto-backup running if enabled)..."
-                        );
-                        let mut exited = false;
-                        for _ in 0..300 {
-                            if matches!(child.try_wait(), Ok(Some(_))) {
-                                exited = true;
-                                break;
-                            }
-                            std::thread::sleep(Duration::from_millis(100));
-                        }
-                        if !exited {
-                            eprintln!(
-                                "tesela-desktop: server did not exit within 30s; sending SIGKILL."
-                            );
-                            let _ = child.kill();
-                        }
-                        let _ = child.wait();
-                    }
+            "tray-hide" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
                 }
             }
-        });
+            "tray-quit" => app.exit(0),
+            _ => {}
+        })
+        .build(app)?;
+    Ok(())
 }
