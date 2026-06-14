@@ -13,6 +13,7 @@
 
 use crate::error::{SyncError, SyncResult};
 use crate::group::GroupId;
+use async_trait::async_trait;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -89,9 +90,9 @@ pub async fn adopt(mosaic_root: &Path, ident: &GroupIdentity) -> SyncResult<()> 
     tokio::fs::write(group_id_path(&dir), hex_encode(ident.group_id.as_bytes()))
         .await
         .map_err(|e| SyncError::Other(format!("write group_id: {e}")))?;
-    tokio::fs::write(group_key_path(&dir), ident.group_key.as_bytes())
-        .await
-        .map_err(|e| SyncError::Other(format!("write group_key: {e}")))?;
+    FileGroupKeyStore::new(&dir)
+        .store_key(&ident.group_key)
+        .await?;
     Ok(())
 }
 
@@ -101,6 +102,63 @@ fn group_id_path(tesela_dir: &Path) -> PathBuf {
 
 fn group_key_path(tesela_dir: &Path) -> PathBuf {
     tesela_dir.join("group_key.bin")
+}
+
+/// Storage seam for the symmetric group key (Phase 2.2 → L1). The default
+/// [`FileGroupKeyStore`] keeps the byte-for-byte on-disk format
+/// (`group_key.bin`, 32 raw bytes); a future `KeychainGroupKeyStore`
+/// (macOS/iOS `security-framework`) slots in behind this trait WITHOUT
+/// touching the `group_id.hex` half — exactly the split the two-file layout
+/// (see [`load_or_create`]) was designed to allow. Async so a blocking
+/// keychain backend can `spawn_blocking` without changing callers.
+#[async_trait]
+pub trait GroupKeyStore: Send + Sync {
+    /// Load the stored group key, or `None` if none has been written yet.
+    async fn load_key(&self) -> SyncResult<Option<GroupKey>>;
+    /// Persist the group key, overwriting any existing one.
+    async fn store_key(&self, key: &GroupKey) -> SyncResult<()>;
+}
+
+/// File-backed group-key store: 32 raw bytes at `<tesela_dir>/group_key.bin`.
+/// This is the default and the one-release fallback the keychain cutover
+/// reads through (never delete `group_key.bin` until every device is
+/// keychain-aware — see the L1 spec's migration-safety note).
+pub struct FileGroupKeyStore {
+    path: PathBuf,
+}
+
+impl FileGroupKeyStore {
+    /// Construct a file store rooted at a mosaic's `.tesela/` directory.
+    pub fn new(tesela_dir: &Path) -> Self {
+        Self {
+            path: group_key_path(tesela_dir),
+        }
+    }
+}
+
+#[async_trait]
+impl GroupKeyStore for FileGroupKeyStore {
+    async fn load_key(&self) -> SyncResult<Option<GroupKey>> {
+        match tokio::fs::read(&self.path).await {
+            Ok(bytes) if bytes.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Ok(Some(GroupKey::from_bytes(arr)))
+            }
+            Ok(_) => Err(SyncError::Other(format!(
+                "group_key file at {} has wrong length",
+                self.path.display()
+            ))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(SyncError::Other(format!("read group_key: {e}"))),
+        }
+    }
+
+    async fn store_key(&self, key: &GroupKey) -> SyncResult<()> {
+        tokio::fs::write(&self.path, key.as_bytes())
+            .await
+            .map_err(|e| SyncError::Other(format!("write group_key: {e}")))
+    }
 }
 
 async fn load_or_create_group_id(tesela_dir: &Path) -> SyncResult<GroupId> {
@@ -124,25 +182,14 @@ async fn load_or_create_group_id(tesela_dir: &Path) -> SyncResult<GroupId> {
 }
 
 async fn load_or_create_group_key(tesela_dir: &Path) -> SyncResult<GroupKey> {
-    let path = group_key_path(tesela_dir);
-    match tokio::fs::read(&path).await {
-        Ok(bytes) if bytes.len() == 32 => {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&bytes);
-            Ok(GroupKey::from_bytes(arr))
-        }
-        Ok(_) => Err(SyncError::Other(format!(
-            "group_key file at {} has wrong length",
-            path.display()
-        ))),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    let store = FileGroupKeyStore::new(tesela_dir);
+    match store.load_key().await? {
+        Some(k) => Ok(k),
+        None => {
             let k = GroupKey::random();
-            tokio::fs::write(&path, k.as_bytes())
-                .await
-                .map_err(|e| SyncError::Other(format!("write group_key: {e}")))?;
+            store.store_key(&k).await?;
             Ok(k)
         }
-        Err(e) => Err(SyncError::Other(format!("read group_key: {e}"))),
     }
 }
 
@@ -221,5 +268,28 @@ mod tests {
         assert_ne!(reloaded.group_id, g1.group_id);
         assert_eq!(reloaded.group_id, other.group_id);
         assert_eq!(reloaded.group_key.as_bytes(), other.group_key.as_bytes());
+    }
+
+    /// L1 GKS — the seam round-trips and keeps the byte-for-byte on-disk
+    /// format (raw 32 bytes at `group_key.bin`) so the keychain backend can
+    /// fall back to it for one release without divergence.
+    #[tokio::test]
+    async fn file_store_round_trips() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let store = FileGroupKeyStore::new(tmp.path());
+
+        // No key yet → None.
+        assert!(store.load_key().await.unwrap().is_none());
+
+        // Store → load returns identical bytes.
+        let k = GroupKey::random();
+        store.store_key(&k).await.unwrap();
+        let loaded = store.load_key().await.unwrap().expect("key present after store");
+        assert_eq!(loaded.as_bytes(), k.as_bytes());
+
+        // On-disk format is exactly the legacy raw 32 bytes at group_key.bin.
+        let raw = std::fs::read(tmp.path().join("group_key.bin")).unwrap();
+        assert_eq!(raw.len(), 32);
+        assert_eq!(&raw[..], k.as_bytes());
     }
 }
