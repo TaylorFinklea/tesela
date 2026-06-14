@@ -441,6 +441,10 @@
   import { findStrongFuzzyMatch } from "$lib/fuzzy";
   import { detectTaskTokens, resolveDetectSpec, type DetectConfig } from "$lib/task-tokens";
   import type { PropertyDefinition } from "$lib/property-registry";
+  import { commandRegistry, type CommandContext } from "$lib/command-registry.svelte";
+  import type { SlashContext } from "$lib/editor/slash-context";
+  import "$lib/editor/commands/heading";
+  import "$lib/editor/commands/date";
   import { assignChords } from "$lib/chord-keys";
 
   // `i` is reserved as the chord-menu's filter trigger (see ChordMenu).
@@ -533,6 +537,8 @@
     propertyDefs,
     onInsertTemplate,
     isPinnedTab = false,
+    blockId,
+    blockProperties = {},
     bid,
     onlorotext: onLoroText,
     onsetproperty: onSetProperty,
@@ -611,6 +617,8 @@
      *  ID. The BlockOutliner fetches its body and inserts the parsed blocks as
      *  children of the current block. */
     onInsertTemplate?: (templateNoteId: string) => void;
+    blockId?: string;
+    blockProperties?: Record<string, string>;
     /** When true, this editor is inside a pinned drawer tab. Enables gt/gT
      *  vim actions for cycling drawer tabs from within the editor. */
     isPinnedTab?: boolean;
@@ -652,6 +660,8 @@
   let showSlashMenu = $state(false);
   let slashPosition = $state({ x: 0, y: 0 });
   let slashStartPos = $state<number>(-1);
+  let slashOverrideTree = $state<ChordNode[] | null>(null);
+  let slashHeadLabel = $state("/");
 
   // Autocomplete state (for # tags and [[ wiki-links)
   let showAutocomplete = $state(false);
@@ -1032,13 +1042,249 @@
 
   function writePropertyContinuation(key: string, value: string) {
     if (!view || slashStartPos < 0) return;
-    writePropertyContinuationAt(
-      key,
-      value,
-      view.state.doc.toString(),
-      view.state.selection.main.head,
-      slashStartPos,
-    );
+    const doc = view.state.doc.toString();
+    const cursorPos = view.state.selection.main.head;
+    let triggerStart = slashStartPos;
+    while (triggerStart > 0 && (doc[triggerStart - 1] === " " || doc[triggerStart - 1] === "\t")) {
+      triggerStart--;
+    }
+    const cleaned = doc.slice(0, triggerStart) + doc.slice(cursorPos);
+    dispatchWithLocalApplyGuard({
+      changes: { from: 0, to: doc.length, insert: cleaned },
+      selection: { anchor: triggerStart },
+    });
+    onChange(cleaned);
+    onSetProperty?.({ key, value });
+    showSlashMenu = false;
+    slashStartPos = -1;
+    view.focus();
+  }
+
+  function buildSlashContext(): SlashContext {
+    const v = view;
+    const doc = v?.state.doc.toString() ?? "";
+    const cursorPos = v?.state.selection.main.head ?? 0;
+    const slashPos = slashStartPos;
+    const before = slashPos >= 0 ? doc.slice(0, slashPos) : doc.slice(0, cursorPos);
+    const after = v && slashPos >= 0 ? doc.slice(cursorPos) : "";
+
+    const stripTrigger = (trimBeforeSlash = false) => {
+      const live = view;
+      if (!live) return null;
+      const liveDoc = live.state.doc.toString();
+      const liveCursor = live.state.selection.main.head;
+      let triggerStart = slashStartPos;
+      if (triggerStart < 0) triggerStart = liveCursor;
+      if (trimBeforeSlash) {
+        while (triggerStart > 0 && (liveDoc[triggerStart - 1] === " " || liveDoc[triggerStart - 1] === "\t")) {
+          triggerStart--;
+        }
+      }
+      return {
+        doc: liveDoc,
+        cursorPos: liveCursor,
+        triggerStart,
+        cleaned: liveDoc.slice(0, triggerStart) + liveDoc.slice(liveCursor),
+      };
+    };
+
+    const replaceTrigger: SlashContext["replaceTrigger"] = (insert, caretFromEnd) => {
+      const live = view;
+      if (!live) return;
+      dispatchWithLocalApplyGuard({
+        changes: { from: 0, to: live.state.doc.length, insert },
+        selection: { anchor: caretFromEnd === undefined ? insert.length : insert.length - caretFromEnd },
+      });
+      onChange(insert);
+    };
+
+    const setProperty: SlashContext["setProperty"] = (key, value) => {
+      const live = view;
+      if (!live) return;
+      if (slashStartPos >= 0) {
+        writePropertyContinuationAt(
+          key,
+          value,
+          live.state.doc.toString(),
+          live.state.selection.main.head,
+          slashStartPos,
+        );
+        return;
+      }
+      onChange(live.state.doc.toString());
+      onSetProperty?.({ key, value });
+    };
+
+    const addTag: SlashContext["addTag"] = (tagName) => {
+      const live = view;
+      if (!live) return;
+      const liveDoc = live.state.doc.toString();
+      const liveCursor = live.state.selection.main.head;
+      const slash = slashStartPos;
+      const cleaned = slash >= 0 ? liveDoc.slice(0, slash) + liveDoc.slice(liveCursor) : liveDoc;
+      const anchor = slash >= 0 ? slash : liveCursor;
+      const wasPresent = getBlockTags(cleaned).some((t) => t.toLowerCase() === tagName.toLowerCase());
+      const newText = wasPresent ? cleaned : toggleBlockTag(cleaned, tagName, autoFillNames?.(tagName) ?? []);
+      dispatchWithLocalApplyGuard({
+        changes: { from: 0, to: liveDoc.length, insert: newText },
+        selection: { anchor: Math.min(anchor, newText.length) },
+      });
+      onChange(newText);
+      if (!wasPresent) onTagAdded?.(tagName);
+    };
+
+    const insertTemplate: SlashContext["insertTemplate"] = (noteId) => {
+      const stripped = stripTrigger(false);
+      if (stripped) {
+        const live = view;
+        if (!live) return;
+        dispatchWithLocalApplyGuard({
+          changes: { from: 0, to: stripped.doc.length, insert: stripped.cleaned },
+          selection: { anchor: Math.min(stripped.triggerStart, stripped.cleaned.length) },
+        });
+        onChange(stripped.cleaned);
+      }
+      onInsertTemplate?.(noteId);
+    };
+
+    const openDatePicker: SlashContext["openDatePicker"] = (propertyKey) => {
+      if (propertyKey) {
+        openDatePickerForProperty(propertyKey);
+        return;
+      }
+      const stripped = stripTrigger(false);
+      if (!stripped) return;
+      const live = view;
+      if (!live) return;
+      dispatchWithLocalApplyGuard({
+        changes: { from: 0, to: stripped.doc.length, insert: stripped.cleaned },
+        selection: { anchor: Math.min(stripped.triggerStart, stripped.cleaned.length) },
+      });
+      onChange(stripped.cleaned);
+      datePickerPropertyKey = null;
+      const cursorAfter = stripped.triggerStart;
+      setTimeout(() => {
+        if (!view) return;
+        datePickerCursor = cursorAfter;
+        const coords = view.coordsAtPos(Math.min(cursorAfter, view.state.doc.length));
+        datePickerPosition = coords
+          ? { x: coords.left, y: coords.bottom + 4 }
+          : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
+        showDatePicker = true;
+      }, 0);
+    };
+
+    const openTagPicker: SlashContext["openTagPicker"] = () => {
+      const stripped = stripTrigger(false);
+      if (!stripped) return;
+      const live = view;
+      if (!live) return;
+      dispatchWithLocalApplyGuard({
+        changes: { from: 0, to: stripped.doc.length, insert: stripped.cleaned },
+        selection: { anchor: Math.min(stripped.triggerStart, stripped.cleaned.length) },
+      });
+      onChange(stripped.cleaned);
+      const currentDoc = stripped.cleaned;
+      const cursorAfter = stripped.triggerStart;
+      setTimeout(() => {
+        if (!view) return;
+        const activeTags = new Set(getBlockTags(currentDoc).map((t) => t.toLowerCase()));
+        tagManageItems = (notesList ?? [])
+          .filter((n) => n.note_type === "Tag")
+          .map((n) => ({
+            id: n.id,
+            label: n.title,
+            secondary: activeTags.has(n.title.toLowerCase()) ? "✓" : undefined,
+          }));
+        autocompleteStartPos = cursorAfter;
+        autocompleteType = "tagmanage";
+        showAutocomplete = true;
+        autocompleteFilter = "";
+        const coords = view.coordsAtPos(Math.min(cursorAfter, view.state.doc.length));
+        autocompletePosition = coords
+          ? { x: coords.left, y: coords.bottom + 4 }
+          : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
+      }, 0);
+    };
+
+    const openTemplatePicker: SlashContext["openTemplatePicker"] = () => {
+      const stripped = stripTrigger(false);
+      if (!stripped) return;
+      const live = view;
+      if (!live) return;
+      dispatchWithLocalApplyGuard({
+        changes: { from: 0, to: stripped.doc.length, insert: stripped.cleaned },
+        selection: { anchor: Math.min(stripped.triggerStart, stripped.cleaned.length) },
+      });
+      onChange(stripped.cleaned);
+      const cursorAfter = stripped.triggerStart;
+      setTimeout(() => {
+        if (!view) return;
+        templatePickItems = (notesList ?? [])
+          .filter((n) => n.tags.some((t) => t.toLowerCase() === "template"))
+          .map((n) => ({
+            id: n.id,
+            label: n.title,
+          }));
+        autocompleteStartPos = cursorAfter;
+        autocompleteType = "templatepick";
+        showAutocomplete = true;
+        autocompleteFilter = "";
+        const coords = view.coordsAtPos(Math.min(cursorAfter, view.state.doc.length));
+        autocompletePosition = coords
+          ? { x: coords.left, y: coords.bottom + 4 }
+          : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
+      }, 0);
+    };
+
+    const openPropertyValue: SlashContext["openPropertyValue"] = (def) => {
+      const node = buildPropertyNode(def, "v");
+      slashOverrideTree = node.children ?? [node];
+      slashHeadLabel = `/${def.name}`;
+      showSlashMenu = true;
+      const live = view;
+      if (!live) return;
+      const coords = live.coordsAtPos(Math.min(live.state.selection.main.head, live.state.doc.length));
+      slashPosition = coords
+        ? { x: coords.left, y: coords.bottom + 4 }
+        : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
+    };
+
+    return {
+      block: { id: blockId ?? "", bid: bid ?? null, properties: blockProperties ?? {} },
+      before,
+      after,
+      propertyDefs: propertyDefs ?? [],
+      statusChoices: statusChoices ?? ["todo", "doing", "done"],
+      autoFillNames: (tagName) => autoFillNames?.(tagName) ?? [],
+      replaceTrigger,
+      setProperty,
+      addTag,
+      insertTemplate,
+      openDatePicker,
+      openTagPicker,
+      openTemplatePicker,
+      openPropertyValue,
+      moveCursor: (anchor, head) => {
+        dispatchWithLocalApplyGuard({ selection: { anchor, head: head ?? anchor } });
+      },
+      finish: (verb) => {
+        showSlashMenu = false;
+        slashStartPos = -1;
+        slashOverrideTree = null;
+        slashHeadLabel = "/";
+        onSlashCommand?.(verb);
+        view?.focus();
+      },
+    };
+  }
+
+  function buildSlashCommandContext(editor: SlashContext): CommandContext {
+    return {
+      vimMode: getVimMode(),
+      focusedBlock: blockId ? { id: blockId, properties: blockProperties ?? {} } : null,
+      editor,
+    };
   }
   /**
    * Phase 10.4 — build the `/p` Property chord submenu from the block's
@@ -1142,21 +1388,37 @@
 
   function getSlashTree(): ChordNode[] {
     // Phase 12.2 — slash tree is one flat list:
-    //   1. Built-in insertion verbs (Task, Tag, Heading, Link, Date, …) with
-    //      hard-coded chord keys.
-    //   2. Hoisted tag-properties for the focused block (Status, Priority,
+    //   1. Registry-backed slash leaves, merged ahead of legacy builtins and
+    //      deduped by `slashKey` so migrated verbs cannot silently fall back.
+    //   2. Built-in insertion verbs that have not migrated yet.
+    //   3. Hoisted tag-properties for the focused block (Status, Priority,
     //      Deadline, …) so the user picks them in one chord rather than
     //      `/p > X`. Their preferred key comes from the Property page's
     //      `chord_key:`; collisions with built-ins fall back to first-letter
     //      and surface a "taken by …" warning in the menu.
-    //   3. `/p` "All properties" — discovery surface for every property in
+    //   4. `/p` "All properties" — discovery surface for every property in
     //      the registry, including ones not on this block's tags.
-    //   4. Hardcoded `/s Status` ONLY when the block has no tag-properties,
+    //   5. Hardcoded `/s Status` ONLY when the block has no tag-properties,
     //      so untagged blocks still get a one-chord status setter.
     const defs = propertyDefs ?? [];
     const choices = statusChoices ?? ["todo", "doing", "done"];
+    const editor = buildSlashContext();
+    const baseCtx = buildSlashCommandContext(editor);
 
-    const builtins: ChordNode[] = [
+    const registryLeaves: ChordNode[] = commandRegistry
+      .available(baseCtx)
+      .filter((cmd) => cmd.slashKey)
+      .map((cmd) => ({
+        key: cmd.slashKey!,
+        label: cmd.label,
+        action: () => {
+          const liveEditor = buildSlashContext();
+          void cmd.run(undefined, buildSlashCommandContext(liveEditor));
+        },
+        hint: cmd.glyph,
+      }));
+
+    const legacyBuiltins: ChordNode[] = [
       { key: "t", label: "Task",         action: () => applySlash("task"),       hint: "tags:: Task" },
       { key: "T", label: "Tag picker",   action: () => applySlash("tag"),        hint: "#" },
       { key: "h", label: "Heading",      action: () => applySlash("heading") },
@@ -1168,6 +1430,14 @@
       { key: "m", label: "Template",     action: () => applySlash("template") },
       { key: "p", label: "All properties", children: getPropertyChildren() },
     ];
+
+    const claimedSlashKeys = new Set<string>();
+    const builtins: ChordNode[] = [];
+    for (const node of [...registryLeaves, ...legacyBuiltins]) {
+      if (claimedSlashKeys.has(node.key)) continue;
+      claimedSlashKeys.add(node.key);
+      builtins.push(node);
+    }
 
     // Single assignChords pass with builtins pre-claimed so a tag-property
     // declaring `chord_key: t` (would shadow Task) loses gracefully and gets
@@ -1189,12 +1459,13 @@
     // Untagged-block fallback: keep the legacy `/s Status` so plain blocks
     // (without #Task) can still set a status quickly. When the block IS
     // tagged, Status appears in propNodes and this fallback is skipped.
+    const statusKeys = assignStatusKeys(choices);
     const fallbackStatus: ChordNode[] = defs.length === 0
       ? [{
           key: "s",
           label: "Status",
           children: choices.map((s, i) => ({
-            key: assignStatusKeys(choices)[i],
+            key: statusKeys[i],
             label: s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, " "),
             action: () => applySlash(s),
             hint: `status:: ${s}`,
@@ -1245,8 +1516,7 @@
           break;
         }
         case "heading":
-          insert = "# " + before.trim() + after;
-          break;
+          return;
         case "property":
           insert = before.trimEnd() + "\nkey:: value" + after;
           break;
@@ -1280,23 +1550,8 @@
           }, 0);
           break;
         }
-        case "date": {
-          // Strip the slash text and open the date picker. On commit the
-          // picker upserts a `scheduled::`/`deadline::` block property
-          // (and `recurring::` if a recurrence was typed) — no inline link.
-          insert = before + after;
-          const cursorAfter = before.length;
-          setTimeout(() => {
-            if (!view) return;
-            datePickerCursor = cursorAfter;
-            const coords = view.coordsAtPos(Math.min(cursorAfter, view.state.doc.length));
-            datePickerPosition = coords
-              ? { x: coords.left, y: coords.bottom + 4 }
-              : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
-            showDatePicker = true;
-          }, 0);
-          break;
-        }
+        case "date":
+          return;
         case "query": {
           // Scaffold an inline query block. Cursor lands at end of `tag:` so
           // the user immediately types a tag name.
@@ -1772,6 +2027,8 @@
           setTimeout(() => {
             if (!view) return;
             slashStartPos = from;
+            slashOverrideTree = null;
+            slashHeadLabel = "/";
             showSlashMenu = true;
             const coords = view.coordsAtPos(from + 1);
             if (coords) {
@@ -2253,12 +2510,14 @@
 
   {#if showSlashMenu}
     <ChordMenu
-      tree={getSlashTree()}
+      tree={slashOverrideTree ?? getSlashTree()}
       position={slashPosition}
-      headLabel="/"
+      headLabel={slashHeadLabel}
       onclose={() => {
         showSlashMenu = false;
         slashStartPos = -1;
+        slashOverrideTree = null;
+        slashHeadLabel = "/";
         // Restore DOM focus to the cm-editor so the user keeps typing
         // wherever they left off — ChordMenu doesn't take focus, but the
         // overlay click can blur as a side-effect on some browsers.

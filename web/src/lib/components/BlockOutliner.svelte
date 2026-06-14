@@ -2199,6 +2199,8 @@
               if (!isPinnedTab) setLastActiveOutliner(rootEl ?? null);
             }}
             onchange={(text) => handleBlockChange(block.id, text)}
+            blockId={block.id}
+            blockProperties={block.properties}
             bid={block.bid ?? undefined}
             onlorotext={(text) => handleLoroText(block.id, text)}
             onsetproperty={(p) => setBlockPropertyStructured(block.id, p.key, p.value)}
