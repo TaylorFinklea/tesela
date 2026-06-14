@@ -523,7 +523,7 @@ export function buildV4Commands(): V4Command[] {
       label: "New scratch page",
       glyph: "✎",
       category: "create",
-      shortcut: "Space n s",
+      // shortcut removed — this is a chord (Space n s), not a ⌘-shortcut.
       chord: ["n", "s"],
       keywords: ["scratch", "draft", "throwaway", "new"],
       run: () => createScratchAndJump(),

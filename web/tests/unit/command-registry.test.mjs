@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+// Mock KeyboardEvent for Node.js test environment
+class KeyboardEvent {
+  constructor(type, init = {}) {
+    this.type = type;
+    this.key = init.key || "";
+    this.ctrlKey = init.ctrlKey || false;
+    this.altKey = init.altKey || false;
+    this.metaKey = init.metaKey || false;
+    this.shiftKey = init.shiftKey || false;
+  }
+}
+globalThis.KeyboardEvent = KeyboardEvent;
+
 // We test the pure registry utilities by importing the module's named exports.
 // The singleton registry is populated as a side effect of importing v4/commands,
 // so tests that need a clean registry call _reset().
@@ -12,6 +25,10 @@ const {
   buildKeymapIndex,
   findConflicts,
   BROWSER_RESERVED_KEYS,
+  effectiveShortcut,
+  effectiveChord,
+  checkRebind,
+  resolveShortcut,
 } = mod;
 
 test("register deduplicates by id", () => {
@@ -203,4 +220,283 @@ test("available filters editor-surface commands without editor context", () => {
 
   assert.deepEqual(commandRegistry.available({}).map((cmd) => cmd.id), ["global-cmd"]);
   assert.deepEqual(commandRegistry.available({ editor: {} }).map((cmd) => cmd.id), ["global-cmd", "editor-cmd"]);
+});
+
+// ── effectiveShortcut / effectiveChord / checkRebind / resolveShortcut ─────
+
+test("effectiveShortcut returns override when present", () => {
+  commandRegistry._reset();
+  const cmd = {
+    id: "x",
+    label: "X",
+    glyph: "x",
+    category: "navigate",
+    shortcut: "⌘A",
+    keywords: [],
+    run: () => {},
+    registeredAt: 0,
+  };
+  const overrides = { x: { shortcut: "⌘Z" } };
+  assert.equal(effectiveShortcut(cmd, overrides), "⌘Z");
+});
+
+test("effectiveShortcut falls back to command default", () => {
+  const cmd = {
+    id: "x",
+    label: "X",
+    glyph: "x",
+    category: "navigate",
+    shortcut: "⌘A",
+    keywords: [],
+    run: () => {},
+    registeredAt: 0,
+  };
+  assert.equal(effectiveShortcut(cmd, {}), "⌘A");
+});
+
+test("effectiveShortcut returns undefined when override is null", () => {
+  const cmd = {
+    id: "x",
+    label: "X",
+    glyph: "x",
+    category: "navigate",
+    shortcut: "⌘A",
+    keywords: [],
+    run: () => {},
+    registeredAt: 0,
+  };
+  const overrides = { x: { shortcut: null } };
+  assert.equal(effectiveShortcut(cmd, overrides), undefined);
+});
+
+test("effectiveChord returns override when present", () => {
+  const cmd = {
+    id: "x",
+    label: "X",
+    glyph: "x",
+    category: "navigate",
+    chord: ["g", "a"],
+    keywords: [],
+    run: () => {},
+    registeredAt: 0,
+  };
+  const overrides = { x: { chord: ["h", "b"] } };
+  assert.deepEqual(effectiveChord(cmd, overrides), ["h", "b"]);
+});
+
+test("effectiveChord falls back to command default", () => {
+  const cmd = {
+    id: "x",
+    label: "X",
+    glyph: "x",
+    category: "navigate",
+    chord: ["g", "a"],
+    keywords: [],
+    run: () => {},
+    registeredAt: 0,
+  };
+  assert.deepEqual(effectiveChord(cmd, {}), ["g", "a"]);
+});
+
+test("effectiveChord returns undefined when override is null", () => {
+  const cmd = {
+    id: "x",
+    label: "X",
+    glyph: "x",
+    category: "navigate",
+    chord: ["g", "a"],
+    keywords: [],
+    run: () => {},
+    registeredAt: 0,
+  };
+  const overrides = { x: { chord: null } };
+  assert.equal(effectiveChord(cmd, overrides), undefined);
+});
+
+test("checkRebind returns reserved for browser-reserved shortcut", () => {
+  const result = checkRebind("x", "shortcut", "⌘W", {});
+  assert.deepEqual(result, { ok: false, reason: "reserved" });
+});
+
+test("checkRebind returns ok for non-reserved shortcut", () => {
+  const result = checkRebind("x", "shortcut", "⌘A", {});
+  assert.deepEqual(result, { ok: true });
+});
+
+test("checkRebind always returns ok for chord", () => {
+  const result = checkRebind("x", "chord", "g a", {});
+  assert.deepEqual(result, { ok: true });
+});
+
+test("checkRebind reports taken when another command holds the binding", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "a", label: "A", glyph: "a", category: "navigate",
+    shortcut: "⌘J", keywords: [], run: () => {},
+  });
+  commandRegistry.register({
+    id: "b", label: "B", glyph: "b", category: "navigate",
+    shortcut: "⌘K", keywords: [], run: () => {},
+  });
+  // Rebinding b onto a's shortcut → taken (soft warn), holders = [a].
+  const taken = checkRebind("b", "shortcut", "⌘J", {});
+  assert.equal(taken.ok, false);
+  assert.equal(taken.reason, "taken");
+  assert.deepEqual(taken.by.map((c) => c.id), ["a"]);
+  // b's own current shortcut and a free key are both ok.
+  assert.deepEqual(checkRebind("b", "shortcut", "⌘K", {}), { ok: true });
+  assert.deepEqual(checkRebind("b", "shortcut", "⌘Z", {}), { ok: true });
+});
+
+test("buildKeymapIndex with no overrides is unchanged", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "a",
+    label: "A",
+    glyph: "a",
+    category: "navigate",
+    shortcut: "⌘A",
+    chord: ["g", "a"],
+    keywords: [],
+    run: () => {},
+  });
+  commandRegistry.register({
+    id: "b",
+    label: "B",
+    glyph: "b",
+    category: "navigate",
+    chord: ["g", "b"],
+    keywords: [],
+    run: () => {},
+  });
+
+  const idx = buildKeymapIndex();
+  assert.equal(idx.shortcuts.get("⌘A")?.length, 1);
+  assert.equal(idx.chords.get("g a")?.length, 1);
+  assert.equal(idx.chords.get("g b")?.length, 1);
+});
+
+test("buildKeymapIndex with overrides uses effective shortcuts", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "a",
+    label: "A",
+    glyph: "a",
+    category: "navigate",
+    shortcut: "⌘A",
+    chord: ["g", "a"],
+    keywords: [],
+    run: () => {},
+  });
+  commandRegistry.register({
+    id: "b",
+    label: "B",
+    glyph: "b",
+    category: "navigate",
+    chord: ["g", "b"],
+    keywords: [],
+    run: () => {},
+  });
+
+  const overrides = {
+    a: { shortcut: "⌘Z", chord: ["h", "x"] },
+    b: { chord: null }, // unbind chord
+  };
+
+  const idx = buildKeymapIndex(commandRegistry, overrides);
+  assert.equal(idx.shortcuts.get("⌘A"), undefined); // old shortcut gone
+  assert.equal(idx.shortcuts.get("⌘Z")?.length, 1); // new shortcut
+  assert.equal(idx.chords.get("g a"), undefined); // old chord gone
+  assert.equal(idx.chords.get("h x")?.length, 1); // new chord
+  assert.equal(idx.chords.get("g b"), undefined); // chord unbound
+});
+
+test("resolveShortcut returns matching command", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "test-cmd",
+    label: "Test",
+    glyph: "t",
+    category: "navigate",
+    shortcut: "⌘P",
+    keywords: [],
+    run: () => {},
+  });
+
+  const e = new KeyboardEvent("keydown", { key: "p", metaKey: true });
+  const result = resolveShortcut(e, {}, {});
+  assert.equal(result?.id, "test-cmd");
+});
+
+test("resolveShortcut returns undefined for browser-reserved key", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "test-cmd",
+    label: "Test",
+    glyph: "t",
+    category: "navigate",
+    shortcut: "⌘W",
+    keywords: [],
+    run: () => {},
+  });
+
+  const e = new KeyboardEvent("keydown", { key: "w", metaKey: true });
+  const result = resolveShortcut(e, {}, {});
+  assert.equal(result, undefined);
+});
+
+test("resolveShortcut returns undefined when no modifier held", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "test-cmd",
+    label: "Test",
+    glyph: "t",
+    category: "navigate",
+    shortcut: "⌘P",
+    keywords: [],
+    run: () => {},
+  });
+
+  const e = new KeyboardEvent("keydown", { key: "p" });
+  const result = resolveShortcut(e, {}, {});
+  assert.equal(result, undefined);
+});
+
+test("resolveShortcut respects overrides", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "cmd-a",
+    label: "A",
+    glyph: "a",
+    category: "navigate",
+    shortcut: "⌘A",
+    keywords: [],
+    run: () => {},
+  });
+  commandRegistry.register({
+    id: "cmd-b",
+    label: "B",
+    glyph: "b",
+    category: "navigate",
+    shortcut: "⌘B",
+    keywords: [],
+    run: () => {},
+  });
+
+  // Rebind cmd-a to ⌘Z
+  const overrides = { "cmd-a": { shortcut: "⌘Z" } };
+
+  // Old shortcut no longer resolves
+  const e1 = new KeyboardEvent("keydown", { key: "a", metaKey: true });
+  assert.equal(resolveShortcut(e1, {}, overrides), undefined);
+
+  // New shortcut resolves to cmd-a
+  const e2 = new KeyboardEvent("keydown", { key: "z", metaKey: true });
+  const result = resolveShortcut(e2, {}, overrides);
+  assert.equal(result?.id, "cmd-a");
+
+  // cmd-b still resolves to ⌘B
+  const e3 = new KeyboardEvent("keydown", { key: "b", metaKey: true });
+  const result2 = resolveShortcut(e3, {}, overrides);
+  assert.equal(result2?.id, "cmd-b");
 });

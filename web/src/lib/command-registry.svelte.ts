@@ -12,6 +12,7 @@
 
 import { BUILTIN_SLASH_CHORDS } from "./chord-keys.ts";
 import type { SlashContext } from "./editor/slash-context.ts";
+import { eventToShortcutGlyph } from "./shortcut-glyph.ts";
 
 export type CommandContext = {
   route?: string | null;
@@ -108,7 +109,52 @@ export const BROWSER_RESERVED_KEYS = new Set([
   '⌘T', '⌘W', '⌘⇧W', '⌘N', '⌘Q', '⌘R',
 ]);
 
-export function buildKeymapIndex(registry: CommandRegistry = commandRegistry) {
+/**
+ * Keybinding override type for user-rebindable shortcuts.
+ * Tri-state per channel: key ABSENT = inherit compiled-in default;
+ * null = explicitly unbound; a value = rebound.
+ */
+export type BindingOverride = {
+  shortcut?: string | null;
+  chord?: string[] | null;
+};
+
+/**
+ * Returns the effective shortcut for a command, considering overrides.
+ * - If overrides[id] has shortcut key present (even if null), use that (null → undefined)
+ * - Otherwise, fall back to cmd.shortcut
+ */
+export function effectiveShortcut(
+  cmd: Command | RegisteredCommand,
+  overrides: Record<string, BindingOverride>
+): string | undefined {
+  const override = overrides[cmd.id];
+  if (override && 'shortcut' in override) {
+    return override.shortcut ?? undefined;
+  }
+  return cmd.shortcut;
+}
+
+/**
+ * Returns the effective chord for a command, considering overrides.
+ * - If overrides[id] has chord key present (even if null), use that (null → undefined)
+ * - Otherwise, fall back to cmd.chord
+ */
+export function effectiveChord(
+  cmd: Command | RegisteredCommand,
+  overrides: Record<string, BindingOverride>
+): string[] | undefined {
+  const override = overrides[cmd.id];
+  if (override && 'chord' in override) {
+    return override.chord ?? undefined;
+  }
+  return cmd.chord;
+}
+
+export function buildKeymapIndex(
+  registry: CommandRegistry = commandRegistry,
+  overrides: Record<string, BindingOverride> = {}
+) {
   const shortcuts = new Map<string, RegisteredCommand[]>();
   const chords = new Map<string, RegisteredCommand[]>();
 
@@ -125,13 +171,15 @@ export function buildKeymapIndex(registry: CommandRegistry = commandRegistry) {
   }
 
   for (const cmd of registry.all()) {
-    if (cmd.shortcut) {
-      const list = shortcuts.get(cmd.shortcut) ?? [];
+    const shortcut = effectiveShortcut(cmd, overrides);
+    if (shortcut) {
+      const list = shortcuts.get(shortcut) ?? [];
       list.push(cmd);
-      shortcuts.set(cmd.shortcut, list);
+      shortcuts.set(shortcut, list);
     }
-    if (cmd.chord && cmd.chord.length > 0) {
-      const key = cmd.chord.join(' ');
+    const chord = effectiveChord(cmd, overrides);
+    if (chord && chord.length > 0) {
+      const key = chord.join(' ');
       const list = chords.get(key) ?? [];
       list.push(cmd);
       chords.set(key, list);
@@ -139,6 +187,70 @@ export function buildKeymapIndex(registry: CommandRegistry = commandRegistry) {
   }
 
   return { shortcuts, chords };
+}
+
+/**
+ * Resolve a keyboard event to a command based on effective shortcuts.
+ * Returns the first available command whose effective shortcut matches the event,
+ * or undefined if no match or if the key is browser-reserved.
+ */
+export function resolveShortcut(
+  e: KeyboardEvent,
+  ctx: CommandContext,
+  overrides: Record<string, BindingOverride>
+): RegisteredCommand | undefined {
+  const glyph = eventToShortcutGlyph(e);
+  if (!glyph) return undefined;
+  
+  // Skip browser-reserved keys
+  if (BROWSER_RESERVED_KEYS.has(glyph)) return undefined;
+  
+  // Find the first available command whose effective shortcut matches
+  const available = commandRegistry.available(ctx);
+  for (const cmd of available) {
+    if (effectiveShortcut(cmd, overrides) === glyph) {
+      return cmd;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Validate a pending rebind of `cmdId`'s `kind` channel to `key`. Three-tier:
+ *  - `reserved` — a browser-reserved shortcut (`preventDefault` can't intercept
+ *    it, so the binding would be dead) → hard block.
+ *  - `taken` — another command already holds this effective binding → soft warn
+ *    (`by` lists the holders; the caller may "rebind anyway", last-writer-wins).
+ *  - `ok` — free.
+ * Probes against (current overrides + the pending rebind) so a key already
+ * moved off another command by an override doesn't false-positive.
+ */
+export function checkRebind(
+  cmdId: string,
+  kind: 'shortcut' | 'chord',
+  key: string,
+  overrides: Record<string, BindingOverride>
+):
+  | { ok: true }
+  | { ok: false; reason: 'reserved' }
+  | { ok: false; reason: 'taken'; by: RegisteredCommand[] } {
+  if (kind === 'shortcut' && BROWSER_RESERVED_KEYS.has(key)) {
+    return { ok: false, reason: 'reserved' };
+  }
+  const pending: BindingOverride = {
+    ...(overrides[cmdId] ?? {}),
+    [kind]: kind === 'chord' ? key.split(' ') : key,
+  };
+  const { shortcuts, chords } = buildKeymapIndex(commandRegistry, {
+    ...overrides,
+    [cmdId]: pending,
+  });
+  const index = kind === 'shortcut' ? shortcuts : chords;
+  const holders = (index.get(key) ?? []).filter((c) => c.id !== cmdId);
+  if (holders.length > 0) {
+    return { ok: false, reason: 'taken', by: holders };
+  }
+  return { ok: true };
 }
 
 export function findConflicts(registry: CommandRegistry = commandRegistry): BindingConflict[] {
