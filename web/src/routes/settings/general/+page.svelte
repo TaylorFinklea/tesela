@@ -6,6 +6,10 @@
   import { commandRegistry, effectiveShortcut, effectiveChord, checkRebind } from "$lib/command-registry.svelte";
   import { eventToShortcutGlyph } from "$lib/shortcut-glyph";
   import * as keybindings from "$lib/stores/keybindings.svelte";
+  // Side-effect import: populates commandRegistry (buildV4Commands runs on
+  // module load) so the rebindable list isn't empty on this standalone route
+  // — the /g shell loads it via the leader/palette, but /settings doesn't.
+  import "$lib/v4/commands";
 
   function loadSetting(key: string, fallback: string): string {
     if (!browser) return fallback;
@@ -56,6 +60,13 @@
 
   function cancelCapture() {
     capturingId = null;
+  }
+
+  // Focus the "press keys…" span the moment it mounts so the one-shot
+  // onkeydown actually receives the rebind keystroke (clicking Rebind alone
+  // leaves focus on the button → keydown went to <body> and never captured).
+  function focusOnMount(node: HTMLElement) {
+    node.focus();
   }
 
   function handleRebindKey(e: KeyboardEvent, cmdId: string) {
@@ -249,6 +260,7 @@
                 class="text-[10px] px-2 py-0.5 rounded border border-primary/40 bg-primary/5 text-primary font-mono outline-none min-w-[72px] text-center"
                 role="status"
                 tabindex="0"
+                use:focusOnMount
                 onkeydown={(e) => handleRebindKey(e, cmd.id)}
                 onblur={() => cancelCapture()}
               >press keys…</span>
