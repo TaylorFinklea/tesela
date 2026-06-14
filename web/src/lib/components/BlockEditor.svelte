@@ -432,6 +432,9 @@
     teselaAtomicCursorFilter,
     teselaDecorations,
     teselaDecorationTheme,
+    teselaTableDecorations,
+    tableFocusTracker,
+    focusedStateField,
     hiddenPropertyKeysFacet,
     primaryTagFacet,
     detectConfigFacet,
@@ -2215,6 +2218,15 @@
         teselaDecorations,
         teselaAtomicCursorFilter,
         teselaDecorationTheme,
+        // GFM pipe-table rendering. MUST be a StateField (teselaTableDecorations)
+        // and NOT part of the ViewPlugin above, because CodeMirror 6 forbids
+        // multi-line Decoration.replace from a ViewPlugin's decorations facet.
+        // tableFocusTracker dispatches setFocusedEffect on focus changes so
+        // the StateField can gate widgets without calling view.hasFocus directly.
+        // focusedStateField must be listed before teselaTableDecorations.
+        focusedStateField,
+        teselaTableDecorations,
+        tableFocusTracker,
         hiddenKeysCompartment.of(
           hiddenPropertyKeysFacet.of(hiddenKeys ?? { hide: new Set(), hideEmpty: new Set() }),
         ),

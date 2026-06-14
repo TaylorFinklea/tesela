@@ -10,7 +10,7 @@
  *   `.show-props` ancestor can override.
  */
 import { EditorView, Decoration, WidgetType, type DecorationSet, ViewPlugin, type ViewUpdate } from "@codemirror/view";
-import { EditorSelection, EditorState, Facet, RangeSet, RangeSetBuilder, Transaction } from "@codemirror/state";
+import { EditorSelection, EditorState, Facet, RangeSet, RangeSetBuilder, StateEffect, StateField, Transaction } from "@codemirror/state";
 // `.ts` extension so the node test runner resolves it (the repo convention
 // for relative imports; `rewriteRelativeImportExtensions` handles the build).
 import { tokenizeCode } from "./code-highlight.ts";
@@ -60,6 +60,90 @@ class HrWidget extends WidgetType {
     return el;
   }
   eq() {
+    return true;
+  }
+}
+
+// ── GFM pipe-table widget ──────────────────────────────────────────────────
+//
+// IMPORTANT: CodeMirror 6 FORBIDS multi-line (line-break-spanning)
+// `Decoration.replace(...)` from a ViewPlugin's `decorations` facet —
+// they MUST come from a `StateField`. This widget is only ever emitted
+// from `teselaTableDecorations` (a StateField below), NEVER from the
+// `teselaDecorations` ViewPlugin. Violating this rule causes a runtime
+// throw whenever the editor renders an unfocused block with a table.
+// See: https://codemirror.net/docs/ref/#view.Decoration^replace
+
+/** GFM pipe table rendered as an HTML <table> widget (unfocused blocks).
+ *  The underlying raw markdown is left in the doc; the widget disappears
+ *  when the block gains focus so the user can edit the source. */
+class TableWidget extends WidgetType {
+  readonly header: string[];
+  readonly body: string[][];
+  readonly align: Array<"left" | "center" | "right" | null>;
+  constructor(
+    header: string[],
+    body: string[][],
+    align: Array<"left" | "center" | "right" | null>,
+  ) {
+    super();
+    this.header = header;
+    this.body = body;
+    this.align = align;
+  }
+  eq(other: TableWidget) {
+    if (other.header.length !== this.header.length) return false;
+    if (other.body.length !== this.body.length) return false;
+    for (let i = 0; i < this.header.length; i++) {
+      if (other.header[i] !== this.header[i]) return false;
+    }
+    for (let i = 0; i < this.body.length; i++) {
+      const r1 = this.body[i];
+      const r2 = other.body[i];
+      if (!r1 || !r2 || r1.length !== r2.length) return false;
+      for (let j = 0; j < r1.length; j++) {
+        if (r1[j] !== r2[j]) return false;
+      }
+    }
+    if (other.align.length !== this.align.length) return false;
+    for (let i = 0; i < this.align.length; i++) {
+      if (other.align[i] !== this.align[i]) return false;
+    }
+    return true;
+  }
+  toDOM() {
+    const table = document.createElement("table");
+    table.className = "cm-tesela-md-table";
+    const thead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    for (let i = 0; i < this.header.length; i++) {
+      const th = document.createElement("th");
+      // textContent (never innerHTML) — cell text is plain markdown, not HTML.
+      th.textContent = this.header[i] ?? "";
+      const a = this.align[i];
+      if (a) th.style.textAlign = a;
+      headerRow.appendChild(th);
+    }
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
+    if (this.body.length > 0) {
+      const tbody = document.createElement("tbody");
+      for (const row of this.body) {
+        const tr = document.createElement("tr");
+        for (let i = 0; i < row.length; i++) {
+          const td = document.createElement("td");
+          td.textContent = row[i] ?? "";
+          const a = this.align[i];
+          if (a) td.style.textAlign = a;
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+    }
+    return table;
+  }
+  ignoreEvent() {
     return true;
   }
 }
@@ -485,6 +569,195 @@ export function findCodeFenceRanges(doc: string): CodeFenceRange[] {
   return ranges;
 }
 
+// ── GFM pipe-table detection (pure helpers, exported for unit tests) ──────────
+
+export type PipeTable = {
+  from: number;
+  to: number;
+  header: string[];
+  body: string[][];
+  align: Array<"left" | "center" | "right" | null>;
+};
+
+/** Pure: split a single pipe-table row into trimmed cells. A leading or
+ *  trailing `|` is a separator (dropped), not part of any cell. Used both
+ *  to detect table regions and to render the widget's cell text. */
+export function splitPipeCells(line: string): string[] {
+  const trimmed = line.trim();
+  const parts = trimmed.split("|");
+  if (trimmed.startsWith("|") && parts.length > 0) parts.shift();
+  if (trimmed.endsWith("|") && parts.length > 0) parts.pop();
+  return parts.map((c) => c.trim());
+}
+
+function parsePipeAlign(cell: string): "left" | "center" | "right" | null {
+  const c = cell.trim();
+  const startsCol = c.startsWith(":");
+  const endsCol = c.endsWith(":");
+  if (startsCol && endsCol) return "center";
+  if (endsCol) return "right";
+  if (startsCol) return "left";
+  return null;
+}
+
+/** Pure: find GFM pipe-table regions in `doc`. A region is a header line, a
+ *  `---|---` (or `:--`/`--:`/`:-:`) separator line, and zero or more body
+ *  rows. The separator determines the column count; header and body rows must
+ *  match it. Blank lines, lines without `|`, or rows with the wrong column
+ *  count end the table. The `to` offset is the start of the line AFTER the
+ *  table (or `doc.length` if the table is the doc's last line) — same
+ *  convention as `findCodeFenceRanges`.
+ *
+ *  Used both to render the table as an HTML widget (via StateField, unfocused)
+ *  and to suppress tag / wiki-link / property parsing inside cells. */
+export function findPipeTables(doc: string): PipeTable[] {
+  const tables: PipeTable[] = [];
+  const lines = doc.split("\n");
+  const lineStarts: number[] = [];
+  let off = 0;
+  for (const line of lines) {
+    lineStarts.push(off);
+    off += line.length + 1; // +1 for the consumed "\n"
+  }
+  const isRow = (line: string): boolean => line.trim().length > 0 && line.includes("|");
+  const isSep = (line: string): boolean =>
+    /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(line);
+
+  let i = 0;
+  while (i < lines.length - 1) {
+    const headerLine = lines[i];
+    const sepLine = lines[i + 1];
+    if (headerLine !== undefined && sepLine !== undefined && isRow(headerLine) && isSep(sepLine)) {
+      const headerCells = splitPipeCells(headerLine);
+      const sepCells = splitPipeCells(sepLine);
+      const cols = sepCells.length;
+      if (headerCells.length === cols) {
+        let j = i + 2;
+        while (
+          j < lines.length &&
+          isRow(lines[j] ?? "") &&
+          splitPipeCells(lines[j] ?? "").length === cols
+        ) {
+          j++;
+        }
+        const from = lineStarts[i] ?? 0;
+        const to = j < lines.length ? (lineStarts[j] ?? doc.length) : doc.length;
+        const body: string[][] = [];
+        for (let k = i + 2; k < j; k++) body.push(splitPipeCells(lines[k] ?? ""));
+        const align = sepCells.map(parsePipeAlign);
+        tables.push({ from, to, header: headerCells, body, align });
+        i = j;
+        continue;
+      }
+    }
+    i++;
+  }
+  return tables;
+}
+
+// ── StateField for table block decorations ──────────────────────────────────────
+//
+// WHY A StateField (not the ViewPlugin):
+//
+// CodeMirror 6 forbids multi-line (line-break-spanning) Decoration.replace
+// decorations from a ViewPlugin's `decorations` facet. They MUST be provided
+// via a StateField. The `teselaDecorations` ViewPlugin handles all single-line
+// and non-replace-across-newlines decorations fine; GFM pipe tables span
+// multiple lines so they MUST live here. Violating the rule causes a runtime
+// throw even though the code type-checks. See CM6 docs:
+// https://codemirror.net/docs/ref/#view.Decoration^replace
+
+// ── StateEffect + focused StateField for table decoration gating ────────────
+//
+// StateField.update only receives EditorState, not EditorView, so it cannot
+// call view.hasFocus directly. Instead a companion ViewPlugin fires a
+// StateEffect when focus changes; the focusedStateField records it; and
+// teselaTableDecorations reads it to decide whether to emit widgets.
+
+/** Dispatched by tableFocusTracker when focus changes. */
+const setFocusedEffect = StateEffect.define<boolean>();
+
+/** Tracks editor focus as pure state so StateFields can read it. */
+export const focusedStateField = StateField.define<boolean>({
+  create: () => false,
+  update(value, tr) {
+    for (const e of tr.effects) {
+      if (e.is(setFocusedEffect)) return e.value;
+    }
+    return value;
+  },
+});
+
+function buildTableDecorations(state: EditorState): DecorationSet {
+  // Only render widgets when the block is NOT focused (same gate as the
+  // ViewPlugin's !view.hasFocus block for all other markdown decorations).
+  const focused = state.field(focusedStateField);
+  if (focused) return Decoration.none;
+
+  const doc = state.doc.toString();
+  const tables = findPipeTables(doc);
+  if (tables.length === 0) return Decoration.none;
+
+  const builder = new RangeSetBuilder<Decoration>();
+  for (const t of tables) {
+    const from = Math.max(0, t.from);
+    const to = Math.min(doc.length, t.to);
+    if (to <= from) continue;
+    builder.add(
+      from,
+      to,
+      Decoration.replace({ widget: new TableWidget(t.header, t.body, t.align) }),
+    );
+  }
+  return builder.finish();
+}
+
+/**
+ * StateField<DecorationSet> that emits block-spanning Decoration.replace for
+ * GFM pipe tables in unfocused blocks.
+ *
+ * MUST be a StateField (not the ViewPlugin's `decorations` facet) because
+ * CodeMirror 6 forbids multi-line (line-break-spanning) replace decorations
+ * from ViewPlugin decorations. Violating this rule type-checks fine but
+ * throws at runtime. See CM6 docs on Decoration.replace.
+ */
+export const teselaTableDecorations = StateField.define<DecorationSet>({
+  create(state) {
+    return buildTableDecorations(state);
+  },
+  update(deco, tr) {
+    if (tr.docChanged) return buildTableDecorations(tr.state);
+    // Check for a focus-change effect.
+    for (const e of tr.effects) {
+      if (e.is(setFocusedEffect)) return buildTableDecorations(tr.state);
+    }
+    return deco.map(tr.changes);
+  },
+  provide(field) {
+    return EditorView.decorations.from(field);
+  },
+});
+
+/**
+ * ViewPlugin that dispatches setFocusedEffect on focusChanged so that
+ * teselaTableDecorations (a StateField) can react and show/hide widgets.
+ * Must be included alongside teselaTableDecorations in the extensions array.
+ */
+export const tableFocusTracker = ViewPlugin.fromClass(
+  class {
+    update(update: ViewUpdate) {
+      if (update.focusChanged) {
+        // Schedule the dispatch after the current update cycle to avoid
+        // "dispatch from within an update" errors.
+        const view = update.view;
+        Promise.resolve().then(() => {
+          view.dispatch({ effects: setFocusedEffect.of(view.hasFocus) });
+        });
+      }
+    }
+  },
+);
+
 function buildDecorations(view: EditorView): Built {
   const builder = new RangeSetBuilder<Decoration>();
   const atomicBuilder = new RangeSetBuilder<Decoration>();
@@ -499,6 +772,13 @@ function buildDecorations(view: EditorView): Built {
   const codeRanges = findCodeFenceRanges(doc);
   const insideCode = (i: number): boolean =>
     codeRanges.some((r) => i >= r.from && i < r.to);
+  // GFM pipe tables: detect early so the tag/wikilink/property passes can
+  // skip cell content. The actual block-replacing widget lives in the
+  // teselaTableDecorations StateField (see below), NOT here, because
+  // CodeMirror 6 forbids multi-line replace decorations from a ViewPlugin.
+  const tables = findPipeTables(doc);
+  const insideTable = (i: number): boolean =>
+    tables.some((t) => i >= t.from && i < t.to);
   for (const region of codeRanges) {
     const firstLine = view.state.doc.lineAt(region.from).number;
     const lastLine = view.state.doc.lineAt(region.to).number;
@@ -539,7 +819,7 @@ function buildDecorations(view: EditorView): Built {
   TAG_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = TAG_RE.exec(doc)) !== null) {
-    if (insideCode(m.index)) continue;
+    if (insideCode(m.index) || insideTable(m.index)) continue;
     decos.push({ from: m.index, to: m.index + m[0].length, decoration: tagInlineMark });
   }
 
@@ -584,7 +864,7 @@ function buildDecorations(view: EditorView): Built {
   // Wiki-links
   WIKI_LINK_RE.lastIndex = 0;
   while ((m = WIKI_LINK_RE.exec(doc)) !== null) {
-    if (insideCode(m.index)) continue;
+    if (insideCode(m.index) || insideTable(m.index)) continue;
     decos.push({ from: m.index, to: m.index + 2, decoration: wikiLinkBracketMark });
     decos.push({ from: m.index + 2, to: m.index + m[0].length - 2, decoration: wikiLinkMark });
     decos.push({ from: m.index + m[0].length - 2, to: m.index + m[0].length, decoration: wikiLinkBracketMark });
@@ -662,6 +942,7 @@ function buildDecorations(view: EditorView): Built {
     }
     const literal = (i: number): boolean =>
       insideCode(i) ||
+      insideTable(i) ||
       codeSpanRanges.some(([a, b]) => i >= a && i < b) ||
       imageRanges.some(([a, b]) => i >= a && i < b);
 
@@ -1167,5 +1448,36 @@ export const teselaDecorationTheme = EditorView.theme({
     borderTop: "1px solid color-mix(in srgb, var(--foreground) 20%, transparent)",
     margin: "8px 0",
     width: "100%",
+  },
+  // GFM pipe table — rendered (as an HTML <table>) when the block is unfocused.
+  // The Decoration.replace that emits this widget comes from the
+  // teselaTableDecorations StateField, NOT the teselaDecorations ViewPlugin.
+  ".cm-tesela-md-table": {
+    borderCollapse: "collapse",
+    margin: "6px 0",
+    fontSize: "0.92em",
+    lineHeight: "1.4",
+    border: "1px solid color-mix(in srgb, var(--foreground) 15%, transparent)",
+    borderRadius: "4px",
+    overflow: "hidden",
+  },
+  ".cm-tesela-md-table th": {
+    background: "var(--surface-2)",
+    fontWeight: "600",
+    textAlign: "left",
+    padding: "4px 10px",
+    borderBottom: "1px solid color-mix(in srgb, var(--foreground) 20%, transparent)",
+    borderRight: "1px solid color-mix(in srgb, var(--foreground) 8%, transparent)",
+  },
+  ".cm-tesela-md-table td": {
+    padding: "4px 10px",
+    borderRight: "1px solid color-mix(in srgb, var(--foreground) 8%, transparent)",
+    borderBottom: "1px solid color-mix(in srgb, var(--foreground) 8%, transparent)",
+  },
+  ".cm-tesela-md-table th:last-child, .cm-tesela-md-table td:last-child": {
+    borderRight: "none",
+  },
+  ".cm-tesela-md-table tr:last-child td": {
+    borderBottom: "none",
   },
 });
