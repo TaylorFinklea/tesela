@@ -628,6 +628,105 @@ async fn test_snapshot_deposit_compacts_oplog() {
 }
 
 #[tokio::test]
+async fn deposit_compact_put_delivers() {
+    // Seq-black-hole regression (#195 / L1 CT). When a snapshot GCs the ENTIRE
+    // oplog, a subsequent PUT must still get a seq ABOVE the compaction
+    // watermark — otherwise a consumer already caught up to the pre-compaction
+    // high cursor polls `?since=N` and never sees the new op (`seq <= N` → a
+    // permanent inbound black hole). Guards `store.rs`
+    // `MAX(MAX(seq), compaction_seq) + 1`; reverting that to `MAX(seq) + 1`
+    // (MAX over the now-empty oplog = 0 → new seq 1) makes this test fail.
+    // The existing compaction test uses covers_seq=2 (seq 3 survives), which
+    // masks the bug; full GC is required to expose it.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let device = random_device_id_hex();
+    let now = now_secs();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now))
+        .send()
+        .await
+        .unwrap();
+
+    let ops_path = format!("/groups/{}/ops", hex::encode(group.id.as_bytes()));
+    // PUT 3 ops → seq 1,2,3; a consumer conceptually catches up to cursor=3.
+    for i in 0..3 {
+        let put_body =
+            json!({ "from_device": device, "payload_b64": b64(format!("op-{i}").as_bytes()) });
+        let body_bytes = serde_json::to_vec(&put_body).unwrap();
+        let headers = auth_headers(&group, &device, "PUT", &ops_path, "", &body_bytes);
+        client
+            .put(format!("{}{}", relay.base_url, ops_path))
+            .headers(headers)
+            .body(body_bytes)
+            .send()
+            .await
+            .unwrap();
+    }
+
+    // Deposit a snapshot covering ALL 3 ops → GC the entire oplog,
+    // compaction_seq=3 (MAX(seq) over relay_ops now drops to 0).
+    let snap_path = format!("/groups/{}/snapshot", hex::encode(group.id.as_bytes()));
+    let snap_body = json!({
+        "covers_seq": 3,
+        "snapshots": [{ "stream_id_b64": b64(b"note-stream-key-A"), "payload_b64": b64(b"opaque-snapshot") }],
+    });
+    let body_bytes = serde_json::to_vec(&snap_body).unwrap();
+    let headers = auth_headers(&group, &device, "PUT", &snap_path, "", &body_bytes);
+    let dep = client
+        .put(format!("{}{}", relay.base_url, snap_path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    let dep_body: serde_json::Value = dep.json().await.unwrap();
+    assert_eq!(dep_body["gc"].as_u64(), Some(3), "all 3 ops must be GC'd");
+
+    // PUT a NEW op AFTER full compaction — it MUST land above the watermark.
+    let put_body =
+        json!({ "from_device": device, "payload_b64": b64(b"op-after-compaction") });
+    let body_bytes = serde_json::to_vec(&put_body).unwrap();
+    let headers = auth_headers(&group, &device, "PUT", &ops_path, "", &body_bytes);
+    let put_resp = client
+        .put(format!("{}{}", relay.base_url, ops_path))
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    let put_resp_body: serde_json::Value = put_resp.json().await.unwrap();
+    let new_seq = put_resp_body["seq"].as_i64().expect("seq is integer");
+    assert!(
+        new_seq > 3,
+        "post-compaction op must get seq > compaction watermark (3); got {new_seq} \
+         (the black hole: MAX(seq)+1 over the GC'd log = 1)"
+    );
+
+    // The caught-up consumer (cursor=3) MUST receive the post-compaction op.
+    let headers = auth_headers(&group, &device, "GET", &ops_path, "since=3", &[]);
+    let r = client
+        .get(format!("{}{}?since=3", relay.base_url, ops_path))
+        .headers(headers)
+        .send()
+        .await
+        .unwrap();
+    let rows: Vec<serde_json::Value> = r.json().await.unwrap();
+    let seqs: Vec<i64> = rows.iter().map(|v| v["seq"].as_i64().unwrap()).collect();
+    assert_eq!(
+        seqs,
+        vec![new_seq],
+        "a consumer caught up to seq 3 must still receive the post-compaction op"
+    );
+}
+
+#[tokio::test]
 async fn test_snapshot_covers_seq_zero_is_inert() {
     // covers_seq = 0 is the chunked-deposit contract (every chunk except
     // the last): the per-stream snapshot upserts MUST apply, but the
