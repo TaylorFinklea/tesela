@@ -445,6 +445,12 @@
   import type { SlashContext } from "$lib/editor/slash-context";
   import "$lib/editor/commands/heading";
   import "$lib/editor/commands/date";
+  import "$lib/editor/commands/task";
+  import "$lib/editor/commands/tag";
+  import "$lib/editor/commands/template";
+  import "$lib/editor/commands/link";
+  import "$lib/editor/commands/query";
+  import "$lib/editor/commands/collection";
   import { assignChords } from "$lib/chord-keys";
 
   // `i` is reserved as the chord-menu's filter trigger (see ChordMenu).
@@ -1501,19 +1507,8 @@
     } else {
       switch (command) {
         case "task": {
-          const cleaned = before + after;
-          const hasTask = getBlockTags(cleaned).some((t) => t.toLowerCase() === "task");
-          // PROP6 — the `/task` slash is an ADD-only gesture: when the block
-          // already has #Task we just strip the slash text (no toggle, no
-          // auto-fill). When the block doesn't have it, `toggleBlockTag` adds
-          // the tag — fire onTagAdded AFTER `onChange` so the parent can emit
-          // structured `BlockPropertySet` ops for the tag's property defaults.
-          // Tracked via a local flag and dispatched below the switch (alongside
-          // the existing `pendingProp` route) to keep the post-dispatch code
-          // path single.
-          tagAddedThisSlash = !hasTask ? "Task" : null;
-          insert = hasTask ? cleaned : toggleBlockTag(cleaned, "Task", autoFillNames?.("Task") ?? []);
-          break;
+          // Migrated to editor.task registry command — masked by getSlashTree dedupe.
+          return;
         }
         case "heading":
           return;
@@ -1521,51 +1516,16 @@
           insert = before.trimEnd() + "\nkey:: value" + after;
           break;
         case "link":
-          insert = before + "[[]]" + after;
-          break;
+          // Migrated to editor.link registry command — masked by getSlashTree dedupe.
+          return;
         case "tag": {
-          // Remove the slash text, keep cursor position, open tag manager
-          // Remove only the slash character; preserve newlines in `after` exactly
-          insert = before + after;
-          const cursorAfter = before.length;
-          const currentDoc = before + after;
-          setTimeout(() => {
-            if (!view) return;
-            const activeTags = new Set(getBlockTags(currentDoc).map((t) => t.toLowerCase()));
-            tagManageItems = (notesList ?? [])
-              .filter((n) => n.note_type === "Tag")
-              .map((n) => ({
-                id: n.id,
-                label: n.title,
-                secondary: activeTags.has(n.title.toLowerCase()) ? "✓" : undefined,
-              }));
-            autocompleteStartPos = cursorAfter;
-            autocompleteType = "tagmanage";
-            showAutocomplete = true;
-            autocompleteFilter = "";
-            const coords = view.coordsAtPos(Math.min(cursorAfter, view.state.doc.length));
-            autocompletePosition = coords
-              ? { x: coords.left, y: coords.bottom + 4 }
-              : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
-          }, 0);
-          break;
+          // Migrated to editor.tag registry command — masked by getSlashTree dedupe.
+          return;
         }
         case "date":
           return;
         case "query": {
-          // Scaffold an inline query block. Cursor lands at end of `tag:` so
-          // the user immediately types a tag name.
-          const cleaned = before.trimEnd();
-          const queryHead = cleaned + "\nquery:: tag:";
-          insert = queryHead + "\nview:: table" + after;
-          dispatchWithLocalApplyGuard({
-            changes: { from: 0, to: doc.length, insert },
-            selection: { anchor: queryHead.length },
-          });
-          onChange(insert);
-          showSlashMenu = false;
-          slashStartPos = -1;
-          onSlashCommand?.(command);
+          // Migrated to editor.query registry command — masked by getSlashTree dedupe.
           return;
         }
         case "widget": {
@@ -1596,36 +1556,12 @@
           return;
         }
         case "collection": {
-          // Scaffold an inline collection block. Empty list to start; user
-          // adds blocks via the "+ Add block" button.
-          const cleaned = before.trimEnd();
-          insert = cleaned + "\ncollection:: []\nview:: cards" + after;
-          break;
+          // Migrated to editor.collection registry command — masked by getSlashTree dedupe.
+          return;
         }
         case "template": {
-          // Open a picker showing all #Template-tagged notes. Pick one to
-          // insert its body as child blocks (handled by BlockOutliner via
-          // onInsertTemplate callback).
-          insert = before + after;
-          const cursorAfter = before.length;
-          setTimeout(() => {
-            if (!view) return;
-            templatePickItems = (notesList ?? [])
-              .filter((n) => n.tags.some((t) => t.toLowerCase() === "template"))
-              .map((n) => ({
-                id: n.id,
-                label: n.title,
-              }));
-            autocompleteStartPos = cursorAfter;
-            autocompleteType = "templatepick";
-            showAutocomplete = true;
-            autocompleteFilter = "";
-            const coords = view.coordsAtPos(Math.min(cursorAfter, view.state.doc.length));
-            autocompletePosition = coords
-              ? { x: coords.left, y: coords.bottom + 4 }
-              : { x: container.getBoundingClientRect().left, y: container.getBoundingClientRect().bottom + 4 };
-          }, 0);
-          break;
+          // Migrated to editor.template registry command — masked by getSlashTree dedupe.
+          return;
         }
         default:
           return;
