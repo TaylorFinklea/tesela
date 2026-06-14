@@ -430,7 +430,7 @@ RustBuffer uniffi_tesela_sync_ffi_fn_func_decode_pairing_code(RustBuffer code, R
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_ENCODE_PAIRING_CODE
 #define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_ENCODE_PAIRING_CODE
-RustBuffer uniffi_tesela_sync_ffi_fn_func_encode_pairing_code(RustBuffer group_id_hex, RustBuffer group_key_hex, RustBuffer device_id_hex, RustBuffer url, RustBuffer display_name, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_tesela_sync_ffi_fn_func_encode_pairing_code(RustBuffer group_id_hex, RustBuffer group_key_hex, RustBuffer device_id_hex, RustBuffer url, RustBuffer display_name, RustBuffer relay_url, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_GENERATE_DEVICE_ID_HEX

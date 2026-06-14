@@ -3402,15 +3402,21 @@ public func decodePairingCode(code: String)throws  -> PairingCodeRecord  {
  * `PairingCode` from raw fields and returns the encoded string. The
  * Swift caller is responsible for supplying a real reachable URL
  * (the desktop's `build_public_url` logic doesn't apply to iPhone).
+ *
+ * `relay_url`: `None` ≡ a LAN-only code; `Some(url)` so the joining
+ * device auto-configures the same WAN relay (mirrors the desktop
+ * `peer_sync` inviter, which fills this from `[sync.relay]`). Threading
+ * it here is what unblocks iOS-as-inviter for cross-network sync.
  */
-public func encodePairingCode(groupIdHex: String, groupKeyHex: String, deviceIdHex: String, url: String, displayName: String)throws  -> String  {
+public func encodePairingCode(groupIdHex: String, groupKeyHex: String, deviceIdHex: String, url: String, displayName: String, relayUrl: String?)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiSyncError_lift) {
     uniffi_tesela_sync_ffi_fn_func_encode_pairing_code(
         FfiConverterString.lower(groupIdHex),
         FfiConverterString.lower(groupKeyHex),
         FfiConverterString.lower(deviceIdHex),
         FfiConverterString.lower(url),
-        FfiConverterString.lower(displayName),$0
+        FfiConverterString.lower(displayName),
+        FfiConverterOptionString.lower(relayUrl),$0
     )
 })
 }
@@ -3475,7 +3481,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_tesela_sync_ffi_checksum_func_decode_pairing_code() != 3947) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_tesela_sync_ffi_checksum_func_encode_pairing_code() != 50160) {
+    if (uniffi_tesela_sync_ffi_checksum_func_encode_pairing_code() != 5465) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_func_generate_device_id_hex() != 205) {

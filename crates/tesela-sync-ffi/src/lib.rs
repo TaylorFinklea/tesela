@@ -218,6 +218,11 @@ pub fn decode_pairing_code(code: String) -> Result<PairingCodeRecord, FfiSyncErr
 /// `PairingCode` from raw fields and returns the encoded string. The
 /// Swift caller is responsible for supplying a real reachable URL
 /// (the desktop's `build_public_url` logic doesn't apply to iPhone).
+///
+/// `relay_url`: `None` ≡ a LAN-only code; `Some(url)` so the joining
+/// device auto-configures the same WAN relay (mirrors the desktop
+/// `peer_sync` inviter, which fills this from `[sync.relay]`). Threading
+/// it here is what unblocks iOS-as-inviter for cross-network sync.
 #[uniffi::export]
 pub fn encode_pairing_code(
     group_id_hex: String,
@@ -225,6 +230,7 @@ pub fn encode_pairing_code(
     device_id_hex: String,
     url: String,
     display_name: String,
+    relay_url: Option<String>,
 ) -> Result<String, FfiSyncError> {
     let group_id = parse_hex_16(&group_id_hex).ok_or_else(|| FfiSyncError::Other {
         message: "group_id_hex must be 32-char hex".to_string(),
@@ -241,12 +247,10 @@ pub fn encode_pairing_code(
         device_id: DeviceId::from_bytes(device_id),
         url,
         display_name,
-        // The iOS FFI entry point doesn't yet take a relay URL; the
-        // host-side path (`tesela-server` peer_sync handler) populates
-        // this from `[sync.relay]` config. iOS UniFFI gains this
-        // parameter when iOS becomes a sync peer (deferred multi-week
-        // track); for now iOS generates LAN-only pairing codes.
-        relay_url: None,
+        // Threaded from the caller: `Some(url)` emits a v2 code carrying
+        // the WAN relay so the joiner auto-configures it (mirrors the
+        // desktop `peer_sync` inviter); `None` stays LAN-only.
+        relay_url,
         version: tesela_sync::crypto::pairing::PAIRING_CODE_VERSION,
     };
     encode_pairing_code_inner(&code).map_err(FfiSyncError::from)
@@ -1614,6 +1618,7 @@ mod tests {
             device.clone(),
             "http://10.0.0.1:7474".to_string(),
             "Test iPhone".to_string(),
+            None,
         )
         .unwrap();
         let back = decode_pairing_code(code).unwrap();
@@ -1622,6 +1627,28 @@ mod tests {
         assert_eq!(back.device_id_hex, device);
         assert_eq!(back.url, "http://10.0.0.1:7474");
         assert_eq!(back.display_name, "Test iPhone");
+        // `None` in ⇒ LAN-only code ⇒ `None` back out (no relay adopted).
+        assert_eq!(back.relay_url, None);
+    }
+
+    #[test]
+    fn encode_pairing_code_includes_relay_url() {
+        let g = generate_group_identity();
+        let device = generate_device_id_hex();
+        let relay = "https://relay.example.com".to_string();
+        let code = encode_pairing_code(
+            g.group_id_hex.clone(),
+            g.group_key_hex.clone(),
+            device.clone(),
+            "http://10.0.0.1:7474".to_string(),
+            "Test iPhone".to_string(),
+            Some(relay.clone()),
+        )
+        .unwrap();
+        let back = decode_pairing_code(code).unwrap();
+        // The relay URL survives encode → decode so the joining device
+        // auto-configures the same WAN relay (iOS-as-inviter spine).
+        assert_eq!(back.relay_url, Some(relay));
     }
 
     #[test]
