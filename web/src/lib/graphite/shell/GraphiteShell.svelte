@@ -34,24 +34,17 @@
     getFocusedLeafId,
     getActiveTab,
     moveFocus,
-    movePane,
     openPageInFocused,
-    vsplit,
-    hsplit,
   } from '$lib/buffer/state.svelte';
-  import { makePageBuffer } from '$lib/buffer/tree';
   import { asPageId } from '$lib/buffer/types';
   import { openStation } from '$lib/stores/station.svelte';
   import { openLeader } from '$lib/v5/leader-tree.svelte';
   import { openColonMode } from '$lib/stores/colon-mode.svelte';
   import { getVimMode } from '$lib/stores/pane-state.svelte';
-  import { togglePeek } from '$lib/stores/peek.svelte';
-  import {
-    openSettingsOverlay,
-    openFullscreenGraph,
-  } from '$lib/stores/fullscreen-overlay.svelte';
+  import { openSettingsOverlay } from '$lib/stores/fullscreen-overlay.svelte';
   import { getFocusedBlock } from '$lib/stores/current-block.svelte';
-  import type { CommandContext } from '$lib/command-registry.svelte';
+  import { resolveShortcut, type CommandContext } from '$lib/command-registry.svelte';
+  import * as keybindings from '$lib/stores/keybindings.svelte';
   import ColonCommandLine from '$lib/components/shell/ColonCommandLine.svelte';
   import FullscreenOverlay from '$lib/components/shell/FullscreenOverlay.svelte';
   import PeekPopover from '$lib/components/shell/PeekPopover.svelte';
@@ -139,13 +132,6 @@
       el.isContentEditable ||
       !!el.closest?.('.cm-editor')
     );
-  }
-
-  function openCommandStation() {
-    openStation({
-      tab: 'palette',
-      priorPaneId: getFocusedLeafId() as unknown as string | undefined,
-    });
   }
 
   // Ctrl-W h/j/k/l prefix for vim-style window motion (mirror of v4). Moving
@@ -249,45 +235,14 @@
         return;
       }
 
-      // ⌘K opens the command station.
-      if (mod && !e.shiftKey && (e.key === 'k' || e.key === 'K')) {
+      // ── registry-driven ⌘-shortcut ladder ────────────────────────────────
+      // resolveShortcut skips BROWSER_RESERVED_KEYS (⌘W/⌘T/etc) and only
+      // returns commands whose when() passes for the current ctx. Reading
+      // keybindings.snapshot() here (not closed-over) picks up live rebinds.
+      const cmd = resolveShortcut(e, commandCtx, keybindings.snapshot());
+      if (cmd) {
         e.preventDefault();
-        openCommandStation();
-        return;
-      }
-
-      // ── chords the palette / colon line advertise (parity with v4) ──────
-      // ⌘W/⌘⇧W/⌘T are browser-reserved on macOS (preventDefault can't stop
-      // tab close / new tab), so those are NOT bound — their badges were
-      // removed from the command registry instead.
-      if (mod && e.key === '\\') {
-        e.preventDefault();
-        vsplit(makePageBuffer(asPageId('')));
-        return;
-      }
-      if (mod && e.key === '-') {
-        e.preventDefault();
-        hsplit(makePageBuffer(asPageId('')));
-        return;
-      }
-      if (mod && e.shiftKey && /^[hjklHJKL]$/.test(e.key)) {
-        const key = e.key.toLowerCase();
-        const dir =
-          key === 'h' ? 'left' : key === 'l' ? 'right' : key === 'j' ? 'down' : 'up';
-        e.preventDefault();
-        movePane(dir);
-        return;
-      }
-      // ⌘I toggles the peek popover (mounted below).
-      if (mod && !e.shiftKey && (e.key === 'i' || e.key === 'I')) {
-        e.preventDefault();
-        togglePeek(getFocusedLeafId() as unknown as string | undefined);
-        return;
-      }
-      // ⌘G opens the fullscreen graph overlay.
-      if (mod && !e.shiftKey && (e.key === 'g' || e.key === 'G')) {
-        e.preventDefault();
-        openFullscreenGraph();
+        void cmd.run(undefined, commandCtx);
         return;
       }
     };

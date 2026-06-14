@@ -14,7 +14,7 @@ import {
 } from "$lib/command-registry.svelte";
 import { api } from "$lib/api-client";
 import { apiBase } from "$lib/runtime-base";
-import { openPeek } from "$lib/stores/peek.svelte";
+import { togglePeek } from "$lib/stores/peek.svelte";
 import { openFullscreenGraph } from "$lib/stores/fullscreen-overlay.svelte";
 import { openStation } from "$lib/stores/station.svelte";
 import { getAppQueryClient } from "$lib/app-query-client.svelte";
@@ -25,6 +25,7 @@ import {
   closeFocusedLeaf,
   closeTab,
   getFocusedBuffer,
+  getFocusedLeafId,
   getScratchPruneAfterDays,
   getWorkspace,
   hsplit,
@@ -632,13 +633,13 @@ export function buildV4Commands(): V4Command[] {
     {
       id: "peek",
       verb: "peek",
-      label: "Open Peek popover",
+      label: "Toggle Peek popover",
       glyph: "i",
       category: "tile",
       chord: ["p"],
       shortcut: "⌘I",
       keywords: ["peek", "backlinks", "popover"],
-      run: () => openPeek("backlinks-of-page"),
+      run: () => togglePeek(getFocusedLeafId() as unknown as string | undefined),
     },
     {
       id: "fullscreen-graph",
@@ -663,7 +664,7 @@ export function buildV4Commands(): V4Command[] {
       run: () =>
         openStation({
           tab: "palette",
-          priorPaneId: undefined,
+          priorPaneId: getFocusedLeafId() as unknown as string | undefined,
         }),
     },
     {
