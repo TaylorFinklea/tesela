@@ -339,6 +339,13 @@ pub struct PairWithCodeResp {
     /// True when we adopted a different group identity to complete the
     /// pair. False when our local group already matched.
     pub adopted_group: bool,
+    /// True when the pairing code carried a relay URL that we persisted into
+    /// `config.toml` — the joiner is now configured to join the spine. False
+    /// for a LAN-only (relay_url=None) code, leaving config untouched. (L1)
+    pub relay_configured: bool,
+    /// True when the joiner must restart for the new relay config to take
+    /// effect — the relay handle is bound at server boot, not hot-swappable.
+    pub restart_required: bool,
 }
 
 pub async fn pair_with_code(
@@ -379,17 +386,52 @@ pub async fn pair_with_code(
     write_peers(&s.mosaic_root, &peers)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    // L1 — join the spine: the v2 pairing code carries the inviter's relay
+    // URL. Persist it into config.toml so this joiner's next boot brings up
+    // the relay against the same spine (without this the joiner adopts the
+    // group but stays LAN-only forever). A None relay_url is the LAN-only
+    // path — leave config untouched (today's behavior). The relay handle is
+    // boot-time only, so signal restart_required rather than hot-swapping it.
+    let relay_configured = match parsed.relay_url.as_deref() {
+        Some(url) if !url.trim().is_empty() => {
+            persist_relay_url(&s.mosaic_root, url)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("relay config: {e}")))?;
+            true
+        }
+        _ => false,
+    };
+
     tracing::info!(
-        "sync_peer: paired via code with {} (adopted_group={})",
+        "sync_peer: paired via code with {} (adopted_group={}, relay_configured={})",
         peer.device_id_hex,
-        adopted
+        adopted,
+        relay_configured
     );
     Ok(Json(PairWithCodeResp {
         device_id_hex: peer.device_id_hex,
         display_name: peer.display_name.clone().unwrap_or_default(),
         url: peer.url,
         adopted_group: adopted,
+        relay_configured,
+        restart_required: relay_configured,
     }))
+}
+
+/// Persist the spine relay URL into the mosaic's `config.toml`, mirroring the
+/// `PUT /sync/relay/config` idiom (`relay.rs::put_config`) — load-or-default,
+/// set `[sync.relay]`, save. Takes effect on next server boot. Canonicalizes
+/// the trailing slash so the stored URL matches `scope_to_identity`'s
+/// relay-url comparison key (a divergent form would spuriously re-bootstrap).
+fn persist_relay_url(mosaic_root: &Path, url: &str) -> Result<(), String> {
+    use tesela_core::config::{Config, RelayConfig};
+    let path = mosaic_root.join(".tesela").join("config.toml");
+    let mut cfg = Config::load_or_default(&path);
+    cfg.sync.relay = Some(RelayConfig {
+        url: url.trim().trim_end_matches('/').to_string(),
+        poll_interval_ms: 5_000,
+    });
+    cfg.save(&path).map_err(|e| e.to_string())
 }
 
 pub async fn discovered(State(s): State<Arc<AppState>>) -> Json<Vec<DiscoveredPeerView>> {
@@ -508,5 +550,41 @@ fn nibble(b: u8) -> Option<u8> {
         b'a'..=b'f' => Some(b - b'a' + 10),
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tesela_core::config::Config;
+
+    /// L1 PV — a paired joiner persists the inviter's relay URL so its next
+    /// boot joins the spine. Also asserts the trailing-slash canonicalization
+    /// (so the stored URL matches `RelayState::scope_to_identity`'s key).
+    #[test]
+    fn pair_with_code_persists_relay_url() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".tesela")).unwrap();
+
+        persist_relay_url(tmp.path(), "https://relay.example.com:8443/").unwrap();
+
+        let cfg = Config::load(&tmp.path().join(".tesela").join("config.toml")).unwrap();
+        let relay = cfg.sync.relay.expect("[sync.relay] should be configured");
+        assert_eq!(relay.url, "https://relay.example.com:8443"); // trailing slash trimmed
+        assert_eq!(relay.poll_interval_ms, 5_000);
+    }
+
+    /// load-or-default path: no pre-existing config.toml still produces a
+    /// valid one, and a whitespace-padded URL is trimmed.
+    #[test]
+    fn persist_relay_url_creates_config_when_absent() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".tesela")).unwrap();
+        assert!(!tmp.path().join(".tesela").join("config.toml").exists());
+
+        persist_relay_url(tmp.path(), "  http://100.64.0.1:9999  ").unwrap();
+
+        let cfg = Config::load(&tmp.path().join(".tesela").join("config.toml")).unwrap();
+        assert_eq!(cfg.sync.relay.unwrap().url, "http://100.64.0.1:9999");
     }
 }
