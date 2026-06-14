@@ -18,10 +18,14 @@ function functionBody(name) {
 }
 
 test("slash/property programmatic dispatches use the local-apply guard", () => {
-  for (const name of ["openDatePickerForProperty", "writePropertyContinuation", "applySlash"]) {
+  for (const name of ["openDatePickerForProperty", "writePropertyContinuation"]) {
     const body = functionBody(name);
     assert.match(body, /onChange\(/, `${name} should still perform its explicit onChange save`);
     assert.doesNotMatch(body, /\bview\.dispatch\s*\(/, `${name} should not dispatch directly before explicit onChange`);
     assert.match(body, /dispatchWithLocalApplyGuard\s*\(/, `${name} should guard programmatic dispatches`);
   }
+});
+
+test("applySlash is deleted", () => {
+  assert.equal(source.indexOf("function applySlash("), -1, "applySlash must not exist");
 });

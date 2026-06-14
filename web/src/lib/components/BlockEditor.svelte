@@ -451,6 +451,8 @@
   import "$lib/editor/commands/link";
   import "$lib/editor/commands/query";
   import "$lib/editor/commands/collection";
+  import "$lib/editor/commands/widget";
+  import "$lib/editor/commands/property";
   import { assignChords } from "$lib/chord-keys";
 
   // `i` is reserved as the chord-menu's filter trigger (see ChordMenu).
@@ -459,8 +461,6 @@
   // in or what tag-properties they've defined.
   const SLASH_RESERVED: ReadonlySet<string> = new Set(["i"]);
   import { setVimMode, getVimMode, cycleBottomDrawerTab } from "$lib/stores/pane-state.svelte";
-  import { api } from "$lib/api-client";
-  import { goto } from "$app/navigation";
   import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
   import ChordMenu, { type ChordNode } from "./ChordMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
@@ -943,11 +943,10 @@
   }
 
   /**
-   * Phase 10.3 — chord-leader tree for the in-block `/` menu. Each leaf
-   * fires `applySlash(<id>)`, which preserves the existing per-command
-   * logic (tag toggle / heading / property / link / date / query /
-   * widget / collection / template). One submenu (`s` Status) keys off
-   * the dynamically-loaded `statusChoices`.
+   * Phase 12.2 — chord-leader tree for the in-block `/` menu. All verbs
+   * are registered in the command registry (editor surface) and dispatched
+   * through a live SlashContext. The `/p` submenu covers property entry;
+   * the `/s` fallback covers status on untagged blocks.
    *
    * Chord assignments — keep first-letter intuitive where possible:
    *   t Task         T Tag picker     s Status (sub)
@@ -981,9 +980,9 @@
 
   /**
    * Phase 10.4 — write a `key:: value` continuation onto the current block,
-   * cleaning up the `/`-trigger text the same way `applySlash` does. Used by
-   * the new `/p` chord submenu so each property pick lands a real key/value
-   * pair instead of forcing the user into the bottom props panel.
+   * stripping the `/`-trigger text. Used by the `/p` chord submenu so each
+   * property pick lands a real key/value pair instead of forcing the user
+   * into the bottom props panel.
    */
   /**
    * Open the DatePicker bound to a property key. The `/p…` slash-trigger
@@ -1377,7 +1376,16 @@
     const defs = propertyDefs ?? [];
     if (defs.length === 0) {
       return [
-        { key: "k", label: "Manual key:: value", action: () => applySlash("property"), hint: "key:: value" },
+        {
+          key: "k",
+          label: "Manual key:: value",
+          hint: "key:: value",
+          action: () => {
+            const liveEditor = buildSlashContext();
+            const liveCtx = buildSlashCommandContext(liveEditor);
+            void commandRegistry.findByVerb("property")?.run(undefined, liveCtx);
+          },
+        },
       ];
     }
     const assignments = assignChords(
@@ -1424,22 +1432,13 @@
         hint: cmd.glyph,
       }));
 
-    const legacyBuiltins: ChordNode[] = [
-      { key: "t", label: "Task",         action: () => applySlash("task"),       hint: "tags:: Task" },
-      { key: "T", label: "Tag picker",   action: () => applySlash("tag"),        hint: "#" },
-      { key: "h", label: "Heading",      action: () => applySlash("heading") },
-      { key: "l", label: "Link",         action: () => applySlash("link"),       hint: "[[ ]]" },
-      { key: "d", label: "Date",         action: () => applySlash("date") },
-      { key: "q", label: "Query",        action: () => applySlash("query") },
-      { key: "w", label: "New widget",   action: () => applySlash("widget") },
-      { key: "c", label: "Collection",   action: () => applySlash("collection") },
-      { key: "m", label: "Template",     action: () => applySlash("template") },
+    const fixedBuiltins: ChordNode[] = [
       { key: "p", label: "All properties", children: getPropertyChildren() },
     ];
 
     const claimedSlashKeys = new Set<string>();
     const builtins: ChordNode[] = [];
-    for (const node of [...registryLeaves, ...legacyBuiltins]) {
+    for (const node of [...registryLeaves, ...fixedBuiltins]) {
       if (claimedSlashKeys.has(node.key)) continue;
       claimedSlashKeys.add(node.key);
       builtins.push(node);
@@ -1473,7 +1472,11 @@
           children: choices.map((s, i) => ({
             key: statusKeys[i],
             label: s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, " "),
-            action: () => applySlash(s),
+            action: () => {
+              const liveEditor = buildSlashContext();
+              liveEditor.setProperty("status", s);
+              liveEditor.finish(s);
+            },
             hint: `status:: ${s}`,
           })),
         }]
@@ -1482,107 +1485,7 @@
     return [...builtinNodes, ...propNodes, ...fallbackStatus];
   }
 
-  function applySlash(command: string) {
-    if (!view || slashStartPos < 0) return;
-    const doc = view.state.doc.toString();
-    const cursorPos = view.state.selection.main.head;
-    const before = doc.slice(0, slashStartPos);
-    const after = doc.slice(cursorPos);
 
-    let insert = "";
-    // P1.13 structured-first: a property the slash command SETS (vs. text it
-    // inserts) is collected here and emitted as a container op AFTER the text
-    // dispatch — never written as a `key:: value` line.
-    let pendingProp: { key: string; value: string } | null = null;
-    // PROP6 — same "dispatched after the text commit" pattern as `pendingProp`.
-    // The `/task` slash sets this to "Task" when the block didn't already have
-    // it; null otherwise. Fires `onTagAdded` after `onChange` below so the
-    // parent (BlockOutliner) can emit structured `BlockPropertySet` ops for
-    // the tag's property defaults via the existing setter.
-    let tagAddedThisSlash: string | null = null;
-    const allStatuses = statusChoices ?? ["todo", "doing", "done"];
-    if (allStatuses.includes(command)) {
-      insert = before.trimEnd() + after;
-      pendingProp = { key: "status", value: command };
-    } else {
-      switch (command) {
-        case "task": {
-          // Migrated to editor.task registry command — masked by getSlashTree dedupe.
-          return;
-        }
-        case "heading":
-          return;
-        case "property":
-          insert = before.trimEnd() + "\nkey:: value" + after;
-          break;
-        case "link":
-          // Migrated to editor.link registry command — masked by getSlashTree dedupe.
-          return;
-        case "tag": {
-          // Migrated to editor.tag registry command — masked by getSlashTree dedupe.
-          return;
-        }
-        case "date":
-          return;
-        case "query": {
-          // Migrated to editor.query registry command — masked by getSlashTree dedupe.
-          return;
-        }
-        case "widget": {
-          // Strip the `/widget` text, prompt for a name, then create a Query
-          // note that becomes a saved widget in the rail. Navigates to the
-          // new note for editing the DSL.
-          insert = before + after;
-          dispatchWithLocalApplyGuard({
-            changes: { from: 0, to: doc.length, insert },
-            selection: { anchor: before.length },
-          });
-          onChange(insert);
-          showSlashMenu = false;
-          slashStartPos = -1;
-          onSlashCommand?.(command);
-          setTimeout(async () => {
-            const name = window.prompt("New query widget name:");
-            if (!name || !name.trim()) return;
-            const trimmed = name.trim();
-            const content = `---\ntitle: "${trimmed}"\ntype: "Query"\ntags: []\n---\nquery::\nsection:: saved\n`;
-            try {
-              const created = await api.createNote(trimmed, content);
-              goto(`/p/${encodeURIComponent(created.id)}`);
-            } catch (e) {
-              console.error("Failed to create widget:", e);
-            }
-          }, 0);
-          return;
-        }
-        case "collection": {
-          // Migrated to editor.collection registry command — masked by getSlashTree dedupe.
-          return;
-        }
-        case "template": {
-          // Migrated to editor.template registry command — masked by getSlashTree dedupe.
-          return;
-        }
-        default:
-          return;
-      }
-    }
-
-    dispatchWithLocalApplyGuard({
-      changes: { from: 0, to: doc.length, insert },
-      selection: { anchor: insert.length - after.length },
-    });
-    onChange(insert);
-    if (pendingProp) onSetProperty?.(pendingProp);
-    if (tagAddedThisSlash) onTagAdded?.(tagAddedThisSlash);
-    showSlashMenu = false;
-    slashStartPos = -1;
-    onSlashCommand?.(command);
-    // Belt-and-braces: ensure cm-editor regains DOM focus after the slash
-    // menu closes. The `focused` prop drives focus too, but the explicit
-    // call avoids any race with overlay teardown.
-    view.focus();
-  }
 
   // When parent changes focused prop, programmatically focus/blur CM6.
   // Phase 9.9 follow-up — also honor `startInInsert` post-mount: the parent
