@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- L4: the tesela-server now runs IN-PROCESS in this app (was a child
+	     binary), so EventKit (Reminders sync) + microphone (voice-note capture
+	     in the webview) access is now attributed to Tesela.app and gated by
+	     these TCC usage strings. Without them a Reminders sync / voice note
+	     CRASHES the bundled app. Merged into the bundle Info.plist by Tauri v2.
+	     The EventKit code touches Reminders only (EKEntityType::Reminder) — no
+	     calendar-events access, so NSCalendarsUsageDescription is intentionally
+	     omitted. -->
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Tesela syncs your tasks with Apple Reminders so they stay current across your devices.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Tesela syncs your tasks with Apple Reminders so they stay current across your devices.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Tesela uses the microphone for voice notes — recordings are transcribed on-device and then discarded.</string>
+</dict>
+</plist>
