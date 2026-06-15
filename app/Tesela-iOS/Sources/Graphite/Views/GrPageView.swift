@@ -40,6 +40,7 @@ struct GrPageView: View {
                 pageHead
                 Rectangle().fill(theme.lineSoft).frame(height: 1)
                 pageBody
+                taggedBlocks
                 linkedRefs
                 Spacer().frame(height: 96)
             }
@@ -137,6 +138,25 @@ struct GrPageView: View {
             }
         }
         .padding(.horizontal, 8)
+    }
+
+    /// Tag pages get a "Blocks tagged #X" section — the iOS parity for the
+    /// web's `backlinks-of-tag` renderer (which lists `getTypedBlocks(tag)`).
+    /// Runs `tag:<name>` through the same query engine as the inline widget.
+    @ViewBuilder
+    private var taggedBlocks: some View {
+        if page.type == "tag" {
+            VStack(alignment: .leading, spacing: 0) {
+                Spacer().frame(height: 14)
+                GrQueryWidget(
+                    dsl: "tag:\(page.title)",
+                    title: "Blocks tagged #\(page.title)",
+                    mosaic: mosaic,
+                    path: $path
+                )
+            }
+            .padding(.horizontal, 8)
+        }
     }
 
     @ViewBuilder

@@ -11,6 +11,9 @@ import SwiftUI
 /// inside `GrPageView`'s outer scroll view; nesting scrollers breaks sizing.
 struct GrQueryWidget: View {
     let dsl: String
+    /// Optional human header shown instead of the raw DSL — e.g. a tag page's
+    /// "Blocks tagged #foo". When nil the header shows the DSL in monospace.
+    var title: String? = nil
     @ObservedObject var mosaic: MockMosaicService
     @Binding var path: NavigationPath
     @Environment(\.theme) private var theme
@@ -58,11 +61,19 @@ struct GrQueryWidget: View {
         HStack(spacing: 8) {
             GrIcon(name: "search", size: 12)
                 .foregroundStyle(theme.fgFaint)
-            Text(dsl)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundStyle(theme.fgSubtle)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            if let title {
+                Text(title)
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(theme.fgDefault)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else {
+                Text(dsl)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(theme.fgSubtle)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
             Spacer(minLength: 4)
             if !loading {
                 Text("\(rows.count)")
