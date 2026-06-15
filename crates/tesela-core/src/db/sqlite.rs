@@ -404,9 +404,17 @@ impl SqliteIndex {
             .await
             .map_err(|e| db_err("Failed to clear notes", e))?;
 
-        // Re-insert all notes
+        // Re-insert all notes. Mirror `reindex` (upsert + index_type_info)
+        // rather than a bare `upsert_note`, so Tag/Property pages repopulate
+        // `tag_defs`/`property_defs` — otherwise a bulk rebuild leaves the
+        // property registry EMPTY, and the typed query matcher (L5) +
+        // `GET /properties` fall back to untyped/no-defs. The top-level
+        // `DELETE FROM notes` already cascades those tables clear (FK
+        // migration 005), and `index_type_info` self-clears per note, so this
+        // is a clean repopulation.
         for note in notes {
             self.upsert_note(note).await?;
+            self.index_type_info(note).await?;
         }
 
         Ok(notes.len())
@@ -2374,6 +2382,46 @@ mod tests {
             prop_defs.is_empty(),
             "property_defs should be empty after remove_note; got {prop_defs:?}"
         );
+    }
+
+    /// A bulk `rebuild_from_notes` (the startup + relay-bootstrap path)
+    /// must repopulate `property_defs`/`tag_defs`, not just the notes
+    /// table — otherwise the property registry is empty after a rebuild
+    /// and server-side typed queries (L5) + `GET /properties` see no defs.
+    /// Regression guard for the L5-followup fix.
+    #[tokio::test]
+    async fn rebuild_from_notes_repopulates_property_and_tag_defs() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+
+        // A Property page declaring a number type (like the builtin `points`)
+        // and a Tag page, alongside a plain note.
+        let mut points = make_test_note("points", "points", "- Points property.", &[]);
+        points.metadata.note_type = Some("Property".to_string());
+        points
+            .metadata
+            .custom
+            .insert("value_type".to_string(), serde_json::json!("number"));
+        let mut task = make_test_note("task", "Task", "- Task tag.", &[]);
+        task.metadata.note_type = Some("Tag".to_string());
+        let plain = make_test_note("n1", "Note One", "- hello", &[]);
+
+        index
+            .rebuild_from_notes(&[points, task, plain])
+            .await
+            .unwrap();
+
+        let defs = index.get_all_property_defs().await.unwrap();
+        assert_eq!(
+            defs.len(),
+            1,
+            "rebuild must register the Property page; got {defs:?}"
+        );
+        assert_eq!(defs[0].name, "points");
+        assert_eq!(defs[0].value_type, "number");
+
+        let tags = index.get_all_tag_defs().await.unwrap();
+        assert_eq!(tags.len(), 1, "rebuild must register the Tag page; got {tags:?}");
+        assert_eq!(tags[0].name, "Task");
     }
 
     /// A note's `note_type` flipping away from Tag/Property (or
