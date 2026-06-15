@@ -601,6 +601,17 @@ All built against `MockMosaicService`'s in-memory seed — no real data yet.
 
 > Self-contained items any agent can pick up. First agent to start it executes it. Honor each item's `tier_floor` gate before starting; `complexity` is sizing only.
 
+### Product-test feedback (2026-06-15)
+
+- [ ] **#PT1 — Editor garbles `key:: value` typed inline after a tag.** Reported: typing `Ship it #l5test testpoints:: 10` came back mangled (e.g. `l5testpoints:: 1` — `#`/space/`test`/`0` dropped) and "combined with other properties." **Design decided (Taylor):** properties stay **own-line only** (the `/p` chord) — so inline `key:: value` should remain plain text, NOT parse as a property. This item is ONLY the garble (data corruption) fix: typing inline must leave clean text, never drop/merge chars.
+  - **Diagnosis so far** - `PROPERTY_LINE_RE` (`web/src/lib/block-parser.ts:10`) is own-line `^key:: value$`, so the inline text is (correctly) not a property. The garble is a CodeMirror decoration/typing interaction. **Ruled out:** atomic tag-chip widgets (removed from the editor 2026-06-07 — Model A; tags are plain marked text in CM now). Remaining atomic ranges (`web/src/lib/cm-decorations.ts`): block-id `<!-- bid:… -->` hide (`:852`), tables/images/hr/callout. Root cause UNCONFIRMED — the symptom doesn't cleanly map to these.
+  - **BLOCKED ON** - a faithful keystroke repro. Get Taylor's exact steps (the block's prior content + the literal keystrokes/screenshot). MCP browser fill does NOT simulate keystroke timing, so it can't reproduce a typing-interaction bug. Do this in a focused editor session, not blind — `cm-decorations.ts` is the app's most delicate code.
+  - **Files** - `web/src/lib/cm-decorations.ts` (atomic ranges / `transactionFilter`), `web/src/lib/block-parser.ts` (own-line gate, confirm unchanged).
+  - **Acceptance** - With a real keystroke repro, typing `<text> #tag key:: value` leaves the source byte-exact (no dropped/merged chars); the `key:: value` stays plain text (not a property — own-line model preserved).
+  - **Verify** - Reproduce the original garble in a real browser, then confirm fixed (typed source matches what was typed). Add a CM regression test if a deterministic trigger is found.
+  - **tier_floor** - `senior`
+  - **complexity** - `M`
+
 ### Opencode-ready reliability polish (2026-06-12)
 
 - [x] **Add a dry-run repair for date-slug dailies missing `daily` tags.**
