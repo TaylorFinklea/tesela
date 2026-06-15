@@ -126,7 +126,36 @@
     persistTabs(updated, activeIdx);
   }
 
-  // (editing state lives inside TabStrip now)
+  // (tab editing state lives inside TabStrip now)
+
+  // Inline DSL editor — lets the user edit (or set) the `query::` text right
+  // from the rendered block. The raw `query::` line is otherwise hidden once
+  // the widget renders, so without this there's no way to change the query.
+  // Commits via writeBlockProps so it round-trips like any other block edit.
+  let editingQuery = $state(false);
+  let queryDraft = $state("");
+
+  function startEditQuery() {
+    queryDraft = queryText;
+    editingQuery = true;
+  }
+
+  function commitQuery() {
+    const next = queryDraft.trim();
+    editingQuery = false;
+    if (next === queryText) return;
+    writeBlockProps({ query: next });
+  }
+
+  function queryKeydown(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commitQuery();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      editingQuery = false;
+    }
+  }
 
   const allNotesQuery = createQuery(() => ({
     queryKey: ["notes", { limit: 500 }] as const,
@@ -250,19 +279,36 @@
     <ViewSwitcher views={VIEW_META} active={viewMode} onChange={setView} />
   </div>
 
-  <!-- Match count + query info -->
-  <div class="text-[10px] text-muted-foreground/50 mb-2">
-    {#if queryText}
+  <!-- Match count + query info (click the DSL to edit it) -->
+  <div class="text-[10px] text-muted-foreground/50 mb-2 flex items-center gap-1.5 flex-wrap">
+    {#if editingQuery}
+      <!-- svelte-ignore a11y_autofocus -->
+      <input
+        class="text-[11px] font-mono bg-muted/40 border border-border/60 rounded px-1.5 py-0.5 text-foreground/90 min-w-[16rem] focus:outline-none focus:border-primary/60"
+        bind:value={queryDraft}
+        onkeydown={queryKeydown}
+        onblur={commitQuery}
+        autofocus
+        placeholder="tag:task points:>5"
+      />
+      <span class="text-muted-foreground/40">↵ save · esc cancel</span>
+    {:else if queryText}
       {matches.length} {matches.length === 1 ? "match" : "matches"}
-      · <code class="text-foreground/70">{queryText}</code>
+      · <button
+          type="button"
+          class="font-mono text-foreground/70 hover:text-primary underline decoration-dotted decoration-foreground/30 underline-offset-2"
+          onclick={startEditQuery}
+          title="Edit query">{queryText}</button>
       {#if activeTab.filter}
         <span class="text-muted-foreground/40">+</span> <code class="text-foreground/70">{activeTab.filter}</code>
       {/if}
-    {:else}empty query{/if}
+    {:else}
+      <button type="button" class="text-primary/80 hover:text-primary" onclick={startEditQuery}>+ Add query</button>
+    {/if}
   </div>
 
-  {#if !queryText}
-    <div class="text-[11px] text-muted-foreground/60 italic">Empty query — set <code>query::</code> on this block.</div>
+  {#if !queryText && !editingQuery}
+    <div class="text-[11px] text-muted-foreground/60 italic">Empty query — click <button type="button" class="text-primary/80 hover:text-primary underline" onclick={startEditQuery}>+ Add query</button>, or type <code>/query</code> to insert a new one.</div>
   {:else if allNotesQuery.isLoading}
     <div class="text-[11px] text-muted-foreground">Loading…</div>
   {:else if matches.length === 0}
