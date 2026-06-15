@@ -85,6 +85,23 @@ struct BlockRow: View {
         properties.first(where: { $0.key == "scheduled" })?.value
     }
 
+    /// Block properties to render as right-edge chips — everything except the
+    /// system/collection keys, the date/recurrence props that already get
+    /// dedicated chips, and internal keys. Mirrors the web's hidden-key sets
+    /// (`SYSTEM_HIDDEN_KEYS` + `ROW_OWNED_KEYS`); shows the rest (custom props
+    /// like `points`/`testpoints`) so they're visible on iOS, not just desktop.
+    private var displayProperties: [BlockProperty] {
+        let hidden: Set<String> = [
+            "query", "view", "views", "active_view", "collection",
+            "scheduled", "deadline", "recurring", "status",
+            "id", "collapsed", "color",
+        ]
+        return properties.filter {
+            !hidden.contains($0.key.lowercased())
+                && !$0.value.trimmingCharacters(in: .whitespaces).isEmpty
+        }
+    }
+
     @Environment(\.theme) private var theme
     @State private var editBuffer: String = ""
     @State private var livePushTask: Task<Void, Never>? = nil
@@ -112,7 +129,7 @@ struct BlockRow: View {
             bullet
             VStack(alignment: .leading, spacing: 4) {
                 content
-                if (!tags.isEmpty || recurringValue != nil || deadlineValue != nil || scheduledValue != nil) && !isEditing {
+                if (!tags.isEmpty || recurringValue != nil || deadlineValue != nil || scheduledValue != nil || !displayProperties.isEmpty) && !isEditing {
                     HStack(spacing: 4) {
                         ForEach(tags, id: \.self) { tag in
                             TagChip(value: tag)
@@ -134,6 +151,9 @@ struct BlockRow: View {
                                 RecurrenceChip(value: recValue)
                             }
                             .buttonStyle(.plain)
+                        }
+                        ForEach(displayProperties, id: \.key) { prop in
+                            PropertyChip(key: prop.key, value: prop.value)
                         }
                     }
                 }
