@@ -143,6 +143,9 @@ struct GrPageView: View {
     private var renderedBlocks: some View {
         let blocks = mosaic.loadedPageBlocks[slug] ?? []
         ForEach(BlockFold.visibleBlocks(in: blocks, collapsed: collapsedBlockIds)) { block in
+            let query = queryInfo(for: block)
+            VStack(alignment: .leading, spacing: 6) {
+            if !(query?.hideRow ?? false) {
             BlockRow(
                 id: block.id,
                 kind: block.kind,
@@ -181,8 +184,34 @@ struct GrPageView: View {
                     Task { try? await mosaic.recurBump(blockId: block.id, mode: .skip) }
                 }
             )
+            }
+            if let query {
+                GrQueryWidget(dsl: query.dsl, mosaic: mosaic, path: $path)
+                    .padding(.leading, CGFloat(18 + block.indent * 18))
+                    .padding(.trailing, 18)
+            }
+            }
         }
         addBlockRow
+    }
+
+    /// The query DSL for a block when it is a query block, plus whether the
+    /// raw block row should be hidden. Two source forms, matching the web:
+    ///  - a `query::` sub-line → `block.properties["query"]` (the row text is a
+    ///    label/title, so keep it and render the widget beneath);
+    ///  - a main-line `- query:: <dsl>` → the DSL is the block's own text, so
+    ///    hide the raw row and let the widget replace it.
+    private func queryInfo(for block: Block) -> (dsl: String, hideRow: Bool)? {
+        if let prop = block.properties.first(where: { $0.key.lowercased() == "query" }) {
+            let dsl = prop.value.trimmingCharacters(in: .whitespaces)
+            if !dsl.isEmpty { return (dsl, false) }
+        }
+        let text = block.displayText.trimmingCharacters(in: .whitespaces)
+        if text.lowercased().hasPrefix("query::") {
+            let dsl = String(text.dropFirst("query::".count)).trimmingCharacters(in: .whitespaces)
+            if !dsl.isEmpty { return (dsl, true) }
+        }
+        return nil
     }
 
     private func toggleFold(_ blockId: String) {
