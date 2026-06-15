@@ -1,7 +1,10 @@
 # Current State
 
 ## Branch
-- `main` (ahead of origin; unpushed — 43+ commits incl. `4766111` cmd-registry B1–B4, waves 1–4 merges, L2 spec). NOT pushed.
+- `main` (ahead of origin; **13 unpushed** as of 2026-06-15). NOT pushed.
+- **LATEST (2026-06-15):** L4 Phase B merged + `/Applications/Tesela.app` rebuilt (release shell, ad-hoc re-signed) → in-process desktop is the daily-driver. L4-FOLLOWUP done (`aeca2684` TCC usage strings: Reminders/mic, in `src-tauri/Info.plist` + the live bundle). **iOS build 13 shipped to TestFlight** (`18146932`) — carries ED2/IOS1/IOS2/IOS3 (unshipped since build 12) + latent L5/L1-FFI. Product test (`~/.harness/reports/tesela/20260614-l4-l5-product-test/`) covers all three surfaces.
+- **L5 web test stack** (vite :5173 → scratch backend :7481 on `/tmp/tesela-l5-test`, seeded notes intact): dies on session restart — **restart with the two bg commands** (backend: `TESELA_SERVER_BIND=127.0.0.1:7481 TESELA_DISABLE_{MDNS,PEER_SYNC,RELAY}=1 ./target/debug/tesela-server --mosaic /tmp/tesela-l5-test`; vite: `TESELA_API_TARGET=http://127.0.0.1:7481 pnpm --dir web dev`). The /Applications desktop server is SEPARATE (in-process, no `tesela-server` proc by design).
+- `4766111` cmd-registry B1–B4, waves 1–4 merges, L2 spec (older history).
 - Opus = orchestrator/Lead. Fleet = gpt-5.5 + minimax via pi (Bash); Claude subagents via Workflow. Evidence: `model-scorecard.md` + `model-bench.jsonl`.
 
 ## Plan
