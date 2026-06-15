@@ -35,6 +35,44 @@ final class LocalQueryEngineTests: XCTestCase {
         XCTAssertTrue(parsed.clauses.allSatisfy { $0.negated })
     }
 
+    // MARK: - L5 registry-typed property comparison
+
+    /// `frontmatterValueType` pulls `value_type` out of a Property page's
+    /// frontmatter (the iOS registry source, since metadata doesn't decode
+    /// `custom`). Drives the typed comparison in `localExecuteQuery`.
+    func testFrontmatterValueTypeParsesPropertyPage() {
+        let page = "---\ntitle: \"Points\"\ntype: \"Property\"\nvalue_type: \"number\"\ntags: []\n---\n- Points property.\n"
+        XCTAssertEqual(LocalQueryEngine.frontmatterValueType(page), "number")
+        // A non-Property page (no frontmatter / no value_type) → nil.
+        XCTAssertNil(LocalQueryEngine.frontmatterValueType("- just a note block\n"))
+        XCTAssertNil(LocalQueryEngine.frontmatterValueType("---\ntitle: \"X\"\ntype: \"Tag\"\n---\n- tag.\n"))
+    }
+
+    /// The headline L5 discriminator: with a `number` registry, `points:3`
+    /// matches a stored `3.0` (Eq coercion). Without the registry (the old
+    /// behavior), it does NOT — proving the typed path is actually engaged.
+    func testTypedNumberEqualityCoercesThreePointZero() {
+        let blks = blocks("- Estimate #l5test\n  points:: 3.0\n", noteId: "n1")
+        let dsl = LocalQueryEngine.parseSimpleDsl("tag:l5test points:3")
+        let untyped = LocalQueryEngine.queryItems(
+            blocks: blks, noteId: "n1", noteTitle: "N1", pageNoteType: nil, dsl: dsl)
+        XCTAssertTrue(untyped.isEmpty, "untyped Eq must NOT match \"3.0\" to \"3\"")
+        let typed = LocalQueryEngine.queryItems(
+            blocks: blks, noteId: "n1", noteTitle: "N1", pageNoteType: nil, dsl: dsl,
+            propertyTypes: ["points": "number"])
+        XCTAssertEqual(typed.count, 1, "number-typed Eq must coerce 3.0 == 3")
+    }
+
+    /// Number-typed ordering selects the right rows.
+    func testTypedNumberOrdering() {
+        let blks = blocks("- Big #l5test\n  points:: 10\n- Small #l5test\n  points:: 2\n", noteId: "n1")
+        let dsl = LocalQueryEngine.parseSimpleDsl("tag:l5test points:>5")
+        let typed = LocalQueryEngine.queryItems(
+            blocks: blks, noteId: "n1", noteTitle: "N1", pageNoteType: nil, dsl: dsl,
+            propertyTypes: ["points": "number"])
+        XCTAssertEqual(typed.map(\.text), ["Big"], "only points:10 is > 5")
+    }
+
     // MARK: - ORDER BY surfacing (mirrors parse_query's `sort`)
 
     /// Mirrors the Rust `parse_order_by` contract (query.rs): `sort` is

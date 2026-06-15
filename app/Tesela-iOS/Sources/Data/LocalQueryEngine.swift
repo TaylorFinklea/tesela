@@ -1068,6 +1068,31 @@ enum LocalQueryEngine {
         dsl.clauses.allSatisfy { clauseMatches($0, ctx: ctx, propertyTypes: propertyTypes) }
     }
 
+    /// Extract a Property page's declared `value_type` from its YAML
+    /// frontmatter (e.g. `value_type: "number"`), so the live query path can
+    /// build a `name → value_type` registry from local notes and compare
+    /// typed (L5). Mirrors what the web `parsePropertyPage` reads from
+    /// `note.metadata.custom.value_type`. Returns nil if absent. Only the
+    /// leading `---`-fenced frontmatter is scanned.
+    static func frontmatterValueType(_ content: String) -> String? {
+        guard content.hasPrefix("---") else { return nil }
+        let lines = content.split(separator: "\n", omittingEmptySubsequences: false)
+        var inFrontmatter = false
+        for (i, raw) in lines.enumerated() {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if i == 0 { inFrontmatter = (line == "---"); continue }
+            if !inFrontmatter { break }
+            if line == "---" { break } // end of frontmatter
+            if let r = line.range(of: "value_type:") {
+                let v = line[r.upperBound...]
+                    .trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+                return v.isEmpty ? nil : v
+            }
+        }
+        return nil
+    }
+
     /// Build the QueryItems contributed by one note for a block-kind
     /// query. Mirrors the row construction in
     /// `SqliteIndex::execute_block_query` (sqlite.rs): the
@@ -1078,12 +1103,13 @@ enum LocalQueryEngine {
         noteId: String,
         noteTitle: String,
         pageNoteType: String?,
-        dsl: SimpleDsl
+        dsl: SimpleDsl,
+        propertyTypes: [String: String] = [:]
     ) -> [QueryItem] {
         let ctxs = contexts(blocks: blocks, noteId: noteId, pageNoteType: pageNoteType)
         var out: [QueryItem] = []
         for (idx, ctx) in ctxs.enumerated() {
-            guard blockMatches(dsl, ctx: ctx) else { continue }
+            guard blockMatches(dsl, ctx: ctx, propertyTypes: propertyTypes) else { continue }
 
             var breadcrumb = [noteTitle]
             var crumbs: [String] = []

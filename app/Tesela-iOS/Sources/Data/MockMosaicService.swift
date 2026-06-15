@@ -3384,18 +3384,38 @@ final class MockMosaicService: ObservableObject, MosaicService {
     private func localExecuteQuery(_ dsl: String) -> QueryResult {
         let parsed = LocalQueryEngine.parseSimpleDsl(dsl)
         guard parsed.kind == .block else { return QueryResult(groups: []) }
+        let allNotes = loadAllLocalNotes()
+        // L5: build the property-type registry from Property pages so the
+        // matcher compares typed values (number/date/checkbox) instead of
+        // guessing from strings. Mirrors the web QueryBlock's buildRegistry.
+        let propertyTypes = buildPropertyTypeRegistry(allNotes)
         var items: [QueryItem] = []
-        for note in loadAllLocalNotes() {
+        for note in allNotes {
             let blocks = parseBlocks(from: note.body, noteId: note.id)
             items += LocalQueryEngine.queryItems(
                 blocks: blocks,
                 noteId: note.id,
                 noteTitle: note.title,
                 pageNoteType: note.metadata.note_type,
-                dsl: parsed
+                dsl: parsed,
+                propertyTypes: propertyTypes
             )
         }
         return QueryResult(groups: [QueryGroup(key: "", items: items)])
+    }
+
+    /// `lowercased property name → value_type` from the local Property pages,
+    /// the iOS equivalent of the web `buildRegistry(notes)`. Drives L5 typed
+    /// comparison in `localExecuteQuery`. `value_type` lives in the Property
+    /// page's frontmatter (iOS metadata doesn't decode `custom`), so parse it.
+    private func buildPropertyTypeRegistry(_ notes: [APINote]) -> [String: String] {
+        var map: [String: String] = [:]
+        for note in notes where note.metadata.note_type == "Property" {
+            if let vt = LocalQueryEngine.frontmatterValueType(note.content) {
+                map[note.title.lowercased()] = vt
+            }
+        }
+        return map
     }
 
     // MARK: - Saved views (saved-views spec, 2026-06-10)
