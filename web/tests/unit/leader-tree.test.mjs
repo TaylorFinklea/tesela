@@ -105,3 +105,47 @@ test("bucket labels match spec: i=insert, p=properties, v=views, a=actions, t=to
     assert.equal(node.label, expected, `bucket '${key}' label should be "${expected}"`);
   }
 });
+
+test("config bucket: settings panes nest under ',' as unique-keyed children (no bare-',' leaf)", () => {
+  // Regression for the leader-overlay crash: when `general` was a bare-`,` leaf
+  // while devices/sync/mosaic/data were `,x` branches, buildChordTree emitted
+  // TWO root nodes keyed `,` (a leaf + its subtree). GrLeaderOverlay's keyed
+  // {#each ... (node.key)} then threw Svelte's each_key_duplicate and crashed
+  // the WHOLE leader on every open. The fix homes `general` at `,g`, making `,`
+  // a pure config bucket with all panes keyboard-reachable.
+  commandRegistry._reset();
+  reg("general", [",", "g"], "General");
+  reg("devices", [",", "d"], "Devices");
+  reg("sync", [",", "s"], "Sync");
+  reg("mosaic", [",", "m"], "Mosaic");
+  reg("data", [",", "a"], "Data");
+  const tree = getLeaderTree();
+  const commaNodes = tree.filter((n) => n.key === ",");
+  assert.equal(commaNodes.length, 1, "',' must be ONE bucket node, not a leaf+subtree pair");
+  const bucket = commaNodes[0];
+  assert.ok(bucket.children, "',' bucket must have children");
+  assert.deepEqual(
+    bucket.children.map((c) => c.key).sort(),
+    ["a", "d", "g", "m", "s"],
+    "all 5 settings panes must be reachable as unique-keyed children",
+  );
+});
+
+test("getLeaderTree siblings always have a unique render key (key+label) — overlay-safe", () => {
+  // GrLeaderOverlay keys its {#each} by `${node.key} ${node.label}`. Even a
+  // mis-homed bare-key leaf colliding with a bucket must produce distinct render
+  // keys so the keyed each never throws each_key_duplicate.
+  commandRegistry._reset();
+  reg("leaf", [","], "General"); // bare-',' leaf
+  reg("branch", [",", "d"], "Devices"); // ',d' branch → forces a leaf+subtree pair
+  const walk = (nodes) => {
+    const renderKeys = nodes.map((n) => `${n.key} ${n.label}`);
+    assert.equal(
+      new Set(renderKeys).size,
+      renderKeys.length,
+      `render keys must be unique among siblings: ${JSON.stringify(renderKeys)}`,
+    );
+    for (const n of nodes) if (n.children) walk(n.children);
+  };
+  walk(getLeaderTree());
+});

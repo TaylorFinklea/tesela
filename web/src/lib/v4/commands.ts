@@ -51,7 +51,7 @@ import {
 } from "$lib/stores/fullscreen-overlay.svelte";
 
 const SETTINGS_PAGES: { slug: SettingsSlug; label: string; chord?: string[] }[] = [
-  { slug: "general", label: "General", chord: [","] },
+  { slug: "general", label: "General", chord: [",", "g"] },
   { slug: "devices", label: "Devices", chord: [",", "d"] },
   { slug: "sync", label: "Sync", chord: [",", "s"] },
   { slug: "mosaic", label: "Mosaic", chord: [",", "m"] },
