@@ -84,6 +84,10 @@ class CommandRegistry {
     });
   }
 
+  availableOn(surface: Surface, ctx: CommandContext): RegisteredCommand[] {
+    return this.available(ctx).filter((cmd) => surfacesFor(cmd).has(surface));
+  }
+
   findByVerb(verb: string): RegisteredCommand | undefined {
     const v = verb.toLowerCase();
     return this.all().find((c) => c.verb === v || c.id === v);

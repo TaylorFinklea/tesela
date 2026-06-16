@@ -574,3 +574,80 @@ test("surfacesFor: plain command (no flags) is palette + colon", () => {
   assert.equal(s.has("slash"), false);
   assert.equal(s.has("leader"), false);
 });
+
+// ── availableOn (per-surface filter over available) ───────────────────────
+
+test("availableOn filters available() by derived surface", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "slashy", label: "Slashy", glyph: "+", category: "editor",
+    slashKey: "h", keywords: [], run: () => {},
+  });
+  commandRegistry.register({
+    id: "leadery", label: "Leadery", glyph: "g", category: "navigate",
+    chord: ["g", "d"], keywords: [], run: () => {},
+  });
+  commandRegistry.register({
+    id: "plain", label: "Plain", glyph: "p", category: "navigate",
+    keywords: [], run: () => {},
+  });
+
+  // slashy has slashKey → slash; also palette+colon. NOT leader.
+  assert.deepEqual(
+    commandRegistry.availableOn("slash", {}).map((c) => c.id),
+    ["slashy"],
+  );
+  // leadery has chord → leader. plain has none.
+  assert.deepEqual(
+    commandRegistry.availableOn("leader", {}).map((c) => c.id),
+    ["leadery"],
+  );
+  // palette/colon include every non-editor command.
+  assert.deepEqual(
+    commandRegistry.availableOn("palette", {}).map((c) => c.id),
+    ["slashy", "leadery", "plain"],
+  );
+  assert.deepEqual(
+    commandRegistry.availableOn("colon", {}).map((c) => c.id),
+    ["slashy", "leadery", "plain"],
+  );
+});
+
+test("availableOn respects explicit surfaces (authoritative)", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "scoped", label: "Scoped", glyph: "s", category: "navigate",
+    surfaces: new Set(["leader"]),
+    slashKey: "x", chord: ["g", "z"], // would-be derivations ignored
+    keywords: [], run: () => {},
+  });
+  assert.deepEqual(commandRegistry.availableOn("leader", {}).map((c) => c.id), ["scoped"]);
+  assert.deepEqual(commandRegistry.availableOn("slash", {}).map((c) => c.id), []);
+  assert.deepEqual(commandRegistry.availableOn("palette", {}).map((c) => c.id), []);
+});
+
+test("availableOn still honors when() and editor gate from available()", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "page-only", label: "Page", glyph: "p", category: "navigate",
+    chord: ["g", "p"], when: (ctx) => ctx.bufferKind === "page",
+    keywords: [], run: () => {},
+  });
+  commandRegistry.register({
+    id: "editor-ins", label: "Ins", glyph: "+", category: "editor",
+    surface: "editor", slashKey: "h", keywords: [], run: () => {},
+  });
+
+  // when() gate: leader bucket hides page-only off a page.
+  assert.deepEqual(commandRegistry.availableOn("leader", {}).map((c) => c.id), []);
+  assert.deepEqual(
+    commandRegistry.availableOn("leader", { bufferKind: "page" }).map((c) => c.id),
+    ["page-only"],
+  );
+  // editor gate: editor-ins absent without ctx.editor, present with it.
+  assert.deepEqual(commandRegistry.availableOn("slash", {}).map((c) => c.id), []);
+  assert.deepEqual(
+    commandRegistry.availableOn("slash", { editor: {} }).map((c) => c.id),
+    ["editor-ins"],
+  );
+});
