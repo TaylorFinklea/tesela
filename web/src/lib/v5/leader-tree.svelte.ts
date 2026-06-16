@@ -14,8 +14,8 @@ import {
   effectiveChord,
   type Command,
   type CommandContext,
-} from "$lib/command-registry.svelte";
-import * as keybindings from "$lib/stores/keybindings.svelte";
+} from "../command-registry.svelte.ts";
+import * as keybindings from "../stores/keybindings.svelte.ts";
 // Type-only import via the `<script module>` block of ChordMenu.svelte.
 // Svelte's TS support exports the module-script types via the .svelte
 // path with a side-effect import.
