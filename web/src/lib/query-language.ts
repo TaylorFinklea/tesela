@@ -846,6 +846,47 @@ export function blockMatches(
   return evalExpr(block, query.expr, types);
 }
 
+/**
+ * Stably sort rows by an `ORDER BY` sort string — the `"field [asc|desc], …"`
+ * shape `parseQuery` puts in `ParsedQuery.sort`. Multi-key (first key wins;
+ * ties fall through to the next), default ascending.
+ *
+ * Field resolution is the caller's job (`fieldValue(row, key)` → the raw string
+ * for that key — title/text builtins, property lookup, `[[…]]` stripped — the
+ * same keys the server's `apply_sort` resolves). The COMPARISON is L5-typed via
+ * `compareTyped`, so `points` orders numerically and ISO dates chronologically
+ * — the inline query block sorts CORRECTLY where the server's string-only
+ * `apply_sort` does not (server-side sort parity is a tracked follow-up).
+ */
+export function applySort<T>(
+  rows: readonly T[],
+  sort: string | null | undefined,
+  fieldValue: (row: T, key: string) => string,
+  types: ReadonlyMap<string, string> = EMPTY_TYPES,
+): T[] {
+  const out = [...rows];
+  if (!sort) return out;
+  const keys: Array<{ key: string; desc: boolean }> = [];
+  for (const tok of sort.split(",")) {
+    const parts = tok.trim().split(/\s+/).filter((p) => p.length > 0);
+    if (parts.length === 0) continue;
+    keys.push({ key: parts[0].toLowerCase(), desc: (parts[1] ?? "").toLowerCase() === "desc" });
+  }
+  if (keys.length === 0) return out;
+  // Decorate-sort-undecorate for a stable sort (preserve filter order on ties).
+  return out
+    .map((row, i) => ({ row, i }))
+    .sort((a, b) => {
+      for (const { key, desc } of keys) {
+        const vt = types.get(key) ?? "string";
+        const cmp = compareTyped(fieldValue(a.row, key), fieldValue(b.row, key), vt);
+        if (cmp !== 0) return desc ? -cmp : cmp;
+      }
+      return a.i - b.i;
+    })
+    .map((d) => d.row);
+}
+
 /** Walk the tree, short-circuiting. Empty `and` matches everything. */
 function evalExpr(block: ParsedBlock, expr: BoolExpr, types: ReadonlyMap<string, string>): boolean {
   if (expr.op === "and") return expr.args.every((a) => evalExpr(block, a, types));

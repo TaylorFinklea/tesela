@@ -586,7 +586,7 @@
           type="text"
           spellcheck="false"
           autocomplete="off"
-          placeholder="status:todo tag:project -has:scheduled"
+          placeholder="status = todo AND type = project AND scheduled IS NULL"
           bind:this={dslInputEl}
           bind:value={editor.dsl}
           oninput={refreshSuggest}

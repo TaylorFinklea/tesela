@@ -59,9 +59,12 @@ export function validateViewDsl(dsl: string): string | null {
   const trimmed = dsl.trim();
   if (trimmed.length === 0) return "query must not be empty";
   const parsed = parseQuery(trimmed);
-  const mentionsKind = trimmed.toLowerCase().includes("kind:");
+  // Recognize the `kind` selector in BOTH the JQL infix form (`kind = page`)
+  // and the legacy colon form (`kind:page`) — it's consumed at parse time so
+  // it leaves no predicate in the expr tree.
+  const mentionsKind = /\bkind\b\s*[:=]/i.test(trimmed);
   if (isEmptyExpr(parsed.expr) && parsed.sort === undefined && !mentionsKind) {
-    return `no predicates recognized in "${trimmed}" — use key:value filters like status:todo, tag:project, -has:scheduled`;
+    return `no predicates recognized in "${trimmed}" — use filters like status = todo, type = project, scheduled IS NULL`;
   }
   return null;
 }

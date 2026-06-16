@@ -3,7 +3,7 @@
   import { goto } from "$app/navigation";
   import { api } from "$lib/api-client";
   import { blockDisplayText, parseBlocks, segmentText } from "$lib/block-parser";
-  import { parseQuery, blockMatches } from "$lib/query-language";
+  import { parseQuery, blockMatches, applySort } from "$lib/query-language";
   import { buildRegistry } from "$lib/property-registry";
   import {
     IconTable,
@@ -182,6 +182,20 @@
   });
 
   type Match = { block: ParsedBlock; noteTitle: string; noteId: string };
+
+  /** Resolve a match's value for an `ORDER BY` key — the same keys the
+   *  server's `apply_sort` resolves: `title`/`text` builtins, else a
+   *  case-insensitive property lookup with a fully-wrapping `[[…]]` stripped. */
+  function matchFieldValue(m: Match, key: string): string {
+    if (key === "title") return m.noteTitle;
+    if (key === "text") return m.block.text;
+    const entry = Object.entries(m.block.properties).find(
+      ([k]) => k.toLowerCase() === key,
+    );
+    const raw = (entry?.[1] ?? "").trim();
+    return raw.startsWith("[[") && raw.endsWith("]]") ? raw.slice(2, -2) : raw;
+  }
+
   const matches: Match[] = $derived.by(() => {
     if (!queryText) return [];
     const notes = (allNotesQuery.data ?? []) as Note[];
@@ -194,7 +208,8 @@
         }
       }
     }
-    return out;
+    // L5-typed `ORDER BY` (parsedQuery.sort) — sorts the inline block's rows.
+    return applySort(out, parsedQuery.sort, matchFieldValue, propertyTypes);
   });
 
   // Query block system keys — never expose as table columns.
@@ -289,7 +304,7 @@
         onkeydown={queryKeydown}
         onblur={commitQuery}
         autofocus
-        placeholder="tag:task points:>5"
+        placeholder="type = task AND points > 5"
       />
       <span class="text-muted-foreground/40">↵ save · esc cancel</span>
     {:else if queryText}

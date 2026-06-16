@@ -12,7 +12,7 @@ commandRegistry.register({
   run: (_arg, ctx) => {
     const ed = ctx?.editor;
     if (!ed) return;
-    const head = ed.before.trimEnd() + "\nquery:: tag:";
+    const head = ed.before.trimEnd() + "\nquery:: type = ";
     const tail = "\nview:: table" + ed.after;
     ed.replaceTrigger(head + tail, tail.length);
     ed.finish("query");
