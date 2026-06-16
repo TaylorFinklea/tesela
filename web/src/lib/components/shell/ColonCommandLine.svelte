@@ -22,8 +22,6 @@
   } from "$lib/command-registry.svelte";
   import * as keybindings from "$lib/stores/keybindings.svelte";
   import { findCommandByVerb, matchesV4Command } from "$lib/v4/commands";
-  import { openPeek } from "$lib/stores/peek.svelte";
-  import { openFullscreenGraph } from "$lib/stores/fullscreen-overlay.svelte";
   import { focusLeaf } from "$lib/buffer/state.svelte";
   import type { LeafId } from "$lib/buffer/types";
   // This strip styles with the v4 design tokens (`--v4-*`), which tokens.css
@@ -50,12 +48,6 @@
   // The context-filtered registry of verbs, computed once per open.
   const allCommands = $derived.by(() => (open ? commandRegistry.availableOn('colon', ctx) : []));
 
-  // Built-in non-registry verbs (peek, graph) surface as autocomplete rows too.
-  const BUILTINS = [
-    { verb: "peek", label: "Open Peek popover", glyph: "i", shortcut: "⌘I" },
-    { verb: "graph", label: "Fullscreen graph", glyph: "✦", shortcut: "⌘G" },
-  ];
-
   type Row = {
     verb: string;
     label: string;
@@ -68,16 +60,6 @@
     if (!open) return [];
     const q = value.trim();
     const rows: Row[] = [];
-    for (const b of BUILTINS) {
-      if (!q || b.verb.includes(q.toLowerCase())) {
-        rows.push({
-          verb: b.verb,
-          label: b.label,
-          glyph: b.glyph,
-          shortcut: b.shortcut,
-        });
-      }
-    }
     const overrides = keybindings.snapshot();
     for (const cmd of allCommands) {
       if (!cmd.verb) continue;
@@ -119,16 +101,6 @@
   }
 
   async function runVerb(verb: string, arg?: string) {
-    if (verb === "peek") {
-      openPeek((arg ?? "backlinks-of-page") as Parameters<typeof openPeek>[0]);
-      closeColonMode();
-      return;
-    }
-    if (verb === "graph") {
-      openFullscreenGraph();
-      closeColonMode();
-      return;
-    }
     const cmd = findCommandByVerb(verb);
     if (!cmd) {
       error = `unknown verb: :${verb}`;
@@ -159,7 +131,7 @@
     const [typedVerb, ...rest] = raw.split(/\s+/);
     const arg = rest.join(" ").trim() || undefined;
     const exact = findCommandByVerb(typedVerb);
-    if (exact || typedVerb === "peek" || typedVerb === "graph") {
+    if (exact) {
       await runVerb(typedVerb, arg);
       return;
     }
