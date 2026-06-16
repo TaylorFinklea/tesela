@@ -681,3 +681,56 @@ test("BUILTIN_SLASH_CHORDS no longer carries widget (w) or All-properties (p)", 
   assert.equal(BUILTIN_SLASH_CHORDS.has("w"), false, "BUILTIN_SLASH_CHORDS dropped w (New widget)");
   assert.equal(BUILTIN_SLASH_CHORDS.has("p"), false, "BUILTIN_SLASH_CHORDS dropped p (All properties)");
 });
+
+// ── Phase D: colon narrows to exact verbs + folds peek/graph builtins ─────
+
+test("availableOn('colon') includes peek and graph verbs from the registry", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "peek",
+    verb: "peek",
+    label: "Toggle Peek popover",
+    glyph: "i",
+    category: "tile",
+    chord: ["p"],
+    shortcut: "⌘I",
+    keywords: ["peek"],
+    run: () => {},
+  });
+  commandRegistry.register({
+    id: "fullscreen-graph",
+    verb: "graph",
+    label: "Fullscreen graph",
+    glyph: "✦",
+    category: "navigate",
+    chord: ["g", "g"],
+    shortcut: "⌘G",
+    keywords: ["graph"],
+    run: () => {},
+  });
+
+  const colon = commandRegistry.availableOn("colon", {});
+  const verbs = colon.map((c) => c.verb);
+  assert.ok(verbs.includes("peek"), "colon surface includes :peek from registry");
+  assert.ok(verbs.includes("graph"), "colon surface includes :graph from registry");
+  assert.equal(commandRegistry.findByVerb("peek")?.id, "peek");
+  assert.equal(commandRegistry.findByVerb("graph")?.id, "fullscreen-graph");
+});
+
+test("availableOn('colon') excludes a palette-only command", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "palette-only",
+    verb: "palonly",
+    label: "Palette Only",
+    glyph: "x",
+    category: "navigate",
+    surfaces: new Set(["palette"]),
+    keywords: [],
+    run: () => {},
+  });
+  const colonVerbs = commandRegistry.availableOn("colon", {}).map((c) => c.verb);
+  assert.ok(!colonVerbs.includes("palonly"), "palette-only command is not a colon verb");
+  const palVerbs = commandRegistry.availableOn("palette", {}).map((c) => c.verb);
+  assert.ok(palVerbs.includes("palonly"));
+});
