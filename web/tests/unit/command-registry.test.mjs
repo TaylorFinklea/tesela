@@ -29,6 +29,7 @@ const {
   effectiveChord,
   checkRebind,
   resolveShortcut,
+  surfacesFor,
 } = mod;
 
 test("register deduplicates by id", () => {
@@ -499,4 +500,77 @@ test("resolveShortcut respects overrides", () => {
   const e3 = new KeyboardEvent("keydown", { key: "b", metaKey: true });
   const result2 = resolveShortcut(e3, {}, overrides);
   assert.equal(result2?.id, "cmd-b");
+});
+
+// ── surfacesFor (back-compat derivation) ──────────────────────────────────
+
+test("surfacesFor returns explicit surfaces verbatim when present", () => {
+  const cmd = {
+    id: "x", label: "X", glyph: "x", category: "editor",
+    surfaces: new Set(["slash", "leader"]),
+    slashKey: "h", surface: "global", chord: ["i", "h"], // all ignored
+    keywords: [], run: () => {},
+  };
+  const s = surfacesFor(cmd);
+  assert.equal(s.has("slash"), true);
+  assert.equal(s.has("leader"), true);
+  assert.equal(s.has("colon"), false);
+  assert.equal(s.has("palette"), false);
+});
+
+test("surfacesFor derives slash from slashKey + always palette/colon (back-compat)", () => {
+  // A bare editor insertion verb today: slashKey present, no surface flag.
+  const cmd = {
+    id: "ins", label: "Ins", glyph: "+", category: "editor",
+    slashKey: "h", keywords: [], run: () => {},
+  };
+  const s = surfacesFor(cmd);
+  assert.equal(s.has("slash"), true);
+  assert.equal(s.has("palette"), true);
+  assert.equal(s.has("colon"), true);
+});
+
+test("surfacesFor: surface:'global' yields all four surfaces", () => {
+  // The editor.heading shape: surface:'global' + slashKey — leaks everywhere today.
+  const cmd = {
+    id: "editor.heading", label: "Heading", glyph: "#", category: "editor",
+    surface: "global", slashKey: "h", keywords: [], run: () => {},
+  };
+  const s = surfacesFor(cmd);
+  assert.deepEqual(
+    [...["slash", "colon", "leader", "palette"]].filter((k) => s.has(k)).sort(),
+    ["colon", "leader", "palette", "slash"],
+  );
+});
+
+test("surfacesFor: surface:'editor' yields slash only", () => {
+  const cmd = {
+    id: "ed", label: "Ed", glyph: "e", category: "editor",
+    surface: "editor", keywords: [], run: () => {},
+  };
+  const s = surfacesFor(cmd);
+  assert.equal(s.has("slash"), true);
+  assert.equal(s.has("colon"), false);
+  assert.equal(s.has("leader"), false);
+  assert.equal(s.has("palette"), false);
+});
+
+test("surfacesFor: chord puts command in the leader bucket", () => {
+  const cmd = {
+    id: "go-daily", label: "Daily", glyph: "d", category: "navigate",
+    chord: ["g", "d"], keywords: [], run: () => {},
+  };
+  assert.equal(surfacesFor(cmd).has("leader"), true);
+});
+
+test("surfacesFor: plain command (no flags) is palette + colon", () => {
+  const cmd = {
+    id: "plain", label: "Plain", glyph: "p", category: "navigate",
+    keywords: [], run: () => {},
+  };
+  const s = surfacesFor(cmd);
+  assert.equal(s.has("palette"), true);
+  assert.equal(s.has("colon"), true);
+  assert.equal(s.has("slash"), false);
+  assert.equal(s.has("leader"), false);
 });

@@ -14,6 +14,8 @@ import { BUILTIN_SLASH_CHORDS } from "./chord-keys.ts";
 import type { SlashContext } from "./editor/slash-context.ts";
 import { eventToShortcutGlyph } from "./shortcut-glyph.ts";
 
+export type Surface = 'slash' | 'colon' | 'leader' | 'palette';
+
 export type CommandContext = {
   route?: string | null;
   bufferKind?: 'page' | 'derived' | 'ambient' | null;
@@ -34,6 +36,7 @@ export type Command = {
   chord?: string[];
   surface?: 'global' | 'editor';
   slashKey?: string;
+  surfaces?: ReadonlySet<Surface>;
   keywords: string[];
   argPrompt?: string;
   /** Optional predicate controlling whether the command is available. */
@@ -94,6 +97,36 @@ class CommandRegistry {
 }
 
 export const commandRegistry = new CommandRegistry();
+
+/**
+ * Per-surface visibility for a command. When `cmd.surfaces` is set it is
+ * authoritative; otherwise derive back-compat defaults from today's fields so
+ * Phase A is a no-op until later phases set explicit `surfaces`.
+ */
+export function surfacesFor(cmd: Command | RegisteredCommand): ReadonlySet<Surface> {
+  if (cmd.surfaces) return cmd.surfaces;
+  const out = new Set<Surface>();
+  if (cmd.surface === 'editor') {
+    // editor-only command — slash menu only (today it never reaches the others
+    // because available() drops it without ctx.editor, and only slash builds ctx.editor)
+    out.add('slash');
+    return out;
+  }
+  if (cmd.surface === 'global') {
+    // surface 'global' leaks everywhere today
+    out.add('slash');
+    out.add('palette');
+    out.add('colon');
+    out.add('leader');
+    return out;
+  }
+  // surface unset → visible to palette + colon today.
+  out.add('palette');
+  out.add('colon');
+  if (cmd.slashKey) out.add('slash');
+  if (cmd.chord && cmd.chord.length > 0) out.add('leader');
+  return out;
+}
 
 // ── keymap introspection (B2) ─────────────────────────────────────────────
 
