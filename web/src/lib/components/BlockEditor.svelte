@@ -2100,6 +2100,18 @@
           return true;
         },
       },
+      // Ctrl+, opens the leader overlay from INSERT mode without leaving insert.
+      // Unlike Ctrl-d/g above, we do NOT guard against insertMode — that's the point.
+      // cm-vim's default insert bindings are C-w/C-u/C-r/C-o/C-d etc; Ctrl-, is
+      // not among them, so there is no collision. Reuses GraphiteShell's existing
+      // tesela:leader listener (GraphiteShell.svelte openLeader handler).
+      {
+        key: "Ctrl-,",
+        run: () => {
+          document.dispatchEvent(new CustomEvent("tesela:leader"));
+          return true;
+        },
+      },
       {
         key: "Backspace",
         run: (v) => {
