@@ -109,7 +109,7 @@ function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext
 /** The chord tree the menu walks. Derived from the unified command registry. */
 export function getLeaderTree(ctx?: CommandContext): ChordNode[] {
   const overrides = keybindings.snapshot();
-  const commands = (ctx ? commandRegistry.available(ctx) : commandRegistry.all()).filter(
+  const commands = (ctx ? commandRegistry.availableOn('leader', ctx) : commandRegistry.all()).filter(
     (cmd) => {
       const chord = effectiveChord(cmd, overrides);
       return chord && chord.length > 0;
