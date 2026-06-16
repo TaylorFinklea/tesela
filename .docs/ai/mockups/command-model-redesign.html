@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tesela — command-model redesign mockup</title>
+<style>
+  /* ===========================================================================
+     Tesela warm-dark "Prism" theme — color roles lifted from the real app
+     (web/src/themes.css + ChordMenu.svelte). Coral/rose brand accents per the
+     2026-06-16 command-model-redesign spec brief.
+  ============================================================================ */
+  :root {
+    --bg:         #16161e;   /* canvas */
+    --bg-1:       #1a1b26;   /* editor surface */
+    --bg-2:       #1f2030;   /* panel */
+    --bg-3:       #24283b;   /* popover */
+    --line:       #2f334d;   /* hairline */
+    --line-soft:  #262a3d;
+    --fg:         #c0caf5;   /* cream foreground */
+    --fg-muted:   #a9b1d6;
+    --ink-faint:  #545c7e;   /* hints */
+    --primary:    #FF6B5A;   /* coral brand accent */
+    --rose:       #E8697F;   /* rose */
+    --type-task:  #db6c83;   /* Task type chip */
+    --ok:         #7ac77a;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 70% -10%, #1c1d2c 0%, transparent 60%),
+      var(--bg);
+    color: var(--fg);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 900px; margin: 0 auto; padding: 28px 24px 80px; }
+
+  /* ---- header / charter legend ------------------------------------------- */
+  header h1 {
+    font-size: 18px;
+    margin: 0 0 2px;
+    color: var(--fg);
+    letter-spacing: 0.01em;
+  }
+  header h1 .accent { color: var(--primary); }
+  .subtitle { color: var(--ink-faint); font-size: 11.5px; margin: 0 0 18px; }
+  .mockup-note {
+    display: inline-block;
+    margin-left: 8px;
+    padding: 1px 7px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    color: var(--rose);
+    font-size: 10px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    vertical-align: middle;
+  }
+
+  .charter {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-bottom: 24px;
+  }
+  .charter .surf {
+    background: var(--bg-2);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    padding: 9px 11px;
+  }
+  .charter .surf .k {
+    color: var(--primary);
+    font-weight: 700;
+    font-size: 13px;
+  }
+  .charter .surf .role { color: var(--fg); font-size: 11px; margin-top: 2px; }
+  .charter .surf .job { color: var(--ink-faint); font-size: 10.5px; margin-top: 3px; line-height: 1.35; }
+  @media (max-width: 720px) { .charter { grid-template-columns: repeat(2, 1fr); } }
+
+  /* ---- section scaffolding ----------------------------------------------- */
+  .section { margin-bottom: 30px; }
+  .section > .head {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .section > .head h2 {
+    font-size: 13px;
+    margin: 0;
+    color: var(--fg);
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  .section > .head .desc { color: var(--ink-faint); font-size: 11px; }
+
+  /* ---- toggle (before/after) --------------------------------------------- */
+  .seg {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--bg-2);
+  }
+  .seg button {
+    background: transparent;
+    color: var(--fg-muted);
+    border: 0;
+    padding: 5px 14px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .seg button.active { background: color-mix(in srgb, var(--primary) 22%, transparent); color: var(--fg); }
+  .seg button:not(.active):hover { background: color-mix(in srgb, var(--primary) 8%, transparent); }
+
+  .pill-btn {
+    background: var(--bg-2);
+    color: var(--fg-muted);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 5px 12px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .pill-btn:hover { border-color: color-mix(in srgb, var(--primary) 50%, var(--line)); color: var(--fg); }
+
+  /* ---- faux editor / journal --------------------------------------------- */
+  .editor {
+    position: relative;            /* anchor for the slash popover */
+    background: var(--bg-1);
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    padding: 18px 18px 22px;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.02);
+  }
+  .editor .day {
+    color: var(--ink-faint);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .block { display: flex; align-items: center; gap: 8px; }
+  .bullet { color: var(--fg-muted); font-size: 12px; }
+  .checkbox {
+    width: 13px; height: 13px;
+    border: 1.5px solid var(--type-task);
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+  }
+  .blocktext { color: var(--fg); white-space: pre; }
+  .caret {
+    display: inline-block;
+    width: 1px;
+    height: 15px;
+    background: var(--primary);
+    margin-left: 1px;
+    transform: translateY(2px);
+    animation: blink 1.05s step-end infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .typed { color: var(--primary); }           /* the "/" the user typed */
+  .typechip {
+    margin-left: 6px;
+    padding: 1px 7px;
+    border-radius: 5px;
+    font-size: 10.5px;
+    color: var(--type-task);
+    background: color-mix(in srgb, var(--type-task) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--type-task) 35%, transparent);
+  }
+  .editor .row2 { margin-top: 9px; }
+  .editor .triggerbar {
+    margin-top: 16px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    color: var(--ink-faint);
+    font-size: 11px;
+  }
+  kbd.inline {
+    font-family: var(--mono);
+    padding: 1px 6px;
+    background: color-mix(in srgb, var(--fg) 8%, transparent);
+    color: var(--primary);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  /* ===========================================================================
+     ChordMenu / which-key popover — mirrors web/src/lib/components/ChordMenu.svelte
+  ============================================================================ */
+  .chord-overlay { position: fixed; inset: 0; z-index: 49; background: transparent; }
+  .chord-pop {
+    z-index: 50;
+    width: 290px;
+    background: var(--bg-3);
+    color: var(--fg);
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    box-shadow: 0 16px 40px rgba(0,0,0,0.5);
+    padding: 7px;
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  /* anchored (slash) mode sits at the caret inside the editor */
+  .chord-pop.anchored { position: absolute; }
+  /* centered (leader) mode */
+  .chord-pop.centered { position: fixed; left: 50%; top: 26%; transform: translateX(-50%); width: 320px; }
+
+  .chord-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px 8px;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 5px;
+    flex-wrap: wrap;
+  }
+  .chord-prefix {
+    font-size: 10px;
+    text-transform: uppercase;
+    color: var(--primary);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+  .chord-sep { color: var(--ink-faint); font-size: 11px; }
+  .chord-crumb { color: var(--ink-faint); font-size: 11px; }
+  .chord-context {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--type-task);
+    background: color-mix(in srgb, var(--type-task) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--type-task) 30%, transparent);
+    border-radius: 5px;
+    padding: 0 6px;
+  }
+
+  .chord-list { display: flex; flex-direction: column; gap: 1px; max-height: 50vh; overflow-y: auto; }
+  .chord-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .chord-row:hover, .chord-row.hot { background: color-mix(in srgb, var(--primary) 13%, transparent); }
+  .chord-key {
+    display: inline-block;
+    min-width: 22px;
+    padding: 1px 6px;
+    text-align: center;
+    background: color-mix(in srgb, var(--primary) 13%, transparent);
+    color: var(--primary);
+    border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--line));
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .chord-key.wide { min-width: 30px; }
+  .chord-label { color: var(--fg); flex: 1; }
+  .chord-label .ic { margin-right: 6px; opacity: 0.9; }
+  .chord-hint {
+    display: inline-block;
+    padding: 1px 6px;
+    background: transparent;
+    color: var(--ink-faint);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 10px;
+    font-weight: 500;
+    opacity: 0.9;
+    max-width: 16ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chord-hint.bloat {
+    color: var(--rose);
+    border-color: color-mix(in srgb, var(--rose) 40%, var(--line));
+    background: color-mix(in srgb, var(--rose) 8%, transparent);
+  }
+  .chord-more { color: var(--ink-faint); font-size: 12px; }
+  .chord-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px 2px;
+    border-top: 1px solid var(--line);
+    margin-top: 5px;
+    color: var(--ink-faint);
+    font-size: 10px;
+  }
+  .chord-divider {
+    margin: 4px 6px;
+    border-top: 1px dashed var(--line);
+    padding-top: 4px;
+    font-size: 9.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--ink-faint);
+  }
+  .count-badge {
+    font-size: 10px;
+    padding: 0 6px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    color: var(--ink-faint);
+  }
+  .count-badge.bad { color: var(--rose); border-color: color-mix(in srgb, var(--rose) 45%, var(--line)); }
+  .count-badge.good { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+
+  .hintline { color: var(--ink-faint); font-size: 11px; margin-top: 8px; }
+  .hintline b { color: var(--fg-muted); font-weight: 600; }
+
+  footer { color: var(--ink-faint); font-size: 11px; margin-top: 36px; border-top: 1px solid var(--line); padding-top: 14px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ===================== HEADER + CHARTER ============================== -->
+  <header>
+    <h1>Tesela — command-interaction <span class="accent">redesign</span>
+      <span class="mockup-note">mockup · react, don't ship</span>
+    </h1>
+    <p class="subtitle">Four surfaces, one registry. Click rows or use the keyboard. Esc / Backspace ascends.</p>
+  </header>
+
+  <div class="charter">
+    <div class="surf">
+      <div class="k">/ slash</div>
+      <div class="role">inline insertion + props</div>
+      <div class="job">8 insertion verbs while typing, plus one context-aware Properties entry.</div>
+    </div>
+    <div class="surf">
+      <div class="k">SPC leader</div>
+      <div class="role">complete keyboard map</div>
+      <div class="job">which-key buckets — EVERY command has a bucket home. Also via insert-mode chord.</div>
+    </div>
+    <div class="surf">
+      <div class="k">⌘K palette</div>
+      <div class="role">universal fuzzy search</div>
+      <div class="job">commands <i>and</i> notes/pages, fuzzy-matched.</div>
+    </div>
+    <div class="surf">
+      <div class="k">: colon</div>
+      <div class="role">power-user verbs</div>
+      <div class="job">exact verb typing, no note interleave.</div>
+    </div>
+  </div>
+
+  <!-- ===================== SLASH SECTION ================================= -->
+  <div class="section">
+    <div class="head">
+      <h2>1 · Slash menu</h2>
+      <span class="desc">pared + context-aware properties</span>
+    </div>
+
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
+      <div class="seg" id="seg-slash">
+        <button data-mode="before">Before · today (15 flat)</button>
+        <button data-mode="after" class="active">After · pared</button>
+      </div>
+      <span class="count-badge" id="slash-count">—</span>
+    </div>
+
+    <div class="editor" id="editor">
+      <div class="day">Wed · 2026-06-16</div>
+      <div class="block">
+        <span class="bullet">•</span>
+        <span class="checkbox"></span>
+        <span class="blocktext" id="blocktext">Ship the big feature </span><span class="caret" id="caret"></span>
+        <span class="typechip">#Task</span>
+      </div>
+      <div class="triggerbar">
+        <button class="pill-btn" id="open-slash">type <kbd class="inline">/</kbd></button>
+        <span>opens the slash menu at the caret — focused block is a <span style="color:var(--type-task)">#Task</span></span>
+      </div>
+    </div>
+    <div class="hintline" id="slash-hint">
+      <b>After:</b> top level = 8 verbs + one <b>p Properties ▸</b> row. Press <kbd class="inline">p</kbd> to open the
+      Task-scoped property submenu. <b>Before</b> hoists all 5 Task props + 2 extras to the top — feel the bloat.
+    </div>
+  </div>
+
+  <!-- ===================== LEADER SECTION ================================ -->
+  <div class="section">
+    <div class="head">
+      <h2>2 · Leader menu</h2>
+      <span class="desc">which-key buckets · every command homed</span>
+    </div>
+
+    <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
+      <button class="pill-btn" id="open-leader">⌨ insert-mode leader</button>
+      <span style="color:var(--ink-faint); font-size:11px;">
+        or press <kbd class="inline">Ctrl ,</kbd> — opens the leader without leaving insert mode
+        <span style="color:var(--rose)">(chord = pending decision)</span>
+      </span>
+    </div>
+    <div class="hintline">
+      Press a bucket letter to <b>descend</b> (g / w / b / n / i / p / v / a / t / ,), Esc/Backspace to ascend.
+      Every registry command lives in exactly one bucket — this is the discoverable, complete keyboard map.
+    </div>
+  </div>
+
+  <footer>
+    Self-contained design mockup for the 2026-06-16 command-model redesign spec. No app code, no network.
+    The slash before/after contrast demonstrates paring; the leader demonstrates that every command has a bucket
+    home. Colors + chord-chip styling mirror the real <code>ChordMenu.svelte</code> / Prism warm-dark theme.
+  </footer>
+
+</div>
+
+<!-- popover host (populated by JS) -->
+<div id="pop-host"></div>
+
+<script>
+/* ============================================================================
+   DATA — modeled directly from 2026-06-16-command-model-redesign-spec.md
+============================================================================ */
+
+// --- Slash: AFTER (pared) — 8 insertion verbs + one Properties entry --------
+const SLASH_AFTER = [
+  { key: "h", label: "Heading",    icon: "⌗", hint: "#" },
+  { key: "t", label: "Task",       icon: "○", hint: "[ ]" },
+  { key: "l", label: "Link",       icon: "🔗", hint: "[[ ]]" },
+  { key: "#", label: "Tag",        icon: "#", hint: "#tag" },
+  { key: "d", label: "Date",       icon: "📅", hint: "date" },
+  { key: "m", label: "Template",   icon: "▤", hint: "tmpl" },
+  { key: "q", label: "Query",      icon: "⌕", hint: "query::" },
+  { key: "c", label: "Collection", icon: "▦", hint: "select ▸" },
+  { divider: "context-aware" },
+  { key: "p", label: "Properties", icon: "⚑", hint: "#Task ▸", children: "TASK_PROPS" },
+];
+
+// context-aware submenu for a #Task block (only this type's props)
+const TASK_PROPS = [
+  { key: "s", label: "Status",    hint: "select ▸", children: "STATUS_VALUES" },
+  { key: "r", label: "Priority",  hint: "select ▸", children: "PRIORITY_VALUES" },
+  { key: "d", label: "Deadline",  hint: "date" },
+  { key: "c", label: "Scheduled", hint: "date" },
+  { key: "p", label: "Points",    hint: "number" },
+];
+const STATUS_VALUES = [
+  { key: "t", label: "Todo" },
+  { key: "d", label: "Doing" },
+  { key: "n", label: "Done" },
+  { key: "c", label: "Cancelled" },
+];
+const PRIORITY_VALUES = [
+  { key: "a", label: "A · high" },
+  { key: "b", label: "B · med" },
+  { key: "c", label: "C · low" },
+];
+
+// --- Slash: BEFORE (today's bloated 16-flat menu) ---------------------------
+const SLASH_BEFORE = [
+  { key: "h", label: "Heading",    icon: "⌗", hint: "#" },
+  { key: "t", label: "Task",       icon: "○", hint: "[ ]" },
+  { key: "l", label: "Link",       icon: "🔗", hint: "[[ ]]" },
+  { key: "#", label: "Tag",        icon: "#", hint: "#tag" },
+  { key: "d", label: "Date",       icon: "📅", hint: "date" },
+  { key: "m", label: "Template",   icon: "▤", hint: "tmpl" },
+  { key: "q", label: "Query",      icon: "⌕", hint: "query::" },
+  { key: "c", label: "Collection", icon: "▦", hint: "select ▸" },
+  // hoisted Task-tag PropertyDefinitions — the bloat
+  { key: "s", label: "Status",     hint: "hoisted",  bloat: true },
+  { key: "r", label: "Priority",   hint: "hoisted",  bloat: true },
+  { key: "e", label: "Deadline",   hint: "hoisted",  bloat: true },
+  { key: "g", label: "Scheduled",  hint: "hoisted",  bloat: true },
+  { key: "p", label: "Points",     hint: "hoisted",  bloat: true },
+  { key: "a", label: "All properties", hint: "▸",    bloat: true },
+  { key: "w", label: "New widget", hint: "→ note",   bloat: true },
+];
+
+// --- Leader: full bucket taxonomy from spec §2 ------------------------------
+const LEADER = [
+  { key: "g", label: "go to",     children: "G" },
+  { key: "w", label: "windows",   children: "W" },
+  { key: "b", label: "buffers",   children: "B" },
+  { key: "n", label: "new",       children: "N" },
+  { key: "i", label: "insert",    children: "I" },
+  { key: "p", label: "properties",children: "P" },
+  { key: "v", label: "views",     children: "V" },
+  { key: "a", label: "actions",   children: "A" },
+  { key: "t", label: "toggle",    children: "T" },
+  { key: ",", label: "config",    children: "CFG" },
+  { divider: "leaves" },
+  { key: "SPC", label: "command palette", hint: "⌘K", wide: true },
+  { key: "/",   label: "command station", hint: ":" },
+];
+const G = [
+  { key: "d", label: "daily",     hint: "today" },
+  { key: "D", label: "date…",     hint: "pick" },
+  { key: "y", label: "yesterday" },
+  { key: "t", label: "tomorrow" },
+  { key: "g", label: "graph" },
+  { key: "c", label: "calendar" },
+  { key: "n", label: "inbox" },
+  { key: "a", label: "agenda" },
+  { key: "b", label: "dashboard" },
+  { key: "i", label: "AI" },
+];
+const W = [
+  { key: "v", label: "split vertical" },
+  { key: "s", label: "split horizontal" },
+  { key: "c", label: "close pane" },
+  { key: "h", label: "focus ←" },
+  { key: "j", label: "focus ↓" },
+  { key: "k", label: "focus ↑" },
+  { key: "l", label: "focus →" },
+];
+const B = [
+  { key: "n", label: "new tab" },
+  { key: "c", label: "close tab" },
+  { key: "j", label: "jump to tile" },
+];
+const N = [
+  { key: "n", label: "note…" },
+  { key: "s", label: "scratch" },
+  { key: "w", label: "widget", hint: "← was /slash" },
+];
+const I = [
+  { key: "h", label: "heading" },
+  { key: "t", label: "task" },
+  { key: "l", label: "link" },
+  { key: "g", label: "tag" },
+  { key: "d", label: "date" },
+  { key: "m", label: "template" },
+  { key: "q", label: "query" },
+  { key: "c", label: "collection" },
+];
+const P = [
+  { key: "s", label: "status" },
+  { key: "r", label: "priority" },
+  { key: "d", label: "deadline" },
+  { key: "c", label: "scheduled" },
+  { key: "p", label: "points" },
+  { key: "a", label: "all…", hint: "▸" },
+];
+const V = [
+  { key: "b", label: "backlinks" },
+  { key: "o", label: "outline" },
+  { key: "p", label: "properties" },
+  { key: "t", label: "tasks" },
+  { key: "g", label: "local graph" },
+  { key: "i", label: "tag instances" },
+  { key: "k", label: "tag backlinks" },
+];
+const A = [
+  { key: "p", label: "promote" },
+  { key: "t", label: "→ tag" },
+  { key: "n", label: "→ note" },
+  { key: "r", label: "rename slug" },
+  { key: "s", label: "prune scratches" },
+  { key: "d", label: "delete tag" },
+  { key: "k", label: "skip occurrence" },
+];
+const T = [
+  { key: "p", label: "peek", hint: "← was : builtin" },
+  { key: "v", label: "vim mode", hint: "later" },
+  { key: "t", label: "theme", hint: "later" },
+];
+const CFG = [
+  { key: "g", label: "general" },
+  { key: "d", label: "devices" },
+  { key: "s", label: "sync" },
+  { key: "m", label: "mosaic" },
+  { key: "a", label: "data" },
+  { key: "k", label: "keymap" },
+];
+
+// resolve children-by-name into a registry so trees are recursive
+const REGISTRY = { SLASH_AFTER, SLASH_BEFORE, TASK_PROPS, STATUS_VALUES, PRIORITY_VALUES,
+  LEADER, G, W, B, N, I, P, V, A, T, CFG };
+function resolve(name) { return REGISTRY[name]; }
+
+/* ============================================================================
+   POPOVER ENGINE — one renderer for both slash & leader (mirrors ChordMenu)
+============================================================================ */
+const host = document.getElementById("pop-host");
+let active = null;   // { kind:'slash'|'leader', rootName, prefix, breadcrumb:[], context }
+
+function open(kind, rootName, prefix, context) {
+  active = { kind, rootName, prefix, breadcrumb: [], context: context || null };
+  render();
+}
+function close() { active = null; host.innerHTML = ""; updateCaretTyping(false); }
+
+// derive current level by walking breadcrumb of group-labels
+function currentLevel() {
+  let level = resolve(active.rootName);
+  let ctx = active.context;
+  for (const crumbLabel of active.breadcrumb) {
+    const found = level.find(n => n.label === crumbLabel && n.children);
+    if (found) { level = resolve(found.children); ctx = null; }
+  }
+  return level;
+}
+
+function selectNode(node) {
+  if (node.divider) return;
+  if (node.children) {
+    active.breadcrumb = [...active.breadcrumb, node.label];
+    render();
+  } else {
+    // leaf — flash & close (mockup: no real action)
+    close();
+  }
+}
+function ascend() {
+  if (active.breadcrumb.length > 0) {
+    active.breadcrumb = active.breadcrumb.slice(0, -1);
+    render();
+  } else {
+    close();
+  }
+}
+
+function render() {
+  if (!active) { host.innerHTML = ""; return; }
+  const level = currentLevel();
+  const anchored = active.kind === "slash";
+
+  const overlay = document.createElement("div");
+  overlay.className = "chord-overlay";
+  overlay.addEventListener("click", close);
+
+  const pop = document.createElement("div");
+  pop.className = "chord-pop " + (anchored ? "anchored" : "centered");
+
+  // --- header / breadcrumb ---
+  const head = document.createElement("div");
+  head.className = "chord-head";
+  const pfx = document.createElement("span");
+  pfx.className = "chord-prefix";
+  pfx.textContent = active.prefix;
+  head.appendChild(pfx);
+  for (const c of active.breadcrumb) {
+    const sep = document.createElement("span"); sep.className = "chord-sep"; sep.textContent = "›"; head.appendChild(sep);
+    const cr = document.createElement("span"); cr.className = "chord-crumb"; cr.textContent = c; head.appendChild(cr);
+  }
+  // context badge for the slash Properties submenu
+  if (active.context && active.breadcrumb.length > 0) {
+    const ctx = document.createElement("span");
+    ctx.className = "chord-context";
+    ctx.textContent = active.context;
+    head.appendChild(ctx);
+  }
+  pop.appendChild(head);
+
+  // --- list ---
+  const list = document.createElement("div");
+  list.className = "chord-list";
+  for (const node of level) {
+    if (node.divider) {
+      const d = document.createElement("div");
+      d.className = "chord-divider";
+      d.textContent = node.divider;
+      list.appendChild(d);
+      continue;
+    }
+    const row = document.createElement("div");
+    row.className = "chord-row";
+    row.dataset.key = node.key;
+
+    const kbd = document.createElement("kbd");
+    kbd.className = "chord-key" + (node.wide ? " wide" : "");
+    kbd.textContent = node.key;
+    row.appendChild(kbd);
+
+    const lab = document.createElement("span");
+    lab.className = "chord-label";
+    if (node.icon) {
+      const ic = document.createElement("span"); ic.className = "ic"; ic.textContent = node.icon; lab.appendChild(ic);
+    }
+    lab.appendChild(document.createTextNode(node.label));
+    row.appendChild(lab);
+
+    if (node.hint) {
+      const h = document.createElement("kbd");
+      h.className = "chord-hint" + (node.bloat ? " bloat" : "");
+      h.textContent = node.hint;
+      row.appendChild(h);
+    }
+    if (node.children) {
+      const m = document.createElement("span"); m.className = "chord-more"; m.textContent = "›"; row.appendChild(m);
+    }
+    row.addEventListener("click", (e) => { e.stopPropagation(); selectNode(node); });
+    list.appendChild(row);
+  }
+  pop.appendChild(list);
+
+  // --- footer: count badge + nav hint ---
+  const foot = document.createElement("div");
+  foot.className = "chord-foot";
+  const left = document.createElement("span");
+  const realRows = level.filter(n => !n.divider).length;
+  if (active.kind === "slash" && active.breadcrumb.length === 0) {
+    const badge = document.createElement("span");
+    const before = active.rootName === "SLASH_BEFORE";
+    badge.className = "count-badge " + (before ? "bad" : "good");
+    badge.textContent = before ? (realRows + " rows · bloated") : (realRows + " rows · pared");
+    left.appendChild(badge);
+  } else {
+    left.textContent = realRows + " items";
+    left.style.color = "var(--ink-faint)";
+  }
+  foot.appendChild(left);
+  const right = document.createElement("span");
+  right.innerHTML = active.breadcrumb.length > 0
+    ? '<kbd class="chord-key" style="min-width:auto">Esc</kbd> back'
+    : '<kbd class="chord-key" style="min-width:auto">Esc</kbd> close';
+  foot.appendChild(right);
+  pop.appendChild(foot);
+
+  host.innerHTML = "";
+  host.appendChild(overlay);
+  host.appendChild(pop);
+
+  if (anchored) positionAtCaret(pop);
+}
+
+/* anchor the slash popover just below the typing caret */
+function positionAtCaret(pop) {
+  const caret = document.getElementById("caret");
+  const editor = document.getElementById("editor");
+  const cr = caret.getBoundingClientRect();
+  const er = editor.getBoundingClientRect();
+  // position relative to the editor (which is position:relative)
+  let left = cr.left - er.left;
+  let top = cr.bottom - er.top + 6;
+  // keep inside the editor horizontally
+  const maxLeft = editor.clientWidth - 290 - 8;
+  if (left > maxLeft) left = Math.max(8, maxLeft);
+  pop.style.left = left + "px";
+  pop.style.top = top + "px";
+}
+
+/* ============================================================================
+   SLASH before/after toggle + the typed "/" affordance
+============================================================================ */
+let slashMode = "after"; // 'before' | 'after'
+const slashCountEl = document.getElementById("slash-count");
+const slashHintEl  = document.getElementById("slash-hint");
+
+function setSlashMode(mode) {
+  slashMode = mode;
+  document.querySelectorAll("#seg-slash button").forEach(b => {
+    b.classList.toggle("active", b.dataset.mode === mode);
+  });
+  if (mode === "before") {
+    slashCountEl.className = "count-badge bad";
+    slashCountEl.textContent = "15 flat rows";
+    slashHintEl.innerHTML = '<b>Before (today):</b> 8 verbs + 5 hoisted Task props + All-properties + New-widget = '
+      + '<span style="color:var(--rose)">16 chords flat</span>. The <span style="color:var(--rose)">rose</span> rows are the bloat the redesign removes.';
+  } else {
+    slashCountEl.className = "count-badge good";
+    slashCountEl.textContent = "9 rows (8 + p ▸)";
+    slashHintEl.innerHTML = '<b>After:</b> top level = 8 verbs + one <b>p Properties ▸</b> row. Press <kbd class="inline">p</kbd> for the '
+      + 'Task-scoped property submenu (Status / Priority / Deadline / Scheduled / Points).';
+  }
+  // re-open if currently showing slash at root, so the toggle is felt live
+  if (active && active.kind === "slash") openSlash();
+}
+function openSlash() {
+  const root = slashMode === "before" ? "SLASH_BEFORE" : "SLASH_AFTER";
+  open("slash", root, "/", "#Task");
+  updateCaretTyping(true);
+}
+// show the "/" the user typed at the caret while the slash menu is open
+function updateCaretTyping(on) {
+  const bt = document.getElementById("blocktext");
+  bt.querySelectorAll(".typed").forEach(s => s.remove());
+  if (on) {
+    const s = document.createElement("span");
+    s.className = "typed";
+    s.textContent = "/";
+    bt.appendChild(s);
+  }
+}
+
+document.querySelectorAll("#seg-slash button").forEach(b => {
+  b.addEventListener("click", () => setSlashMode(b.dataset.mode));
+});
+document.getElementById("open-slash").addEventListener("click", openSlash);
+document.getElementById("open-leader").addEventListener("click", () => open("leader", "LEADER", "SPC"));
+
+/* ============================================================================
+   GLOBAL KEYBOARD — typing "/" opens slash; Ctrl+, opens leader;
+   letters descend; Esc/Backspace ascend.  (capture phase, like ChordMenu)
+============================================================================ */
+document.addEventListener("keydown", (e) => {
+  // open triggers when no popover is active
+  if (!active) {
+    if (e.key === "/") { e.preventDefault(); openSlash(); return; }
+    if (e.ctrlKey && e.key === ",") { e.preventDefault(); open("leader", "LEADER", "SPC"); return; }
+    return;
+  }
+  // popover is open → modal handling
+  if (e.key === "Escape" || e.key === "Backspace") {
+    e.preventDefault(); e.stopPropagation();
+    ascend();
+    return;
+  }
+  // match a row key at the current level (case-sensitive, like the real menu)
+  const level = currentLevel();
+  let key = e.key;
+  if (key === " ") key = "SPC"; // SPC leaf
+  const match = level.find(n => !n.divider && n.key === key);
+  if (match) {
+    e.preventDefault(); e.stopPropagation();
+    selectNode(match);
+    return;
+  }
+  // swallow everything else while modal
+  e.preventDefault(); e.stopPropagation();
+}, true);
+
+// init
+setSlashMode("after");
+</script>
+</body>
+</html>
