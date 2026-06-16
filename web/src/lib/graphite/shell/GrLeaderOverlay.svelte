@@ -207,7 +207,7 @@
     justify-content: flex-end;
   }
   .gr-leader {
-    width: min(460px, 92%);
+    width: min(720px, 94%);
     margin-top: auto;
     margin-bottom: 46px;
     background: var(--raised);
@@ -242,7 +242,7 @@
   .gr-leader-body {
     padding: 8px;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(3, 1fr);
     gap: 2px;
   }
   .gr-chord {
