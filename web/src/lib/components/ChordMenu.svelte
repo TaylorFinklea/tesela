@@ -178,9 +178,14 @@
     if (!q) return allEntries;
     return allEntries.filter((e) => e.fullLabel.toLowerCase().includes(q));
   });
-  // Clamp the highlight when the filter narrows.
+  // Clamp the highlight when the filter narrows. Guard BOTH bounds: an
+  // ArrowDown over an empty filtered list drives searchIdx to -1, and the
+  // old upper-only guard never pulled it back — stranding the highlight and
+  // Enter even after the user edited the query back to a matching one.
   $effect(() => {
-    if (searchIdx >= filteredEntries.length) searchIdx = Math.max(0, filteredEntries.length - 1);
+    const max = filteredEntries.length - 1;
+    if (searchIdx > max) searchIdx = Math.max(0, max);
+    else if (searchIdx < 0) searchIdx = 0;
   });
 
   function handleSelect(node: ChordNode) {
@@ -297,14 +302,16 @@
       return;
     }
     if (searchOpen) {
-      // Phase C — Ctrl/Cmd+letter accelerator (filterMode only). Finds
-      // the node whose `key` matches the letter case-insensitively
-      // (Shift+letter still works) and runs/descends it. Only fires when
-      // a matching node exists; bare letters still fall through to the
-      // search input for typing.
+      // Phase C — Ctrl/Cmd+letter accelerator (filterMode only). Matches the
+      // node whose `key` equals the pressed key CASE-SENSITIVELY first, so
+      // case-distinct siblings stay independently reachable (Task `t` via ⌘t,
+      // Tag picker `T` via ⌘⇧t); only falls back to a case-insensitive match
+      // when there's no exact-case hit. Fires only when a node matches; bare
+      // letters still fall through to the search input for typing.
       if (filterMode && (e.ctrlKey || e.metaKey) && !e.altKey && /^[a-zA-Z]$/.test(e.key)) {
-        const letter = e.key.toLowerCase();
-        const match = currentLevel.find((n) => n.key.toLowerCase() === letter);
+        const match =
+          currentLevel.find((n) => n.key === e.key) ??
+          currentLevel.find((n) => n.key.toLowerCase() === e.key.toLowerCase());
         if (match) {
           e.preventDefault();
           e.stopPropagation();
@@ -448,7 +455,7 @@
       </div>
     </div>
     <div class="chord-list">
-      {#each filteredEntries as entry, idx (entry.path.join("/") + "/" + entry.node.label)}
+      {#each filteredEntries as entry, idx (idx + "/" + entry.node.key + "/" + entry.node.label)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div
@@ -480,7 +487,7 @@
     </div>
   {:else}
     <div class="chord-list">
-      {#each currentLevel as node (node.key)}
+      {#each currentLevel as node (node.key + " " + node.label)}
         <!-- svelte-ignore a11y_click_events_have_key_events -->
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="chord-row" onclick={() => handleSelect(node)}>
