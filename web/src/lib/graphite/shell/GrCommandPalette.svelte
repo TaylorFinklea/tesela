@@ -64,7 +64,7 @@
 
   const MAX_NOTES_IN_PALETTE = 12;
 
-  const allCommands = $derived(commandRegistry.available(ctx));
+  const allCommands = $derived(commandRegistry.availableOn('palette', ctx));
 
   const notesQuery = createQuery(() => ({
     queryKey: ['notes', { limit: 500 }] as const,
