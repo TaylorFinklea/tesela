@@ -4,6 +4,15 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-15 — Query language = JQL; the colon DSL is legacy sugar in the same grammar
+
+Taylor prefers a **JQL-style** query language (`type = task AND points > 5`, `status IN (todo, doing)`, `priority >= 2 ORDER BY due ASC`) over the colon DSL (`tag:task points:>5`). Non-obvious finding that shaped the work: the **engines already parsed full JQL** — the Rust parser (`crates/tesela-core/src/query.rs`) is a recursive-descent grammar (`parse_or → parse_and → parse_unary → parse_predicate`, `BoolExpr{And/Or/Not/Atom}` + `Predicate{Cmp/In}`, `IN`/`LIKE`/`BETWEEN`/`IS NULL`/`ORDER BY`), with the colon DSL as legacy sugar in the SAME grammar; the web TS engine mirrors it 1:1. So JQL was a **front-end + iOS-parity** job, not a new parser.
+
+- **P1 (web, `541a8322`):** made JQL the default authored/displayed form (`/query` template, placeholders, validation hint); `kind = page` validates (not just `kind:`); **`ORDER BY` now sorts the inline query block, L5-typed** (`applySort` reusing `compareTyped`) — the inline block sorts correctly where the server's string-only `apply_sort` doesn't (server typed-sort parity = a P3 follow-up).
+- **P2 (iOS, `a38ed68d`):** iOS's `LocalQueryEngine` was deliberately flat-AND-only and dropped OR/parens/IN/LIKE/BETWEEN/IS NULL toward match-all. Restructured to the Rust `BoolExpr` tree (parser + `evalExpr` + `likeMatches`).
+- **Parity is a TESTED contract:** the shared `query-conformance.json` fixture gained **69 JQL cases** (41 core `0d6b3f77` + 28 adversarial `cc9d316e`); **Rust is the source of truth** — every `expect` validated against it, and web + iOS must match. 182 cases now green on all three engines. A LIKE escape-set difference (Rust escapes `-&#~`, the iOS port doesn't) was reviewed + **verified harmless** (literal in NSRegularExpression normal mode anyway) and is guarded by cases.
+- **Not done (P3):** palette JQL examples, an optional DSL→JQL one-shot converter for existing saved views, error surfacing on malformed JQL, server-side typed `apply_sort`, and the iOS inline-query-widget sort (filter works; order is source-order). The inbox chip composer stays colon-DSL (its whitespace token-split assumes single-token clauses; JQL clauses have spaces). `INBOX_VIEW_DSL` stays colon-DSL (conformance-pinned across Rust+fixture; parser treats both forms as equivalent).
+
 ### 2026-06-12 — Agent-pipeline roles: Opus = planner; Codex/Pi execute; Opus implements only L items
 
 **Decision (Taylor), effective when Opus's rate limits recover (~1 week):** lock in a standing division of labor across the agent fleet.
