@@ -1424,7 +1424,7 @@
     const baseCtx = buildSlashCommandContext(editor);
 
     const registryLeaves: ChordNode[] = commandRegistry
-      .available(baseCtx)
+      .availableOn('slash', baseCtx)
       .filter((cmd) => cmd.slashKey)
       .map((cmd) => ({
         key: cmd.slashKey!,
