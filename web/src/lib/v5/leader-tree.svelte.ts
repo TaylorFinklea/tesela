@@ -46,9 +46,16 @@ export function getLeaderInitialPath(): string[] {
 }
 
 const CHORD_GROUP_LABELS: Record<string, string> = {
-  n: "new…",
   g: "go to…",
-  b: "buffer…",
+  w: "windows…",
+  b: "buffers…",
+  n: "new…",
+  i: "insert…",
+  p: "properties…",
+  v: "views…",
+  a: "actions…",
+  t: "toggle…",
+  ",": "config…",
 };
 
 function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext): ChordNode[] {
