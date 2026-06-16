@@ -2288,6 +2288,7 @@
       tree={slashOverrideTree ?? getSlashTree()}
       position={slashPosition}
       headLabel={slashHeadLabel}
+      filterMode
       onclose={() => {
         showSlashMenu = false;
         slashStartPos = -1;

@@ -57,6 +57,7 @@
 
 <script lang="ts">
   import { onMount } from "svelte";
+  import { slashFilter } from "$lib/editor/slash-filter";
 
   let {
     tree,
@@ -64,6 +65,7 @@
     initialPath = [],
     position,
     headLabel = "SPC",
+    filterMode = false,
   }: {
     tree: ChordNode[];
     onclose: () => void;
@@ -87,6 +89,18 @@
      * user sees the trigger that opened it.
      */
     headLabel?: string;
+    /**
+     * Phase C — turn the menu into a type-to-filter picker (Logseq-style).
+     * When `true`:
+     *   - the filter input is open on mount (no separate `i` trigger)
+     *   - bare keystrokes type into the filter; ↑/↓ navigate; Enter picks
+     *   - `Ctrl+letter` (or `Cmd+letter`) is an express accelerator that
+     *     jumps to the node whose `key` matches (case-insensitive)
+     *   - Esc closes the menu outright (no falling back to chord mode)
+     * Default `false` preserves the leader's chord-press + `i`-filter flow
+     * byte-for-byte. Only the slash menu passes `filterMode={true}`.
+     */
+    filterMode?: boolean;
   } = $props();
 
   let breadcrumb = $state<string[]>(initialPath);
@@ -148,6 +162,18 @@
   });
   let filteredEntries = $derived.by((): FlatEntry[] => {
     if (!searchOpen) return [];
+    // Phase C — filterMode (slash menu) uses slashFilter (fuzzy/prefix)
+    // on the CURRENT level only. No descendant flattening: descending into
+    // a group (Properties ▸ Status) is a deliberate Enter/Ctrl+letter act,
+    // and the user filters the new level separately. Non-filterMode (leader)
+    // keeps the legacy flatten + substring match.
+    if (filterMode) {
+      return slashFilter(currentLevel, searchValue).map((node) => ({
+        node,
+        path: [],
+        fullLabel: node.label,
+      }));
+    }
     const q = searchValue.trim().toLowerCase();
     if (!q) return allEntries;
     return allEntries.filter((e) => e.fullLabel.toLowerCase().includes(q));
@@ -168,6 +194,7 @@
     } else if (node.action) {
       node.action();
       onclose();
+      return;
     }
     // Selection always exits search mode so the user sees the post-action
     // state (descended chord level / popover closed). Idempotent if search
@@ -176,6 +203,12 @@
       searchOpen = false;
       searchValue = "";
       searchIdx = 0;
+    }
+    // Phase C — in filterMode the filter is the menu's primary surface, so
+    // re-open it at the descended level. The user keeps typing to narrow
+    // the new level's children (Properties ▸ Status ▸ …).
+    if (filterMode) {
+      openSearch();
     }
   }
   /**
@@ -193,6 +226,13 @@
       searchOpen = false;
       searchValue = "";
       searchIdx = 0;
+      // Phase C — re-open filter at the descended level (filterMode only).
+      // handleSelect handles the same re-open for Ctrl+letter + non-flatten
+      // paths; this branch covers the legacy non-filterMode flatten match
+      // (which calls handleSelectEntry, not handleSelect).
+      if (filterMode) {
+        openSearch();
+      }
     } else {
       handleSelect(entry.node);
     }
@@ -202,6 +242,12 @@
     if (inputNode) {
       inputNode = null;
       inputValue = "";
+      return;
+    }
+    if (searchOpen && filterMode) {
+      // Phase C — in filterMode there's no chord mode to fall back to.
+      // Esc on the filter closes the menu outright.
+      onclose();
       return;
     }
     if (searchOpen) {
@@ -251,6 +297,21 @@
       return;
     }
     if (searchOpen) {
+      // Phase C — Ctrl/Cmd+letter accelerator (filterMode only). Finds
+      // the node whose `key` matches the letter case-insensitively
+      // (Shift+letter still works) and runs/descends it. Only fires when
+      // a matching node exists; bare letters still fall through to the
+      // search input for typing.
+      if (filterMode && (e.ctrlKey || e.metaKey) && !e.altKey && /^[a-zA-Z]$/.test(e.key)) {
+        const letter = e.key.toLowerCase();
+        const match = currentLevel.find((n) => n.key.toLowerCase() === letter);
+        if (match) {
+          e.preventDefault();
+          e.stopPropagation();
+          handleSelect(match);
+          return;
+        }
+      }
       // Cmd+1..Cmd+9 quick-select Nth filtered match.
       if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key)) {
         const i = Number(e.key) - 1;
@@ -285,20 +346,27 @@
       return;
     }
     // `i` opens search/filter mode. Reserved at chord-assignment time so no
-    // chord node ever owns this letter.
-    if (e.key === "i") {
+    // chord node ever owns this letter. Suppressed in filterMode because
+    // the filter is the menu's primary surface (already open on mount) —
+    // typing `i` should land in the filter query, not toggle search.
+    if (e.key === "i" && !filterMode) {
       e.preventDefault();
       e.stopPropagation();
       openSearch();
       return;
     }
-    // Match by exact key (case-sensitive) — Shift+letter is a different chord.
-    const match = currentLevel.find((n) => n.key === e.key);
-    if (match) {
-      e.preventDefault();
-      e.stopPropagation();
-      handleSelect(match);
-      return;
+    // Bare-letter chord match. In filterMode this is REPLACED by type-to-
+    // filter (the `i` key above is suppressed so typing flows to the
+    // input that was opened on mount), so skip it entirely. Phase C
+    // accelerators live in the Ctrl+letter branch above.
+    if (!filterMode) {
+      const match = currentLevel.find((n) => n.key === e.key);
+      if (match) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleSelect(match);
+        return;
+      }
     }
     // Swallow EVERY other keystroke while the menu is open — modal behavior.
     // Without this, arrows would still move the cm-editor caret behind the
@@ -312,6 +380,11 @@
 
   onMount(() => {
     document.addEventListener("keydown", handleKeydown, true);
+    // Phase C — in filterMode the filter is the menu's primary surface;
+    // open it on mount so the user can start typing immediately.
+    if (filterMode) {
+      openSearch();
+    }
     return () => document.removeEventListener("keydown", handleKeydown, true);
   });
 </script>
@@ -364,8 +437,14 @@
       />
       <div class="chord-input-help">
         <kbd class="chord-key">↵</kbd> select
-        <kbd class="chord-key">⌘1-9</kbd> jump
-        <kbd class="chord-key">Esc</kbd> back
+        <kbd class="chord-key">↑↓</kbd> nav
+        {#if filterMode}
+          <kbd class="chord-key">Ctrl+⌃</kbd> jump
+          <kbd class="chord-key">Esc</kbd> close
+        {:else}
+          <kbd class="chord-key">⌘1-9</kbd> jump
+          <kbd class="chord-key">Esc</kbd> back
+        {/if}
       </div>
     </div>
     <div class="chord-list">
