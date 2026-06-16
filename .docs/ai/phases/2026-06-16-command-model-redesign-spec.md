@@ -19,22 +19,26 @@ Overlap is allowed but each command has a *primary home*. `:` and ⌘K stop bein
 `:` = exact verbs only; ⌘K = fuzzy over verbs + notes. Fold the hand-duplicated colon
 builtins (peek/graph) back into the registry.
 
-## 1. Slash (`/`) — pared + context-aware
+## 1. Slash (`/`) — type-to-filter (Logseq) + Ctrl-accelerators (REVISED 2026-06-16 per Taylor)
 
-Today `getSlashTree` (BlockEditor.svelte:1407-1490) hoists the focused block's tag
-PropertyDefinitions (Status/Priority/Deadline/Scheduled/Points) to the slash TOP level,
-so a Task block shows ~10+ chords. Redesign:
+Today `getSlashTree` (BlockEditor.svelte:1407-1490) is a CHORD menu (single bare letters
+= accelerators) AND it hoists the focused block's tag PropertyDefinitions to the top level
+(~10+ rows on a Task block). Redesign — make it a **type-to-filter** menu like Logseq DB:
 
-- **Top level = the 8 insertion verbs only:** Heading, Task, Link, Tag, Date, Template,
-  Query, Collection. (Logseq-DB content insertion.)
-- **Properties stays on `/` but behind ONE context-aware entry:** `p Properties ▸` →
-  a submenu showing **only the focused block's type's properties** (Task → Status,
-  Priority, Deadline, Scheduled, Points; Person → its props; untyped → All properties).
-  This keeps Taylor's "/ also does properties, context-aware of your block" while killing
-  the top-level bloat. (Reuses the existing `getPropertyChildren` + the block's tag defs —
-  just scoped behind `/p` instead of hoisted.)
-- **`New widget`** (creates a Query *note*, not block content) → moves OFF slash to the
-  leader `new` bucket.
+- **Default interaction = TYPE the command name to filter.** Typing `/` opens the menu;
+  you keep typing (`/prop` → Properties, `/head` → Heading); the list narrows by
+  fuzzy/prefix match on the label; **Enter** selects the highlighted match; **↑/↓** navigate.
+  "Sometimes just type the thing and hit enter — faster than navigating." (Taylor)
+- **Ctrl+letter accelerators (express lane), active ONLY while the menu is open.**
+  `Ctrl+P` → Properties, `Ctrl+H` → Heading, etc. — direct jump for the regulars without
+  typing the whole name. The bare-letter chords of today are REPLACED by this: bare keys
+  type-to-filter, the modifier is the accelerator (so they don't fight).
+- **Contents (unchanged from the pared design):** the 8 insertion verbs (Heading, Task,
+  Link, Tag, Date, Template, Query, Collection) + the **context-aware `Properties`** entry
+  (Task → Status/Priority/Deadline/Scheduled/Points; other types → theirs; untyped → All
+  properties). No more hoisted top-level props. `New widget` → leader `new` bucket.
+- This makes slash a *scoped* type-to-filter picker (insertion + context-props), interaction-
+  consistent with ⌘K (fuzzy) but narrower in scope; the leader stays chord-press (below).
 
 ## 2. Leader (SPC) — which-key buckets, every command
 
@@ -58,6 +62,12 @@ Proposed v1 taxonomy (refine in mockup):
 Every registry command lands in exactly one bucket → the leader becomes the complete,
 discoverable keyboard map (emacs-2.0). Driven by `category` (already on every command) +
 a small bucket-label table, OR a new `bucket` field — TBD in implementation.
+
+**Layout (REVISED 2026-06-16 per Taylor): a WIDE multi-column which-key grid**, like emacs
+`which-key` / neovim `which-key.nvim` — keys laid out in 2–3 columns so the popup is wide
+and short, NOT a tall single column. Navigation unchanged (press a bucket letter to descend,
+Esc/Backspace ascends, breadcrumb shown). Chord-press stays the leader's model (vs slash's
+type-to-filter) — matching the references (which-key = chords; M-x/palette = type-to-filter).
 
 ## 3. Insert-mode invocation (NEW — doesn't exist today)
 

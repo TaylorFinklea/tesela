@@ -219,8 +219,13 @@
   }
   /* anchored (slash) mode sits at the caret inside the editor */
   .chord-pop.anchored { position: absolute; }
-  /* centered (leader) mode */
-  .chord-pop.centered { position: fixed; left: 50%; top: 26%; transform: translateX(-50%); width: 320px; }
+  /* centered (leader) mode — WIDE which-key grid: size to content, cap height */
+  .chord-pop.centered {
+    position: fixed; left: 50%; top: 22%;
+    transform: translateX(-50%);
+    width: max-content;
+    max-width: min(680px, 92vw);
+  }
 
   .chord-head {
     display: flex;
@@ -238,6 +243,23 @@
     font-weight: 700;
     letter-spacing: 0.08em;
   }
+  /* live type-to-filter query echoed in the slash header */
+  .chord-filter {
+    font-size: 12px;
+    color: var(--fg);
+    font-weight: 600;
+  }
+  .chord-filter .q { color: var(--primary); }
+  .chord-filter .cur {
+    display: inline-block;
+    width: 1px;
+    height: 12px;
+    background: var(--primary);
+    margin-left: 1px;
+    transform: translateY(2px);
+    animation: blink 1.05s step-end infinite;
+  }
+  .chord-filter .empty { color: var(--ink-faint); font-weight: 500; }
   .chord-sep { color: var(--ink-faint); font-size: 11px; }
   .chord-crumb { color: var(--ink-faint); font-size: 11px; }
   .chord-context {
@@ -251,6 +273,17 @@
   }
 
   .chord-list { display: flex; flex-direction: column; gap: 1px; max-height: 50vh; overflow-y: auto; }
+  /* WIDE which-key grid (leader): multi-column, short — widen instead of growing tall */
+  .chord-list.grid {
+    display: grid;
+    grid-template-columns: repeat(3, max-content);
+    gap: 1px 6px;
+    max-height: 360px;
+    overflow-y: auto;
+    align-content: start;
+  }
+  .chord-list.grid .chord-divider { grid-column: 1 / -1; }
+  .chord-list.grid .chord-row { min-width: 184px; }
   .chord-row {
     display: flex;
     align-items: center;
@@ -274,7 +307,27 @@
     font-weight: 700;
   }
   .chord-key.wide { min-width: 30px; }
+  /* Ctrl+letter accelerator chip (slash express lane) */
+  .chord-accel {
+    display: inline-flex;
+    align-items: center;
+    gap: 1px;
+    min-width: 26px;
+    padding: 1px 6px;
+    text-align: center;
+    background: color-mix(in srgb, var(--rose) 12%, transparent);
+    color: var(--rose);
+    border: 1px solid color-mix(in srgb, var(--rose) 32%, var(--line));
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .chord-accel .mod { opacity: 0.85; }
   .chord-label { color: var(--fg); flex: 1; }
+  /* fuzzy-match emphasis on the filtered label */
+  .chord-label .match { color: var(--primary); font-weight: 700; }
   .chord-label .ic { margin-right: 6px; opacity: 0.9; }
   .chord-hint {
     display: inline-block;
@@ -372,13 +425,13 @@
   <div class="section">
     <div class="head">
       <h2>1 · Slash menu</h2>
-      <span class="desc">pared + context-aware properties</span>
+      <span class="desc">type to filter · ⌃letter accelerators · context-aware properties</span>
     </div>
 
     <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
       <div class="seg" id="seg-slash">
-        <button data-mode="before">Before · today (15 flat)</button>
-        <button data-mode="after" class="active">After · pared</button>
+        <button data-mode="before">Before · today (15 bare chords)</button>
+        <button data-mode="after" class="active">After · type to filter · ⌃letter = express</button>
       </div>
       <span class="count-badge" id="slash-count">—</span>
     </div>
@@ -397,8 +450,8 @@
       </div>
     </div>
     <div class="hintline" id="slash-hint">
-      <b>After:</b> top level = 8 verbs + one <b>p Properties ▸</b> row. Press <kbd class="inline">p</kbd> to open the
-      Task-scoped property submenu. <b>Before</b> hoists all 5 Task props + 2 extras to the top — feel the bloat.
+      <b>After:</b> type to filter (e.g. <kbd class="inline">prop</kbd>) · <kbd class="inline">↵</kbd> picks ·
+      <kbd class="inline">⌃</kbd>letter jumps.
     </div>
   </div>
 
@@ -406,7 +459,7 @@
   <div class="section">
     <div class="head">
       <h2>2 · Leader menu</h2>
-      <span class="desc">which-key buckets · every command homed</span>
+      <span class="desc">wide which-key grid · every command homed</span>
     </div>
 
     <div style="display:flex; gap:10px; align-items:center; margin-bottom:12px;">
@@ -417,8 +470,9 @@
       </span>
     </div>
     <div class="hintline">
+      A <b>wide multi-column which-key grid</b> (emacs which-key / which-key.nvim style) — short, not tall.
       Press a bucket letter to <b>descend</b> (g / w / b / n / i / p / v / a / t / ,), Esc/Backspace to ascend.
-      Every registry command lives in exactly one bucket — this is the discoverable, complete keyboard map.
+      Every registry command lives in exactly one bucket — the discoverable, complete keyboard map.
     </div>
   </div>
 
@@ -438,18 +492,19 @@
    DATA — modeled directly from 2026-06-16-command-model-redesign-spec.md
 ============================================================================ */
 
-// --- Slash: AFTER (pared) — 8 insertion verbs + one Properties entry --------
+// --- Slash: AFTER (pared) — 8 insertion verbs + one Properties entry ---------
+// type-to-filter on label; the bare-letter chord is promoted to a ⌃letter accelerator.
 const SLASH_AFTER = [
-  { key: "h", label: "Heading",    icon: "⌗", hint: "#" },
-  { key: "t", label: "Task",       icon: "○", hint: "[ ]" },
-  { key: "l", label: "Link",       icon: "🔗", hint: "[[ ]]" },
-  { key: "#", label: "Tag",        icon: "#", hint: "#tag" },
-  { key: "d", label: "Date",       icon: "📅", hint: "date" },
-  { key: "m", label: "Template",   icon: "▤", hint: "tmpl" },
-  { key: "q", label: "Query",      icon: "⌕", hint: "query::" },
-  { key: "c", label: "Collection", icon: "▦", hint: "select ▸" },
+  { accel: "h", label: "Heading",    icon: "⌗", hint: "#" },
+  { accel: "t", label: "Task",       icon: "○", hint: "[ ]" },
+  { accel: "l", label: "Link",       icon: "🔗", hint: "[[ ]]" },
+  { accel: "g", label: "Tag",        icon: "#", hint: "#tag" },
+  { accel: "d", label: "Date",       icon: "📅", hint: "date" },
+  { accel: "m", label: "Template",   icon: "▤", hint: "tmpl" },
+  { accel: "q", label: "Query",      icon: "⌕", hint: "query::" },
+  { accel: "c", label: "Collection", icon: "▦", hint: "select ▸" },
   { divider: "context-aware" },
-  { key: "p", label: "Properties", icon: "⚑", hint: "#Task ▸", children: "TASK_PROPS" },
+  { accel: "p", label: "Properties", icon: "⚑", hint: "#Task ▸", children: "TASK_PROPS" },
 ];
 
 // context-aware submenu for a #Task block (only this type's props)
@@ -598,13 +653,62 @@ function resolve(name) { return REGISTRY[name]; }
    POPOVER ENGINE — one renderer for both slash & leader (mirrors ChordMenu)
 ============================================================================ */
 const host = document.getElementById("pop-host");
-let active = null;   // { kind:'slash'|'leader', rootName, prefix, breadcrumb:[], context }
+// active: { kind:'slash'|'leader', rootName, prefix, breadcrumb:[], context, filter, hi }
+//   filter = live type-to-filter query (slash only); hi = highlighted visible-row index
+let active = null;
 
 function open(kind, rootName, prefix, context) {
-  active = { kind, rootName, prefix, breadcrumb: [], context: context || null };
+  active = { kind, rootName, prefix, breadcrumb: [], context: context || null, filter: "", hi: 0 };
   render();
 }
 function close() { active = null; host.innerHTML = ""; updateCaretTyping(false); }
+
+/* type-to-filter helpers (slash "After" only) -------------------------------- */
+// is type-to-filter active right now? only the pared slash menu, at any level.
+function isTypeFilter() {
+  return active && active.kind === "slash" && active.rootName === "SLASH_AFTER";
+}
+// subsequence (fuzzy) + prefix match on a label, case-insensitive.
+function fuzzyMatch(label, q) {
+  if (!q) return true;
+  const l = label.toLowerCase(), s = q.toLowerCase();
+  if (l.startsWith(s)) return true;
+  let i = 0;
+  for (const ch of l) { if (ch === s[i]) i++; if (i === s.length) return true; }
+  return false;
+}
+// rank: exact-prefix beats subsequence; shorter labels first (best match floats up).
+function rankRows(rows, q) {
+  const real = rows.filter(n => !n.divider && fuzzyMatch(n.label, q));
+  if (!q) return rows;            // no query → show full level (dividers included)
+  real.sort((a, b) => {
+    const ap = a.label.toLowerCase().startsWith(q.toLowerCase()) ? 0 : 1;
+    const bp = b.label.toLowerCase().startsWith(q.toLowerCase()) ? 0 : 1;
+    if (ap !== bp) return ap - bp;
+    return a.label.length - b.label.length;
+  });
+  return real;                    // filtered → drop dividers, ranked
+}
+// render the label into `el`, wrapping the matched characters in <span class="match">
+function appendLabel(el, label, q) {
+  if (!q) { el.appendChild(document.createTextNode(label)); return; }
+  const l = label.toLowerCase(), s = q.toLowerCase();
+  // prefix match → highlight the leading run; else subsequence-highlight each hit
+  if (l.startsWith(s)) {
+    const m = document.createElement("span"); m.className = "match"; m.textContent = label.slice(0, q.length);
+    el.appendChild(m);
+    el.appendChild(document.createTextNode(label.slice(q.length)));
+    return;
+  }
+  let i = 0;
+  for (const ch of label) {
+    if (i < s.length && ch.toLowerCase() === s[i]) {
+      const m = document.createElement("span"); m.className = "match"; m.textContent = ch; el.appendChild(m); i++;
+    } else {
+      el.appendChild(document.createTextNode(ch));
+    }
+  }
+}
 
 // derive current level by walking breadcrumb of group-labels
 function currentLevel() {
@@ -621,6 +725,7 @@ function selectNode(node) {
   if (node.divider) return;
   if (node.children) {
     active.breadcrumb = [...active.breadcrumb, node.label];
+    active.filter = ""; active.hi = 0;   // fresh filter at the new level
     render();
   } else {
     // leaf — flash & close (mockup: no real action)
@@ -630,6 +735,7 @@ function selectNode(node) {
 function ascend() {
   if (active.breadcrumb.length > 0) {
     active.breadcrumb = active.breadcrumb.slice(0, -1);
+    active.filter = ""; active.hi = 0;
     render();
   } else {
     close();
@@ -659,6 +765,19 @@ function render() {
     const sep = document.createElement("span"); sep.className = "chord-sep"; sep.textContent = "›"; head.appendChild(sep);
     const cr = document.createElement("span"); cr.className = "chord-crumb"; cr.textContent = c; head.appendChild(cr);
   }
+  // live type-to-filter echo (pared slash): show "/prop▏" and blink a cursor
+  if (isTypeFilter()) {
+    const sep = document.createElement("span"); sep.className = "chord-sep"; sep.textContent = "›"; head.appendChild(sep);
+    const f = document.createElement("span");
+    f.className = "chord-filter";
+    if (active.filter) {
+      const q = document.createElement("span"); q.className = "q"; q.textContent = active.filter; f.appendChild(q);
+    } else {
+      const e = document.createElement("span"); e.className = "empty"; e.textContent = "type to filter"; f.appendChild(e);
+    }
+    const cur = document.createElement("span"); cur.className = "cur"; f.appendChild(cur);
+    head.appendChild(f);
+  }
   // context badge for the slash Properties submenu
   if (active.context && active.breadcrumb.length > 0) {
     const ctx = document.createElement("span");
@@ -670,8 +789,20 @@ function render() {
 
   // --- list ---
   const list = document.createElement("div");
-  list.className = "chord-list";
-  for (const node of level) {
+  // leader = wide which-key grid; slash = single column
+  list.className = "chord-list" + (active.kind === "leader" ? " grid" : "");
+
+  // pared slash filters + ranks live; clamp the highlight to the visible set
+  const typeFilter = isTypeFilter();
+  const rows = typeFilter ? rankRows(level, active.filter) : level;
+  const realRowsArr = rows.filter(n => !n.divider);
+  if (typeFilter) {
+    if (active.hi >= realRowsArr.length) active.hi = Math.max(0, realRowsArr.length - 1);
+    if (active.hi < 0) active.hi = 0;
+  }
+  let realIdx = -1;
+
+  for (const node of rows) {
     if (node.divider) {
       const d = document.createElement("div");
       d.className = "chord-divider";
@@ -679,21 +810,32 @@ function render() {
       list.appendChild(d);
       continue;
     }
+    realIdx++;
     const row = document.createElement("div");
-    row.className = "chord-row";
-    row.dataset.key = node.key;
+    const highlighted = typeFilter && realIdx === active.hi;
+    row.className = "chord-row" + (highlighted ? " hot" : "");
+    row.dataset.key = node.key || node.accel || "";
 
-    const kbd = document.createElement("kbd");
-    kbd.className = "chord-key" + (node.wide ? " wide" : "");
-    kbd.textContent = node.key;
-    row.appendChild(kbd);
+    // accelerator-or-chord chip: ⌃letter for the pared slash, bare key elsewhere
+    if (node.accel) {
+      const a = document.createElement("kbd");
+      a.className = "chord-accel";
+      const mod = document.createElement("span"); mod.className = "mod"; mod.textContent = "⌃"; a.appendChild(mod);
+      a.appendChild(document.createTextNode(node.accel.toUpperCase()));
+      row.appendChild(a);
+    } else {
+      const kbd = document.createElement("kbd");
+      kbd.className = "chord-key" + (node.wide ? " wide" : "");
+      kbd.textContent = node.key;
+      row.appendChild(kbd);
+    }
 
     const lab = document.createElement("span");
     lab.className = "chord-label";
     if (node.icon) {
       const ic = document.createElement("span"); ic.className = "ic"; ic.textContent = node.icon; lab.appendChild(ic);
     }
-    lab.appendChild(document.createTextNode(node.label));
+    appendLabel(lab, node.label, typeFilter ? active.filter : "");
     row.appendChild(lab);
 
     if (node.hint) {
@@ -708,6 +850,14 @@ function render() {
     row.addEventListener("click", (e) => { e.stopPropagation(); selectNode(node); });
     list.appendChild(row);
   }
+  // empty-filter state
+  if (typeFilter && realRowsArr.length === 0) {
+    const none = document.createElement("div");
+    none.className = "chord-divider";
+    none.style.textAlign = "center";
+    none.textContent = "no match for “" + active.filter + "”";
+    list.appendChild(none);
+  }
   pop.appendChild(list);
 
   // --- footer: count badge + nav hint ---
@@ -719,7 +869,13 @@ function render() {
     const badge = document.createElement("span");
     const before = active.rootName === "SLASH_BEFORE";
     badge.className = "count-badge " + (before ? "bad" : "good");
-    badge.textContent = before ? (realRows + " rows · bloated") : (realRows + " rows · pared");
+    if (before) {
+      badge.textContent = realRows + " rows · bloated";
+    } else if (active.filter) {
+      badge.textContent = realRowsArr.length + " / " + realRows + " match";
+    } else {
+      badge.textContent = realRows + " rows · pared";
+    }
     left.appendChild(badge);
   } else {
     left.textContent = realRows + " items";
@@ -727,9 +883,15 @@ function render() {
   }
   foot.appendChild(left);
   const right = document.createElement("span");
-  right.innerHTML = active.breadcrumb.length > 0
-    ? '<kbd class="chord-key" style="min-width:auto">Esc</kbd> back'
-    : '<kbd class="chord-key" style="min-width:auto">Esc</kbd> close';
+  if (typeFilter) {
+    right.innerHTML = active.filter
+      ? '<kbd class="chord-key" style="min-width:auto">↵</kbd> pick · <kbd class="chord-key" style="min-width:auto">Esc</kbd> close'
+      : 'type to filter · <kbd class="chord-key" style="min-width:auto">⌃</kbd>letter jumps';
+  } else {
+    right.innerHTML = active.breadcrumb.length > 0
+      ? '<kbd class="chord-key" style="min-width:auto">Esc</kbd> back'
+      : '<kbd class="chord-key" style="min-width:auto">Esc</kbd> close';
+  }
   foot.appendChild(right);
   pop.appendChild(foot);
 
@@ -775,9 +937,11 @@ function setSlashMode(mode) {
       + '<span style="color:var(--rose)">16 chords flat</span>. The <span style="color:var(--rose)">rose</span> rows are the bloat the redesign removes.';
   } else {
     slashCountEl.className = "count-badge good";
-    slashCountEl.textContent = "9 rows (8 + p ▸)";
-    slashHintEl.innerHTML = '<b>After:</b> top level = 8 verbs + one <b>p Properties ▸</b> row. Press <kbd class="inline">p</kbd> for the '
-      + 'Task-scoped property submenu (Status / Priority / Deadline / Scheduled / Points).';
+    slashCountEl.textContent = "9 rows · type to filter";
+    slashHintEl.innerHTML = '<b>After:</b> type to filter (e.g. <kbd class="inline">prop</kbd>) · '
+      + '<kbd class="inline">↵</kbd> picks the highlighted row · <kbd class="inline">⌃</kbd>letter jumps directly '
+      + '(<kbd class="inline">⌃P</kbd> → the <span style="color:var(--type-task)">#Task</span>-scoped Properties submenu). '
+      + '<kbd class="inline">↑/↓</kbd> move the highlight.';
   }
   // re-open if currently showing slash at root, so the toggle is felt live
   if (active && active.kind === "slash") openSlash();
@@ -787,14 +951,14 @@ function openSlash() {
   open("slash", root, "/", "#Task");
   updateCaretTyping(true);
 }
-// show the "/" the user typed at the caret while the slash menu is open
+// show "/<filter>" the user typed at the caret while the slash menu is open
 function updateCaretTyping(on) {
   const bt = document.getElementById("blocktext");
   bt.querySelectorAll(".typed").forEach(s => s.remove());
   if (on) {
     const s = document.createElement("span");
     s.className = "typed";
-    s.textContent = "/";
+    s.textContent = "/" + (active && active.kind === "slash" ? active.filter : "");
     bt.appendChild(s);
   }
 }
@@ -806,8 +970,12 @@ document.getElementById("open-slash").addEventListener("click", openSlash);
 document.getElementById("open-leader").addEventListener("click", () => open("leader", "LEADER", "SPC"));
 
 /* ============================================================================
-   GLOBAL KEYBOARD — typing "/" opens slash; Ctrl+, opens leader;
-   letters descend; Esc/Backspace ascend.  (capture phase, like ChordMenu)
+   GLOBAL KEYBOARD
+     - typing "/" opens slash; Ctrl+, opens leader
+     - SLASH (pared)  = TYPE-TO-FILTER: letters filter, ↵ picks highlight,
+       ↑/↓ move highlight, ⌃letter jumps to an accelerator, Backspace edits.
+     - LEADER & slash-Before = chord-press: a row letter descends/selects.
+   (capture phase, like ChordMenu)
 ============================================================================ */
 document.addEventListener("keydown", (e) => {
   // open triggers when no popover is active
@@ -816,13 +984,60 @@ document.addEventListener("keydown", (e) => {
     if (e.ctrlKey && e.key === ",") { e.preventDefault(); open("leader", "LEADER", "SPC"); return; }
     return;
   }
-  // popover is open → modal handling
-  if (e.key === "Escape" || e.key === "Backspace") {
+
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); return; }
+
+  /* ---- pared slash: type-to-filter + ⌃letter accelerators ---------------- */
+  if (isTypeFilter()) {
+    const level = currentLevel();
+
+    // ⌃letter accelerator — express lane, active only while the menu is open
+    if (e.ctrlKey && /^[a-z]$/i.test(e.key)) {
+      const ch = e.key.toLowerCase();
+      const hit = level.find(n => !n.divider && n.accel === ch);
+      if (hit) { e.preventDefault(); e.stopPropagation(); selectNode(hit); }
+      else { e.preventDefault(); e.stopPropagation(); }
+      return;
+    }
+
+    const visible = rankRows(level, active.filter).filter(n => !n.divider);
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault(); e.stopPropagation();
+      if (visible.length) active.hi = (active.hi + 1) % visible.length;
+      render(); return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault(); e.stopPropagation();
+      if (visible.length) active.hi = (active.hi - 1 + visible.length) % visible.length;
+      render(); return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault(); e.stopPropagation();
+      const pick = visible[active.hi];
+      if (pick) selectNode(pick);
+      return;
+    }
+    if (e.key === "Backspace") {
+      e.preventDefault(); e.stopPropagation();
+      if (active.filter) { active.filter = active.filter.slice(0, -1); active.hi = 0; updateCaretTyping(true); render(); }
+      else { ascend(); }        // empty filter → ascend a level (or close at root)
+      return;
+    }
+    // printable char → extend the filter
+    if (e.key.length === 1 && !e.metaKey && !e.altKey) {
+      e.preventDefault(); e.stopPropagation();
+      active.filter += e.key; active.hi = 0;
+      updateCaretTyping(true); render();
+      return;
+    }
+    // swallow the rest
     e.preventDefault(); e.stopPropagation();
-    ascend();
     return;
   }
-  // match a row key at the current level (case-sensitive, like the real menu)
+
+  /* ---- leader & slash-Before: chord-press -------------------------------- */
+  if (e.key === "Backspace") { e.preventDefault(); e.stopPropagation(); ascend(); return; }
   const level = currentLevel();
   let key = e.key;
   if (key === " ") key = "SPC"; // SPC leaf
