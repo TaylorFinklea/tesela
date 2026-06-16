@@ -446,6 +446,7 @@
   import type { PropertyDefinition } from "$lib/property-registry";
   import { commandRegistry, type CommandContext } from "$lib/command-registry.svelte";
   import type { SlashContext } from "$lib/editor/slash-context";
+  import { planEnterSplit } from "$lib/editor/enter-split";
   import "$lib/editor/commands/heading";
   import "$lib/editor/commands/date";
   import "$lib/editor/commands/task";
@@ -1998,33 +1999,16 @@
           if (onEnter) {
             const doc = v.state.doc.toString();
             const cursor = v.state.selection.main.head;
-            const firstNl = doc.indexOf("\n");
             // Model B: the token lift happens on BLUR (leaving the block), not
             // here — pressing Enter moves focus to the new block, which blurs
             // this one and triggers the lift. So Enter is a plain split.
-            const cursorOnFirstLine = firstNl === -1 || cursor <= firstNl;
-            // Phase 10.1 follow-up — when a block has continuation lines
-            // (status:: / tags:: / etc. — anything indented after the bullet
-            // line) and the user presses Enter on the FIRST line, keep
-            // those continuation lines with the CURRENT block. The previous
-            // implementation split at cursor unconditionally, so cycling
-            // status with Cmd+Enter and then pressing Enter pulled the
-            // `status:: doing` line down onto the new (empty) block. Multi-
-            // line content edits (cursor past first line) keep the old
-            // split-at-cursor behavior.
-            if (cursorOnFirstLine && firstNl !== -1) {
-              const firstLine = doc.slice(0, firstNl);
-              const continuation = doc.slice(firstNl); // includes leading \n
-              const beforeCursor = firstLine.slice(0, cursor);
-              const afterCursor = firstLine.slice(cursor);
-              onChange(beforeCursor + continuation);
-              onEnter(afterCursor);
-            } else {
-              const textBefore = doc.slice(0, cursor);
-              const textAfter = doc.slice(cursor);
-              if (textAfter) onChange(textBefore);
-              onEnter(textAfter);
-            }
+            // `planEnterSplit` owns the split decision (first-line guard +
+            // property-line guard); see enter-split.ts for why each guard
+            // exists. It needs the cursor's own line to detect a property/
+            // `tags::` line — pass it from the CM doc.
+            const plan = planEnterSplit(doc, cursor, v.state.doc.lineAt(cursor).text);
+            if (plan.current !== null) onChange(plan.current);
+            onEnter(plan.next);
             return true;
           }
           return false;
