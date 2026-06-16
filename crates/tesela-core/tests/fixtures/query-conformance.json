@@ -1723,6 +1723,618 @@
       },
       "propertyTypes": {},
       "expect": true
+    },
+    {
+      "name": "jql_or_first_branch",
+      "dsl": "tag = a OR tag = b",
+      "block": {
+        "text": "row",
+        "tags": [
+          "a"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_or_second_branch",
+      "dsl": "tag = a OR tag = b",
+      "block": {
+        "text": "row",
+        "tags": [
+          "b"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_or_neither",
+      "dsl": "tag = a OR tag = b",
+      "block": {
+        "text": "row",
+        "tags": [
+          "c"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_or_status_values",
+      "dsl": "status = todo OR status = doing",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "doing"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_or_status_miss",
+      "dsl": "status = todo OR status = doing",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "done"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_and_over_or_orbranch",
+      "dsl": "tag = a AND tag = b OR tag = c",
+      "block": {
+        "text": "row",
+        "tags": [
+          "c"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_and_over_or_andbranch",
+      "dsl": "tag = a AND tag = b OR tag = c",
+      "block": {
+        "text": "row",
+        "tags": [
+          "a",
+          "b"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_and_over_or_miss",
+      "dsl": "tag = a AND tag = b OR tag = c",
+      "block": {
+        "text": "row",
+        "tags": [
+          "a"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_paren_group_match",
+      "dsl": "(tag = a OR tag = b) AND status = todo",
+      "block": {
+        "text": "row",
+        "tags": [
+          "a"
+        ],
+        "properties": {
+          "status": "todo"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_paren_group_status_miss",
+      "dsl": "(tag = a OR tag = b) AND status = todo",
+      "block": {
+        "text": "row",
+        "tags": [
+          "a"
+        ],
+        "properties": {
+          "status": "done"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_paren_group_tag_miss",
+      "dsl": "(tag = a OR tag = b) AND status = todo",
+      "block": {
+        "text": "row",
+        "tags": [
+          "c"
+        ],
+        "properties": {
+          "status": "todo"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_not_paren_group",
+      "dsl": "NOT (tag = a)",
+      "block": {
+        "text": "row",
+        "tags": [
+          "b"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_not_paren_group_match",
+      "dsl": "NOT (tag = a)",
+      "block": {
+        "text": "row",
+        "tags": [
+          "a"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_in_member",
+      "dsl": "status IN (todo, doing)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "doing"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_in_nonmember",
+      "dsl": "status IN (todo, doing)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "done"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_in_whitespace_ok",
+      "dsl": "status IN (todo,   doing)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "doing"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_in_points_member",
+      "dsl": "points IN (2, 10)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "points": "10"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_in_points_nonmember",
+      "dsl": "points IN (2, 10)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "points": "3"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_not_in_member",
+      "dsl": "status NOT IN (done)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "todo"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_not_in_match",
+      "dsl": "status NOT IN (done)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "done"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_not_in_missing",
+      "dsl": "status NOT IN (done)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_like_prefix",
+      "dsl": "text LIKE \"Buy%\"",
+      "block": {
+        "text": "Buy milk",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_like_prefix_miss",
+      "dsl": "text LIKE \"Buy%\"",
+      "block": {
+        "text": "Sell milk",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_like_suffix",
+      "dsl": "text LIKE \"%milk\"",
+      "block": {
+        "text": "Buy milk",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_like_underscore",
+      "dsl": "text LIKE \"B_y%\"",
+      "block": {
+        "text": "Buy milk",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_like_case_insensitive",
+      "dsl": "text LIKE \"buy%\"",
+      "block": {
+        "text": "Buy milk",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_not_like",
+      "dsl": "text NOT LIKE \"%done\"",
+      "block": {
+        "text": "Buy milk",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_like_property",
+      "dsl": "status LIKE \"do%\"",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "doing"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_between_in_range",
+      "dsl": "points BETWEEN 2 AND 5",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "points": "3"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_between_below",
+      "dsl": "points BETWEEN 2 AND 5",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "points": "1"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_between_above",
+      "dsl": "points BETWEEN 2 AND 5",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "points": "10"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_between_typed",
+      "dsl": "points BETWEEN 2 AND 5",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "points": "3.0"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true,
+      "propertyTypes": {
+        "points": "number"
+      }
+    },
+    {
+      "name": "jql_is_null_missing",
+      "dsl": "status IS NULL",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_is_null_present",
+      "dsl": "status IS NULL",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "todo"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_is_not_null_present",
+      "dsl": "status IS NOT NULL",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "todo"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_is_not_null_missing",
+      "dsl": "status IS NOT NULL",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jql_infix_ne",
+      "dsl": "status != done",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "todo"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_infix_ne_missing",
+      "dsl": "status != done",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_infix_gte_typed",
+      "dsl": "points >= 3",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "points": "3.0"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true,
+      "propertyTypes": {
+        "points": "number"
+      }
+    },
+    {
+      "name": "jql_mixed_and",
+      "dsl": "type = task AND points > 5",
+      "block": {
+        "text": "row",
+        "tags": [
+          "task"
+        ],
+        "properties": {
+          "points": "10"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jql_mixed_and_miss",
+      "dsl": "type = task AND points > 5",
+      "block": {
+        "text": "row",
+        "tags": [
+          "task"
+        ],
+        "properties": {
+          "points": "2"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
     }
   ]
 }
