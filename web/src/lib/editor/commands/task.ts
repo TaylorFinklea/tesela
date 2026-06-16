@@ -8,6 +8,7 @@ commandRegistry.register({
   category: "editor",
   surface: "global",
   slashKey: "t",
+  chord: ["i", "t"],
   keywords: ["task", "todo", "tag"],
   run: (_arg, ctx) => {
     const ed = ctx?.editor;

@@ -8,6 +8,7 @@ commandRegistry.register({
   category: "editor",
   surface: "editor",
   slashKey: "q",
+  chord: ["i", "q"],
   keywords: ["query", "filter", "search"],
   run: (_arg, ctx) => {
     const ed = ctx?.editor;

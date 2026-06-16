@@ -12,6 +12,7 @@ commandRegistry.register({
   category: "editor",
   surface: "global",
   slashKey: "h",
+  chord: ["i", "h"],
   keywords: ["heading", "title", "block"],
   run: (_arg, ctx) => {
     const ed = ctx?.editor;

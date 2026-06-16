@@ -52,18 +52,18 @@ import {
 
 const SETTINGS_PAGES: { slug: SettingsSlug; label: string; chord?: string[] }[] = [
   { slug: "general", label: "General", chord: [","] },
-  { slug: "devices", label: "Devices" },
-  { slug: "sync", label: "Sync" },
-  { slug: "mosaic", label: "Mosaic" },
-  { slug: "data", label: "Data" },
+  { slug: "devices", label: "Devices", chord: [",", "d"] },
+  { slug: "sync", label: "Sync", chord: [",", "s"] },
+  { slug: "mosaic", label: "Mosaic", chord: [",", "m"] },
+  { slug: "data", label: "Data", chord: [",", "a"] },
 ];
 
-const DERIVED_RENDERERS: { name: string; label: string; verb: string; glyph: string }[] = [
-  { name: "backlinks-of-page", label: "Backlinks (follow)", verb: "backlinks", glyph: "↩" },
-  { name: "outline-of-page", label: "Outline (follow)", verb: "outline", glyph: "⋮" },
-  { name: "properties-of-page", label: "Properties (follow)", verb: "properties", glyph: "⚙" },
-  { name: "tasks-linked-to-page", label: "Linked tasks (follow)", verb: "tasks", glyph: "☑" },
-  { name: "local-graph-of-page", label: "Local graph (follow)", verb: "graph-local", glyph: "✦" },
+const DERIVED_RENDERERS: { name: string; label: string; verb: string; glyph: string; chord: string[] }[] = [
+  { name: "backlinks-of-page", label: "Backlinks (follow)", verb: "backlinks", glyph: "↩", chord: ["v", "b"] },
+  { name: "outline-of-page", label: "Outline (follow)", verb: "outline", glyph: "⋮", chord: ["v", "o"] },
+  { name: "properties-of-page", label: "Properties (follow)", verb: "properties", glyph: "⚙", chord: ["v", "p"] },
+  { name: "tasks-linked-to-page", label: "Linked tasks (follow)", verb: "tasks", glyph: "☑", chord: ["v", "t"] },
+  { name: "local-graph-of-page", label: "Local graph (follow)", verb: "graph-local", glyph: "✦", chord: ["v", "g"] },
 ];
 
 const AMBIENTS: { name: string; label: string; verb: string; glyph: string; chord: string[] }[] = [
@@ -353,7 +353,7 @@ export function buildV4Commands(): V4Command[] {
       glyph: "│",
       category: "pane",
       shortcut: "⌘\\",
-      chord: ["b", "v"],
+      chord: ["w", "v"],
       keywords: ["split", "vsplit", "vertical", "right", "pane"],
       run: () => vsplit(makePageBuffer(asPageId(""))),
     },
@@ -364,7 +364,7 @@ export function buildV4Commands(): V4Command[] {
       glyph: "─",
       category: "pane",
       shortcut: "⌘-",
-      chord: ["b", "h"],
+      chord: ["w", "s"],
       keywords: ["split", "hsplit", "horizontal", "below", "pane"],
       run: () => hsplit(makePageBuffer(asPageId(""))),
     },
@@ -374,10 +374,10 @@ export function buildV4Commands(): V4Command[] {
       label: "Close focused pane",
       glyph: "×",
       category: "pane",
-      chord: ["b", "q"],
+      chord: ["w", "q"],
       // No shortcut advertised: ⌘W is browser-reserved on macOS (closes the
       // tab — preventDefault can't stop it), so a ⌘W badge was a data-loss
-      // trap. Use `:quit`, the palette, or leader `b q`.
+      // trap. Use `:quit`, the palette, or leader `w q`.
       keywords: ["close", "quit", "kill", "pane"],
       run: () => closeFocusedLeaf(),
     },
@@ -389,6 +389,10 @@ export function buildV4Commands(): V4Command[] {
         dir === "left" ? "←" : dir === "right" ? "→" : dir === "up" ? "↑" : "↓",
       category: "pane" as const,
       shortcut: `⌘⇧${dir === "left" ? "H" : dir === "right" ? "L" : dir === "up" ? "K" : "J"}`,
+      chord: [
+        "w",
+        dir === "left" ? "h" : dir === "right" ? "l" : dir === "up" ? "k" : "j",
+      ] as string[],
       keywords: ["move", "push", "send", dir, "pane"],
       run: () => movePane(dir),
     })),
@@ -400,6 +404,7 @@ export function buildV4Commands(): V4Command[] {
       label: "New tab",
       glyph: "+",
       category: "tab",
+      chord: ["b", "t"],
       // ⌘T is browser-reserved (new browser tab) — not interceptable, so no
       // badge. The top-bar `+`, `:tabnew`, and the palette all create tabs.
       keywords: ["tab", "new", "open", "window"],
@@ -411,6 +416,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Close current tab",
       glyph: "×",
       category: "tab",
+      chord: ["b", "c"],
       // ⌘⇧W is browser-reserved (close window) — not interceptable, no badge.
       keywords: ["tab", "close", "kill"],
       run: () => closeTab(getWorkspace().activeTabId),
@@ -423,6 +429,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Jump to page…",
       glyph: "→",
       category: "tile",
+      chord: ["b", "j"],
       keywords: ["jump", "go", "open", "tile", "note", "page"],
       argPrompt: "note slug or id",
       run: (arg) => {
@@ -439,6 +446,7 @@ export function buildV4Commands(): V4Command[] {
       label: `Open ${d.label}`,
       glyph: d.glyph,
       category: "derived" as const,
+      chord: d.chord,
       keywords: [d.verb, "derived", "follow", d.name],
       run: () => hsplit(makeDerivedBuffer(d.name, followBinding()), 0.7),
     })),
@@ -453,6 +461,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Open instances of a tag (pinned)",
       glyph: "▦",
       category: "derived" as const,
+      chord: ["v", "i"],
       keywords: ["instances", "tag", "members", "uses"],
       argPrompt: "tag slug",
       run: (arg) => {
@@ -470,6 +479,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Open backlinks of a tag (pinned)",
       glyph: "↩",
       category: "derived" as const,
+      chord: ["v", "k"],
       keywords: ["backlinks", "tag", "uses"],
       argPrompt: "tag slug",
       run: (arg) => {
@@ -535,6 +545,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Promote focused scratch to a regular page",
       glyph: "↑",
       category: "create",
+      chord: ["n", "p"],
       keywords: ["promote", "keep", "save", "scratch"],
       run: () => promoteFocusedScratch(),
     },
@@ -544,6 +555,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Delete focused tag (with usage confirmation)",
       glyph: "✕",
       category: "create",
+      chord: ["a", "d"],
       keywords: ["delete", "tag", "remove"],
       run: () => deleteFocusedTag(),
     },
@@ -553,6 +565,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Convert focused page to a tag page",
       glyph: "↻",
       category: "create",
+      chord: ["a", "t"],
       keywords: ["convert", "tag", "type"],
       run: () => convertFocusedTo("tag"),
     },
@@ -562,6 +575,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Convert focused tag page to a regular note",
       glyph: "↻",
       category: "create",
+      chord: ["a", "n"],
       keywords: ["convert", "note", "type"],
       run: () => convertFocusedTo("note"),
     },
@@ -571,6 +585,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Rename focused tag's slug",
       glyph: "✎",
       category: "create",
+      chord: ["a", "r"],
       keywords: ["rename", "slug", "tag", "disambiguate"],
       argPrompt: "new slug (e.g., cardinal-religion)",
       run: async (arg) => {
@@ -587,6 +602,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Prune stale scratch pages now",
       glyph: "🧹",
       category: "create",
+      chord: ["a", "p"],
       keywords: ["prune", "clean", "sweep", "scratch", "delete"],
       argPrompt: "days threshold (default: workspace setting)",
       run: async (arg) => {
@@ -636,7 +652,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Toggle Peek popover",
       glyph: "i",
       category: "tile",
-      chord: ["p"],
+      chord: ["t", "p"],
       shortcut: "⌘I",
       keywords: ["peek", "backlinks", "popover"],
       run: () => togglePeek(getFocusedLeafId() as unknown as string | undefined),
@@ -694,6 +710,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Show keymap index and conflicts",
       glyph: "⌘",
       category: "navigate",
+      chord: ["a", "k"],
       keywords: ["keymap", "bindings", "conflicts", "keyboard"],
       run: () => {
         openKeymapOverlay(formatKeymap());
@@ -707,6 +724,7 @@ export function buildV4Commands(): V4Command[] {
       label: "Skip to Next Occurrence",
       glyph: "⏭",
       category: "tile",
+      chord: ["a", "s"],
       when: (ctx) => !!ctx.focusedBlock?.properties["recurring"],
       keywords: ["skip", "recurrence", "recurring", "next", "occurrence"],
       run: async () => {

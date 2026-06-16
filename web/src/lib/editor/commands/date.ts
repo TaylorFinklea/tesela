@@ -8,6 +8,7 @@ commandRegistry.register({
   category: "editor",
   surface: "editor",
   slashKey: "d",
+  chord: ["i", "d"],
   keywords: ["date", "deadline", "scheduled", "calendar"],
   run: (_arg, ctx) => {
     const ed = ctx?.editor;

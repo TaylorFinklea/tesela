@@ -8,6 +8,7 @@ commandRegistry.register({
   category: "editor",
   surface: "editor",
   slashKey: "l",
+  chord: ["i", "l"],
   keywords: ["link", "wikilink", "reference"],
   run: (_arg, ctx) => {
     const ed = ctx?.editor;

@@ -8,6 +8,7 @@ commandRegistry.register({
   category: "editor",
   surface: "editor",
   // No slashKey — invoked from the /p submenu leaf, not as a top-level slash verb.
+  chord: ["p", "p"],
   keywords: ["property", "key", "value", "attribute"],
   run: (_arg, ctx) => {
     const ed = ctx?.editor;

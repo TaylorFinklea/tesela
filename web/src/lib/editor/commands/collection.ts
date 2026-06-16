@@ -8,6 +8,7 @@ commandRegistry.register({
   category: "editor",
   surface: "editor",
   slashKey: "c",
+  chord: ["i", "c"],
   keywords: ["collection", "list", "cards"],
   run: (_arg, ctx) => {
     const ed = ctx?.editor;
