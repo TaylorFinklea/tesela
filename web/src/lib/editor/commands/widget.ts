@@ -9,7 +9,11 @@ commandRegistry.register({
   glyph: "widget",
   category: "editor",
   surface: "editor",
-  slashKey: "w",
+  // Phase C — widget removed from the slash menu (it now lives under the
+  // leader's `n` bucket via `chord: ["n", "w"]`). Explicit `surfaces` is
+  // required to override Phase A's back-compat derivation (which would
+  // include `slash` because `surface: "editor"` → `{slash}`).
+  surfaces: new Set(["leader"]),
   chord: ["n", "w"],
   keywords: ["widget", "query", "saved", "collection"],
   run: (_arg, ctx) => {

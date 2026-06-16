@@ -651,3 +651,33 @@ test("availableOn still honors when() and editor gate from available()", () => {
     ["editor-ins"],
   );
 });
+
+test("availableOn('slash') excludes editor.widget (Phase C — widget moves to leader)", () => {
+  commandRegistry._reset();
+  // editor.widget is the canonical editor-insertion command that Phase C
+  // removes from the slash surface. It still exists in the registry (the
+  // leader's `n` bucket needs it), but `availableOn('slash', …)` must not
+  // return it. editor.task stays as a control (should remain on slash).
+  commandRegistry.register({
+    id: "editor.widget", label: "New widget", glyph: "w", category: "editor",
+    surface: "editor", slashKey: "w", chord: ["n", "w"],
+    surfaces: new Set(["leader"]), // explicit: only leader, not slash
+    keywords: [], run: () => {},
+  });
+  commandRegistry.register({
+    id: "editor.task", label: "Task", glyph: "t", category: "editor",
+    surface: "global", slashKey: "t", keywords: [], run: () => {},
+  });
+
+  const slash = commandRegistry.availableOn("slash", { editor: {} }).map((c) => c.id);
+  assert.ok(!slash.includes("editor.widget"), "editor.widget must not appear on slash surface");
+  assert.ok(slash.includes("editor.task"), "editor.task must still appear on slash surface");
+});
+
+test("BUILTIN_SLASH_CHORDS no longer carries widget (w) or All-properties (p)", () => {
+  // Phase C drops the hard-coded `w` (New widget) and `p` (All properties)
+  // rows. Widget moved to the leader `new` bucket; `p` is now the single
+  // context-aware Properties entry in getSlashTree, not a top-level builtin.
+  assert.equal(BUILTIN_SLASH_CHORDS.has("w"), false, "BUILTIN_SLASH_CHORDS dropped w (New widget)");
+  assert.equal(BUILTIN_SLASH_CHORDS.has("p"), false, "BUILTIN_SLASH_CHORDS dropped p (All properties)");
+});

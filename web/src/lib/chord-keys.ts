@@ -87,10 +87,12 @@ export const BUILTIN_SLASH_CHORDS: ReadonlyMap<string, string> = new Map([
   ["l", "Link"],
   ["d", "Date"],
   ["q", "Query"],
-  ["w", "New widget"],
   ["c", "Collection"],
   ["m", "Template"],
-  ["p", "All properties"],
+  // Phase C dropped:
+  //   - `w` (New widget) — widget now lives in the leader's `n` bucket.
+  //   - `p` (All properties) — `p` is now the single context-aware
+  //     Properties entry in the slash tree (not a top-level builtin).
 ]);
 
 function pickFallback(label: string, taken: Map<string, string>, reserved: ReadonlySet<string>, ownerName: string): string {
