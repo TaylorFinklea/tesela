@@ -31,8 +31,15 @@ final class LocalQueryEngineTests: XCTestCase {
         )
         let parsed = defaultDsl
         XCTAssertEqual(parsed.kind, .block)
-        XCTAssertEqual(parsed.clauses.count, 4)
-        XCTAssertTrue(parsed.clauses.allSatisfy { $0.negated })
+        // The 4 negated predicates parse to a top-level AND of 4 NOT(atom)
+        // nodes (`kind:block` is consumed for its side-effect, not a clause).
+        guard case .and(let args) = parsed.expr else {
+            return XCTFail("expected a top-level AND, got \(parsed.expr)")
+        }
+        XCTAssertEqual(args.count, 4)
+        XCTAssertTrue(args.allSatisfy {
+            if case .not = $0 { return true } else { return false }
+        })
     }
 
     // MARK: - L5 registry-typed property comparison
@@ -111,7 +118,8 @@ final class LocalQueryEngineTests: XCTestCase {
 
     func testOrderByDoesNotEatPredicates() {
         let parsed = LocalQueryEngine.parseSimpleDsl("tag:project ORDER BY created")
-        XCTAssertEqual(parsed.clauses.count, 1)
+        // A single predicate isn't wrapped in an AND — it's the bare atom.
+        XCTAssertEqual(parsed.expr, .atom(.cmp(key: "tag", op: .eq, value: "project")))
         XCTAssertEqual(parsed.sort, "created")
     }
 

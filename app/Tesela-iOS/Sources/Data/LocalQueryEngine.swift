@@ -366,25 +366,33 @@ enum LocalQueryEngine {
 
     struct SimpleDsl: Equatable {
         enum Kind: Equatable { case block, page }
-        /// Comparison operator — the `QueryOp` subset the local engine
-        /// evaluates (`Like`/`NotLike` stay server-side).
-        enum Op: Equatable { case eq, ne, gt, lt, gte, lte }
-        /// One parsed clause. Mirrors Rust's `Predicate`: `cmp` is
-        /// `Predicate::Cmp` (negation = the wrapping `Not`), `inList`
-        /// is `Predicate::In` (from `key:v1,v2` tight-comma sugar or
-        /// the legacy `tag-in:a,b` shape — OR within the key).
-        enum Clause: Equatable {
-            case cmp(negated: Bool, key: String, op: Op, value: String)
-            case inList(negated: Bool, key: String, values: [String])
-
-            var negated: Bool {
-                switch self {
-                case .cmp(let n, _, _, _), .inList(let n, _, _): return n
-                }
-            }
+        /// Comparison operator — full `QueryOp` mirror (`like`/`notLike`
+        /// now evaluated locally for JQL parity).
+        enum Op: Equatable { case eq, ne, gt, lt, gte, lte, like, notLike }
+        /// A single leaf predicate — mirror of Rust's `Predicate`:
+        /// `cmp` is `Predicate::Cmp` (a `key op value` comparison);
+        /// `inList` is `Predicate::In` (`key IN (…)` / `NOT IN (…)`,
+        /// or the `key:v1,v2` tight-comma sugar / legacy `tag-in:a,b`
+        /// shape — OR within the key, `negated` flips to `NOT IN`).
+        enum Predicate: Equatable {
+            case cmp(key: String, op: Op, value: String)
+            case inList(key: String, values: [String], negated: Bool)
+        }
+        /// Boolean expression tree — mirror of Rust's `BoolExpr`. The DSL
+        /// is a real algebra over predicates (`AND` / `OR` / `NOT` /
+        /// parens); the matcher walks this tree (`evalExpr`). An empty
+        /// `and` is the identity (matches everything) — what
+        /// `parseSimpleDsl("")` returns.
+        indirect enum BoolExpr: Equatable {
+            case and([BoolExpr])
+            case or([BoolExpr])
+            case not(BoolExpr)
+            case atom(Predicate)
         }
         var kind: Kind
-        var clauses: [Clause]
+        /// Canonical boolean expression. Always set; defaults to an empty
+        /// `.and([])` (matches everything) for the empty query string.
+        var expr: BoolExpr
         /// Mirror of Rust `Query.sort`: the pre-composed `ORDER BY`
         /// string ("deadline desc", "status, deadline desc"), or nil when
         /// no ORDER BY with at least one field parsed. Not evaluated
@@ -392,6 +400,15 @@ enum LocalQueryEngine {
         /// can apply the server's structural sort-only carve-out
         /// (`SavedViewLogic.dslValidationError`).
         var sort: String? = nil
+    }
+
+    /// Mirror of web `isEmptyExpr` / Rust's default `BoolExpr::And { args: [] }`
+    /// — true for the identity expression (`.and([])`) that the parser
+    /// returns for an empty / all-dropped query, so callers can detect
+    /// "no filters recognized" (degrade toward match-all).
+    static func isEmptyExpr(_ expr: SimpleDsl.BoolExpr) -> Bool {
+        if case .and(let args) = expr { return args.isEmpty }
+        return false
     }
 
     /// Mirror of `tokenize` (query.rs): punctuation + quoted strings +
@@ -468,28 +485,18 @@ enum LocalQueryEngine {
         return (tokens, bytes)
     }
 
-    /// Flat-AND mirror of the Rust recursive-descent parser
-    /// (`Parser` in query.rs) for the subset the local engine
-    /// evaluates. Structural mirroring notes:
-    ///   * `parseClauses` ≈ `parse_and` — implicit AND between atoms;
-    ///     a token that can't start a unary (stray comma, `or`, `)`)
-    ///     terminates parsing, dropping the remainder exactly like
-    ///     Rust's `parse_and` break.
-    ///   * `parseUnary` ≈ `parse_unary` — `-`/`NOT` toggle negation
-    ///     (Rust stacks `Not` via recursion; a parity flag is
-    ///     equivalent), and a dropped predicate (`kind:…`, bareword,
-    ///     empty value) re-synchronizes at the next unary-starting
-    ///     token with the negation still pending, mirroring how
-    ///     Rust's outer `Not` wraps whatever the inner retry returns.
-    ///   * `OR` / parens / JQL (`IN (…)`, `LIKE`, `BETWEEN`,
-    ///     `IS NULL`) aren't evaluated locally: paren tokens are
-    ///     skipped (so a single parenthesized group degrades to its
-    ///     inner clauses), JQL keywords drop as barewords, and `or`
-    ///     ends the clause list.
-    ///   * `ORDER BY` stops the clause list (mirroring Rust
-    ///     `parse_unary`'s stop) so `parseOrderBy` can surface the
-    ///     sort spec at the top level — sorting itself stays
-    ///     server-side; the spec exists for validation parity.
+    /// Faithful mirror of the Rust recursive-descent parser
+    /// (`Parser` in query.rs) and its TS port
+    /// (`web/src/lib/query-language.ts`): `parseOr → parseAnd →
+    /// parseUnary → parsePredicate`, producing a `BoolExpr` tree. The
+    /// full JQL grammar is parsed AND evaluated locally now —
+    /// real `OR`, parenthesized grouping, `IN (…)` / `NOT IN (…)`,
+    /// `LIKE` / `NOT LIKE`, `BETWEEN x AND y` (→ `and[gte, lte]`), and
+    /// `IS [NOT] NULL` (→ `has` / `not(has)`). `ORDER BY` stops the
+    /// expression (mirroring Rust `parse_unary`'s stop) so `parseOrderBy`
+    /// can surface the sort spec at the top level. Genuinely malformed
+    /// input (dropped/empty predicate, unterminated paren, empty `IN ()`)
+    /// degrades toward match-all, mirroring Rust.
     private struct DslParser {
         let tokens: [SpannedDslToken]
         let bytes: [UInt8]
@@ -527,58 +534,92 @@ enum LocalQueryEngine {
             }
         }
 
-        mutating func parseClauses() -> [SimpleDsl.Clause] {
-            var clauses: [SimpleDsl.Clause] = []
-            // First unary is unconditional (Rust parse_and's `left`);
-            // if it fails the whole expression is empty (match-all).
-            guard let first = parseUnary() else { return clauses }
-            clauses.append(first)
+        /// Wrap a leaf predicate as a `BoolExpr.atom` — mirror of the
+        /// Rust/web `atom` shorthand.
+        func atom(_ pred: SimpleDsl.Predicate) -> SimpleDsl.BoolExpr { .atom(pred) }
+
+        /// Mirror of Rust `parse_or` / web `parseOr`: `and ("OR" and)*`.
+        /// Folds the alternatives into a single `.or([...])` only when at
+        /// least one `OR` actually parsed a right-hand side.
+        mutating func parseOr() -> SimpleDsl.BoolExpr? {
+            guard var left = parseAnd() else { return nil }
+            var alts: [SimpleDsl.BoolExpr] = []
+            while peekKeyword("or") {
+                pos += 1
+                if let rhs = parseAnd() {
+                    if alts.isEmpty { alts.append(left) }
+                    alts.append(rhs)
+                }
+            }
+            if !alts.isEmpty { left = .or(alts) }
+            return left
+        }
+
+        /// Mirror of Rust `parse_and` / web `parseAnd`: `unary
+        /// (("AND" | implicit ws) unary)*`. Implicit AND between
+        /// space-separated atoms; an explicit `AND` keyword is consumed.
+        mutating func parseAnd() -> SimpleDsl.BoolExpr? {
+            guard var left = parseUnary() else { return nil }
+            var args: [SimpleDsl.BoolExpr] = []
             while true {
                 if peekKeyword("and") {
                     pos += 1
                 } else if !peekStartsUnary {
                     break
                 }
-                guard let next = parseUnary() else { break }
-                clauses.append(next)
+                guard let rhs = parseUnary() else { break }
+                if args.isEmpty { args.append(left) }
+                args.append(rhs)
             }
-            return clauses
+            if !args.isEmpty { left = .and(args) }
+            return left
         }
 
-        mutating func parseUnary() -> SimpleDsl.Clause? {
-            var negated = false
+        /// Mirror of Rust `parse_unary` / web `parseUnary`:
+        /// `("NOT" | "-") unary | "(" or ")" | predicate`. Loops so a
+        /// `kind:value` predicate consumed for its side-effect (mutating
+        /// `kind`) but producing no expression retries at the next unary.
+        mutating func parseUnary() -> SimpleDsl.BoolExpr? {
             while true {
                 // Mirror of Rust `parse_unary`'s ORDER BY stop: without
                 // it, ORDER / BY / the field names would be consumed as
                 // dropped barewords and the sort never populated.
                 if peekOrderBy { return nil }
-                if peekKeyword("not") || peek == .minus {
+                if peekKeyword("not") {
                     pos += 1
-                    negated.toggle()
-                    continue
+                    guard let inner = parseUnary() else { return nil }
+                    return .not(inner)
+                }
+                if peek == .minus {
+                    pos += 1
+                    guard let inner = parseUnary() else { return nil }
+                    return .not(inner)
                 }
                 if peek == .lparen {
-                    // Grouping isn't evaluated locally — skip the paren
-                    // so `(tag:x)` degrades to its inner clause.
                     pos += 1
-                    continue
+                    let inner = parseOr() ?? .and([])
+                    if peek == .rparen { pos += 1 }
+                    return inner
                 }
                 let startPos = pos
-                if let clause = parsePredicate(negated: negated) { return clause }
+                if let expr = parsePredicate() { return expr }
                 if pos == startPos { return nil }
-                // Predicate consumed but produced nothing (`kind:…`,
-                // bareword, empty value) — eat an optional AND and
-                // retry at the next unary-starting token.
+                // Predicate consumed for side-effect (likely `kind:…`) —
+                // eat an explicit AND so `kind:block AND status:todo`
+                // doesn't stall, then retry at the next unary token.
                 if peekKeyword("and") { pos += 1 }
                 if !peekStartsUnary { return nil }
             }
         }
 
-        /// Mirror of `parse_predicate` for the legacy shapes
-        /// (`key:value`, `key:>=N`, `key:v1,v2`, `tag-in:a,b,c`,
-        /// `has:foo`) plus infix ops. JQL keyword forms fall through
-        /// to the bareword drop.
-        mutating func parsePredicate(negated: Bool) -> SimpleDsl.Clause? {
+        /// Mirror of Rust `parse_predicate` / web `parsePredicate`. Every
+        /// legacy form (`key:value`, `key:>=N`, `key:v1,v2`,
+        /// `tag-in:a,b,c`, `has:foo`) plus the full JQL grammar
+        /// (`key IN (…)` / `NOT IN (…)`, `LIKE` / `NOT LIKE`,
+        /// `IS [NOT] NULL`, `BETWEEN x AND y`, infix ops). Negation lives
+        /// at the `parseUnary` level now (returns a `.not(...)`), so this
+        /// returns a bare `BoolExpr`.
+        mutating func parsePredicate() -> SimpleDsl.BoolExpr? {
             guard pos < tokens.count else { return nil }
             let keyTok = tokens[pos].tok
             pos += 1
@@ -599,7 +640,69 @@ enum LocalQueryEngine {
             if key.hasSuffix("-in"), peek == .colon {
                 pos += 1
                 let realKey = String(key.dropLast("-in".count))
-                return .inList(negated: negated, key: realKey, values: parseCommaListUntilBoundary())
+                return atom(.inList(key: realKey, values: parseCommaListUntilBoundary(), negated: false))
+            }
+
+            // New-style infix `key IN (…)` / `key NOT IN (…)`.
+            if peekKeyword("in") {
+                pos += 1
+                return atom(.inList(key: key, values: parseParenValueList(), negated: false))
+            }
+            if peekKeyword("not") {
+                // Tentatively consume NOT; commit only if followed by IN or LIKE.
+                let save = pos
+                pos += 1
+                if peekKeyword("in") {
+                    pos += 1
+                    return atom(.inList(key: key, values: parseParenValueList(), negated: true))
+                }
+                if peekKeyword("like") {
+                    pos += 1
+                    let value = parseValue() ?? ""
+                    return atom(.cmp(key: key, op: .notLike, value: value))
+                }
+                pos = save
+            }
+
+            // `key LIKE "pattern"` — SQL-style wildcard match.
+            if peekKeyword("like") {
+                pos += 1
+                let value = parseValue() ?? ""
+                return atom(.cmp(key: key, op: .like, value: value))
+            }
+
+            // `key IS [NOT] NULL|EMPTY` — sugar for `-has:key` / `has:key`.
+            if peekKeyword("is") {
+                let save = pos
+                pos += 1 // consume "is"
+                var negated = false
+                if peekKeyword("not") {
+                    pos += 1
+                    negated = true
+                }
+                if peekKeyword("null") || peekKeyword("empty") {
+                    pos += 1
+                    // IS NOT NULL → present → has:key → Eq;
+                    // IS NULL     → absent  → -has:key → Ne.
+                    return atom(.cmp(key: "has", op: negated ? .eq : .ne, value: key))
+                }
+                pos = save
+            }
+
+            // `key BETWEEN a AND b` — sugar for `key >= a AND key <= b`.
+            if peekKeyword("between") {
+                let save = pos
+                pos += 1 // consume "between"
+                if let low = parseValue(), peekKeyword("and") {
+                    pos += 1
+                    if let high = parseValue() {
+                        return .and([
+                            atom(.cmp(key: key, op: .gte, value: low)),
+                            atom(.cmp(key: key, op: .lte, value: high)),
+                        ])
+                    }
+                }
+                pos = save
             }
 
             // Infix `key = v` / `key >= v` / … — no empty-value drop and
@@ -607,7 +710,7 @@ enum LocalQueryEngine {
             if case .op(let infixOp)? = peek {
                 pos += 1
                 let value = parseValue() ?? ""
-                return .cmp(negated: negated, key: key, op: infixOp, value: value)
+                return atom(.cmp(key: key, op: infixOp, value: value))
             }
 
             // Legacy colon syntax: `key:value`, `key:>=N`, `key:v1,v2`.
@@ -636,14 +739,13 @@ enum LocalQueryEngine {
                         }
                     }
                     if values.count > 1 {
-                        return .inList(negated: negated, key: key, values: values)
+                        return atom(.inList(key: key, values: values, negated: false))
                     }
                 }
-                return .cmp(negated: negated, key: key, op: op, value: value)
+                return atom(.cmp(key: key, op: op, value: value))
             }
 
-            // Bareword with no operator (including the JQL keyword
-            // grammar) — dropped silently, same as Rust.
+            // Bareword with no operator — dropped silently, same as Rust.
             return nil
         }
 
@@ -739,20 +841,47 @@ enum LocalQueryEngine {
             }
             return out.filter { !$0.isEmpty }
         }
+
+        /// Mirror of `parse_paren_value_list` (query.rs) / web
+        /// `parseParenValueList` — `(a, b, c)` for `IN (…)` / `NOT IN (…)`.
+        /// Tolerates missing parens (returns an empty list) so malformed
+        /// input never traps; an empty `IN ()` yields `[]` (matches
+        /// nothing on positive IN, everything on NOT IN).
+        mutating func parseParenValueList() -> [String] {
+            var out: [String] = []
+            guard peek == .lparen else { return out }
+            pos += 1
+            loop: while pos < tokens.count {
+                switch tokens[pos].tok {
+                case .rparen:
+                    pos += 1
+                    break loop
+                case .comma:
+                    pos += 1
+                case .word, .quoted:
+                    if let v = parseValue() { out.append(v) }
+                default:
+                    break loop
+                }
+            }
+            return out
+        }
     }
 
-    /// Parse a DSL string into the flat-AND clause list the local
-    /// matcher evaluates. Gated by the shared conformance fixture —
-    /// every supported shape must match Rust's `parse_query` +
-    /// `block_matches` exactly.
+    /// Parse a DSL string into the `BoolExpr` tree the local matcher
+    /// evaluates. Gated by the shared conformance fixture — every
+    /// supported shape must match Rust's `parse_query` + `block_matches`
+    /// exactly.
     static func parseSimpleDsl(_ dsl: String) -> SimpleDsl {
         let (tokens, bytes) = tokenizeDsl(dsl)
         var parser = DslParser(tokens: tokens, bytes: bytes)
-        let clauses = parser.parseClauses()
+        // Empty / all-dropped input → the identity `.and([])` (match-all),
+        // mirroring Rust `parse_or().unwrap_or_default()`.
+        let expr = parser.parseOr() ?? .and([])
         // Same top-level sequencing as Rust `parse_query`: the sort is
         // parsed at wherever expression parsing stopped.
         let sort = parser.parseOrderBy()
-        return SimpleDsl(kind: parser.kind, clauses: clauses, sort: sort)
+        return SimpleDsl(kind: parser.kind, expr: expr, sort: sort)
     }
 
     /// Per-block evaluation context: the parsed block enriched with the
@@ -896,11 +1025,40 @@ enum LocalQueryEngine {
         return lexicographic(a.lowercased(), b.lowercased())
     }
 
+    /// SQL `LIKE` matcher — mirror of `like_matches` (query.rs) /
+    /// `likeMatches` (query-language.ts). `%` → any run, `_` → exactly
+    /// one char; all other regex metacharacters escaped to literals;
+    /// anchored full-string match, ASCII case-insensitive. A malformed
+    /// pattern (regex compile failure) degrades to "no match", never
+    /// throws.
+    static func likeMatches(_ actual: String, _ pattern: String) -> Bool {
+        var out = "^"
+        for ch in pattern {
+            switch ch {
+            case "%": out += ".*"
+            case "_": out += "."
+            case ".", "+", "*", "?", "(", ")", "|", "[", "]", "{", "}", "^", "$", "\\":
+                out += "\\"
+                out.append(ch)
+            default:
+                out.append(ch)
+            }
+        }
+        out += "$"
+        guard let re = try? NSRegularExpression(
+            pattern: out, options: [.caseInsensitive]
+        ) else { return false }
+        let range = NSRange(actual.startIndex..<actual.endIndex, in: actual)
+        return re.firstMatch(in: actual, options: [], range: range) != nil
+    }
+
     /// Mirror of `apply_op` (query.rs) for the local op subset.
     static func applyOp(_ actual: String, _ op: SimpleDsl.Op, _ expected: String) -> Bool {
         switch op {
         case .eq: return actual.lowercased() == expected.lowercased()
         case .ne: return actual.lowercased() != expected.lowercased()
+        case .like: return likeMatches(actual, expected)
+        case .notLike: return !likeMatches(actual, expected)
         case .gt: return compareValues(actual, expected) == .orderedDescending
         case .lt: return compareValues(actual, expected) == .orderedAscending
         case .gte: return compareValues(actual, expected) != .orderedAscending
@@ -957,6 +1115,8 @@ enum LocalQueryEngine {
     /// (`count:3` matches `3.0`, `done:true` matches `True`).
     static func applyOpTyped(_ actual: String, _ op: SimpleDsl.Op, _ expected: String, _ vt: String) -> Bool {
         switch op {
+        case .like: return likeMatches(actual, expected)
+        case .notLike: return !likeMatches(actual, expected)
         case .eq: return compareValuesTyped(actual, expected, vt) == .orderedSame
         case .ne: return compareValuesTyped(actual, expected, vt) != .orderedSame
         case .gt: return compareValuesTyped(actual, expected, vt) == .orderedDescending
@@ -966,19 +1126,40 @@ enum LocalQueryEngine {
         }
     }
 
-    /// Mirror of `pred_matches` (query.rs): `cmp` routes to the per-key
-    /// matcher; `inList` is OR over per-value Eq through the same
-    /// matcher (so `status:a,b` ≡ `tag-in:`-style membership exactly).
-    static func clauseMatches(
-        _ clause: SimpleDsl.Clause,
+    /// Mirror of `eval_expr` (query.rs) / `evalExpr` (query-language.ts):
+    /// walk the `BoolExpr` tree, short-circuiting. Empty `.and([])` is the
+    /// identity (matches everything); `.or([])` matches nothing (the
+    /// parser never produces one).
+    static func evalExpr(
+        _ expr: SimpleDsl.BoolExpr,
         ctx: BlockContext,
         propertyTypes: [String: String] = [:]
     ) -> Bool {
-        switch clause {
-        case .cmp(let negated, let key, let op, let value):
-            let matched = cmpMatches(key: key, op: op, value: value, ctx: ctx, propertyTypes: propertyTypes)
-            return negated ? !matched : matched
-        case .inList(let negated, let key, let values):
+        switch expr {
+        case .and(let args):
+            return args.allSatisfy { evalExpr($0, ctx: ctx, propertyTypes: propertyTypes) }
+        case .or(let args):
+            return args.contains { evalExpr($0, ctx: ctx, propertyTypes: propertyTypes) }
+        case .not(let inner):
+            return !evalExpr(inner, ctx: ctx, propertyTypes: propertyTypes)
+        case .atom(let pred):
+            return predMatches(pred, ctx: ctx, propertyTypes: propertyTypes)
+        }
+    }
+
+    /// Mirror of `pred_matches` (query.rs): `cmp` routes to the per-key
+    /// matcher; `inList` is OR over per-value Eq through the same matcher
+    /// (so `status:a,b` ≡ `status IN (a,b)`), with `negated` flipping
+    /// for `NOT IN`.
+    static func predMatches(
+        _ pred: SimpleDsl.Predicate,
+        ctx: BlockContext,
+        propertyTypes: [String: String] = [:]
+    ) -> Bool {
+        switch pred {
+        case .cmp(let key, let op, let value):
+            return cmpMatches(key: key, op: op, value: value, ctx: ctx, propertyTypes: propertyTypes)
+        case .inList(let key, let values, let negated):
             let matched = values.contains {
                 cmpMatches(key: key, op: .eq, value: $0, ctx: ctx, propertyTypes: propertyTypes)
             }
@@ -1065,7 +1246,7 @@ enum LocalQueryEngine {
         ctx: BlockContext,
         propertyTypes: [String: String] = [:]
     ) -> Bool {
-        dsl.clauses.allSatisfy { clauseMatches($0, ctx: ctx, propertyTypes: propertyTypes) }
+        evalExpr(dsl.expr, ctx: ctx, propertyTypes: propertyTypes)
     }
 
     /// Extract a Property page's declared `value_type` from its YAML

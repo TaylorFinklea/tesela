@@ -127,7 +127,7 @@ enum SavedViewLogic {
         }
         let parsed = LocalQueryEngine.parseSimpleDsl(trimmed)
         let mentionsKind = trimmed.lowercased().contains("kind:")
-        if parsed.clauses.isEmpty && parsed.sort == nil && !mentionsKind {
+        if LocalQueryEngine.isEmptyExpr(parsed.expr) && parsed.sort == nil && !mentionsKind {
             return "No filters recognized in “\(trimmed)” — use key:value "
                 + "filters like status:todo, tag:project, -has:scheduled"
         }
