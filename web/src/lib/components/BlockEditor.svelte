@@ -458,6 +458,7 @@
   import "$lib/editor/commands/widget";
   import "$lib/editor/commands/property";
   import { assignChords } from "$lib/chord-keys";
+  import { buildSlashTree } from "$lib/editor/slash-tree";
 
   // `i` is reserved as the chord-menu's filter trigger (see ChordMenu).
   // Reserving here keeps the assigner from handing it out to any node, so
@@ -958,31 +959,6 @@
    *   q Query        w Widget         c Collection   m Template
    */
   /**
-   * Assign unique single-character chord keys to a list of choices. For
-   * each choice, try preferred-letter aliases first ("doing"→`i` for
-   * in-progress, "in-review"→`r`), then walk the choice's letters in
-   * order and pick the first one not yet claimed. Falls back to digits
-   * 1-9 when the choice has no unclaimed letters. The user's Status
-   * property choices come from a config file (`notes/status.md`) so
-   * collisions like {done, dude} are entirely possible.
-   */
-  function assignStatusKeys(choices: string[]): string[] {
-    const used = new Set<string>();
-    const aliases: Record<string, string> = { doing: "i", "in-review": "r" };
-    return choices.map((c) => {
-      const lower = c.toLowerCase();
-      const candidates: string[] = [];
-      if (aliases[lower]) candidates.push(aliases[lower]);
-      for (const ch of lower) if (/[a-z]/.test(ch)) candidates.push(ch);
-      for (let i = 1; i <= 9; i++) candidates.push(String(i));
-      for (const k of candidates) {
-        if (!used.has(k)) { used.add(k); return k; }
-      }
-      return "?"; // unreachable — 9 digits + 26 letters covers any realistic count
-    });
-  }
-
-  /**
    * Phase 10.4 — write a `key:: value` continuation onto the current block,
    * stripping the `/`-trigger text. Used by the `/p` chord submenu so each
    * property pick lands a real key/value pair instead of forcing the user
@@ -1405,25 +1381,24 @@
   }
 
   function getSlashTree(): ChordNode[] {
-    // Phase 12.2 — slash tree is one flat list:
-    //   1. Registry-backed slash leaves, merged ahead of legacy builtins and
-    //      deduped by `slashKey` so migrated verbs cannot silently fall back.
-    //   2. Built-in insertion verbs that have not migrated yet.
-    //   3. Hoisted tag-properties for the focused block (Status, Priority,
-    //      Deadline, …) so the user picks them in one chord rather than
-    //      `/p > X`. Their preferred key comes from the Property page's
-    //      `chord_key:`; collisions with built-ins fall back to first-letter
-    //      and surface a "taken by …" warning in the menu.
-    //   4. `/p` "All properties" — discovery surface for every property in
-    //      the registry, including ones not on this block's tags.
-    //   5. Hardcoded `/s Status` ONLY when the block has no tag-properties,
-    //      so untagged blocks still get a one-chord status setter.
-    const defs = propertyDefs ?? [];
-    const choices = statusChoices ?? ["todo", "doing", "done"];
+    // Phase C — pared slash tree: the 8 insertion verbs (from the registry's
+    // `slash` surface) + ONE context-aware `Properties` entry whose children
+    // come from `getPropertyChildren()` (the focused block's tag
+    // PropertyDefinitions, or a "Manual key:: value" leaf when untyped).
+    //
+    // Dropped vs. Phase 12.2:
+    //   - hoisted top-level tag-properties (Status, Priority, …)
+    //   - hardcoded `/s Status` fallback for untagged blocks
+    //   - the top-level `assignChords` pass (collisions no longer surface as
+    //     "taken by Task" warnings at the root — getPropertyChildren still
+    //     runs assignChords internally for its own children)
+    //
+    // The `New widget` verb no longer appears in slash; widget moved to the
+    // leader `new` bucket (set via `surfaces` in editor/commands/widget.ts).
     const editor = buildSlashContext();
     const baseCtx = buildSlashCommandContext(editor);
 
-    const registryLeaves: ChordNode[] = commandRegistry
+    const verbLeaves: ChordNode[] = commandRegistry
       .availableOn('slash', baseCtx)
       .filter((cmd) => cmd.slashKey)
       .map((cmd) => ({
@@ -1436,57 +1411,10 @@
         hint: cmd.glyph,
       }));
 
-    const fixedBuiltins: ChordNode[] = [
-      { key: "p", label: "All properties", children: getPropertyChildren() },
-    ];
-
-    const claimedSlashKeys = new Set<string>();
-    const builtins: ChordNode[] = [];
-    for (const node of [...registryLeaves, ...fixedBuiltins]) {
-      if (claimedSlashKeys.has(node.key)) continue;
-      claimedSlashKeys.add(node.key);
-      builtins.push(node);
-    }
-
-    // Single assignChords pass with builtins pre-claimed so a tag-property
-    // declaring `chord_key: t` (would shadow Task) loses gracefully and gets
-    // a "taken by Task" warning in the rendered menu.
-    const items = [
-      ...builtins.map((b) => ({ name: b.label, preferred: b.key })),
-      ...defs.map((d) => ({ name: d.name, preferred: d.chord_key })),
-    ];
-    const all = assignChords(items, { reserved: SLASH_RESERVED });
-
-    const builtinNodes: ChordNode[] = builtins.map((b, i) => ({ ...b, key: all[i].key }));
-    const propNodes: ChordNode[] = defs.map((def, i) => {
-      const a = all[builtins.length + i];
-      const node = buildPropertyNode(def, a.key);
-      if (a.conflictWith) node.conflictWith = a.conflictWith;
-      return node;
+    return buildSlashTree({
+      verbLeaves,
+      propertyChildren: getPropertyChildren(),
     });
-
-    // Untagged-block fallback: keep the legacy `/s Status` so plain blocks
-    // (without #Task) can still set a status quickly. When the block IS
-    // tagged, Status appears in propNodes and this fallback is skipped.
-    const statusKeys = assignStatusKeys(choices);
-    const fallbackStatus: ChordNode[] = defs.length === 0
-      ? [{
-          key: "s",
-          label: "Status",
-          children: choices.map((s, i) => ({
-            key: statusKeys[i],
-            label: s.charAt(0).toUpperCase() + s.slice(1).replace(/-/g, " "),
-            action: () => {
-              const liveEditor = buildSlashContext();
-              liveEditor.setProperty("status", s);
-              liveEditor.finish(s);
-            },
-            hint: `status:: ${s}`,
-          })),
-        }]
-      : [];
-
-    return [...builtinNodes, ...propNodes, ...fallbackStatus];
   }
 
 
