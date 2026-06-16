@@ -1,6 +1,15 @@
-# Command-model redesign — design (DRAFT, pending Taylor sign-off via interactive mockup)
+# Command-model redesign — design (APPROVED 2026-06-16)
 
-Status: brainstorming/design. **No implementation until Taylor approves the mockup.**
+Status: **APPROVED** by Taylor ("good to go", 2026-06-16) after reviewing the v2 interactive
+mockup. Ready for an implementation plan. **No production code until the PLAN is reviewed.**
+
+## Decisions locked (2026-06-16)
+- **Insert-mode leader chord = `Ctrl+,`** (rebindable via the L3 override layer).
+- **Leader buckets = `g` go-to · `w` windows · `b` buffers · `n` new · `i` insert · `p` properties · `v` views · `a` actions · `t` toggle · `,` config**, + leaves `SPC SPC` palette / `SPC /` station.
+- **`:` colon narrows to exact-verbs-only** (no note interleave; that's ⌘K). Fold the hand-duplicated colon builtins (peek/graph) back into the registry.
+- **Slash = type-to-filter (Logseq) + `Ctrl+letter` accelerators** (see §1).
+- **Leader layout = wide multi-column which-key grid** (see §2).
+
 Grounded in the command-surface map (workflow `wf_37efdece-251`): all four surfaces
 are filters over ONE `commandRegistry` (`web/src/lib/command-registry.svelte.ts`);
 the redesign is mostly a per-surface *ownership* field + a leader-bucket model +
@@ -71,11 +80,10 @@ type-to-filter) — matching the references (which-key = chords; M-x/palette = t
 
 ## 3. Insert-mode invocation (NEW — doesn't exist today)
 
-A Ctrl chord opens the SAME leader overlay without leaving insert mode (reuses
-`openLeader()`; the `Ctrl+,` in ChordMenu.svelte:11 is a dead comment). **Sub-decision
-for Taylor:** which chord — `Ctrl+,` (matches the dead comment's intent) / `Ctrl+Space`
-(but may clash with autocomplete) / `Ctrl+;`. The `i` filter key is reserved INSIDE the
-menu, not the opener.
+**`Ctrl+,`** opens the SAME leader overlay without leaving insert mode (reuses
+`openLeader()`; the `Ctrl+,` in ChordMenu.svelte:11 is a dead comment to make real).
+Rebindable via the L3 override layer. The `i` filter key is reserved INSIDE the menu, not
+the opener; confirm `Ctrl+,` doesn't collide with a cm-editor/vim insert binding during impl.
 
 ## 4. Intentional overlap (examples)
 
