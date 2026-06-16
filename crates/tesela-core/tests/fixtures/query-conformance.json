@@ -2335,6 +2335,421 @@
         "noteType": null
       },
       "expect": false
+    },
+    {
+      "name": "jqladv_prec_or_branch",
+      "dsl": "tag = x OR status = todo AND points > 5",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "todo",
+          "points": "10"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_prec_or_tagbranch",
+      "dsl": "tag = x OR status = todo AND points > 5",
+      "block": {
+        "text": "row",
+        "tags": [
+          "x"
+        ],
+        "properties": {
+          "status": "done",
+          "points": "2"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_prec_neither",
+      "dsl": "tag = x OR status = todo AND points > 5",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "done",
+          "points": "2"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jqladv_nested_parens",
+      "dsl": "((tag = a))",
+      "block": {
+        "text": "row",
+        "tags": [
+          "a"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_de_morgan_true",
+      "dsl": "NOT (tag = a OR tag = b)",
+      "block": {
+        "text": "row",
+        "tags": [
+          "c"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_de_morgan_false",
+      "dsl": "NOT (tag = a OR tag = b)",
+      "block": {
+        "text": "row",
+        "tags": [
+          "a"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jqladv_double_not_true",
+      "dsl": "NOT NOT tag = a",
+      "block": {
+        "text": "row",
+        "tags": [
+          "a"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_double_not_false",
+      "dsl": "NOT NOT tag = a",
+      "block": {
+        "text": "row",
+        "tags": [
+          "b"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jqladv_minus_neg",
+      "dsl": "-tag:a",
+      "block": {
+        "text": "row",
+        "tags": [
+          "b"
+        ],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_in_quoted",
+      "dsl": "status IN (\"to do\", done)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "to do"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_like_literal_dot_match",
+      "dsl": "text LIKE \"a.b%\"",
+      "block": {
+        "text": "a.bc",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_like_literal_dot_miss",
+      "dsl": "text LIKE \"a.b%\"",
+      "block": {
+        "text": "axbc",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jqladv_right_paren_match",
+      "dsl": "tag = a AND (status = todo OR status = doing)",
+      "block": {
+        "text": "row",
+        "tags": [
+          "a"
+        ],
+        "properties": {
+          "status": "doing"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_right_paren_miss",
+      "dsl": "tag = a AND (status = todo OR status = doing)",
+      "block": {
+        "text": "row",
+        "tags": [
+          "a"
+        ],
+        "properties": {
+          "status": "done"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jqladv_mixed_legacy_infix_match",
+      "dsl": "tag:task AND points > 5",
+      "block": {
+        "text": "row",
+        "tags": [
+          "task"
+        ],
+        "properties": {
+          "points": "10"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_mixed_legacy_infix_miss",
+      "dsl": "tag:task AND points > 5",
+      "block": {
+        "text": "row",
+        "tags": [
+          "task"
+        ],
+        "properties": {
+          "points": "2"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jqladv_is_not_null_and_ne",
+      "dsl": "status IS NOT NULL AND status != done",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "todo"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_is_not_null_and_ne_eq",
+      "dsl": "status IS NOT NULL AND status != done",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "done"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jqladv_is_not_null_and_ne_missing",
+      "dsl": "status IS NOT NULL AND status != done",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jqladv_not_in_nonmember",
+      "dsl": "points NOT IN (2, 3)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "points": "10"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_not_in_member",
+      "dsl": "points NOT IN (2, 3)",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "points": "2"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jqladv_empty_in",
+      "dsl": "status IN ()",
+      "block": {
+        "text": "row",
+        "tags": [],
+        "properties": {
+          "status": "todo"
+        },
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jqladv_like_wildcard_all",
+      "dsl": "text LIKE \"%\"",
+      "block": {
+        "text": "anything here",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_like_hyphen_lit",
+      "dsl": "text LIKE \"a-b%\"",
+      "block": {
+        "text": "a-b cd",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_like_hyphen_miss",
+      "dsl": "text LIKE \"a-b%\"",
+      "block": {
+        "text": "axb cd",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": false
+    },
+    {
+      "name": "jqladv_like_amp_lit",
+      "dsl": "text LIKE \"r&d%\"",
+      "block": {
+        "text": "r&d team",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_like_hash_lit",
+      "dsl": "text LIKE \"a#b\"",
+      "block": {
+        "text": "a#b",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
+    },
+    {
+      "name": "jqladv_like_tilde_lit",
+      "dsl": "text LIKE \"~x%\"",
+      "block": {
+        "text": "~x marks",
+        "tags": [],
+        "properties": {},
+        "isHeading": false,
+        "onDailyPage": false,
+        "noteType": null
+      },
+      "expect": true
     }
   ]
 }
