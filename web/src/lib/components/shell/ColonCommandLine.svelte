@@ -48,7 +48,7 @@
   let highlightedIdx = $state(0);
 
   // The context-filtered registry of verbs, computed once per open.
-  const allCommands = $derived.by(() => (open ? commandRegistry.available(ctx) : []));
+  const allCommands = $derived.by(() => (open ? commandRegistry.availableOn('colon', ctx) : []));
 
   // Built-in non-registry verbs (peek, graph) surface as autocomplete rows too.
   const BUILTINS = [
