@@ -85,6 +85,71 @@ struct BlockRow: View {
         properties.first(where: { $0.key == "scheduled" })?.value
     }
 
+    // ── Task status + priority (web parity) ─────────────────────────────
+    // Mirrors the web client so a task looks the same across web + mobile:
+    // a status GLYPH (shape + color by status) beside the bullet — NOT a
+    // checkbox — plus a priority FLAG in the sub-row. Web rules:
+    // BlockOutliner.svelte statusChar/statusColorClass (857-873) + priority.ts.
+    // The status/priority colors are fixed Tailwind/brand hexes on web (theme-
+    // independent), so we match them as `Color(hex:)` constants, not theme tokens.
+
+    /// `status::` value (lowercased), or nil when unset.
+    private var statusValue: String? {
+        let v = properties.first(where: { $0.key.lowercased() == "status" })?
+            .value.trimmingCharacters(in: .whitespaces).lowercased()
+        return (v?.isEmpty == false) ? v : nil
+    }
+
+    /// Status glyph — web statusChar(): a Task with status unset shows the
+    /// `○` placeholder (web's shouldShowStatus placeholder).
+    private var statusGlyph: String {
+        switch statusValue ?? "" {
+        case "done", "completed": return "✓"
+        case "doing", "in-review": return "◑"
+        case "todo": return "○"
+        case "canceled", "cancelled": return "✗"
+        case "blocked": return "⧖"
+        case "paused": return "⏸"
+        case "": return "○"
+        default: return "·"
+        }
+    }
+
+    /// Status color — web statusColorClass(), same fixed Tailwind hexes.
+    private var statusGlyphColor: Color {
+        switch statusValue ?? "" {
+        case "done", "completed": return Color(hex: 0x34D399)            // emerald-400
+        case "doing", "in-review": return Color(hex: 0x60A5FA)           // blue-400
+        case "todo": return Color(hex: 0xFBBF24)                          // amber-400
+        case "canceled", "cancelled", "blocked": return Color(hex: 0xF87171) // red-400
+        case "paused": return theme.fgSubtle
+        default: return theme.fgFaint
+        }
+    }
+
+    /// Priority level 1–3 from `priority::` (web priority.ts); p4 / low /
+    /// none / unset → nil → no flag (matches web).
+    private var priorityLevel: Int? {
+        guard let v = properties.first(where: { $0.key.lowercased() == "priority" })?
+            .value.trimmingCharacters(in: .whitespaces).lowercased(), !v.isEmpty
+        else { return nil }
+        switch v {
+        case "p1", "critical", "urgent", "1": return 1
+        case "p2", "high", "2": return 2
+        case "p3", "medium", "med", "3": return 3
+        default: return nil
+        }
+    }
+
+    /// Priority flag color — web priority.ts FLAGS (P1 red, P2 amber, P3 blue).
+    private func priorityColor(_ level: Int) -> Color {
+        switch level {
+        case 1: return Color(hex: 0xEB5C58)
+        case 2: return Color(hex: 0xE8A33D)
+        default: return Color(hex: 0x6B9AE0)
+        }
+    }
+
     /// Block properties to render as right-edge chips — everything except the
     /// system/collection keys, the date/recurrence props that already get
     /// dedicated chips, and internal keys. Mirrors the web's hidden-key sets
@@ -93,7 +158,7 @@ struct BlockRow: View {
     private var displayProperties: [BlockProperty] {
         let hidden: Set<String> = [
             "query", "view", "views", "active_view", "collection",
-            "scheduled", "deadline", "recurring", "status",
+            "scheduled", "deadline", "recurring", "status", "priority",
             "id", "collapsed", "color",
         ]
         return properties.filter {
@@ -129,8 +194,17 @@ struct BlockRow: View {
             bullet
             VStack(alignment: .leading, spacing: 4) {
                 content
-                if (!tags.isEmpty || recurringValue != nil || deadlineValue != nil || scheduledValue != nil || !displayProperties.isEmpty) && !isEditing {
+                if (!tags.isEmpty || priorityLevel != nil || recurringValue != nil || deadlineValue != nil || scheduledValue != nil || !displayProperties.isEmpty) && !isEditing {
                     HStack(spacing: 4) {
+                        // Priority flag (web parity: ⚑ + P1/P2/P3, priority-colored,
+                        // in the sub-row — NOT tinting the marker). P4/low/unset → hidden.
+                        if let level = priorityLevel {
+                            HStack(spacing: 2) {
+                                Text("⚑").font(.system(size: 10))
+                                Text("P\(level)").font(.system(size: 11, weight: .semibold))
+                            }
+                            .foregroundStyle(priorityColor(level))
+                        }
                         ForEach(tags, id: \.self) { tag in
                             TagChip(value: tag)
                         }
@@ -227,7 +301,17 @@ struct BlockRow: View {
     private var bullet: some View {
         switch kind {
         case .task:
-            taskCheckbox
+            // Web parity: a neutral bullet PLUS a colored status glyph beside
+            // it (web keeps the dot and adds the status indicator — there is
+            // NO checkbox). Tap the glyph to toggle done.
+            HStack(alignment: .top, spacing: 4) {
+                Text("·")
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(theme.fgFaint)
+                    .frame(width: 6, alignment: .center)
+                statusMarker
+            }
+            .padding(.top, 2)
         case .project:
             Text("·")
                 .font(.system(size: 12, design: .monospaced))
@@ -243,23 +327,21 @@ struct BlockRow: View {
         }
     }
 
-    private var taskCheckbox: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 3)
-                .stroke(theme.typeTask, lineWidth: 1.5)
-                .frame(width: 14, height: 14)
-            if isDone {
-                RoundedRectangle(cornerRadius: 3)
-                    .fill(theme.typeTask)
-                    .frame(width: 14, height: 14)
-                Icon(name: .check, size: 10, lineWidth: 2.5)
-                    .foregroundStyle(theme.bg)
+    /// The task status marker — web's status glyph (shape + color by status),
+    /// replacing the old binary checkbox so a task looks the same as on web
+    /// and reflects todo/doing/done/blocked/… not just done. Tap toggles done
+    /// (v1 parity; web's full status cycle is a follow-up). Unset status on a
+    /// task shows the dimmed `○` placeholder.
+    private var statusMarker: some View {
+        Text(statusGlyph)
+            .font(.system(size: 12, design: .monospaced))
+            .foregroundStyle(statusGlyphColor)
+            .opacity(statusValue == nil ? 0.5 : 0.9)
+            .frame(width: 14, alignment: .center)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                if kind == .task { onToggleTask?() }
             }
-        }
-        .padding(.top, 4)
-        .onTapGesture {
-            if kind == .task { onToggleTask?() }
-        }
     }
 
     // ── Content (body text with inline parsing OR a TextField) ──────────
