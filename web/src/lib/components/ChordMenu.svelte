@@ -57,7 +57,7 @@
 
 <script lang="ts">
   import { onMount } from "svelte";
-  import { slashFilter } from "$lib/editor/slash-filter";
+  import { flattenTree, flattenedSlashFilter } from "$lib/editor/slash-filter";
 
   let {
     tree,
@@ -138,42 +138,30 @@
     return level;
   });
 
-  /**
-   * Recursive flattening for search mode. Walks every descendant of the
-   * current breadcrumb level so typing "dude" surfaces `Status › Dude`
-   * (a value buried two levels deep), not just top-level matches. Each
-   * entry carries its parent path so we can render a "Path › Label"
-   * label and, on select, descend into groups or fire leaf actions
-   * directly (skipping intermediate breadcrumb hops).
-   */
+  // FlatEntry === FlatMatch<ChordNode>. flattenTree (slash-filter.ts) walks
+  // every descendant of the current level so a value buried two levels deep
+  // (Status › Dude) becomes one searchable entry carrying its "Path › Label".
   type FlatEntry = { node: ChordNode; path: string[]; fullLabel: string };
-  function flattenForSearch(level: ChordNode[], path: string[] = []): FlatEntry[] {
-    const out: FlatEntry[] = [];
-    for (const node of level) {
-      const fullLabel = path.length === 0 ? node.label : `${path.join(" › ")} › ${node.label}`;
-      out.push({ node, path: [...path], fullLabel });
-      if (node.children) out.push(...flattenForSearch(node.children, [...path, node.label]));
-    }
-    return out;
-  }
   let allEntries = $derived.by((): FlatEntry[] => {
     if (!searchOpen) return [];
-    return flattenForSearch(currentLevel);
+    return flattenTree(currentLevel);
   });
   let filteredEntries = $derived.by((): FlatEntry[] => {
     if (!searchOpen) return [];
-    // Phase C — filterMode (slash menu) uses slashFilter (fuzzy/prefix)
-    // on the CURRENT level only. No descendant flattening: descending into
-    // a group (Properties ▸ Status) is a deliberate Enter/Ctrl+letter act,
-    // and the user filters the new level separately. Non-filterMode (leader)
-    // keeps the legacy flatten + substring match.
+    // filterMode (slash menu) — Logseq-style: empty query shows the current
+    // level (buckets/leaves) as a browsable list; once the user types, fuzzy-
+    // match across the FULL flattened tree (every descendant of the current
+    // level) so `/p1` jumps straight to a deep leaf (Properties › Priority › p1)
+    // without manual descent. The path renders as a "Path › Label" breadcrumb
+    // and selecting a leaf fires its action directly (handleSelectEntry).
     if (filterMode) {
-      return slashFilter(currentLevel, searchValue).map((node) => ({
-        node,
-        path: [],
-        fullLabel: node.label,
-      }));
+      const q = searchValue.trim();
+      if (!q) {
+        return currentLevel.map((node) => ({ node, path: [], fullLabel: node.label }));
+      }
+      return flattenedSlashFilter(currentLevel, q);
     }
+    // Non-filterMode (leader) keeps the legacy flatten + substring match.
     const q = searchValue.trim().toLowerCase();
     if (!q) return allEntries;
     return allEntries.filter((e) => e.fullLabel.toLowerCase().includes(q));
