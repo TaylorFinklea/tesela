@@ -2830,11 +2830,22 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // then each continuation line indented two spaces deeper
             // than the bullet — matching what `parseBlocks` expects so
             // the body round-trips losslessly.
-            let bodyLines = block.displayText.components(separatedBy: "\n")
-            let firstLine = bodyLines.first ?? ""
+            // Drop any property-shaped (`key:: value`) line from the editable
+            // body — `renderProperties` below is the SOLE emitter of property
+            // lines, sourced from the authoritative `block.properties`. Without
+            // this, a body polluted with property lines (a task's status::/tags::
+            // folded into rawText by a whole-body edit, or a doubled engine
+            // materialization) re-emits them on every render and they stack up
+            // ("Task / status / tags / status / tags"). parseBlocks routes every
+            // key:: line into block.properties, so nothing is lost; already-
+            // doubled blocks self-heal on the next render/writeback.
+            let proseLines = block.displayText
+                .components(separatedBy: "\n")
+                .filter { parseProperty($0.trimmingCharacters(in: .whitespaces)) == nil }
+            let firstLine = proseLines.first ?? ""
             out.append("\(indent)- \(firstLine)\(bidSuffix)")
             let continuationIndent = "\(indent)  "
-            for line in bodyLines.dropFirst() {
+            for line in proseLines.dropFirst() {
                 out.append("\(continuationIndent)\(line)")
             }
 
@@ -2850,7 +2861,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// representation without dropping user-set keys (priority, due,
     /// etc.).
     private func renderProperties(for block: Block, indent: String) -> [String] {
-        var merged = block.properties
+        // Dedup by key (first wins): a block whose `properties` were parsed from
+        // an already-doubled body (e.g. `status::` appearing twice) would
+        // otherwise render the duplicate. Keeping each key once makes the render
+        // single + self-healing once renderBody stops re-feeding the body lines.
+        var seenKeys = Set<String>()
+        var merged = block.properties.filter { seenKeys.insert($0.key.lowercased()).inserted }
         var tagNames = merged
             .filter { $0.key.lowercased() == "tags" }
             .flatMap { $0.value.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) } }

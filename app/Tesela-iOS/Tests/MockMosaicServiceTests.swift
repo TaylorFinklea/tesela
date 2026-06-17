@@ -256,6 +256,39 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertEqual(service.testableRenderBody(from: blocks), body)
     }
 
+    /// Regression (build 17 feedback): making a Task duplicated its property
+    /// lines — renderBody emitted the body's `status::`/`tags::` lines AND
+    /// renderProperties re-emitted them, so each save→render stacked another
+    /// copy ("Task / status / tags / status / tags"). renderBody now drops
+    /// property-shaped lines from the body (renderProperties is the sole
+    /// emitter) and renderProperties dedups by key — so a body already polluted
+    /// with DOUBLED properties collapses to one of each, a user-set `priority::`
+    /// survives, and a re-render is idempotent (no further accumulation).
+    func testRenderBodyCollapsesDuplicatedTaskProperties() {
+        let body = """
+        - Task <!-- bid:6AE83FC1-9EE9-4626-9EFE-58E0D83E7176 -->
+          status:: todo
+          tags:: Task
+          priority:: high
+          status:: todo
+          tags:: Task
+        """
+
+        let service = MockMosaicService()
+        let blocks = service.testableParseBlocks(from: body, noteId: "dup")
+        let rendered = service.testableRenderBody(from: blocks)
+
+        func count(_ needle: String) -> Int { rendered.components(separatedBy: needle).count - 1 }
+        XCTAssertEqual(count("status:: todo"), 1, "status emitted exactly once: \(rendered)")
+        XCTAssertEqual(count("tags:: Task"), 1, "tags emitted exactly once: \(rendered)")
+        XCTAssertEqual(count("priority:: high"), 1, "user property survives: \(rendered)")
+        XCTAssertEqual(count("Task <!--"), 1, "title bullet rendered once")
+
+        // Idempotent: re-parsing + re-rendering does not re-accumulate.
+        let reblocks = service.testableParseBlocks(from: rendered, noteId: "dup")
+        XCTAssertEqual(service.testableRenderBody(from: reblocks), rendered)
+    }
+
     /// Blocks separated only by blank lines should get correct line numbers.
     func testParseBlocksWithBlankLines() {
         let body = """
