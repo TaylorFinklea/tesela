@@ -100,31 +100,13 @@ struct BlockRow: View {
         return (v?.isEmpty == false) ? v : nil
     }
 
-    /// Status glyph — web statusChar(): a Task with status unset shows the
-    /// `○` placeholder (web's shouldShowStatus placeholder).
-    private var statusGlyph: String {
-        switch statusValue ?? "" {
-        case "done", "completed": return "✓"
-        case "doing", "in-review": return "◑"
-        case "todo": return "○"
-        case "canceled", "cancelled": return "✗"
-        case "blocked": return "⧖"
-        case "paused": return "⏸"
-        case "": return "○"
-        default: return "·"
-        }
-    }
-
-    /// Status color — web statusColorClass(), same fixed Tailwind hexes.
-    private var statusGlyphColor: Color {
-        switch statusValue ?? "" {
-        case "done", "completed": return Color(hex: 0x34D399)            // emerald-400
-        case "doing", "in-review": return Color(hex: 0x60A5FA)           // blue-400
-        case "todo": return Color(hex: 0xFBBF24)                          // amber-400
-        case "canceled", "cancelled", "blocked": return Color(hex: 0xF87171) // red-400
-        case "paused": return theme.fgSubtle
-        default: return theme.fgFaint
-        }
+    /// Marker COLOR (Todoist-style): status drives the marker SHAPE, priority
+    /// drives its color. Completion is ALWAYS green (not priority-colored);
+    /// otherwise the priority color (P1 red, P2 amber, P3 blue), or a neutral
+    /// gray when no priority is set.
+    private var markerColor: Color {
+        if let level = priorityLevel { return priorityColor(level) }
+        return Color(hex: 0x8A909C) // no priority → neutral gray
     }
 
     /// Priority level 1–3 from `priority::` (web priority.ts); p4 / low /
@@ -194,17 +176,8 @@ struct BlockRow: View {
             bullet
             VStack(alignment: .leading, spacing: 4) {
                 content
-                if (!tags.isEmpty || priorityLevel != nil || recurringValue != nil || deadlineValue != nil || scheduledValue != nil || !displayProperties.isEmpty) && !isEditing {
+                if (!tags.isEmpty || recurringValue != nil || deadlineValue != nil || scheduledValue != nil || !displayProperties.isEmpty) && !isEditing {
                     HStack(spacing: 4) {
-                        // Priority flag (web parity: ⚑ + P1/P2/P3, priority-colored,
-                        // in the sub-row — NOT tinting the marker). P4/low/unset → hidden.
-                        if let level = priorityLevel {
-                            HStack(spacing: 2) {
-                                Text("⚑").font(.system(size: 10))
-                                Text("P\(level)").font(.system(size: 11, weight: .semibold))
-                            }
-                            .foregroundStyle(priorityColor(level))
-                        }
                         ForEach(tags, id: \.self) { tag in
                             TagChip(value: tag)
                         }
@@ -327,21 +300,41 @@ struct BlockRow: View {
         }
     }
 
-    /// The task status marker — web's status glyph (shape + color by status),
-    /// replacing the old binary checkbox so a task looks the same as on web
-    /// and reflects todo/doing/done/blocked/… not just done. Tap toggles done
-    /// (v1 parity; web's full status cycle is a follow-up). Unset status on a
-    /// task shows the dimmed `○` placeholder.
+    /// The task status marker — a thick priority-colored circle (Todoist-style).
+    /// Status drives the SHAPE (todo = ring, doing = ring + center dot, done =
+    /// filled circle + centered check, blocked/cancelled/paused = ring + glyph);
+    /// priority drives the COLOR, except DONE which is always green. Tap toggles
+    /// done. The neutral bullet sits to its left (see `bullet`).
     private var statusMarker: some View {
-        Text(statusGlyph)
-            .font(.system(size: 12, design: .monospaced))
-            .foregroundStyle(statusGlyphColor)
-            .opacity(statusValue == nil ? 0.5 : 0.9)
-            .frame(width: 14, alignment: .center)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if kind == .task { onToggleTask?() }
+        ZStack {
+            switch statusValue ?? "" {
+            case "done", "completed":
+                Circle().fill(Color(hex: 0x34D399)) // done → always green
+                Image(systemName: "checkmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.white)
+            case "doing", "in-review":
+                Circle().strokeBorder(markerColor, lineWidth: 2.5)
+                Circle().fill(markerColor).frame(width: 6, height: 6)
+            case "canceled", "cancelled":
+                Circle().strokeBorder(markerColor, lineWidth: 2.5)
+                Text("✗").font(.system(size: 9, weight: .bold)).foregroundStyle(markerColor)
+            case "blocked":
+                Circle().strokeBorder(markerColor, lineWidth: 2.5)
+                Text("⧖").font(.system(size: 8)).foregroundStyle(markerColor)
+            case "paused":
+                Circle().strokeBorder(markerColor, lineWidth: 2.5)
+                Text("⏸").font(.system(size: 8)).foregroundStyle(markerColor)
+            default:
+                // todo, or status unset on a task
+                Circle().strokeBorder(markerColor, lineWidth: 2.5)
             }
+        }
+        .frame(width: 16, height: 16)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if kind == .task { onToggleTask?() }
+        }
     }
 
     // ── Content (body text with inline parsing OR a TextField) ──────────

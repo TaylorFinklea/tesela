@@ -34,6 +34,7 @@
   import { toggleBlockTag, getBlockTags, chipTags } from "$lib/block-tags";
   import type { DetectConfig, TagDetectSpec } from "$lib/task-tokens";
   import { tagColor } from "$lib/tag-color";
+  import { priorityFlag } from "$lib/priority";
   import { api } from "$lib/api-client";
   import {
     upsertOpForBlock,
@@ -853,25 +854,6 @@
     if (focusedIndex === null) return;
     onfocusedblockchange?.(visibleBlocks[focusedIndex] ?? null);
   });
-
-  function statusChar(s: string): string {
-    if (s === "done") return "✓";
-    if (s === "doing" || s === "in-review") return "◑";
-    if (s === "todo") return "○";
-    if (s === "canceled" || s === "cancelled") return "✗";
-    if (s === "blocked") return "⧖";
-    if (s === "paused") return "⏸";
-    return "·";
-  }
-
-  function statusColorClass(s: string): string {
-    if (s === "done") return "text-emerald-400/80";
-    if (s === "doing" || s === "in-review") return "text-blue-400/80";
-    if (s === "todo") return "text-amber-400/80";
-    if (s === "canceled" || s === "cancelled" || s === "blocked") return "text-red-400/70";
-    if (s === "paused") return "text-muted-foreground/70";
-    return "text-muted-foreground/60";
-  }
 
   function buildFullContent(updated: ParsedBlock[]): { full: string; bodyOnly: string } {
     const bodyLines = updated
@@ -2171,15 +2153,31 @@
         <!-- Status indicator (Logseq-style: between bullet and text). Only
              shown when status is set or any tag in the chain declares it. -->
         {#if shouldShowStatus(block)}
+          <!-- Task marker: a thick priority-colored circle (Todoist-style).
+               Status = shape (todo ring · doing ring+dot · done filled+check ·
+               blocked/cancelled/paused ring+glyph); priority = color, except
+               done which is always green. -->
+          {@const st = (block.properties.status ?? "").toLowerCase()}
+          {@const mcol = st === "done" || st === "completed" ? "#34D399" : (priorityFlag(block.properties.priority ?? "")?.color ?? "#8a909c")}
           <!-- svelte-ignore a11y_consider_explicit_label -->
           <button
-            class="shrink-0 pt-[10px] pr-1.5 cursor-pointer hover:opacity-100 transition-opacity {block.properties.status ? 'opacity-90' : 'opacity-50'}"
+            class="shrink-0 pt-[9px] pr-1.5 cursor-pointer hover:opacity-100 transition-opacity {block.properties.status ? 'opacity-90' : 'opacity-60'}"
             onclick={(e) => { e.stopPropagation(); handleStatusCycle(vi); }}
             title={block.properties.status ? `Status: ${block.properties.status} · click to cycle` : "Click to set status"}
           >
-            <span class="block text-[12px] leading-none font-mono w-[14px] text-center {block.properties.status ? statusColorClass(block.properties.status) : 'text-muted-foreground/60'}">
-              {block.properties.status ? statusChar(block.properties.status) : "○"}
-            </span>
+            {#if st === "done" || st === "completed"}
+              <span class="grid place-items-center w-4 h-4 rounded-full text-[10px] font-bold leading-none" style="background:{mcol};color:#fff">✓</span>
+            {:else if st === "doing" || st === "in-review"}
+              <span class="grid place-items-center w-4 h-4 rounded-full" style="border:2.5px solid {mcol}"><span class="w-1.5 h-1.5 rounded-full" style="background:{mcol}"></span></span>
+            {:else if st === "canceled" || st === "cancelled"}
+              <span class="grid place-items-center w-4 h-4 rounded-full text-[9px] font-mono font-bold leading-none" style="border:2.5px solid {mcol};color:{mcol}">✗</span>
+            {:else if st === "blocked"}
+              <span class="grid place-items-center w-4 h-4 rounded-full text-[8px] font-mono leading-none" style="border:2.5px solid {mcol};color:{mcol}">⧖</span>
+            {:else if st === "paused"}
+              <span class="grid place-items-center w-4 h-4 rounded-full text-[8px] font-mono leading-none" style="border:2.5px solid {mcol};color:{mcol}">⏸</span>
+            {:else}
+              <span class="block w-4 h-4 rounded-full" style="border:2.5px solid {mcol}"></span>
+            {/if}
           </button>
         {/if}
 
@@ -2320,7 +2318,7 @@
       </div>
 
       <!-- Properties row: date/recurrence strip beneath the block line (Task 5/6) -->
-      {#if block.properties.priority || block.properties.scheduled || block.properties.deadline || block.properties.recurring}
+      {#if block.properties.scheduled || block.properties.deadline || block.properties.recurring}
         <div style="padding-left: {displayIndent * 24}px;">
           <BlockDateRow {block} onUpdate={(t) => handleBlockChange(block.id, t)} />
         </div>
