@@ -20,6 +20,7 @@ struct AgendaRow: Identifiable, Codable, Equatable, Hashable {
     let is_anchor: Bool
     let text: String                   // Already bid-stripped server-side
     let status: String?                // "todo" | "doing" | "done" | nil
+    let priority: String?              // Raw `priority::` value (drives marker color); nil if unset
     let field: AgendaField             // Which dated property anchored this row
 
     /// Stable per-row identity for SwiftUI ForEach. A recurring block's

@@ -290,6 +290,7 @@ enum LocalQueryEngine {
             // Status + done filtering (server: exact "done").
             let status = props["status"]
             if !includeDone && status == "done" { continue }
+            let priority = props["priority"]
 
             // Task iff `tags::` contains "task" (case-insensitive) or any
             // `status::` is present; everything else is an event.
@@ -316,6 +317,7 @@ enum LocalQueryEngine {
                     is_anchor: isAnchor,
                     text: block.text,
                     status: status,
+                    priority: priority,
                     field: field
                 ))
             }

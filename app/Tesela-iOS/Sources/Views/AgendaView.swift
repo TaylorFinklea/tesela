@@ -412,21 +412,12 @@ private struct AgendaRowView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             if showCheckbox {
-                Button(action: onToggleDone) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 3)
-                            .stroke(theme.typeTask, lineWidth: 1.5)
-                            .frame(width: 16, height: 16)
-                        if row.status == "done" {
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(theme.typeTask)
-                                .frame(width: 16, height: 16)
-                            Icon(name: .check, size: 11, lineWidth: 2.5)
-                                .foregroundStyle(theme.bg)
-                        }
-                    }
-                }
-                .buttonStyle(.plain)
+                TaskStatusMarker(
+                    status: row.status,
+                    priority: row.priority,
+                    size: 16,
+                    onTap: onToggleDone
+                )
                 .padding(.top, 2)
             } else if isTask {
                 Spacer().frame(width: 16, height: 16)

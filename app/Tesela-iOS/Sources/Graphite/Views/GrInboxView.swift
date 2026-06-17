@@ -278,12 +278,26 @@ struct GrInboxView: View {
 
     private func inboxCard(_ row: QueryItem) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(theme.bg4)
-                    .frame(width: 30, height: 30)
-                GrIcon(name: sourceIcon(row), size: 15)
-                    .foregroundStyle(theme.fgSubtle)
+            if isTaskRow(row) {
+                TaskStatusMarker(
+                    status: row.properties["status"],
+                    priority: row.properties["priority"],
+                    size: 18
+                ) {
+                    let next = row.properties["status"] == "done" ? "todo" : "done"
+                    Task { await triage(row, status: next) }
+                }
+                .frame(width: 30, alignment: .center)
+                .contentShape(Rectangle().inset(by: -8))
+                .padding(.top, 1)
+            } else {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(theme.bg4)
+                        .frame(width: 30, height: 30)
+                    GrIcon(name: sourceIcon(row), size: 15)
+                        .foregroundStyle(theme.fgSubtle)
+                }
             }
             VStack(alignment: .leading, spacing: 7) {
                 Text(row.text.isEmpty ? "(empty block)" : row.text)
@@ -335,6 +349,16 @@ struct GrInboxView: View {
         case "person": return "user"
         default: return "file-text"
         }
+    }
+
+    /// A row is a task iff it carries a `status::` property or a `tags::`
+    /// value containing "task" — same rule as the agenda/LocalQueryEngine.
+    /// Task rows get the shared status marker instead of the source icon.
+    private func isTaskRow(_ row: QueryItem) -> Bool {
+        if row.properties["status"] != nil { return true }
+        return (row.properties["tags"] ?? "")
+            .split(separator: ",")
+            .contains { $0.trimmingCharacters(in: .whitespaces).lowercased() == "task" }
     }
 
     // ── Data load + actions ─────────────────────────────────────────────

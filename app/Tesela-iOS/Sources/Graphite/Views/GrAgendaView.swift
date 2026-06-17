@@ -205,25 +205,15 @@ struct GrAgendaView: View {
             // (the row's gesture layer swallowed it), which is why every
             // tap navigated (2026-06-10 product test).
             if isTask && row.is_anchor {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 4)
-                        .stroke(theme.typeTask, lineWidth: 1.5)
-                        .frame(width: 18, height: 18)
-                    if isDone {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(theme.typeTask)
-                            .frame(width: 18, height: 18)
-                        GrIcon(name: "square-check", size: 11, weight: .bold)
-                            .foregroundStyle(theme.bg)
-                    }
-                }
+                TaskStatusMarker(
+                    status: row.status,
+                    priority: row.priority,
+                    size: 18
+                ) { Task { await markDone(row) } }
                 .padding(.top, 1)
                 // Generous hit area around the 18pt glyph (extends past
                 // the frame; keeps the column width matching the dot rows).
                 .contentShape(Rectangle().inset(by: -10))
-                .onTapGesture {
-                    Task { await markDone(row) }
-                }
             } else {
                 GrTypeDot(kind: row.kind.rawValue, size: 8)
                     .padding(.top, 6)
@@ -339,6 +329,7 @@ struct GrAgendaView: View {
                 is_anchor: row.is_anchor,
                 text: row.text,
                 status: next,
+                priority: row.priority,
                 field: row.field
             )
         }
