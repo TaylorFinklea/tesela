@@ -466,6 +466,7 @@
   // in or what tag-properties they've defined.
   const SLASH_RESERVED: ReadonlySet<string> = new Set(["i"]);
   import { setVimMode, getVimMode, cycleBottomDrawerTab } from "$lib/stores/pane-state.svelte";
+  import { setFocusedEditor, clearFocusedEditor } from "$lib/stores/focused-editor.svelte";
   import { gotoNote } from "$lib/stores/active-pane-nav.svelte";
   import ChordMenu, { type ChordNode } from "./ChordMenu.svelte";
   import AutocompleteMenu, { type AutocompleteItem } from "./AutocompleteMenu.svelte";
@@ -1045,13 +1046,21 @@
     view.focus();
   }
 
-  function buildSlashContext(): SlashContext {
+  function buildSlashContext(leaderMode = false): SlashContext {
     const v = view;
     const doc = v?.state.doc.toString() ?? "";
     const cursorPos = v?.state.selection.main.head ?? 0;
     const slashPos = slashStartPos;
-    const before = slashPos >= 0 ? doc.slice(0, slashPos) : doc.slice(0, cursorPos);
-    const after = v && slashPos >= 0 ? doc.slice(cursorPos) : "";
+    // leaderMode: the verb came from the Space leader, not a `/` trigger, so
+    // there is no in-block caret to split on. Treat every editor verb as a
+    // WHOLE-BLOCK op — before = the entire block, after = "" — so heading
+    // prepends and link/property/collection/query append their continuation
+    // against the full text, and NOTHING is spliced at a stale mid-block caret
+    // (which would merge words / shred the block — the verbs assume the slash
+    // invariant `after===""`). The slash path is unchanged: the caret sits at
+    // the `/` trigger end, so before is pre-trigger text and after post-caret.
+    const before = leaderMode ? doc : (slashPos >= 0 ? doc.slice(0, slashPos) : doc.slice(0, cursorPos));
+    const after = leaderMode ? "" : (v && slashPos >= 0 ? doc.slice(cursorPos) : "");
 
     const stripTrigger = (trimBeforeSlash = false) => {
       const live = view;
@@ -1708,8 +1717,9 @@
     });
 
     const focusBlurHandler = EditorView.domEventHandlers({
-      focus: () => { wireVimCtx(); onFocus?.(); return false; },
+      focus: () => { setFocusedEditor(blockId ?? ""); wireVimCtx(); onFocus?.(); return false; },
       blur: (_e, v) => {
+        clearFocusedEditor(blockId ?? "");
         clearVimCtxIfMine();
         // Model B — lift detected tokens when LEAVING the block (commit-time),
         // so editing isn't disrupted mid-stream and ⌘↵ make-task doesn't rewrite
@@ -2246,12 +2256,33 @@
     if (browser && bid) trySubscribeLoro(15); // ~3s of retries for slow bootstraps
 
     return () => {
+      clearFocusedEditor(blockId ?? "");
       vimModeOff?.();
       if (subRetryTimer) clearTimeout(subRetryTimer);
       try { loroUnsub?.(); } catch { /* best-effort unsubscribe */ }
       view?.destroy();
       view = null;
     };
+  });
+
+  // Leader → editor bridge. The leader dispatches `tesela:run-editor-command`
+  // for any `category: 'editor'` chord (Space → i/p), since the shell ctx has
+  // no live editor. ONLY the cm view with real DOM focus handles it — DOM focus
+  // is singular, so in a split layout (where each pane keeps its own `focused`
+  // block) the verb runs on exactly the block the user is in, never a sibling
+  // pane's. cm keeps DOM focus while the leader overlay is open (a capture-phase
+  // document listener, not an input), so view.hasFocus holds through the chord.
+  // Builds a TRIGGER-LESS leader SlashContext so the verb acts on this block.
+  onMount(() => {
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent).detail?.id as string | undefined;
+      if (!id || !view || !view.hasFocus) return;
+      const cmd = commandRegistry.get(id);
+      if (!cmd) return;
+      void cmd.run(undefined, buildSlashCommandContext(buildSlashContext(true)));
+    };
+    document.addEventListener("tesela:run-editor-command", handler);
+    return () => document.removeEventListener("tesela:run-editor-command", handler);
   });
 
   // Phase 10.2 follow-up — leader-menu `g f` (Follow wiki link) dispatches

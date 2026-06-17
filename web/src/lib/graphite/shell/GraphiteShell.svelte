@@ -43,6 +43,7 @@
   import { getVimMode } from '$lib/stores/pane-state.svelte';
   import { openSettingsOverlay } from '$lib/stores/fullscreen-overlay.svelte';
   import { getFocusedBlock } from '$lib/stores/current-block.svelte';
+  import { isEditorFocused } from '$lib/stores/focused-editor.svelte';
   import { resolveShortcut, type CommandContext } from '$lib/command-registry.svelte';
   import * as keybindings from '$lib/stores/keybindings.svelte';
   import ColonCommandLine from '$lib/components/shell/ColonCommandLine.svelte';
@@ -65,6 +66,9 @@
       return b ? { id: b.id, properties: b.properties ?? {} } : null;
     })(),
     splitOpen: tab?.layout?.type === 'split',
+    // Lets the leader admit editor commands (i/p buckets) only when a block is
+    // focused; they run via tesela:run-editor-command on the focused editor.
+    editorFocused: isEditorFocused(),
   });
   const dragRef = $state({ value: false });
   // Only show the per-pane focus accent when the layout is actually split —

@@ -58,6 +58,24 @@ const CHORD_GROUP_LABELS: Record<string, string> = {
   ",": "config…",
 };
 
+/**
+ * The action for a leader LEAF. Editor commands (`category: 'editor'`) can't
+ * run against the shell ctx — it has no live `editor` SlashContext — so they
+ * dispatch `tesela:run-editor-command` to the focused BlockEditor, which
+ * supplies one (mirrors the `g f` follow-wiki bridge). Every other command
+ * runs in place. The dispatch only fires on a real keypress (browser), so
+ * `document` is always defined here.
+ */
+function leafAction(leaf: Command, ctx?: CommandContext): () => void {
+  if (leaf.category === 'editor') {
+    return () =>
+      document.dispatchEvent(
+        new CustomEvent('tesela:run-editor-command', { detail: { id: leaf.id } }),
+      );
+  }
+  return () => void leaf.run(undefined, ctx);
+}
+
 function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext): ChordNode[] {
   const overrides = keybindings.snapshot();
   const groups = new Map<string, Command[]>();
@@ -78,7 +96,7 @@ function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext
       nodes.push({
         key,
         label: leaf.label,
-        action: () => void leaf.run(undefined, ctx),
+        action: leafAction(leaf, ctx),
       });
     } else if (leaf && branches.length > 0) {
       // Both a leaf and a subtree share this key — show the leaf as the first
@@ -86,7 +104,7 @@ function buildChordTree(commands: Command[], depth: number, ctx?: CommandContext
       nodes.push({
         key,
         label: leaf.label,
-        action: () => void leaf.run(undefined, ctx),
+        action: leafAction(leaf, ctx),
       });
       const children = buildChordTree(branches, depth + 1, ctx);
       if (children.length > 0) {

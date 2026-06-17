@@ -131,6 +131,46 @@ test("config bucket: settings panes nest under ',' as unique-keyed children (no 
   );
 });
 
+test("editor-category leaf dispatches tesela:run-editor-command (not run in place)", () => {
+  // The shell ctx has no live `editor`, so a leader editor verb must hand off
+  // to the focused BlockEditor via the event rather than calling run() (which
+  // would no-op: `if (!ed) return`).
+  commandRegistry._reset();
+  let ran = false;
+  let dispatched = null;
+  globalThis.CustomEvent = class { constructor(type, init) { this.type = type; this.detail = init?.detail; } };
+  globalThis.document = { dispatchEvent: (e) => { dispatched = e; return true; } };
+  commandRegistry.register({
+    id: "editor.heading", label: "Heading", glyph: "#", category: "editor",
+    surface: "global", slashKey: "h", chord: ["i", "h"], keywords: [],
+    run: () => { ran = true; },
+  });
+  const tree = getLeaderTree({ editorFocused: true });
+  const h = tree.find((n) => n.key === "i")?.children?.find((c) => c.key === "h");
+  assert.ok(h?.action, "i → h leaf must exist");
+  h.action();
+  assert.equal(ran, false, "editor command must NOT run in place from the leader");
+  assert.ok(dispatched, "an event must be dispatched");
+  assert.equal(dispatched.type, "tesela:run-editor-command");
+  assert.equal(dispatched.detail.id, "editor.heading");
+});
+
+test("non-editor leaf runs in place (no event dispatched)", () => {
+  commandRegistry._reset();
+  let ran = false;
+  let dispatched = null;
+  globalThis.document = { dispatchEvent: (e) => { dispatched = e; return true; } };
+  commandRegistry.register({
+    id: "nav.daily", label: "Daily", glyph: "d", category: "navigate",
+    chord: ["g", "d"], keywords: [], run: () => { ran = true; },
+  });
+  const d = getLeaderTree({}).find((n) => n.key === "g")?.children?.find((c) => c.key === "d");
+  assert.ok(d?.action, "g → d leaf must exist");
+  d.action();
+  assert.equal(ran, true, "non-editor command runs in place");
+  assert.equal(dispatched, null, "no event dispatched for a non-editor command");
+});
+
 test("getLeaderTree siblings always have a unique render key (key+label) — overlay-safe", () => {
   // GrLeaderOverlay keys its {#each} by `${node.key} ${node.label}`. Even a
   // mis-homed bare-key leaf colliding with a bucket must produce distinct render

@@ -734,3 +734,51 @@ test("availableOn('colon') excludes a palette-only command", () => {
   const palVerbs = commandRegistry.availableOn("palette", {}).map((c) => c.verb);
   assert.ok(palVerbs.includes("palonly"));
 });
+
+// ── B (leader→editor): editor commands reach the leader when a block is focused ──
+
+test("surfacesFor: surface:'editor' WITH a chord ALSO yields leader (leader→editor)", () => {
+  // The link/date/tag/etc. shape: editor surface + an i/p chord. They must now
+  // appear in the leader (i/p buckets), not just slash. (No chord → slash-only,
+  // covered by the existing test above.)
+  const cmd = {
+    id: "editor.link", label: "Link", glyph: "[[ ]]", category: "editor",
+    surface: "editor", slashKey: "l", chord: ["i", "l"], keywords: [], run: () => {},
+  };
+  const s = surfacesFor(cmd);
+  assert.equal(s.has("slash"), true);
+  assert.equal(s.has("leader"), true); // NEW
+  assert.equal(s.has("colon"), false);
+  assert.equal(s.has("palette"), false);
+});
+
+test("available: editorFocused admits surface:'editor' commands without a full editor ctx", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "editor-cmd", label: "Editor", glyph: "e", category: "editor",
+    surface: "editor", chord: ["i", "l"], keywords: [], run: () => {},
+  });
+  // Neither editor nor editorFocused → dropped (unchanged behavior).
+  assert.deepEqual(commandRegistry.available({}).map((c) => c.id), []);
+  // editorFocused presence (the leader path) admits it without a full editor ctx.
+  assert.deepEqual(commandRegistry.available({ editorFocused: true }).map((c) => c.id), ["editor-cmd"]);
+  // A full editor ctx (the slash path) still admits it.
+  assert.deepEqual(commandRegistry.available({ editor: {} }).map((c) => c.id), ["editor-cmd"]);
+});
+
+test("availableOn('leader'): editor+chord command shows only when a block is focused", () => {
+  commandRegistry._reset();
+  commandRegistry.register({
+    id: "editor.link", label: "Link", glyph: "[[ ]]", category: "editor",
+    surface: "editor", slashKey: "l", chord: ["i", "l"], keywords: [], run: () => {},
+  });
+  // Hidden from the leader with no focused block...
+  assert.deepEqual(commandRegistry.availableOn("leader", {}).map((c) => c.id), []);
+  // ...shown once a block is focused (editorFocused), so the i bucket populates.
+  assert.deepEqual(
+    commandRegistry.availableOn("leader", { editorFocused: true }).map((c) => c.id),
+    ["editor.link"],
+  );
+  // Slash surface unchanged: still gated on a real editor ctx.
+  assert.deepEqual(commandRegistry.availableOn("slash", { editor: {} }).map((c) => c.id), ["editor.link"]);
+});

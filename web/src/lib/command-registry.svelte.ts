@@ -23,6 +23,14 @@ export type CommandContext = {
   focusedBlock?: { id: string; properties: Record<string, string> } | null;
   splitOpen?: boolean;
   editor?: SlashContext;
+  /**
+   * True when a BlockEditor is focused but its full `editor` SlashContext is
+   * NOT on this ctx (the leader path — the shell can't build one). Lets
+   * `available()` admit `surface:'editor'` commands so they populate the
+   * leader's i/p buckets; execution routes via the `tesela:run-editor-command`
+   * event to the focused editor, which supplies the real context.
+   */
+  editorFocused?: boolean;
 };
 
 export type Command = {
@@ -73,7 +81,7 @@ class CommandRegistry {
 
   available(ctx: CommandContext): RegisteredCommand[] {
     return this.all().filter((cmd) => {
-      if (cmd.surface === 'editor' && !ctx.editor) return false;
+      if (cmd.surface === 'editor' && !ctx.editor && !ctx.editorFocused) return false;
       if (!cmd.when) return true;
       try {
         return cmd.when(ctx);
@@ -111,9 +119,13 @@ export function surfacesFor(cmd: Command | RegisteredCommand): ReadonlySet<Surfa
   if (cmd.surfaces) return cmd.surfaces;
   const out = new Set<Surface>();
   if (cmd.surface === 'editor') {
-    // editor-only command — slash menu only (today it never reaches the others
-    // because available() drops it without ctx.editor, and only slash builds ctx.editor)
+    // editor command — slash menu always; ALSO the leader when it has a chord,
+    // so Space → i/p can run it on the focused block. The leader dispatches
+    // `tesela:run-editor-command` and the focused BlockEditor supplies the real
+    // ctx.editor (the shell only carries ctx.editorFocused, which available()
+    // honors so these commands aren't dropped from the leader tree).
     out.add('slash');
+    if (cmd.chord && cmd.chord.length > 0) out.add('leader');
     return out;
   }
   if (cmd.surface === 'global') {
