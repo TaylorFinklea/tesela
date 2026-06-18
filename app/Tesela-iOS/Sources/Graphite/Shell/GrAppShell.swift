@@ -340,7 +340,7 @@ struct GrAppShell: View {
                 GrLibraryView(mosaic: mosaic, backend: backend)
             }
             Tab(value: AppTab.search, role: .search) {
-                GrTabPlaceholder(tab: .search)
+                GrSearchView(mosaic: mosaic, backend: backend)
             }
         }
         .tint(Theme.graphite.accentPrimary)
