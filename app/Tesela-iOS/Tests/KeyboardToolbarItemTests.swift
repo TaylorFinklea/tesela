@@ -11,10 +11,10 @@ final class KeyboardToolbarItemTests: XCTestCase {
 
     // MARK: - Default ordering
 
-    func testDefaultOrderIsSlashedThroughMic() {
+    func testDefaultOrderIsPaletteThroughMic() {
         XCTAssertEqual(
             defaultKeyboardToolbarItems,
-            [.slashCommand, .backlink, .dedent, .indent, .cycleStatus, .mic]
+            [.commandPalette, .slashCommand, .backlink, .dedent, .indent, .cycleStatus, .mic]
         )
     }
 
@@ -44,6 +44,7 @@ final class KeyboardToolbarItemTests: XCTestCase {
                 .mic,
                 .date,
                 .tags,
+                .commandPalette,
             ]
         )
     }
@@ -55,7 +56,7 @@ final class KeyboardToolbarItemTests: XCTestCase {
         )
         XCTAssertEqual(
             defaultKeyboardToolbarItemsRaw,
-            "slash,backlink,dedent,indent,status,mic"
+            "palette,slash,backlink,dedent,indent,status,mic"
         )
     }
 

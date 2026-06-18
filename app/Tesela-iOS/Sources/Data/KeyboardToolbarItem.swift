@@ -13,6 +13,7 @@ enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable 
     case mic
     case date
     case tags
+    case commandPalette = "palette"
 
     var id: String { rawValue }
 
@@ -29,6 +30,7 @@ enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable 
         case .mic:          return "Voice"
         case .date:         return "Date"
         case .tags:         return "Tags"
+        case .commandPalette: return "Commands"
         }
     }
 
@@ -44,6 +46,7 @@ enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable 
         case .mic:          return "mic"
         case .date:         return "calendar.badge.plus"
         case .tags:         return "tag"
+        case .commandPalette: return "command"
         }
     }
 }
@@ -53,7 +56,7 @@ enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable 
 /// the trailing edge of the toolbar in `BlockRow` and not user-
 /// configurable, so it can't be removed or buried by reordering.
 let defaultKeyboardToolbarItems: [KeyboardToolbarItem] =
-    [.slashCommand, .backlink, .dedent, .indent, .cycleStatus, .mic]
+    [.commandPalette, .slashCommand, .backlink, .dedent, .indent, .cycleStatus, .mic]
 
 /// Encode an item list as the comma-separated raw-value string stored
 /// in `@AppStorage("keyboardToolbarItems")`.

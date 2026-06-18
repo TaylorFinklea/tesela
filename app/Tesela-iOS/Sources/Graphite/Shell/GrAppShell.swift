@@ -46,6 +46,7 @@ struct GrAppShell: View {
     @State private var activeTab: AppTab = .daily
     @State private var captureContext: CaptureContext = .init()
     @State private var showSettings: Bool = false
+    @State private var showCommandPalette: Bool = false
 
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
     @Environment(\.scenePhase) private var scenePhase
@@ -372,6 +373,7 @@ struct GrAppShell: View {
         .environment(\.captureContext, captureContext)
         .environment(\.openSearch, { activeTab = .search })
         .environment(\.openSettings, { showSettings = true })
+        .environment(\.openCommandPalette, { showCommandPalette = true })
         .sheet(isPresented: $showSettings) {
             GrSettingsView(
                 mosaic: mosaic,
@@ -382,6 +384,32 @@ struct GrAppShell: View {
             )
             .environment(\.theme, .graphite)
             .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $showCommandPalette) {
+            GrCommandPalette(onRun: runCommand)
+                .environment(\.theme, .graphite)
+                .preferredColorScheme(.dark)
+        }
+    }
+
+    /// Execute a command-palette command. Navigation is immediate; opening
+    /// another sheet (Settings) is deferred so the palette finishes
+    /// dismissing first (one sheet at a time on the shell).
+    private func runCommand(_ cmd: GrCommand) {
+        switch cmd.id {
+        case "goto.daily":   activeTab = .daily
+        case "goto.agenda":  activeTab = .agenda
+        case "goto.inbox":   activeTab = .inbox
+        case "goto.library": activeTab = .library
+        case "goto.search":  activeTab = .search
+        case "action.refresh":
+            Task { await mosaic.refresh(from: backend.backend, userInitiated: true) }
+        case "open.settings":
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(350))
+                showSettings = true
+            }
+        default: break
         }
     }
 }
@@ -398,6 +426,19 @@ extension EnvironmentValues {
     var openSettings: () -> Void {
         get { self[OpenSettingsKey.self] }
         set { self[OpenSettingsKey.self] = newValue }
+    }
+}
+
+/// Opens the command palette (the `:`/leader stand-in) from anywhere —
+/// the editor's keyboard-toolbar Commands button calls it.
+private struct OpenCommandPaletteKey: EnvironmentKey {
+    static let defaultValue: () -> Void = {}
+}
+
+extension EnvironmentValues {
+    var openCommandPalette: () -> Void {
+        get { self[OpenCommandPaletteKey.self] }
+        set { self[OpenCommandPaletteKey.self] = newValue }
     }
 }
 

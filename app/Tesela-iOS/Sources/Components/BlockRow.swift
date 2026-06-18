@@ -128,6 +128,9 @@ struct BlockRow: View {
     }
 
     @Environment(\.theme) private var theme
+    /// Opens the command palette (the `:`/leader stand-in) — the keyboard
+    /// toolbar's Commands button calls it. Resolved from the shell.
+    @Environment(\.openCommandPalette) private var openCommandPalette
     @State private var editBuffer: String = ""
     @State private var livePushTask: Task<Void, Never>? = nil
     @FocusState private var editFocused: Bool
@@ -604,6 +607,10 @@ struct BlockRow: View {
         case .mic:
             // Stub — voice-into-block lands in a later phase.
             break
+        case .commandPalette:
+            // Open the command palette (the :/leader stand-in). Resolved
+            // from the shell environment.
+            openCommandPalette()
         }
     }
 
