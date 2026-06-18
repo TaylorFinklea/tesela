@@ -32,6 +32,10 @@ Active items. Trim as completed.
 
 ### Now
 
+> **▶▶ CURRENT (2026-06-18): iOS editor sprint SHIPPED (TestFlight builds 21–28, all pushed + Opus-verified).** Marker unification; Enter indent-inherit + empty-outdent + insert-after-cursor; word-wrap (`sizeThatFits`); capture target-swatch menu; **`[[` / `#` / `/` inline autocomplete** on one trigger-detection framework (`EditorAutocomplete`/`LinkSuggest`; complete page+tag source via new FFI `index_entries()` over the Loro index — fixes the lazy-materialization gap); Graphite **Search view** (gpt-5.5 via pi). See git log + `decisions.md` 2026-06-18. **Also shipped:** arch-review eval (3 open-source reports → ~20% signal) + the C23 backup-restore guard + C19/C20/C21/C24/C6 hygiene batch.
+> - [ ] **#64 iOS mobile command palette** — toolbar button → searchable command registry (the `:`/leader stand-in). Needs the registry surfaced to iOS.
+> - [ ] **#65 iOS capture sheet footer clipped behind keyboard** (intermittent).
+
 > **▶▶ CURRENT (2026-06-13): see [`phases/2026-06-13-backlog.md`](phases/2026-06-13-backlog.md)** — the live tier-routed backlog. Stream A + Stream B below are **SHIPPED** (historical). Command-registry B1–B4 merged (`4766111`). Opus = Lead/XL + review; fleet (gpt-5.5/minimax) = S/M. Opus on sync (HA-first, defer CF).
 
 **▶▶ QUERY SYNTAX = JQL, not the colon DSL (Taylor, 2026-06-15).** Taylor prefers a **JQL-style** query language (`type = task AND points > 5`, `status IN (todo, doing)`, `priority >= 2 ORDER BY due ASC`) over the current colon DSL (`tag:task points:>5`). **Key fact from recon:** the Rust (`query.rs`) AND web (`query-language.ts`) engines ALREADY ship a full recursive-descent JQL parser (shared `BoolExpr`/`Predicate` types: `AND`/`OR`/parens/`IN`/`NOT IN`/`LIKE`/`BETWEEN`/`ORDER BY`/infix ops), with the colon DSL as a legacy sugar in the same grammar. So this is mostly a FRONT-END + parity job, not a new parser. Phased:
