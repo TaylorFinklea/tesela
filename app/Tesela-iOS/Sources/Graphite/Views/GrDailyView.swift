@@ -153,12 +153,22 @@ struct GrDailyView: View {
                 },
                 onMenuAction: { action in handleTodayAction(action, on: block) },
                 onSplitToNewBlock: { _ in
-                    // The current block's text (incl. the trailing-newline
-                    // trim) was already persisted via splices, so do NOT
-                    // re-author it here — just append a new sibling and
-                    // move focus, mirroring the old split's tail.
-                    let newId = mosaic.appendTodayBlock(kind: .note)
-                    editingBlockId = newId
+                    // Logseq Enter: the new sibling inherits the CURRENT
+                    // block's indent (not root). On an EMPTY indented block,
+                    // Enter outdents one level instead of making a block —
+                    // repeat to promote up to root. The current block's text
+                    // already persisted via splices, so read it back live.
+                    let cur = mosaic.todayBlocks.first { $0.id == block.id }
+                    let indent = cur?.indent ?? block.indent
+                    let isEmpty = (cur?.text ?? "")
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    if isEmpty && indent > 0 {
+                        mosaic.indentTodayBlock(id: block.id, by: -1)
+                        editingBlockId = block.id
+                    } else {
+                        let newId = mosaic.appendTodayBlock(kind: .note, indent: indent)
+                        editingBlockId = newId
+                    }
                 },
                 onIndent: { delta in mosaic.indentTodayBlock(id: block.id, by: delta) },
                 onCycleStatus: { mosaic.cycleBlockStatus(id: block.id) },
@@ -212,8 +222,15 @@ struct GrDailyView: View {
                 onMenuAction: { action in handleYesterdayAction(action, on: block) },
                 onSplitToNewBlock: { committedText in
                     mosaic.editYesterdayBlock(id: block.id, text: committedText)
-                    let newId = mosaic.appendYesterdayBlock(kind: .note)
-                    editingBlockId = newId
+                    let isEmpty = committedText
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    if isEmpty && block.indent > 0 {
+                        mosaic.indentYesterdayBlock(id: block.id, by: -1)
+                        editingBlockId = block.id
+                    } else {
+                        let newId = mosaic.appendYesterdayBlock(kind: .note, indent: block.indent)
+                        editingBlockId = newId
+                    }
                 },
                 onIndent: { delta in mosaic.indentYesterdayBlock(id: block.id, by: delta) }
             )
@@ -271,8 +288,16 @@ struct GrDailyView: View {
                     onMenuAction: { action in handlePastDailyAction(action, on: block, dayId: day.id) },
                     onSplitToNewBlock: { committedText in
                         mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: committedText)
-                        let newId = mosaic.appendPastDailyBlock(dayId: day.id, kind: .note)
-                        editingBlockId = newId
+                        let isEmpty = committedText
+                            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        if isEmpty && block.indent > 0 {
+                            mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: -1)
+                            editingBlockId = block.id
+                        } else {
+                            let newId = mosaic.appendPastDailyBlock(
+                                dayId: day.id, kind: .note, indent: block.indent)
+                            editingBlockId = newId
+                        }
                     },
                     onIndent: { delta in
                         mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: delta)

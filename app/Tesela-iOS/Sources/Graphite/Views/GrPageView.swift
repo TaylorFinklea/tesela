@@ -190,8 +190,17 @@ struct GrPageView: View {
                 onMenuAction: { action in handlePageAction(action, on: block) },
                 onSplitToNewBlock: { committedText in
                     mosaic.editPageBlock(pageId: slug, blockId: block.id, text: committedText)
-                    let newId = mosaic.appendPageBlock(pageId: slug)
-                    editingBlockId = newId
+                    // Logseq Enter: inherit the current block's indent; an
+                    // empty indented block outdents one level instead.
+                    let isEmpty = committedText
+                        .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    if isEmpty && block.indent > 0 {
+                        mosaic.indentPageBlock(pageId: slug, blockId: block.id, by: -1)
+                        editingBlockId = block.id
+                    } else {
+                        let newId = mosaic.appendPageBlock(pageId: slug, kind: .note, indent: block.indent)
+                        editingBlockId = newId
+                    }
                 },
                 onIndent: { delta in
                     mosaic.indentPageBlock(pageId: slug, blockId: block.id, by: delta)
