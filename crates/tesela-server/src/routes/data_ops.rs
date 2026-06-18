@@ -242,6 +242,23 @@ pub async fn restore_backup(
     AxumPath(name): AxumPath<String>,
     Json(req): Json<RestoreRequest>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    // In-place restore renames the live mosaic out from under THIS running
+    // engine, which still holds pre-restore state (Loro docs + the mosaic
+    // path) in memory — the next materialize/save can clobber the just-
+    // restored files. Refuse it over HTTP and point the user at the safe
+    // path (stopped-engine CLI, or a sibling restore). See decisions.md #6.
+    if req.in_place {
+        return Err((
+            StatusCode::CONFLICT,
+            "In-place restore is refused while the server is running: it would \
+             rename the live mosaic out from under the running engine (which \
+             still holds pre-restore state in memory) and the next save could \
+             re-clobber the restored files. Stop the server and restore with \
+             the `tesela` CLI, or use a sibling restore (in_place=false) to \
+             unpack into a new directory."
+                .to_string(),
+        ));
+    }
     let backup_path = state
         .mosaic_root
         .join(".tesela")

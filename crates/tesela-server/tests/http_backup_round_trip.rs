@@ -188,6 +188,23 @@ async fn http_backup_list_verify_restore_round_trip() {
         verify
     );
 
+    // 3a. In-place restore against the RUNNING server must be refused
+    //     (409). It would rename the live mosaic out from under the
+    //     engine and risk re-clobbering the restored files; the safe
+    //     path is the stopped-engine CLI. Guard added per decisions.md #6.
+    let in_place = client
+        .post(format!("{}/backups/{}/restore", base, backup_name))
+        .json(&serde_json::json!({"in_place": true, "allow_newer": false}))
+        .send()
+        .await
+        .expect("POST /backups/<n>/restore in_place");
+    assert_eq!(
+        in_place.status(),
+        reqwest::StatusCode::CONFLICT,
+        "in-place restore against a running server must return 409, got {}",
+        in_place.status()
+    );
+
     // 4. Restore endpoint into the default sibling location (in_place
     //    = false). This is what the web UI's "Restore → sibling"
     //    button drives.

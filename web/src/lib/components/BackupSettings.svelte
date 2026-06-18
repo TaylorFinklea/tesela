@@ -117,12 +117,14 @@
   }
 
   async function restoreRow(name: string, inPlace: boolean) {
-    if (
-      inPlace &&
-      !confirm(
-        "In-place restore will rename your current mosaic to .before-restore-<timestamp> and replace it with the backup contents. Continue?",
-      )
-    ) {
+    // In-place restore is refused while the server is running (it would rename
+    // the live mosaic out from under the engine and risk re-clobbering the
+    // restored files). The server returns 409; surface the guidance here
+    // instead of firing a request that always fails. Use the CLI with the
+    // server stopped, or restore into a sibling directory.
+    if (inPlace) {
+      rowMessages[name] =
+        "In-place restore must be done with the server stopped: run `tesela backup restore` from the CLI, or use “Restore → sibling”.";
       return;
     }
     busyRow = name;
@@ -317,9 +319,10 @@
               onclick={() => restoreRow(b.name, false)}>Restore → sibling</button
             >
             <button
-              class="px-2 py-0.5 rounded text-[11px] border border-red-500/40 text-red-300/80 hover:bg-red-500/10 disabled:opacity-50"
+              class="px-2 py-0.5 rounded text-[11px] border border-border/40 text-muted-foreground/70 hover:bg-muted/40 disabled:opacity-50"
               disabled={busyRow === b.name}
-              onclick={() => restoreRow(b.name, true)}>Restore in-place</button
+              title="In-place restore requires the server stopped — use the tesela CLI, or restore to a sibling directory."
+              onclick={() => restoreRow(b.name, true)}>Restore in-place (CLI)</button
             >
             {#if rowMessages[b.name]}
               <span class="text-[10px] text-muted-foreground/70 ml-2">{rowMessages[b.name]}</span>
