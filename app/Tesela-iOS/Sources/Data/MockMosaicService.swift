@@ -720,7 +720,22 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// to call on every keystroke.
     func searchablePages(_ query: String, limit: Int = 12) -> [Page] {
         let q = query.trimmingCharacters(in: .whitespaces)
-        let visible = pages.filter { !$0.hidden }
+        // In .relay mode the in-memory `pages` cache only holds notes the
+        // last refresh materialized, so a synced-but-unopened page (one you
+        // only ever link to) is missing — that's why `[[photography` found
+        // nothing. Read the full local note set from disk (the same source
+        // localSearch/localAgenda use) so every page is linkable. .http and
+        // .mock keep their always-current in-memory snapshot.
+        let candidates: [Page]
+        if case .relay = currentBackend {
+            let today = dailyId(daysAgo: 0)
+            candidates = loadAllLocalNotes()
+                .filter { $0.id != today }
+                .map { mapPage($0) }
+        } else {
+            candidates = pages
+        }
+        let visible = candidates.filter { !$0.hidden }
         if q.isEmpty { return Array(visible.prefix(limit)) }
         return LinkSuggest.rank(visible, query: q, limit: limit)
     }

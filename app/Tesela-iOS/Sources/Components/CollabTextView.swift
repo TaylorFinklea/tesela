@@ -96,13 +96,6 @@ struct CollabTextView: UIViewRepresentable {
         // disabled so the text view grows with its content inside the
         // surrounding ScrollView (mirrors `TextField(axis: .vertical)`).
         tv.isScrollEnabled = false
-        // Wrap to the available width instead of laying out one ever-widening
-        // line. A non-scrolling UITextView in SwiftUI reports its full
-        // single-line text as its intrinsic width and resists horizontal
-        // compression, so without lowering that resistance the row grows off
-        // the right edge instead of wrapping. (text_seq offsets are unchanged
-        // — this is layout only.)
-        tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tv.textContainerInset = .zero
         tv.textContainer.lineFragmentPadding = 0
         tv.autocorrectionType = .default
@@ -162,6 +155,19 @@ struct CollabTextView: UIViewRepresentable {
         } else if !isFocused, uiView.isFirstResponder {
             DispatchQueue.main.async { uiView.resignFirstResponder() }
         }
+    }
+
+    /// Size the editor to the proposed WIDTH and report the wrapped height,
+    /// so this non-scrolling UITextView wraps to the row width and grows
+    /// vertically (the row expands) instead of laying out a single clipped
+    /// line. Without this, SwiftUI measures the text view at its unbounded
+    /// single-line intrinsic width and the text runs off / clips. (iOS 16+.)
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        guard let width = proposal.width, width > 0, width.isFinite else { return nil }
+        let fitted = uiView.sizeThatFits(
+            CGSize(width: width, height: .greatestFiniteMagnitude)
+        )
+        return CGSize(width: width, height: ceil(fitted.height))
     }
 
     func makeCoordinator() -> Coordinator {

@@ -364,10 +364,16 @@ struct BlockRow: View {
         .onDisappear { linkAutocomplete.dismiss() }
     }
 
-    /// Commit a `[[` link pick: replace the typed `[[query` span with
-    /// `[[Title]]` through the splice path, then close the suggestions.
-    private func commitLink(_ page: Page) {
-        inserter.replaceTrigger(startOffset: linkAutocomplete.startOffset, with: "[[\(page.title)]]")
+    /// Commit a `[[` link pick (existing page).
+    private func commitLink(_ page: Page) { commitLinkName(page.title) }
+
+    /// Replace the typed `[[query` span with `[[name]]` — an existing page
+    /// or a brand-new one — through the splice path (closing the brackets),
+    /// then dismiss the suggestions.
+    private func commitLinkName(_ name: String) {
+        let clean = name.trimmingCharacters(in: .whitespaces)
+        guard !clean.isEmpty else { return }
+        inserter.replaceTrigger(startOffset: linkAutocomplete.startOffset, with: "[[\(clean)]]")
         linkAutocomplete.dismiss()
     }
 
@@ -460,6 +466,11 @@ struct BlockRow: View {
                         ForEach(linkAutocomplete.results) { page in
                             linkSuggestionChip(page)
                         }
+                        // Offer a brand-new page when a name is typed (so
+                        // `[[Thing` that doesn't exist yet is still linkable).
+                        if !linkAutocomplete.query.isEmpty {
+                            createLinkChip(linkAutocomplete.query)
+                        }
                     } else {
                         ForEach(scrollableToolbarItems) { item in
                             toolbarButton(for: item)
@@ -489,6 +500,31 @@ struct BlockRow: View {
             .padding(.vertical, 6)
             .background(RoundedRectangle(cornerRadius: 9).fill(theme.bg4))
             .foregroundStyle(theme.fgDefault)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// "Create a new page" chip in the `[[` strip — shown after any matches
+    /// when a name is typed. Outlined/accented to read as distinct from
+    /// existing-page chips. Tap → insert `[[name]]`.
+    private func createLinkChip(_ name: String) -> some View {
+        Button {
+            commitLinkName(name)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                Text("\u{201C}\(name)\u{201D}")
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 9)
+                    .strokeBorder(theme.accentSecondary.opacity(0.5), lineWidth: 1)
+            )
+            .foregroundStyle(theme.accentSecondary)
         }
         .buttonStyle(.plain)
     }

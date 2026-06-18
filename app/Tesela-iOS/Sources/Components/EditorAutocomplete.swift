@@ -73,6 +73,9 @@ enum LinkSuggest {
 final class LinkAutocomplete: ObservableObject {
     @Published var isActive = false
     @Published private(set) var results: [Page] = []
+    /// The text typed after `[[` so far. Surfaced so the accessory can offer
+    /// a "create [[query]]" row for a page that doesn't exist yet.
+    @Published private(set) var query = ""
 
     /// UTF-16 offset of the `[[` opener in the live block text — the start
     /// of the `[[query` span the chosen link replaces.
@@ -84,13 +87,17 @@ final class LinkAutocomplete: ObservableObject {
 
     func update(start: Int, query: String) {
         startOffset = start
+        self.query = query
         results = search?(query) ?? []
-        isActive = !results.isEmpty
+        // Active when we have matches OR a non-empty query (so the
+        // create-new row can offer to make a brand-new page link).
+        isActive = !results.isEmpty || !query.isEmpty
     }
 
     func dismiss() {
         guard isActive else { return }
         isActive = false
         results = []
+        query = ""
     }
 }
