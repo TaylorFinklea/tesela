@@ -91,6 +91,13 @@ struct CollabTextView: UIViewRepresentable {
         // disabled so the text view grows with its content inside the
         // surrounding ScrollView (mirrors `TextField(axis: .vertical)`).
         tv.isScrollEnabled = false
+        // Wrap to the available width instead of laying out one ever-widening
+        // line. A non-scrolling UITextView in SwiftUI reports its full
+        // single-line text as its intrinsic width and resists horizontal
+        // compression, so without lowering that resistance the row grows off
+        // the right edge instead of wrapping. (text_seq offsets are unchanged
+        // — this is layout only.)
+        tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tv.textContainerInset = .zero
         tv.textContainer.lineFragmentPadding = 0
         tv.autocorrectionType = .default

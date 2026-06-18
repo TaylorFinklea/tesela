@@ -40,6 +40,42 @@ private func grResolvedTarget(
     }
 }
 
+/// The capture-target menu items (Today / Inbox / current page / child of
+/// the focused block), shared by the compact bar's swatch and the expanded
+/// sheet's chooser so they never drift. Each writes `composer.manualTarget`.
+@MainActor
+@ViewBuilder
+private func targetMenuItems(composer: CaptureComposer, context: CaptureContext) -> some View {
+    Button {
+        composer.manualTarget = .today
+    } label: {
+        Label("Today", systemImage: "calendar")
+    }
+    Button {
+        composer.manualTarget = .inbox
+    } label: {
+        Label("Inbox", systemImage: "tray")
+    }
+    if let page = context.currentPage {
+        Button {
+            composer.manualTarget = .page(slug: page.slug, title: page.title)
+        } label: {
+            Label("Add to \(page.title)", systemImage: "doc.text")
+        }
+    }
+    if let block = context.focusedBlock {
+        Button {
+            composer.manualTarget = .childOf(
+                parentId: block.id,
+                parentPreview: block.preview,
+                pageSlug: block.pageSlug
+            )
+        } label: {
+            Label("Add as child", systemImage: "arrow.turn.down.right")
+        }
+    }
+}
+
 // MARK: - Compact capture bar (tabViewBottomAccessory)
 
 /// The compact Graphite capture pill shown in `tabViewBottomAccessory`.
@@ -83,21 +119,28 @@ struct GrCaptureBar: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Attach")
 
-            // Target swatch — icon-only at rest, tinted by the project
-            // accent like the mockup's `.cb-target`.
-            Image(systemName: resolvedTarget.systemImage)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(theme.typeNote)
-                .frame(width: 34, height: 34)
-                .background(
-                    RoundedRectangle(cornerRadius: 11)
-                        .fill(theme.accentSecondary.opacity(0.18))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 11)
-                        .stroke(theme.accentSecondary.opacity(0.26), lineWidth: 1)
-                )
-                .accessibilityLabel("Capture target: \(resolvedTarget.label)")
+            // Target swatch — a tap-to-choose target picker (Today / Inbox /
+            // current page / child-of-focused), mirroring the expanded
+            // sheet's `targetMenu`. It used to be a dead `Image` that only
+            // *displayed* the target; the tinted swatch looked tappable but
+            // did nothing.
+            Menu {
+                targetMenuItems(composer: composer, context: context)
+            } label: {
+                Image(systemName: resolvedTarget.systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(theme.typeNote)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        RoundedRectangle(cornerRadius: 11)
+                            .fill(theme.accentSecondary.opacity(0.18))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 11)
+                            .stroke(theme.accentSecondary.opacity(0.26), lineWidth: 1)
+                    )
+            }
+            .accessibilityLabel("Capture target: \(resolvedTarget.label)")
 
             Button(action: expand) {
                 Text(composer.draft.isEmpty ? "Capture…" : composer.draft)
@@ -264,34 +307,7 @@ struct GrCaptureSheet: View {
     /// `targetChip` exactly (same menu items, same `manualTarget` writes).
     private var targetMenu: some View {
         Menu {
-            Button {
-                composer.manualTarget = .today
-            } label: {
-                Label("Today", systemImage: "calendar")
-            }
-            Button {
-                composer.manualTarget = .inbox
-            } label: {
-                Label("Inbox", systemImage: "tray")
-            }
-            if let page = context.currentPage {
-                Button {
-                    composer.manualTarget = .page(slug: page.slug, title: page.title)
-                } label: {
-                    Label("Add to \(page.title)", systemImage: "doc.text")
-                }
-            }
-            if let block = context.focusedBlock {
-                Button {
-                    composer.manualTarget = .childOf(
-                        parentId: block.id,
-                        parentPreview: block.preview,
-                        pageSlug: block.pageSlug
-                    )
-                } label: {
-                    Label("Add as child", systemImage: "arrow.turn.down.right")
-                }
-            }
+            targetMenuItems(composer: composer, context: context)
         } label: {
             HStack(spacing: 6) {
                 Text("to")
