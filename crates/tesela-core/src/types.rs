@@ -113,10 +113,12 @@ impl TypeRegistry {
                 }
             }
         }
-        // Return default built-in types if no file
-        TypeRegistry {
-            types: default_types(),
-        }
+        // No types.toml: the built-in `.md` pages (Task/Project/Person/
+        // Priority/Status/…) are seeded at server boot and indexed into the
+        // DB, which is the runtime source of truth for types (surfaced via
+        // get_all_tag_defs). Return an empty registry rather than a second
+        // hardcoded copy that silently drifts from those pages.
+        TypeRegistry { types: Vec::new() }
     }
 
     /// Get a type definition by name (case-insensitive)
@@ -127,159 +129,35 @@ impl TypeRegistry {
     }
 }
 
-/// Built-in default types
-fn default_types() -> Vec<TypeDefinition> {
-    vec![
-        TypeDefinition {
-            name: "task".to_string(),
-            description: "A task to be completed".to_string(),
-            icon: "☐".to_string(),
-            color: "#FF6B6B".to_string(),
-            properties: vec![
-                PropertyDef {
-                    name: "status".to_string(),
-                    value_type: "select".to_string(),
-                    values: Some(vec![
-                        "backlog".to_string(),
-                        "todo".to_string(),
-                        "doing".to_string(),
-                        "in-review".to_string(),
-                        "done".to_string(),
-                        "canceled".to_string(),
-                    ]),
-                    default: Some("todo".to_string()),
-                    required: false,
-                    hide_by_default: false,
-                    hide_empty: true,
-                },
-                PropertyDef {
-                    name: "priority".to_string(),
-                    value_type: "select".to_string(),
-                    values: Some(vec![
-                        "critical".to_string(),
-                        "high".to_string(),
-                        "medium".to_string(),
-                        "low".to_string(),
-                    ]),
-                    default: Some("medium".to_string()),
-                    required: false,
-                    hide_by_default: false,
-                    hide_empty: true,
-                },
-                PropertyDef {
-                    name: "deadline".to_string(),
-                    value_type: "date".to_string(),
-                    values: None,
-                    default: None,
-                    required: false,
-                    hide_by_default: false,
-                    hide_empty: true,
-                },
-                PropertyDef {
-                    name: "scheduled".to_string(),
-                    value_type: "date".to_string(),
-                    values: None,
-                    default: None,
-                    required: false,
-                    hide_by_default: false,
-                    hide_empty: true,
-                },
-                PropertyDef {
-                    name: "effort".to_string(),
-                    value_type: "text".to_string(),
-                    values: None,
-                    default: None,
-                    required: false,
-                    hide_by_default: false,
-                    hide_empty: true,
-                },
-            ],
-        },
-        TypeDefinition {
-            name: "project".to_string(),
-            description: "A project with multiple tasks".to_string(),
-            icon: "📋".to_string(),
-            color: "#4ECDC4".to_string(),
-            properties: vec![
-                PropertyDef {
-                    name: "status".to_string(),
-                    value_type: "select".to_string(),
-                    values: Some(vec![
-                        "planning".to_string(),
-                        "active".to_string(),
-                        "paused".to_string(),
-                        "completed".to_string(),
-                        "archived".to_string(),
-                    ]),
-                    default: Some("planning".to_string()),
-                    required: false,
-                    hide_by_default: false,
-                    hide_empty: true,
-                },
-                PropertyDef {
-                    name: "deadline".to_string(),
-                    value_type: "date".to_string(),
-                    values: None,
-                    default: None,
-                    required: false,
-                    hide_by_default: false,
-                    hide_empty: true,
-                },
-            ],
-        },
-        TypeDefinition {
-            name: "person".to_string(),
-            description: "A contact or team member".to_string(),
-            icon: "👤".to_string(),
-            color: "#45B7D1".to_string(),
-            properties: vec![
-                PropertyDef {
-                    name: "email".to_string(),
-                    value_type: "text".to_string(),
-                    values: None,
-                    default: None,
-                    required: false,
-                    hide_by_default: false,
-                    hide_empty: true,
-                },
-                PropertyDef {
-                    name: "team".to_string(),
-                    value_type: "text".to_string(),
-                    values: None,
-                    default: None,
-                    required: false,
-                    hide_by_default: false,
-                    hide_empty: true,
-                },
-            ],
-        },
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
-    fn test_default_types() {
-        let registry = TypeRegistry {
-            types: default_types(),
-        };
-        assert_eq!(registry.types.len(), 3);
-        assert!(registry.get("Task").is_some());
-        assert!(registry.get("Project").is_some());
-        assert!(registry.get("Person").is_some());
-        assert!(registry.get("nonexistent").is_none());
+    fn load_without_types_toml_is_empty() {
+        // No types.toml → empty registry (the built-in pages indexed into the
+        // DB are the source of truth; the fallback must not carry a second,
+        // drifting copy). See get_all_tag_defs in the server's /types route.
+        let dir = TempDir::new().unwrap();
+        let registry = TypeRegistry::load(dir.path());
+        assert!(registry.types.is_empty());
+        assert!(registry.get("Task").is_none());
     }
 
     #[test]
-    fn test_task_type_properties() {
-        let registry = TypeRegistry {
-            types: default_types(),
-        };
-        let task = registry.get("Task").unwrap();
-        assert_eq!(task.properties.len(), 5);
-        assert_eq!(task.properties[0].name, "status");
-        assert_eq!(task.properties[0].value_type, "select");
+    fn load_reads_types_toml_when_present() {
+        let dir = TempDir::new().unwrap();
+        fs::create_dir_all(dir.path().join(".tesela")).unwrap();
+        fs::write(
+            dir.path().join(".tesela").join("types.toml"),
+            "[[types]]\nname = \"task\"\ndescription = \"\"\nicon = \"\"\ncolor = \"\"\n",
+        )
+        .unwrap();
+        let registry = TypeRegistry::load(dir.path());
+        assert_eq!(registry.types.len(), 1);
+        assert!(registry.get("Task").is_some());
+        assert!(registry.get("nonexistent").is_none());
     }
 }

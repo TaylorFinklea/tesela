@@ -71,6 +71,12 @@ pub struct AutoSync {
     in_flight: Mutex<()>,
 }
 
+impl Default for AutoSync {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AutoSync {
     pub fn new() -> Self {
         Self {

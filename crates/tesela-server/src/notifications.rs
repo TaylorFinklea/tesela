@@ -39,6 +39,12 @@ impl Notifier {
     }
 }
 
+impl Default for Notifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Default lead time in minutes for `deadline::` notifications.
 const DEADLINE_LEAD_MIN: i64 = 60;
 

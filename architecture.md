@@ -1,5 +1,15 @@
 # Tesela Architecture
 
+> ⚠️ **HISTORICAL (Phase 8, ~2026-03).** This document predates the Loro
+> cutover and is kept for context only. It still says "files are truth,
+> database is cache" and describes a SqliteEngine / dual-write model + a
+> planned Slint GUI — all superseded. The current model: **Loro CRDT is the
+> sync source of truth**, Markdown files are a materialized export, and SQLite
+> is a rebuildable cache; clients are SvelteKit web + SwiftUI iOS + a Tauri
+> desktop shell. For the live picture use `AGENTS.md`, `.docs/ai/roadmap.md`,
+> `.docs/ai/current-state.md`, and `.docs/ai/decisions.md` (2026-05-29 /
+> 2026-06-10), not this file.
+
 ## 1. Overview
 
 Tesela is a keyboard-first, file-based note-taking system built on the **Mosaic** model with **outliner architecture**. Notes are Markdown files with block-based structure, forming a knowledge graph through bidirectional links and hierarchical inheritance. The architecture prioritizes data ownership, offline-first operation, and extensibility.

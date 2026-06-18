@@ -1,8 +1,9 @@
 name: CI
 
-# Fast PR/push-blocking lane. Three parallel jobs:
-#   rust               — fmt gate, clippy (advisory), cargo test --workspace
-#   web                — svelte-check (advisory), node:test unit suites (blocking)
+# Fast PR/push-blocking lane. Four parallel jobs:
+#   rust               — fmt gate, clippy (-D warnings), cargo test --workspace
+#   web                — svelte-check, node:test unit suites (both blocking)
+#   audit              — cargo audit against the RUSTSEC advisory DB
 #   worker-conformance — the relay conformance suite against the CF Worker
 #                        via `wrangler dev` (the Rust relay impl is covered by
 #                        `cargo test --workspace` in the rust job, so both
@@ -67,14 +68,11 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
-      # Advisory only: the workspace carries ~26 pre-existing clippy warnings
-      # (tesela-core, tesela-sync, tesela-relay, tesela-sync-ffi,
-      # tesela-server, tesela-loro-spike as of 2026-06-10). Promote to a
-      # blocking `-D warnings` gate once those are burned down — do NOT gate
-      # before then, or CI goes permanently red again like the fmt step did.
-      - name: Clippy (advisory)
-        continue-on-error: true
-        run: cargo clippy --workspace
+      # Blocking: the ~26 pre-existing warnings were burned down (9c1e2d83)
+      # and the loro-spike crate deleted, so the workspace is clippy-clean.
+      # `-D warnings` keeps it that way — a new warning fails the build.
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
 
       - name: Tests
         run: cargo test --workspace
@@ -104,12 +102,11 @@ jobs:
       - name: Install web dependencies
         run: pnpm --dir web install --frozen-lockfile
 
-      # Advisory only: one pre-existing type error in
-      # src/lib/components/v4/VoiceCaptureButton.svelte:169 (v4 chrome —
-      # slated for deletion in the Graphite cutover, stream B). Promote to
-      # blocking once that error is fixed or the v4 chrome is deleted.
-      - name: svelte-check (advisory)
-        continue-on-error: true
+      # Blocking: the v4 chrome (which carried the one pre-existing type
+      # error) was deleted in the Graphite cutover, so `pnpm check` is at 0
+      # errors. svelte-check exits non-zero only on errors (warnings don't
+      # fail), so this gate stays green until a real type error lands.
+      - name: svelte-check
         run: pnpm --dir web check
 
       # Blocking: 16 of the 17 node:test unit suites (190 tests).
@@ -130,6 +127,34 @@ jobs:
           cd web
           node --experimental-transform-types --test \
             $(ls tests/unit/*.test.mjs | grep -v cm-decorations)
+
+  audit:
+    name: Security audit (cargo audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      # Prebuilt binary (no compile) — keeps this job to ~1 min.
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      # Scans Cargo.lock against the RUSTSEC advisory DB. This is the only
+      # supply-chain gate; the app ships a relay + reqwest/rustls + axum
+      # network surface, so a known-vuln dependency should fail the build.
+      #
+      # RUSTSEC-2023-0071 (rsa Marvin timing attack) is ignored: `rsa` is a
+      # transitive lockfile entry from sqlx-mysql (sqlx's macro crate lists
+      # every driver), but Tesela builds sqlite-only so rsa is never compiled
+      # — `cargo tree -i rsa` finds it in no build graph. No upstream fix
+      # exists. Drop the ignore if a fixed rsa ships or sqlx stops pulling it.
+      - name: cargo audit
+        run: cargo audit --ignore RUSTSEC-2023-0071
 
   worker-conformance:
     name: Relay conformance (Cloudflare Worker via wrangler dev)
@@ -198,7 +223,7 @@ jobs:
   notify-failure:
     name: File failure issue (main only)
     runs-on: ubuntu-latest
-    needs: [rust, web, worker-conformance]
+    needs: [rust, web, audit, worker-conformance]
     if: failure() && github.event_name == 'push'
     permissions:
       issues: write
