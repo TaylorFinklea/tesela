@@ -350,9 +350,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Append a fresh empty block to yesterday's daily. Returns the new
     /// block's id so the caller can flip it into edit mode.
     @discardableResult
-    func appendYesterdayBlock(kind: BlockKind = .note, indent: Int = 0) -> String {
+    func appendYesterdayBlock(kind: BlockKind = .note, indent: Int = 0, after: String? = nil) -> String {
         let id = UUID().uuidString.lowercased()
-        yesterdayBlocks.append(Block(id: id, kind: kind, text: "", indent: indent))
+        let block = Block(id: id, kind: kind, text: "", indent: indent)
+        if let after, let idx = yesterdayBlocks.firstIndex(where: { $0.id == after }) {
+            yesterdayBlocks.insert(block, at: idx + 1)
+        } else {
+            yesterdayBlocks.append(block)
+        }
         scheduleYesterdayWriteback()
         return id
     }
@@ -426,10 +431,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
     }
 
     @discardableResult
-    func appendPastDailyBlock(dayId: String, kind: BlockKind = .note, indent: Int = 0) -> String {
+    func appendPastDailyBlock(dayId: String, kind: BlockKind = .note, indent: Int = 0, after: String? = nil) -> String {
         let id = UUID().uuidString.lowercased()
+        let block = Block(id: id, kind: kind, text: "", indent: indent, noteId: dayId)
         updatePastDaily(dayId: dayId) { blocks in
-            blocks.append(Block(id: id, kind: kind, text: "", indent: indent, noteId: dayId))
+            if let after, let idx = blocks.firstIndex(where: { $0.id == after }) {
+                blocks.insert(block, at: idx + 1)
+            } else {
+                blocks.append(block)
+            }
         }
         return id
     }
@@ -646,7 +656,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Append a fresh empty block to today and push. Returns the new
     /// block's id so the caller can flip it into edit mode immediately.
     @discardableResult
-    func appendTodayBlock(kind: BlockKind = .note, indent: Int = 0) -> String {
+    func appendTodayBlock(kind: BlockKind = .note, indent: Int = 0, after: String? = nil) -> String {
         // Canonical (36-char dashed) UUID so isCanonicalUUID(...) returns
         // true and the rendered `- text <!-- bid:UUID -->` carries the
         // id verbatim. The earlier "ios-<12char>" form was non-canonical,
@@ -656,7 +666,12 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // relay paths to produce DUPLICATE blocks on the receiver
         // (each path assigned a different bid for the same intent).
         let id = UUID().uuidString.lowercased()
-        todayBlocks.append(Block(id: id, kind: kind, text: "", indent: indent))
+        let block = Block(id: id, kind: kind, text: "", indent: indent)
+        if let after, let idx = todayBlocks.firstIndex(where: { $0.id == after }) {
+            todayBlocks.insert(block, at: idx + 1)  // split: right after the source block
+        } else {
+            todayBlocks.append(block)               // "Add block": at the end
+        }
         scheduleWriteback()
         return id
     }
@@ -698,10 +713,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
 
     /// Append a new empty block on a non-daily page.
     @discardableResult
-    func appendPageBlock(pageId: String, kind: BlockKind = .note, indent: Int = 0) -> String {
+    func appendPageBlock(pageId: String, kind: BlockKind = .note, indent: Int = 0, after: String? = nil) -> String {
         let id = UUID().uuidString.lowercased()
         var blocks = loadedPageBlocks[pageId] ?? []
-        blocks.append(Block(id: id, kind: kind, text: "", indent: indent))
+        let block = Block(id: id, kind: kind, text: "", indent: indent)
+        if let after, let idx = blocks.firstIndex(where: { $0.id == after }) {
+            blocks.insert(block, at: idx + 1)
+        } else {
+            blocks.append(block)
+        }
         Task { await pushPage(id: pageId, blocks: blocks) }
         return id
     }

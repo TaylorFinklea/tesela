@@ -198,7 +198,7 @@ struct GrPageView: View {
                         mosaic.indentPageBlock(pageId: slug, blockId: block.id, by: -1)
                         editingBlockId = block.id
                     } else {
-                        let newId = mosaic.appendPageBlock(pageId: slug, kind: .note, indent: block.indent)
+                        let newId = mosaic.appendPageBlock(pageId: slug, kind: .note, indent: block.indent, after: block.id)
                         editingBlockId = newId
                     }
                 },

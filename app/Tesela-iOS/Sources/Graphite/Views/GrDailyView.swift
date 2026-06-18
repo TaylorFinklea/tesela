@@ -166,7 +166,7 @@ struct GrDailyView: View {
                         mosaic.indentTodayBlock(id: block.id, by: -1)
                         editingBlockId = block.id
                     } else {
-                        let newId = mosaic.appendTodayBlock(kind: .note, indent: indent)
+                        let newId = mosaic.appendTodayBlock(kind: .note, indent: indent, after: block.id)
                         editingBlockId = newId
                     }
                 },
@@ -229,7 +229,7 @@ struct GrDailyView: View {
                         mosaic.indentYesterdayBlock(id: block.id, by: -1)
                         editingBlockId = block.id
                     } else {
-                        let newId = mosaic.appendYesterdayBlock(kind: .note, indent: block.indent)
+                        let newId = mosaic.appendYesterdayBlock(kind: .note, indent: block.indent, after: block.id)
                         editingBlockId = newId
                     }
                 },
@@ -297,7 +297,7 @@ struct GrDailyView: View {
                             editingBlockId = block.id
                         } else {
                             let newId = mosaic.appendPastDailyBlock(
-                                dayId: day.id, kind: .note, indent: block.indent)
+                                dayId: day.id, kind: .note, indent: block.indent, after: block.id)
                             editingBlockId = newId
                         }
                     },
