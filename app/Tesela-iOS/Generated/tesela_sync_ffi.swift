@@ -1304,6 +1304,15 @@ public protocol SyncEngineHandleProtocol: AnyObject, Sendable {
     func importNoteSnapshotById(noteId: Data, bytes: Data) async throws 
     
     /**
+     * Every note's index entry (id/title/slug/tags) from the always-
+     * resident Loro index — the complete page list for THIS mosaic,
+     * including notes not materialized to local disk on this device.
+     * iOS uses this for `[[` link autocomplete so pages that were never
+     * opened locally are still found. No per-note docs are loaded.
+     */
+    func indexEntries() async  -> [IndexEntryRecord]
+    
+    /**
      * Encoded version vector of a note's current Loro doc, for the
      * reconnect/catch-up handshake: a peer hands this to the other side's
      * [`Self::produce_note_delta`] (`since_vv`) so the response carries only
@@ -1755,6 +1764,31 @@ open func importNoteSnapshotById(noteId: Data, bytes: Data)async throws   {
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
             liftFunc: { $0 },
             errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Every note's index entry (id/title/slug/tags) from the always-
+     * resident Loro index — the complete page list for THIS mosaic,
+     * including notes not materialized to local disk on this device.
+     * iOS uses this for `[[` link autocomplete so pages that were never
+     * opened locally are still found. No per-note docs are loaded.
+     */
+open func indexEntries()async  -> [IndexEntryRecord]  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_syncenginehandle_index_entries(
+                    self.uniffiCloneHandle()
+                    
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterSequenceTypeIndexEntryRecord.lift,
+            errorHandler: nil
+            
         )
 }
     
@@ -2400,6 +2434,99 @@ public func FfiConverterTypeGroupIdentityRecord_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeGroupIdentityRecord_lower(_ value: GroupIdentityRecord) -> RustBuffer {
     return FfiConverterTypeGroupIdentityRecord.lower(value)
+}
+
+
+/**
+ * One note's index entry in a Swift-friendly shape. Sourced from the
+ * always-resident Loro index doc — present for EVERY note in the mosaic,
+ * including those whose per-note doc/markdown isn't materialized on this
+ * device yet (lazy materialization). Powers iOS link/page autocomplete so
+ * `[[` finds pages that were never opened locally.
+ */
+public struct IndexEntryRecord: Equatable, Hashable {
+    /**
+     * 32-char lowercase hex of the 16-byte note id.
+     */
+    public var noteIdHex: String
+    /**
+     * Display title.
+     */
+    public var title: String
+    /**
+     * URL/link slug.
+     */
+    public var slug: String
+    /**
+     * Tags on the note.
+     */
+    public var tags: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * 32-char lowercase hex of the 16-byte note id.
+         */noteIdHex: String, 
+        /**
+         * Display title.
+         */title: String, 
+        /**
+         * URL/link slug.
+         */slug: String, 
+        /**
+         * Tags on the note.
+         */tags: [String]) {
+        self.noteIdHex = noteIdHex
+        self.title = title
+        self.slug = slug
+        self.tags = tags
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension IndexEntryRecord: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeIndexEntryRecord: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> IndexEntryRecord {
+        return
+            try IndexEntryRecord(
+                noteIdHex: FfiConverterString.read(from: &buf), 
+                title: FfiConverterString.read(from: &buf), 
+                slug: FfiConverterString.read(from: &buf), 
+                tags: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: IndexEntryRecord, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.noteIdHex, into: &buf)
+        FfiConverterString.write(value.title, into: &buf)
+        FfiConverterString.write(value.slug, into: &buf)
+        FfiConverterSequenceString.write(value.tags, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeIndexEntryRecord_lift(_ buf: RustBuffer) throws -> IndexEntryRecord {
+    return try FfiConverterTypeIndexEntryRecord.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeIndexEntryRecord_lower(_ value: IndexEntryRecord) -> RustBuffer {
+    return FfiConverterTypeIndexEntryRecord.lower(value)
 }
 
 
@@ -3291,6 +3418,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeIndexEntryRecord: FfiConverterRustBuffer {
+    typealias SwiftType = [IndexEntryRecord]
+
+    public static func write(_ value: [IndexEntryRecord], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeIndexEntryRecord.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [IndexEntryRecord] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [IndexEntryRecord]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeIndexEntryRecord.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeRelaySnapshotRecord: FfiConverterRustBuffer {
     typealias SwiftType = [RelaySnapshotRecord]
 
@@ -3542,6 +3694,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_import_note_snapshot_by_id() != 34200) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_index_entries() != 64527) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_syncenginehandle_note_version() != 24306) {

@@ -214,6 +214,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
     var onViewsUpsert: ((_ view: SavedView) async throws -> Void)? = nil
     var onViewsDelete: ((_ viewId: String) async throws -> Void)? = nil
 
+    /// Complete page list from the engine's always-resident Loro index
+    /// (every note, even those not materialized to local disk). Wired in
+    /// `GrAppShell` to `RelayTicker.indexEntries()`. Cached in
+    /// `indexPageCache` and refreshed on each `.relay` refresh so `[[`
+    /// link autocomplete can filter it synchronously per keystroke.
+    var onIndexEntries: (() async -> [IndexEntryRecord]?)? = nil
+    private var indexPageCache: [Page] = []
+
     /// Callback fired whenever a note becomes visible/loaded (the daily
     /// on refresh, any opened page). Wired in both shells to
     /// `relayTicker.bootstrapNoteIfNeeded(slug:)` so a device that's only
@@ -748,16 +756,40 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // .mock keep their always-current in-memory snapshot.
         let candidates: [Page]
         if case .relay = currentBackend {
-            let today = dailyId(daysAgo: 0)
-            candidates = loadAllLocalNotes()
-                .filter { $0.id != today }
-                .map { mapPage($0) }
+            // The Loro index (cached in indexPageCache, refreshed each
+            // refresh) lists EVERY page — including ones never materialized
+            // to local disk on this device, which is why `[[photography`
+            // found nothing before. Fall back to the on-disk scan only until
+            // that first index load lands.
+            if !indexPageCache.isEmpty {
+                candidates = indexPageCache
+            } else {
+                let today = dailyId(daysAgo: 0)
+                candidates = loadAllLocalNotes()
+                    .filter { $0.id != today }
+                    .map { mapPage($0) }
+            }
         } else {
             candidates = pages
         }
         let visible = candidates.filter { !$0.hidden }
         if q.isEmpty { return Array(visible.prefix(limit)) }
         return LinkSuggest.rank(visible, query: q, limit: limit)
+    }
+
+    /// Refresh the `[[`-autocomplete page cache from the engine's Loro
+    /// index — the complete list, including notes not materialized locally.
+    /// Called on each `.relay` refresh. No-op outside `.relay` / unwired.
+    func refreshIndexPages() async {
+        guard case .relay = currentBackend, let load = onIndexEntries else { return }
+        guard let entries = await load() else { return }
+        let today = dailyId(daysAgo: 0)
+        indexPageCache = entries.compactMap { e in
+            let slug = e.slug.isEmpty ? e.noteIdHex : e.slug
+            guard slug != today else { return nil }
+            return Page(id: slug, title: e.title.isEmpty ? slug : e.title,
+                        slug: slug, type: "note", edited: "", blocks: 0, refs: 0)
+        }
     }
 
     func capture(_ text: String) {
@@ -1352,6 +1384,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
             if hydrated {
                 todayLoadedAt = localNoteMTime(id: dailyId(daysAgo: 0)) ?? Date()
             }
+            // Refresh the complete page list (Loro index) for `[[`
+            // autocomplete — includes pages not materialized locally.
+            await refreshIndexPages()
             // The daily slug is purely date-derived in relay mode (no server
             // to mint an id), so set it even when today's file doesn't exist
             // yet — the daily write gates (`scheduleWriteback`/splice) need

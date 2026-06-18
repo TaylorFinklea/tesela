@@ -161,6 +161,34 @@ impl From<ViewRecord> for InnerViewRecord {
     }
 }
 
+/// One note's index entry in a Swift-friendly shape. Sourced from the
+/// always-resident Loro index doc — present for EVERY note in the mosaic,
+/// including those whose per-note doc/markdown isn't materialized on this
+/// device yet (lazy materialization). Powers iOS link/page autocomplete so
+/// `[[` finds pages that were never opened locally.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct IndexEntryRecord {
+    /// 32-char lowercase hex of the 16-byte note id.
+    pub note_id_hex: String,
+    /// Display title.
+    pub title: String,
+    /// URL/link slug.
+    pub slug: String,
+    /// Tags on the note.
+    pub tags: Vec<String>,
+}
+
+impl From<tesela_sync::engine::IndexEntry> for IndexEntryRecord {
+    fn from(e: tesela_sync::engine::IndexEntry) -> Self {
+        Self {
+            note_id_hex: e.note_id,
+            title: e.title,
+            slug: e.slug,
+            tags: e.tags,
+        }
+    }
+}
+
 /// Group identity in a Swift-friendly shape: two hex strings.
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct GroupIdentityRecord {
@@ -907,6 +935,20 @@ impl SyncEngineHandle {
             .await
             .into_iter()
             .map(ViewRecord::from)
+            .collect()
+    }
+
+    /// Every note's index entry (id/title/slug/tags) from the always-
+    /// resident Loro index — the complete page list for THIS mosaic,
+    /// including notes not materialized to local disk on this device.
+    /// iOS uses this for `[[` link autocomplete so pages that were never
+    /// opened locally are still found. No per-note docs are loaded.
+    pub async fn index_entries(&self) -> Vec<IndexEntryRecord> {
+        self.inner
+            .index_entries()
+            .await
+            .into_iter()
+            .map(IndexEntryRecord::from)
             .collect()
     }
 

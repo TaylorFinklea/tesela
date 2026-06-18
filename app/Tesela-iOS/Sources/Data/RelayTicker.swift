@@ -644,6 +644,21 @@ final class RelayTicker: ObservableObject {
         return await engine.viewsList()
     }
 
+    /// Every page's index entry (id/title/slug/tags) from the engine's
+    /// always-resident Loro index — the COMPLETE page list for this mosaic,
+    /// including notes never materialized to local disk on this device.
+    /// Powers `[[` link autocomplete. nil when the engine can't open.
+    func indexEntries() async -> [IndexEntryRecord]? {
+        do {
+            try await openEngineIfNeeded()
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+        guard let engine else { return nil }
+        return await engine.indexEntries()
+    }
+
     /// Create/update a saved view in the engine's registry and drain the
     /// op to the relay so other devices converge. Throws when the engine
     /// can't open or the upsert is rejected — the editor surfaces the

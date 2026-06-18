@@ -162,6 +162,11 @@ struct GrAppShell: View {
                 mosaic.onViewsList = { [weak relayTicker] in
                     await relayTicker?.viewsList()?.map(SavedView.init(ffi:))
                 }
+                // Complete page list (Loro index) for `[[` link autocomplete,
+                // so pages never opened on this device are still found.
+                mosaic.onIndexEntries = { [weak relayTicker] in
+                    await relayTicker?.indexEntries()
+                }
                 mosaic.onViewsUpsert = { [weak relayTicker] view in
                     guard let relayTicker else {
                         throw URLError(.cannotWriteToFile)
