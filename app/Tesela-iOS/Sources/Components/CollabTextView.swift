@@ -66,10 +66,10 @@ struct CollabTextView: UIViewRepresentable {
     /// the toolbar handlers.
     let inserter: CollabTextInserter
 
-    /// Drives the `[[` page-link suggestions strip in the keyboard
-    /// accessory. The coordinator updates it as the user types; `BlockRow`
-    /// renders `results` and commits a pick through `inserter`.
-    var autocomplete: LinkAutocomplete
+    /// Drives the inline suggestion strip ([[ links / # tags / slash) in the
+    /// keyboard accessory. The coordinator updates it as the user types;
+    /// `BlockRow` renders `results` and commits a pick through `inserter`.
+    var autocomplete: EditorAutocomplete
 
     /// The formatting accessory hosted as the text view's
     /// `inputAccessoryView`. SwiftUI's `ToolbarItemGroup(placement:
@@ -252,13 +252,13 @@ struct CollabTextView: UIViewRepresentable {
             updateAutocomplete(textView)
         }
 
-        /// Open / refresh / close the `[[` link suggestions for the caret.
+        /// Open / refresh / close the inline suggestions ([[ / # / slash).
         private func updateAutocomplete(_ tv: UITextView) {
             guard tv.markedTextRange == nil else { return }  // skip IME composition
             let sel = tv.selectedRange
             let caret = sel.location + sel.length
-            if let hit = LinkSuggest.detectQuery(in: tv.text ?? "", caretUTF16: caret) {
-                parent.autocomplete.update(start: hit.start, query: hit.query)
+            if let hit = LinkSuggest.detectTrigger(in: tv.text ?? "", caretUTF16: caret) {
+                parent.autocomplete.update(kind: hit.kind, start: hit.start, query: hit.query)
             } else {
                 parent.autocomplete.dismiss()
             }

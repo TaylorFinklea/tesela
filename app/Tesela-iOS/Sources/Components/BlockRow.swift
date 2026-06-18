@@ -63,6 +63,9 @@ struct BlockRow: View {
     /// inactive and the toolbar's link button just inserts `[[`. Declared
     /// here (before `onIndent`) to match the call-site argument order.
     var pageSearch: ((String) -> [Page])? = nil
+    /// Supplies `#` tag suggestions for `query` (wired to the service's
+    /// `searchableTags`). nil → no tag suggestions.
+    var tagSearch: ((String) -> [String])? = nil
     /// Apply an indent delta to this block (+1 or -1). Used by the
     /// keyboard accessory toolbar's indent/dedent buttons.
     var onIndent: ((Int) -> Void)? = nil
@@ -137,10 +140,11 @@ struct BlockRow: View {
     /// insert at the live caret through the splice path. Recreated per
     /// row; bound to the concrete `UITextView` in `CollabTextView`.
     @State private var inserter = CollabTextInserter()
-    /// `[[` page-link autocomplete state for the keyboard suggestions strip.
-    /// The editor coordinator updates it as the user types; the accessory
-    /// renders `results` and a pick commits through `inserter`.
-    @StateObject private var linkAutocomplete = LinkAutocomplete()
+    /// Inline autocomplete state ([[ links / # tags / slash verbs) for the
+    /// keyboard suggestions strip. The editor coordinator updates it as the
+    /// user types; the accessory renders `results` and a pick commits
+    /// through `inserter`.
+    @StateObject private var editorAutocomplete = EditorAutocomplete()
 
     @AppStorage("keyboardToolbarItems") private var keyboardToolbarRaw: String = defaultKeyboardToolbarItemsRaw
     @AppStorage("bareDateField") private var bareDateFieldRaw: String = "scheduled"
@@ -347,34 +351,62 @@ struct BlockRow: View {
                 onSplitToNewBlock?(stripped)
             },
             inserter: inserter,
-            autocomplete: linkAutocomplete,
+            autocomplete: editorAutocomplete,
             accessory: collabKeyboardAccessory
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             editBuffer = combinedEditableText()
             collabFocused = true
-            // Wire the `[[` suggestion source so the coordinator's query
-            // updates produce page results in the accessory strip.
-            linkAutocomplete.search = pageSearch
+            // Wire the suggestion source so the coordinator's trigger/query
+            // updates produce chips ([[ pages, # tags, / verbs).
+            editorAutocomplete.provider = { [pageSearch, tagSearch] kind, query in
+                Self.suggestions(for: kind, query: query, pageSearch: pageSearch, tagSearch: tagSearch)
+            }
             // Register this editor's imperative inserter so the owner can
             // live-apply an inbound remote splice on THIS block (C1-inbound).
             onActiveCollabInserter?(inserter)
         }
-        .onDisappear { linkAutocomplete.dismiss() }
+        .onDisappear { editorAutocomplete.dismiss() }
     }
 
-    /// Commit a `[[` link pick (existing page).
-    private func commitLink(_ page: Page) { commitLinkName(page.title) }
+    /// Build the suggestion chips for a trigger + query. Pages/tags get a
+    /// trailing "create new" chip; slash returns the built-in verbs.
+    static func suggestions(
+        for kind: TriggerKind,
+        query: String,
+        pageSearch: ((String) -> [Page])?,
+        tagSearch: ((String) -> [String])?
+    ) -> [Suggestion] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        switch kind {
+        case .link:
+            var out = (pageSearch?(query) ?? []).map {
+                Suggestion(id: "link:\($0.id)", label: $0.title, insert: "[[\($0.title)]]")
+            }
+            if !q.isEmpty {
+                out.append(Suggestion(id: "link:new", label: "\u{201C}\(q)\u{201D}",
+                                      insert: "[[\(q)]]", isCreateNew: true))
+            }
+            return out
+        case .tag:
+            var out = (tagSearch?(query) ?? []).map {
+                Suggestion(id: "tag:\($0)", label: "#\($0)", insert: "#\($0)")
+            }
+            if !q.isEmpty, !out.contains(where: { $0.insert == "#\(q)" }) {
+                out.append(Suggestion(id: "tag:new", label: "#\(q)", insert: "#\(q)", isCreateNew: true))
+            }
+            return out
+        case .slash:
+            return SlashVerbs.matching(query)
+        }
+    }
 
-    /// Replace the typed `[[query` span with `[[name]]` — an existing page
-    /// or a brand-new one — through the splice path (closing the brackets),
-    /// then dismiss the suggestions.
-    private func commitLinkName(_ name: String) {
-        let clean = name.trimmingCharacters(in: .whitespaces)
-        guard !clean.isEmpty else { return }
-        inserter.replaceTrigger(startOffset: linkAutocomplete.startOffset, with: "[[\(clean)]]")
-        linkAutocomplete.dismiss()
+    /// Commit a suggestion: replace the typed `trigger+query` span with the
+    /// suggestion's insert text through the splice path, then dismiss.
+    private func commitSuggestion(_ s: Suggestion) {
+        inserter.replaceTrigger(startOffset: editorAutocomplete.startOffset, with: s.insert)
+        editorAutocomplete.dismiss()
     }
 
     /// The collab editor's keyboard accessory, styled as a floating pill
@@ -455,21 +487,17 @@ struct BlockRow: View {
     @ViewBuilder
     private var keyboardAccessory: some View {
         HStack(spacing: 12) {
-            // Scrollable middle. While typing a `[[` link this slot shows
-            // page suggestions IN PLACE of the format buttons (same pill
-            // height — no fragile accessory resizing); otherwise the
-            // user-configurable format buttons, scrolling horizontally so
-            // the pinned Hide-keyboard button on the right stays reachable.
+            // Scrollable middle. While an inline trigger is open ([[ link,
+            // # tag, / slash) this slot shows suggestion chips IN PLACE of
+            // the format buttons (same pill height — no fragile accessory
+            // resizing); otherwise the user-configurable format buttons,
+            // scrolling horizontally so the pinned Hide-keyboard button on
+            // the right stays reachable.
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: linkAutocomplete.isActive ? 8 : 18) {
-                    if linkAutocomplete.isActive {
-                        ForEach(linkAutocomplete.results) { page in
-                            linkSuggestionChip(page)
-                        }
-                        // Offer a brand-new page when a name is typed (so
-                        // `[[Thing` that doesn't exist yet is still linkable).
-                        if !linkAutocomplete.query.isEmpty {
-                            createLinkChip(linkAutocomplete.query)
+                HStack(spacing: editorAutocomplete.isActive ? 8 : 18) {
+                    if editorAutocomplete.isActive {
+                        ForEach(editorAutocomplete.results) { suggestion in
+                            suggestionChip(suggestion)
                         }
                     } else {
                         ForEach(scrollableToolbarItems) { item in
@@ -484,47 +512,31 @@ struct BlockRow: View {
         }
     }
 
-    /// A page chip in the `[[` suggestions strip. Tap → insert `[[Title]]`.
-    private func linkSuggestionChip(_ page: Page) -> some View {
+    /// A suggestion chip in the inline-trigger strip ([[ page / # tag / slash
+    /// verb). "Create new" chips read as distinct (outlined accent); the rest
+    /// are filled. Tap → splice the suggestion's insert text.
+    private func suggestionChip(_ s: Suggestion) -> some View {
         Button {
-            commitLink(page)
+            commitSuggestion(s)
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: "doc.text")
-                    .font(.system(size: 11))
-                Text(page.title)
+                Image(systemName: s.isCreateNew ? "plus" : "text.cursor")
+                    .font(.system(size: 11, weight: s.isCreateNew ? .semibold : .regular))
+                Text(s.label)
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
             }
             .padding(.horizontal, 11)
             .padding(.vertical, 6)
-            .background(RoundedRectangle(cornerRadius: 9).fill(theme.bg4))
-            .foregroundStyle(theme.fgDefault)
-        }
-        .buttonStyle(.plain)
-    }
-
-    /// "Create a new page" chip in the `[[` strip — shown after any matches
-    /// when a name is typed. Outlined/accented to read as distinct from
-    /// existing-page chips. Tap → insert `[[name]]`.
-    private func createLinkChip(_ name: String) -> some View {
-        Button {
-            commitLinkName(name)
-        } label: {
-            HStack(spacing: 5) {
-                Image(systemName: "plus")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("\u{201C}\(name)\u{201D}")
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
+            .background {
+                if s.isCreateNew {
+                    RoundedRectangle(cornerRadius: 9)
+                        .strokeBorder(theme.accentSecondary.opacity(0.5), lineWidth: 1)
+                } else {
+                    RoundedRectangle(cornerRadius: 9).fill(theme.bg4)
+                }
             }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 6)
-            .background(
-                RoundedRectangle(cornerRadius: 9)
-                    .strokeBorder(theme.accentSecondary.opacity(0.5), lineWidth: 1)
-            )
-            .foregroundStyle(theme.accentSecondary)
+            .foregroundStyle(s.isCreateNew ? theme.accentSecondary : theme.fgDefault)
         }
         .buttonStyle(.plain)
     }

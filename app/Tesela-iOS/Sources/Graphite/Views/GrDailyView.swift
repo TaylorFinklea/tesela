@@ -171,6 +171,7 @@ struct GrDailyView: View {
                     }
                 },
                 pageSearch: { mosaic.searchablePages($0) },
+                tagSearch: { mosaic.searchableTags($0) },
                 onIndent: { delta in mosaic.indentTodayBlock(id: block.id, by: delta) },
                 onCycleStatus: { mosaic.cycleBlockStatus(id: block.id) },
                 onSetProperties: { updated in
@@ -234,6 +235,7 @@ struct GrDailyView: View {
                     }
                 },
                 pageSearch: { mosaic.searchablePages($0) },
+                tagSearch: { mosaic.searchableTags($0) },
                 onIndent: { delta in mosaic.indentYesterdayBlock(id: block.id, by: delta) }
             )
             .opacity(0.72)
@@ -302,6 +304,7 @@ struct GrDailyView: View {
                         }
                     },
                     pageSearch: { mosaic.searchablePages($0) },
+                    tagSearch: { mosaic.searchableTags($0) },
                     onIndent: { delta in
                         mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: delta)
                     }

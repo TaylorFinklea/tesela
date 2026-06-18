@@ -221,6 +221,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// link autocomplete can filter it synchronously per keystroke.
     var onIndexEntries: (() async -> [IndexEntryRecord]?)? = nil
     private var indexPageCache: [Page] = []
+    private var indexTagCache: [String] = []
 
     /// Callback fired whenever a note becomes visible/loaded (the daily
     /// on refresh, any opened page). Wired in both shells to
@@ -777,9 +778,26 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return LinkSuggest.rank(visible, query: q, limit: limit)
     }
 
-    /// Refresh the `[[`-autocomplete page cache from the engine's Loro
-    /// index — the complete list, including notes not materialized locally.
-    /// Called on each `.relay` refresh. No-op outside `.relay` / unwired.
+    /// Tag names matching `query` for `#` autocomplete. Uses the complete
+    /// tag set from the Loro index in `.relay` (cached, includes tags on
+    /// unmaterialized notes); the in-memory `tags` list otherwise. Empty
+    /// query → a recent slice.
+    func searchableTags(_ query: String, limit: Int = 12) -> [String] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let all: [String]
+        if case .relay = currentBackend, !indexTagCache.isEmpty {
+            all = indexTagCache
+        } else {
+            all = tags.map { $0.title }
+        }
+        if q.isEmpty { return Array(all.prefix(limit)) }
+        return LinkSuggest.rankStrings(all, query: q, limit: limit)
+    }
+
+    /// Refresh the autocomplete caches (pages + tags) from the engine's
+    /// Loro index — the complete lists, including notes/tags not
+    /// materialized locally. Called on each `.relay` refresh. No-op
+    /// outside `.relay` / unwired.
     func refreshIndexPages() async {
         guard case .relay = currentBackend, let load = onIndexEntries else { return }
         guard let entries = await load() else { return }
@@ -790,6 +808,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
             return Page(id: slug, title: e.title.isEmpty ? slug : e.title,
                         slug: slug, type: "note", edited: "", blocks: 0, refs: 0)
         }
+        var tagSet = Set<String>()
+        for e in entries { for t in e.tags where !t.isEmpty { tagSet.insert(t) } }
+        indexTagCache = tagSet.sorted()
     }
 
     func capture(_ text: String) {
