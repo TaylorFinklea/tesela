@@ -713,6 +713,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
         Task { await pushPage(id: pageId, blocks: blocks) }
     }
 
+    /// Pages matching `query`, ranked for the `[[` link autocomplete.
+    /// Empty query → the most-recently-edited handful (web shows recents
+    /// on an empty filter). Otherwise a fuzzy/substring match over title +
+    /// slug via `LinkSuggest.rank`, capped at `limit`. Non-mutating; safe
+    /// to call on every keystroke.
+    func searchablePages(_ query: String, limit: Int = 12) -> [Page] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        let visible = pages.filter { !$0.hidden }
+        if q.isEmpty { return Array(visible.prefix(limit)) }
+        return LinkSuggest.rank(visible, query: q, limit: limit)
+    }
+
     func capture(_ text: String) {
         capture(text, target: .today)
     }

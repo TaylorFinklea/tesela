@@ -66,6 +66,11 @@ struct CollabTextView: UIViewRepresentable {
     /// the toolbar handlers.
     let inserter: CollabTextInserter
 
+    /// Drives the `[[` page-link suggestions strip in the keyboard
+    /// accessory. The coordinator updates it as the user types; `BlockRow`
+    /// renders `results` and commits a pick through `inserter`.
+    var autocomplete: LinkAutocomplete
+
     /// The formatting accessory hosted as the text view's
     /// `inputAccessoryView`. SwiftUI's `ToolbarItemGroup(placement:
     /// .keyboard)` only attaches when the first responder is a
@@ -232,6 +237,25 @@ struct CollabTextView: UIViewRepresentable {
 
         func textViewDidChange(_ textView: UITextView) {
             parent.text = textView.text ?? ""
+            updateAutocomplete(textView)
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            // Caret moved without a text change (tap / arrow) — re-check
+            // whether the caret still sits inside an open `[[…`.
+            updateAutocomplete(textView)
+        }
+
+        /// Open / refresh / close the `[[` link suggestions for the caret.
+        private func updateAutocomplete(_ tv: UITextView) {
+            guard tv.markedTextRange == nil else { return }  // skip IME composition
+            let sel = tv.selectedRange
+            let caret = sel.location + sel.length
+            if let hit = LinkSuggest.detectQuery(in: tv.text ?? "", caretUTF16: caret) {
+                parent.autocomplete.update(start: hit.start, query: hit.query)
+            } else {
+                parent.autocomplete.dismiss()
+            }
         }
 
         func textViewDidEndEditing(_ textView: UITextView) {
@@ -277,6 +301,27 @@ final class CollabTextInserter {
         // the binding. Caret advances to the end of the inserted text
         // automatically.
         _ = tv
+    }
+
+    /// Replace the `[[query` span — from `startOffset` (UTF-16) to the live
+    /// caret — with `string` (the chosen `[[Page]]`), routed through the
+    /// delegate's `shouldChangeTextIn` so the splice is emitted and the
+    /// engine's `text_seq` stays aligned. Used by the link-autocomplete pick.
+    func replaceTrigger(startOffset: Int, with string: String) {
+        guard let tv = textView else { return }
+        let caret = tv.selectedRange.location + tv.selectedRange.length
+        let len = max(0, caret - startOffset)
+        guard startOffset >= 0, startOffset + len <= (tv.text as NSString?)?.length ?? 0 else { return }
+        let range = NSRange(location: startOffset, length: len)
+        let shouldChange = coordinator?.textView(
+            tv, shouldChangeTextIn: range, replacementText: string
+        ) ?? true
+        guard shouldChange else { return }
+        if let start = tv.position(from: tv.beginningOfDocument, offset: range.location),
+           let end = tv.position(from: start, offset: range.length),
+           let textRange = tv.textRange(from: start, to: end) {
+            tv.replace(textRange, withText: string)
+        }
     }
 
     /// Inbound live-apply (collab editing C1-inbound): make the live text

@@ -58,6 +58,11 @@ struct BlockRow: View {
     /// own the outline (Daily, Page) so the keyboard accessory's Enter
     /// behaviour can split a block.
     var onSplitToNewBlock: ((String) -> Void)? = nil
+    /// Supplies `[[` page-link suggestions for `query` (the owner wires it
+    /// to the service's `searchablePages`). When nil, link autocomplete is
+    /// inactive and the toolbar's link button just inserts `[[`. Declared
+    /// here (before `onIndent`) to match the call-site argument order.
+    var pageSearch: ((String) -> [Page])? = nil
     /// Apply an indent delta to this block (+1 or -1). Used by the
     /// keyboard accessory toolbar's indent/dedent buttons.
     var onIndent: ((Int) -> Void)? = nil
@@ -132,6 +137,10 @@ struct BlockRow: View {
     /// insert at the live caret through the splice path. Recreated per
     /// row; bound to the concrete `UITextView` in `CollabTextView`.
     @State private var inserter = CollabTextInserter()
+    /// `[[` page-link autocomplete state for the keyboard suggestions strip.
+    /// The editor coordinator updates it as the user types; the accessory
+    /// renders `results` and a pick commits through `inserter`.
+    @StateObject private var linkAutocomplete = LinkAutocomplete()
 
     @AppStorage("keyboardToolbarItems") private var keyboardToolbarRaw: String = defaultKeyboardToolbarItemsRaw
     @AppStorage("bareDateField") private var bareDateFieldRaw: String = "scheduled"
@@ -338,16 +347,28 @@ struct BlockRow: View {
                 onSplitToNewBlock?(stripped)
             },
             inserter: inserter,
+            autocomplete: linkAutocomplete,
             accessory: collabKeyboardAccessory
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             editBuffer = combinedEditableText()
             collabFocused = true
+            // Wire the `[[` suggestion source so the coordinator's query
+            // updates produce page results in the accessory strip.
+            linkAutocomplete.search = pageSearch
             // Register this editor's imperative inserter so the owner can
             // live-apply an inbound remote splice on THIS block (C1-inbound).
             onActiveCollabInserter?(inserter)
         }
+        .onDisappear { linkAutocomplete.dismiss() }
+    }
+
+    /// Commit a `[[` link pick: replace the typed `[[query` span with
+    /// `[[Title]]` through the splice path, then close the suggestions.
+    private func commitLink(_ page: Page) {
+        inserter.replaceTrigger(startOffset: linkAutocomplete.startOffset, with: "[[\(page.title)]]")
+        linkAutocomplete.dismiss()
     }
 
     /// The collab editor's keyboard accessory, styled as a floating pill
@@ -428,14 +449,21 @@ struct BlockRow: View {
     @ViewBuilder
     private var keyboardAccessory: some View {
         HStack(spacing: 12) {
-            // Scrollable middle — user-configurable items. If the user
-            // enables more buttons than fit, this scrolls horizontally
-            // so the toolbar pill stays a normal width and the pinned
-            // Hide-keyboard button on the right is always reachable.
+            // Scrollable middle. While typing a `[[` link this slot shows
+            // page suggestions IN PLACE of the format buttons (same pill
+            // height — no fragile accessory resizing); otherwise the
+            // user-configurable format buttons, scrolling horizontally so
+            // the pinned Hide-keyboard button on the right stays reachable.
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 18) {
-                    ForEach(scrollableToolbarItems) { item in
-                        toolbarButton(for: item)
+                HStack(spacing: linkAutocomplete.isActive ? 8 : 18) {
+                    if linkAutocomplete.isActive {
+                        ForEach(linkAutocomplete.results) { page in
+                            linkSuggestionChip(page)
+                        }
+                    } else {
+                        ForEach(scrollableToolbarItems) { item in
+                            toolbarButton(for: item)
+                        }
                     }
                 }
                 .padding(.horizontal, 2)
@@ -443,6 +471,26 @@ struct BlockRow: View {
             // Always pinned right — never scrolls, never configurable.
             toolbarButton(for: .hideKeyboard)
         }
+    }
+
+    /// A page chip in the `[[` suggestions strip. Tap → insert `[[Title]]`.
+    private func linkSuggestionChip(_ page: Page) -> some View {
+        Button {
+            commitLink(page)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "doc.text")
+                    .font(.system(size: 11))
+                Text(page.title)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 11)
+            .padding(.vertical, 6)
+            .background(RoundedRectangle(cornerRadius: 9).fill(theme.bg4))
+            .foregroundStyle(theme.fgDefault)
+        }
+        .buttonStyle(.plain)
     }
 
     /// Items rendered inside the scrollable middle. We filter out
@@ -483,7 +531,10 @@ struct BlockRow: View {
             // splice path; on the legacy TextField (no cursor offset)
             // append at the end — caret lands there on next keystroke.
             if collab {
-                inserter.insertAtCaret("[[]]")
+                // With autocomplete wired, insert just the `[[` opener so the
+                // suggestions strip appears (selecting a page closes the
+                // link). Without it, the empty `[[]]` pair as before.
+                inserter.insertAtCaret(pageSearch != nil ? "[[" : "[[]]")
             } else {
                 let spacer = (editBuffer.hasSuffix(" ") || editBuffer.isEmpty) ? "" : " "
                 editBuffer += spacer + "[[]]"

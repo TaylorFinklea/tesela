@@ -202,6 +202,7 @@ struct GrPageView: View {
                         editingBlockId = newId
                     }
                 },
+                pageSearch: { mosaic.searchablePages($0) },
                 onIndent: { delta in
                     mosaic.indentPageBlock(pageId: slug, blockId: block.id, by: delta)
                 },
