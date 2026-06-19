@@ -1,7 +1,10 @@
 # Current State
 
 ## Branch
-- `main` @ `3a38ce69`+ — **2026-06-19**. Clean tree; `.docs/ai/review/` is untracked (the 3 open-source arch-review reports, kept for reference).
+- `main` @ HEAD — **2026-06-19**. Clean tree; `.docs/ai/review/` is untracked (the 3 open-source arch-review reports, kept for reference).
+
+## This session
+- [x] **iOS: past dailies no longer dimmed** (build 34 → TestFlight). Dropped `.opacity(0.72/0.6)` on yesterday/past-daily blocks in `GrDailyView.swift` (live Graphite shell) — Taylor disliked the grayed/darker look. Legacy `DailyView`/`WorkspaceGridView` still dim but aren't live (`useLegacyShell` off); offered to strip those too.
 
 ## Plan
 - [x] **Arch-review eval + hygiene batch.** Adversarially verified the 3 open-source review reports (`.docs/ai/review/`) vs real code (ultracode, Claude-only) — ~20% signal, ~80% cargo-culted team/SaaS advice. Acted on the real findings: C23 (backup in-place-restore 409 guard — only data-loss item) + hygiene C19/C20/C21/C24/C6 (CI clippy + svelte-check blocking, `cargo audit`, delete `tesela-loro-spike`, fix `AGENTS.md` Next.js→Svelte + crate count, drop drifted `default_types()`). Declined the rest. See git log `3fec1b62`/`9d5d9b7c`.
