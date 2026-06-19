@@ -217,6 +217,12 @@ pub struct TickOutcome {
     pub sent: u32,
     /// Note ids touched by an inbound apply, deduped, in first-seen order.
     pub applied_note_ids: Vec<[u8; 16]>,
+    /// The exact per-note delta bytes that applied this tick. The caller
+    /// re-broadcasts these verbatim on `ws_delta_tx` so live web clients'
+    /// Loro docs converge — the same "re-broadcast the applied bytes"
+    /// approach the WS inbound handler uses. (A post-apply `export_doc_update`
+    /// can't recover them: the engine's export cursor already consumed them.)
+    pub applied_updates: Vec<tesela_sync::LoroDocUpdate>,
 }
 
 /// One iteration of the relay sync loop: inbound (poll + apply +
@@ -235,6 +241,7 @@ pub async fn tick(
     let mut applied_total = 0u32;
     let mut sent_total = 0u32;
     let mut applied_note_ids: Vec<[u8; 16]> = Vec::new();
+    let mut applied_updates: Vec<tesela_sync::LoroDocUpdate> = Vec::new();
 
     // ─── Inbound ─────────────────────────────────────────────────────
     match handle.client.poll(state.inbound_cursor).await {
@@ -286,6 +293,17 @@ pub async fn tick(
                         for doc in &report.applied {
                             if !applied_note_ids.contains(doc) {
                                 applied_note_ids.push(*doc);
+                            }
+                        }
+                        // Carry the exact bytes that applied so the caller can
+                        // re-broadcast them on ws_delta_tx (live web clients'
+                        // Loro docs converge without a hard refresh).
+                        for (doc, bytes) in &pairs {
+                            if report.applied.contains(doc) {
+                                applied_updates.push(tesela_sync::LoroDocUpdate {
+                                    doc: *doc,
+                                    update_bytes: bytes.clone(),
+                                });
                             }
                         }
                         // A PENDING import (causal gap — the base was
@@ -548,6 +566,7 @@ pub async fn tick(
         applied: applied_total,
         sent: sent_total,
         applied_note_ids,
+        applied_updates,
     })
 }
 

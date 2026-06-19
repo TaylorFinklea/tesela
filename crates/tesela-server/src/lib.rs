@@ -936,32 +936,34 @@ async fn bring_up_relay_if_configured(
                             outcome.sent
                         );
                     }
-                    for note_id in outcome.applied_note_ids {
-                        // Notify web that this remote-originated edit landed.
+                    for note_id in &outcome.applied_note_ids {
+                        // Notify web that this remote-originated edit landed
+                        // (drives query invalidation — list/agenda/inbox).
                         routes::ws::emit_note_updated(
                             &*tick_engine,
                             &tick_store,
                             &tick_index,
                             &tick_ws_tx,
-                            note_id,
+                            *note_id,
                         )
                         .await;
-                        // Push the merged note's delta to live device sockets
-                        // so they converge without waiting on their own poll.
-                        // `origin: None` — fan out to everyone (the relay has
-                        // no originating WS socket). Cursor-free export.
-                        if let Some(bytes) = tick_engine.export_doc_update(note_id, None).await {
-                            if let Ok(frame) = tesela_sync::encode_loro_relay_payload(&[
-                                tesela_sync::LoroDocUpdate {
-                                    doc: note_id,
-                                    update_bytes: bytes,
-                                },
-                            ]) {
-                                let _ = tick_ws_delta_tx.send(state::WsDelta {
-                                    origin: None,
-                                    frame,
-                                });
-                            }
+                    }
+                    // Re-broadcast the EXACT applied delta bytes to live
+                    // device sockets so their Loro docs converge without
+                    // waiting on their own poll. `origin: None` — fan out to
+                    // everyone (the relay has no originating WS socket). The
+                    // post-apply `export_doc_update` returned None here — the
+                    // engine's export cursor already consumed these bytes — so
+                    // we carry them out of the tick and re-broadcast verbatim,
+                    // exactly as the WS inbound handler does.
+                    if !outcome.applied_updates.is_empty() {
+                        if let Ok(frame) =
+                            tesela_sync::encode_loro_relay_payload(&outcome.applied_updates)
+                        {
+                            let _ = tick_ws_delta_tx.send(state::WsDelta {
+                                origin: None,
+                                frame,
+                            });
                         }
                     }
                 }

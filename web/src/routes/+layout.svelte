@@ -139,6 +139,14 @@
         // editor (that's C2.3). Updates for other docs are ignored inside
         // `applyInbound`.
         applyInboundToActive(updates);
+        // Fallback: a relay-applied remote delta may target a note that is
+        // VIEWED but not the active editing buffer (e.g. today's daily on
+        // desktop while you edited on the phone) — `applyInboundToActive`
+        // drops those. Schedule a broad, debounced refresh so the daily /
+        // agenda / inbox / list queries re-fetch and render the change live
+        // instead of waiting for a hard refresh. The server suppresses our
+        // own-origin deltas, so this only fires for genuinely remote edits.
+        scheduleNoteRefresh(null, true);
         const firstDocHex = updates[0]
           ? Array.from(updates[0].doc)
               .map((b) => b.toString(16).padStart(2, "0"))
