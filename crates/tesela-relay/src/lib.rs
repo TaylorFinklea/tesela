@@ -9,6 +9,7 @@ use axum::middleware::from_fn_with_state;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 
+pub mod apns;
 pub mod handlers;
 pub mod state;
 pub mod store;
@@ -33,6 +34,7 @@ pub use tesela_sync::crypto::relay_auth;
 /// - `PUT  /groups/{id}/ops`                — MAC-gated
 /// - `GET  /groups/{id}/ops`                — MAC-gated
 /// - `POST /groups/{id}/ack`                — MAC-gated
+/// - `POST /groups/{id}/devices`            — MAC-gated (APNs token registry, P3b)
 /// - `PUT  /groups/{id}/snapshot`           — MAC-gated (snapshot deposit + compaction)
 /// - `GET  /groups/{id}/snapshots`          — MAC-gated (bootstrap source)
 /// - `DELETE /admin/groups/{id}/register`   — admin-token-gated (handler checks)
@@ -46,6 +48,10 @@ pub fn router(state: AppState) -> Router {
             put(handlers::put_op).get(handlers::get_ops),
         )
         .route("/groups/{group_id}/ack", post(handlers::post_ack))
+        .route(
+            "/groups/{group_id}/devices",
+            post(handlers::handle_register_device),
+        )
         .route("/groups/{group_id}/snapshot", put(handlers::put_snapshot))
         .route("/groups/{group_id}/snapshots", get(handlers::get_snapshots))
         .layer(from_fn_with_state(state.clone(), handlers::mac_gate));

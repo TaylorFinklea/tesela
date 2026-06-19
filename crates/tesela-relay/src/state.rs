@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
+use crate::apns::Apns;
 use crate::store::Store;
 
 /// Window of nonces seen recently per `(group_id, nonce)`. Anything
@@ -51,6 +52,9 @@ pub(crate) struct Inner {
     pub(crate) nonces: NonceCache,
     /// Per-IP rate-limit counters. See `RATE_LIMIT_*`.
     pub(crate) ip_rates: IpRateCache,
+    /// APNs push sender, iff all `APNS_*` config was supplied + the `.p8`
+    /// parsed. `None` = the relay sends no silent pushes (default).
+    pub(crate) apns: Option<Arc<Apns>>,
 }
 
 impl AppState {
@@ -62,6 +66,20 @@ impl AppState {
         max_body: usize,
         admin_token: Option<String>,
     ) -> Result<Self> {
+        Self::open_with_apns(db_path, max_body, admin_token, None).await
+    }
+
+    /// Like [`open`](Self::open) but also wires an APNs sender (sync
+    /// durability P3c). `main.rs` builds the sender from `APNS_*` config
+    /// and passes it here; tests + every other caller use `open` (no
+    /// push). Kept as a separate constructor so the common 3-arg
+    /// signature stays stable across the test suite.
+    pub async fn open_with_apns(
+        db_path: &Path,
+        max_body: usize,
+        admin_token: Option<String>,
+        apns: Option<Arc<Apns>>,
+    ) -> Result<Self> {
         let store = Store::open(db_path).await?;
         Ok(Self {
             inner: Arc::new(Inner {
@@ -70,6 +88,7 @@ impl AppState {
                 admin_token,
                 nonces: Arc::new(Mutex::new(HashMap::new())),
                 ip_rates: Arc::new(Mutex::new(HashMap::new())),
+                apns,
             }),
         })
     }

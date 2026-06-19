@@ -45,11 +45,18 @@ hmac = "0.12"
 base64 = "0.22"
 hex = "0.4"
 
+# APNs silent-push proxy (sync durability P3c). Outbound HTTP/2 to
+# api.push.apple.com (Apple rejects HTTP/1.1, hence the explicit http2
+# feature on top of the workspace rustls base) + an ES256 provider-token
+# JWT signed with the operator's .p8 key (jsonwebtoken uses the `ring`
+# already in-tree). Both are optional at runtime: unset APNS_* env → the
+# relay runs exactly as before, no push.
+reqwest = { workspace = true, features = ["http2"] }
+jsonwebtoken = "9"
+
 [dev-dependencies]
-# Integration tests via reqwest against a spawned in-process relay.
-reqwest.workspace = true
-# tesela-sync is already a runtime dep above; conformance tests use
-# the same primitives so client + relay can't drift on the wire
-# format.
+# Integration tests use reqwest (a runtime dep above) against a spawned
+# in-process relay, plus tesela-sync's primitives so client + relay
+# can't drift on the wire format.
 rand.workspace = true
 tempfile.workspace = true

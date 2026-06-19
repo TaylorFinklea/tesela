@@ -378,6 +378,60 @@ impl Store {
             .collect())
     }
 
+    // ── APNs device-token registry (sync durability P3b/P3c) ──────
+
+    /// Upsert (group_id, device_id) → APNs push token. Idempotent;
+    /// last-write-wins on the token + timestamp. Mirrors the CF Worker's
+    /// `upsertDeviceToken` (+ the per-group `group_id` the multi-group
+    /// store needs). The token is stored verbatim (the handler lowercases
+    /// it for wire parity with the CF Worker).
+    pub async fn upsert_device_token(
+        &self,
+        group_id: &[u8; 16],
+        device_id: &[u8; 16],
+        apns_token: &str,
+        updated_at: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO relay_device_tokens(group_id, device_id, apns_token, updated_at) \
+             VALUES (?, ?, ?, ?) \
+             ON CONFLICT(group_id, device_id) DO UPDATE SET \
+               apns_token = excluded.apns_token, updated_at = excluded.updated_at",
+        )
+        .bind(&group_id[..])
+        .bind(&device_id[..])
+        .bind(apns_token)
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await
+        .context("upsert device token")?;
+        Ok(())
+    }
+
+    /// APNs tokens of every device in `group_id` EXCEPT `exclude_device`
+    /// (the depositor — it already has the op). The push fans out to
+    /// these so the group's OTHER devices wake. Mirrors the CF Worker's
+    /// `listOtherApnsTokens`.
+    pub async fn list_other_apns_tokens(
+        &self,
+        group_id: &[u8; 16],
+        exclude_device: &[u8; 16],
+    ) -> Result<Vec<String>> {
+        let rows = sqlx::query(
+            "SELECT apns_token FROM relay_device_tokens \
+             WHERE group_id = ? AND device_id != ?",
+        )
+        .bind(&group_id[..])
+        .bind(&exclude_device[..])
+        .fetch_all(&self.pool)
+        .await
+        .context("list other apns tokens")?;
+        Ok(rows
+            .into_iter()
+            .map(|r| r.get::<String, _>("apns_token"))
+            .collect())
+    }
+
     // ── Snapshots + snapshot-gated compaction ─────────────────────
 
     /// Deposit a full snapshot batch covering relay-seq `covers_seq`
@@ -535,6 +589,23 @@ async fn migrate(pool: &SqlitePool) -> Result<()> {
         CREATE TABLE IF NOT EXISTS relay_group_meta (
             group_id       BLOB NOT NULL PRIMARY KEY,
             compaction_seq INTEGER NOT NULL DEFAULT 0,
+            FOREIGN KEY (group_id) REFERENCES relay_registrations(group_id) ON DELETE CASCADE
+        );
+
+        -- APNs device-token registry (sync durability P3b/P3c). One row
+        -- per (group, device) → that device's APNs push token (hex). A
+        -- token is a ROUTING identifier, not note content — the relay
+        -- stays zero-knowledge. On a PUT /ops the relay sends a
+        -- content-available silent push to the group's OTHER tokens so a
+        -- suspended device catches up instantly. (CF Worker parity: its
+        -- per-DO `device_tokens` table is single-group, so it has no
+        -- group_id column; the multi-group Rust store needs it.)
+        CREATE TABLE IF NOT EXISTS relay_device_tokens (
+            group_id   BLOB NOT NULL,
+            device_id  BLOB NOT NULL,
+            apns_token TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (group_id, device_id),
             FOREIGN KEY (group_id) REFERENCES relay_registrations(group_id) ON DELETE CASCADE
         );
         "#,

@@ -202,6 +202,30 @@ pub async fn put_op(
                 .store
                 .touch_device(&group_id, &from_device_arr, ts as i64)
                 .await;
+            // Sync durability P3c: nudge the group's OTHER devices to
+            // catch up NOW via a content-available APNs push instead of
+            // waiting for their next poll / BGProcessingTask. SPAWNED +
+            // best-effort: the op is ALREADY durably committed above, so a
+            // token-lookup or push failure can NEVER affect this 200 (it's
+            // a detached task). No-op when APNs is unconfigured.
+            if state.inner.apns.is_some() {
+                let state = state.clone();
+                let group = group_id;
+                let from = from_device_arr;
+                tokio::spawn(async move {
+                    let Some(apns) = state.inner.apns.as_ref() else {
+                        return;
+                    };
+                    match state.inner.store.list_other_apns_tokens(&group, &from).await {
+                        Ok(tokens) => {
+                            for token in tokens {
+                                let _ = apns.send_background_push(&token).await;
+                            }
+                        }
+                        Err(e) => tracing::warn!("[apns] token lookup failed: {e}"),
+                    }
+                });
+            }
             (
                 StatusCode::OK,
                 Json(serde_json::json!({ "seq": seq, "ts": ts })),
@@ -456,6 +480,65 @@ pub async fn post_ack(
     // (delete ops superseded by a stored encrypted snapshot, not by ack).
     // See `.docs/ai/phases/2026-06-03-encrypted-replica-spine-spec.md`.
 
+    (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
+}
+
+// ─── /devices — APNs token registry (sync durability P3b) ───────────
+
+#[derive(Debug, Deserialize)]
+pub struct RegisterDeviceRequest {
+    /// Hex-encoded device id (16 bytes / 32 chars) — the same id as
+    /// `from_device` on PUT /ops, so the push can exclude the depositor.
+    pub device: String,
+    /// The device's APNs push token, hex-encoded.
+    pub apns_token: String,
+}
+
+/// `POST /groups/{group_id}/devices`
+///
+/// MAC-gated (via the `mac_gated` sub-router — the same auth as
+/// /ops/ack). Register or refresh this device's APNs token so a deposit
+/// by another member can wake it with a content-available silent push
+/// (sync durability P3b). Mirrors the Cloudflare Worker's
+/// `handleRegisterDevice` byte-for-byte on the wire: body
+/// `{device, apns_token}`, `device` must be 16 bytes of hex, `apns_token`
+/// a non-empty hex string (lowercased on store). The token is a routing
+/// identifier, not note content — the relay stays zero-knowledge. The
+/// iOS `RelayClient.register_device` (build 36) authenticates here
+/// unchanged (shared MAC primitives).
+pub async fn handle_register_device(
+    State(state): State<AppState>,
+    Path(group_id_hex): Path<String>,
+    Json(req): Json<RegisterDeviceRequest>,
+) -> Response {
+    let Some(group_id) = parse_group_id(&group_id_hex) else {
+        return (StatusCode::BAD_REQUEST, "invalid group_id hex").into_response();
+    };
+    let Ok(device_vec) = hex::decode(&req.device) else {
+        return (StatusCode::BAD_REQUEST, "device not hex").into_response();
+    };
+    let Ok(device_arr): Result<[u8; 16], _> = device_vec.try_into() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            "device must be 16 bytes (DeviceId)",
+        )
+            .into_response();
+    };
+    // Wire parity with the CF Worker: non-empty + all hex digits (its
+    // `/^[0-9a-fA-F]+$/`), stored lowercased.
+    let token = req.apns_token.trim().to_ascii_lowercase();
+    if token.is_empty() || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return (StatusCode::BAD_REQUEST, "apns_token must be non-empty hex").into_response();
+    }
+    let now = wall_clock_secs_f64() as i64;
+    if let Err(e) = state
+        .inner
+        .store
+        .upsert_device_token(&group_id, &device_arr, &token, now)
+        .await
+    {
+        return internal_err(&e.to_string());
+    }
     (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
 }
 

@@ -1574,3 +1574,78 @@ async fn test_00_harness_spawns_relay_and_health_works() {
 // the import stays meaningful even before tests 11/12 fill in. Will
 // remove when stage 3d's nonce-dedupe test exercises Duration.
 const _UNUSED_DURATION: Duration = Duration::from_secs(0);
+
+// ─── /devices — APNs token registry (sync durability P3b) ───────────
+
+/// A MAC'd POST /devices with a valid {device, apns_token} round-trips
+/// to 200 {"ok": true} (the request contract shared with the CF Worker);
+/// missing MAC → 401; a non-hex apns_token → 400. The APNs PUSH itself
+/// is a side-effect to Apple with no relay response, so there's nothing
+/// to assert here beyond the registration contract (push is unconfigured
+/// in tests — `AppState::open` passes `apns: None`).
+#[tokio::test]
+async fn test_register_device_contract() {
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let device = random_device_id_hex();
+    let now = now_secs();
+    let client = reqwest::Client::new();
+    client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&register_body(&group, now))
+        .send()
+        .await
+        .unwrap();
+
+    let path = format!("/groups/{}/devices", hex::encode(group.id.as_bytes()));
+    let url = format!("{}{}", relay.base_url, path);
+
+    // 1) Valid MAC'd registration → 200 {"ok": true}.
+    let body = json!({ "device": device, "apns_token": "aabbccddeeff00112233" });
+    let body_bytes = serde_json::to_vec(&body).unwrap();
+    let headers = auth_headers(&group, &device, "POST", &path, "", &body_bytes);
+    let r = client
+        .post(&url)
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.status().is_success(),
+        "POST /devices should 2xx, got {}",
+        r.status()
+    );
+    let v: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(v["ok"], json!(true));
+
+    // 2) Missing MAC headers → 401 (the mac_gate rejects before the handler).
+    let body = json!({ "device": device, "apns_token": "aabbccdd" });
+    let r = client.post(&url).json(&body).send().await.unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        401,
+        "unauthenticated POST /devices must be 401"
+    );
+
+    // 3) Valid MAC but non-hex apns_token → 400.
+    let body = json!({ "device": device, "apns_token": "not-hex!!" });
+    let body_bytes = serde_json::to_vec(&body).unwrap();
+    let headers = auth_headers(&group, &device, "POST", &path, "", &body_bytes);
+    let r = client
+        .post(&url)
+        .headers(headers)
+        .body(body_bytes)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status().as_u16(),
+        400,
+        "non-hex apns_token must be 400"
+    );
+}

@@ -23,8 +23,9 @@
 //! - Account systems, billing, multi-tenancy beyond namespacing by
 //!   randomly-generated `group_id`. One deployment = one trust
 //!   surface (operator).
-//! - Push delivery / WebSocket. Devices poll. APNs push proxy is a
-//!   separate future deliverable.
+//! - WebSocket. Devices poll. (APNs silent-push is now OPTIONAL — set
+//!   `APNS_*` to nudge suspended iOS devices to pull on each deposit;
+//!   unset → poll-only, exactly as before. The push carries no content.)
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -61,13 +62,60 @@ pub struct Args {
     /// still chunk multi-note batches (see `MAX_RELAY_PLAINTEXT_BYTES`).
     #[arg(long, env = "TESELA_RELAY_MAX_BODY", default_value_t = 16 * 1024 * 1024)]
     pub max_body: usize,
+
+    // ── APNs silent-push (sync durability P3c). All four required to
+    //    enable; any unset → push disabled, relay runs poll-only as
+    //    before. Same env-var names as the Cloudflare Worker so the two
+    //    relays share one ops vocabulary. An HA add-on maps its options
+    //    to these env vars.
+    /// APNs auth key — either the `.p8` PEM contents
+    /// (`-----BEGIN PRIVATE KEY-----…`) or a filesystem path to the
+    /// `.p8` file (the HA-add-on-friendly form; auto-detected).
+    #[arg(long, env = "APNS_KEY_P8")]
+    pub apns_key_p8: Option<String>,
+
+    /// APNs Key ID (the `.p8`'s key id; the JWT `kid`). e.g. `C2DP446WQ9`.
+    #[arg(long, env = "APNS_KEY_ID")]
+    pub apns_key_id: Option<String>,
+
+    /// Apple Developer Team ID (the JWT `iss`). e.g. `K7CBQW6MPG`.
+    #[arg(long, env = "APNS_TEAM_ID")]
+    pub apns_team_id: Option<String>,
+
+    /// App bundle id (the APNs `apns-topic`). e.g. `app.tesela.ios`.
+    #[arg(long, env = "APNS_BUNDLE_ID")]
+    pub apns_bundle_id: Option<String>,
+
+    /// Optional APNs host override (default `https://api.push.apple.com`).
+    /// Set `https://api.sandbox.push.apple.com` for development tokens
+    /// (the iOS entitlement is `aps-environment=development`).
+    #[arg(long, env = "APNS_HOST")]
+    pub apns_host: Option<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
-    let state = AppState::open(&args.db, args.max_body, args.admin_token.clone()).await?;
+    // Build the APNs sender from config (None unless all APNS_* are set +
+    // the .p8 parses). A bad key fails here loudly rather than per-push.
+    let apns = tesela_relay::apns::Apns::from_config(
+        args.apns_key_p8.clone(),
+        args.apns_key_id.clone(),
+        args.apns_team_id.clone(),
+        args.apns_bundle_id.clone(),
+        args.apns_host.clone(),
+    )
+    .map(std::sync::Arc::new);
+    match &apns {
+        Some(_) => info!(
+            "APNs silent-push ENABLED (key id {})",
+            args.apns_key_id.as_deref().unwrap_or("?")
+        ),
+        None => info!("APNs silent-push disabled (APNS_* not fully configured)"),
+    }
+    let state =
+        AppState::open_with_apns(&args.db, args.max_body, args.admin_token.clone(), apns).await?;
     let app = router(state);
 
     let listener = tokio::net::TcpListener::bind(args.bind).await?;
