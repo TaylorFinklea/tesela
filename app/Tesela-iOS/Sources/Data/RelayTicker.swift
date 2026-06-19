@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 /// Background poll loop driving the iOS-side WAN relay sync.
 ///
@@ -853,6 +854,38 @@ final class RelayTicker: ObservableObject {
         loopTask?.cancel()
         loopTask = nil
         isRunning = false
+    }
+
+    /// Drain the outbound queue to the relay BEFORE iOS suspends the app —
+    /// call this from the shell's scenePhase → `.background` hook instead of
+    /// a bare `stop()`. Stops the tick loop (so no concurrent ticks), then
+    /// runs a final `flushPendingOutbound()` inside a `UIApplication`
+    /// background task so the push has up to ~30s to reach the relay even as
+    /// we background.
+    ///
+    /// Sync-durability Phase 1: without this, a capture made right before
+    /// backgrounding sits stranded in the in-memory outbound queue until the
+    /// next launch (the "added a block, didn't reach the relay for 2 hours"
+    /// gap). The on-device write is always durable (SQLite + file); this
+    /// closes the gap to the relay so OTHER devices can pull it.
+    func flushOnBackground() {
+        stop()
+        let app = UIApplication.shared
+        var bgTask: UIBackgroundTaskIdentifier = .invalid
+        bgTask = app.beginBackgroundTask(withName: "relay-flush-on-background") {
+            // iOS is reclaiming the time — end the task so we aren't killed.
+            if bgTask != .invalid {
+                app.endBackgroundTask(bgTask)
+                bgTask = .invalid
+            }
+        }
+        Task { [weak self] in
+            _ = await self?.flushPendingOutbound()
+            if bgTask != .invalid {
+                app.endBackgroundTask(bgTask)
+                bgTask = .invalid
+            }
+        }
     }
 
     private func runLoop() async {

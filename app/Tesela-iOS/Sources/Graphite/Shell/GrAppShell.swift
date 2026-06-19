@@ -248,7 +248,10 @@ struct GrAppShell: View {
                         await mosaic.refreshLoadedPages()
                     }
                 case .background:
-                    relayTicker.stop()
+                    // Drain any queued outbound ops to the relay before iOS
+                    // suspends us (sync-durability Phase 1) instead of a bare
+                    // stop() that strands a just-made capture until relaunch.
+                    relayTicker.flushOnBackground()
                     liveSync.suspend()
                 default:
                     break

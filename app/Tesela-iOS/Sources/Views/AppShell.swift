@@ -188,7 +188,9 @@ struct AppShell: View {
                             }
                         case .background:
                             liveSync.suspend()
-                            relayTicker.stop()
+                            // Drain queued outbound ops before suspend
+                            // (sync-durability Phase 1) — see GrAppShell.
+                            relayTicker.flushOnBackground()
                         default:
                             break
                         }
