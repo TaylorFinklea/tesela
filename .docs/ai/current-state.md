@@ -1,7 +1,7 @@
 # Current State
 
 ## Branch
-- `main` @ `704592f4` == origin/main — **PUSHED 2026-06-18** (everything below). Clean tree; `.docs/ai/review/` is untracked (the 3 open-source arch-review reports, kept for reference).
+- `main` @ `3a38ce69`+ — **2026-06-19**. Clean tree; `.docs/ai/review/` is untracked (the 3 open-source arch-review reports, kept for reference).
 
 ## Plan
 - [x] **Arch-review eval + hygiene batch.** Adversarially verified the 3 open-source review reports (`.docs/ai/review/`) vs real code (ultracode, Claude-only) — ~20% signal, ~80% cargo-culted team/SaaS advice. Acted on the real findings: C23 (backup in-place-restore 409 guard — only data-loss item) + hygiene C19/C20/C21/C24/C6 (CI clippy + svelte-check blocking, `cargo audit`, delete `tesela-loro-spike`, fix `AGENTS.md` Next.js→Svelte + crate count, drop drifted `default_types()`). Declined the rest. See git log `3fec1b62`/`9d5d9b7c`.
@@ -10,8 +10,10 @@
 - [x] **#65 capture sheet footer clipped behind keyboard** (build 30) — text-path autofocus was racing the sheet present-transition; deferred to 320ms so the keyboard rises against a settled layout. Intermittent keyboard-timing → needs on-device confirm.
 - **iOS editor track COMPLETE** — every reported item shipped (TestFlight builds 21–30, all pushed).
 - [x] **Cross-device sync bug (#70) + durability P1** (2026-06-18). (a) Desktop /g didn't live-update on relay-pulled remote edits — `sync_relay::TickOutcome.applied_updates` now carries the applied bytes + the daemon re-broadcasts them (the post-apply re-export returned None). **DESKTOP-ONLY; deploy pending** (Tauri rebuild + /Applications swap — task #73; `web/build` already rebuilt). (b) ⚠ The scary one: an iOS capture sat unpushed to the relay for 2h (foreground-only push; background stranded the queue). **P1 shipped (build 31):** `RelayTicker.flushOnBackground()` drains the outbound queue in a `UIApplication` bg task before suspend. Taylor chose **"go big"** → full plan in `phases/2026-06-18-sync-durability-spec.md`.
-- [x] **Sync durability P2a** (#71, build 32): BGProcessingTask catch-up (`app.tesela.ios.relay-catchup` → `RelayTicker.runBackgroundCatchup()`). Built via a **3-way pi head-to-head** (minimax-m3 won vs gpt-5.5 + qwen3.7-max; worktree-isolated; all 3 build-verified + scored on `~/.claude/model-scorecard.md`). **P2b remaining:** background URLSession for the relay PUT.
-- [ ] **Sync durability P2b** (#71): background URLSession so the relay PUT survives suspension. **P3** (#72): APNs silent-push (needs Taylor's APNs key + relay/CF work).
+- [x] **Sync durability P2a** (#71, build 32): BGProcessingTask catch-up (`app.tesela.ios.relay-catchup` → `RelayTicker.runBackgroundCatchup()`). Built via a **3-way pi head-to-head** (minimax-m3 won vs gpt-5.5 + qwen3.7-max; worktree-isolated; all 3 build-verified + scored).
+- [x] **P2b = DEAD END** (#71): the relay PUT is Rust/`reqwest` (`transport/relay.rs:248`) called via FFI, NOT Swift `URLSession` — a background URLSession can't carry it, and it's redundant with P1 (~30s bg task) + P2a (periodic retry). Closed; no code.
+- [x] **Sync durability P3a** (#72, build TBD this session): iOS APNs silent-push receiver — `AppDelegate` (via `@UIApplicationDelegateAdaptor`) registers for remote notifications, captures the token, and on a content-available push runs `runBackgroundCatchup()`. `UIBackgroundModes += remote-notification`. Built via a **4-way pi head-to-head** (minimax won vs gpt-5.5/qwen/kimi; ALL 4 build-verified + scored). **Not functional end-to-end** — see P3b/P3c + Taylor deps.
+- [ ] **Sync durability P3b/P3c** (#72): relay device-token registry + relay APNs send (HA add-on AND CF Worker). **⚠ TAYLOR DEPS:** (1) enable Push for App ID `app.tesela.ios` + `aps-environment` entitlement, (2) APNs auth key (`.p8`+ids). Detail in `phases/2026-06-18-sync-durability-spec.md`.
 
 ## Blockers
 - None (sync durability P2/P3 are planned phases, not blockers).
