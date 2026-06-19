@@ -566,6 +566,14 @@ public protocol RelayClientHandleProtocol: AnyObject, Sendable {
     func pollCount(sinceSeq: Int64) async throws  -> PollProbeRecord
     
     /**
+     * Register this device's APNs push token so the relay can wake our
+     * OTHER devices with a content-available silent push on every op
+     * deposit (sync durability P3b). Best-effort + idempotent (the relay
+     * upserts by device id). The token is a routing id, not note content.
+     */
+    func registerDevice(apnsToken: String) async throws 
+    
+    /**
      * Register on the relay, recovering an existing matching record
      * if one exists. Returns the Unix-seconds timestamp pinned to the
      * registration — the Swift coordinator persists this so subsequent
@@ -709,6 +717,29 @@ open func pollCount(sinceSeq: Int64)async throws  -> PollProbeRecord  {
             completeFunc: ffi_tesela_sync_ffi_rust_future_complete_rust_buffer,
             freeFunc: ffi_tesela_sync_ffi_rust_future_free_rust_buffer,
             liftFunc: FfiConverterTypePollProbeRecord_lift,
+            errorHandler: FfiConverterTypeFfiSyncError_lift
+        )
+}
+    
+    /**
+     * Register this device's APNs push token so the relay can wake our
+     * OTHER devices with a content-available silent push on every op
+     * deposit (sync durability P3b). Best-effort + idempotent (the relay
+     * upserts by device id). The token is a routing id, not note content.
+     */
+open func registerDevice(apnsToken: String)async throws   {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_tesela_sync_ffi_fn_method_relayclienthandle_register_device(
+                    self.uniffiCloneHandle(),
+                    FfiConverterString.lower(apnsToken)
+                )
+            },
+            pollFunc: ffi_tesela_sync_ffi_rust_future_poll_void,
+            completeFunc: ffi_tesela_sync_ffi_rust_future_complete_void,
+            freeFunc: ffi_tesela_sync_ffi_rust_future_free_void,
+            liftFunc: { $0 },
             errorHandler: FfiConverterTypeFfiSyncError_lift
         )
 }
@@ -3652,6 +3683,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_poll_count() != 27172) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_register_device() != 2582) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_method_relayclienthandle_register_or_recover() != 3102) {

@@ -1594,6 +1594,17 @@ impl RelayClientHandle {
                 .collect(),
         })
     }
+
+    /// Register this device's APNs push token so the relay can wake our
+    /// OTHER devices with a content-available silent push on every op
+    /// deposit (sync durability P3b). Best-effort + idempotent (the relay
+    /// upserts by device id). The token is a routing id, not note content.
+    pub async fn register_device(&self, apns_token: String) -> Result<(), FfiSyncError> {
+        self.inner
+            .register_device(&apns_token)
+            .await
+            .map_err(FfiSyncError::from)
+    }
 }
 
 /// Probe-only return shape — see [`RelayClientHandle::poll_count`].

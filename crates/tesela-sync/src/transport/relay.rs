@@ -710,6 +710,56 @@ impl RelayClient {
         Ok(())
     }
 
+    /// Register this device's APNs push token so the relay can send a
+    /// content-available silent push to our other devices on every op
+    /// deposit (sync durability P3b). MAC-authed exactly like `ack`. The
+    /// token is a routing identifier, not note content — the relay stays
+    /// zero-knowledge. Idempotent (relay upserts by device id).
+    pub async fn register_device(&self, apns_token_hex: &str) -> SyncResult<()> {
+        let body = serde_json::json!({
+            "device": hex::encode(self.device_id.as_bytes()),
+            "apns_token": apns_token_hex,
+        });
+        let body_bytes =
+            serde_json::to_vec(&body).map_err(|e| SyncError::Other(format!("json body: {e}")))?;
+        let path = format!("/groups/{}/devices", hex::encode(self.group_id.as_bytes()));
+        let url = self
+            .base_url
+            .join(&path)
+            .map_err(|e| SyncError::Other(format!("url join: {e}")))?;
+        let nonce_b64 = self.fresh_nonce_b64();
+        let ts = now_secs_i64();
+        let canonical = canonical_request(
+            "POST",
+            &path,
+            "",
+            &nonce_b64,
+            ts,
+            &body_hash_hex(&body_bytes),
+        );
+        let mac = compute_request_mac(&self.auth_key, &canonical);
+        let resp = self
+            .http
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("X-Tesela-Group", hex::encode(self.group_id.as_bytes()))
+            .header("X-Tesela-Device", hex::encode(self.device_id.as_bytes()))
+            .header("X-Tesela-Nonce", &nonce_b64)
+            .header("X-Tesela-Ts", ts.to_string())
+            .header("X-Tesela-Mac", base64_std(&mac))
+            .body(body_bytes)
+            .send()
+            .await
+            .map_err(net_err("register_device"))?;
+        if !resp.status().is_success() {
+            return Err(SyncError::Crypto(format!(
+                "register_device: relay returned {}",
+                resp.status()
+            )));
+        }
+        Ok(())
+    }
+
     // ── Helpers ────────────────────────────────────────────────────
 
     fn group_url(&self, suffix: &str) -> Url {

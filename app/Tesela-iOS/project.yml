@@ -108,6 +108,13 @@ targets:
         CODE_SIGN_IDENTITY[sdk=iphoneos*]: "Apple Development"
         CODE_SIGN_STYLE: "Automatic"
         DEVELOPMENT_TEAM: "K7CBQW6MPG"
+        # APNs entitlement (sync durability P3) — DEVICE builds only, so the
+        # ad-hoc simulator build never needs a managed profile. Requires the
+        # "Push Notifications" capability ENABLED for App ID app.tesela.ios in
+        # the Apple Developer portal; with automatic signing the managed
+        # profile then grants aps-environment. If Push is NOT enabled, the
+        # device archive fails with a provisioning error.
+        CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]: "Tesela.entitlements"
         TARGETED_DEVICE_FAMILY: "1,2"
     scheme:
       testTargets:

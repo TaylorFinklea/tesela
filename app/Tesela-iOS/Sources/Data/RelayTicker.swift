@@ -74,6 +74,11 @@ final class RelayTicker: ObservableObject {
     // session in the happy path.
     private var engine: SyncEngineHandle? = nil
     private var relay: RelayClientHandle? = nil
+    /// The APNs device token we last successfully registered with the relay
+    /// (sync durability P3b). Guards `maybeRegisterApnsToken` so we POST
+    /// /devices once per token, not every tick; re-registers if iOS rotates
+    /// the token.
+    private var lastRegisteredApnsToken: String? = nil
     private var coordinator: SyncCoordinator? = nil
 
     private var loopTask: Task<Void, Never>? = nil
@@ -970,6 +975,12 @@ final class RelayTicker: ObservableObject {
                     engine: engine
                 )
             }
+            // Sync durability P3b: once we have a relay handle + an APNs
+            // device token (captured by AppDelegate at launch), register it
+            // so the relay can silent-push our other devices on deposit.
+            // Idempotent + best-effort; the guard makes this a no-op on every
+            // tick after the first successful registration.
+            await maybeRegisterApnsToken()
         } catch let err as FfiSyncError {
             lastError = err.localizedDescription
             consecutiveErrors = consecutiveErrors &+ 1
@@ -1352,6 +1363,27 @@ final class RelayTicker: ObservableObject {
     func runBackgroundCatchup() async {
         try? await ensureCoordinator()
         await tickOnce()
+    }
+
+    /// Register this device's APNs token with the relay (sync durability
+    /// P3b) so the relay can wake our OTHER devices with a content-available
+    /// silent push on every op deposit. The token is captured by
+    /// `AppDelegate` at launch (`AppDelegate.deviceTokenHex`); this pulls it
+    /// when a relay handle exists and POSTs it via the FFI. No-op until both
+    /// the token and the handle are ready; POSTs once per token (re-POSTs on
+    /// rotation). Best-effort — a failure just retries on a later tick and
+    /// never surfaces as a sync error.
+    private func maybeRegisterApnsToken() async {
+        guard let relay,
+            let token = AppDelegate.deviceTokenHex,
+            token != lastRegisteredApnsToken
+        else { return }
+        do {
+            try await relay.registerDevice(apnsToken: token)
+            lastRegisteredApnsToken = token
+        } catch {
+            // Leave lastRegisteredApnsToken unset so the next tick retries.
+        }
     }
 
     /// Stable per-install device id, persisted across launches. iOS's
