@@ -174,5 +174,15 @@ targets:
         # runtime, with no log on the device).
         UIBackgroundModes:
           - processing
+          # Phase 3a — the relay server will send silent
+          # `content-available: 1` pushes to wake a suspended device
+          # when a new batch lands for the group; the iOS side runs
+          # `RelayTicker.runBackgroundCatchup()` in response. Without
+          # this entry iOS drops the wake entirely (no error, no log
+          # on the device). Enabling Push for the App ID
+          # (`aps-environment` entitlement) is the SEPARATE step that
+          # makes the silent push actually arrive at runtime — out of
+          # scope here.
+          - remote-notification
         BGTaskSchedulerPermittedIdentifiers:
           - app.tesela.ios.relay-catchup

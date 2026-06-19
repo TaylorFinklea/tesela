@@ -27,6 +27,17 @@ struct TeselaApp: App {
     /// already completing on its own; the race is benign.
     private static var catchupTask: Task<Void, Never>? = nil
 
+    /// Sync-durability Phase 3a — APNs RECEIVING end. The SwiftUI `@main`
+    /// App doesn't expose `UIApplicationDelegate` hooks (remote-
+    /// notification registration + the silent-push entry point), so we
+    /// adapt `AppDelegate` here. The adaptor fires the delegate's
+    /// `application(_:didFinishLaunchingWithOptions:)` before the rest
+    /// of `init()` returns, which registers for remote notifications
+    /// early enough that the first push can land on a cold install.
+    /// See `AppDelegate.swift` for the full rationale + the token
+    /// capture (the relay-registration endpoint doesn't exist yet).
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     init() {
         // Register the BGProcessingTask handler BEFORE the app finishes
         // launching — iOS throws from `register` if it's called after
