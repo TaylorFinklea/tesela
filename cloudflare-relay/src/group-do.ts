@@ -22,6 +22,7 @@ import {
   handleAdminDelete,
   handlePutSnapshot,
   handleGetSnapshots,
+  handleRegisterDevice,
 } from "./handlers";
 
 export interface Env {
@@ -29,6 +30,15 @@ export interface Env {
   TESELA_RELAY_ADMIN_TOKEN?: string;
   TESELA_RELAY_MAX_BODY?: string;
   TESELA_RELAY_REPLAY_WINDOW_SECS?: string;
+  // APNs config (sync durability P3c) — Worker secrets/vars, set once
+  // the .p8 key is provisioned. Absent until then: sendApnsBackgroundPush
+  // no-ops (returns false), so the relay runs fine without them. These
+  // make Env structurally satisfy `ApnsEnv` from ./apns.
+  APNS_KEY_P8?: string;
+  APNS_KEY_ID?: string;
+  APNS_TEAM_ID?: string;
+  APNS_BUNDLE_ID?: string;
+  APNS_HOST?: string;
 }
 
 /** Per-IP request cap, mirroring the Rust self-host's sliding window
@@ -83,6 +93,8 @@ export class GroupDO implements DurableObject {
           return await handleGetOps(this, req);
         case "POST /ack":
           return await handlePostAck(this, req);
+        case "POST /devices":
+          return await handleRegisterDevice(this, req);
         case "PUT /snapshot":
           return await handlePutSnapshot(this, req);
         case "GET /snapshots":
@@ -136,6 +148,17 @@ export class GroupDO implements DurableObject {
       CREATE TABLE IF NOT EXISTS group_meta (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         compaction_seq INTEGER NOT NULL DEFAULT 0
+      );
+
+      -- APNs device-token registry (sync durability P3b). One row per
+      -- device id (16 bytes) → its APNs push token (hex). A device token
+      -- is a routing identifier, NOT note content — storing it keeps the
+      -- relay zero-knowledge. On a PUT /ops the DO pushes a
+      -- content-available wake to the group's OTHER tokens (P3c).
+      CREATE TABLE IF NOT EXISTS device_tokens (
+        device_id BLOB PRIMARY KEY,
+        apns_token TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
       );
     `);
   }
@@ -311,6 +334,32 @@ export class GroupDO implements DurableObject {
       device.buffer,
       Math.floor(ts),
     );
+  }
+
+  // ── APNs device-token registry (sync durability P3b/P3c) ──────────
+
+  /** Upsert a device's APNs push token (sync durability P3b). */
+  upsertDeviceToken(device_id: Uint8Array, apns_token: string, ts: number): void {
+    this.state.storage.sql.exec(
+      "INSERT INTO device_tokens (device_id, apns_token, updated_at) VALUES (?, ?, ?) " +
+        "ON CONFLICT (device_id) DO UPDATE SET apns_token = excluded.apns_token, updated_at = excluded.updated_at",
+      device_id.buffer,
+      apns_token,
+      Math.floor(ts),
+    );
+  }
+
+  /** APNs tokens of every device in the group EXCEPT `exclude_device`
+   *  (the depositor — it already has the op). Filtered in JS by hex to
+   *  avoid BLOB-comparison subtleties, mirroring `ackOps`. */
+  listOtherApnsTokens(exclude_device: Uint8Array): string[] {
+    const excludeHex = bytesToHex(exclude_device);
+    const rows = this.state.storage.sql.exec<{ device_id: ArrayBuffer; apns_token: string }>(
+      "SELECT device_id, apns_token FROM device_tokens",
+    );
+    return [...rows]
+      .filter((r) => bytesToHex(new Uint8Array(r.device_id)) !== excludeHex)
+      .map((r) => r.apns_token);
   }
 
   /** Hard upper bound on remembered nonces per DO — a backstop so a

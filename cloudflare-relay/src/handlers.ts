@@ -21,6 +21,7 @@ import {
   toB64,
   toHex,
 } from "./crypto";
+import { sendApnsBackgroundPush } from "./apns";
 
 /** Convert the outer Worker's pre-stripped path back into the canonical
  *  "/groups/{id}/..." form the MAC was signed against. The Worker
@@ -159,7 +160,50 @@ export async function handlePutOp(self: GroupDO, req: Request): Promise<Response
   const ts = Date.now() / 1000;
   const { seq } = self.insertOp(from_device, ts, payload);
   self.touchDevice(from_device, ts);
+
+  // Sync durability P3c: nudge the group's OTHER devices to catch up NOW
+  // via an APNs content-available push, instead of waiting for their next
+  // poll / BGProcessingTask. Best-effort + zero-knowledge (the push
+  // carries NO content); no-ops when APNs isn't configured. Never fails
+  // the PUT — sendApnsBackgroundPush swallows its own errors and returns
+  // false. Awaited (the DO has no ctx.waitUntil); the added latency is one
+  // APNs RTT, acceptable for this write volume.
+  const tokens = self.listOtherApnsTokens(from_device);
+  if (tokens.length > 0) {
+    await Promise.all(tokens.map((t) => sendApnsBackgroundPush(self.env, t)));
+  }
+
   return json({ seq, ts });
+}
+
+// ─── /devices (POST) — APNs token registry (sync durability P3b) ───
+
+interface RegisterDeviceBody {
+  device: string; // 16 bytes of hex — the device id (matches from_device)
+  apns_token: string; // APNs device token, hex
+}
+
+export async function handleRegisterDevice(self: GroupDO, req: Request): Promise<Response> {
+  const max = Number(self.env.TESELA_RELAY_MAX_BODY ?? "1048576");
+  const raw = new Uint8Array(await req.arrayBuffer());
+  if (raw.length > max) return json({ error: "body too large" }, 413);
+
+  const macCheck = await verifyMac(self, req, raw);
+  if (macCheck instanceof Response) return macCheck;
+
+  const body = JSON.parse(new TextDecoder().decode(raw)) as RegisterDeviceBody;
+  if (typeof body.device !== "string" || !isHex(body.device, 16)) {
+    return json({ error: "device must be 16 bytes of hex" }, 400);
+  }
+  if (
+    typeof body.apns_token !== "string" ||
+    body.apns_token.length === 0 ||
+    !/^[0-9a-fA-F]+$/.test(body.apns_token)
+  ) {
+    return json({ error: "apns_token must be non-empty hex" }, 400);
+  }
+  self.upsertDeviceToken(fromHex(body.device), body.apns_token.toLowerCase(), Date.now() / 1000);
+  return json({ ok: true });
 }
 
 export async function handleGetOps(self: GroupDO, req: Request): Promise<Response> {
