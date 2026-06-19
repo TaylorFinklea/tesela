@@ -68,6 +68,11 @@ logseq-*.png
 # macOS Finder metadata
 .DS_Store
 
+# APNs auth keys (.p8) — SECRETS, never commit. Sign relay push JWTs;
+# live in the macOS Keychain / CF Worker secrets, not the repo.
+AuthKey_*.p8
+*.p8
+
 # Local archive snapshots
 *.zip
 
