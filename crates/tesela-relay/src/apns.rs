@@ -133,6 +133,10 @@ impl Apns {
             }
         }
         let mut header = Header::new(Algorithm::ES256);
+        // Drop the default `typ: "JWT"` so the header is byte-identical to
+        // the CF Worker's {alg, kid} (Apple tolerates typ, but parity keeps
+        // the two relays interchangeable).
+        header.typ = None;
         header.kid = Some(self.key_id.clone());
         let claims = Claims {
             iss: self.team_id.clone(),

@@ -1,5 +1,5 @@
 name: Tesela Sync Relay
-version: "0.2.2"
+version: "0.3.0"
 slug: tesela_relay
 description: Zero-knowledge sync relay for Tesela notes. Stores AEAD-sealed envelopes only — never sees your data.
 url: https://github.com/TaylorFinklea/tesela
@@ -20,7 +20,32 @@ options:
   admin_token: ""
   max_body: 16777216
   log_level: info
+  apns_key_p8: ""
+  apns_key_id: ""
+  apns_team_id: ""
+  apns_bundle_id: ""
+  apns_host: ""
 schema:
   admin_token: password
   max_body: int(1024,)
   log_level: list(trace|debug|info|warn|error)
+  # APNs silent-push (sync durability P3c). Leave ALL blank for poll-only
+  # (default). Set all four of key_p8/key_id/team_id/bundle_id to nudge
+  # suspended iOS devices to pull the instant an op lands. The push
+  # carries no note content — the relay stays zero-knowledge.
+  #
+  # apns_key_p8: either a PATH to the .p8 inside the addon data dir
+  #   (recommended — drop AuthKey_XXX.p8 into /addon_configs or the
+  #   addon's data share and set e.g. "/data/AuthKey_C2DP446WQ9.p8"), or
+  #   the PEM contents inline. Auto-detected.
+  apns_key_p8: str?
+  apns_key_id: str?
+  apns_team_id: str?
+  apns_bundle_id: str?
+  # apns_host: leave BLANK → https://api.push.apple.com (production). A
+  # TestFlight/App Store build's device token is a PRODUCTION token (the
+  # distribution signing overrides the `development` entitlement string),
+  # so production is correct — leave this blank. Only set
+  # https://api.sandbox.push.apple.com for an Xcode-direct dev/ad-hoc
+  # install. If pushes log reason=BadDeviceToken, you're on the wrong host.
+  apns_host: str?
