@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>app.tesela.ios.relay-catchup</string>
+	</array>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
@@ -31,6 +35,10 @@
 	<string>Tesela uses the camera only to scan a pairing QR code from another device. Frames are decoded on-device and not stored.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Tesela uses the microphone for voice notes — recordings are transcribed and saved to today's daily, then discarded.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>processing</string>
+	</array>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>

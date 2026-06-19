@@ -164,3 +164,15 @@ targets:
         # camera view to scan a pairing QR shown on another device.
         # The frames never leave the device and aren't stored.
         NSCameraUsageDescription: "Tesela uses the camera only to scan a pairing QR code from another device. Frames are decoded on-device and not stored."
+        # Sync-durability Phase 2a — a BGProcessingTask wakes the
+        # suspended app to drain the relay (deliver a stranded
+        # capture + pull peers' edits) without a foreground launch.
+        # The identifier MUST match the BGTaskScheduler.register()
+        # call + BGProcessingTaskRequest in TeselaApp.swift, and
+        # must also be listed in BGTaskSchedulerPermittedIdentifiers
+        # (iOS drops any submit() to a non-listed identifier at
+        # runtime, with no log on the device).
+        UIBackgroundModes:
+          - processing
+        BGTaskSchedulerPermittedIdentifiers:
+          - app.tesela.ios.relay-catchup
