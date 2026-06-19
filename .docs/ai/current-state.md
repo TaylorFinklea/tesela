@@ -10,7 +10,8 @@
 - [x] **#65 capture sheet footer clipped behind keyboard** (build 30) — text-path autofocus was racing the sheet present-transition; deferred to 320ms so the keyboard rises against a settled layout. Intermittent keyboard-timing → needs on-device confirm.
 - **iOS editor track COMPLETE** — every reported item shipped (TestFlight builds 21–30, all pushed).
 - [x] **Cross-device sync bug (#70) + durability P1** (2026-06-18). (a) Desktop /g didn't live-update on relay-pulled remote edits — `sync_relay::TickOutcome.applied_updates` now carries the applied bytes + the daemon re-broadcasts them (the post-apply re-export returned None). **DESKTOP-ONLY; deploy pending** (Tauri rebuild + /Applications swap — task #73; `web/build` already rebuilt). (b) ⚠ The scary one: an iOS capture sat unpushed to the relay for 2h (foreground-only push; background stranded the queue). **P1 shipped (build 31):** `RelayTicker.flushOnBackground()` drains the outbound queue in a `UIApplication` bg task before suspend. Taylor chose **"go big"** → full plan in `phases/2026-06-18-sync-durability-spec.md`.
-- [ ] **Sync durability P2** (#71): BGProcessingTask catch-up + background URLSession. **P3** (#72): APNs silent-push (instant cross-device; needs Taylor's APNs key + relay/CF work).
+- [x] **Sync durability P2a** (#71, build 32): BGProcessingTask catch-up (`app.tesela.ios.relay-catchup` → `RelayTicker.runBackgroundCatchup()`). Built via a **3-way pi head-to-head** (minimax-m3 won vs gpt-5.5 + qwen3.7-max; worktree-isolated; all 3 build-verified + scored on `~/.claude/model-scorecard.md`). **P2b remaining:** background URLSession for the relay PUT.
+- [ ] **Sync durability P2b** (#71): background URLSession so the relay PUT survives suspension. **P3** (#72): APNs silent-push (needs Taylor's APNs key + relay/CF work).
 
 ## Blockers
 - None (sync durability P2/P3 are planned phases, not blockers).
