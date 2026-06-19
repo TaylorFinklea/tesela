@@ -31,10 +31,15 @@ export async function sendApnsBackgroundPush(
   env: ApnsEnv,
   deviceTokenHex: string,
 ): Promise<boolean> {
+  // Routing-level correlation tag for `wrangler tail`. A token PREFIX only —
+  // never the full token, the JWT, or the .p8. The push carries no note
+  // content, so these logs can't leak anything but routing metadata.
+  const tag = deviceTokenHex.slice(0, 8);
   try {
     // Config guard — the relay runs fine before the key is provisioned.
     const { APNS_KEY_P8, APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID } = env;
     if (!APNS_KEY_P8 || !APNS_KEY_ID || !APNS_TEAM_ID || !APNS_BUNDLE_ID) {
+      console.log(`[apns] skip ${tag}…: APNS_* secrets not configured`);
       return false;
     }
 
@@ -53,9 +58,24 @@ export async function sendApnsBackgroundPush(
       },
       body: JSON.stringify({ aps: { "content-available": 1 } }),
     });
-    return res.ok;
-  } catch {
+    if (res.ok) {
+      console.log(`[apns] push ${tag}… → ${res.status} OK`);
+      return true;
+    }
+    // APNs returns a JSON body with a `reason` on failure (BadDeviceToken,
+    // ExpiredProviderToken, TopicDisallowed, …) — an error CODE, never note
+    // content. Surfacing it is what makes `wrangler tail` diagnostic.
+    let reason = "";
+    try {
+      reason = ((await res.json()) as { reason?: string }).reason ?? "";
+    } catch {
+      // body wasn't JSON; status alone is enough signal.
+    }
+    console.warn(`[apns] push ${tag}… → ${res.status} FAIL reason=${reason || "?"}`);
+    return false;
+  } catch (e) {
     // ANY unexpected error (crypto, network, parse) → false, never throw.
+    console.error(`[apns] push ${tag}… error: ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
 }

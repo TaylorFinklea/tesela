@@ -172,6 +172,7 @@ export async function handlePutOp(self: GroupDO, req: Request): Promise<Response
   try {
     const tokens = self.listOtherApnsTokens(from_device);
     if (tokens.length > 0) {
+      console.log(`[apns] deposit seq=${seq} → waking ${tokens.length} other device(s)`);
       await Promise.all(tokens.map((t) => sendApnsBackgroundPush(self.env, t)));
     }
   } catch {
@@ -208,6 +209,9 @@ export async function handleRegisterDevice(self: GroupDO, req: Request): Promise
     return json({ error: "apns_token must be non-empty hex" }, 400);
   }
   self.upsertDeviceToken(fromHex(body.device), body.apns_token.toLowerCase(), Date.now() / 1000);
+  console.log(
+    `[apns] registered device ${body.device.slice(0, 8)}… token ${body.apns_token.slice(0, 8)}…`,
+  );
   return json({ ok: true });
 }
 
