@@ -238,7 +238,6 @@ struct GrDailyView: View {
                 tagSearch: { mosaic.searchableTags($0) },
                 onIndent: { delta in mosaic.indentYesterdayBlock(id: block.id, by: delta) }
             )
-            .opacity(0.72)
         }
     }
 
@@ -309,7 +308,6 @@ struct GrDailyView: View {
                         mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: delta)
                     }
                 )
-                .opacity(0.6)
             }
         }
     }
