@@ -1340,6 +1340,20 @@ final class RelayTicker: ObservableObject {
         }
     }
 
+    /// One-shot relay catch-up for a BACKGROUND launch (a BGProcessingTask),
+    /// when the foreground tick loop isn't running. Opens the engine +
+    /// coordinator from persisted state, then runs a full tick (drain
+    /// outbound + pull inbound) so a suspended device both DELIVERS a
+    /// stranded capture and CATCHES UP on peers' edits without being
+    /// foregrounded. Self-sufficient — safe to call from the app-level
+    /// BGTask handler with a fresh `RelayTicker()` (no shell exists on a
+    /// background launch, so there's no second engine handle to conflict).
+    /// Sync-durability Phase 2a.
+    func runBackgroundCatchup() async {
+        try? await ensureCoordinator()
+        await tickOnce()
+    }
+
     /// Stable per-install device id, persisted across launches. iOS's
     /// HLC monotonicity depends on the device id staying constant; a
     /// fresh id every launch would look like a fresh device to peers.
