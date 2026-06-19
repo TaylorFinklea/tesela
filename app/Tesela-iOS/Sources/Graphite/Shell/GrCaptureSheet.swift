@@ -255,8 +255,14 @@ struct GrCaptureSheet: View {
                 composer.pendingVoiceCapture = false
                 Task { await toggleRecording() }
             } else {
+                // Defer autofocus until AFTER the present transition
+                // (`.snappy(0.28)` ≈ 280ms) settles, so the keyboard rises
+                // against a STABLE sheet. Focusing mid-transition (the old
+                // 60ms) raced the sheet-in + keyboard-up animations and
+                // `safeAreaInset` avoidance intermittently settled with the
+                // footer (mic + Add) clipped behind the keyboard.
                 Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(60))
+                    try? await Task.sleep(for: .milliseconds(320))
                     fieldFocused = true
                 }
             }
