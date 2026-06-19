@@ -164,13 +164,18 @@ export async function handlePutOp(self: GroupDO, req: Request): Promise<Response
   // Sync durability P3c: nudge the group's OTHER devices to catch up NOW
   // via an APNs content-available push, instead of waiting for their next
   // poll / BGProcessingTask. Best-effort + zero-knowledge (the push
-  // carries NO content); no-ops when APNs isn't configured. Never fails
-  // the PUT — sendApnsBackgroundPush swallows its own errors and returns
-  // false. Awaited (the DO has no ctx.waitUntil); the added latency is one
-  // APNs RTT, acceptable for this write volume.
-  const tokens = self.listOtherApnsTokens(from_device);
-  if (tokens.length > 0) {
-    await Promise.all(tokens.map((t) => sendApnsBackgroundPush(self.env, t)));
+  // carries NO content); no-ops when APNs isn't configured. Awaited (the
+  // DO has no ctx.waitUntil); the added latency is one APNs RTT, acceptable
+  // for this write volume. The ENTIRE block is wrapped: the op is already
+  // durably committed (insertOp above), so a token-lookup or push error
+  // must NEVER turn a successful deposit into a 500 — that would break sync.
+  try {
+    const tokens = self.listOtherApnsTokens(from_device);
+    if (tokens.length > 0) {
+      await Promise.all(tokens.map((t) => sendApnsBackgroundPush(self.env, t)));
+    }
+  } catch {
+    // best-effort push; the deposit stands regardless.
   }
 
   return json({ seq, ts });
