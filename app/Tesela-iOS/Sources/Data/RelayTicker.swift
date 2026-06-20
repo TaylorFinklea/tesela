@@ -79,6 +79,11 @@ final class RelayTicker: ObservableObject {
     /// /devices once per token, not every tick; re-registers if iOS rotates
     /// the token.
     private var lastRegisteredApnsToken: String? = nil
+    /// In-app diagnostic for the APNs token-registration state (sync
+    /// durability P3b) — shown in Sync settings so we can see WHERE
+    /// registration is stuck (no relay handle / no token / POST failed /
+    /// registered) without attaching Console.app.
+    @Published var apnsNote: String = "—"
     private var coordinator: SyncCoordinator? = nil
 
     private var loopTask: Task<Void, Never>? = nil
@@ -1374,15 +1379,28 @@ final class RelayTicker: ObservableObject {
     /// rotation). Best-effort — a failure just retries on a later tick and
     /// never surfaces as a sync error.
     private func maybeRegisterApnsToken() async {
-        guard let relay,
-            let token = AppDelegate.deviceTokenHex,
-            token != lastRegisteredApnsToken
-        else { return }
+        guard let relay else {
+            apnsNote = "no relay handle yet"
+            return
+        }
+        guard let token = AppDelegate.deviceTokenHex else {
+            // No APNs token captured. Surface WHY: a registration error
+            // (entitlement/Push/network) vs still pending.
+            apnsNote = AppDelegate.lastRegistrationError.map { "no token — iOS reg failed: \($0)" }
+                ?? "no token yet (APNs registration pending)"
+            return
+        }
+        if token == lastRegisteredApnsToken {
+            apnsNote = "registered ✓ (\(token.prefix(8))…)"
+            return
+        }
         do {
             try await relay.registerDevice(apnsToken: token)
             lastRegisteredApnsToken = token
+            apnsNote = "registered ✓ (\(token.prefix(8))…)"
         } catch {
             // Leave lastRegisteredApnsToken unset so the next tick retries.
+            apnsNote = "POST /devices failed: \(error.localizedDescription)"
         }
     }
 

@@ -22,6 +22,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     /// can't linger across a re-install / signing-identity change.
     static var deviceTokenHex: String? = nil
 
+    /// Last APNs registration failure (nil = none / success). Surfaced in
+    /// the Sync settings diagnostic so a token-capture failure is visible
+    /// in-app without attaching Console.app.
+    static var lastRegistrationError: String? = nil
+
     /// Launch: kick off APNs registration. The first launch on a fresh
     /// install prompts the user for notification permission; subsequent
     /// launches just request the token. We don't gate this on any
@@ -46,6 +51,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     ) {
         let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
         Self.deviceTokenHex = hex
+        Self.lastRegistrationError = nil
         print("[apns] device token \(hex)")
     }
 
@@ -63,6 +69,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
         didFailToRegisterForRemoteNotificationsWithError error: Error
     ) {
         Self.deviceTokenHex = nil
+        Self.lastRegistrationError = error.localizedDescription
         print("[apns] registration failed: \(error.localizedDescription)")
     }
 

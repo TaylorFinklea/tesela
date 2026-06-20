@@ -127,6 +127,7 @@ struct SyncSettingsView: View {
                 relayMetricRow("Last received", "\(relayTicker.lastApplied) op\(relayTicker.lastApplied == 1 ? "" : "s")")
                 relayMetricRow("Last sent",     "\(relayTicker.lastSent) op\(relayTicker.lastSent == 1 ? "" : "s")")
                 relayMetricRow("Inbound seq",   "\(relayTicker.inboundCursorSeq)")
+                relayMetricRow("APNs push",     relayTicker.apnsNote)
             }
         }
         .padding(.vertical, 4)
