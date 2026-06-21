@@ -194,6 +194,9 @@ struct GrSettingsView: View {
                         urlEditor
                     }
                     connectionStatusRow
+                    if let warning = localhostMisconfigWarning {
+                        misconfigWarningRow(warning)
+                    }
                     HStack(spacing: 8) {
                         GrButton(
                             variant: .cta,
@@ -320,6 +323,52 @@ struct GrSettingsView: View {
         case .connecting:      return backend.serverURL
         default:               return nil
         }
+    }
+
+    /// On a PHYSICAL device, an HTTP backend pointed at 127.0.0.1/localhost
+    /// can NEVER reach the Mac — that address is the phone itself, where no
+    /// server runs. HTTP reads then silently fall back to a local scan and
+    /// writes go nowhere the relay can see, so the device drifts apart with
+    /// NO error shown ("Connected" stays green). This is the exact trap that
+    /// silently desynced the iPhone (2026-06-21). The Simulator is exempt —
+    /// there 127.0.0.1 IS the Mac.
+    private var localhostMisconfigWarning: String? {
+        #if targetEnvironment(simulator)
+        return nil
+        #else
+        let s = urlField.lowercased()
+        guard pickerMode == .http,
+              s.contains("127.0.0.1") || s.contains("localhost") || s.contains("::1")
+        else { return nil }
+        return "127.0.0.1 is THIS device, not your Mac — edits silently go nowhere and your "
+            + "devices drift apart. Use your Mac's LAN/Tailscale address, or switch to Relay "
+            + "(syncs through the encrypted relay; works with the Mac off)."
+        #endif
+    }
+
+    private func misconfigWarningRow(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(theme.typeTask)
+                Text(text)
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(theme.fgDefault)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            GrButton(variant: .cta, label: "Switch to Relay") {
+                pickerMode = .relay
+                Task { await save() }
+            }
+        }
+        .padding(10)
+        .background(theme.typeTask.opacity(0.10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(theme.typeTask.opacity(0.35), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
     /// Ported verbatim from `BackendSettingsView.save()` — the core #156
