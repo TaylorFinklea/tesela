@@ -219,7 +219,18 @@ pub async fn put_op(
                     match state.inner.store.list_other_apns_tokens(&group, &from).await {
                         Ok(tokens) => {
                             for token in tokens {
-                                let _ = apns.send_background_push(&token).await;
+                                if apns.send_background_push(&token).await
+                                    == crate::apns::PushOutcome::Dead
+                                {
+                                    // Prune a permanently-dead token (410 /
+                                    // BadDeviceToken) so it isn't pushed on
+                                    // every future deposit.
+                                    let _ = state
+                                        .inner
+                                        .store
+                                        .delete_device_token(&group, &token)
+                                        .await;
+                                }
                             }
                         }
                         Err(e) => tracing::warn!("[apns] token lookup failed: {e}"),

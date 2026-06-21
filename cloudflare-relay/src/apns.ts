@@ -22,15 +22,22 @@ export interface ApnsEnv {
 let jwtCache: { kid: string; token: string; expiresAt: number } | null = null;
 const JWT_CACHE_TTL_MS = 50 * 60 * 1000;
 
+/** Outcome of one push. `dead` = APNs says the token is PERMANENTLY
+ *  invalid (HTTP 410 Unregistered, or reason BadDeviceToken) — the relay
+ *  should PRUNE it so a stale token from a reinstalled device isn't pushed
+ *  on every future deposit. `failed` = transient/other (keep the token). */
+export type PushResult = "delivered" | "dead" | "failed";
+
 /**
  * Sends ONE content-available background push to `deviceTokenHex`.
- * Returns true on a 2xx from APNs; false on ANY failure OR if APNs
- * is not configured (any required env field missing). MUST NOT throw.
+ * Returns "delivered" on a 2xx; "dead" if APNs reports the token is
+ * permanently invalid (410 / BadDeviceToken — prune it); "failed" on any
+ * other failure OR if APNs is not configured. MUST NOT throw.
  */
 export async function sendApnsBackgroundPush(
   env: ApnsEnv,
   deviceTokenHex: string,
-): Promise<boolean> {
+): Promise<PushResult> {
   // Routing-level correlation tag for `wrangler tail`. A token PREFIX only —
   // never the full token, the JWT, or the .p8. The push carries no note
   // content, so these logs can't leak anything but routing metadata.
@@ -40,7 +47,7 @@ export async function sendApnsBackgroundPush(
     const { APNS_KEY_P8, APNS_KEY_ID, APNS_TEAM_ID, APNS_BUNDLE_ID } = env;
     if (!APNS_KEY_P8 || !APNS_KEY_ID || !APNS_TEAM_ID || !APNS_BUNDLE_ID) {
       console.log(`[apns] skip ${tag}…: APNS_* secrets not configured`);
-      return false;
+      return "failed";
     }
 
     const token = await getOrMintJwt(APNS_KEY_P8, APNS_KEY_ID, APNS_TEAM_ID);
@@ -60,7 +67,7 @@ export async function sendApnsBackgroundPush(
     });
     if (res.ok) {
       console.log(`[apns] push ${tag}… → ${res.status} OK`);
-      return true;
+      return "delivered";
     }
     // APNs returns a JSON body with a `reason` on failure (BadDeviceToken,
     // ExpiredProviderToken, TopicDisallowed, …) — an error CODE, never note
@@ -71,12 +78,18 @@ export async function sendApnsBackgroundPush(
     } catch {
       // body wasn't JSON; status alone is enough signal.
     }
-    console.warn(`[apns] push ${tag}… → ${res.status} FAIL reason=${reason || "?"}`);
-    return false;
+    // 410 = the token is no longer valid (app uninstalled / token rotated);
+    // BadDeviceToken = a permanently bad token. Either way it will NEVER
+    // deliver, so signal the caller to prune it.
+    const dead = res.status === 410 || reason === "Unregistered" || reason === "BadDeviceToken";
+    console.warn(
+      `[apns] push ${tag}… → ${res.status} ${dead ? "DEAD" : "FAIL"} reason=${reason || "?"}`,
+    );
+    return dead ? "dead" : "failed";
   } catch (e) {
-    // ANY unexpected error (crypto, network, parse) → false, never throw.
+    // ANY unexpected error (crypto, network, parse) → failed, never throw.
     console.error(`[apns] push ${tag}… error: ${e instanceof Error ? e.message : String(e)}`);
-    return false;
+    return "failed";
   }
 }
 

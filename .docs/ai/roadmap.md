@@ -121,8 +121,8 @@ The web client is feature-complete through Phase 2 (Navigation & Discovery): out
 - Breadcrumb improvements — clickable path segments.
 - Mobile/responsive layout considerations.
 
-**3E: Code blocks (rendering)**
-Fenced ``` ```lang ... ``` ``` spans inside a block today are stored verbatim but rendered as plain paragraph text. Smallest viable change: detect the fence in BlockText (web + iOS) and render the span in a monospaced, themed code surface (no syntax highlighting yet). Tags and wikilinks inside a code fence must not be parsed. A separate **executable code blocks** track lives in `Later` — see below.
+**3E: Code blocks (rendering) — [x] DONE (roadmap was stale; verified 2026-06-20).**
+Both platforms already render fenced ``` ```lang … ``` ``` spans in a monospaced, themed surface with tags/wikilinks NOT parsed inside. **web** = `block-parser.ts segmentText()` (`{type:"code"}` segments; inline parse runs only outside fences) → rendered as `<pre><code class="font-mono … bg-muted/40">` (CollectionBlock/QueryBlock), and the main CodeMirror outliner via `cm-decorations.ts` + `code-highlight.ts` (a dependency-free syntax highlighter — MORE than this item asked). **iOS** = `BlockText.swift` lifts fences into a monospaced code surface. Remaining/deferred: executable code blocks (see `Later`).
 
 **3D: Task Management Depth (Apple Reminders / Todoist parity) — promote sooner**
 The user is daily-driving Tesela for tasks; three threads need to ship soon so the system can compete with Apple Reminders / Todoist while preserving the database-first foundation. Detailed scope in **Phase 12** below.

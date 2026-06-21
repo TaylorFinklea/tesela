@@ -173,7 +173,14 @@ export async function handlePutOp(self: GroupDO, req: Request): Promise<Response
     const tokens = self.listOtherApnsTokens(from_device);
     if (tokens.length > 0) {
       console.log(`[apns] deposit seq=${seq} → waking ${tokens.length} other device(s)`);
-      await Promise.all(tokens.map((t) => sendApnsBackgroundPush(self.env, t)));
+      const results = await Promise.all(
+        tokens.map(async (t) => ({ token: t, result: await sendApnsBackgroundPush(self.env, t) })),
+      );
+      // Prune permanently-dead tokens (APNs 410 / BadDeviceToken) so a
+      // stale token from a reinstalled device isn't pushed every deposit.
+      for (const { token, result } of results) {
+        if (result === "dead") self.deleteDeviceTokenByToken(token);
+      }
     }
   } catch {
     // best-effort push; the deposit stands regardless.

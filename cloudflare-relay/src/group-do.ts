@@ -362,6 +362,13 @@ export class GroupDO implements DurableObject {
       .map((r) => r.apns_token);
   }
 
+  /** Prune a permanently-dead APNs token (APNs reported 410 Unregistered
+   *  or BadDeviceToken) so a stale token left by a reinstalled device
+   *  isn't pushed — and logged as a failure — on every future deposit. */
+  deleteDeviceTokenByToken(apns_token: string): void {
+    this.state.storage.sql.exec("DELETE FROM device_tokens WHERE apns_token = ?", apns_token);
+  }
+
   /** Hard upper bound on remembered nonces per DO — a backstop so a
    *  sustained burst of distinct nonces can't grow the map without limit
    *  (the rate limiter already bounds the inflow rate). */

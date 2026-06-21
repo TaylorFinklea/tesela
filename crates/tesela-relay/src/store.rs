@@ -432,6 +432,20 @@ impl Store {
             .collect())
     }
 
+    /// Prune a permanently-dead APNs token (APNs reported HTTP 410
+    /// Unregistered or reason BadDeviceToken) so a stale token left by a
+    /// reinstalled device — which keeps a NEW row under a new device_id —
+    /// isn't pushed (and logged as a failure) on every future deposit.
+    pub async fn delete_device_token(&self, group_id: &[u8; 16], apns_token: &str) -> Result<()> {
+        sqlx::query("DELETE FROM relay_device_tokens WHERE group_id = ? AND apns_token = ?")
+            .bind(&group_id[..])
+            .bind(apns_token)
+            .execute(&self.pool)
+            .await
+            .context("delete device token")?;
+        Ok(())
+    }
+
     // ── Snapshots + snapshot-gated compaction ─────────────────────
 
     /// Deposit a full snapshot batch covering relay-seq `covers_seq`
@@ -614,4 +628,74 @@ async fn migrate(pool: &SqlitePool) -> Result<()> {
     .await
     .context("running relay migrations")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn temp_store() -> (Store, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("relay.sqlite")).await.unwrap();
+        (store, dir)
+    }
+
+    /// APNs device-token registry: upsert is per-(group,device) LWW,
+    /// list excludes the depositor, and prune removes a dead token so it
+    /// isn't pushed again (the sync-durability P3c stale-token fix).
+    #[tokio::test]
+    async fn device_token_upsert_list_and_prune() {
+        let (store, _dir) = temp_store().await;
+        let group = [7u8; 16];
+        let dev_a = [0xaau8; 16];
+        let dev_b = [0xbbu8; 16];
+        store
+            .register_group(&group, &[1u8; 32], 0, &[2u8; 32])
+            .await
+            .unwrap();
+
+        store
+            .upsert_device_token(&group, &dev_a, "aatoken", 1)
+            .await
+            .unwrap();
+        store
+            .upsert_device_token(&group, &dev_b, "bbtoken", 2)
+            .await
+            .unwrap();
+
+        // A deposit from dev_a wakes only the OTHER device (dev_b).
+        assert_eq!(
+            store.list_other_apns_tokens(&group, &dev_a).await.unwrap(),
+            vec!["bbtoken".to_string()]
+        );
+
+        // Upsert is last-write-wins on (group, device): re-registering dev_b
+        // replaces its token, not adds a row.
+        store
+            .upsert_device_token(&group, &dev_b, "bbtoken2", 3)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.list_other_apns_tokens(&group, &dev_a).await.unwrap(),
+            vec!["bbtoken2".to_string()]
+        );
+
+        // Pruning a permanently-dead token removes it so it isn't pushed
+        // (and logged as a failure) on every future deposit.
+        store
+            .delete_device_token(&group, "bbtoken2")
+            .await
+            .unwrap();
+        assert!(store
+            .list_other_apns_tokens(&group, &dev_a)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // dev_a's own token is untouched — a deposit from dev_b still wakes it.
+        assert_eq!(
+            store.list_other_apns_tokens(&group, &dev_b).await.unwrap(),
+            vec!["aatoken".to_string()]
+        );
+    }
 }

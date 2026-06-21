@@ -149,17 +149,19 @@ impl Apns {
     }
 
     /// Send ONE content-available push to `device_token_hex`. Returns
-    /// `true` on a 2xx from APNs, `false` on any failure (config, crypto,
-    /// network, non-2xx). Never panics. Logs at routing level only — a
-    /// token PREFIX, the status, and Apple's `reason` code — never the
-    /// full token, the JWT, or the key; the push body has no note content.
-    pub async fn send_background_push(&self, device_token_hex: &str) -> bool {
+    /// `Delivered` on a 2xx; `Dead` if APNs reports the token is
+    /// permanently invalid (HTTP 410 / reason BadDeviceToken — the caller
+    /// should PRUNE it); `Failed` on any other failure (config, crypto,
+    /// network). Never panics. Logs at routing level only — a token PREFIX,
+    /// the status, and Apple's `reason` code — never the full token, the
+    /// JWT, or the key; the push body has no note content.
+    pub async fn send_background_push(&self, device_token_hex: &str) -> PushOutcome {
         let tag = &device_token_hex[..device_token_hex.len().min(8)];
         let token = match self.provider_token() {
             Ok(t) => t,
             Err(e) => {
                 tracing::error!("[apns] push {tag}… jwt error: {e}");
-                return false;
+                return PushOutcome::Failed;
             }
         };
         let url = format!("{}/3/device/{}", self.host, device_token_hex);
@@ -178,7 +180,7 @@ impl Apns {
         match res {
             Ok(r) if r.status().is_success() => {
                 tracing::info!("[apns] push {tag}… → {} OK", r.status().as_u16());
-                true
+                PushOutcome::Delivered
             }
             Ok(r) => {
                 let status = r.status().as_u16();
@@ -195,20 +197,37 @@ impl Apns {
                             .and_then(|x| x.as_str().map(str::to_string))
                     })
                     .unwrap_or_default();
+                // 410 / Unregistered / BadDeviceToken = the token will NEVER
+                // deliver (app uninstalled or token permanently bad) — signal
+                // the caller to prune it from the registry.
+                let dead = status == 410 || reason == "Unregistered" || reason == "BadDeviceToken";
                 tracing::warn!(
-                    "[apns] push {tag}… → {status} FAIL reason={}",
-                    if reason.is_empty() {
-                        "?".to_string()
-                    } else {
-                        reason
-                    }
+                    "[apns] push {tag}… → {status} {} reason={}",
+                    if dead { "DEAD" } else { "FAIL" },
+                    if reason.is_empty() { "?" } else { reason.as_str() },
                 );
-                false
+                if dead {
+                    PushOutcome::Dead
+                } else {
+                    PushOutcome::Failed
+                }
             }
             Err(e) => {
                 tracing::error!("[apns] push {tag}… error: {e}");
-                false
+                PushOutcome::Failed
             }
         }
     }
+}
+
+/// Outcome of one APNs push. `Dead` = the token is permanently invalid
+/// (HTTP 410 Unregistered / reason BadDeviceToken) — the relay should
+/// prune it so a reinstalled device's stale token isn't pushed (and
+/// logged as a failure) on every future deposit. `Failed` = transient or
+/// other (keep the token and retry on the next deposit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PushOutcome {
+    Delivered,
+    Dead,
+    Failed,
 }
