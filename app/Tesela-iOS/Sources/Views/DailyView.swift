@@ -45,7 +45,7 @@ struct DailyView: View {
                 )
                 ConnectionBanner(connection: mosaic.connection) {
                     if let backend {
-                        Task { await mosaic.refresh(from: backend.backend, userInitiated: true) }
+                        Task { await mosaic.refresh(from: backend.backend) }
                     }
                 }
                 ScrollView {
@@ -75,7 +75,7 @@ struct DailyView: View {
                 }
                 .refreshable {
                     if let backend {
-                        await mosaic.refresh(from: backend.backend, userInitiated: true)
+                        await mosaic.refresh(from: backend.backend)
                     }
                 }
             }

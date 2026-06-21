@@ -47,7 +47,7 @@ struct GrLibraryView: View {
                 }
                 .refreshable {
                     if let backend {
-                        await mosaic.refresh(from: backend.backend, userInitiated: true)
+                        await mosaic.refresh(from: backend.backend)
                     }
                 }
             }

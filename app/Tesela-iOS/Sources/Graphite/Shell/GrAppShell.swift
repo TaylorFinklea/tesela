@@ -406,7 +406,7 @@ struct GrAppShell: View {
         case "goto.library": activeTab = .library
         case "goto.search":  activeTab = .search
         case "action.refresh":
-            Task { await mosaic.refresh(from: backend.backend, userInitiated: true) }
+            Task { await mosaic.refresh(from: backend.backend) }
         case "open.settings":
             Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(350))

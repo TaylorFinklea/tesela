@@ -1374,18 +1374,25 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Hydrate the in-memory snapshot. **Local-first**: always render
     /// the engine-materialized files immediately so the UI is usable
     /// in <100ms even when offline, then fire HTTP in the background
-    /// to pick up server-side changes. The HTTP path is best-effort:
-    /// failures leave the local view in place silently. Pull-to-
-    /// refresh sets `userInitiated: true` so an HTTP failure can
-    /// surface its banner; the default (background refresh, app
-    /// foreground, RelayTicker callback) stays silent.
+    /// to pick up server-side changes. The HTTP path is best-effort for
+    /// READS — a failure leaves the local view in place — but the
+    /// connection STATUS is now honest: an unreachable backend flips to
+    /// `.failed` (with a calm "showing your local copy" message) on
+    /// EVERY refresh, not just a pull-to-refresh, so a wrong LAN IP /
+    /// Mac off / 127.0.0.1-on-a-real-device can't sit silently green
+    /// while reads quietly serve a stale local copy. (The message is
+    /// scoped to what an HTTP probe knows — it does NOT claim edits
+    /// won't sync, since writes ride the relay path independently.)
+    /// Benign in-flight cancellations are still swallowed (no flapping
+    /// on a transient blip); the reconnect loop restores `.ready` once
+    /// the server answers again.
     ///
     /// This pattern is what makes iOS feel like a local-first app
     /// (no "blank screen for 5 seconds" cold launches, no "offline
     /// edit gets clobbered on reconnect"). HTTP becomes a freshen
     /// pass on top of the local source of truth, not a gate that
     /// blocks the UI.
-    func refresh(from backend: Backend, userInitiated: Bool = false) async {
+    func refresh(from backend: Backend) async {
         // Nudge query-backed views (Agenda/Inbox) on every real-backend
         // refresh — `defer` so the `.http` catch-path early returns
         // still signal (a failed freshen may still have hydrated from
@@ -1516,23 +1523,30 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 await snapshotNotesToSandbox(notes + [daily])
                 connection = .ready
             } catch {
-                // HTTP failed. If we already have local data on
-                // screen, the user sees no disruption — we just
-                // don't surface a banner. The only time we want
-                // to surface it is on an explicit pull-to-refresh
-                // (`userInitiated`) where the user actively asked
-                // for the network round-trip and deserves to know
-                // it failed. Even then, the existing local data
-                // stays in place; the banner is a hint, not a wipe.
+                // HTTP failed. We surface the unreachable backend HONESTLY
+                // even when local data is on screen — on EVERY refresh, not
+                // just an explicit pull-to-refresh. The old behavior forced
+                // `.ready` (green "Connected") here as long as any local
+                // copy existed, which is exactly the trap that silently
+                // desynced a device: a wrong LAN IP / Mac off / 127.0.0.1
+                // on a real phone reads fine off the local sandbox, so a
+                // green "Connected" gives the user no way to tell a healthy
+                // server from a dead one — the precondition for a silent
+                // drift. The local data stays on screen regardless (reads
+                // aren't disrupted) — only the STATUS becomes truthful. (We
+                // don't claim writes are lost: they ride the relay path
+                // independently of this HTTP backend.) The benign
+                // in-flight cancellations stay swallowed inside
+                // setConnectionFailedIfReal, so a transient blip on a
+                // healthy network won't flap the banner; the reconnect loop
+                // (started by the .failed transition) restores .ready as
+                // soon as the server answers again.
                 if hadDataBefore || hydratedFromLocal {
-                    connection = .ready
-                    if userInitiated {
-                        setConnectionFailedIfReal(error, host: baseURL.host)
-                    }
+                    setConnectionFailedIfReal(error, host: baseURL.host, degraded: true)
                     return
                 }
-                // No local data either — surface the error so the
-                // user knows the app couldn't find anything to show.
+                // No local data either — surface the raw error so the user
+                // knows the app couldn't find anything to show.
                 setConnectionFailedIfReal(error, host: baseURL.host)
             }
         }
@@ -2425,7 +2439,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// the next refresh will succeed. Once iOS reads notes from the
     /// local engine instead of HTTP (B.3.4/B.3.5) this whole class of
     /// noise disappears; until then, swallow the benign cases here.
-    private func setConnectionFailedIfReal(_ error: Error, host: String?) {
+    ///
+    /// `degraded: true` is the "HTTP unreachable but we already have local
+    /// data on screen" case: reads keep working off the iOS sandbox, but
+    /// writes won't reach the Mac. We still go `.failed` (honest — the
+    /// status must NOT stay green), but with a calm, actionable message
+    /// rather than a raw transport error, since the user isn't actually
+    /// staring at a broken screen.
+    private func setConnectionFailedIfReal(_ error: Error, host: String?, degraded: Bool = false) {
         if let url = error as? URLError {
             switch url.code {
             case .cancelled, .networkConnectionLost:
@@ -2449,6 +2470,21 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // bridges Swift errors into NSError. Same treatment.
         let ns = error as NSError
         if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
+            return
+        }
+        if degraded {
+            let target = host ?? "the server"
+            // HONESTY SCOPE: this state is driven purely by the HTTP probe
+            // failing, which says NOTHING about write sync — edits ride the
+            // engine+relay path (independent of this baseURL) and drain via
+            // the relay whenever a path is up. So we must NOT claim "edits
+            // won't sync" (false whenever the relay is healthy — the exact
+            // wrong-LAN-IP / Tailscale case this targets). State only what
+            // the probe knows: the direct server is unreachable, reads are
+            // from the local copy, writes are durably saved.
+            connection = .failed(
+                "Can't reach \(target) — showing your local copy; changes are saved and will sync."
+            )
             return
         }
         connection = .failed(humanizeError(error, host: host))

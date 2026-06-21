@@ -117,6 +117,45 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertEqual(service.yesterdayBlocks.map(\.text), ["previous day block"])
     }
 
+    /// HONEST CONNECTION STATUS (2026-06-21 silent-desync fix): an
+    /// unreachable HTTP backend must flip `connection` to `.failed` even
+    /// when local data is on screen — it must NOT sit silently green
+    /// `.ready` (the trap that desynced a real device). Reads stay intact
+    /// (the local copy is still rendered); only the status becomes
+    /// truthful. Guards against a future refactor re-forcing `.ready`.
+    func testHttpRefreshSurfacesUnreachableBackendWhileKeepingLocalReads() async throws {
+        let today = "2099-06-15"
+        try resetLocalDailyFixtures([today])
+        defer { try? resetLocalDailyFixtures([today]) }
+        try writeLocalDaily(id: today, body: "- local-only block")
+
+        let now = date(2099, 6, 15)
+        let service = MockMosaicService(now: { now })
+
+        // Port 1 refuses instantly — a stand-in for a wrong LAN IP / Mac
+        // off / 127.0.0.1-on-a-real-device (HTTP fails, local copy exists).
+        let dead = MockMosaicService.Backend.http(URL(string: "http://127.0.0.1:1")!)
+        await service.refresh(from: dead)
+
+        // Reads survive — the local copy is still on screen.
+        XCTAssertEqual(service.todayBlocks.map(\.text), ["local-only block"])
+        // Status is honest: unreachable backend → .failed, NOT green .ready.
+        guard case .failed(let message) = service.connection else {
+            return XCTFail("expected .failed for an unreachable HTTP backend, got \(service.connection)")
+        }
+        // ...and it's the calm degraded copy (reads OK), not a raw transport error.
+        XCTAssertTrue(
+            message.contains("showing your local copy"),
+            "expected the degraded message, got: \(message)"
+        )
+        // The message must NOT overclaim that writes are stuck — edits ride
+        // the relay path independently of this HTTP backend.
+        XCTAssertFalse(
+            message.lowercased().contains("won't sync"),
+            "degraded message must not claim writes won't sync: \(message)"
+        )
+    }
+
     // MARK: - parseBlocks line-number tracking
 
     /// Verify that each Block's `lineNumber` records the 0-based index of
