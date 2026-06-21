@@ -13,7 +13,8 @@
 - [ ] **Taylor is testing instant-sync (build 39)** — awaiting his report on the feel / suspended-device wake.
 - [ ] **CF Worker `wrangler deploy`** to ship the dead-token prune (NOT urgent — only matters after a device reinstall).
 - [ ] **#73 desktop /g live-update deploy** — the #70 fix is committed; needs a Tauri rebuild + `/Applications` swap (Taylor's running-app env).
-- [ ] **#75 multi-device clobber** (flagged, NOT urgent): an iOS edit was overwritten by a web/iPad edit. Family of the known convergence work; reproduce deliberately later — potential data loss, don't lose it.
+- [x] **#75 clobber RESOLVED + wake-from-suspend CONFIRMED** (2026-06-21): root cause was **config, not a code bug** — the iPhone was on **SERVER=HTTP** (writing to `127.0.0.1:7474`, a dead address on a real phone → edits silently vanished → device diverged → refresh clobbered local). Toggling to **Relay** fixed it: an iPhone edit appeared on the iPad ~1s after unlock (the APNs silent push woke the suspended iPad — the original 2h-gap scenario, fully closed + real-device validated).
+- [ ] **FOLLOW-UP — silent write-failure is a daily-driver trap**: HTTP mode pointed at a dead `127.0.0.1` swallowed every edit with NO error + silent divergence. Harden: surface unsynced/failed writes (or detect real-device-pointed-at-127.0.0.1) so a wrong SERVER mode can't silently lose data. (Reliability > features.)
 
 ## Blockers
 - None.
