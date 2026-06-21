@@ -109,7 +109,11 @@ fn parse_freq(base: &str) -> Option<Recurrence> {
         "weekly" | "every week" => return Some(Recurrence::simple(Freq::Weekly, 1)),
         "monthly" | "every month" => return Some(Recurrence::simple(Freq::Monthly, 1)),
         "yearly" | "annually" | "every year" => return Some(Recurrence::simple(Freq::Yearly, 1)),
-        "weekdays" => {
+        // Common single-word cadences. biweekly/fortnightly = every 2 weeks
+        // (the dominant meaning); quarterly = every 3 months.
+        "biweekly" | "fortnightly" => return Some(Recurrence::simple(Freq::Weekly, 2)),
+        "quarterly" => return Some(Recurrence::simple(Freq::Monthly, 3)),
+        "weekdays" | "every weekday" | "every weekdays" => {
             return Some(Recurrence {
                 freq: Freq::Weekly,
                 interval: 1,
@@ -146,6 +150,16 @@ fn parse_freq(base: &str) -> Option<Recurrence> {
                 by_weekday: normalize_weekdays(days),
                 end: None,
             });
+        }
+        // "every other <unit>" → interval 2 (a common way to say it).
+        if let Some(unit) = rest.strip_prefix("other ") {
+            return match unit {
+                "day" | "days" => Some(Recurrence::simple(Freq::Daily, 2)),
+                "week" | "weeks" => Some(Recurrence::simple(Freq::Weekly, 2)),
+                "month" | "months" => Some(Recurrence::simple(Freq::Monthly, 2)),
+                "year" | "years" => Some(Recurrence::simple(Freq::Yearly, 2)),
+                _ => None,
+            };
         }
         // "every N <unit>" handling.
         let (n_str, unit) = rest.split_once(' ')?;
@@ -317,6 +331,65 @@ mod tests {
             parse("every 2 years"),
             Some(Recurrence::simple(Freq::Yearly, 2))
         );
+    }
+
+    #[test]
+    fn parse_natural_cadences() {
+        // Single-word cadences (added 2026-06-20).
+        assert_eq!(parse("biweekly"), Some(Recurrence::simple(Freq::Weekly, 2)));
+        assert_eq!(
+            parse("fortnightly"),
+            Some(Recurrence::simple(Freq::Weekly, 2))
+        );
+        assert_eq!(
+            parse("Quarterly"),
+            Some(Recurrence::simple(Freq::Monthly, 3))
+        );
+        // "every other <unit>" → interval 2.
+        assert_eq!(
+            parse("every other day"),
+            Some(Recurrence::simple(Freq::Daily, 2))
+        );
+        assert_eq!(
+            parse("every other week"),
+            Some(Recurrence::simple(Freq::Weekly, 2))
+        );
+        assert_eq!(
+            parse("every other month"),
+            Some(Recurrence::simple(Freq::Monthly, 2))
+        );
+        assert_eq!(
+            parse("every other year"),
+            Some(Recurrence::simple(Freq::Yearly, 2))
+        );
+        // "every weekday" aliases the Mon–Fri set.
+        assert_eq!(
+            parse("every weekday"),
+            Some(Recurrence {
+                freq: Freq::Weekly,
+                interval: 1,
+                by_weekday: vec![
+                    Weekday::Mon,
+                    Weekday::Tue,
+                    Weekday::Wed,
+                    Weekday::Thu,
+                    Weekday::Fri
+                ],
+                end: None,
+            })
+        );
+        // End clauses still compose with the new keywords.
+        assert_eq!(
+            parse("biweekly count 4"),
+            Some(Recurrence {
+                freq: Freq::Weekly,
+                interval: 2,
+                by_weekday: vec![],
+                end: Some(RecurrenceEnd::Count(4)),
+            })
+        );
+        // Unknown unit after "every other" still rejects.
+        assert_eq!(parse("every other fortnight"), None);
     }
 
     #[test]
