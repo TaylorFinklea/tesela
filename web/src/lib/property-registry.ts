@@ -78,6 +78,12 @@ export type PropertyDefinition = {
    *  Same fallback + conflict semantics as `chord_key`, but for the value
    *  submenu. Frontmatter shape: `value_chord_keys: { backlog: b, todo: t }`. */
   value_chord_keys: Record<string, string>;
+  /** Per-choice display color (for `select` / `multi-select`) — keyed by the
+   *  choice value (lowercased), valued as a CSS color (hex `#7CB342`, an
+   *  `rgb(...)`, or a theme token like `var(--primary)`). Absent / empty map =
+   *  today's default muted chip. Back-compat sibling key on the Property page:
+   *  `choice_colors: { done: "#7CB342", blocked: "#E8697F" }`. Phase 4. */
+  choice_colors: Record<string, string>;
   /** Model B — natural-language triggers for inline detection (lowercased).
    *  Meaning is value-type-driven: select → the value tokens (`["p1","p2"]`);
    *  date → leading keyword(s) (`["due","deadline"]`); number → adjacent word
@@ -110,6 +116,18 @@ export function parsePropertyPage(note: Note): PropertyDefinition | null {
       if (/[a-z]/.test(ch)) valueChordKeys[k.toLowerCase()] = ch;
     }
   }
+  // choice_colors is `{ choice: cssColor }` — keys lowercased so a lookup
+  // matches regardless of the value's stored case; values kept verbatim (any
+  // non-empty string is a valid CSS color or theme token). A non-object or a
+  // non-string entry is dropped rather than erroring (Property page = user
+  // content, mirror of the value_chord_keys tolerance above).
+  const choiceColors: Record<string, string> = {};
+  const cc = c.choice_colors;
+  if (cc && typeof cc === "object" && !Array.isArray(cc)) {
+    for (const [k, v] of Object.entries(cc as Record<string, unknown>)) {
+      if (typeof v === "string" && v.trim() !== "") choiceColors[k.toLowerCase()] = v.trim();
+    }
+  }
   return {
     name: note.title,
     value_type: (c.value_type as PropertyType) || "text",
@@ -127,6 +145,7 @@ export function parsePropertyPage(note: Note): PropertyDefinition | null {
     chip_value_format: valueFormat,
     chord_key: chordKey,
     value_chord_keys: valueChordKeys,
+    choice_colors: choiceColors,
     nl_triggers: Array.isArray(c.nl_triggers)
       ? (c.nl_triggers as unknown[]).filter((t): t is string => typeof t === "string").map((t) => t.toLowerCase())
       : [],
@@ -399,6 +418,7 @@ export function getTagPropertyDefs(
           chip_value_format: null,
           chord_key: null,
           value_chord_keys: {},
+          choice_colors: {},
           nl_triggers: [],
         };
         out.push(applyOverride(stub, over, false));
@@ -440,6 +460,24 @@ export function removeFrontmatterKey(content: string, key: string): string {
 /** Serializes a string array as inline YAML: ["a", "b", "c"] */
 export function serializeStringArray(arr: string[]): string {
   return `[${arr.map((s) => `"${s}"`).join(", ")}]`;
+}
+
+/**
+ * Serialize a per-choice color map to single-line compact JSON — valid FLOW
+ * YAML, so it round-trips through the server's gray_matter `pod_to_json` back
+ * into `metadata.custom.choice_colors`. Written under the `choice_colors`
+ * Property-page key via `updateFrontmatterKey`. Empty/whitespace values are
+ * dropped; returns `null` when nothing remains so the caller can
+ * `removeFrontmatterKey` instead of writing `choice_colors: {}`. The key case
+ * is preserved as passed (the parse lowercases on read). Phase 4.
+ */
+export function serializeChoiceColors(map: Record<string, string>): string | null {
+  const cleaned: Record<string, string> = {};
+  for (const [choice, color] of Object.entries(map)) {
+    if (typeof color === "string" && color.trim() !== "") cleaned[choice] = color.trim();
+  }
+  if (Object.keys(cleaned).length === 0) return null;
+  return JSON.stringify(cleaned);
 }
 
 /**

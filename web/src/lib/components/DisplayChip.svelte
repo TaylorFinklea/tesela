@@ -110,6 +110,40 @@
     if (labelMode === "short") return def.chip_short_label ?? def.name.slice(0, 4);
     return def.name; // "full"
   });
+
+  /**
+   * Phase 4 — per-choice color. For a select / multi-select value with a
+   * `choice_colors` entry (Property-page frontmatter, keyed by lowercased
+   * choice), tint the chip with that color. We mix it into a translucent
+   * background + a saturated foreground via `color-mix`, mirroring the tag-chip
+   * recipe (cm-decorations `.cm-tesela-tag-chip`) so it stays readable in both
+   * the warm-dark and light themes. `null` → fall back to the default muted
+   * chip classes. The recurring chip keeps its own affordance and is never
+   * tinted. A multi-select value can be a `, `-joined list — color by the FIRST
+   * matching choice so the chip still reads as one pill.
+   */
+  const choiceColor = $derived.by((): string | null => {
+    if (isRecurring) return null;
+    if (def.value_type !== "select" && def.value_type !== "multi-select") return null;
+    const colors = def.choice_colors;
+    if (!colors || Object.keys(colors).length === 0) return null;
+    const raw = (value ?? "").trim();
+    if (!raw) return null;
+    const parts = def.value_type === "multi-select" ? raw.split(",").map((p) => p.trim()) : [raw];
+    for (const p of parts) {
+      const hit = colors[p.toLowerCase()];
+      if (hit) return hit;
+    }
+    return null;
+  });
+
+  const chipStyle = $derived(
+    choiceColor
+      ? `background: color-mix(in srgb, ${choiceColor} 16%, transparent); ` +
+        `color: color-mix(in srgb, ${choiceColor} 78%, var(--foreground)); ` +
+        `border: 1px solid color-mix(in srgb, ${choiceColor} 32%, transparent);`
+      : "",
+  );
 </script>
 
 <svelte:window onclick={handleClickOutside} />
@@ -117,7 +151,8 @@
 <span class="relative">
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <span
-    class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-muted/40 text-muted-foreground/90 font-medium {isRecurring && blockId ? 'cursor-pointer hover:bg-muted/70' : ''}"
+    class="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full font-medium {choiceColor ? '' : 'bg-muted/40 text-muted-foreground/90'} {isRecurring && blockId ? 'cursor-pointer hover:bg-muted/70' : ''}"
+    style={chipStyle}
     title="{def.name}: {value}"
     onclick={handleChipClick}
     onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') handleChipClick(e as unknown as MouseEvent); }}

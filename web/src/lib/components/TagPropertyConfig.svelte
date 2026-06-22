@@ -11,6 +11,7 @@
     updateFrontmatterKey,
     removeFrontmatterKey,
     serializeStringArray,
+    serializeChoiceColors,
     type RawPropOverride,
   } from "$lib/property-registry";
   import type { Visibility } from "$lib/types/Visibility";
@@ -296,6 +297,73 @@
     queryClient.invalidateQueries({ queryKey: ["note", propPageId] });
     queryClient.invalidateQueries({ queryKey: ["notes"] });
     queryClient.invalidateQueries({ queryKey: ["type", tagName] });
+  }
+
+  // Phase 4 — curated per-choice color palette. GLOBAL per-property (lives on
+  // the Property page), not a per-type override. Values are hex so they render
+  // identically in both themes; DisplayChip mixes them into a translucent
+  // background + saturated text via color-mix.
+  const CHOICE_PALETTE: string[] = [
+    "#7CB342", // green
+    "#43A047", // deep green
+    "#6B9AE0", // blue
+    "#A98BE0", // violet
+    "#E8A33D", // amber
+    "#E8697F", // coral / red
+    "#62B8CE", // cyan
+    "#8A909C", // muted / grey
+  ];
+
+  /**
+   * Set (or clear, when `color === ""`) one choice's color on the Property
+   * page's `choice_colors` frontmatter map. Mirrors `togglePropertyVisibilityFlag`'s
+   * write path (read the Property page → updateFrontmatterKey → save), but for
+   * the whole `choice_colors` map serialized as single-line FLOW YAML / JSON.
+   * Removes the key entirely when the map empties so we never write
+   * `choice_colors: {}`. GLOBAL to the property (every type using it), per spec
+   * §4 Phase 4.
+   */
+  async function setChoiceColor(propName: string, choice: string, color: string) {
+    const propPageId = propName.toLowerCase();
+    let propNote;
+    try {
+      propNote = await api.getNote(propPageId);
+    } catch {
+      // No Property page → nothing to colour (colors only matter for a
+      // configured select property, which always has a page).
+      return;
+    }
+    const raw = propNote.metadata.custom.choice_colors;
+    const map: Record<string, string> = {};
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        if (typeof v === "string" && v.trim() !== "") map[k] = v;
+      }
+    }
+    if (color === "") delete map[choice];
+    else map[choice] = color;
+    const serialized = serializeChoiceColors(map);
+    const newContent = serialized
+      ? updateFrontmatterKey(propNote.content, "choice_colors", serialized)
+      : removeFrontmatterKey(propNote.content, "choice_colors");
+    await api.updateNote(propPageId, newContent);
+    queryClient.invalidateQueries({ queryKey: ["note", propPageId] });
+    queryClient.invalidateQueries({ queryKey: ["notes"] });
+    queryClient.invalidateQueries({ queryKey: ["type", tagName] });
+  }
+
+  // Which (property, choice) swatch picker is currently open. Encoded
+  // `prop choice` so a choice value can contain anything.
+  let openColorPicker = $state<string | null>(null);
+  function colorKey(prop: string, choice: string): string {
+    return `${prop} ${choice}`;
+  }
+
+  // Read the currently-stored color for a choice off the live registry def.
+  function choiceColorFor(propName: string, choice: string): string | null {
+    const def = propertyRegistry.get(propName.toLowerCase());
+    if (!def) return null;
+    return def.choice_colors[choice.toLowerCase()] ?? null;
   }
 
   async function removeProperty(propName: string) {
@@ -636,18 +704,52 @@
               <!-- Choices (only for select-type properties) -->
               {#if hasChoices && def}
                 <div class="space-y-0.5 pt-1 border-t border-border/30">
-                  <div class="text-[10px] text-muted-foreground/50 mb-1">Hide choices for #{tagName}:</div>
+                  <div class="text-[10px] text-muted-foreground/50 mb-1">
+                    Choices — hide per #{tagName}, color is global:
+                  </div>
                   {#each def.choices as choice}
                     {@const isHidden = hidden.some((h) => h.toLowerCase() === choice.toLowerCase())}
-                    <label class="flex items-center gap-2 cursor-pointer group/choice">
-                      <input
-                        type="checkbox"
-                        checked={isHidden}
-                        class="w-3 h-3 accent-primary"
-                        onchange={() => toggleHiddenChoice(prop.name, choice, isHidden)}
-                      />
-                      <span class="text-[11px] {isHidden ? 'line-through text-muted-foreground/40' : ''}">{choice}</span>
-                    </label>
+                    {@const curColor = choiceColorFor(prop.name, choice)}
+                    {@const pickerOpen = openColorPicker === colorKey(prop.name, choice)}
+                    <div class="flex items-center gap-2 group/choice relative">
+                      <label class="flex items-center gap-2 cursor-pointer flex-1">
+                        <input
+                          type="checkbox"
+                          checked={isHidden}
+                          class="w-3 h-3 accent-primary"
+                          onchange={() => toggleHiddenChoice(prop.name, choice, isHidden)}
+                        />
+                        <span class="text-[11px] {isHidden ? 'line-through text-muted-foreground/40' : ''}">{choice}</span>
+                      </label>
+                      <!-- Color swatch / picker (GLOBAL per-property) -->
+                      <button
+                        class="w-4 h-4 rounded-full border border-border/50 shrink-0 transition-transform hover:scale-110"
+                        style={curColor ? `background:${curColor}` : ""}
+                        title={curColor ? `Choice color: ${curColor}` : "Set choice color"}
+                        onclick={() => { openColorPicker = pickerOpen ? null : colorKey(prop.name, choice); }}
+                      >
+                        {#if !curColor}<span class="text-[9px] text-muted-foreground/40 leading-none">＋</span>{/if}
+                      </button>
+                      {#if pickerOpen}
+                        <div class="absolute right-0 top-5 z-50 p-1.5 rounded border border-border bg-popover shadow-md flex items-center gap-1">
+                          {#each CHOICE_PALETTE as c}
+                            <button
+                              class="w-4 h-4 rounded-full border {curColor === c ? 'ring-1 ring-ring/60' : 'border-border/40'}"
+                              style="background:{c}"
+                              title={c}
+                              onclick={() => { setChoiceColor(prop.name, choice, c); openColorPicker = null; }}
+                            ></button>
+                          {/each}
+                          {#if curColor}
+                            <button
+                              class="text-[11px] text-muted-foreground/40 hover:text-destructive px-1"
+                              title="Clear color"
+                              onclick={() => { setChoiceColor(prop.name, choice, ""); openColorPicker = null; }}
+                            >×</button>
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
                   {/each}
                 </div>
               {/if}
