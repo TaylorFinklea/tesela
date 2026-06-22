@@ -35,6 +35,27 @@ fn default_color() -> String {
     "#808080".to_string()
 }
 
+/// Per-type visibility for a property (Anytype/Logseq-DB 3-state model).
+///
+/// - `OnNew` — auto-seeded onto a new block of the type (and its default
+///   applied); always shown. Legacy equivalent: `hide_by_default = false`.
+/// - `OnSet` — settable but not auto-seeded; shown only when it has a
+///   value (per-type `hide_empty` semantics).
+/// - `Hidden` — never seeded; available in `/p` but hidden when empty.
+///   Legacy equivalent: `hide_by_default = true`.
+///
+/// Serializes as the same `on_new` / `on_set` / `hidden` strings used in
+/// `property_overrides.{Prop}.show` FLOW YAML.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(test, derive(TS))]
+#[cfg_attr(test, ts(export, export_to = "../../../web/src/lib/types/"))]
+#[serde(rename_all = "snake_case")]
+pub enum Visibility {
+    OnNew,
+    OnSet,
+    Hidden,
+}
+
 /// A property definition within a type
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(test, derive(TS))]
@@ -49,6 +70,12 @@ pub struct PropertyDef {
     pub default: Option<String>,
     #[serde(default)]
     pub required: bool,
+    /// Per-type visibility, resolved from the type's `property_overrides`
+    /// (`show`) or derived from `hide_by_default` when no override exists.
+    /// `None` only when this PropertyDef was produced outside the per-type
+    /// resolver (e.g. `get_all_property_defs`).
+    #[serde(default)]
+    pub show: Option<Visibility>,
     /// If true, the property is hidden from the block by default. The user
     /// must expand the block's "show properties" affordance (chevron) to see
     /// it. Inspired by Logseq DB's per-tag-property "Hide by default" toggle.
@@ -76,6 +103,7 @@ impl Default for PropertyDef {
             values: None,
             default: None,
             required: false,
+            show: None,
             hide_by_default: false,
             hide_empty: true,
         }

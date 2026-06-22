@@ -22,6 +22,158 @@ fn db_err(msg: &str, e: sqlx::Error) -> TeselaError {
     }
 }
 
+/// A single type's per-property override, parsed from
+/// `property_overrides.{Prop}` FLOW YAML. All fields optional; absent
+/// fields fall back to the global Property page's config.
+///
+/// `hide_choices` is the new alias for legacy `hidden_{Prop}` — both feed
+/// the same subtract step (§3.3/§5.4).
+#[derive(Debug, Clone, Default)]
+struct PropOverride {
+    /// REPLACE the property's choice list for this type's instances.
+    choices: Option<Vec<String>>,
+    /// Per-type default value.
+    default: Option<String>,
+    /// Per-type visibility (`on_new`/`on_set`/`hidden`).
+    show: Option<crate::types::Visibility>,
+    /// Choices to subtract after the (possibly replaced) list is built.
+    hide_choices: Vec<String>,
+}
+
+/// Parse one override object (`{choices: [...], show: "on_new", default: "todo",
+/// hide_choices: [...]}`) from a JSON value. Unknown/malformed fields are
+/// ignored rather than erroring — a Tag page is user content.
+fn parse_prop_override(v: &serde_json::Value) -> PropOverride {
+    let obj = match v.as_object() {
+        Some(o) => o,
+        None => return PropOverride::default(),
+    };
+    let str_array = |val: &serde_json::Value| -> Vec<String> {
+        val.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|e| e.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    PropOverride {
+        choices: obj.get("choices").map(str_array),
+        default: obj.get("default").and_then(|d| d.as_str().map(String::from)),
+        show: obj
+            .get("show")
+            .and_then(|s| s.as_str())
+            .and_then(|s| match s {
+                "on_new" => Some(crate::types::Visibility::OnNew),
+                "on_set" => Some(crate::types::Visibility::OnSet),
+                "hidden" => Some(crate::types::Visibility::Hidden),
+                _ => None,
+            }),
+        hide_choices: obj
+            .get("hide_choices")
+            .map(str_array)
+            .unwrap_or_default(),
+    }
+}
+
+/// Build the resolved override map for a tag by walking its rows in
+/// child→parent order. Keys are `lower(prop)`; **first-insert-wins** so a
+/// child override beats a parent's (same precedence as the name dedup, but
+/// a distinct pass because the name dedup discards parent rows — §3.5).
+///
+/// `rows` is `(property_overrides_json, hidden_{Prop} pairs)` in the chain
+/// walk order (child first). Each `hidden_{Prop}` legacy key is folded into
+/// the same property's `hide_choices` subtract list.
+fn build_overrides(
+    rows: &[(String, Vec<(String, Vec<String>)>)],
+) -> std::collections::HashMap<String, PropOverride> {
+    let mut map: std::collections::HashMap<String, PropOverride> =
+        std::collections::HashMap::new();
+    for (overrides_json, hidden_pairs) in rows {
+        // property_overrides.{Prop}
+        if let Ok(serde_json::Value::Object(obj)) =
+            serde_json::from_str::<serde_json::Value>(overrides_json)
+        {
+            for (prop, val) in &obj {
+                let key = prop.to_ascii_lowercase();
+                // first-insert-wins: child rows come first.
+                map.entry(key).or_insert_with(|| parse_prop_override(val));
+            }
+        }
+        // Legacy hidden_{Prop}: alias for property_overrides.{Prop}.hide_choices.
+        // Merge into hide_choices regardless of who set the override fields —
+        // both child and parent hidden_ lists subtract (it's additive subtract,
+        // not a replace), but we still honor first-insert-wins for the OTHER
+        // fields by only touching hide_choices.
+        for (prop, hidden) in hidden_pairs {
+            let key = prop.to_ascii_lowercase();
+            let entry = map.entry(key).or_default();
+            for h in hidden {
+                if !entry.hide_choices.contains(h) {
+                    entry.hide_choices.push(h.clone());
+                }
+            }
+        }
+    }
+    map
+}
+
+/// Per-resolve source of `hidden_{Prop}` legacy pairs — intentionally empty.
+///
+/// Legacy `hidden_{Prop}: [choices]` frontmatter keys are folded into the
+/// matching property's `hide_choices` at INDEX time (`index_type_info`), so
+/// the cached `property_overrides_json` is already the single source of
+/// subtract lists by the time the resolver runs. This keeps the Rust resolver
+/// (kanban / views) in lockstep with the TS registry (chips), which reads
+/// `hidden_{Prop}` straight from frontmatter. The shim stays so the chain-walk
+/// call sites keep `build_overrides`'s `(json, pairs)` shape; the pairs are
+/// already merged upstream.
+fn legacy_hidden_pairs() -> Vec<(String, Vec<String>)> {
+    Vec::new()
+}
+
+/// Apply a resolved override to a single `PropertyDef`, in place. Mirrors
+/// §3.3 precedence exactly: choices REPLACE → then SUBTRACT hide_choices;
+/// default override wins; show override wins, else derive from
+/// `hide_by_default`.
+///
+/// `hide_by_default` is the property's global flag (from `property_defs`),
+/// used only for the derivation fallback.
+fn apply_override(
+    def: &mut crate::types::PropertyDef,
+    over: Option<&PropOverride>,
+    hide_by_default: bool,
+) {
+    // choices: REPLACE then SUBTRACT.
+    if let Some(o) = over {
+        if let Some(replaced) = &o.choices {
+            def.values = Some(replaced.clone());
+        }
+        if !o.hide_choices.is_empty() {
+            if let Some(vals) = &mut def.values {
+                let hidden: std::collections::HashSet<&str> =
+                    o.hide_choices.iter().map(|s| s.as_str()).collect();
+                vals.retain(|c| !hidden.contains(c.as_str()));
+            }
+        }
+        if let Some(d) = &o.default {
+            def.default = Some(d.clone());
+        }
+    }
+    // show: override wins; else derive from hide_by_default
+    // (on_new when shown by default, hidden otherwise).
+    def.show = Some(match over.and_then(|o| o.show) {
+        Some(v) => v,
+        None => {
+            if hide_by_default {
+                crate::types::Visibility::Hidden
+            } else {
+                crate::types::Visibility::OnNew
+            }
+        }
+    });
+}
+
 /// SQLite-backed search index and link graph.
 ///
 /// SQLite is treated as a **cache** of the filesystem. If the database file
@@ -249,9 +401,82 @@ impl SqliteIndex {
                     .get("color")
                     .and_then(|v| v.as_str().map(String::from))
                     .unwrap_or_else(|| "#808080".to_string());
+                // Per-type override map (FLOW YAML inline map → JSON object),
+                // keyed by property name. We ALSO fold any legacy
+                // `hidden_{Prop}: [choices]` frontmatter keys into the
+                // matching property's `hide_choices` here, at index time, so
+                // the Rust resolver (kanban / views) subtracts the same
+                // choices the web registry (chips) does — which reads
+                // `hidden_{Prop}` straight from frontmatter (spec §3.3 +
+                // locked decision 4: the two engines must agree). After this
+                // fold the cached map is the single source of subtract lists,
+                // so `legacy_hidden_pairs()` at resolve time is empty.
+                let mut overrides_val = note
+                    .metadata
+                    .custom
+                    .get("property_overrides")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                if !overrides_val.is_object() {
+                    overrides_val = serde_json::json!({});
+                }
+                {
+                    let obj = overrides_val.as_object_mut().expect("just ensured object");
+                    for (key, val) in &note.metadata.custom {
+                        let Some(prop) = key.strip_prefix("hidden_") else {
+                            continue;
+                        };
+                        if prop.is_empty() {
+                            continue;
+                        }
+                        let hidden: Vec<String> = val
+                            .as_array()
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str().map(String::from))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        if hidden.is_empty() {
+                            continue;
+                        }
+                        // Merge into an existing override entry if one matches
+                        // case-insensitively (the resolver keys by lower()).
+                        let entry_key = obj
+                            .keys()
+                            .find(|k| k.eq_ignore_ascii_case(prop))
+                            .cloned()
+                            .unwrap_or_else(|| prop.to_string());
+                        let entry = obj
+                            .entry(entry_key)
+                            .or_insert_with(|| serde_json::json!({}));
+                        if !entry.is_object() {
+                            *entry = serde_json::json!({});
+                        }
+                        let hc = entry
+                            .as_object_mut()
+                            .expect("just ensured object")
+                            .entry("hide_choices".to_string())
+                            .or_insert_with(|| serde_json::json!([]));
+                        if let Some(arr) = hc.as_array_mut() {
+                            for h in hidden {
+                                if !arr.iter().any(|x| x.as_str() == Some(h.as_str())) {
+                                    arr.push(serde_json::Value::String(h));
+                                }
+                            }
+                        }
+                    }
+                }
+                let overrides_json =
+                    serde_json::to_string(&overrides_val).unwrap_or_else(|_| "{}".to_string());
+                let plural = note
+                    .metadata
+                    .custom
+                    .get("plural")
+                    .and_then(|v| v.as_str().map(String::from));
 
                 sqlx::query(
-                    "INSERT OR REPLACE INTO tag_defs (id, name, extends, icon, color, properties_json, note_id) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                    "INSERT OR REPLACE INTO tag_defs (id, name, extends, icon, color, properties_json, property_overrides_json, plural, note_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 )
                 .bind(note.id.as_str())
                 .bind(&note.title)
@@ -259,6 +484,8 @@ impl SqliteIndex {
                 .bind(&icon)
                 .bind(&color)
                 .bind(&props_json)
+                .bind(&overrides_json)
+                .bind(&plural)
                 .bind(note.id.as_str())
                 .execute(&self.pool)
                 .await
@@ -293,6 +520,15 @@ impl SqliteIndex {
                     .get("hide_empty")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                // hide_by_default — read server-side now (Phase 1) so the Rust
+                // resolver can derive the 3-state `show` (parity with the TS
+                // registry, which has always read it from frontmatter).
+                let hide_by_default = note
+                    .metadata
+                    .custom
+                    .get("hide_by_default")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let description = note
                     .metadata
                     .custom
@@ -300,7 +536,7 @@ impl SqliteIndex {
                     .and_then(|v| v.as_str().map(String::from));
 
                 sqlx::query(
-                    "INSERT OR REPLACE INTO property_defs (id, name, value_type, choices_json, default_value, multiple_values, hide_empty, description, note_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    "INSERT OR REPLACE INTO property_defs (id, name, value_type, choices_json, default_value, multiple_values, hide_empty, hide_by_default, description, note_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 )
                 .bind(note.id.as_str())
                 .bind(&note.title)
@@ -309,6 +545,7 @@ impl SqliteIndex {
                 .bind(&default_value)
                 .bind(multiple)
                 .bind(hide_empty)
+                .bind(hide_by_default)
                 .bind(&description)
                 .bind(note.id.as_str())
                 .execute(&self.pool)
@@ -534,6 +771,8 @@ impl SqliteIndex {
 
         // Collect properties by walking the extends chain (child → parent → root)
         let mut all_property_names: Vec<String> = Vec::new();
+        // Per-row override JSON in child→parent order, fed to build_overrides.
+        let mut override_rows: Vec<(String, Vec<(String, Vec<String>)>)> = Vec::new();
         let mut current_name = name.to_string();
         let mut icon = "📄".to_string();
         let mut color = "#808080".to_string();
@@ -546,7 +785,7 @@ impl SqliteIndex {
             depth += 1;
 
             let row = sqlx::query(
-                "SELECT name, extends, icon, color, properties_json FROM tag_defs WHERE LOWER(name) = LOWER(?)"
+                "SELECT name, extends, icon, color, properties_json, property_overrides_json FROM tag_defs WHERE LOWER(name) = LOWER(?)"
             )
             .bind(&current_name)
             .fetch_optional(&self.pool)
@@ -563,6 +802,9 @@ impl SqliteIndex {
                     let props: Vec<String> = serde_json::from_str(&props_str).unwrap_or_default();
                     // Prepend parent properties (parent first, child overrides)
                     all_property_names.extend(props);
+
+                    let overrides_json: String = row.get("property_overrides_json");
+                    override_rows.push((overrides_json, legacy_hidden_pairs()));
 
                     let extends: Option<String> = row.get("extends");
                     match extends {
@@ -582,39 +824,49 @@ impl SqliteIndex {
         let mut seen = std::collections::HashSet::new();
         all_property_names.retain(|p| seen.insert(p.clone()));
 
+        // SEPARATE override pass (§3.5): child→parent, first-insert-wins.
+        let overrides = build_overrides(&override_rows);
+
         // Resolve property definitions from property_defs table
         let mut resolved_props = Vec::new();
         for prop_name in &all_property_names {
             let prop_row = sqlx::query(
-                "SELECT name, value_type, choices_json, default_value, multiple_values, hide_empty, description FROM property_defs WHERE LOWER(name) = LOWER(?)"
+                "SELECT name, value_type, choices_json, default_value, multiple_values, hide_empty, hide_by_default, description FROM property_defs WHERE LOWER(name) = LOWER(?)"
             )
             .bind(prop_name)
             .fetch_optional(&self.pool)
             .await
             .map_err(|e| db_err("Failed to resolve property", e))?;
 
+            let over = overrides.get(&prop_name.to_ascii_lowercase());
             match prop_row {
                 Some(row) => {
                     let choices_str: Option<String> = row.get("choices_json");
-                    resolved_props.push(crate::types::PropertyDef {
+                    let hide_by_default: bool = row.get("hide_by_default");
+                    let mut def = crate::types::PropertyDef {
                         name: row.get("name"),
                         value_type: row.get("value_type"),
                         values: choices_str.and_then(|s| serde_json::from_str(&s).ok()),
                         default: row.get("default_value"),
                         required: false,
                         ..Default::default()
-                    });
+                    };
+                    apply_override(&mut def, over, hide_by_default);
+                    resolved_props.push(def);
                 }
                 None => {
-                    // Property page doesn't exist yet — show as text
-                    resolved_props.push(crate::types::PropertyDef {
+                    // Property page doesn't exist yet — show as text.
+                    // An override (choices/default/show) still applies (§3.5c).
+                    let mut def = crate::types::PropertyDef {
                         name: prop_name.clone(),
                         value_type: "text".to_string(),
                         values: None,
                         default: None,
                         required: false,
                         ..Default::default()
-                    });
+                    };
+                    apply_override(&mut def, over, false);
+                    resolved_props.push(def);
                 }
             }
         }
@@ -632,7 +884,7 @@ impl SqliteIndex {
     pub async fn get_all_tag_defs(&self) -> Result<Vec<crate::types::TypeDefinition>> {
         use sqlx::Row;
         let rows = sqlx::query(
-            "SELECT name, extends, icon, color, properties_json FROM tag_defs ORDER BY name",
+            "SELECT name, extends, icon, color, properties_json, property_overrides_json FROM tag_defs ORDER BY name",
         )
         .fetch_all(&self.pool)
         .await
@@ -643,38 +895,52 @@ impl SqliteIndex {
             let props_str: String = row.get("properties_json");
             let prop_names: Vec<String> = serde_json::from_str(&props_str).unwrap_or_default();
 
+            // This function lists each tag's OWN direct properties (no extends
+            // walk, unlike get_resolved_tag_def). Apply the same separate-pass
+            // override merge over just this row's overrides — consistent
+            // child-wins semantics, just with a single-element chain.
+            let overrides_json: String = row.get("property_overrides_json");
+            let overrides =
+                build_overrides(&[(overrides_json, legacy_hidden_pairs())]);
+
             // Resolve each property name against property_defs for full schema
             let mut resolved_props = Vec::new();
             for pname in &prop_names {
                 let prop_row = sqlx::query(
-                    "SELECT name, value_type, choices_json, default_value FROM property_defs WHERE LOWER(name) = LOWER(?)"
+                    "SELECT name, value_type, choices_json, default_value, hide_by_default FROM property_defs WHERE LOWER(name) = LOWER(?)"
                 )
                 .bind(pname)
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(|e| db_err("Failed to resolve property in get_all_tag_defs", e))?;
 
+                let over = overrides.get(&pname.to_ascii_lowercase());
                 match prop_row {
                     Some(pr) => {
                         let choices_str: Option<String> = pr.get("choices_json");
-                        resolved_props.push(crate::types::PropertyDef {
+                        let hide_by_default: bool = pr.get("hide_by_default");
+                        let mut def = crate::types::PropertyDef {
                             name: pr.get("name"),
                             value_type: pr.get("value_type"),
                             values: choices_str.and_then(|s| serde_json::from_str(&s).ok()),
                             default: pr.get("default_value"),
                             required: false,
                             ..Default::default()
-                        });
+                        };
+                        apply_override(&mut def, over, hide_by_default);
+                        resolved_props.push(def);
                     }
                     None => {
-                        resolved_props.push(crate::types::PropertyDef {
+                        let mut def = crate::types::PropertyDef {
                             name: pname.clone(),
                             value_type: "text".to_string(),
                             values: None,
                             default: None,
                             required: false,
                             ..Default::default()
-                        });
+                        };
+                        apply_override(&mut def, over, false);
+                        resolved_props.push(def);
                     }
                 }
             }
@@ -2484,6 +2750,381 @@ mod tests {
         assert!(
             prop_defs.is_empty(),
             "property_defs should be cleared on Property → Tag; got {prop_defs:?}"
+        );
+    }
+
+    // ────────────────────────────────────────────────────────────────
+    // Per-type property configuration (spec 2026-06-22, Phase 1).
+    //
+    // One global Status Property page shared by Task + Project, each
+    // carrying its own `property_overrides.Status` (choices / show /
+    // default). The resolver must REPLACE choices per type, derive/honor
+    // `show`, apply per-type default, and leave un-overridden tags
+    // identical to the global config.
+    // ────────────────────────────────────────────────────────────────
+
+    /// Build a Tag page note with an inline `property_overrides` map and a
+    /// `tag_properties` membership list, the way the FLOW-YAML frontmatter
+    /// parses into `custom`.
+    fn make_tag_note(
+        id: &str,
+        title: &str,
+        tag_properties: &[&str],
+        overrides: serde_json::Value,
+    ) -> Note {
+        let mut note = make_test_note(id, title, "- a tag page", &[]);
+        note.metadata.note_type = Some("Tag".to_string());
+        note.metadata.custom.insert(
+            "tag_properties".to_string(),
+            serde_json::json!(tag_properties),
+        );
+        if !overrides.is_null() {
+            note.metadata
+                .custom
+                .insert("property_overrides".to_string(), overrides);
+        }
+        note
+    }
+
+    /// Build a select Property page note.
+    fn make_select_prop(id: &str, title: &str, choices: &[&str], default: Option<&str>) -> Note {
+        let mut note = make_test_note(id, title, "- a property page", &[]);
+        note.metadata.note_type = Some("Property".to_string());
+        note.metadata
+            .custom
+            .insert("value_type".to_string(), serde_json::json!("select"));
+        note.metadata
+            .custom
+            .insert("choices".to_string(), serde_json::json!(choices));
+        if let Some(d) = default {
+            note.metadata
+                .custom
+                .insert("default".to_string(), serde_json::json!(d));
+        }
+        note
+    }
+
+    fn status_of<'a>(
+        def: &'a crate::types::TypeDefinition,
+    ) -> &'a crate::types::PropertyDef {
+        def.properties
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case("Status"))
+            .expect("Status property missing from resolved type")
+    }
+
+    /// Core acceptance: Task + Project share one global Status, each
+    /// resolving to its own per-type choices; Task's show==on_new + default.
+    #[tokio::test]
+    async fn per_type_status_override_replaces_choices() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+
+        // Global Status property — the fallback list.
+        let status = make_select_prop(
+            "status",
+            "Status",
+            &["backlog", "todo", "doing", "in-review", "done", "canceled"],
+            Some("todo"),
+        );
+        index.reindex(&status).await.unwrap();
+
+        let task = make_tag_note(
+            "task",
+            "Task",
+            &["Status"],
+            serde_json::json!({
+                "Status": {"choices": ["todo", "doing", "done", "blocked"], "show": "on_new", "default": "todo"}
+            }),
+        );
+        index.reindex(&task).await.unwrap();
+
+        let project = make_tag_note(
+            "project",
+            "Project",
+            &["Status"],
+            serde_json::json!({
+                "Status": {"choices": ["planned", "active", "shipped"]}
+            }),
+        );
+        index.reindex(&project).await.unwrap();
+
+        let task_def = index.get_resolved_tag_def("Task").await.unwrap().unwrap();
+        let ts = status_of(&task_def);
+        assert_eq!(
+            ts.values.as_deref(),
+            Some(&["todo", "doing", "done", "blocked"].map(String::from)[..]),
+            "Task Status choices must be REPLACED by the override"
+        );
+        assert_eq!(ts.show, Some(crate::types::Visibility::OnNew));
+        assert_eq!(ts.default.as_deref(), Some("todo"));
+
+        let proj_def = index.get_resolved_tag_def("Project").await.unwrap().unwrap();
+        let ps = status_of(&proj_def);
+        assert_eq!(
+            ps.values.as_deref(),
+            Some(&["planned", "active", "shipped"].map(String::from)[..]),
+            "Project Status choices must be REPLACED by the override"
+        );
+        // No `show` override → derived from hide_by_default (false) → on_new.
+        assert_eq!(ps.show, Some(crate::types::Visibility::OnNew));
+
+        // get_all_tag_defs must mirror get_resolved_tag_def for these.
+        let all = index.get_all_tag_defs().await.unwrap();
+        let all_task = all.iter().find(|t| t.name == "Task").unwrap();
+        assert_eq!(
+            status_of(all_task).values.as_deref(),
+            Some(&["todo", "doing", "done", "blocked"].map(String::from)[..])
+        );
+        let all_proj = all.iter().find(|t| t.name == "Project").unwrap();
+        assert_eq!(
+            status_of(all_proj).values.as_deref(),
+            Some(&["planned", "active", "shipped"].map(String::from)[..])
+        );
+    }
+
+    /// Legacy `hidden_{Prop}` frontmatter must subtract on the RUST side
+    /// too (folded into `hide_choices` at index time) so kanban/views agree
+    /// with the web chips (spec §3.3 + locked decision 4). Before the
+    /// index-time fold the Rust resolver ignored `hidden_` and the engines
+    /// diverged — the major the Phase-1 review caught.
+    #[tokio::test]
+    async fn legacy_hidden_prop_subtracts_on_rust_side() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let status = make_select_prop("status", "Status", &["todo", "doing", "done"], Some("todo"));
+        index.reindex(&status).await.unwrap();
+
+        // Task uses the LEGACY `hidden_Status: [done]` form, no property_overrides.
+        let mut task = make_test_note("task", "Task", "- a tag page", &[]);
+        task.metadata.note_type = Some("Tag".to_string());
+        task.metadata
+            .custom
+            .insert("tag_properties".to_string(), serde_json::json!(["Status"]));
+        task.metadata
+            .custom
+            .insert("hidden_Status".to_string(), serde_json::json!(["done"]));
+        index.reindex(&task).await.unwrap();
+
+        let def = index.get_resolved_tag_def("Task").await.unwrap().unwrap();
+        assert_eq!(
+            status_of(&def).values.as_deref(),
+            Some(&["todo", "doing"].map(String::from)[..]),
+            "legacy hidden_Status must subtract `done` on the Rust resolver"
+        );
+    }
+
+    /// REPLACE (property_overrides.choices) THEN SUBTRACT (legacy hidden_,
+    /// matched case-insensitively against the override entry) compose on Rust.
+    #[tokio::test]
+    async fn replace_then_subtract_legacy_hidden_on_rust_side() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let status = make_select_prop("status", "Status", &["a", "b"], None);
+        index.reindex(&status).await.unwrap();
+
+        let mut task = make_test_note("task", "Task", "- a tag page", &[]);
+        task.metadata.note_type = Some("Tag".to_string());
+        task.metadata
+            .custom
+            .insert("tag_properties".to_string(), serde_json::json!(["Status"]));
+        task.metadata.custom.insert(
+            "property_overrides".to_string(),
+            serde_json::json!({"Status": {"choices": ["todo", "doing", "done", "blocked"]}}),
+        );
+        // lowercase `hidden_status` must fold into the "Status" override entry.
+        task.metadata
+            .custom
+            .insert("hidden_status".to_string(), serde_json::json!(["blocked"]));
+        index.reindex(&task).await.unwrap();
+
+        let def = index.get_resolved_tag_def("Task").await.unwrap().unwrap();
+        assert_eq!(
+            status_of(&def).values.as_deref(),
+            Some(&["todo", "doing", "done"].map(String::from)[..]),
+            "choices REPLACE to [todo,doing,done,blocked], then hidden_ subtracts blocked"
+        );
+    }
+
+    /// §3.5(a): an override applies regardless of WHICH ancestor's
+    /// `tag_properties` lists the property. Here the parent (Root) lists
+    /// Status; the child (Task) only carries the override.
+    #[tokio::test]
+    async fn override_applies_regardless_of_listing_ancestor() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        index
+            .reindex(&make_select_prop("status", "Status", &["a", "b", "c"], None))
+            .await
+            .unwrap();
+
+        // Parent declares Status membership; no override.
+        let parent = make_tag_note("root-tag", "Root Tag", &["Status"], serde_json::Value::Null);
+        index.reindex(&parent).await.unwrap();
+
+        // Child lists no extra props but overrides Status choices.
+        let mut child = make_tag_note(
+            "task",
+            "Task",
+            &[],
+            serde_json::json!({"Status": {"choices": ["x", "y"]}}),
+        );
+        child
+            .metadata
+            .custom
+            .insert("extends".to_string(), serde_json::json!("Root Tag"));
+        index.reindex(&child).await.unwrap();
+
+        let def = index.get_resolved_tag_def("Task").await.unwrap().unwrap();
+        assert_eq!(
+            status_of(&def).values.as_deref(),
+            Some(&["x", "y"].map(String::from)[..]),
+            "child override must apply to a property inherited from the parent"
+        );
+    }
+
+    /// §3.5(b): an override for a property NOT in the resolved membership
+    /// set is ignored — it never appears in the resolved type.
+    #[tokio::test]
+    async fn override_for_non_member_prop_ignored() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        index
+            .reindex(&make_select_prop("status", "Status", &["a", "b"], None))
+            .await
+            .unwrap();
+
+        let task = make_tag_note(
+            "task",
+            "Task",
+            &["Status"],
+            serde_json::json!({
+                "Status": {"choices": ["a"]},
+                "Priority": {"choices": ["p1", "p2"]}
+            }),
+        );
+        index.reindex(&task).await.unwrap();
+
+        let def = index.get_resolved_tag_def("Task").await.unwrap().unwrap();
+        assert!(
+            def.properties
+                .iter()
+                .all(|p| !p.name.eq_ignore_ascii_case("Priority")),
+            "an override for a non-member property must not introduce it"
+        );
+    }
+
+    /// §3.5(c): an override for a property with NO global Property page
+    /// still applies its choices/default to the text-stub PropertyDef.
+    #[tokio::test]
+    async fn override_applies_to_propless_text_stub() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        // No Status Property page indexed at all.
+        let task = make_tag_note(
+            "task",
+            "Task",
+            &["Status"],
+            serde_json::json!({
+                "Status": {"choices": ["todo", "done"], "default": "todo", "show": "on_set"}
+            }),
+        );
+        index.reindex(&task).await.unwrap();
+
+        let def = index.get_resolved_tag_def("Task").await.unwrap().unwrap();
+        let s = status_of(&def);
+        assert_eq!(s.value_type, "text", "stub keeps text type (no Property page)");
+        assert_eq!(
+            s.values.as_deref(),
+            Some(&["todo", "done"].map(String::from)[..]),
+            "override choices apply even to a text stub"
+        );
+        assert_eq!(s.default.as_deref(), Some("todo"));
+        assert_eq!(s.show, Some(crate::types::Visibility::OnSet));
+    }
+
+    /// A no-override tag resolves byte-identical to before: choices/default
+    /// untouched from the global Property page, `show` derived (on_new since
+    /// hide_by_default defaults false).
+    #[tokio::test]
+    async fn no_override_tag_uses_global_config_unchanged() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        index
+            .reindex(&make_select_prop(
+                "status",
+                "Status",
+                &["backlog", "todo", "done"],
+                Some("todo"),
+            ))
+            .await
+            .unwrap();
+
+        // Tag with Status membership and NO property_overrides.
+        let person = make_tag_note("person", "Person", &["Status"], serde_json::Value::Null);
+        index.reindex(&person).await.unwrap();
+
+        let def = index.get_resolved_tag_def("Person").await.unwrap().unwrap();
+        let s = status_of(&def);
+        assert_eq!(
+            s.values.as_deref(),
+            Some(&["backlog", "todo", "done"].map(String::from)[..]),
+            "no override → global choices unchanged"
+        );
+        assert_eq!(s.default.as_deref(), Some("todo"), "global default unchanged");
+        assert_eq!(
+            s.show,
+            Some(crate::types::Visibility::OnNew),
+            "no show override + hide_by_default=false → on_new"
+        );
+    }
+
+    /// `hide_by_default=true` on the global Property derives `show: hidden`
+    /// when the type carries no `show` override.
+    #[tokio::test]
+    async fn hide_by_default_derives_hidden_show() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        let mut status = make_select_prop("status", "Status", &["a", "b"], None);
+        status
+            .metadata
+            .custom
+            .insert("hide_by_default".to_string(), serde_json::json!(true));
+        index.reindex(&status).await.unwrap();
+
+        let task = make_tag_note("task", "Task", &["Status"], serde_json::Value::Null);
+        index.reindex(&task).await.unwrap();
+
+        let def = index.get_resolved_tag_def("Task").await.unwrap().unwrap();
+        assert_eq!(
+            status_of(&def).show,
+            Some(crate::types::Visibility::Hidden),
+            "hide_by_default=true with no show override → hidden"
+        );
+    }
+
+    /// Replace-then-subtract: `choices` override REPLACES, then
+    /// `hide_choices` SUBTRACTS from the replaced list (§3.3 precedence).
+    #[tokio::test]
+    async fn choices_replace_then_subtract_hide_choices() {
+        let index = SqliteIndex::open_in_memory().await.unwrap();
+        index
+            .reindex(&make_select_prop(
+                "status",
+                "Status",
+                &["g1", "g2", "g3"],
+                None,
+            ))
+            .await
+            .unwrap();
+
+        let task = make_tag_note(
+            "task",
+            "Task",
+            &["Status"],
+            serde_json::json!({
+                "Status": {"choices": ["todo", "doing", "done", "blocked"], "hide_choices": ["blocked"]}
+            }),
+        );
+        index.reindex(&task).await.unwrap();
+
+        let def = index.get_resolved_tag_def("Task").await.unwrap().unwrap();
+        assert_eq!(
+            status_of(&def).values.as_deref(),
+            Some(&["todo", "doing", "done"].map(String::from)[..]),
+            "hide_choices must subtract from the REPLACED list"
         );
     }
 }

@@ -214,8 +214,8 @@ pub async fn serve(
 
         let builtin_pages: Vec<(&str, &str)> = vec![
             ("root-tag.md", "---\ntitle: \"Root Tag\"\ntype: \"Tag\"\nicon: \"📄\"\ntag_properties: []\ntags: []\n---\n- The base tag that all other tags extend.\n"),
-            ("task.md", "---\ntitle: \"Task\"\ntype: \"Tag\"\nextends: \"Root Tag\"\nicon: \"☑\"\ntag_properties: [\"Status\", \"Priority\", \"Deadline\", \"Scheduled\", \"Points\"]\ndetect_tokens: true\ndefault_date_property: \"scheduled\"\ntags: []\n---\n- Task tag page.\n"),
-            ("project.md", "---\ntitle: \"Project\"\ntype: \"Tag\"\nextends: \"Root Tag\"\nicon: \"🗂\"\ntag_properties: [\"Status\", \"Deadline\"]\ntags: []\n---\n- Project tag page.\n"),
+            ("task.md", "---\ntitle: \"Task\"\ntype: \"Tag\"\nextends: \"Root Tag\"\nicon: \"☑\"\ntag_properties: [\"Status\", \"Priority\", \"Deadline\", \"Scheduled\", \"Points\"]\nproperty_overrides: {Status: {choices: [todo, doing, done, blocked], show: on_new, default: todo}}\ndetect_tokens: true\ndefault_date_property: \"scheduled\"\ntags: []\n---\n- Task tag page.\n"),
+            ("project.md", "---\ntitle: \"Project\"\ntype: \"Tag\"\nextends: \"Root Tag\"\nicon: \"🗂\"\ntag_properties: [\"Status\", \"Deadline\"]\nproperty_overrides: {Status: {choices: [planned, active, shipped]}}\ntags: []\n---\n- Project tag page.\n"),
             ("person.md", "---\ntitle: \"Person\"\ntype: \"Tag\"\nextends: \"Root Tag\"\nicon: \"👤\"\ntag_properties: [\"Email\", \"Team\"]\ntags: []\n---\n- Person tag page.\n"),
             ("status.md", "---\ntitle: \"Status\"\ntype: \"Property\"\nvalue_type: \"select\"\nchoices: [\"backlog\", \"todo\", \"doing\", \"in-review\", \"done\", \"canceled\"]\ndefault: \"todo\"\ntags: []\n---\n- Status property.\n"),
             ("priority.md", "---\ntitle: \"Priority\"\ntype: \"Property\"\nvalue_type: \"select\"\nchoices: [\"p1\", \"p2\", \"p3\", \"p4\"]\ndefault: \"p4\"\nnl_triggers: [\"p1\", \"p2\", \"p3\", \"p4\"]\ntags: []\n---\n- Priority property.\n"),

@@ -1,6 +1,6 @@
 //! SQLite schema definitions and migrations for Tesela
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 pub const CREATE_MIGRATIONS_TABLE: &str = r#"
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -199,5 +199,23 @@ END"#,
     note_id TEXT,
     FOREIGN KEY (note_id) REFERENCES notes(id) ON DELETE CASCADE
 )"#,
+    ],
+), (
+    // Per-type property configuration (Phase 1 of the per-type
+    // property/type spec, 2026-06-22). `tag_defs` and `property_defs`
+    // are owned by migration 005, so we ALTER ADD COLUMN here rather
+    // than drop/recreate:
+    //   - tag_defs.property_overrides_json — per-type override map
+    //     (keyed by property name, case-insensitive): choices / show /
+    //     default / hide_choices.
+    //   - tag_defs.plural — plural display name (falls back to name).
+    //   - property_defs.hide_by_default — so the Rust resolver can
+    //     derive the 3-state `show` (parity with the TS registry, which
+    //     already reads this from frontmatter).
+    "006_per_type_property_config",
+    &[
+        "ALTER TABLE tag_defs ADD COLUMN property_overrides_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE tag_defs ADD COLUMN plural TEXT",
+        "ALTER TABLE property_defs ADD COLUMN hide_by_default BOOLEAN NOT NULL DEFAULT 0",
     ],
 )];

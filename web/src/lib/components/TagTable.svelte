@@ -57,6 +57,7 @@
       value_type: def?.value_type ?? (prop.value_type as import("$lib/property-registry").PropertyType),
       choices: rawChoices,
       default: null,
+      show: null,
       hide_by_default: def?.hide_by_default ?? false,
       hide_empty: def?.hide_empty ?? true,
       chip_icon: def?.chip_icon ?? null,

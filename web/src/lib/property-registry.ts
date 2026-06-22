@@ -3,6 +3,7 @@
  * No server changes required: value_type and choices live in frontmatter, surfaced via NoteMetadata.custom.
  */
 import type { Note } from "$lib/types/Note";
+import type { Visibility } from "$lib/types/Visibility";
 
 export type PropertyType =
   | "text"
@@ -43,6 +44,12 @@ export type PropertyDefinition = {
   value_type: PropertyType;
   choices: string[];
   default: string | null;
+  /** Per-type visibility (`on_new`/`on_set`/`hidden`), resolved from the
+   *  type's `property_overrides` (`show`) or derived from `hide_by_default`
+   *  when no override exists. `null` only when this PropertyDefinition was
+   *  produced outside the per-type resolver (i.e. straight off `buildRegistry`,
+   *  not `getTagPropertyDefs`) — mirrors the Rust `Option<Visibility>`. */
+  show: Visibility | null;
   /** If true, hide this property from the block by default — only show when
    *  the user expands the block's properties via the chevron. */
   hide_by_default: boolean;
@@ -108,6 +115,10 @@ export function parsePropertyPage(note: Note): PropertyDefinition | null {
     value_type: (c.value_type as PropertyType) || "text",
     choices: Array.isArray(c.choices) ? (c.choices as string[]) : [],
     default: typeof c.default === "string" ? c.default : null,
+    // `show` is set to a concrete Visibility only on the per-type resolver
+    // path (`getTagPropertyDefs`); a bare registry def carries null, exactly
+    // like the Rust `PropertyDef.show` produced by `get_all_property_defs`.
+    show: null,
     hide_by_default: c.hide_by_default === true,
     hide_empty: c.hide_empty !== false, // default true
     chip_icon: typeof c.chip_icon === "string" ? c.chip_icon : null,
@@ -190,9 +201,138 @@ export function resolveTagChain(tagName: string, inheritance: InheritanceMap): s
 }
 
 /**
+ * A resolved per-type property override (mirror of the Rust `PropOverride`,
+ * `sqlite.rs:31-41`). `choices` REPLACEs the global choice list; `hide_choices`
+ * SUBTRACTs from the (possibly replaced) list; `default`/`show` override the
+ * global config. `choices === null` means "no choices override" (mirror of
+ * `Option<Vec<String>>`); `hide_choices` defaults to `[]`.
+ */
+export type PropOverride = {
+  choices: string[] | null;
+  default: string | null;
+  show: Visibility | null;
+  hide_choices: string[];
+};
+
+/**
+ * Parse one override object (`{choices: [...], show: "on_new", default: "todo",
+ * hide_choices: [...]}`) into a PropOverride. Mirrors `parse_prop_override`
+ * (`sqlite.rs:46-77`): unknown/malformed fields are ignored rather than
+ * erroring — a Tag page is user content. A non-object value yields an empty
+ * override.
+ */
+export function parsePropOverride(v: unknown): PropOverride {
+  const empty: PropOverride = { choices: null, default: null, show: null, hide_choices: [] };
+  if (!v || typeof v !== "object" || Array.isArray(v)) return empty;
+  const obj = v as Record<string, unknown>;
+  const strArray = (val: unknown): string[] =>
+    Array.isArray(val) ? val.filter((e): e is string => typeof e === "string") : [];
+  const showRaw = typeof obj.show === "string" ? obj.show : null;
+  const show: Visibility | null =
+    showRaw === "on_new" || showRaw === "on_set" || showRaw === "hidden" ? showRaw : null;
+  return {
+    // `choices` present (any type) → Some; coerced to a string array (mirror
+    // of `obj.get("choices").map(str_array)` — a present-but-non-array
+    // `choices` becomes `Some([])`, matching the Rust `str_array` fallback).
+    choices: "choices" in obj ? strArray(obj.choices) : null,
+    default: typeof obj.default === "string" ? obj.default : null,
+    show,
+    hide_choices: strArray(obj.hide_choices),
+  };
+}
+
+/**
+ * Build the resolved override map for a tag by walking its rows in
+ * child→parent order. Keys are `lower(prop)`; FIRST-INSERT-WINS so a child
+ * override beats a parent's (a distinct pass from the name dedup — §3.5).
+ * Mirrors `build_overrides` (`sqlite.rs:87-119`).
+ *
+ * Each row is `(property_overrides object, hidden_{Prop} pairs)` in the chain
+ * walk order (child first). The `hide_choices` subtract list is ADDITIVE: both
+ * child and parent `hide_choices`/`hidden_{Prop}` accumulate (deduped by value),
+ * while the OTHER fields (choices/default/show) honor first-insert-wins.
+ *
+ * The legacy `hidden_{Prop}` fold is the ONE intentional Rust/TS asymmetry: the
+ * Rust DB layer has no `hidden_{Prop}` column (so `legacy_hidden_pairs()` is a
+ * no-op shim there), but the TS registry reads frontmatter directly and MUST
+ * fold those keys into the same property's subtract list — both engines end up
+ * subtracting identically (§3.3, prompt note).
+ */
+export function buildOverrides(
+  rows: Array<{ overrides: Record<string, unknown>; hidden: Record<string, string[]> }>,
+): Map<string, PropOverride> {
+  const map = new Map<string, PropOverride>();
+  for (const { overrides, hidden } of rows) {
+    // property_overrides.{Prop} — first-insert-wins (child rows come first).
+    if (overrides && typeof overrides === "object" && !Array.isArray(overrides)) {
+      for (const [prop, val] of Object.entries(overrides)) {
+        const key = prop.toLowerCase();
+        if (!map.has(key)) map.set(key, parsePropOverride(val));
+      }
+    }
+    // Legacy hidden_{Prop}: alias for property_overrides.{Prop}.hide_choices.
+    // Additive subtract regardless of first-insert-wins on the other fields.
+    for (const [prop, vals] of Object.entries(hidden)) {
+      const key = prop.toLowerCase();
+      let entry = map.get(key);
+      if (!entry) {
+        entry = { choices: null, default: null, show: null, hide_choices: [] };
+        map.set(key, entry);
+      }
+      for (const h of vals) {
+        if (!entry.hide_choices.includes(h)) entry.hide_choices.push(h);
+      }
+    }
+  }
+  return map;
+}
+
+/**
+ * Apply a resolved override to a single PropertyDefinition, returning a new
+ * def (the registry def is shared, so never mutate it). Mirrors `apply_override`
+ * (`sqlite.rs:143-176`) precedence EXACTLY:
+ *   a. choices REPLACE (if override.choices is non-null)
+ *   b. then SUBTRACT hide_choices (only when there IS a choice list — a global
+ *      `choices: []` registry default is an empty list, so subtract is a no-op
+ *      there; mirrors Rust `if let Some(vals)`).
+ *   c. default override wins.
+ *   d. show: override wins; else derive — hide_by_default → "hidden", else "on_new".
+ * `show` is ALWAYS set to a concrete Visibility on this path.
+ */
+export function applyOverride(
+  def: PropertyDefinition,
+  over: PropOverride | undefined,
+  hideByDefault: boolean,
+): PropertyDefinition {
+  let choices = def.choices;
+  if (over) {
+    if (over.choices !== null) {
+      choices = over.choices.slice();
+    }
+    if (over.hide_choices.length > 0) {
+      const hidden = new Set(over.hide_choices);
+      choices = choices.filter((c) => !hidden.has(c));
+    }
+  }
+  const show: Visibility = over?.show ?? (hideByDefault ? "hidden" : "on_new");
+  return {
+    ...def,
+    choices,
+    default: over?.default ?? def.default,
+    show,
+  };
+}
+
+/**
  * Resolves a tag's full property definition list, walking the extends chain
  * and looking each property name up against the registry of Property pages.
  * Deduplicated by lowercased property name.
+ *
+ * Mirror of the Rust `get_resolved_tag_def` (`sqlite.rs:708-823`): membership
+ * (`tag_properties`) is the union along the chain deduped child-first; the
+ * per-type override merge is a SEPARATE pass (`buildOverrides`, child-wins
+ * first-insert) applied per resolved property via `applyOverride`. The merged
+ * result equals what the Rust resolver returns for the same input.
  */
 export function getTagPropertyDefs(
   tagName: string,
@@ -200,9 +340,33 @@ export function getTagPropertyDefs(
   registry: PropertyRegistry,
   inheritance: InheritanceMap,
 ): PropertyDefinition[] {
+  const chain = resolveTagChain(tagName, inheritance);
+
+  // SEPARATE override pass (§3.5): walk rows child→parent, first-insert-wins.
+  // The TS side folds BOTH property_overrides AND the legacy hidden_{Prop}
+  // frontmatter keys (the one intentional Rust/TS asymmetry — see buildOverrides).
+  const overrideRows: Array<{
+    overrides: Record<string, unknown>;
+    hidden: Record<string, string[]>;
+  }> = [];
+  for (const tag of chain) {
+    const tagPage = notes.find(
+      (n) => n.title.toLowerCase() === tag && n.metadata.note_type === "Tag",
+    );
+    if (!tagPage) continue;
+    const c = tagPage.metadata.custom;
+    const rawOverrides =
+      c.property_overrides && typeof c.property_overrides === "object" && !Array.isArray(c.property_overrides)
+        ? (c.property_overrides as Record<string, unknown>)
+        : {};
+    overrideRows.push({ overrides: rawOverrides, hidden: parseHiddenChoices(c) });
+  }
+  const overrides = buildOverrides(overrideRows);
+
+  // Membership pass: union along the chain, deduped child-first.
   const seen = new Set<string>();
   const out: PropertyDefinition[] = [];
-  for (const tag of resolveTagChain(tagName, inheritance)) {
+  for (const tag of chain) {
     const tagPage = notes.find(
       (n) => n.title.toLowerCase() === tag && n.metadata.note_type === "Tag",
     );
@@ -210,10 +374,34 @@ export function getTagPropertyDefs(
     const tagProps = tagPage.metadata.custom.tag_properties;
     if (!Array.isArray(tagProps)) continue;
     for (const propName of tagProps as string[]) {
-      const def = registry.get(String(propName).toLowerCase());
-      if (def && !seen.has(def.name.toLowerCase())) {
-        seen.add(def.name.toLowerCase());
-        out.push(def);
+      const key = String(propName).toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const over = overrides.get(key);
+      const def = registry.get(key);
+      if (def) {
+        // Property page exists — apply override to its global config.
+        out.push(applyOverride(def, over, def.hide_by_default));
+      } else {
+        // §3.5c — no global Property page: a text-stub def (value_type "text",
+        // empty choices, null default) still receives the override.
+        const stub: PropertyDefinition = {
+          name: String(propName),
+          value_type: "text",
+          choices: [],
+          default: null,
+          show: null,
+          hide_by_default: false,
+          hide_empty: true,
+          chip_icon: null,
+          chip_label_mode: null,
+          chip_short_label: null,
+          chip_value_format: null,
+          chord_key: null,
+          value_chord_keys: {},
+          nl_triggers: [],
+        };
+        out.push(applyOverride(stub, over, false));
       }
     }
   }
