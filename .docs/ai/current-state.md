@@ -1,7 +1,7 @@
 # Current State
 
 ## Branch
-- `main` @ `776f1d2a` == origin/main — **pushed, clean tree** (2026-06-20). `.docs/ai/review/` + `AuthKey_*.p8` are untracked (the latter is gitignored; never commit it).
+- `main` @ `37635a7d` — **1 unpushed commit** ahead of origin/main (`01480753`): the recurring auto-roll (`37635a7d`). Sync-trust commits are pushed. `.docs/ai/review/` + `AuthKey_*.p8` untracked (latter gitignored; never commit it).
 
 ## Last session — instant cross-device sync SHIPPED + working
 - **✅ APNs instant-sync WORKING end-to-end** (#72, iOS build 39, CF Worker). Edit on one device → relay deposit → content-available APNs push → other device catches up in seconds. `wrangler tail` confirmed `registered ✓` on both devices + `push → 200 OK` both directions. Full arc (P1 flush-on-background → P2a BGTask → P3 receiver+token-POST+entitlement+relay push) in `phases/2026-06-18-sync-durability-spec.md`. Builds 31–39.
@@ -18,9 +18,11 @@
   - **localhost warning** (build 40, `d9e0ee36`): physical device + HTTP→`127.0.0.1`/localhost → loud amber warning + one-tap "Switch to Relay" in Settings.
   - **honest connection status** (build 41, `0b7f2403`): `MockMosaicService.refresh` `.http` catch no longer forces green `.ready` on HTTP failure — an unreachable backend now flips `.failed` ("Can't reach <host> — showing your local copy; changes are saved and will sync") on EVERY refresh, lighting up the ConnectionBanner / TopBar dot / Settings app-wide. Reads stay intact; reconnect loop self-heals. Built understand→implement→adversarial-review (3 lenses) workflows; review caught the "edits won't sync" overclaim (writes ride the relay independently) + banner truncation + dead `userInitiated` param — all fixed. New regression test; 25/25 green.
   - Deferred (acceptable, noted): amber "degraded" vs red "failed" visual split; surfacing write-path (`persistTaskToggle`) failures directly.
+- [x] **Recurring-task auto-roll — iOS Relay-mode gap CLOSED** (build 42, `37635a7d`, 2026-06-21). Map finding: roll-on-completion was ALREADY built + working on desktop/web + iOS-HTTP (server `apply_post_save_bumps`); the gap was iOS **Relay** mode (engine path bypasses the server routes where the roll lives). `MockMosaicService.rollRecurringComplete` now rolls locally on completion via `onLocalPropertySet`, mirroring `rewrite_block_for_complete` (status→todo, dates stepped per-field, `last_completed`, `recurrence_done`); spent series keep `done`. Understand→implement→adversarial-review (3 lenses); review caught a BLOCKER (spent never persisted `done` → revert) + MAJOR (`[[...]]` wrapping so CRDT converges with the server) + anchor-fallback/suffix minors — all fixed. Convergence verified safe (sync-apply is pure Loro merge, no double-roll). 29/29 tests. iOS parser also synced with the biweekly/quarterly/every-other Rust additions.
+  - Deferred: a fully-atomic multi-key engine op (the roll is 4-5 non-atomic ops; status-first order + tight window make the crash edge rare + recoverable).
 
 ## Blockers
 - None.
 
 ## Open questions / next pick
-- Next track is Taylor's pick. Strong candidates: **#75 clobber** (repro + diagnose), **3D recurring-task auto-roll** (the parser's ready), **3B block-merge-on-Backspace**. iOS editor track + the sync-durability arc are both complete.
+- Next track is Taylor's pick. Strong candidates: **#73 desktop deploy** (his env), **3B block-merge-on-Backspace** (editor), **type-system/kanban depth**, or the web in-place recurring-roll toast (server already broadcasts `RecurringRolled`). iOS editor track, sync-durability arc, sync-trust hardening, and recurring auto-roll are all complete.
