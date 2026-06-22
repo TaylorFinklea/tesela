@@ -6,10 +6,15 @@
   import {
     buildRegistry,
     parseHiddenChoices,
+    parsePropertyOverridesRaw,
+    serializePropertyOverrides,
     updateFrontmatterKey,
     removeFrontmatterKey,
     serializeStringArray,
+    type RawPropOverride,
   } from "$lib/property-registry";
+  import type { Visibility } from "$lib/types/Visibility";
+  import { TABLER_ICONS, resolveChipIcon } from "$lib/icon-registry";
 
   let { tagName, noteId }: { tagName: string; noteId: string } = $props();
 
@@ -47,6 +52,172 @@
   const hiddenChoices = $derived(
     tagNote ? parseHiddenChoices(tagNote.metadata.custom as Record<string, unknown>) : {},
   );
+
+  // Phase 3 — RAW per-type override map, read straight off the Tag page
+  // frontmatter (NOT the flattened/resolved PropertyDef). This is what lets the
+  // editor distinguish overridden-vs-inherited and never bake an inherited
+  // value into an override (spec §3.5 tail).
+  const rawOverrides = $derived(
+    tagNote
+      ? parsePropertyOverridesRaw(tagNote.metadata.custom as Record<string, unknown>)
+      : {},
+  );
+
+  // Find the raw override entry for a property by case-insensitive name. Returns
+  // both the key as-written (so a write preserves the existing casing) and the
+  // entry. `key` is null when no override exists for this property yet.
+  function rawOverrideFor(propName: string): { key: string | null; entry: RawPropOverride } {
+    const lower = propName.toLowerCase();
+    for (const [k, v] of Object.entries(rawOverrides)) {
+      if (k.toLowerCase() === lower) return { key: k, entry: v };
+    }
+    return { key: null, entry: {} };
+  }
+
+  // Type metadata: icon + plural, read raw from the Tag page frontmatter.
+  const tagIcon = $derived.by((): string => {
+    const v = tagNote?.metadata.custom.icon;
+    return typeof v === "string" ? v : "";
+  });
+  const tagPlural = $derived.by((): string => {
+    const v = tagNote?.metadata.custom.plural;
+    return typeof v === "string" ? v : "";
+  });
+
+  const resolvedTagIcon = $derived(resolveChipIcon(tagIcon || null));
+
+  const iconNames = Object.keys(TABLER_ICONS).sort();
+  let iconPickerOpen = $state(false);
+  let iconSearch = $state("");
+  const filteredIcons = $derived(
+    iconSearch.trim()
+      ? iconNames.filter((n) => n.includes(iconSearch.trim().toLowerCase()))
+      : iconNames,
+  );
+
+  let pluralInput = $state("");
+  let editingPlural = $state(false);
+
+  /**
+   * Persist the whole `property_overrides` map to the Tag page frontmatter.
+   * `mutate(map)` mutates a fresh copy of the current raw map (case-preserving),
+   * then we serialize to single-line FLOW YAML / JSON via the existing
+   * updateFrontmatterKey pipeline — or remove the key when the map is empty so we
+   * never write `property_overrides: {}`. Does NOT clobber other frontmatter keys.
+   */
+  async function writeOverrides(mutate: (map: Record<string, RawPropOverride>) => void) {
+    const note = await api.getNote(noteId);
+    const current = parsePropertyOverridesRaw(note.metadata.custom as Record<string, unknown>);
+    // Deep-ish clone so the mutator can't disturb the derived state.
+    const next: Record<string, RawPropOverride> = {};
+    for (const [k, v] of Object.entries(current)) {
+      next[k] = {
+        ...v,
+        ...(v.choices ? { choices: [...v.choices] } : {}),
+        ...(v.hide_choices ? { hide_choices: [...v.hide_choices] } : {}),
+      };
+    }
+    mutate(next);
+    const serialized = serializePropertyOverrides(next);
+    const newContent = serialized
+      ? updateFrontmatterKey(note.content, "property_overrides", serialized)
+      : removeFrontmatterKey(note.content, "property_overrides");
+    await api.updateNote(noteId, newContent);
+    queryClient.invalidateQueries({ queryKey: ["note", noteId] });
+    queryClient.invalidateQueries({ queryKey: ["type", tagName] });
+    queryClient.invalidateQueries({ queryKey: ["notes"] });
+  }
+
+  // Mutate one property's override entry (created on demand, keyed by the
+  // existing case or the canonical property name for a fresh entry).
+  function setOverrideField(
+    map: Record<string, RawPropOverride>,
+    propName: string,
+    apply: (e: RawPropOverride) => void,
+  ) {
+    const lower = propName.toLowerCase();
+    let key: string | null = null;
+    for (const k of Object.keys(map)) {
+      if (k.toLowerCase() === lower) {
+        key = k;
+        break;
+      }
+    }
+    if (key === null) {
+      key = propName;
+      map[key] = {};
+    }
+    apply(map[key]);
+  }
+
+  // --- Choices override editor ---
+  let newChoiceInput = $state<Record<string, string>>({});
+
+  async function addOverrideChoice(propName: string) {
+    const val = (newChoiceInput[propName] ?? "").trim();
+    if (!val) return;
+    await writeOverrides((map) => {
+      setOverrideField(map, propName, (e) => {
+        const list = e.choices ? [...e.choices] : [];
+        if (!list.some((c) => c.toLowerCase() === val.toLowerCase())) list.push(val);
+        e.choices = list;
+      });
+    });
+    newChoiceInput[propName] = "";
+  }
+
+  async function removeOverrideChoice(propName: string, choice: string) {
+    await writeOverrides((map) => {
+      setOverrideField(map, propName, (e) => {
+        e.choices = (e.choices ?? []).filter((c) => c !== choice);
+      });
+    });
+  }
+
+  async function setOverrideShow(propName: string, show: Visibility | "") {
+    await writeOverrides((map) => {
+      setOverrideField(map, propName, (e) => {
+        if (show === "") delete e.show;
+        else e.show = show;
+      });
+    });
+  }
+
+  async function setOverrideDefault(propName: string, value: string) {
+    await writeOverrides((map) => {
+      setOverrideField(map, propName, (e) => {
+        if (value.trim() === "") delete e.default;
+        else e.default = value;
+      });
+    });
+  }
+
+  // --- Icon + plural write-back (top-level Tag frontmatter keys) ---
+  async function setIcon(name: string) {
+    iconPickerOpen = false;
+    iconSearch = "";
+    const note = await api.getNote(noteId);
+    const newContent = name
+      ? updateFrontmatterKey(note.content, "icon", `"${name}"`)
+      : removeFrontmatterKey(note.content, "icon");
+    await api.updateNote(noteId, newContent);
+    queryClient.invalidateQueries({ queryKey: ["note", noteId] });
+    queryClient.invalidateQueries({ queryKey: ["type", tagName] });
+    queryClient.invalidateQueries({ queryKey: ["notes"] });
+  }
+
+  async function savePlural(value: string) {
+    editingPlural = false;
+    const note = await api.getNote(noteId);
+    const trimmed = value.trim();
+    const newContent = trimmed
+      ? updateFrontmatterKey(note.content, "plural", `"${trimmed}"`)
+      : removeFrontmatterKey(note.content, "plural");
+    await api.updateNote(noteId, newContent);
+    queryClient.invalidateQueries({ queryKey: ["note", noteId] });
+    queryClient.invalidateQueries({ queryKey: ["type", tagName] });
+    queryClient.invalidateQueries({ queryKey: ["notes"] });
+  }
 
   // Tag inheritance
   const extendsTagName = $derived.by((): string => {
@@ -196,6 +367,79 @@
 </script>
 
 <div class="space-y-2">
+  <!-- Type metadata: icon + plural -->
+  <div class="flex items-center gap-2 text-[11px] mb-1">
+    <span class="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/40">Icon</span>
+    <button
+      class="flex items-center justify-center w-6 h-6 rounded hover:bg-muted/50 transition-colors text-[14px]"
+      title="Set type icon"
+      onclick={() => { iconPickerOpen = !iconPickerOpen; iconSearch = ""; }}
+    >
+      {#if resolvedTagIcon.component}
+        {@const IconComp = resolvedTagIcon.component as any}
+        <IconComp size={15} />
+      {:else if resolvedTagIcon.emoji}
+        {resolvedTagIcon.emoji}
+      {:else}
+        <span class="text-muted-foreground/30">＋</span>
+      {/if}
+    </button>
+    {#if tagIcon}
+      <span class="text-[10px] text-muted-foreground/40">{tagIcon}</span>
+      <button
+        class="text-[10px] text-muted-foreground/30 hover:text-destructive transition-colors"
+        title="Clear icon"
+        onclick={() => setIcon("")}
+      >×</button>
+    {/if}
+  </div>
+
+  {#if iconPickerOpen}
+    <div class="space-y-1 mb-2 p-2 rounded border border-border/30 bg-muted/20">
+      <input
+        type="text"
+        placeholder="Search icons…"
+        bind:value={iconSearch}
+        autofocus
+        class="w-full text-[11px] bg-muted/50 rounded px-2 py-1 outline-none border border-transparent focus:border-ring/30"
+      />
+      <div class="grid grid-cols-8 gap-1 max-h-40 overflow-y-auto">
+        {#each filteredIcons as name (name)}
+          {@const IconComp = TABLER_ICONS[name] as any}
+          <button
+            class="flex items-center justify-center w-7 h-7 rounded hover:bg-accent transition-colors {tagIcon.toLowerCase() === name ? 'bg-accent ring-1 ring-ring/40' : ''}"
+            title={name}
+            onclick={() => setIcon(name)}
+          >
+            <IconComp size={15} />
+          </button>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  <!-- Plural row -->
+  <div class="flex items-center gap-2 text-[11px] text-muted-foreground/50 mb-1">
+    <span class="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/40">Plural</span>
+    {#if editingPlural}
+      <input
+        class="flex-1 text-[11px] bg-muted/50 rounded px-2 py-0.5 outline-none border border-ring/30"
+        placeholder="Plural name…"
+        bind:value={pluralInput}
+        autofocus
+        onkeydown={(e) => { if (e.key === "Enter") savePlural(pluralInput); if (e.key === "Escape") editingPlural = false; }}
+        onblur={() => savePlural(pluralInput)}
+      />
+    {:else}
+      <button
+        class="flex-1 text-left text-[11px] px-1 -mx-1 rounded hover:bg-muted/50 transition-colors {tagPlural ? 'text-foreground/70' : 'text-muted-foreground/30 italic'}"
+        onclick={() => { pluralInput = tagPlural; editingPlural = true; }}
+      >
+        {tagPlural || `${tagName} (default)`}
+      </button>
+    {/if}
+  </div>
+
   <!-- Extends row -->
   <div class="flex items-center gap-2 text-[11px] text-muted-foreground/50 mb-1">
     <span class="text-[10px] uppercase tracking-widest font-medium text-muted-foreground/40">Extends</span>
@@ -290,6 +534,10 @@
             </div>
           </div>
           {#if isExpanded}
+            {@const ov = rawOverrideFor(prop.name)}
+            {@const ovChoices = ov.entry.choices ?? []}
+            {@const ovShow = ov.entry.show ?? null}
+            {@const ovDefault = ov.entry.default ?? ""}
             <div class="px-4 pb-2 space-y-2">
               <!-- Visibility toggles (per-property, applies wherever the property is used) -->
               <div class="space-y-1">
@@ -314,6 +562,75 @@
                   <span class="text-[11px]">Hide empty value</span>
                   <span class="text-[10px] text-muted-foreground/40">— hidden when no value set</span>
                 </label>
+              </div>
+
+              <!-- Per-type override editor (choices REPLACE / show / default) -->
+              <div class="space-y-2 pt-1 border-t border-border/30">
+                <div class="text-[10px] text-muted-foreground/50 uppercase tracking-widest">
+                  Override for #{tagName}
+                </div>
+
+                <!-- SHOW: 3-way on_new / on_set / hidden (+ inherit) -->
+                <div class="flex items-center gap-2">
+                  <span class="text-[10px] text-muted-foreground/50 w-12">Show</span>
+                  <select
+                    class="text-[11px] bg-muted/50 rounded px-1.5 py-0.5 outline-none border border-transparent focus:border-ring/30"
+                    value={ovShow ?? ""}
+                    onchange={(e) => setOverrideShow(prop.name, (e.currentTarget as HTMLSelectElement).value as Visibility | "")}
+                  >
+                    <option value="">inherit</option>
+                    <option value="on_new">on_new</option>
+                    <option value="on_set">on_set</option>
+                    <option value="hidden">hidden</option>
+                  </select>
+                </div>
+
+                <!-- DEFAULT -->
+                <div class="flex items-center gap-2">
+                  <span class="text-[10px] text-muted-foreground/50 w-12">Default</span>
+                  <input
+                    type="text"
+                    placeholder="inherit"
+                    value={ovDefault}
+                    class="flex-1 text-[11px] bg-muted/50 rounded px-2 py-0.5 outline-none border border-transparent focus:border-ring/30"
+                    onkeydown={(e) => { if (e.key === "Enter") setOverrideDefault(prop.name, (e.currentTarget as HTMLInputElement).value); }}
+                    onblur={(e) => setOverrideDefault(prop.name, (e.currentTarget as HTMLInputElement).value)}
+                  />
+                </div>
+
+                <!-- CHOICES REPLACE: editable list; empty = inherit global -->
+                <div class="space-y-1">
+                  <div class="text-[10px] text-muted-foreground/50">
+                    Choices {ovChoices.length === 0 ? "(inherits global)" : "(replaces global)"}
+                  </div>
+                  {#if ovChoices.length > 0}
+                    <div class="flex flex-wrap gap-1">
+                      {#each ovChoices as choice}
+                        <span class="flex items-center gap-1 text-[11px] bg-muted/50 rounded px-1.5 py-0.5">
+                          {choice}
+                          <button
+                            class="text-muted-foreground/40 hover:text-destructive transition-colors"
+                            onclick={() => removeOverrideChoice(prop.name, choice)}
+                          >×</button>
+                        </span>
+                      {/each}
+                    </div>
+                  {/if}
+                  <div class="flex gap-1">
+                    <input
+                      type="text"
+                      placeholder="Add choice…"
+                      value={newChoiceInput[prop.name] ?? ""}
+                      oninput={(e) => (newChoiceInput[prop.name] = (e.currentTarget as HTMLInputElement).value)}
+                      onkeydown={(e) => { if (e.key === "Enter") addOverrideChoice(prop.name); }}
+                      class="flex-1 text-[11px] bg-muted/50 rounded px-2 py-0.5 outline-none border border-transparent focus:border-ring/30"
+                    />
+                    <button
+                      class="text-[10px] px-2 py-0.5 rounded bg-accent hover:bg-accent/80 text-accent-foreground transition-colors"
+                      onclick={() => addOverrideChoice(prop.name)}
+                    >Add</button>
+                  </div>
+                </div>
               </div>
 
               <!-- Choices (only for select-type properties) -->

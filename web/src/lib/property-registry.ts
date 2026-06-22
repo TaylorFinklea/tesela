@@ -437,6 +437,102 @@ export function serializeStringArray(arr: string[]): string {
   return `[${arr.map((s) => `"${s}"`).join(", ")}]`;
 }
 
+/**
+ * The raw, on-disk shape of one `property_overrides.{Prop}` entry as edited by
+ * the config UI. Distinct from the resolved `PropOverride`: every field is
+ * OPTIONAL and only written when the user has actually overridden it. An empty
+ * object `{}` means "inherit everything" and should be dropped from the map
+ * rather than serialized, so we never bake an inherited value into an override
+ * (spec §3.5 tail). `choices: []` (present, empty) is treated as "no override"
+ * — an empty list inherits the global, per §3.1 ("empty list = inherit").
+ */
+export type RawPropOverride = {
+  choices?: string[];
+  show?: Visibility;
+  default?: string;
+  hide_choices?: string[];
+};
+
+/**
+ * Read the raw `property_overrides` map straight off a Tag page's
+ * `metadata.custom` (NOT the flattened/resolved PropertyDef). Returns a map
+ * keyed by the property name AS WRITTEN (original case preserved) so the editor
+ * can distinguish overridden-vs-inherited and round-trip without case drift.
+ * Malformed entries are coerced to `{}`.
+ */
+export function parsePropertyOverridesRaw(
+  custom: Record<string, unknown>,
+): Record<string, RawPropOverride> {
+  const out: Record<string, RawPropOverride> = {};
+  const raw = custom.property_overrides;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return out;
+  for (const [prop, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!val || typeof val !== "object" || Array.isArray(val)) {
+      out[prop] = {};
+      continue;
+    }
+    const obj = val as Record<string, unknown>;
+    const entry: RawPropOverride = {};
+    if (Array.isArray(obj.choices)) {
+      entry.choices = obj.choices.filter((e): e is string => typeof e === "string");
+    }
+    if (
+      obj.show === "on_new" ||
+      obj.show === "on_set" ||
+      obj.show === "hidden"
+    ) {
+      entry.show = obj.show;
+    }
+    if (typeof obj.default === "string") entry.default = obj.default;
+    if (Array.isArray(obj.hide_choices)) {
+      entry.hide_choices = obj.hide_choices.filter((e): e is string => typeof e === "string");
+    }
+    out[prop] = entry;
+  }
+  return out;
+}
+
+/**
+ * Normalize one raw override entry: drop fields that mean "inherit" so an
+ * empty/inherited value is never persisted as an override (spec §3.5 tail).
+ * `choices: []` and `hide_choices: []` collapse to absent; an empty/whitespace
+ * `default` collapses to absent. Returns `null` when nothing remains (the
+ * whole entry should be dropped from the map).
+ */
+export function normalizeRawOverride(entry: RawPropOverride): RawPropOverride | null {
+  const out: RawPropOverride = {};
+  if (entry.choices && entry.choices.length > 0) out.choices = entry.choices;
+  if (entry.show) out.show = entry.show;
+  if (typeof entry.default === "string" && entry.default.trim() !== "") {
+    out.default = entry.default;
+  }
+  if (entry.hide_choices && entry.hide_choices.length > 0) {
+    out.hide_choices = entry.hide_choices;
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * Serialize the whole `property_overrides` map to a single-line, compact JSON
+ * string — which is VALID FLOW YAML, so it round-trips through the server's
+ * gray_matter parser (`pod_to_json`) back into a nested `metadata.custom` map.
+ * Written under the `property_overrides` key via `updateFrontmatterKey`.
+ * Entries that normalize to nothing are dropped. Returns `null` when the whole
+ * map is empty — the caller should `removeFrontmatterKey` instead of writing
+ * `property_overrides: {}`.
+ */
+export function serializePropertyOverrides(
+  map: Record<string, RawPropOverride>,
+): string | null {
+  const cleaned: Record<string, RawPropOverride> = {};
+  for (const [prop, entry] of Object.entries(map)) {
+    const norm = normalizeRawOverride(entry);
+    if (norm) cleaned[prop] = norm;
+  }
+  if (Object.keys(cleaned).length === 0) return null;
+  return JSON.stringify(cleaned);
+}
+
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
