@@ -4,4 +4,10 @@ import type { PropertyDef } from "./PropertyDef";
 /**
  * A type definition (e.g., Task, Project, Person)
  */
-export type TypeDefinition = { name: string, description: string, icon: string, color: string, properties: Array<PropertyDef>, };
+export type TypeDefinition = { name: string, description: string, icon: string, color: string, 
+/**
+ * Plural display name (e.g. `Tasks` for the `Task` type). Falls back to
+ * `name` when the Tag page declares no `plural:` frontmatter. Used
+ * wherever a type is labelled in the plural (e.g. the tag-page header).
+ */
+plural: string, properties: Array<PropertyDef>, };

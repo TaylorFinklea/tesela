@@ -161,13 +161,16 @@
 
   /**
    * For a tag being toggled ON via `toggleBlockTag`, return the property names
-   * that should be auto-appended as empty continuation lines. Skips any
-   * property marked `hide_by_default` — those start hidden anyway, no value
-   * to nudge the user toward filling in yet.
+   * that should be auto-appended as empty continuation lines. Per the LOCKED
+   * per-type visibility model (spec §3.4, decision 2): ONLY `show === "on_new"`
+   * props are seeded. `on_set` (settable but not seeded; shown only when
+   * valued) and `hidden` (suppressed) props get NO empty line. `getTagPropertyDefs`
+   * always resolves `show` to a concrete Visibility, so reading it directly is
+   * the canonical signal (replaces the old `!hide_by_default` heuristic).
    */
   function autoFillNamesForTag(tagName: string): string[] {
     const defs = getTagPropertyDefs(tagName, allNotes, propertyRegistry, inheritanceMap);
-    return defs.filter((d) => !d.hide_by_default).map((d) => d.name);
+    return defs.filter((d) => d.show === "on_new").map((d) => d.name);
   }
 
   /**
@@ -200,6 +203,9 @@
     if (!block) return;
     for (const def of getTagPropertyDefs(tagName, allNotes, propertyRegistry, inheritanceMap)) {
       const k = def.name.toLowerCase();
+      // Only `on_new` props are auto-seeded (spec §3.4). `on_set`/`hidden`
+      // are settable via /p but never seeded on tag-add, even with a default.
+      if (def.show !== "on_new") continue;
       if (def.default === null || def.default === undefined) continue;
       const existing = block.properties[k];
       if (existing && existing.trim() !== "") continue;
@@ -370,8 +376,16 @@
     for (const tag of allTags) {
       for (const def of getTagPropertyDefs(tag, allNotes, propertyRegistry, inheritanceMap)) {
         const k = def.name.toLowerCase();
-        if (def.hide_by_default) hide.add(k);
-        if (def.hide_empty) hideEmpty.add(k);
+        // LOCKED per-type visibility (spec §3.4, decision 2). `getTagPropertyDefs`
+        // resolves `show` to a concrete Visibility, so route off it directly:
+        //   hidden  → `hide` (suppressed; revealed only via the chevron, exactly
+        //             like the legacy `hide_by_default` it replaces).
+        //   on_set  → `hideEmpty` (shown only when valued; empty lines hidden).
+        //   on_new  → always visible (neither set), the chevron-revealed default
+        //             still hides ALL property lines via the blanket `hide` add
+        //             above; expanding shows it.
+        if (def.show === "hidden") hide.add(k);
+        else if (def.show === "on_set") hideEmpty.add(k);
       }
     }
     return { hide, hideEmpty };

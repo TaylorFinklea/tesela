@@ -24,6 +24,11 @@ pub struct TypeDefinition {
     pub icon: String,
     #[serde(default = "default_color")]
     pub color: String,
+    /// Plural display name (e.g. `Tasks` for the `Task` type). Falls back to
+    /// `name` when the Tag page declares no `plural:` frontmatter. Used
+    /// wherever a type is labelled in the plural (e.g. the tag-page header).
+    #[serde(default)]
+    pub plural: String,
     #[serde(default)]
     pub properties: Vec<PropertyDef>,
 }

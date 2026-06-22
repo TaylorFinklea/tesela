@@ -776,6 +776,7 @@ impl SqliteIndex {
         let mut current_name = name.to_string();
         let mut icon = "📄".to_string();
         let mut color = "#808080".to_string();
+        let mut plural = String::new();
         let mut depth = 0;
 
         loop {
@@ -785,7 +786,7 @@ impl SqliteIndex {
             depth += 1;
 
             let row = sqlx::query(
-                "SELECT name, extends, icon, color, properties_json, property_overrides_json FROM tag_defs WHERE LOWER(name) = LOWER(?)"
+                "SELECT name, extends, icon, color, plural, properties_json, property_overrides_json FROM tag_defs WHERE LOWER(name) = LOWER(?)"
             )
             .bind(&current_name)
             .fetch_optional(&self.pool)
@@ -797,6 +798,11 @@ impl SqliteIndex {
                     if depth == 1 {
                         icon = row.get("icon");
                         color = row.get("color");
+                        plural = row
+                            .try_get::<Option<String>, _>("plural")
+                            .ok()
+                            .flatten()
+                            .unwrap_or_default();
                     }
                     let props_str: String = row.get("properties_json");
                     let props: Vec<String> = serde_json::from_str(&props_str).unwrap_or_default();
@@ -871,11 +877,17 @@ impl SqliteIndex {
             }
         }
 
+        let plural = if plural.trim().is_empty() {
+            name.to_string()
+        } else {
+            plural
+        };
         Ok(Some(crate::types::TypeDefinition {
             name: name.to_string(),
             description: String::new(),
             icon,
             color,
+            plural,
             properties: resolved_props,
         }))
     }
@@ -884,7 +896,7 @@ impl SqliteIndex {
     pub async fn get_all_tag_defs(&self) -> Result<Vec<crate::types::TypeDefinition>> {
         use sqlx::Row;
         let rows = sqlx::query(
-            "SELECT name, extends, icon, color, properties_json, property_overrides_json FROM tag_defs ORDER BY name",
+            "SELECT name, extends, icon, color, plural, properties_json, property_overrides_json FROM tag_defs ORDER BY name",
         )
         .fetch_all(&self.pool)
         .await
@@ -945,11 +957,19 @@ impl SqliteIndex {
                 }
             }
 
+            let name: String = row.get("name");
+            let plural = row
+                .try_get::<Option<String>, _>("plural")
+                .ok()
+                .flatten()
+                .filter(|p| !p.trim().is_empty())
+                .unwrap_or_else(|| name.clone());
             result.push(crate::types::TypeDefinition {
-                name: row.get("name"),
+                name,
                 description: String::new(),
                 icon: row.get("icon"),
                 color: row.get("color"),
+                plural,
                 properties: resolved_props,
             });
         }

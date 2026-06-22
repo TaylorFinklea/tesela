@@ -31,6 +31,11 @@ import {
   IconRepeat,
   IconLock,
   IconChecklist,
+  IconCheckbox,
+  IconFolder,
+  IconGlobe,
+  IconBulb,
+  IconSparkles,
 } from "@tabler/icons-svelte";
 
 // Tabler's Svelte 5 typings are still in flux (the `IconCalendar` etc.
@@ -52,6 +57,16 @@ export const TABLER_ICONS: Record<string, unknown> = {
   repeat: IconRepeat,
   lock: IconLock,
   checklist: IconChecklist,
+  // Built-in type-page icons (rendered on tag pages; the type's `icon:`
+  // frontmatter is a bare Tabler name routed through resolveChipIcon).
+  checkbox: IconCheckbox,
+  folder: IconFolder,
+  globe: IconGlobe,
+  // `lightbulb` is the Issue type's frontmatter name; Tabler ships it as
+  // `IconBulb`, so register under both keys.
+  bulb: IconBulb,
+  lightbulb: IconBulb,
+  sparkles: IconSparkles,
 };
 
 /**
