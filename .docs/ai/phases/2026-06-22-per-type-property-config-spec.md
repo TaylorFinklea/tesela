@@ -1,112 +1,112 @@
 # Spec — Rock-solid per-type property/type system (Anytype/Logseq-DB parity)
 
-Status: DRAFT for Taylor review · Author: Opus · 2026-06-22
-Supersedes the stale `memory/project_property_system_vision.md` (89-day-old "current state" is wrong — most of the foundation shipped).
+Status: DRAFT for Taylor review · Author: Opus · 2026-06-22 (v2 — revised after a 3-lens adversarial review caught a dual-resolver blocker + citation errors)
+Supersedes the stale `memory/project_property_system_vision.md`.
 
 ## 1. Goal & non-goals
 
-**Goal.** Make the type/property system *rock solid* before building views. The unifying capability behind every gap Taylor named is **per-type property configuration**: the same global Property (e.g. `Status`) carrying *different* config *per type*. Concretely:
+**Goal.** Make the type/property system *rock solid* before views. The unifying capability behind every gap Taylor named is **per-type property configuration** — the same global Property (e.g. `Status`) carrying *different* config *per type*:
 
-- **Per-type choices** — `Task` Status = `[todo, doing, done, blocked]`; `Project` Status = `[planned, active, shipped]` — same global `Status` property, different option lists.
-- **Per-type visibility** — a property is `on_new` (auto-added to a new block of that type), `on_set` (available but not auto-added, shown only when valued), or `hidden`.
-- **Per-type default** — `Status` defaults to `todo` for Tasks, `backlog` for Projects.
-- **Type metadata** — a **Tabler icon** per type and a **plural** name (Anytype-style).
+- **Per-type choices** — `Task` Status = `[todo, doing, done, blocked]`; `Project` Status = `[planned, active, shipped]` — one global `Status`, different option lists.
+- **Per-type visibility** — `on_new` (auto-added to a new block of that type) / `on_set` (available, shown only when valued) / `hidden`.
+- **Per-type default** — `todo` for Tasks, `backlog` for Projects.
+- **Type metadata** — a Tabler **icon** + a **plural** name per type.
 
-**Non-goals (this spec).** View rendering (kanban/table/gallery) — deferred; the known hard part there is keyboard-first, tracked separately. Computed/rollup properties. The bidirectional `node` reference picker.
+**Non-goals (this spec).** View rendering (kanban/table/gallery) — deferred (keyboard-first is the hard part there, tracked separately). Computed/rollup properties. The bidirectional `node` reference picker. Property/type **rename propagation** (see §7 limitations).
 
-## 2. Current architecture (verified 2026-06-22 against code)
+## 2. Current architecture (verified 2026-06-22, citations corrected in v2)
 
-Everything-is-a-page is **already real**:
+Everything-is-a-page is already real:
 
-- **Tag page** = markdown note with `type: "Tag"`; frontmatter: `tag_properties: ["Status", "Priority"]` (string array), `extends: "Parent"`, `icon`, `color`, and an existing per-tag choice filter `hidden_{PropertyName}: [choice…]`. (`notes/task.md`; `crates/tesela-fixtures/src/lib.rs:217`)
-- **Property page** = markdown note with `type: "Property"`; frontmatter: `value_type` (one of 9: text/number/date/datetime/checkbox/url/select/multiselect/node — `property.rs:11-38`), `choices`, `default`, `multiple_values`, `hide_by_default`, `hide_empty`, `description`, plus web-only chip metadata (`chip_icon`, `chord_key`, `nl_triggers`, `value_chord_keys` — `web/src/lib/property-registry.ts:41-80`).
-- **Caches** (DB-only, rebuilt on every note write via `index.reindex`): `tag_defs(id,name,extends,icon,color,properties_json,note_id)` and `property_defs(id,name,value_type,choices_json,default_value,multiple_values,hide_empty,description,note_id)` (`db/schema.rs:179-201`). **No sync table** — Tag/Property pages sync as ordinary Loro `NoteUpsert` (`notes.rs:1200-1222`).
-- **Resolver** `get_resolved_tag_def(name)` (`db/sqlite.rs:529-629`): walks `extends` (max 10 hops), collects property *names* child-first + dedups, resolves each name against `property_defs`, returns `TypeDefinition{name,description,icon,color,properties: Vec<PropertyDef>}`; icon/color from the leaf type. `PropertyDef{name,value_type,values,default,required,hide_by_default,hide_empty}` (`types.rs:38-83`). Served by `GET /types`, `GET /types/{name}` (`routes/types.rs`).
-- **Create/seed** (web): adding a tag (`toggleBlockTag`, `block-tags.ts:75-140`) appends empty `key:: ` lines for **non-`hide_by_default`** properties; `BlockOutliner.autoFillTagDefaults` (`BlockOutliner.svelte:198-208`) then emits `BlockPropertySet` ops for properties with a non-null default (idempotent). Visibility at render = `cm-decorations` hides `hide_by_default` keys via `hiddenKeysFacet` (`cm-decorations.ts:365-377,883`).
-- **Config UI** (web): `TagPropertyConfig.svelte` — add/remove property names, toggle `hide_by_default`/`hide_empty` (these apply **globally** to the Property), and edit per-tag hidden choices (`hidden_{PropName}`). Icon/color are read-only today.
-- **iOS**: `LocalQueryEngine` is a pure local eval engine with **zero property-definition awareness** (`LocalQueryEngine.swift:1-42`). No iOS property registry. Per-type config on iOS is a separate, larger effort.
+- **Tag page** = note `type: "Tag"`; frontmatter `tag_properties: [Status, Priority]` (string array), `extends: "Root Tag"`, `icon` (emoji default `📄`), `color`, plus an existing per-tag choice filter `hidden_{PropertyName}: [choice…]`. Built-ins seeded in `crates/tesela-server/src/lib.rs:196-234` (NOT a fixtures file).
+- **Property page** = note `type: "Property"`; frontmatter `value_type` (9 types, `property.rs:11-38`), `choices`, `default`, `multiple_values`, `hide_empty`, `hide_by_default`, `description`, plus **web-only** chip metadata (`chip_icon`, `chord_key`, `nl_triggers`, … `property-registry.ts:41-80`).
+- **Caches** (DB-only, rebuilt on every note write via `index.reindex`): `tag_defs(id,name,extends,icon,color,properties_json,note_id)` + `property_defs(id,name,value_type,choices_json,default_value,multiple_values,hide_empty,description,note_id)` (`db/schema.rs:179-201`). **No synced schema** — Tag/Property pages sync as ordinary Loro `NoteUpsert` (`crates/tesela-server/src/routes/notes.rs:~1190-1210`); caches rebuild on index. ⚠ **`hide_by_default` is NOT a `property_defs` column** — it is read **only client-side** (`property-registry.ts:111`), never by the Rust resolver.
+- **TWO resolution engines** (the key structural fact, §3.2):
+  1. **Rust** `get_resolved_tag_def` (`db/sqlite.rs:529-629`) → consumed by **view/config** surfaces (TagTable, KanbanBoard, TagPropertyConfig, Inbox) via `GET /types`.
+  2. **Client-side TS** `buildRegistry` + `getTagPropertyDefs` (`property-registry.ts:84-221`) → reads raw Property/Tag-page frontmatter directly; consumed by the **editor seeding + visibility** path (`BlockOutliner.svelte`, `block-tags.ts`). **This path never calls `GET /types`.**
+- **Create/seed** (web): adding a tag (`toggleBlockTag`, `block-tags.ts`) appends empty `key:: ` lines for **non-`hide_by_default`** props (filtered via the TS registry); `BlockOutliner.autoFillTagDefaults` (`BlockOutliner.svelte:198-208`) emits `BlockPropertySet` ops for props with a default (idempotent). Render hiding = `cm-decorations` `hiddenKeysFacet` (`cm-decorations.ts:365-377,883`).
+- **Config UI** (web): `TagPropertyConfig.svelte` — add/remove names, toggle `hide_by_default`/`hide_empty` (**global** to the Property), edit per-tag `hidden_{Prop}`. Reads Tag-page frontmatter directly.
+- **Icon render**: `resolveChipIcon` (`icon-registry.ts:63-71`) resolves a **bare Tabler name** (e.g. `checkbox`) from a **curated `TABLER_ICONS` subset** to a component, with emoji/raw-string fallback. A name not in the subset silently renders as text.
+- **iOS**: `LocalQueryEngine` has **zero property-definition awareness** (`LocalQueryEngine.swift:1-42`); no iOS property registry.
 
-**The one missing concept:** a property's `choices`/`default`/visibility are shared across every type that references it. `hidden_{PropName}` is the *only* per-type override today (subtractive, choices-only).
+The only missing concept: a property's `choices`/`default`/visibility is shared across every type. `hidden_{Prop}` is the *only* per-type override today (subtractive, choices-only, web-only).
 
 ## 3. Design
 
-### 3.1 On-disk format — a `property_overrides` map on the Tag page
+### 3.1 On-disk format
 
-Keep `tag_properties: [names]` as the *membership* list (which properties the type uses — back-compat untouched). Add an optional sibling map carrying the per-type config:
+Keep `tag_properties: [names]` as the *membership* list (back-compat untouched). Add an optional sibling map + two metadata keys, written as **single-line FLOW YAML** (gray_matter parses inline maps via `pod_to_json`; the existing single-line `updateFrontmatterKey` writer persists the whole map as one line's value — no nested-YAML writer needed):
 
 ```yaml
-title: Task
-type: Tag
-icon: tabler:checkbox      # NEW — Tabler icon name (see §3.6)
-plural: Tasks              # NEW — plural display name
-extends: Root
-tag_properties: [Status, Priority, Deadline, Scheduled, Points]
-property_overrides:        # NEW — per-type config, keyed by property name
-  Status:
-    choices: [todo, doing, done, blocked]   # REPLACE the global choices for this type
-    show: on_new                            # on_new | on_set | hidden
-    default: todo
-  Priority:
-    show: on_set
-  Deadline:
-    show: on_set
+icon: checkbox            # NEW — bare Tabler name (curated subset) or emoji
+plural: Tasks             # NEW — plural display name
+tag_properties: [Status, Priority, Deadline]
+property_overrides: {Status: {choices: [todo, doing, done, blocked], show: on_new, default: todo}, Priority: {show: on_set}}
 ```
 
-Rationale for a separate map (vs enriching `tag_properties` into a mixed string/object array): `tag_properties` stays a clean name list (zero back-compat risk); overrides are purely additive; it generalizes the existing `hidden_{PropName}` (which becomes `property_overrides.{Prop}.hide_choices`, §5-D). The frontmatter parser already turns any YAML object into `metadata.custom` JSON (`storage/markdown.rs:13-89`) — no parser change needed to *read* it.
+`property_overrides` is keyed by property name (**matched case-insensitively**, §3.5). Membership (`tag_properties`) and config (`property_overrides`) are separate: an override for a property not in the resolved membership set is **ignored**; a property in membership with no override uses the global config.
 
-### 3.2 Choice-override semantics — REPLACE, with the global as fallback
+### 3.2 TWO resolution engines must BOTH implement the merge
 
-Per Taylor ("status is very general; a different status per type"): a type's `choices` **replaces** the global Property's choices *for that type's instances*. The global Property page's `choices` is the **fallback/superset** used by any type without an override and by the bare `key:: value` (untyped) usage. So:
+This is the load-bearing correction. The editor's seeding/visibility reads the **client-side TS registry**, not `GET /types`. So the override merge must be implemented **twice** — in `get_resolved_tag_def` (Rust, for views/config) **and** in `getTagPropertyDefs`/`buildRegistry` (TS, for the editor) — and kept in sync, exactly like the query DSL and recurrence engines already are (Rust + TS + Swift mirrors). Phase 1 delivers **both**; the per-phase acceptance below names which engine each surface reads. Shared test vectors keep them honest.
 
-- No override → global choices (today's behavior).
-- `choices: [...]` override → exactly that list for this type.
-- The existing subtractive `hidden_{Prop}` stays valid as a convenience (hide some global choices without restating the whole list); it is sugar for `property_overrides.{Prop}.hide_choices` (§5-D).
+### 3.3 Choice override = REPLACE, then subtract
 
-One global `Status` property, N per-type choice sets. (Open decision §5-A: confirm replace vs subset-only.)
+- `property_overrides.{Prop}.choices` **replaces** the global Property's choices for that type's instances. The global page's `choices` is the fallback for untyped `key:: value` and for types with no override.
+- Legacy `hidden_{Prop}` (and its new alias `property_overrides.{Prop}.hide_choices`) then **subtracts** from the effective list. Precedence: **replace → subtract**. (`choices` override + `hidden_{Prop}` = subtract from the replaced list.)
+- Both layers live in **both** resolvers (§3.2). `hidden_{Prop}` is web-only today; Phase 1 ports it to the Rust resolver so kanban columns (Rust) and chips (TS) agree.
 
-### 3.3 Visibility — 3-state `show`
+### 3.4 Visibility — 3-state `show` (+ server-side `hide_by_default`)
 
-Replaces the binary `hide_by_default` *at the per-type level* (the global flag remains the default when a type has no `show` override):
-
-| `show` | On tag-add (seed) | In `/p` menu | Rendered when empty | Maps to today |
+| `show` | seed on tag-add | in `/p` | shown when empty | legacy equivalent |
 |---|---|---|---|---|
-| `on_new` | auto-add empty line + apply default | yes | yes | `hide_by_default: false` |
-| `on_set` | **not** seeded | yes | no (shown only when valued) | (new middle state) |
-| `hidden` | not seeded | yes (still settable) | no | `hide_by_default: true` |
+| `on_new` | yes (+ default) | yes | yes | `hide_by_default:false` |
+| `on_set` | no | yes | no (visible only when valued — per-type `hide_empty`) | (new) |
+| `hidden` | no | yes | no | `hide_by_default:true` |
 
-Back-compat: a property with no `show` override resolves `on_new` if `hide_by_default=false`, else `hidden`. `on_set` is the genuinely new state (Open decision §5-B: confirm `on_set` = "available + visible-when-valued + hidden-when-empty" — effectively `hide_empty` semantics scoped per-type).
+Back-compat derivation when a type has no `show` override: `on_new` if `hide_by_default=false`, else `hidden`. **Because that derivation needs `hide_by_default`, Phase 1 adds `hide_by_default` (and confirms `hide_empty`) to `property_defs` + `index_type_info`** so the *Rust* resolver can derive `show` too (the TS registry already reads it). (Open decision §6-B confirmed both engines.)
 
-### 3.4 Resolver merge + index
+### 3.5 Merge mechanics (both engines)
 
-- **Index** (`index_type_info`, `db/sqlite.rs:227-265`): also extract `metadata.custom["property_overrides"]`, `["plural"]` and store on the tag row. Add `tag_defs.property_overrides_json TEXT NOT NULL DEFAULT '{}'` and `tag_defs.plural TEXT` (icon column already exists). DB-cache-only migration (`migration 00X_per_type_overrides`); **zero sync impact** (§2).
-- **Resolver** (`get_resolved_tag_def`, the merge point at `sqlite.rs:587-620`): after fetching each global `PropertyDef`, apply the override **collected along the same `extends` walk, child-overrides-win** (a child type's `property_overrides.Status` beats a parent's). Flatten the result into the returned `PropertyDef` so the field set the API exposes is the *effective* config: `values` ← override choices; `default` ← override default; plus a new `show` field on `PropertyDef`. `get_all_tag_defs` (`sqlite.rs:632-691`) gets the same treatment.
-- **`PropertyDef` (types.rs:38-83)** gains `show: Option<Visibility>` (enum `OnNew|OnSet|Hidden`); existing `hide_by_default` stays for back-compat/derivation. Mirror the existing `ts-rs` derive so the web type regenerates.
+The override merge is a **separate pass**, not folded into the existing name loop — because the name dedup (`sqlite.rs:582-583`) keeps only the first (child) occurrence and discards parent tag rows *before* the resolve loop. So:
 
-### 3.5 API / back-compat
+1. Walk tag rows child→parent (the existing `extends` walk).
+2. Build `overrides: Map<lower(prop) → override>` with **first-insert-wins** (child beats parent — same precedence as the name dedup, stated explicitly because they are two distinct operations).
+3. In the resolve loop, for each resolved property look up `overrides[lower(name)]` and flatten `choices`/`default`/`show`/`hide_choices` into the returned `PropertyDef`.
 
-`TypeDefinition.properties` continues to carry resolved `PropertyDef`s — now with effective (overridden) `values`/`default`/`show`. **The API shape is additive** (one new optional field), so an un-migrated web client keeps working. A Tag page with no `property_overrides`/`plural` → byte-identical resolved output to today. Built-in type pages (`task.md`, `project.md`, …) gain example overrides as part of Phase 1's fixture update.
+Edge cases (Phase 1 Verify must cover each): (a) an override applies to a property by name regardless of which ancestor's `tag_properties` lists it (membership = ∪ along the chain, config = child-wins); (b) an override for a property not in the resolved membership set is ignored; (c) an override for a property with **no global Property page** still applies its `choices`/`default` to the text-stub PropertyDef. `get_all_tag_defs` (`sqlite.rs:632-691`) — note it does its own chain walk today; apply the same separate-pass merge there, returning inherited overrides consistently with `get_resolved_tag_def`.
+
+The flattened `PropertyDef` is the *effective* config for consumers; the **config editor reads the raw `property_overrides` map straight from Tag-page frontmatter** (TagPropertyConfig already reads frontmatter) so it can show overridden-vs-inherited.
 
 ### 3.6 Icons (Tabler) + plural
 
-- `icon:` accepts a Tabler name (the `TypeDefinition.icon` field already documents "emoji or Tabler", `types.rs:15-29`) — **verify the web type-icon renderer resolves Tabler names** (Phase 2 task; if it only renders emoji today, add a Tabler lookup mirroring the existing chip-icon path).
-- `plural:` is a new top-level Tag frontmatter string → `tag_defs.plural`; falls back to `name` when absent. Used wherever a type is labelled in the plural (tag-page header "12 Tasks", view headers later).
+- `icon:` = a **bare Tabler name** (e.g. `checkbox`) routed through `resolveChipIcon` (`icon-registry.ts:63-71`), which already falls back to emoji/raw text. Constraint: the chosen name must be in the curated `TABLER_ICONS` subset or it renders as text — Phase 2 adds the type's icons to that subset. Emoji still accepted (default `📄`).
+- `plural:` = new top-level Tag frontmatter string → new `tag_defs.plural` column; falls back to `name`. Used wherever a type is labelled plural.
 
-## 4. Phases (each is one reviewable commit; Verify is the gate)
+## 4. Phases (each one reviewable commit; Verify is the gate)
 
-- **Phase 1 — core data model + resolver (Rust).** `property_overrides`/`plural` indexed; `tag_defs` columns + migration; resolver merge (child-wins along `extends`); `PropertyDef.show`; built-in fixtures get example overrides (Task vs Project Status). **Acceptance:** `GET /types/Task` returns Status choices `[todo,doing,done,blocked]` + `show`, `GET /types/Project` returns Status `[planned,active,shipped]`, from one global `Status` page; a no-override tag is byte-identical to before. **Verify:** `cargo test -p tesela-core` (new resolver tests) + `cargo test -p tesela-server`.
-- **Phase 2 — seed + visibility behavior + icon/plural render (web).** `show` drives `toggleBlockTag` seeding (`on_new` only) + `cm-decorations` hiding (`on_set`/`hidden`); per-type `default` applied on `on_new`; Tabler icon + plural rendered on tag pages. **Acceptance:** adding `#Task` seeds only `on_new` props with their per-type defaults; `on_set`/`hidden` don't seed; the Task page shows its icon + "N Tasks". **Verify:** `npm run check` + a Chrome-DevTools product-test (tag-add seeds correctly).
-- **Phase 3 — config UI (web).** Per-property override editor in `TagPropertyConfig.svelte` (choices / `show` / default), an icon picker (Tabler), a plural field; all round-trip to Tag-page frontmatter via the existing `updateFrontmatterKey` pipeline. **Acceptance:** editing Task's Status choices in the UI persists to `task.md` `property_overrides` + re-resolves. **Verify:** `npm run check` + product-test (round-trip).
-- **Phase 4 — polish.** Per-choice color/icon (e.g. Status `done`→green) stored on the Property page + rendered in chips; defaults-on-create enforced everywhere; `hide_empty`/`on_set` empty-suppression audited. **Verify:** `npm run check` + product-test.
-- **Phase 5 — iOS parity (later milestone).** An iOS property-registry cache fetched from `GET /types`+`/properties` (online) so iOS shows per-type choices/visibility and can edit offline; mirror the resolver merge in Swift. Bigger; spec'd separately when reached.
+- **Phase 1 — data model + BOTH merge engines (Rust core + TS registry).** New `tag_defs.property_overrides_json` + `tag_defs.plural` columns (ALTER ADD COLUMN — table is owned by migration 005; append the tuple to `MIGRATIONS` at `schema.rs:12`, bump `SCHEMA_VERSION` for hygiene); add `hide_by_default` to `property_defs` + `index_type_info` (`sqlite.rs:208`, INSERT at 253-265 — also read `metadata.custom["property_overrides"]`+`["plural"]`). Implement the separate-pass override merge (§3.5) in `get_resolved_tag_def`+`get_all_tag_defs` (Rust) **and** `getTagPropertyDefs`/`buildRegistry` (TS), with case-insensitive keys, replace-then-subtract choices, and `show`/`hide_by_default` derivation. `PropertyDef.show` (Rust + `ts-rs` regen) + `PropertyDefinition.show` (TS). Built-ins (`server/lib.rs:196-234`) get example overrides (Task vs Project Status) written as inline FLOW YAML in the existing `\n`-escaped frontmatter strings. **Acceptance:** `GET /types/Task` and the TS registry BOTH return Status `[todo,doing,done,blocked]`+`show:on_new`; `GET /types/Project` + TS BOTH return Status `[planned,active,shipped]`; a no-override tag is byte-identical to before; the §3.5 edge cases pass. **Verify:** `cargo test -p tesela-core` (resolver + edge tests) + `cargo test -p tesela-server` + a TS unit test asserting the registry merge matches a shared vector.
+- **Phase 2 — seeding + visibility + icon/plural render (web).** Route `toggleBlockTag` seeding off `show==on_new` (not `!hide_by_default`); per-type `default` applied on seed; `cm-decorations` hides `on_set`(empty)/`hidden`; add the built-in type icons to `TABLER_ICONS`; render icon + plural on tag pages. **Acceptance:** adding `#Task` seeds only `on_new` props with per-type defaults; `on_set`/`hidden` don't seed; Task page shows its icon + "N Tasks". **Verify:** `npm run check` + Chrome-DevTools product-test.
+- **Phase 3 — config UI (web).** Per-property override editor in `TagPropertyConfig.svelte` (choices / `show` / default), reading the raw `property_overrides` map from frontmatter and writing it back as single-line FLOW YAML via `updateFrontmatterKey`; Tabler icon picker; plural field. **Acceptance:** editing Task's Status choices persists to `task.md` `property_overrides` + re-resolves in both engines. **Verify:** `npm run check` + product-test (round-trip).
+- **Phase 4 — polish.** Per-choice color/icon (Status `done`→green) on the Property page + chip render; defaults-on-create audited; `on_set`/`hide_empty` empty-suppression audited. **Verify:** `npm run check` + product-test.
+- **Phase 5 — iOS parity (later milestone, spec'd separately).** An iOS property-registry cache from `GET /types`+`/properties`; mirror the merge in Swift; offline contract per §6-D.
 
-## 5. Open decisions (need Taylor's call before Phase 1)
+## 5. Open decisions — PRODUCT (need Taylor's call before Phase 1)
 
-- **A. Choice override = REPLACE** (a type states its own full list, global is fallback) vs subset-only (types can only hide global choices). Spec assumes **replace** (matches "different status per type"). Confirm.
-- **B. `on_set` semantics** = "settable + shown when valued + hidden when empty" (per-type `hide_empty`). Confirm, or define differently.
-- **C. Per-type override depth** — also allow overriding `value_type` per type, or only choices/visibility/default? (value_type override is rarely sane; spec excludes it.) Confirm exclude.
-- **D. `hidden_{Prop}` migration** — keep the legacy subtractive key working *and* fold it into `property_overrides.{Prop}.hide_choices` (dual-read), or hard-migrate built-ins now? Spec assumes dual-read (no breakage). Confirm.
-- **E. Icon source of truth** — Tabler names only, or keep emoji-or-Tabler? Spec assumes accept both, prefer Tabler.
+1. **Choice override = full REPLACE** (a type states its own list; global is fallback) — recommended; the only thing that makes "Project Status = planned/active/shipped" work. ✅
+2. **`on_set`** = settable + visible-when-valued + hidden-when-empty (per-type `hide_empty`). Confirm.
+3. **Override depth** = choices/visibility/default only, **not** `value_type`. Recommended exclude. ✅
+4. **`hidden_{Prop}`** = keep working as an alias for `…hide_choices` (dual-read, replace-then-subtract). Recommended. ✅
+5. **Icons** = bare Tabler name (curated subset) or emoji. Recommended. ✅
 
-## 6. iOS scoping note
+## 6. Architectural calls I already made (review-driven; flagging, not asking)
 
-iOS has no property registry today, so per-type config is **server-resolved**: iOS reads effective defs from `GET /types` when online and renders chips accordingly; offline (`.relay`) it degrades to the raw `key:: value` (no per-type choices). A true offline iOS property registry (Phase 5) is a later milestone — flagged here so the web/server v1 isn't blocked on it.
+- **A. Two engines.** The merge is implemented in **both** the Rust resolver and the TS registry (mirrors, kept in sync via shared vectors), because the editor never reads `GET /types`. Phase 1 delivers both.
+- **B. `hide_by_default` → server index.** Added to `property_defs`+`index_type_info` so the Rust resolver can derive `show` (parity with the TS side), rather than leaving the derivation client-only.
+- **C. On-disk = nested map as single-line FLOW YAML** (not flat `override_Status_choices` keys), persisted via the existing `updateFrontmatterKey` pipeline.
+- **D. iOS offline fallback = FREE-TEXT** (not the global choice list) when no per-type cache exists — presenting globally-valid-but-type-invalid options is worse than free text. Phase 5 adds the cache.
+
+## 7. Known limitations (documented, not solved here)
+
+- **Rename** of a property or type does **not** rewrite `property_overrides`/`tag_properties`/`extends` references (all name-keyed by design today); an orphaned override silently no-ops. A rename-propagation pass is a separate future task.
+- Until Phase 5, iOS in `.relay` (offline) shows free-text entry for typed properties (no per-type choice picker).
