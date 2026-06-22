@@ -156,6 +156,79 @@ final class MockMosaicServiceTests: XCTestCase {
         )
     }
 
+    // MARK: - recurring-task auto-roll in relay mode (2026-06-21)
+
+    /// Completing a recurring task in `.relay` (offline) has no server
+    /// route to roll it, so the client rolls locally via the typed-property
+    /// engine seam (`onLocalPropertySet`), mirroring the server's
+    /// rewrite_block_for_complete: status→todo, dates advanced from their
+    /// own value, last_completed stamped, recurrence_done bumped.
+    func testRecurringTaskRollsForwardOnCompletion() async {
+        let service = MockMosaicService()
+        var writes: [(key: String, value: String)] = []
+        service.onLocalPropertySet = { _, _, key, value in writes.append((key, value)); return true }
+        let props = [
+            BlockProperty(key: "status", value: "done"),
+            BlockProperty(key: "recurring", value: "weekly"),
+            BlockProperty(key: "scheduled", value: "2026-06-15"),
+        ]
+        let rolled = await service.rollRecurringComplete(noteId: "2026-06-15", bid: "b1", properties: props)
+        XCTAssertTrue(rolled)
+        let last = Dictionary(writes.map { ($0.key, $0.value) }, uniquingKeysWith: { _, l in l })
+        XCTAssertEqual(last["status"], "todo")
+        XCTAssertEqual(last["scheduled"], "[[2026-06-22]]")
+        XCTAssertEqual(last["last_completed"], "[[2026-06-15]]")
+        XCTAssertEqual(last["recurrence_done"], "1")
+    }
+
+    /// A dated field's `HH:MM` survives the roll (parity with the server).
+    func testRecurringRollPreservesTimeOfDay() async {
+        let service = MockMosaicService()
+        var writes: [(key: String, value: String)] = []
+        service.onLocalPropertySet = { _, _, key, value in writes.append((key, value)); return true }
+        let props = [
+            BlockProperty(key: "recurring", value: "every 2 days"),
+            BlockProperty(key: "deadline", value: "2026-06-15 09:30"),
+        ]
+        _ = await service.rollRecurringComplete(noteId: "n", bid: "b", properties: props)
+        let last = Dictionary(writes.map { ($0.key, $0.value) }, uniquingKeysWith: { _, l in l })
+        XCTAssertEqual(last["deadline"], "[[2026-06-17]] 09:30")
+    }
+
+    /// A spent series (Count reached) leaves status done and only records
+    /// the final completion — no status reset, no date advance.
+    func testRecurringSpentSeriesDoesNotRoll() async {
+        let service = MockMosaicService()
+        var writes: [(key: String, value: String)] = []
+        service.onLocalPropertySet = { _, _, key, value in writes.append((key, value)); return true }
+        let props = [
+            BlockProperty(key: "recurring", value: "weekly count 1"),
+            BlockProperty(key: "scheduled", value: "2026-06-15"),
+        ]
+        let rolled = await service.rollRecurringComplete(noteId: "n", bid: "b", properties: props)
+        XCTAssertTrue(rolled)
+        // The completion IS persisted (status done) so it doesn't revert on
+        // refresh — but the series does NOT advance (dates unchanged).
+        XCTAssertEqual(writes.first { $0.key == "status" }?.value, "done")
+        XCTAssertFalse(writes.contains { $0.key == "scheduled" })
+        XCTAssertEqual(writes.first { $0.key == "recurrence_done" }?.value, "1")
+    }
+
+    /// A non-recurring task (or a recurring one with no anchor date) returns
+    /// false + writes nothing, so the caller does the plain status:: write.
+    func testNonRecurringTaskIsNotRolled() async {
+        let service = MockMosaicService()
+        var writes: [(key: String, value: String)] = []
+        service.onLocalPropertySet = { _, _, key, value in writes.append((key, value)); return true }
+        let plain = [BlockProperty(key: "status", value: "done"), BlockProperty(key: "scheduled", value: "2026-06-15")]
+        let rolledPlain = await service.rollRecurringComplete(noteId: "n", bid: "b", properties: plain)
+        XCTAssertFalse(rolledPlain)
+        let anchorless = [BlockProperty(key: "recurring", value: "weekly")]
+        let rolledAnchorless = await service.rollRecurringComplete(noteId: "n", bid: "b", properties: anchorless)
+        XCTAssertFalse(rolledAnchorless)
+        XCTAssertTrue(writes.isEmpty)
+    }
+
     // MARK: - parseBlocks line-number tracking
 
     /// Verify that each Block's `lineNumber` records the 0-based index of

@@ -261,14 +261,14 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // so a later whole-note writeback renders the same status.
             upsert(&todayBlocks[idx].properties, key: "status", value: Self.taskStatusValue(done: done))
             let slug = serverDailyId.isEmpty ? dailyId(daysAgo: 0) : serverDailyId
-            persistTaskToggle(noteId: slug, bid: id, done: done) { [weak self] in
+            persistTaskToggle(noteId: slug, bid: id, done: done, properties: todayBlocks[idx].properties) { [weak self] in
                 self?.scheduleWriteback()
             }
         } else if let idx = yesterdayBlocks.firstIndex(where: { $0.id == id }), yesterdayBlocks[idx].kind == .task {
             yesterdayBlocks[idx].done.toggle()
             let done = yesterdayBlocks[idx].done
             upsert(&yesterdayBlocks[idx].properties, key: "status", value: Self.taskStatusValue(done: done))
-            persistTaskToggle(noteId: yesterdayId, bid: id, done: done) { [weak self] in
+            persistTaskToggle(noteId: yesterdayId, bid: id, done: done, properties: yesterdayBlocks[idx].properties) { [weak self] in
                 self?.scheduleYesterdayWriteback()
             }
         }
@@ -297,6 +297,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
         noteId: String,
         bid: String,
         done: Bool,
+        properties: [BlockProperty] = [],
         fallback: @escaping @MainActor () -> Void
     ) {
         let status = Self.taskStatusValue(done: done)
@@ -304,6 +305,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
         case .mock:
             return
         case .http(let baseURL):
+            // The server's set-property handler auto-rolls a recurring task
+            // on status→done (apply_post_save_bumps), so `.http` needs only
+            // the plain status write — the roll happens server-side.
             beginLocalWriteSuppression()
             Task {
                 let body = APISetBlockPropertyBody(
@@ -318,6 +322,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
         case .relay:
             beginLocalWriteSuppression()
             Task {
+                // The relay/engine write path has NO recurrence roll (it
+                // lives in the server routes the relay bypasses), so
+                // COMPLETING a recurring task rolls it forward locally here.
+                // Non-recurring — or un-completing — falls through to the
+                // plain status op.
+                if done, await rollRecurringComplete(noteId: noteId, bid: bid, properties: properties) {
+                    await refresh(from: currentBackend)
+                    return
+                }
                 let applied = await onLocalPropertySet?(noteId, bid, "status", status) ?? false
                 if applied {
                     // The engine re-materialized the file before the seam
@@ -329,6 +342,84 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 }
             }
         }
+    }
+
+    /// Roll a recurring task forward when it's COMPLETED in `.relay` mode.
+    /// The relay/engine write path has no recurrence logic — that lives in
+    /// the server's HTTP routes (`apply_post_save_bumps`), which `.relay`
+    /// bypasses — so an offline iOS completion would otherwise just mark the
+    /// task done and never advance. Mirrors the server's
+    /// `rewrite_block_for_complete` / `_for_spent`: parse `recurring::`,
+    /// anchor on `deadline::` (else `scheduled::`), read `recurrence_done::`,
+    /// then either ADVANCE (status → todo; step each date field from its OWN
+    /// value, preserving any `HH:MM`; stamp `last_completed::`; bump
+    /// `recurrence_done::`) or — when the series is SPENT (Count/Until
+    /// reached) — leave status done and only bump `recurrence_done::`. Each
+    /// field goes through the same typed-property engine seam as a checkbox
+    /// toggle (`onLocalPropertySet`), so the writes converge like any op.
+    /// Returns `true` if the block was recurring (rolled or marked spent);
+    /// `false` if it isn't recurring or has no anchor date, so the caller
+    /// does the plain `status::` write instead.
+    func rollRecurringComplete(noteId: String, bid: String, properties: [BlockProperty]) async -> Bool {
+        func prop(_ key: String) -> String? { properties.first { $0.key == key }?.value }
+        guard let recurringRaw = prop("recurring"),
+              let rec = LocalQueryEngine.parseRecurrence(recurringRaw)
+        else { return false }
+        let deadlineRaw = prop("deadline")
+        let scheduledRaw = prop("scheduled")
+        // Anchor per-FIELD (deadline, else scheduled) so a malformed
+        // deadline still falls through to a valid scheduled — matching the
+        // server's `from_deadline.or(from_scheduled)`.
+        guard let anchor = deadlineRaw.flatMap({ LocalQueryEngine.parseDatedValue($0)?.date })
+            ?? scheduledRaw.flatMap({ LocalQueryEngine.parseDatedValue($0)?.date })
+        else { return false }
+
+        let doneSoFar = prop("recurrence_done").flatMap { UInt32($0) } ?? 0
+        let isActive = LocalQueryEngine.advance(rec, current: anchor, doneSoFar: doneSoFar) != nil
+        let newDone = doneSoFar + 1
+
+        func set(_ key: String, _ value: String) async {
+            _ = await onLocalPropertySet?(noteId, bid, key, value)
+        }
+        // Advance ONE date field from its own value, re-wrapping as the
+        // canonical `[[YYYY-MM-DD]]` the rest of the app links on (so the
+        // value is byte-identical to the server's `format_deadline` and the
+        // CRDT converges), and preserving any trailing `HH:MM`/text verbatim.
+        func rolled(_ raw: String?) -> String? {
+            guard let raw, let dateStr = LocalQueryEngine.extractIsoDate(raw),
+                  let next = LocalQueryEngine.nextAfter(rec, anchor: dateStr) else { return nil }
+            var suffix = ""
+            if let r = raw.range(of: dateStr) {
+                var after = String(raw[r.upperBound...])
+                if after.hasPrefix("]]") { after = String(after.dropFirst(2)) }
+                suffix = after
+            }
+            return "[[\(next)]]\(suffix)"
+        }
+
+        // Write `status` FIRST: the least-harmful crash prefix (a crash
+        // before any date advance leaves the occurrence simply un-completed
+        // at its old date — fully recoverable). `recurrence_done` lands
+        // immediately after the dates to shrink the (sub-ms, crash-only)
+        // window where a date advanced but the count didn't. A fully atomic
+        // roll would need a single multi-key engine op the FFI seam doesn't
+        // expose yet; the residual window is a documented edge.
+        if isActive {
+            await set("status", "todo")
+            if let nd = rolled(deadlineRaw) { await set("deadline", nd) }
+            if let ns = rolled(scheduledRaw) { await set("scheduled", ns) }
+            await set("recurrence_done", String(newDone))
+            await set("last_completed", "[[\(anchor)]]")
+        } else {
+            // Series spent — the completed occurrence is the last one. The
+            // relay path is the ONLY writer of status to the engine (unlike
+            // the server, whose note save already persisted `done` before
+            // its spent-rewrite), so we MUST persist `done` here or the
+            // checkbox reverts on the next refresh. Dates stay put.
+            await set("status", "done")
+            await set("recurrence_done", String(newDone))
+        }
+        return true
     }
 
     // MARK: - Yesterday edits (Phase 2.2)
@@ -424,7 +515,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             value: Self.taskStatusValue(done: done)
         )
         pastDailies[dayIdx] = DailyEntry(id: dayId, blocks: blocks)
-        persistTaskToggle(noteId: dayId, bid: blockId, done: done) { [weak self] in
+        persistTaskToggle(noteId: dayId, bid: blockId, done: done, properties: blocks[idx].properties) { [weak self] in
             Task { await self?.pushPage(id: dayId, blocks: blocks) }
         }
     }

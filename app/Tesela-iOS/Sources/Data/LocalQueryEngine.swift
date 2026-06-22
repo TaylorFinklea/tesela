@@ -177,7 +177,10 @@ enum LocalQueryEngine {
         case "weekly", "every week": return .simple(.weekly, 1)
         case "monthly", "every month": return .simple(.monthly, 1)
         case "yearly", "annually", "every year": return .simple(.yearly, 1)
-        case "weekdays":
+        // Single-word cadences (mirror of recurrence.rs, 2026-06-20).
+        case "biweekly", "fortnightly": return .simple(.weekly, 2)
+        case "quarterly": return .simple(.monthly, 3)
+        case "weekdays", "every weekday", "every weekdays":
             return Recurrence(freq: .weekly, interval: 1, byWeekday: [1, 2, 3, 4, 5], end: nil)
         case "weekends":
             return Recurrence(freq: .weekly, interval: 1, byWeekday: [6, 7], end: nil)
@@ -192,6 +195,17 @@ enum LocalQueryEngine {
         if !rest.isEmpty, dayTokens.allSatisfy({ parseWeekday($0) != nil }) {
             let days = Set(dayTokens.compactMap(parseWeekday))
             return Recurrence(freq: .weekly, interval: 1, byWeekday: days, end: nil)
+        }
+
+        // "every other <unit>" → interval 2.
+        if rest.hasPrefix("other ") {
+            switch String(rest.dropFirst("other ".count)) {
+            case "day", "days": return .simple(.daily, 2)
+            case "week", "weeks": return .simple(.weekly, 2)
+            case "month", "months": return .simple(.monthly, 2)
+            case "year", "years": return .simple(.yearly, 2)
+            default: return nil
+            }
         }
 
         // "every N <unit>".
