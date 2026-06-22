@@ -1,6 +1,6 @@
 # Spec — Rock-solid per-type property/type system (Anytype/Logseq-DB parity)
 
-Status: DRAFT for Taylor review · Author: Opus · 2026-06-22 (v2 — revised after a 3-lens adversarial review caught a dual-resolver blocker + citation errors)
+Status: **APPROVED 2026-06-22** (5 product decisions locked below; Phase 1 implementation in progress) · Author: Opus · v2 — revised after a 3-lens adversarial review caught a dual-resolver blocker + citation errors
 Supersedes the stale `memory/project_property_system_vision.md`.
 
 ## 1. Goal & non-goals
@@ -91,13 +91,13 @@ The flattened `PropertyDef` is the *effective* config for consumers; the **confi
 - **Phase 4 — polish.** Per-choice color/icon (Status `done`→green) on the Property page + chip render; defaults-on-create audited; `on_set`/`hide_empty` empty-suppression audited. **Verify:** `npm run check` + product-test.
 - **Phase 5 — iOS parity (later milestone, spec'd separately).** An iOS property-registry cache from `GET /types`+`/properties`; mirror the merge in Swift; offline contract per §6-D.
 
-## 5. Open decisions — PRODUCT (need Taylor's call before Phase 1)
+## 5. Product decisions — LOCKED 2026-06-22 (Taylor: "do your best thoughts on it, then lock it in")
 
-1. **Choice override = full REPLACE** (a type states its own list; global is fallback) — recommended; the only thing that makes "Project Status = planned/active/shipped" work. ✅
-2. **`on_set`** = settable + visible-when-valued + hidden-when-empty (per-type `hide_empty`). Confirm.
-3. **Override depth** = choices/visibility/default only, **not** `value_type`. Recommended exclude. ✅
-4. **`hidden_{Prop}`** = keep working as an alias for `…hide_choices` (dual-read, replace-then-subtract). Recommended. ✅
-5. **Icons** = bare Tabler name (curated subset) or emoji. Recommended. ✅
+1. **Choice override = full REPLACE** (a type states its own list; global is the fallback for untyped/un-overridden use). LOCKED.
+2. **`on_set`** = settable in `/p`, **not** auto-seeded on tag-add, **shown when it has a value, hidden when empty** (per-type `hide_empty` semantics) — the "optional but visible-when-used" middle state. LOCKED.
+3. **Override depth** = choices / visibility / default only, **never** `value_type`. LOCKED.
+4. **`hidden_{Prop}`** = kept working as an alias for `property_overrides.{Prop}.hide_choices` (dual-read; precedence replace-then-subtract). LOCKED.
+5. **Icons** = bare Tabler name (curated `TABLER_ICONS` subset) **or** emoji; prefer Tabler. LOCKED.
 
 ## 6. Architectural calls I already made (review-driven; flagging, not asking)
 
