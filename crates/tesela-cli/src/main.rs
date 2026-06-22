@@ -823,8 +823,12 @@ async fn cmd_reindex(ctx: &Ctx) -> Result<()> {
     let bar = indicatif::ProgressBar::new(notes.len() as u64);
 
     for note in &notes {
+        // `reindex` (not `upsert_note`) so the type-system caches
+        // (`tag_defs`/`property_defs` via `index_type_info`) are rebuilt
+        // too — otherwise `tesela reindex` rebuilds only the search index
+        // and Tag/Property pages stay unresolved (GET /types empty).
         ctx.index
-            .upsert_note(note)
+            .reindex(note)
             .await
             .context("Failed to index note")?;
         bar.inc(1);
