@@ -422,7 +422,12 @@ export function updateFrontmatterKey(content: string, key: string, value: string
   const re = new RegExp(`^${escapeRe(key)}:.*$`, "m");
   const newLine = `${key}: ${value}`;
 
-  const newFm = re.test(fmBody) ? fmBody.replace(re, newLine) : fmBody.trimEnd() + "\n" + newLine;
+  // Function replacement (NOT a string): a string second-arg to String.replace
+  // interprets `$&`, `` $` ``, `$'`, `$N` in the replacement — and `value` is
+  // arbitrary user text (a property choice, default, or plural like "$$$"),
+  // which would otherwise splice the matched line / surrounding frontmatter
+  // into itself and corrupt the file.
+  const newFm = re.test(fmBody) ? fmBody.replace(re, () => newLine) : fmBody.trimEnd() + "\n" + newLine;
   return "---\n" + newFm + after;
 }
 

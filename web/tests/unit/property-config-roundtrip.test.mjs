@@ -131,3 +131,24 @@ test("parsePropertyOverridesRaw distinguishes overridden vs inherited and preser
   // inherited but explicitly present); both serialize away.
   assert.equal(raw.Deadline, undefined);
 });
+
+test("$-replacement-token values do NOT corrupt frontmatter (updateFrontmatterKey REPLACE branch)", () => {
+  // Regression for the Phase-3 review blocker: a string 2nd-arg to
+  // String.replace interprets `$&` / `` $` `` / `$'` / `$N` in the replacement.
+  // Phase 3 routes arbitrary user text (choices/default/plural) through it.
+  // Trigger the REPLACE branch (key already present) with $-laden values.
+  const map = {
+    Status: { choices: ["$100", "a$&b", "x$`y", "z$0w", "p$'q"], default: "$$$" },
+  };
+  const serialized = serializePropertyOverrides(map);
+  const before =
+    '---\ntitle: "Task"\nproperty_overrides: {"Status":{"choices":["old"]}}\ntags: []\n---\nbody\n';
+  const written = updateFrontmatterKey(before, "property_overrides", serialized);
+
+  // Surrounding frontmatter must be intact — no matched-line / preceding-text
+  // spliced in by $-expansion.
+  assert.ok(written.includes('title: "Task"'), "title preserved");
+  assert.ok(written.includes("tags: []"), "trailing key preserved");
+  // And the override line round-trips to EXACTLY the map.
+  assert.deepEqual(customFromFrontmatter(written), map);
+});
