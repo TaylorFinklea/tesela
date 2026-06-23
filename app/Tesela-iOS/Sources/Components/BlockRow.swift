@@ -25,6 +25,13 @@ struct BlockRow: View {
     /// resolved `choiceColors` (Phase 5.6). Defaults to empty so non-block
     /// callers and previews work uncolored.
     var propertyRegistry: PropertyRegistry = PropertyRegistry()
+    /// A LIVE source for the property registry, read at call time so the
+    /// editor's slash/NLP providers resolve against the current registry even
+    /// when a type-page edit lands mid-session (the captured-by-value snapshot
+    /// `propertyRegistry` would go stale because the editor's `onAppear` wires
+    /// the providers exactly once). Owners wire it to `{ mosaic.propertyRegistry }`.
+    /// When nil, the providers fall back to the by-value `propertyRegistry`.
+    var registrySource: (() -> PropertyRegistry)? = nil
     var isEditing: Bool = false
     var isFoldable: Bool = false
     var isCollapsed: Bool = false
@@ -247,6 +254,7 @@ struct BlockRow: View {
                             PropertyChip(
                                 key: prop.key,
                                 value: prop.value,
+                                def: resolvedDefsByName[prop.key.lowercased()],
                                 tint: chipTint(forKey: prop.key, value: prop.value)
                             )
                         }
@@ -425,26 +433,37 @@ struct BlockRow: View {
         .onAppear {
             editBuffer = combinedEditableText()
             collabFocused = true
-            // Wire the suggestion source so the coordinator's trigger/query
-            // updates produce chips ([[ pages, # tags, / verbs incl. the
-            // registry-derived property verbs for this block's tags).
-            editorAutocomplete.provider = { [pageSearch, tagSearch, tags, propertyRegistry] kind, query in
-                Self.suggestions(
-                    for: kind, query: query,
-                    pageSearch: pageSearch, tagSearch: tagSearch,
-                    tags: tags, registry: propertyRegistry
-                )
-            }
-            // Wire inline NLP (P5.5): scan the just-typed token/tail for a
-            // property nl_trigger or a confident date phrase → a one-tap lift.
-            editorAutocomplete.nlpDetector = { [tags, propertyRegistry] text, caret in
-                InlineNLP.detect(in: text, caretUTF16: caret, tags: tags, registry: propertyRegistry)
-            }
+            // Wire the suggestion + NLP sources. They read the registry LIVE
+            // (via `registrySource`) on each invocation, so a type-page edit
+            // mid-session is reflected without re-running `onAppear`.
+            wireAutocompleteSources()
             // Register this editor's imperative inserter so the owner can
             // live-apply an inbound remote splice on THIS block (C1-inbound).
             onActiveCollabInserter?(inserter)
         }
         .onDisappear { editorAutocomplete.dismiss() }
+    }
+
+    /// Bind the autocomplete provider + NLP detector stored on the persistent
+    /// `editorAutocomplete`. The closures resolve the registry LIVE on each
+    /// invocation — via `registrySource()` when wired, else the by-value
+    /// `propertyRegistry` snapshot — so a type-page edit that re-publishes the
+    /// registry mid-session takes effect for the next keystroke's suggestions
+    /// instead of serving the stale snapshot captured when the editor opened.
+    private func wireAutocompleteSources() {
+        let liveRegistry: () -> PropertyRegistry = { [registrySource, propertyRegistry] in
+            registrySource?() ?? propertyRegistry
+        }
+        editorAutocomplete.provider = { [pageSearch, tagSearch, tags] kind, query in
+            Self.suggestions(
+                for: kind, query: query,
+                pageSearch: pageSearch, tagSearch: tagSearch,
+                tags: tags, registry: liveRegistry()
+            )
+        }
+        editorAutocomplete.nlpDetector = { [tags] text, caret in
+            InlineNLP.detect(in: text, caretUTF16: caret, tags: tags, registry: liveRegistry())
+        }
     }
 
     /// Build the suggestion chips for a trigger + query. Pages/tags get a

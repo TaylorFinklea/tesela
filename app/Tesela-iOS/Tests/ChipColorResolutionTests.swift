@@ -148,4 +148,93 @@ final class ChipColorResolutionTests: XCTestCase {
         }
         XCTAssertTrue(status.choiceColors.isEmpty)
     }
+
+    // MARK: - FIX 5: chip value/label/icon formatting per resolved def
+
+    private func makeDef(
+        name: String,
+        valueType: PropertyType,
+        choices: [String] = [],
+        chipIcon: String? = nil,
+        chipLabelMode: ChipLabelMode? = nil,
+        chipShortLabel: String? = nil,
+        chipValueFormat: ChipValueFormat? = nil
+    ) -> PropertyDef {
+        PropertyDef(
+            name: name, valueType: valueType, choices: choices, def: nil, show: nil,
+            hideByDefault: false, hideEmpty: true,
+            chipIcon: chipIcon, chipLabelMode: chipLabelMode,
+            chipShortLabel: chipShortLabel, chipValueFormat: chipValueFormat,
+            chordKey: nil, valueChordKeys: [:], choiceColors: [:], nlTriggers: []
+        )
+    }
+
+    /// A `.date`-typed def with no explicit `chip_value_format` defaults to
+    /// month-day, so `[[2026-05-13]]` renders "May 13" (not the literal link).
+    func testDateDefDefaultsToMonthDayFormat() {
+        let due = makeDef(name: "Due", valueType: .date)
+        XCTAssertEqual(ChipFormat.valueFormat(for: due), .monthDay)
+        XCTAssertEqual(ChipFormat.formattedValue("[[2026-05-13]]", def: due), "May 13")
+        // A bare ISO date formats identically.
+        XCTAssertEqual(ChipFormat.formattedValue("2026-05-13", def: due), "May 13")
+    }
+
+    /// A non-date def with no format default keeps the raw value (truncated),
+    /// so a custom text/number prop shows verbatim.
+    func testTextDefKeepsRawValue() {
+        let points = makeDef(name: "Points", valueType: .number)
+        XCTAssertEqual(ChipFormat.valueFormat(for: points), .value)
+        XCTAssertEqual(ChipFormat.formattedValue("8", def: points), "8")
+    }
+
+    /// A select def with `chip_value_format: bars` ranks the value across its
+    /// choices (low→high), so the highest choice fills all three segments.
+    func testSelectBarsFormatRanksByChoice() {
+        let energy = makeDef(
+            name: "Energy", valueType: .select,
+            choices: ["low", "medium", "high"], chipValueFormat: .bars
+        )
+        XCTAssertEqual(ChipFormat.formattedValue("high", def: energy), "▰▰▰")
+        XCTAssertEqual(ChipFormat.formattedValue("low", def: energy), "▰▱▱")
+    }
+
+    /// `chip_label_mode` + `chip_short_label` drive the label text; `icon`/`none`
+    /// suppress it. Derived mode is `icon` when a `chip_icon` is set, else `full`.
+    func testLabelModeAndShortLabel() {
+        let full = makeDef(name: "Status", valueType: .select)
+        XCTAssertEqual(ChipFormat.labelMode(for: full), .full)
+        XCTAssertEqual(ChipFormat.labelText(for: full, fallbackKey: "status"), "Status")
+
+        let short = makeDef(
+            name: "Priority", valueType: .select,
+            chipLabelMode: .short, chipShortLabel: "Pri"
+        )
+        XCTAssertEqual(ChipFormat.labelText(for: short, fallbackKey: "priority"), "Pri")
+
+        let iconOnly = makeDef(name: "Deadline", valueType: .date, chipIcon: "flag")
+        XCTAssertEqual(ChipFormat.labelMode(for: iconOnly), .icon)
+        XCTAssertNil(ChipFormat.labelText(for: iconOnly, fallbackKey: "deadline"))
+    }
+
+    /// `chip_icon` resolves a known Tabler name to an SF Symbol; an emoji /
+    /// unknown name falls back to raw text (mirror web `resolveChipIcon`).
+    func testChipIconResolution() {
+        XCTAssertEqual(ChipIconRegistry.resolve("calendar").symbol, "calendar")
+        XCTAssertEqual(ChipIconRegistry.resolve("flag").symbol, "flag.fill")
+        // Tabler `bulb`/`lightbulb` both map to the SF lightbulb.
+        XCTAssertEqual(ChipIconRegistry.resolve("lightbulb").symbol, "lightbulb")
+        // An emoji is not a known name → returned verbatim as the emoji branch.
+        let emoji = ChipIconRegistry.resolve("📅")
+        XCTAssertNil(emoji.symbol)
+        XCTAssertEqual(emoji.emoji, "📅")
+        // No icon → both nil.
+        XCTAssertNil(ChipIconRegistry.resolve(nil).symbol)
+        XCTAssertNil(ChipIconRegistry.resolve(nil).emoji)
+    }
+
+    /// `chip_value_format: iso` strips the `[[ ]]` link wrapper from a date.
+    func testIsoFormatStripsLinkBrackets() {
+        let raw = makeDef(name: "Created", valueType: .date, chipValueFormat: .iso)
+        XCTAssertEqual(ChipFormat.formattedValue("[[2026-05-13]]", def: raw), "2026-05-13")
+    }
 }

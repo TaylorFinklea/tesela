@@ -838,12 +838,21 @@ final class MockMosaicService: ObservableObject, MosaicService {
         Task { await pushPage(id: pageId, blocks: blocks) }
     }
 
-    /// Same shape as editTodayBlock, but for any opened page.
+    /// Same shape as editTodayBlock, but for any opened page. Splits inline
+    /// `#tag` hashtags out into `block.tags` and strips trailing `key:: value`
+    /// property sub-lines (display-only, mirrors `editTodayBlock`'s
+    /// `splitInlineTags` + the `stripPropertyLines` filter) so raw property
+    /// lines don't pollute the rendered/edited `rawText` — the structured
+    /// properties live in `block.properties` / the engine container and
+    /// re-render as chips, so nothing is lost.
     func editPageBlock(pageId: String, blockId: String, text: String) {
         var blocks = loadedPageBlocks[pageId] ?? []
         guard let idx = blocks.firstIndex(where: { $0.id == blockId }) else { return }
-        blocks[idx].text = text.components(separatedBy: "\n").first ?? text
-        blocks[idx].rawText = text
+        let (body, tags) = Self.splitInlineTags(text)
+        let cleanBody = Self.stripPropertyLines(body)
+        blocks[idx].text = cleanBody.components(separatedBy: "\n").first ?? cleanBody
+        blocks[idx].rawText = cleanBody
+        blocks[idx].tags = tags
         Task { await pushPage(id: pageId, blocks: blocks) }
     }
 
@@ -1563,7 +1572,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
             hasOlderDailies = past.more
             // Build the property/type registry from the relay-synced Property/
             // Tag pages in the local sandbox (Phase 5.2 read layer).
-            rebuildPropertyRegistry()
+            await rebuildPropertyRegistry()
             // Always .ready — there's no server to wait on. Empty until the
             // relay delivers the first ops, then onAppliedChanges re-refreshes.
             connection = .ready
@@ -1659,7 +1668,7 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 // ONE local-parse path shared with `.relay` (Phase 5.2). The
                 // snapshot above wrote every Property/Tag page locally, so
                 // `rebuildPropertyRegistry` sees the full mosaic.
-                rebuildPropertyRegistry()
+                await rebuildPropertyRegistry()
                 connection = .ready
             } catch {
                 // HTTP failed. We surface the unreachable backend HONESTLY
@@ -2571,11 +2580,69 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// parsed `custom`. Each note's nested frontmatter is parsed once in
     /// `readLocalNote`; here we just project to `RegistryNote` and build.
     /// Read-only cache — never writes, so it can't affect convergence.
-    private func rebuildPropertyRegistry() {
-        let regNotes = loadAllLocalNotes()
-            .filter { $0.metadata.note_type == "Property" || $0.metadata.note_type == "Tag" }
-            .map { RegistryNote(title: $0.title, noteType: $0.metadata.note_type, custom: $0.metadata.custom) }
+    private func rebuildPropertyRegistry() async {
+        // Move the whole-sandbox directory walk + file read off the
+        // @MainActor — this fired on every relay-settle and read+scraped
+        // EVERY note in the sandbox synchronously on the main actor.
+        // Mirror `snapshotNotesToSandbox`'s detached-Task pattern: compute
+        // the notes-dir URL on the main actor, then read + cheap-scrape the
+        // Property/Tag pages off-actor (returning only Sendable Strings),
+        // then hop back to build + assign the @Published registry on main.
+        //
+        // `RegistryNote`/`PropertyRegistry` carry `[String: Any]` and so are
+        // not Sendable; per the contract we cross only raw type-page strings
+        // (title + note_type + raw content) and build on the main actor (the
+        // build runs the nested-YAML parse over the FEW Property/Tag pages,
+        // not the whole sandbox).
+        let notesDir = localMosaicRoot().appendingPathComponent("notes")
+        let typePages: [(title: String, noteType: String, content: String)] =
+            await Task.detached(priority: .utility) {
+                guard let files = try? FileManager.default.contentsOfDirectory(atPath: notesDir.path) else {
+                    return []
+                }
+                var out: [(title: String, noteType: String, content: String)] = []
+                for fname in files where fname.hasSuffix(".md") {
+                    let path = notesDir.appendingPathComponent(fname)
+                    guard let raw = try? String(contentsOf: path, encoding: .utf8) else { continue }
+                    // Cheap single-line note_type scrape — only Property/Tag
+                    // pages carry the rich registry frontmatter.
+                    guard let noteType = Self.scrapeFrontmatterValue("type", in: raw),
+                          noteType == "Property" || noteType == "Tag" else { continue }
+                    let title = Self.scrapeFrontmatterValue("title", in: raw)
+                        ?? String(fname.dropLast(3))
+                    out.append((title: title, noteType: noteType, content: raw))
+                }
+                return out
+            }.value
+        let regNotes = typePages.map {
+            RegistryNote(title: $0.title, noteType: $0.noteType, content: $0.content)
+        }
         propertyRegistry = PropertyRegistry.build(from: regNotes)
+    }
+
+    /// Cheap single-line frontmatter scrape (`<key>: "value"`), mirroring
+    /// `parseTitleFromFrontmatter`/`parseNoteTypeFromFrontmatter` but as a
+    /// `Sendable` static so it can run inside an off-actor detached task
+    /// without capturing `self`. Returns the unquoted value, or nil when
+    /// the key is absent / the value is empty.
+    nonisolated private static func scrapeFrontmatterValue(_ key: String, in content: String) -> String? {
+        guard content.hasPrefix("---") else { return nil }
+        let prefix = "\(key):"
+        var seenOpenFence = false
+        for line in content.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == "---" {
+                if seenOpenFence { break } // closing fence — stop
+                seenOpenFence = true
+                continue
+            }
+            if trimmed.hasPrefix(prefix) {
+                let val = trimmed.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+                let unquoted = val.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                return unquoted.isEmpty ? nil : unquoted
+            }
+        }
+        return nil
     }
 
     /// Pull `title: "..."` out of a YAML frontmatter block. Returns
@@ -4013,12 +4080,40 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// malformed, the note has no local file, or no block sits at that
     /// line.
     private func resolveLocalBlockBid(_ blockId: String) -> (noteId: String, bid: String)? {
-        guard let (noteId, suffix) = Self.splitBlockAddress(blockId) else { return nil }
-        if Int(suffix) == nil { return (noteId, suffix) }
-        guard let note = readLocalNote(id: noteId) else { return nil }
-        let blocks = parseBlocks(from: note.body, noteId: noteId)
-        guard let bid = Self.blockBid(in: blocks, suffix: suffix) else { return nil }
-        return (noteId, bid)
+        if let (noteId, suffix) = Self.splitBlockAddress(blockId) {
+            if Int(suffix) == nil { return (noteId, suffix) }
+            guard let note = readLocalNote(id: noteId) else { return nil }
+            let blocks = parseBlocks(from: note.body, noteId: noteId)
+            guard let bid = Self.blockBid(in: blocks, suffix: suffix) else { return nil }
+            return (noteId, bid)
+        }
+        // splitBlockAddress rejected the address — a BARE bid or an empty-noteId
+        // ":bid" (a freshly-created, not-yet-refreshed block whose noteId isn't
+        // stamped on the optimistic insert). Resolve the owning note from the
+        // in-memory containers so a structured property set on a just-created
+        // block doesn't no-op until the next refresh repopulates noteId.
+        let bareBid = blockId.hasPrefix(":") ? String(blockId.dropFirst()) : blockId
+        guard !bareBid.isEmpty, !bareBid.contains(":"),
+              let noteId = noteIdForLoadedBid(bareBid) else { return nil }
+        return (noteId, bareBid)
+    }
+
+    /// The owning note slug for a block id loaded in memory — the today/
+    /// yesterday daily, a past daily entry, or an open page. Lets a property
+    /// write resolve a freshly-created block (whose `noteId` isn't stamped yet)
+    /// without waiting for a refresh.
+    private func noteIdForLoadedBid(_ bid: String) -> String? {
+        if todayBlocks.contains(where: { $0.id == bid }) {
+            return serverDailyId.isEmpty ? dailyId(daysAgo: 0) : serverDailyId
+        }
+        if yesterdayBlocks.contains(where: { $0.id == bid }) { return yesterdayId }
+        if let entry = pastDailies.first(where: { $0.blocks.contains { $0.id == bid } }) {
+            return entry.id
+        }
+        for (pageId, blocks) in loadedPageBlocks where blocks.contains(where: { $0.id == bid }) {
+            return pageId
+        }
+        return nil
     }
 
     // MARK: - Internal test hooks

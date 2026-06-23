@@ -193,14 +193,128 @@ struct ScheduledChip: View {
     }
 }
 
+/// Resolve a Property page's `chip_icon` string into an SF Symbol name (for a
+/// known Tabler icon name) OR a raw emoji/text fallback. The iOS port of web
+/// `icon-registry.ts::resolveChipIcon` — the Tabler-name → SF Symbol map keeps
+/// the same curated set; anything unmatched is treated as raw text (emoji /
+/// single char) exactly like web. Exactly one of `symbol`/`emoji` is non-nil
+/// when `name` is non-nil.
+enum ChipIconRegistry {
+    /// Curated Tabler-name → SF Symbol map. Mirrors `TABLER_ICONS` keys so a
+    /// property's `chip_icon` resolves to the same glyph family on both
+    /// platforms (closest SF Symbol stand-in for each Tabler icon).
+    static let sfSymbols: [String: String] = [
+        "calendar": "calendar",
+        "clock": "clock",
+        "flag": "flag.fill",
+        "tag": "tag",
+        "hourglass": "hourglass",
+        "bookmark": "bookmark",
+        "hash": "number",
+        "link": "link",
+        "mail": "envelope",
+        "phone": "phone",
+        "user": "person",
+        "star": "star",
+        "repeat": "arrow.triangle.2.circlepath",
+        "lock": "lock",
+        "checklist": "checklist",
+        "checkbox": "checkmark.square",
+        "folder": "folder",
+        "globe": "globe",
+        "bulb": "lightbulb",
+        "lightbulb": "lightbulb",
+        "sparkles": "sparkles",
+    ]
+
+    static func resolve(_ name: String?) -> (symbol: String?, emoji: String?) {
+        guard let name, !name.isEmpty else { return (nil, nil) }
+        if let symbol = sfSymbols[name.lowercased()] { return (symbol, nil) }
+        return (nil, name)
+    }
+}
+
+/// Pure (UI-free, testable) chip formatting — the iOS port of web
+/// `DisplayChip.svelte`'s derivations: effective label mode, effective value
+/// format, and the value formatter. Extracted off the `PropertyChip` View so
+/// the formatting contract is unit-testable without rendering.
+enum ChipFormat {
+    /// Effective label mode: explicit `chip_label_mode` > derived (`icon` when
+    /// a `chip_icon` is set, else `full`). Mirror web.
+    static func labelMode(for def: PropertyDef?) -> ChipLabelMode {
+        if let m = def?.chipLabelMode { return m }
+        return (def?.chipIcon != nil) ? .icon : .full
+    }
+
+    /// Effective value format: explicit `chip_value_format` > type default
+    /// (date → month-day, else raw value). Mirror web `defaultValueFormat`.
+    static func valueFormat(for def: PropertyDef?) -> ChipValueFormat {
+        if let f = def?.chipValueFormat { return f }
+        return (def?.valueType == .date) ? .monthDay : .value
+    }
+
+    /// Map a select value to a 3-segment bar string by its rank in `choices`
+    /// (mirror web `formatBars`). Off-list → a single filled segment.
+    static func bars(_ v: String, choices: [String]) -> String {
+        let target = v.trimmingCharacters(in: .whitespaces).lowercased()
+        let idx = choices.firstIndex { $0.lowercased() == target }
+        let total = max(choices.count, 1)
+        let rank = (idx == nil) ? 1 : idx! + 1
+        let filled = max(1, Int((Double(rank) / Double(total) * 3).rounded()))
+        return String(repeating: "▰", count: filled) + String(repeating: "▱", count: 3 - filled)
+    }
+
+    static func truncate(_ v: String, max: Int) -> String {
+        v.count > max ? String(v.prefix(max - 1)) + "…" : v
+    }
+
+    /// The display value after applying the effective `valueFormat` for `def`
+    /// (mirror web `formattedValue`). `recurring` is handled by its own chip.
+    static func formattedValue(_ value: String, def: PropertyDef?) -> String {
+        let v = value.trimmingCharacters(in: .whitespaces)
+        switch valueFormat(for: def) {
+        case .monthDay:
+            return DateFormat.humanMonthDay(v)
+        case .iso:
+            return v.replacingOccurrences(of: #"^\[\[|\]\]$"#, with: "", options: .regularExpression)
+        case .bars:
+            guard let def, def.valueType == .select || def.valueType == .multiSelect else {
+                return truncate(v, max: 24)
+            }
+            return bars(v, choices: def.choices)
+        case .truncate:
+            return truncate(v, max: 10)
+        case .value:
+            return truncate(v, max: 24)
+        }
+    }
+
+    /// The label text for `full`/`short` modes (`icon`/`none` → nil). Mirror
+    /// web `labelText`. `fallbackKey` is used when the def is absent.
+    static func labelText(for def: PropertyDef?, fallbackKey: String) -> String? {
+        switch labelMode(for: def) {
+        case .none, .icon: return nil
+        case .short: return def?.chipShortLabel ?? String((def?.name ?? fallbackKey).prefix(4))
+        case .full: return def?.name ?? fallbackKey
+        }
+    }
+}
+
 /// Display-only chip for an arbitrary block property (`key:: value`) that
 /// isn't one of the specially-rendered date/recurrence chips — e.g. a custom
-/// `points::` or `testpoints::`. Renders `key value` in the muted chip
-/// styling so custom properties are visible on iOS (the web surfaces these
-/// via a tag's `display_chips`; iOS shows all non-system props by default).
+/// `points::` or `testpoints::`. Renders the property label + formatted value
+/// in the muted chip styling so custom properties are visible on iOS (the web
+/// surfaces these via a tag's `display_chips`; iOS shows all non-system props
+/// by default). Visualization (icon / label mode / value format) is driven by
+/// the resolved `PropertyDef` so a property looks the same wherever it surfaces
+/// — the iOS port of web `DisplayChip.svelte`.
 struct PropertyChip: View {
     let key: String
     let value: String
+    /// The resolved property def (off the registry) that drives the chip's
+    /// label mode, value format, and icon. `nil` → fall back to the raw
+    /// `key value` rendering (legacy behaviour for properties with no def).
+    var def: PropertyDef? = nil
     /// Phase 5.6: per-choice `choice_colors` tint for a select/multi-select
     /// VALUE chip, resolved off the registry. `nil` → the default muted
     /// chip (uncolored choices look unchanged). Mirrors web `DisplayChip`'s
@@ -218,11 +332,28 @@ struct PropertyChip: View {
     private var valueColor: Color { tint?.mixed(toward: theme.fgDefault, 0.22) ?? theme.fgMuted }
     private var bgColor: Color { (tint ?? theme.fgMuted).opacity(tint == nil ? 0.10 : 0.16) }
 
+    private var labelMode: ChipLabelMode { ChipFormat.labelMode(for: def) }
+    private var formattedValue: String { ChipFormat.formattedValue(value, def: def) }
+    private var labelText: String? { ChipFormat.labelText(for: def, fallbackKey: key) }
+    private var icon: (symbol: String?, emoji: String?) {
+        ChipIconRegistry.resolve(def?.chipIcon)
+    }
+
     var body: some View {
         HStack(spacing: 4) {
-            Text(key)
-                .foregroundStyle(keyColor)
-            Text(value)
+            if labelMode == .icon, icon.symbol != nil || icon.emoji != nil {
+                if let symbol = icon.symbol {
+                    Image(systemName: symbol)
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundStyle(keyColor)
+                } else if let emoji = icon.emoji {
+                    Text(emoji).foregroundStyle(keyColor)
+                }
+            } else if let labelText {
+                Text(labelText)
+                    .foregroundStyle(keyColor)
+            }
+            Text(formattedValue)
                 .foregroundStyle(valueColor)
         }
         .font(.system(size: 11.5, weight: .medium, design: .monospaced))

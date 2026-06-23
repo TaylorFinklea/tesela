@@ -37,6 +37,50 @@ final class BlockBidResolutionTests: XCTestCase {
         XCTAssertNil(MockMosaicService.splitBlockAddress(":0"))
     }
 
+    /// FIX 1 contract: structured property writes MUST address blocks with a
+    /// composite `<noteId>:<bid>`. A composite resolves; a BARE bid (no
+    /// colon) does NOT — it returns nil and the write throws. This documents
+    /// why the `onSetProperty` call sites pass `block.noteId + ":" + block.id`
+    /// rather than the bare `block.id` (a bare bid silently no-ops authoring).
+    func testCompositeAddressResolvesAndBareBidIsNil() {
+        // Composite `slug:bid` splits cleanly into (slug, bid).
+        let composite = MockMosaicService.splitBlockAddress(
+            "2026-06-23:22222222-2222-2222-2222-222222222222"
+        )
+        XCTAssertEqual(composite?.noteId, "2026-06-23")
+        XCTAssertEqual(composite?.suffix, "22222222-2222-2222-2222-222222222222")
+
+        // A bare bid (the bug — no `noteId:` prefix) has no colon → nil.
+        XCTAssertNil(
+            MockMosaicService.splitBlockAddress(
+                "22222222-2222-2222-2222-222222222222"
+            ),
+            "a bare bid must NOT resolve — it documents why call sites pass the composite"
+        )
+    }
+
+    /// FIX 1 end-to-end: a composite-addressed relay write reaches the engine
+    /// seam with the bid extracted; the bare-bid form (the bug) throws before
+    /// the seam fires, proving the no-op authoring is surfaced not swallowed.
+    func testRelaySetBlockPropertyBareBidThrowsBeforeSeam() async {
+        let service = MockMosaicService()
+        service.attach(backend: .relay)
+        service.onLocalPropertySet = { _, _, _, _ in
+            XCTFail("seam must not fire for a bare-bid (non-composite) address")
+            return true
+        }
+        do {
+            try await service.setBlockProperty(
+                blockId: "22222222-2222-2222-2222-222222222222",
+                key: "scheduled",
+                value: "[[2026-06-23]]"
+            )
+            XCTFail("expected a throw on a bare-bid address")
+        } catch {
+            // expected — bare bid can't resolve, so the write is rejected.
+        }
+    }
+
     // MARK: - Line → bid resolution against the real parser
 
     /// Fixture parsed by the REAL service parser (the same path the

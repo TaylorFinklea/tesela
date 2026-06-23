@@ -184,6 +184,7 @@ struct DailyView: View {
                 tags: block.tags,
                 properties: block.properties,
                 propertyRegistry: mosaic.propertyRegistry,
+                registrySource: { mosaic.propertyRegistry },
                 isEditing: editingBlockId == block.id,
                 isFoldable: BlockFold.hasChildren(block: block, in: mosaic.todayBlocks),
                 isCollapsed: collapsedBlockIds.contains(block.id),
@@ -215,7 +216,7 @@ struct DailyView: View {
                     mosaic.setBlockProperties(id: block.id, properties: updated)
                 },
                 onSetProperty: { key, value in
-                    Task { try? await mosaic.setBlockProperty(blockId: block.id, key: key, value: value) }
+                    Task { try? await mosaic.setBlockProperty(blockId: block.noteId + ":" + block.id, key: key, value: value) }
                 },
                 onSkipRecurrence: {
                     Task { try? await mosaic.recurBump(blockId: block.id, mode: .skip) }
@@ -256,6 +257,8 @@ struct DailyView: View {
                 isDone: block.done,
                 tags: block.tags,
                 properties: block.properties,
+                propertyRegistry: mosaic.propertyRegistry,
+                registrySource: { mosaic.propertyRegistry },
                 isEditing: editingBlockId == block.id,
                 isFoldable: BlockFold.hasChildren(block: block, in: mosaic.yesterdayBlocks),
                 isCollapsed: collapsedBlockIds.contains(block.id),
@@ -285,6 +288,9 @@ struct DailyView: View {
                     // mutates todayBlocks; yesterday needs its own routing.
                     // For now leave as a no-op until cycleBlockStatus
                     // gains a yesterday-aware branch (cheap follow-up).
+                },
+                onSetProperty: { key, value in
+                    Task { try? await mosaic.setBlockProperty(blockId: block.noteId + ":" + block.id, key: key, value: value) }
                 }
             )
             .opacity(0.7)
@@ -329,6 +335,8 @@ struct DailyView: View {
                     isDone: block.done,
                     tags: block.tags,
                     properties: block.properties,
+                    propertyRegistry: mosaic.propertyRegistry,
+                    registrySource: { mosaic.propertyRegistry },
                     isEditing: editingBlockId == block.id,
                     isFoldable: BlockFold.hasChildren(block: block, in: day.blocks),
                     isCollapsed: collapsedBlockIds.contains(block.id),
@@ -352,6 +360,9 @@ struct DailyView: View {
                     },
                     onIndent: { delta in
                         mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: delta)
+                    },
+                    onSetProperty: { key, value in
+                        Task { try? await mosaic.setBlockProperty(blockId: block.noteId + ":" + block.id, key: key, value: value) }
                     }
                 )
                 .opacity(0.7)
