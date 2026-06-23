@@ -174,6 +174,7 @@ struct GrPageView: View {
                 isDone: block.done,
                 tags: block.tags,
                 properties: block.properties,
+                propertyRegistry: mosaic.propertyRegistry,
                 isEditing: editingBlockId == block.id,
                 isFoldable: BlockFold.hasChildren(block: block, in: blocks),
                 isCollapsed: collapsedBlockIds.contains(block.id),
@@ -210,6 +211,9 @@ struct GrPageView: View {
                 onCycleStatus: { mosaic.cycleBlockStatus(id: block.id, pageSlug: slug) },
                 onSetProperties: { updated in
                     mosaic.setBlockProperties(id: block.id, properties: updated)
+                },
+                onSetProperty: { key, value in
+                    Task { try? await mosaic.setBlockProperty(blockId: block.id, key: key, value: value) }
                 },
                 onSkipRecurrence: {
                     Task { try? await mosaic.recurBump(blockId: block.id, mode: .skip) }

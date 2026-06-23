@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Deterministic per-tag color — the iOS port of web `tag-color.ts` (the
 /// "colored per-tag pills" redesign, decided 2026-06-07). A tag's hue is a
@@ -200,21 +201,55 @@ struct ScheduledChip: View {
 struct PropertyChip: View {
     let key: String
     let value: String
+    /// Phase 5.6: per-choice `choice_colors` tint for a select/multi-select
+    /// VALUE chip, resolved off the registry. `nil` → the default muted
+    /// chip (uncolored choices look unchanged). Mirrors web `DisplayChip`'s
+    /// tinted recipe (translucent background + saturated foreground); the
+    /// task STATUS marker is NOT routed here (it stays priority-colored).
+    var tint: Color? = nil
 
     @Environment(\.theme) private var theme
+
+    // Web parity (DisplayChip): the property KEY stays muted; only the VALUE
+    // text carries the choice color, blended ~22% toward the theme foreground
+    // so a saturated choice (bright green/amber) stays readable in both themes
+    // (SwiftUI has no color-mix on our target — see Color.mixed below).
+    private var keyColor: Color { theme.fgFaint }
+    private var valueColor: Color { tint?.mixed(toward: theme.fgDefault, 0.22) ?? theme.fgMuted }
+    private var bgColor: Color { (tint ?? theme.fgMuted).opacity(tint == nil ? 0.10 : 0.16) }
 
     var body: some View {
         HStack(spacing: 4) {
             Text(key)
-                .foregroundStyle(theme.fgFaint)
+                .foregroundStyle(keyColor)
             Text(value)
-                .foregroundStyle(theme.fgMuted)
+                .foregroundStyle(valueColor)
         }
         .font(.system(size: 11.5, weight: .medium, design: .monospaced))
         .padding(.horizontal, 6)
         .padding(.vertical, 1)
-        .background(theme.fgMuted.opacity(0.10))
+        .background(bgColor)
+        .overlay(
+            RoundedRectangle(cornerRadius: 3)
+                .strokeBorder((tint ?? .clear).opacity(tint == nil ? 0 : 0.32), lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+}
+
+/// Blend one SwiftUI `Color` toward another by `fraction` (0 = self,
+/// 1 = other) via UIColor components — the iOS stand-in for web's CSS
+/// `color-mix`, used by `PropertyChip` to keep tinted value text readable.
+private extension Color {
+    func mixed(toward other: Color, _ fraction: Double) -> Color {
+        var ra: CGFloat = 0, ga: CGFloat = 0, ba: CGFloat = 0, aa: CGFloat = 0
+        var rb: CGFloat = 0, gb: CGFloat = 0, bb: CGFloat = 0, ab: CGFloat = 0
+        guard UIColor(self).getRed(&ra, green: &ga, blue: &ba, alpha: &aa),
+              UIColor(other).getRed(&rb, green: &gb, blue: &bb, alpha: &ab) else { return self }
+        let f = CGFloat(fraction)
+        return Color(red: Double(ra + (rb - ra) * f),
+                     green: Double(ga + (gb - ga) * f),
+                     blue: Double(ba + (bb - ba) * f))
     }
 }
 

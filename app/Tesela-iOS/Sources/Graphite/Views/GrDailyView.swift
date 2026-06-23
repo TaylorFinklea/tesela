@@ -120,6 +120,7 @@ struct GrDailyView: View {
                 isDone: block.done,
                 tags: block.tags,
                 properties: block.properties,
+                propertyRegistry: mosaic.propertyRegistry,
                 isEditing: editingBlockId == block.id,
                 isFoldable: BlockFold.hasChildren(block: block, in: mosaic.todayBlocks),
                 isCollapsed: collapsedBlockIds.contains(block.id),
@@ -177,6 +178,9 @@ struct GrDailyView: View {
                 onSetProperties: { updated in
                     mosaic.setBlockProperties(id: block.id, properties: updated)
                 },
+                onSetProperty: { key, value in
+                    Task { try? await mosaic.setBlockProperty(blockId: block.id, key: key, value: value) }
+                },
                 onSkipRecurrence: {
                     Task { try? await mosaic.recurBump(blockId: block.id, mode: .skip) }
                 }
@@ -208,6 +212,7 @@ struct GrDailyView: View {
                 isDone: block.done,
                 tags: block.tags,
                 properties: block.properties,
+                propertyRegistry: mosaic.propertyRegistry,
                 isEditing: editingBlockId == block.id,
                 isFoldable: BlockFold.hasChildren(block: block, in: mosaic.yesterdayBlocks),
                 isCollapsed: collapsedBlockIds.contains(block.id),
@@ -236,7 +241,10 @@ struct GrDailyView: View {
                 },
                 pageSearch: { mosaic.searchablePages($0) },
                 tagSearch: { mosaic.searchableTags($0) },
-                onIndent: { delta in mosaic.indentYesterdayBlock(id: block.id, by: delta) }
+                onIndent: { delta in mosaic.indentYesterdayBlock(id: block.id, by: delta) },
+                onSetProperty: { key, value in
+                    Task { try? await mosaic.setBlockProperty(blockId: block.id, key: key, value: value) }
+                }
             )
         }
     }
@@ -273,6 +281,7 @@ struct GrDailyView: View {
                     isDone: block.done,
                     tags: block.tags,
                     properties: block.properties,
+                    propertyRegistry: mosaic.propertyRegistry,
                     isEditing: editingBlockId == block.id,
                     isFoldable: BlockFold.hasChildren(block: block, in: day.blocks),
                     isCollapsed: collapsedBlockIds.contains(block.id),
@@ -306,6 +315,9 @@ struct GrDailyView: View {
                     tagSearch: { mosaic.searchableTags($0) },
                     onIndent: { delta in
                         mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: delta)
+                    },
+                    onSetProperty: { key, value in
+                        Task { try? await mosaic.setBlockProperty(blockId: block.id, key: key, value: value) }
                     }
                 )
             }

@@ -14,17 +14,22 @@ final class KeyboardToolbarItemTests: XCTestCase {
     func testDefaultOrderIsPaletteThroughMic() {
         XCTAssertEqual(
             defaultKeyboardToolbarItems,
-            [.commandPalette, .slashCommand, .backlink, .dedent, .indent, .cycleStatus, .mic]
+            [.commandPalette, .slashCommand, .backlink, .dedent, .indent, .cycleStatus, .date, .mic]
         )
+    }
+
+    func testDefaultSetIncludesDateForReachableDateAuthoring() {
+        // Phase 5.3: the calendar button MUST be in the default seed so a
+        // user can author scheduled/deadline dates with zero config (the
+        // `.date` toolbar item opens `DateInputSheet`).
+        XCTAssertTrue(defaultKeyboardToolbarItems.contains(.date))
     }
 
     func testDefaultOrderExcludesPinnedHideAndOmitsOptionalItems() {
         // The Hide-keyboard button is pinned to the trailing edge by
         // `BlockRow` and never appears in the user-configurable default.
-        // `.date` and `.tags` are valid cases but are not part of the
-        // default seed.
+        // `.tags` is a valid case but is not part of the default seed.
         XCTAssertFalse(defaultKeyboardToolbarItems.contains(.hideKeyboard))
-        XCTAssertFalse(defaultKeyboardToolbarItems.contains(.date))
         XCTAssertFalse(defaultKeyboardToolbarItems.contains(.tags))
     }
 
@@ -56,7 +61,7 @@ final class KeyboardToolbarItemTests: XCTestCase {
         )
         XCTAssertEqual(
             defaultKeyboardToolbarItemsRaw,
-            "palette,slash,backlink,dedent,indent,status,mic"
+            "palette,slash,backlink,dedent,indent,status,date,mic"
         )
     }
 

@@ -20,6 +20,11 @@ struct BlockRow: View {
     var isDone: Bool = false
     var tags: [String] = []
     var properties: [BlockProperty] = []
+    /// The resolved property/type registry (the `@Published` one off
+    /// `MockMosaicService`). Drives select VALUE-chip colors from the
+    /// resolved `choiceColors` (Phase 5.6). Defaults to empty so non-block
+    /// callers and previews work uncolored.
+    var propertyRegistry: PropertyRegistry = PropertyRegistry()
     var isEditing: Bool = false
     var isFoldable: Bool = false
     var isCollapsed: Bool = false
@@ -73,8 +78,17 @@ struct BlockRow: View {
     var onCycleStatus: (() -> Void)? = nil
     /// Persist an updated property list for this block. Called after the
     /// date sheet commits — the caller (DailyView/PageView) routes this
-    /// to the appropriate service method.
+    /// to the appropriate service method. Used for the coarse whole-list
+    /// path (e.g. a date + recurring set atomically).
     var onSetProperties: (([BlockProperty]) -> Void)? = nil
+    /// Typed per-key property write — the STRUCTURED, converging seam
+    /// (`setBlockProperty(blockId:key:value:)` → the `BlockPropertySet`
+    /// container op). Single-key writes (a lone scheduled/deadline date,
+    /// priority, status) route here so they hit the typed converging op
+    /// instead of re-pushing the whole property list. Owners wire it to
+    /// the service's `setBlockProperty`; when nil, callers fall back to
+    /// the whole-list `onSetProperties` path.
+    var onSetProperty: ((_ key: String, _ value: String) -> Void)? = nil
     /// Skip the current recurring-block occurrence to its next date.
     var onSkipRecurrence: (() -> Void)? = nil
 
@@ -125,6 +139,46 @@ struct BlockRow: View {
             !hidden.contains($0.key.lowercased())
                 && !$0.value.trimmingCharacters(in: .whitespaces).isEmpty
         }
+    }
+
+    /// Resolved property defs for the block's tags, keyed by lowercased
+    /// property name — built by unioning `resolvedDefs(forTag:)` across
+    /// every tag the block carries (first def wins). Drives select
+    /// VALUE-chip colors (Phase 5.6). Empty when no tags / no registry.
+    private var resolvedDefsByName: [String: PropertyDef] {
+        var map: [String: PropertyDef] = [:]
+        for tag in tags {
+            let clean = tag.hasPrefix("#") ? String(tag.dropFirst()) : tag
+            for def in propertyRegistry.resolvedDefs(forTag: clean) {
+                let key = def.name.lowercased()
+                if map[key] == nil { map[key] = def }
+            }
+        }
+        return map
+    }
+
+    /// The `choiceColors` tint for a displayed select/multi-select property
+    /// value — mirrors web `DisplayChip`'s Phase-4 per-choice color. Looks
+    /// up the resolved def for `key`, then `choiceColors[value.lowercased()]`
+    /// (multi-select colors by the FIRST matching choice). `nil` → the chip
+    /// keeps its muted style. The status marker is intentionally NOT routed
+    /// here (it stays priority-colored by design).
+    private func chipTint(forKey key: String, value: String) -> Color? {
+        guard let def = resolvedDefsByName[key.lowercased()] else { return nil }
+        guard def.valueType == .select || def.valueType == .multiSelect else { return nil }
+        if def.choiceColors.isEmpty { return nil }
+        let raw = value.trimmingCharacters(in: .whitespaces)
+        guard !raw.isEmpty else { return nil }
+        let parts: [String] = def.valueType == .multiSelect
+            ? raw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            : [raw]
+        for p in parts {
+            if let css = def.choiceColors[p.lowercased()],
+               let hex = TagPalette.resolveOverride(css) {
+                return Color(hex: hex)
+            }
+        }
+        return nil
     }
 
     @Environment(\.theme) private var theme
@@ -186,7 +240,11 @@ struct BlockRow: View {
                             .buttonStyle(.plain)
                         }
                         ForEach(displayProperties, id: \.key) { prop in
-                            PropertyChip(key: prop.key, value: prop.value)
+                            PropertyChip(
+                                key: prop.key,
+                                value: prop.value,
+                                tint: chipTint(forKey: prop.key, value: prop.value)
+                            )
                         }
                     }
                 }
@@ -646,11 +704,20 @@ struct BlockRow: View {
         return text + " " + normalized
     }
 
-    /// Build the updated property list from the sheet's output and pass
-    /// it to `onSetProperties` for the parent to persist.
+    /// Persist the sheet's output. A LONE date field (no recurrence) is a
+    /// single-key change → the typed per-key converging seam
+    /// (`onSetProperty`); a date + recurring must land atomically (two
+    /// keys) → the whole-list path. Falls back to whole-list when
+    /// `onSetProperty` isn't wired.
     private func commitDate(field: DateField, iso: String, time: String?, recurrence: String?) {
         let value = time.map { "\(iso) \($0)" } ?? iso
         let key = field.rawValue  // "deadline" or "scheduled"
+
+        // Single-key fast path: one date, no recurrence → typed seam.
+        if recurrence == nil, let onSetProperty {
+            onSetProperty(key, value)
+            return
+        }
 
         // Upsert: drop any prior value at this key, then append the new one.
         var updated = properties.filter { $0.key != key }

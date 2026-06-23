@@ -56,7 +56,7 @@ enum KeyboardToolbarItem: String, CaseIterable, Codable, Identifiable, Sendable 
 /// the trailing edge of the toolbar in `BlockRow` and not user-
 /// configurable, so it can't be removed or buried by reordering.
 let defaultKeyboardToolbarItems: [KeyboardToolbarItem] =
-    [.commandPalette, .slashCommand, .backlink, .dedent, .indent, .cycleStatus, .mic]
+    [.commandPalette, .slashCommand, .backlink, .dedent, .indent, .cycleStatus, .date, .mic]
 
 /// Encode an item list as the comma-separated raw-value string stored
 /// in `@AppStorage("keyboardToolbarItems")`.
