@@ -40,6 +40,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
     @Published private(set) var palette: [PaletteVerb]
     @Published private(set) var searchResults: [SearchResult]
 
+    /// The client-side property/type registry (Phase 5.2 — read layer only).
+    /// Built from the synced Property/Tag pages on every `refresh(from:)`, the
+    /// iOS mirror of the web `buildRegistry`/`getTagPropertyDefs`. Carries the
+    /// rich Property-page frontmatter (`nl_triggers`, `choice_colors`, `chip_*`,
+    /// chord keys, `property_overrides`) that `GET /types` does NOT surface, so
+    /// it is parsed CLIENT-SIDE from the pages, never fetched. P5.3-5.6 (date
+    /// authoring, slash commands, inline NLP, chip colors) consume this; nothing
+    /// in the editor/toolbar/chip UI reads it yet.
+    @Published private(set) var propertyRegistry: PropertyRegistry = PropertyRegistry()
+
     /// Bumped after every non-mock `refresh(from:)` pass — including the
     /// relay-tick path (`onAppliedChanges → applyRemoteChange → refresh`).
     /// Views whose data lives in their own query-backed `@State` (Agenda,
@@ -1518,6 +1528,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
         switch backend {
         case .mock:
             resetToSeed()
+            // No synced sandbox in mock mode — seed the canonical built-in
+            // Property/Tag pages so the registry has the same shapes as a real
+            // mosaic (Phase 5.2 read layer).
+            propertyRegistry = PropertyRegistry.buildBuiltins()
             connection = .idle
         case .relay:
             // Local-first, no Mac: render the relay-synced sandbox notes and
@@ -1547,6 +1561,9 @@ final class MockMosaicService: ObservableObject, MosaicService {
             let past = localPastDailies(limit: pastDailiesWindow)
             pastDailies = past.entries
             hasOlderDailies = past.more
+            // Build the property/type registry from the relay-synced Property/
+            // Tag pages in the local sandbox (Phase 5.2 read layer).
+            rebuildPropertyRegistry()
             // Always .ready — there's no server to wait on. Empty until the
             // relay delivers the first ops, then onAppliedChanges re-refreshes.
             connection = .ready
@@ -1638,6 +1655,11 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 // notes that are stale (cheaper than re-writing
                 // everything every time).
                 await snapshotNotesToSandbox(notes + [daily])
+                // Registry build runs off the just-snapshotted sandbox files —
+                // ONE local-parse path shared with `.relay` (Phase 5.2). The
+                // snapshot above wrote every Property/Tag page locally, so
+                // `rebuildPropertyRegistry` sees the full mosaic.
+                rebuildPropertyRegistry()
                 connection = .ready
             } catch {
                 // HTTP failed. We surface the unreachable backend HONESTLY
@@ -2113,6 +2135,45 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let note_type: String?
         let created: String?
         let modified: String?
+        /// Nested frontmatter key/values (`nl_triggers`, `property_overrides`,
+        /// `value_chord_keys`, …). The server serializes `metadata.custom` as a
+        /// JSON object (`note.rs:95`), so the `.http` path decodes it directly;
+        /// the relay/local path fills it from the raw frontmatter instead (see
+        /// `readLocalNote`). Re-added for Phase 5.2 — the registry needs the
+        /// rich Property/Tag-page metadata that the flat decoder dropped.
+        let custom: [String: Any]
+
+        private enum CodingKeys: String, CodingKey {
+            case title, tags, note_type, created, modified, custom
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            title = try c.decodeIfPresent(String.self, forKey: .title)
+            tags = (try? c.decode([String].self, forKey: .tags)) ?? []
+            note_type = try c.decodeIfPresent(String.self, forKey: .note_type)
+            created = try c.decodeIfPresent(String.self, forKey: .created)
+            modified = try c.decodeIfPresent(String.self, forKey: .modified)
+            custom = (try? c.decode(AnyJSONDict.self, forKey: .custom).value) ?? [:]
+        }
+
+        /// Memberwise init for the local-parse path (`readLocalNote`), which
+        /// builds the metadata by hand rather than decoding JSON.
+        init(
+            title: String?,
+            tags: [String],
+            note_type: String?,
+            created: String?,
+            modified: String?,
+            custom: [String: Any]
+        ) {
+            self.title = title
+            self.tags = tags
+            self.note_type = note_type
+            self.created = created
+            self.modified = modified
+            self.custom = custom
+        }
     }
 
     /// Body for `POST /agenda`. Matches the server's `AgendaQuery` deser.
@@ -2398,7 +2459,16 @@ final class MockMosaicService: ObservableObject, MosaicService {
                 tags: tags,
                 note_type: noteType,
                 created: nil,
-                modified: mtimeISO
+                modified: mtimeISO,
+                // Relay/local path has no server JSON — parse the nested
+                // frontmatter (`property_overrides`, `nl_triggers`, …) straight
+                // off the raw markdown so synced Property/Tag pages are visible
+                // to the registry (Phase 5.2). GATE on the cheap note_type
+                // scrape: only Property/Tag pages need the (costly) nested-YAML
+                // parse, so every other loadAllLocalNotes caller (search,
+                // backlinks, query) stays off it (P5.2 perf).
+                custom: (noteType == "Property" || noteType == "Tag")
+                    ? FrontmatterParser.parse(content: raw) : [:]
             ),
             modified_at: mtimeISO
         )
@@ -2491,6 +2561,21 @@ final class MockMosaicService: ObservableObject, MosaicService {
             .filter { $0.hasSuffix(".md") }
             .sorted()
             .compactMap { readLocalNote(id: String($0.dropLast(3))) }
+    }
+
+    /// Rebuild the client-side property/type registry (Phase 5.2) from the
+    /// local sandbox's Property/Tag pages. ONE local-parse path for the synced
+    /// backends: `.relay` reads its relay-synced files, `.http` reads the files
+    /// it snapshots after every online refresh — both flow through
+    /// `loadAllLocalNotes` → `readLocalNote`, whose metadata now carries the
+    /// parsed `custom`. Each note's nested frontmatter is parsed once in
+    /// `readLocalNote`; here we just project to `RegistryNote` and build.
+    /// Read-only cache — never writes, so it can't affect convergence.
+    private func rebuildPropertyRegistry() {
+        let regNotes = loadAllLocalNotes()
+            .filter { $0.metadata.note_type == "Property" || $0.metadata.note_type == "Tag" }
+            .map { RegistryNote(title: $0.title, noteType: $0.metadata.note_type, custom: $0.metadata.custom) }
+        propertyRegistry = PropertyRegistry.build(from: regNotes)
     }
 
     /// Pull `title: "..."` out of a YAML frontmatter block. Returns
