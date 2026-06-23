@@ -729,6 +729,32 @@ final class MockMosaicService: ObservableObject, MosaicService {
         return (body, tags)
     }
 
+    /// Drop whole-line `key:: value` property lines from an engine block
+    /// text. The live-reconcile (`reconcileOpenBlockLive`) reads the RAW
+    /// engine `text_seq` via the FFI, which — until the engine-side
+    /// migrate-strip (`reconcile_tree_to_blocks`) lands fleet-wide — can
+    /// carry a task's `status::`/`tags::` continuation lines folded into the
+    /// block text on a NoteUpsert round-trip. Reflecting those into the
+    /// edit buffer is the "raw property lines" bug. This is the same
+    /// `parseProperty` filter `renderBody` already applies (3072-3074), so
+    /// nothing is lost — properties live in `block.properties` / the engine
+    /// container and re-render as chips. Property lines are TRAILING for a
+    /// task (prose first line, property sub-lines after), so dropping them
+    /// leaves the prose prefix — and therefore prose-offset splices — 1:1
+    /// aligned with the engine `text_seq`. Display-only: never written back
+    /// to `text_seq`, so no convergence risk (the engine fix is the durable
+    /// source-side cure, gated on `migrate_in_text`).
+    static func stripPropertyLines(_ text: String) -> String {
+        text.components(separatedBy: "\n")
+            .filter { line in
+                let t = line.trimmingCharacters(in: .whitespaces)
+                guard let sep = t.range(of: "::") else { return true }
+                let key = String(t[..<sep.lowerBound]).trimmingCharacters(in: .whitespaces)
+                return key.isEmpty
+            }
+            .joined(separator: "\n")
+    }
+
     /// Pull `#tag` tokens out of `raw` and return (bodyWithoutTags, tags).
     /// Hashtags are recognized as `#` followed by 1+ characters from
     /// `[A-Za-z0-9_-]`. Tags preserve their `#` prefix to match the web
@@ -1889,13 +1915,20 @@ final class MockMosaicService: ObservableObject, MosaicService {
             // therefore matches the mirror length the clamp uses. Same
             // projection `spliceTodayBlock` maintains, so a blur-commit/refresh
             // doesn't revert the merge.
+            // P5.1: strip any solely-`key:: value` property lines the raw
+            // engine `text_seq` carries (a task's status::/tags:: folded in by
+            // a NoteUpsert round-trip) so the edit buffer + rawText stay
+            // prose-only — properties live in the container and render as
+            // chips. Derive EVERYTHING (body/tags + the UITextView reconcile)
+            // from the stripped text so prose-offset splices stay aligned.
+            let cleanMerged = Self.stripPropertyLines(merged)
             if let idx = self.todayBlocks.firstIndex(where: { $0.id == bid }) {
-                let (body, tags) = Self.splitTrailingTags(merged)
+                let (body, tags) = Self.splitTrailingTags(cleanMerged)
                 self.todayBlocks[idx].text = body.components(separatedBy: "\n").first ?? body
                 self.todayBlocks[idx].rawText = body
                 self.todayBlocks[idx].tags = tags
             }
-            inserter.reconcile(toEngineText: merged)
+            inserter.reconcile(toEngineText: cleanMerged)
         }
     }
 

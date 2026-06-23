@@ -632,4 +632,27 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertFalse(MockMosaicService.isDailySlug("2026-06-09-extra"))
         XCTAssertFalse(MockMosaicService.isDailySlug(""))
     }
+
+    // MARK: - stripPropertyLines (P5.1 raw-property-line fix)
+
+    func testStripPropertyLinesRemovesTaskPropertyLines() {
+        // The exact shape from the field report: prose + folded status::/tags::.
+        let merged = "Do this thing\nstatus:: todo\ntags:: Task"
+        XCTAssertEqual(MockMosaicService.stripPropertyLines(merged), "Do this thing")
+    }
+
+    func testStripPropertyLinesPreservesProseAndTrailingTags() {
+        // Prose-only (incl. an inline #tag) is untouched.
+        XCTAssertEqual(MockMosaicService.stripPropertyLines("Call mom #family"), "Call mom #family")
+        // Multi-line prose continuation survives; only property lines drop.
+        let merged = "Line one\nLine two\nscheduled:: [[2026-06-25]]"
+        XCTAssertEqual(MockMosaicService.stripPropertyLines(merged), "Line one\nLine two")
+    }
+
+    func testStripPropertyLinesIgnoresNonPropertyColons() {
+        // A line with no `::` (incl. a URL's `//`) is prose, kept verbatim.
+        XCTAssertEqual(MockMosaicService.stripPropertyLines("see https://x.example"), "see https://x.example")
+        // A leading `::` with empty key is NOT a property → kept.
+        XCTAssertEqual(MockMosaicService.stripPropertyLines(":: orphan"), ":: orphan")
+    }
 }
