@@ -36,6 +36,15 @@
   - [ ] Phase 5 (iOS property-registry parity — offline per-type choices on iOS, later).
   - ⚠ `tesela-server put_base_diff.rs` sync tests are pre-existing non-deterministic flaky under the full parallel run (pass isolated + as a file) — not a Phase-1/2 regression.
 
+## iOS Phase 5 — property-registry parity (DONE 2026-06-23; spec `phases/2026-06-23-ios-property-registry-parity-spec.md`)
+Trigger: real-device test found 4 iOS task-authoring gaps — raw `status::`/`tags::` lines in the edit buffer, no date authoring, no slash commands, no inline NLP — ALL rooted in iOS being hardcoded + never consuming the property registry. All-Opus ultracode: 3-agent map → spec (6 phases) → per-phase workflows (implement + 3-lens adversarial verify) + builds.
+- **P5.1** (`f17ede5f`, build 43): `stripPropertyLines` hides raw `key:: value` lines from the task edit buffer (iOS display strip in `reconcileOpenBlockLive`; reads the raw engine `text_seq` which carries them after a NoteUpsert round-trip). Display-only, no convergence risk.
+- **P5.2** (`60c398ff`): `PropertyRegistry.swift` — registry built CLIENT-SIDE from synced Property/Tag pages (nested-YAML `FrontmatterParser`; ports web `getTagPropertyDefs`/`applyOverride` exactly; `@Published propertyRegistry`). Perf: gated the nested parse to type pages (review MAJOR).
+- **P5.3+P5.6** (`a46c21f4`): date authoring (`.date` in the default toolbar; typed per-key `onSetProperty` → `setBlockProperty` container seam) + select-chip colors from `choice_colors`. Fixed 2 review MAJORs (date wiring on GrDailyView past rows; web-parity contrast mix for chip text).
+- **P5.4+P5.5** (`c3d0066c` + `112251c6`): registry-driven slash commands (`/p1`, `/status <choice>`, `/scheduled` → STRUCTURED writes) + inline NLP lifts (`nl_triggers` + `DateParser`, tightened to valid-choice + type-declared-date-field only).
+- Invariant held: every property write goes through the typed container seam (converging) — NO `text_seq` pollution. **Build 45 = the full P5.2→P5.6 batch** (build 44 skipped — a WF3 agent cut a stray build).
+- DEFERRED follow-ups: (1) engine-side raw-lines strip-and-lift in `reconcile_tree_to_blocks` (the DURABLE root cure for ALL clients) — gated on `migrate_in_text`/fleet-readiness (old FFI that can't read the container could re-broadcast a property erase); (2) NLP bare-weekday-mid-sentence noise tuning; (3) registry rebuild off-actor if profiling shows jank (the parse-gate already removed the dominant cost); (4) minor NITs (dead `replaceLength`, hardcoded status/date name strings, full CSS-color parity).
+
 ## Blockers
 - None.
 
