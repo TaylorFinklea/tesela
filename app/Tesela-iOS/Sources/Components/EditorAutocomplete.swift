@@ -3,15 +3,39 @@ import SwiftUI
 /// Which inline trigger is open in the editor. `[[` links, `#` tags, and
 /// `/` slash-verbs all share one detection + suggestion strip; only the
 /// candidate source and the inserted text differ per kind.
-enum TriggerKind: Equatable { case link, tag, slash }
+enum TriggerKind: Equatable { case link, tag, slash, nlp }
 
-/// One suggestion chip in the keyboard strip. `insert` is spliced in place
-/// of the typed `trigger+query` span when the chip is tapped.
+/// What tapping a suggestion chip DOES. Most chips still splice text
+/// (`.insertText`); registry-driven property verbs + inline-NLP lifts route
+/// to the STRUCTURED converging seam instead (`.setProperty`/`.setStatus`) or
+/// open the date sheet (`.openDateSheet`). The single dispatch point
+/// (`BlockRow.commitSuggestion`) branches on this.
+enum SuggestionAction: Equatable {
+    /// Splice `Suggestion.insert` at the trigger span (today's behavior).
+    case insertText
+    /// Write a structured property (key, value) via the typed per-key seam,
+    /// then remove the matched trigger text. NEVER spliced into `text_seq`.
+    case setProperty(key: String, value: String)
+    /// Same as `.setProperty` but specifically the status key — kept distinct
+    /// so a `/todo`/`/doing` verb reads as a status set at the call site.
+    case setStatus(choice: String)
+    /// Open the date sheet preset to `field` (scheduled/deadline). The matched
+    /// trigger text is removed and the sheet takes over.
+    case openDateSheet(field: DateField)
+}
+
+/// One suggestion chip in the keyboard strip. For `.insertText` actions
+/// `insert` is spliced in place of the typed `trigger+query` span when the
+/// chip is tapped; for the structured actions `insert` is ignored and the
+/// `action` drives a typed property write / date sheet instead.
 struct Suggestion: Identifiable, Equatable {
     let id: String
     let label: String
     let insert: String
     var isCreateNew: Bool = false
+    /// What the chip does when tapped. Defaults to the legacy splice so every
+    /// existing call site (link/tag/format verbs) keeps inserting text.
+    var action: SuggestionAction = .insertText
 }
 
 /// Pure logic for the inline autocomplete (link / tag / slash). UIKit-free
@@ -134,19 +158,43 @@ final class EditorAutocomplete: ObservableObject {
     @Published private(set) var query = ""
 
     /// UTF-16 offset of the trigger opener in the live block text — the
-    /// start of the `trigger+query` span a chosen suggestion replaces.
+    /// start of the `trigger+query` span a chosen suggestion replaces. For the
+    /// `.nlp` kind this is the start of the matched trigger text.
     private(set) var startOffset = 0
+
+    /// UTF-16 length of the span a chosen suggestion replaces. For `[[`/`#`/`/`
+    /// triggers the dispatch replaces `startOffset…caret` (computed live), so
+    /// this stays 0; for an `.nlp` lift it is the matched trigger length so the
+    /// dispatch removes exactly that text.
+    private(set) var replaceLength = 0
 
     /// Produces suggestions for a (kind, query). Wired by the owner.
     var provider: ((TriggerKind, String) -> [Suggestion])?
+
+    /// Inline-NLP detector (P5.5): given the live text + caret, returns a lift
+    /// candidate or nil. Wired by the owner (captures the block's tags +
+    /// registry). The coordinator calls it when no `[[`/`#`/`/` trigger is open.
+    var nlpDetector: ((_ text: String, _ caretUTF16: Int) -> InlineNLP.Hit?)?
 
     var isActive: Bool { kind != nil && !results.isEmpty }
 
     func update(kind: TriggerKind, start: Int, query: String) {
         self.kind = kind
         self.startOffset = start
+        self.replaceLength = 0
         self.query = query
         self.results = provider?(kind, query) ?? []
+    }
+
+    /// Surface an inline-NLP lift (P5.5) in the same strip. Carries the exact
+    /// span (`start`/`length`) to remove on apply so the dispatch removes the
+    /// matched prose token rather than `start…caret`.
+    func updateNLP(_ hit: InlineNLP.Hit) {
+        self.kind = .nlp
+        self.startOffset = hit.start
+        self.replaceLength = hit.length
+        self.query = ""
+        self.results = [hit.suggestion]
     }
 
     func dismiss() {
@@ -154,6 +202,7 @@ final class EditorAutocomplete: ObservableObject {
         kind = nil
         results = []
         query = ""
+        replaceLength = 0
     }
 }
 
@@ -183,5 +232,207 @@ enum SlashVerbs {
         f.locale = Locale(identifier: "en_US_POSIX")
         let today = f.string(from: Date())
         return Suggestion(id: "slash:date", label: "Today's date", insert: "[[\(today)]]")
+    }
+
+    /// Registry-derived slash verbs for the block being edited (P5.4). Each
+    /// `select`/`multi-select` property contributes a `/<choice>` verb (e.g.
+    /// `/p1`, `/todo`) AND a `/<prop> <choice>` verb (e.g. `/status doing`),
+    /// both routing to the STRUCTURED seam (`.setStatus` for status,
+    /// `.setProperty` otherwise — NOT text). Each `date` property contributes a
+    /// `/<prop>` verb (`/scheduled`, `/deadline`) that opens the date sheet
+    /// preset to its field. The format verbs (`/h1`, `/link`, …) are kept
+    /// separately by the caller.
+    ///
+    /// Verbs are derived from the resolved defs across `tags` (first def per
+    /// lowercased name wins). Choices come from the resolved def — so a Task's
+    /// `Status` yields `[todo, doing, done, blocked]`, a Project's
+    /// `[planned, active, shipped]`.
+    static func registryVerbs(tags: [String], registry: PropertyRegistry) -> [Suggestion] {
+        var seen = Set<String>()
+        var out: [Suggestion] = []
+        for tag in tags {
+            let clean = tag.hasPrefix("#") ? String(tag.dropFirst()) : tag
+            for def in registry.resolvedDefs(forTag: clean) {
+                let key = def.name.lowercased()
+                if seen.contains(key) { continue }
+                seen.insert(key)
+                switch def.valueType {
+                case .select, .multiSelect:
+                    let isStatus = key == "status"
+                    for choice in def.choices {
+                        let action: SuggestionAction = isStatus
+                            ? .setStatus(choice: choice)
+                            : .setProperty(key: key, value: choice)
+                        // /<choice> — e.g. /p1, /todo.
+                        out.append(Suggestion(
+                            id: "slash:prop:\(key):\(choice)",
+                            label: "\(choice)",
+                            insert: "",
+                            action: action
+                        ))
+                        // /<prop> <choice> — e.g. /status doing (filtered by the
+                        // same query matcher, so typing "status" surfaces these).
+                        out.append(Suggestion(
+                            id: "slash:propq:\(key):\(choice)",
+                            label: "\(def.name) → \(choice)",
+                            insert: "",
+                            action: action
+                        ))
+                    }
+                case .date:
+                    let field: DateField = key == "deadline" ? .deadline
+                        : (key == "scheduled" ? .scheduled : .deadline)
+                    out.append(Suggestion(
+                        id: "slash:date:\(key)",
+                        label: "\(def.name)…",
+                        insert: "",
+                        action: .openDateSheet(field: field)
+                    ))
+                default:
+                    break
+                }
+            }
+        }
+        return out
+    }
+
+    /// Merge the built-in format verbs with the registry-derived property
+    /// verbs, then filter by `query` (label/id contains, case-insensitive).
+    /// This is the single source the `.slash` provider returns.
+    static func matchingWithRegistry(_ query: String, tags: [String], registry: PropertyRegistry) -> [Suggestion] {
+        let items = base + [todayDate()] + registryVerbs(tags: tags, registry: registry)
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return items }
+        return items.filter { $0.label.lowercased().contains(q) || $0.id.lowercased().contains(q) }
+    }
+}
+
+/// Inline NLP detection (P5.5): scans the just-typed tail/token of the live
+/// block text for a property `nl_trigger` token or a confident `DateParser`
+/// phrase, and surfaces a one-tap "lift into a structured property" suggestion
+/// in the SAME chip strip the slash/link/tag triggers use. Conservative —
+/// only an EXACT `nl_trigger` token or a confident `DateParser.parse`; never
+/// auto-applies (the user taps to lift; declining leaves the text as prose).
+enum InlineNLP {
+
+    /// One detected lift candidate: which UTF-16 span to remove on apply and
+    /// the suggestion chip to offer.
+    struct Hit: Equatable {
+        /// UTF-16 offset where the matched trigger text starts.
+        let start: Int
+        /// UTF-16 length of the matched trigger text (removed on apply).
+        let length: Int
+        let suggestion: Suggestion
+    }
+
+    /// Detect a lift candidate ending at the caret. Returns the FIRST clear
+    /// match found, preferring a property `nl_trigger` token (most specific)
+    /// then a `DateParser` phrase over the current line's tail. `nil` when no
+    /// confident match — plain prose offers nothing.
+    static func detect(
+        in text: String,
+        caretUTF16 caret: Int,
+        tags: [String],
+        registry: PropertyRegistry,
+        today: Date = Date()
+    ) -> Hit? {
+        let ns = text as NSString
+        let c = max(0, min(caret, ns.length))
+        guard c > 0 else { return nil }
+
+        // Resolve the block's property defs once (first def per name wins).
+        var defs: [PropertyDef] = []
+        var seen = Set<String>()
+        for tag in tags {
+            let clean = tag.hasPrefix("#") ? String(tag.dropFirst()) : tag
+            for def in registry.resolvedDefs(forTag: clean) {
+                let key = def.name.lowercased()
+                if seen.contains(key) { continue }
+                seen.insert(key)
+                defs.append(def)
+            }
+        }
+        guard !defs.isEmpty else { return nil }
+
+        // The token immediately before the caret (whitespace-delimited).
+        var tokenStart = c
+        while tokenStart > 0 {
+            let ch = ns.character(at: tokenStart - 1)
+            if ch == 0x20 || ch == 0x0A || ch == 0x09 { break }
+            tokenStart -= 1
+        }
+        let token = ns.substring(with: NSRange(location: tokenStart, length: c - tokenStart))
+        let tokenLower = token.lowercased()
+
+        // (a) Exact nl_trigger token → a property lift. A select property whose
+        // nl_trigger equals a choice sets that choice (e.g. priority `p1`);
+        // otherwise the trigger is the property and the token its value.
+        if !tokenLower.isEmpty {
+            for def in defs where def.valueType != .date {
+                guard def.nlTriggers.contains(tokenLower) else { continue }
+                let key = def.name.lowercased()
+                // If the trigger is itself a choice, set it; else fall back to
+                // the raw token as the value (covers value-as-trigger props).
+                let value = def.choices.first(where: { $0.lowercased() == tokenLower }) ?? token
+                let action: SuggestionAction = key == "status"
+                    ? .setStatus(choice: value)
+                    : .setProperty(key: key, value: value)
+                let sugg = Suggestion(
+                    id: "nlp:prop:\(key):\(value)",
+                    label: "\(def.name): \(value)",
+                    insert: "",
+                    action: action
+                )
+                return Hit(start: tokenStart, length: c - tokenStart, suggestion: sugg)
+            }
+        }
+
+        // (b) Date phrase via DateParser over the current line's tail. Only the
+        // date properties on the block participate (so a block with no date
+        // prop offers no date lift). We try progressively shorter line-tails
+        // (longest first) so "due tomorrow" beats a bare "tomorrow".
+        let dateDefs = defs.filter { $0.valueType == .date }
+        guard !dateDefs.isEmpty else { return nil }
+
+        // Current line span (after the last newline before the caret).
+        var lineStart = c
+        while lineStart > 0 {
+            if ns.character(at: lineStart - 1) == 0x0A { break }
+            lineStart -= 1
+        }
+        // Walk word boundaries from lineStart up to the caret; try the tail
+        // beginning at each boundary, longest first.
+        var starts: [Int] = []
+        var i = lineStart
+        starts.append(lineStart)
+        while i < c {
+            let ch = ns.character(at: i)
+            if ch == 0x20 || ch == 0x09 {
+                if i + 1 < c { starts.append(i + 1) }
+            }
+            i += 1
+        }
+        for s in starts {
+            let tail = ns.substring(with: NSRange(location: s, length: c - s))
+                .trimmingCharacters(in: .whitespaces)
+            guard !tail.isEmpty else { continue }
+            guard let parsed = DateParser.parse(tail, today: today) else { continue }
+            // Pick the field: DateParser's own field if present, else prefer a
+            // `deadline` def, else the first date def.
+            let field: DateField = parsed.field
+                ?? (dateDefs.contains(where: { $0.name.lowercased() == "deadline" }) ? .deadline : .scheduled)
+            let value = parsed.time.map { "\(parsed.date) \($0)" } ?? parsed.date
+            let label = "\(field.rawValue.capitalized): \(value)"
+            // A confident parse → offer setting the structured date directly
+            // (no sheet needed; the user already typed the phrase).
+            let sugg = Suggestion(
+                id: "nlp:date:\(field.rawValue):\(value)",
+                label: label,
+                insert: "",
+                action: .setProperty(key: field.rawValue, value: value)
+            )
+            return Hit(start: s, length: c - s, suggestion: sugg)
+        }
+        return nil
     }
 }

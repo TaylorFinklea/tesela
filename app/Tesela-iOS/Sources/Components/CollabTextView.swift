@@ -257,8 +257,13 @@ struct CollabTextView: UIViewRepresentable {
             guard tv.markedTextRange == nil else { return }  // skip IME composition
             let sel = tv.selectedRange
             let caret = sel.location + sel.length
-            if let hit = LinkSuggest.detectTrigger(in: tv.text ?? "", caretUTF16: caret) {
+            let text = tv.text ?? ""
+            if let hit = LinkSuggest.detectTrigger(in: text, caretUTF16: caret) {
                 parent.autocomplete.update(kind: hit.kind, start: hit.start, query: hit.query)
+            } else if let nlp = parent.autocomplete.nlpDetector?(text, caret) {
+                // No explicit trigger open — offer an inline-NLP lift if the
+                // just-typed token/tail is a confident property/date match.
+                parent.autocomplete.updateNLP(nlp)
             } else {
                 parent.autocomplete.dismiss()
             }

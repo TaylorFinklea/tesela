@@ -206,6 +206,10 @@ struct BlockRow: View {
     @AppStorage("keyboardToolbarItems") private var keyboardToolbarRaw: String = defaultKeyboardToolbarItemsRaw
     @AppStorage("bareDateField") private var bareDateFieldRaw: String = "scheduled"
     @State private var showingDateSheet = false
+    /// When a `/scheduled` or `/deadline` slash verb opens the date sheet, this
+    /// presets the sheet's field WITHOUT clobbering the user's stored
+    /// `bareDateField` default. `nil` falls back to that default.
+    @State private var dateSheetFieldPreset: String? = nil
 
     private var configuredToolbarItems: [KeyboardToolbarItem] {
         decodeKeyboardToolbarItems(keyboardToolbarRaw)
@@ -272,16 +276,18 @@ struct BlockRow: View {
                 initialDeadline: deadlineValue,
                 initialRecurrence: recurringValue,
                 canSkip: recurringValue != nil,
-                bareDateFieldDefault: bareDateFieldRaw,
+                bareDateFieldDefault: dateSheetFieldPreset ?? bareDateFieldRaw,
                 onCommit: { field, iso, time, recurrence in
                     commitDate(field: field, iso: iso, time: time, recurrence: recurrence)
                     showingDateSheet = false
+                    dateSheetFieldPreset = nil
                 },
                 onSkip: {
                     onSkipRecurrence?()
                     showingDateSheet = false
+                    dateSheetFieldPreset = nil
                 },
-                onCancel: { showingDateSheet = false }
+                onCancel: { showingDateSheet = false; dateSheetFieldPreset = nil }
             )
         }
     }
@@ -420,9 +426,19 @@ struct BlockRow: View {
             editBuffer = combinedEditableText()
             collabFocused = true
             // Wire the suggestion source so the coordinator's trigger/query
-            // updates produce chips ([[ pages, # tags, / verbs).
-            editorAutocomplete.provider = { [pageSearch, tagSearch] kind, query in
-                Self.suggestions(for: kind, query: query, pageSearch: pageSearch, tagSearch: tagSearch)
+            // updates produce chips ([[ pages, # tags, / verbs incl. the
+            // registry-derived property verbs for this block's tags).
+            editorAutocomplete.provider = { [pageSearch, tagSearch, tags, propertyRegistry] kind, query in
+                Self.suggestions(
+                    for: kind, query: query,
+                    pageSearch: pageSearch, tagSearch: tagSearch,
+                    tags: tags, registry: propertyRegistry
+                )
+            }
+            // Wire inline NLP (P5.5): scan the just-typed token/tail for a
+            // property nl_trigger or a confident date phrase → a one-tap lift.
+            editorAutocomplete.nlpDetector = { [tags, propertyRegistry] text, caret in
+                InlineNLP.detect(in: text, caretUTF16: caret, tags: tags, registry: propertyRegistry)
             }
             // Register this editor's imperative inserter so the owner can
             // live-apply an inbound remote splice on THIS block (C1-inbound).
@@ -437,7 +453,9 @@ struct BlockRow: View {
         for kind: TriggerKind,
         query: String,
         pageSearch: ((String) -> [Page])?,
-        tagSearch: ((String) -> [String])?
+        tagSearch: ((String) -> [String])?,
+        tags: [String] = [],
+        registry: PropertyRegistry = PropertyRegistry()
     ) -> [Suggestion] {
         let q = query.trimmingCharacters(in: .whitespaces)
         switch kind {
@@ -459,15 +477,55 @@ struct BlockRow: View {
             }
             return out
         case .slash:
-            return SlashVerbs.matching(query)
+            // Format verbs + registry-derived property verbs for this block's
+            // tags (status/select choices, date openers). P5.4.
+            return SlashVerbs.matchingWithRegistry(query, tags: tags, registry: registry)
+        case .nlp:
+            // The NLP lift suggestion is supplied directly via `updateNLP`;
+            // the provider is never consulted for `.nlp`.
+            return []
         }
     }
 
-    /// Commit a suggestion: replace the typed `trigger+query` span with the
-    /// suggestion's insert text through the splice path, then dismiss.
+    /// Commit a suggestion — the SINGLE dispatch point (P5.4). Branches on the
+    /// suggestion's `action`:
+    ///   - `.insertText` keeps the splice (link/tag/format verbs).
+    ///   - `.setProperty`/`.setStatus` write the STRUCTURED property via the
+    ///     typed per-key seam (NEVER text), then remove the trigger text.
+    ///   - `.openDateSheet` removes the trigger text and opens the date sheet
+    ///     preset to the field.
+    /// After a structured action the trigger span (`startOffset…caret`, the
+    /// `/verb` or the matched NLP token) is removed so no raw text remains.
     private func commitSuggestion(_ s: Suggestion) {
-        inserter.replaceTrigger(startOffset: editorAutocomplete.startOffset, with: s.insert)
+        switch s.action {
+        case .insertText:
+            inserter.replaceTrigger(startOffset: editorAutocomplete.startOffset, with: s.insert)
+        case .setProperty(let key, let value):
+            inserter.replaceTrigger(startOffset: editorAutocomplete.startOffset, with: "")
+            writeProperty(key: key, value: value)
+        case .setStatus(let choice):
+            inserter.replaceTrigger(startOffset: editorAutocomplete.startOffset, with: "")
+            writeProperty(key: "status", value: choice)
+        case .openDateSheet(let field):
+            inserter.replaceTrigger(startOffset: editorAutocomplete.startOffset, with: "")
+            dateSheetFieldPreset = field.rawValue
+            showingDateSheet = true
+        }
         editorAutocomplete.dismiss()
+    }
+
+    /// Write a single structured property through the typed converging seam
+    /// (`onSetProperty` → `setBlockProperty` → `BlockPropertySet` container op).
+    /// Falls back to the whole-list `onSetProperties` path (upsert by key) when
+    /// the typed seam isn't wired, so a property write never silently no-ops.
+    private func writeProperty(key: String, value: String) {
+        if let onSetProperty {
+            onSetProperty(key, value)
+            return
+        }
+        var updated = properties.filter { $0.key != key }
+        updated.append(BlockProperty(key: key, value: value))
+        onSetProperties?(updated)
     }
 
     /// The collab editor's keyboard accessory, styled as a floating pill
@@ -581,7 +639,7 @@ struct BlockRow: View {
             commitSuggestion(s)
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: s.isCreateNew ? "plus" : "text.cursor")
+                Image(systemName: suggestionIcon(s))
                     .font(.system(size: 11, weight: s.isCreateNew ? .semibold : .regular))
                 Text(s.label)
                     .font(.system(size: 13, weight: .medium))
@@ -600,6 +658,18 @@ struct BlockRow: View {
             .foregroundStyle(s.isCreateNew ? theme.accentSecondary : theme.fgDefault)
         }
         .buttonStyle(.plain)
+    }
+
+    /// The SF Symbol for a suggestion chip — "create new" reads as a plus,
+    /// structured property/date lifts as a tag/calendar, plain text inserts as
+    /// a cursor.
+    private func suggestionIcon(_ s: Suggestion) -> String {
+        if s.isCreateNew { return "plus" }
+        switch s.action {
+        case .setProperty, .setStatus: return "tag"
+        case .openDateSheet: return "calendar"
+        case .insertText: return "text.cursor"
+        }
     }
 
     /// Items rendered inside the scrollable middle. We filter out
