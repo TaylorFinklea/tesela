@@ -369,11 +369,14 @@ enum InlineNLP {
         // otherwise the trigger is the property and the token its value.
         if !tokenLower.isEmpty {
             for def in defs where def.valueType != .date {
-                guard def.nlTriggers.contains(tokenLower) else { continue }
+                // Only lift when the typed token IS one of the property's
+                // CHOICES — so the value is meaningful (e.g. priority p1, status
+                // doing). A keyword nl_trigger on a non-select / number / text
+                // property does NOT lift to the literal word.
+                guard def.nlTriggers.contains(tokenLower),
+                      let value = def.choices.first(where: { $0.lowercased() == tokenLower })
+                else { continue }
                 let key = def.name.lowercased()
-                // If the trigger is itself a choice, set it; else fall back to
-                // the raw token as the value (covers value-as-trigger props).
-                let value = def.choices.first(where: { $0.lowercased() == tokenLower }) ?? token
                 let action: SuggestionAction = key == "status"
                     ? .setStatus(choice: value)
                     : .setProperty(key: key, value: value)
@@ -417,19 +420,30 @@ enum InlineNLP {
                 .trimmingCharacters(in: .whitespaces)
             guard !tail.isEmpty else { continue }
             guard let parsed = DateParser.parse(tail, today: today) else { continue }
-            // Pick the field: DateParser's own field if present, else prefer a
-            // `deadline` def, else the first date def.
-            let field: DateField = parsed.field
-                ?? (dateDefs.contains(where: { $0.name.lowercased() == "deadline" }) ? .deadline : .scheduled)
+            // Write only a date field the resolved type DECLARES: DateParser's
+            // inferred field if declared, else a declared deadline/scheduled,
+            // else skip (don't set a date the type doesn't have).
+            let declared = Set(dateDefs.map { $0.name.lowercased() })
+            let inferred = parsed.field?.rawValue.lowercased()
+            let fieldName: String
+            if let inferred, declared.contains(inferred) {
+                fieldName = inferred
+            } else if declared.contains("deadline") {
+                fieldName = "deadline"
+            } else if declared.contains("scheduled") {
+                fieldName = "scheduled"
+            } else {
+                continue
+            }
             let value = parsed.time.map { "\(parsed.date) \($0)" } ?? parsed.date
-            let label = "\(field.rawValue.capitalized): \(value)"
+            let label = "\(fieldName.capitalized): \(value)"
             // A confident parse → offer setting the structured date directly
             // (no sheet needed; the user already typed the phrase).
             let sugg = Suggestion(
-                id: "nlp:date:\(field.rawValue):\(value)",
+                id: "nlp:date:\(fieldName):\(value)",
                 label: label,
                 insert: "",
-                action: .setProperty(key: field.rawValue, value: value)
+                action: .setProperty(key: fieldName, value: value)
             )
             return Hit(start: s, length: c - s, suggestion: sugg)
         }
