@@ -1,7 +1,7 @@
 # Current State
 
 ## Branch
-- `main` @ `37635a7d` — **1 unpushed commit** ahead of origin/main (`01480753`): the recurring auto-roll (`37635a7d`). Sync-trust commits are pushed. `.docs/ai/review/` + `AuthKey_*.p8` untracked (latter gitignored; never commit it).
+- `main` @ `7d2e8682` — **pushed to origin** (2026-06-23). iOS Phase-5 property-registry parity + the post-ship audit fixes all shipped (TestFlight builds 43 / 45 / 46; **46 = working authoring**). `.docs/ai/review/` + `AuthKey_*.p8` untracked (latter gitignored; never commit it).
 
 ## Last session — instant cross-device sync SHIPPED + working
 - **✅ APNs instant-sync WORKING end-to-end** (#72, iOS build 39, CF Worker). Edit on one device → relay deposit → content-available APNs push → other device catches up in seconds. `wrangler tail` confirmed `registered ✓` on both devices + `push → 200 OK` both directions. Full arc (P1 flush-on-background → P2a BGTask → P3 receiver+token-POST+entitlement+relay push) in `phases/2026-06-18-sync-durability-spec.md`. Builds 31–39.
