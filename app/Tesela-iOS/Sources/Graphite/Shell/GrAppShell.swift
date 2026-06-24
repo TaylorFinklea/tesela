@@ -241,7 +241,9 @@ struct GrAppShell: View {
             .onChange(of: scenePhase) { _, newPhase in
                 switch newPhase {
                 case .active:
-                    relayTicker.start()
+                    // wake() (not start()) so a loop parked in a backoff
+                    // sleep ticks NOW — start() no-ops on an existing loop.
+                    relayTicker.wake()
                     liveSync.nudge()
                     Task {
                         await mosaic.refresh(from: backend.backend)

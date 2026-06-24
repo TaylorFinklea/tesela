@@ -181,7 +181,10 @@ struct AppShell: View {
                         switch newPhase {
                         case .active:
                             liveSync.nudge()
-                            relayTicker.start()
+                            // wake() (not start()) so a loop parked in a
+                            // backoff sleep ticks NOW — start() no-ops on an
+                            // existing loop.
+                            relayTicker.wake()
                             Task {
                                 await mosaic.refresh(from: backend.backend)
                                 await mosaic.refreshLoadedPages()

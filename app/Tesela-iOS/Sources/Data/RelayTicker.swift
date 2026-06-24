@@ -145,14 +145,10 @@ final class RelayTicker: ObservableObject {
     /// when there's nothing to do).
     private let tickIntervalSeconds: UInt64
     /// Count of consecutive failed ticks. Resets to 0 on each success.
-    /// Used to compute the next sleep via `2^min(consecutiveErrors, 6)`,
-    /// capped so the loop wakes at least once a minute regardless.
-    /// Published so the UI can show "retrying in 30s" or similar.
+    /// Feeds `backoffSleepSeconds` to compute the next sleep (doubling,
+    /// capped at 60s so the loop always wakes at least once a minute).
+    /// Published so the UI can show "retrying…" while it backs off.
     @Published private(set) var consecutiveErrors: UInt32 = 0
-    /// Max backoff cap, in seconds. Even after lots of consecutive
-    /// failures, the loop still wakes every `tickIntervalSeconds * cap`
-    /// to retry.
-    private let maxBackoffMultiplier: UInt32 = 12  // → 60s when base is 5s
     /// Persisted-cursor UserDefaults keys, scoped per (relay URL, group
     /// id) — both derived from the pairing code (audit A5). Relay seqs
     /// are a per-relay, per-group namespace restarting at 1, so a global
@@ -174,6 +170,25 @@ final class RelayTicker: ObservableObject {
     }
     static func outboundCursorKey(scope: String) -> String {
         "relay.outboundCursorNtp.\(scope)"
+    }
+    /// Seconds to sleep before the next tick given `consecutiveErrors`.
+    /// Exponential (doubling) backoff from `base`, hard-capped at
+    /// `maxSeconds`. The cap is on the RESULTING SECONDS, not the shift
+    /// exponent: the prior code slept `base << min(errors, 12)`, i.e.
+    /// `2 << 12 ≈ 8192s ≈ 2.3h`, which silently parked the sync loop for
+    /// hours after a handful of transient relay failures (edits stranded,
+    /// looked like data loss — 2026-06-24). Capping the seconds keeps the
+    /// "wake at least once a minute" guarantee the comments always claimed.
+    static func backoffSleepSeconds(
+        consecutiveErrors: UInt32,
+        base: UInt64 = 2,
+        maxSeconds: UInt64 = 60
+    ) -> UInt64 {
+        // Cap the exponent first so the shift itself can never overflow,
+        // then clamp the result to the seconds ceiling.
+        let exponent = UInt64(min(consecutiveErrors, 16))
+        let scaled = base << exponent
+        return min(scaled, maxSeconds)
     }
     /// The (relay URL, group id) identity the live coordinator's cursors
     /// persist under. Set by `buildCoordinator`; nil while no coordinator.
@@ -866,6 +881,20 @@ final class RelayTicker: ObservableObject {
         isRunning = false
     }
 
+    /// Foreground entry point: resume prompt syncing when the app returns
+    /// to the foreground. `start()` alone no-ops when a loop already
+    /// exists — even if that loop is parked in a backoff `Task.sleep`
+    /// (now ≤60s, formerly hours) — so a bare `.active → start()` left the
+    /// user waiting out the backoff before any pending edit pushed. `wake()`
+    /// resets the error count and tears the loop down + restarts it, so the
+    /// fresh loop ticks IMMEDIATELY at base cadence. Idempotent and safe to
+    /// call on every `.active`.
+    func wake() {
+        consecutiveErrors = 0
+        stop()
+        start()
+    }
+
     /// Drain the outbound queue to the relay BEFORE iOS suspends the app —
     /// call this from the shell's scenePhase → `.background` hook instead of
     /// a bare `stop()`. Stops the tick loop (so no concurrent ticks), then
@@ -901,12 +930,13 @@ final class RelayTicker: ObservableObject {
     private func runLoop() async {
         while !Task.isCancelled {
             await tickOnce()
-            // Backoff: on consecutive errors, sleep longer between
-            // ticks (capped). Successful tick resets to base cadence.
-            // Doubles per error up to maxBackoffMultiplier (~60s when
-            // base is 5s) so a flaky relay doesn't keep us hot-looping.
-            let multiplier = UInt64(min(consecutiveErrors, maxBackoffMultiplier))
-            let sleepSecs = tickIntervalSeconds * (1 << multiplier)
+            // Backoff: on consecutive errors, sleep longer between ticks
+            // (doubling, hard-capped at 60s — see backoffSleepSeconds).
+            // A successful tick resets consecutiveErrors → base cadence.
+            let sleepSecs = Self.backoffSleepSeconds(
+                consecutiveErrors: consecutiveErrors,
+                base: tickIntervalSeconds
+            )
             do {
                 try await Task.sleep(nanoseconds: sleepSecs * 1_000_000_000)
             } catch {
