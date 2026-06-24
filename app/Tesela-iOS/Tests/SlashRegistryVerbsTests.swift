@@ -165,4 +165,63 @@ final class SlashRegistryVerbsTests: XCTestCase {
         XCTAssertNil(InlineNLP.detect(in: text, caretUTF16: (text as NSString).length,
                                       tags: ["Task"], registry: registry, today: today))
     }
+
+    // MARK: - P5.5 date-lift clear-intent gate
+
+    func testNLPBareWeekdayMidSentenceOffersNothing() {
+        // A bare weekday after an ordinary word is NOT clear date intent → no
+        // lift, even though DateParser alone parses "friday".
+        let text = "lets meet friday"
+        XCTAssertNil(InlineNLP.detect(in: text, caretUTF16: (text as NSString).length,
+                                      tags: ["Task"], registry: registry, today: today),
+                     "a bare mid-sentence weekday must not over-offer a date lift")
+    }
+
+    func testNLPBareRelativeMidSentenceOffersNothing() {
+        // Same for a bare relative token ("tomorrow") sitting mid-prose.
+        let text = "see you tomorrow"
+        XCTAssertNil(InlineNLP.detect(in: text, caretUTF16: (text as NSString).length,
+                                      tags: ["Task"], registry: registry, today: today),
+                     "a bare mid-sentence relative token must not over-offer a date lift")
+    }
+
+    func testNLPDatePrepositionGivesIntent() {
+        // "on friday" → preceded by the date preposition "on" → a lift.
+        let text = "standup on friday"
+        let hit = InlineNLP.detect(in: text, caretUTF16: (text as NSString).length,
+                                   tags: ["Task"], registry: registry, today: today)
+        XCTAssertNotNil(hit, "a date preposition before a weekday should offer a lift")
+        if case .setProperty(let key, _)? = hit?.suggestion.action {
+            XCTAssertTrue(key == "scheduled" || key == "deadline")
+        } else {
+            XCTFail("expected a date setProperty lift, got \(String(describing: hit?.suggestion.action))")
+        }
+    }
+
+    func testNLPDueRelativeGivesIntent() {
+        // "due tomorrow" → the "due" keyword infers a deadline field → a lift.
+        let text = "finish report due tomorrow"
+        let hit = InlineNLP.detect(in: text, caretUTF16: (text as NSString).length,
+                                   tags: ["Task"], registry: registry, today: today)
+        XCTAssertNotNil(hit)
+        if case .setProperty(let key, let value)? = hit?.suggestion.action {
+            XCTAssertEqual(key, "deadline")
+            XCTAssertEqual(value, "2026-06-24")
+        } else {
+            XCTFail("expected a deadline lift, got \(String(describing: hit?.suggestion.action))")
+        }
+    }
+
+    func testNLPLineStartWeekdayGivesIntent() {
+        // A weekday at the very line start IS clear intent → a lift.
+        let text = "friday"
+        let hit = InlineNLP.detect(in: text, caretUTF16: (text as NSString).length,
+                                   tags: ["Task"], registry: registry, today: today)
+        XCTAssertNotNil(hit, "a line-start weekday should offer a date lift")
+        if case .setProperty(let key, _)? = hit?.suggestion.action {
+            XCTAssertTrue(key == "scheduled" || key == "deadline")
+        } else {
+            XCTFail("expected a date setProperty lift, got \(String(describing: hit?.suggestion.action))")
+        }
+    }
 }

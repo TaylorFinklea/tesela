@@ -793,22 +793,30 @@ struct BlockRow: View {
         return text + " " + normalized
     }
 
-    /// Persist the sheet's output. A LONE date field (no recurrence) is a
-    /// single-key change → the typed per-key converging seam
-    /// (`onSetProperty`); a date + recurring must land atomically (two
-    /// keys) → the whole-list path. Falls back to whole-list when
-    /// `onSetProperty` isn't wired.
+    /// Persist the sheet's output. Both the LONE date field and the
+    /// date+recurring case route through the typed per-key converging seam
+    /// (`onSetProperty` → `setBlockProperty` → `BlockPropertySet` container op),
+    /// so a recurring task's date-set converges exactly like a single date. The
+    /// two-key case is two sequential typed writes (date field, then
+    /// `recurring`) — non-atomic is fine; `rollRecurringComplete` already does
+    /// several sequential typed writes. Falls back to the whole-list
+    /// `onSetProperties` path when `onSetProperty` isn't wired.
     private func commitDate(field: DateField, iso: String, time: String?, recurrence: String?) {
         let value = time.map { "\(iso) \($0)" } ?? iso
         let key = field.rawValue  // "deadline" or "scheduled"
 
-        // Single-key fast path: one date, no recurrence → typed seam.
-        if recurrence == nil, let onSetProperty {
+        // Typed converging seam: one write for the date field, plus one for
+        // `recurring` when present. Both compose the noteId:bid address at the
+        // call site, so each resolves on its own.
+        if let onSetProperty {
             onSetProperty(key, value)
+            if let recurrence {
+                onSetProperty("recurring", recurrence)
+            }
             return
         }
 
-        // Upsert: drop any prior value at this key, then append the new one.
+        // Fallback (no typed seam): upsert into the whole property list.
         var updated = properties.filter { $0.key != key }
         updated.append(BlockProperty(key: key, value: value))
 

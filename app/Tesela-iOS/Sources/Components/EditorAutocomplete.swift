@@ -162,12 +162,6 @@ final class EditorAutocomplete: ObservableObject {
     /// `.nlp` kind this is the start of the matched trigger text.
     private(set) var startOffset = 0
 
-    /// UTF-16 length of the span a chosen suggestion replaces. For `[[`/`#`/`/`
-    /// triggers the dispatch replaces `startOffset…caret` (computed live), so
-    /// this stays 0; for an `.nlp` lift it is the matched trigger length so the
-    /// dispatch removes exactly that text.
-    private(set) var replaceLength = 0
-
     /// Produces suggestions for a (kind, query). Wired by the owner.
     var provider: ((TriggerKind, String) -> [Suggestion])?
 
@@ -181,7 +175,6 @@ final class EditorAutocomplete: ObservableObject {
     func update(kind: TriggerKind, start: Int, query: String) {
         self.kind = kind
         self.startOffset = start
-        self.replaceLength = 0
         self.query = query
         self.results = provider?(kind, query) ?? []
     }
@@ -192,7 +185,6 @@ final class EditorAutocomplete: ObservableObject {
     func updateNLP(_ hit: InlineNLP.Hit) {
         self.kind = .nlp
         self.startOffset = hit.start
-        self.replaceLength = hit.length
         self.query = ""
         self.results = [hit.suggestion]
     }
@@ -202,7 +194,6 @@ final class EditorAutocomplete: ObservableObject {
         kind = nil
         results = []
         query = ""
-        replaceLength = 0
     }
 }
 
@@ -403,6 +394,16 @@ enum InlineNLP {
             if ns.character(at: lineStart - 1) == 0x0A { break }
             lineStart -= 1
         }
+        // Date-intent keywords: bare-token date prepositions/keywords plus the
+        // resolved date properties' nl_triggers (e.g. due/deadline/scheduled).
+        // A candidate tail that is NOT line-start and is NOT preceded by one of
+        // these — and whose parse infers no field — is a bare weekday/relative
+        // token mid-prose and must NOT offer a lift (over-offer guard).
+        var dateIntentWords: Set<String> = ["on", "by", "at", "due", "scheduled", "deadline"]
+        for def in dateDefs {
+            for t in def.nlTriggers { dateIntentWords.insert(t.lowercased()) }
+        }
+
         // Walk word boundaries from lineStart up to the caret; try the tail
         // beginning at each boundary, longest first.
         var starts: [Int] = []
@@ -420,6 +421,25 @@ enum InlineNLP {
                 .trimmingCharacters(in: .whitespaces)
             guard !tail.isEmpty else { continue }
             guard let parsed = DateParser.parse(tail, today: today) else { continue }
+            // Clear date intent gate: only offer the lift when the tail begins
+            // at line-start (a), OR is immediately preceded by a date
+            // preposition/keyword (b), OR DateParser inferred a field — a
+            // keyword-led parse like "deadline may 23" (c). A bare weekday/
+            // relative token sitting mid-sentence after an ordinary word
+            // offers nothing.
+            let atLineStart = s <= lineStart
+            let precededByIntent: Bool = {
+                guard !atLineStart else { return false }
+                // The whitespace-delimited word ending just before `s`.
+                var wEnd = s
+                while wEnd > lineStart, isLineSpace(ns.character(at: wEnd - 1)) { wEnd -= 1 }
+                var wStart = wEnd
+                while wStart > lineStart, !isLineSpace(ns.character(at: wStart - 1)) { wStart -= 1 }
+                guard wEnd > wStart else { return false }
+                let prevWord = ns.substring(with: NSRange(location: wStart, length: wEnd - wStart)).lowercased()
+                return dateIntentWords.contains(prevWord)
+            }()
+            guard atLineStart || precededByIntent || parsed.field != nil else { continue }
             // Write only a date field the resolved type DECLARES: DateParser's
             // inferred field if declared, else a declared deadline/scheduled,
             // else skip (don't set a date the type doesn't have).
@@ -448,5 +468,11 @@ enum InlineNLP {
             return Hit(start: s, length: c - s, suggestion: sugg)
         }
         return nil
+    }
+
+    /// A space or tab (0x20 / 0x09). Used to find the word preceding a
+    /// candidate tail without crossing a newline.
+    private static func isLineSpace(_ ch: unichar) -> Bool {
+        ch == 0x20 || ch == 0x09
     }
 }
