@@ -188,6 +188,31 @@ struct BlockRow: View {
         return nil
     }
 
+    /// Which chip groups render below a block's text.
+    struct ChipVisibility {
+        let tags: Bool
+        let dates: Bool
+        let props: Bool
+        var any: Bool { tags || dates || props }
+    }
+
+    /// Decide chip visibility. Tags / inline properties live in the editable
+    /// prose, so they hide while editing (else they'd duplicate the text).
+    /// Date chips (scheduled/deadline/recurring) are STRUCTURED properties
+    /// not in the edited text, so they stay visible while editing — otherwise
+    /// a date set on the focused block gives no feedback and looks like it
+    /// didn't take (2026-06-24 device-test finding).
+    static func chipVisibility(
+        hasTags: Bool, hasDate: Bool, hasProps: Bool, isEditing: Bool
+    ) -> ChipVisibility {
+        let inlineVisible = !isEditing
+        return ChipVisibility(
+            tags: hasTags && inlineVisible,
+            dates: hasDate,
+            props: hasProps && inlineVisible
+        )
+    }
+
     @Environment(\.theme) private var theme
     /// Opens the command palette (the `:`/leader stand-in) — the keyboard
     /// toolbar's Commands button calls it. Resolved from the shell.
@@ -222,41 +247,60 @@ struct BlockRow: View {
         decodeKeyboardToolbarItems(keyboardToolbarRaw)
     }
 
+    /// Which chip groups to render for THIS block, given its edit state.
+    private var visibleChips: ChipVisibility {
+        Self.chipVisibility(
+            hasTags: !tags.isEmpty,
+            hasDate: scheduledValue != nil || deadlineValue != nil || recurringValue != nil,
+            hasProps: !displayProperties.isEmpty,
+            isEditing: isEditing
+        )
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             bullet
             VStack(alignment: .leading, spacing: 4) {
                 content
-                if (!tags.isEmpty || recurringValue != nil || deadlineValue != nil || scheduledValue != nil || !displayProperties.isEmpty) && !isEditing {
+                if visibleChips.any {
                     HStack(spacing: 4) {
-                        ForEach(tags, id: \.self) { tag in
-                            TagChip(value: tag)
-                        }
-                        if let scheduledValue {
-                            Button { showingDateSheet = true } label: {
-                                ScheduledChip(value: scheduledValue)
+                        if visibleChips.tags {
+                            ForEach(tags, id: \.self) { tag in
+                                TagChip(value: tag)
                             }
-                            .buttonStyle(.plain)
                         }
-                        if let deadlineValue {
-                            Button { showingDateSheet = true } label: {
-                                DeadlineChip(value: deadlineValue)
+                        // Date chips stay visible WHILE EDITING (structured
+                        // props, not part of the edited prose) so a date set
+                        // on the focused block shows immediate feedback.
+                        if visibleChips.dates {
+                            if let scheduledValue {
+                                Button { showingDateSheet = true } label: {
+                                    ScheduledChip(value: scheduledValue)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
-                        }
-                        if let recValue = recurringValue {
-                            Button { showingDateSheet = true } label: {
-                                RecurrenceChip(value: recValue)
+                            if let deadlineValue {
+                                Button { showingDateSheet = true } label: {
+                                    DeadlineChip(value: deadlineValue)
+                                }
+                                .buttonStyle(.plain)
                             }
-                            .buttonStyle(.plain)
+                            if let recValue = recurringValue {
+                                Button { showingDateSheet = true } label: {
+                                    RecurrenceChip(value: recValue)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
-                        ForEach(displayProperties, id: \.key) { prop in
-                            PropertyChip(
-                                key: prop.key,
-                                value: prop.value,
-                                def: resolvedDefsByName[prop.key.lowercased()],
-                                tint: chipTint(forKey: prop.key, value: prop.value)
-                            )
+                        if visibleChips.props {
+                            ForEach(displayProperties, id: \.key) { prop in
+                                PropertyChip(
+                                    key: prop.key,
+                                    value: prop.value,
+                                    def: resolvedDefsByName[prop.key.lowercased()],
+                                    tint: chipTint(forKey: prop.key, value: prop.value)
+                                )
+                            }
                         }
                     }
                 }
