@@ -117,6 +117,34 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertEqual(service.yesterdayBlocks.map(\.text), ["previous day block"])
     }
 
+    /// 2026-06-24 device test: a block deleted on web stayed on iOS for ~44min
+    /// until a force-close. The engine applies+re-materializes an inbound
+    /// BlockDelete (apply_doc_update_status → materialize_note), so today.md
+    /// drops the block; the iOS UI must then re-read it when the relay tick's
+    /// `onAppliedChanges` seam fires `applyRemoteChange()` — not linger until a
+    /// cold start. Guards the refresh link of that chain.
+    func testRelayRemoteDeleteIsReflectedAfterApplyRemoteChange() async throws {
+        let today = "2099-06-20"
+        try resetLocalDailyFixtures([today])
+        defer { try? resetLocalDailyFixtures([today]) }
+        try writeLocalDaily(id: today, body: "- keep me\n- delete me")
+
+        let now = date(2099, 6, 20)
+        let service = MockMosaicService(now: { now })
+        service.attach(backend: .relay)
+        await service.refresh(from: .relay)
+        XCTAssertEqual(service.todayBlocks.map(\.text), ["keep me", "delete me"])
+
+        // Remote BlockDelete arrives: engine re-materialized today.md without it.
+        try writeLocalDaily(id: today, body: "- keep me")
+        await service.applyRemoteChange()
+        try await Task.sleep(nanoseconds: 600_000_000)  // outlast the 300ms debounce
+
+        XCTAssertEqual(
+            service.todayBlocks.map(\.text), ["keep me"],
+            "a remote delete must drop the block on the next refresh, not linger until cold start")
+    }
+
     /// HONEST CONNECTION STATUS (2026-06-21 silent-desync fix): an
     /// unreachable HTTP backend must flip `connection` to `.failed` even
     /// when local data is on screen — it must NOT sit silently green
