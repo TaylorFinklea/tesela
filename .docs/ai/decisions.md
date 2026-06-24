@@ -4,6 +4,15 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-24 — iOS "data loss" was sync LIVENESS, not push logic; date chips must survive editing
+
+Build 46/47 device test surfaced "iOS edits don't reach web for hours / look lost." Root-caused live against the desktop's CF-relay state, then fixed (`e6d1d83b`, `5c65e9d2`). Non-obvious calls:
+
+- **It was never push LOGIC — edits converge; it's sync LIVENESS.** Diagnosed by curling the desktop's `/sync/relay/status` + daily notes while Taylor edited: the iPhone was on the SAME relay+group (inbound seq matched the desktop's), reads worked, and edits DID arrive — ~2h late, then instantly on app reopen. Two compounding bugs: (1) `RelayTicker` backoff slept `tickIntervalSeconds * (1 << min(consecutiveErrors, 12))` = `2 * 2^12 ≈ 8192s ≈ 2.3h` (every comment claimed ~60s; `maxBackoffMultiplier=12` was used as a SHIFT exponent, not a seconds cap); (2) `.active → start()` no-ops on an existing loop, so foregrounding couldn't wake a loop parked in that sleep — only a background→foreground cycle (which `stop()`s + rebuilds) recovered, hence "converged when I reopened the app." Fix: pure tested `backoffSleepSeconds` capping the RESULT seconds at 60; `wake()` (reset+stop+start → immediate tick) on `.active` in BOTH shells.
+- **The desktop embed is loopback-only, so iOS↔Mac is 100% relay-dependent.** The Tauri desktop binds `127.0.0.1` and reads its relay URL from `~/Library/Application Support/tesela/desktop.toml` (`main.rs:163`); the mosaic `config.toml` has no `[sync.relay]`. So there is NO LAN HTTP path to the desktop app — iOS's "direct HTTP (LAN-fast)" mode is dead, relay is the only transport, and any relay-side stall = total iOS→Mac loss. (iOS still shows a stale `127.0.0.1:7474` "Connected" in relay mode — misleading; queued as a sync-UX-honesty follow-up.)
+- **Date chips are STRUCTURED state, not prose — keep them visible while editing.** `BlockRow` gated the whole chip row on `!isEditing`; tags/inline props correctly hide during edit (they're in the editable text, would duplicate), but scheduled/deadline/recurring aren't in the text, so hiding them made a date set on a focused block look like it failed. Split via a pure `chipVisibility(...)` (dates ignore `isEditing`).
+- **Diagnostic method worth repeating:** for a multi-device "where's my edit?" report, instrument the boundary — poll the receiving node's relay cursor + materialized note in the background while the user makes ONE labeled edit. It localizes the break (not-pushed vs pushed-not-received vs received-not-applied) far faster than reading the sync code.
+
 ### 2026-06-23 — iOS property-registry parity: client-side registry, display-only raw-lines strip, typed composite writes, audit-as-process
 
 iOS task/property handling was entirely hardcoded; Phase 5 made it the THIRD engine that consumes the type/property registry (spec `phases/2026-06-23-ios-property-registry-parity-spec.md`). Non-obvious calls:
