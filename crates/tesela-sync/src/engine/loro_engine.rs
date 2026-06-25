@@ -504,10 +504,22 @@ impl LoroEngine {
         // `RELAY_MAX_BODY_BYTES` — but it never inflates it past the snapshot.
         // Once a cursor exists, send only the incremental delta since it.
         match since {
-            Some(bytes) => {
-                let vv = VersionVector::decode(bytes).ok()?;
-                doc.export(ExportMode::updates(&vv)).ok()
-            }
+            // Decode the cursor and ship the incremental delta. A cursor that
+            // FAILS TO DECODE (corrupt, or a version-format/lineage change) or
+            // whose incremental export fails must NOT silently strand the note
+            // — fall back to a full snapshot so a dirty note always exports.
+            // The receiver imports a snapshot idempotently (no convergence
+            // risk), and the next confirmed PUT rewrites a fresh, decodable
+            // cursor → back to incremental. (2026-06-25: an un-decodable
+            // broadcast cursor returned None here, and produce_relay_updates
+            // silently skipped the note — iOS edits never reached the desktop.)
+            Some(bytes) => match VersionVector::decode(bytes) {
+                Ok(vv) => doc
+                    .export(ExportMode::updates(&vv))
+                    .ok()
+                    .or_else(|| doc.export(ExportMode::Snapshot).ok()),
+                Err(_) => doc.export(ExportMode::Snapshot).ok(),
+            },
             None => doc.export(ExportMode::Snapshot).ok(),
         }
     }
@@ -6959,6 +6971,52 @@ mod tests {
         assert!(
             again.is_empty(),
             "persisted cursor suppresses re-broadcast after restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn produce_re_emits_when_broadcast_cursor_is_undecodable() {
+        // Regression (2026-06-25): a corrupt / incompatible persisted
+        // broadcast cursor must NOT permanently strand a note's outbound.
+        // Before the fix, export_doc_update returned None on a VersionVector
+        // decode failure and produce_relay_updates silently SKIPPED the dirty
+        // note (no `else` at the `if let Some(bytes)` push) — so the device
+        // never re-broadcast it. On iOS this presented as: a today edit
+        // records (splice applied=1) but tick_outbound sends 0 ops, no error,
+        // forever → iOS edits never reach the desktop.
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("loro");
+        let notes = tmp.path().join("notes");
+        let dev = test_device();
+        let note = blake3_note_id("stuck");
+        let engine = LoroEngine::with_dirs(dev, Arc::new(Hlc::new(dev)), snap, Some(notes))
+            .await
+            .unwrap();
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("stuck".into()),
+                title: "S".into(),
+                content: "- hi <!-- bid:70707070-7070-7070-7070-707070707070 -->\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        // Corrupt / incompatible persisted cursor for this note (e.g. a
+        // version-format change or a stale lineage), so the incremental
+        // export from it cannot be produced.
+        engine
+            .inner
+            .broadcast_cursor
+            .write()
+            .await
+            .insert(note, vec![0xff, 0xff, 0xff, 0xff]);
+        let out = engine.produce_relay_updates().await;
+        assert_eq!(
+            out.len(),
+            1,
+            "a dirty note whose broadcast cursor won't decode must still export \
+             (full-snapshot fallback), never be silently skipped"
         );
     }
 
