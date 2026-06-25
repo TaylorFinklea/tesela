@@ -78,7 +78,7 @@ final class RelayTicker: ObservableObject {
     /// (sync durability P3b). Guards `maybeRegisterApnsToken` so we POST
     /// /devices once per token, not every tick; re-registers if iOS rotates
     /// the token.
-    private var lastRegisteredApnsToken: String? = nil
+    private var lastRegisteredApnsKey: String? = nil
     /// In-app diagnostic for the APNs token-registration state (sync
     /// durability P3b) — shown in Sync settings so we can see WHERE
     /// registration is stuck (no relay handle / no token / POST failed /
@@ -189,6 +189,15 @@ final class RelayTicker: ObservableObject {
         let exponent = UInt64(min(consecutiveErrors, 16))
         let scaled = base << exponent
         return min(scaled, maxSeconds)
+    }
+    /// Stable key identifying THIS device's APNs-token registration. Carries
+    /// the relay SCOPE (`relayUrl|groupIdHex`) as well as the token so a relay
+    /// migration (HA→CF) or re-pair re-registers the token with the NEW relay
+    /// — otherwise the new relay has no token to background-push and the app
+    /// never wakes in the background (2026-06-24). Mirrors the inbound-cursor
+    /// scoping that fixed the same migration class.
+    static func apnsRegistrationKey(token: String, scope: String?) -> String {
+        "\(token)|\(scope ?? "")"
     }
     /// The (relay URL, group id) identity the live coordinator's cursors
     /// persist under. Set by `buildCoordinator`; nil while no coordinator.
@@ -1420,16 +1429,21 @@ final class RelayTicker: ObservableObject {
                 ?? "no token yet (APNs registration pending)"
             return
         }
-        if token == lastRegisteredApnsToken {
+        // Key the registration by (token, relay scope): a relay migration or
+        // re-pair changes the scope → re-register with the NEW relay so it has
+        // a token to background-push (2026-06-24 HA→CF gap). cursorScope is set
+        // by the coordinator we ticked through to get here.
+        let key = Self.apnsRegistrationKey(token: token, scope: cursorScope)
+        if key == lastRegisteredApnsKey {
             apnsNote = "registered ✓ (\(token.prefix(8))…)"
             return
         }
         do {
             try await relay.registerDevice(apnsToken: token)
-            lastRegisteredApnsToken = token
+            lastRegisteredApnsKey = key
             apnsNote = "registered ✓ (\(token.prefix(8))…)"
         } catch {
-            // Leave lastRegisteredApnsToken unset so the next tick retries.
+            // Leave lastRegisteredApnsKey unset so the next tick retries.
             apnsNote = "POST /devices failed: \(error.localizedDescription)"
         }
     }
