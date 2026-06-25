@@ -4,6 +4,14 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-25 — iOS→desktop push broken (zero relay PUT); diagnose before fixing
+
+After builds 48/49 fixed liveness + APNs, a NEW symptom: iOS edits don't reach the desktop and desktop edits overwrite the iOS-authored block. Boundary-confirmed via `wrangler tail`: typing `PUSHTEST_IOS` on iOS produced **zero relay PUT** (desktop cursor frozen). So iOS edits are recorded locally but never pushed; the "clobber" is the consequence (the local-only edit is overwritten when the desktop's state comes down).
+
+- **A 9-agent Workflow (5 parallel tracers → synth → 3 adversarial verifiers) traced the whole push pipeline.** Confirmed mechanism: the Graphite today editor pushes via a PER-KEYSTROKE splice seam (GrDailyView `onTextSplice` → `spliceTodayBlock` → `onLocalSplice` → `RelayTicker.spliceAndPush` → `engine.spliceBlockText`); `onCommitEdit` (blur) is a deliberate no-op. `spliceAndPush` **discarded** `spliceBlockText`'s op count (`_ = try await`, RelayTicker.swift:510); `spliceBlockText` returns **Ok(0) (not a throw)** when the block isn't a live tree node (loro_engine.rs:936) → a 0-op splice is silently swallowed (no PUT, no error). The sibling `setBlockPropertyAndPush` already guards this exact class (`applied==1` + surfaces error); the splice seam never got the guard.
+- **BUT all 3 verifiers REFUTED that as THE cause** (high agreement): for a VISIBLE, desktop-bootstrapped block the splice should resolve (note_id = blake3(slug); bid read off the materialized `<!-- bid -->` = the live node's meta) → Ok(1) → version advances → exported → PUT. So zero-PUT means the loss is elsewhere: (a) stale/empty `serverDailyId` (midnight rollover 06-24→06-25 — there IS re-derive-on-refresh handling, may be incomplete), or (b) recorded-but-not-exported (outbound `broadcast_cursor`/produce), or (c) a real applied==0 splice miss.
+- **Decision: OBSERVE before fixing** (iron law + 3 refutations; one candidate fix could create TWIN blocks on a bid mismatch). Build 50 (`824ed89a`) adds a `lastSpliceDiag` ("Last splice" in Settings → Sync) capturing the previously-discarded `applied` + outbound `sent/failed` + the slug. One typed char distinguishes all causes: `—`=seam never fired; wrong slug=rollover; `applied=0`=not-in-tree; `applied=1 sent=0`=cursor. THEN fix precisely. Workflow result archived in the run transcript; ~857k tokens, 9 agents.
+
 ### 2026-06-24 — iOS "data loss" was sync LIVENESS, not push logic; date chips must survive editing
 
 Build 46/47 device test surfaced "iOS edits don't reach web for hours / look lost." Root-caused live against the desktop's CF-relay state, then fixed (`e6d1d83b`, `5c65e9d2`). Non-obvious calls:

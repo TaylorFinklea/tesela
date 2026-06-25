@@ -11,7 +11,8 @@
   - [ ] **#3 slash `/p1` deep-filter parity** — port web `flattenedSlashFilter` into iOS `SlashVerbs`.
   - [ ] **#4 inline NLP not firing** — NOT data/logic (ruled out); needs SIM repro (tag-presence vs detector vs build-47 gate). ⚠ don't speculative-fix.
   - [ ] **#5 per-type color+logo** — roadmap'd (later).
-- **builds 48 + 49 → TestFlight** this session. Awaiting Apple processing + Taylor device verify.
+- **#7 iOS→desktop push BROKEN (build 49)** — IN PROGRESS. iOS edit → ZERO relay PUT (wrangler-tail confirmed); edits recorded locally, never pushed; desktop edits then clobber the local-only block. 9-agent Workflow: today editor uses a per-keystroke SPLICE seam that silently discards a 0-op splice (RelayTicker.swift:510 / loro_engine.rs:936), BUT 3 verifiers refuted it as THE cause (a visible block should splice Ok(1)+PUT) → loss likely upstream (stale serverDailyId / rollover) or downstream (outbound cursor). decisions.md 2026-06-25. **Build 50 (`824ed89a`) = DIAGNOSTIC ONLY** ("Last splice" row in Settings → Sync) to observe before fixing. **[ ] Taylor: type 1 char in a Today block → Settings→Sync → read "Last splice" → report.** Then build 51 = precise fix.
+- **builds 48 + 49 + 50 → TestFlight** this session. Awaiting Apple processing + Taylor device verify/diagnostic.
 
 ## Plan
 - (no active phase loop)
