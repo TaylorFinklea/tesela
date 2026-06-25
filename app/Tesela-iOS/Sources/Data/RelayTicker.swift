@@ -37,6 +37,14 @@ final class RelayTicker: ObservableObject {
     /// Ops sent on the last outbound tick (0 ≡ engine had nothing
     /// new authored since the last push).
     @Published private(set) var lastSent: UInt32 = 0
+    /// DIAGNOSTIC (2026-06-25, build 50): the last today-block splice's
+    /// outcome — slug, the spliceBlockText op count (`applied`, normally
+    /// discarded), and the resulting outbound `sent`/`failed`. Surfaced in
+    /// Settings → Sync so a "my iOS edit never reaches the desktop" report
+    /// is observable on-device: stays "—" if the splice seam never fires
+    /// (upstream early-return); `applied=0` ≡ block-not-in-tree; `applied=1
+    /// sent=0` ≡ recorded-but-not-exported; a wrong `slug` ≡ stale daily id.
+    @Published private(set) var lastSpliceDiag: String = "—"
     /// Relay seq we've applied up to. Surfaces "we're at seq N" so
     /// the user can compare with the Mac's outbound cursor.
     @Published private(set) var inboundCursorSeq: Int64 = 0
@@ -506,8 +514,12 @@ final class RelayTicker: ObservableObject {
         if lastPushedVV[slug] == nil {
             lastPushedVV[slug] = await engine.noteVersion(slug: slug)
         }
+        let applied: UInt32
         do {
-            _ = try await engine.spliceBlockText(
+            // Capture the op count (build-50 diagnostic): spliceBlockText
+            // returns Ok(0) — NOT a throw — when the block isn't a live tree
+            // node, which previously was silently discarded (`_ =`).
+            applied = try await engine.spliceBlockText(
                 slug: slug,
                 blockIdHex: blockIdHex,
                 utf16Offset: UInt32(max(0, utf16Offset)),
@@ -515,9 +527,11 @@ final class RelayTicker: ObservableObject {
                 insert: insert
             )
         } catch {
+            lastSpliceDiag = "slug=\(slug) bid=\(blockIdHex.prefix(8)) ERR \(error.localizedDescription)"
             lastError = error.localizedDescription
             return
         }
+        lastSpliceDiag = "slug=\(slug) bid=\(blockIdHex.prefix(8)) applied=\(applied)"
         // Engine durability is guaranteed. In hub mode the live `/ws`
         // socket owns delivery (the caller pushes a delta after this
         // returns), so the relay coordinator must NOT also drain this op.
@@ -526,12 +540,17 @@ final class RelayTicker: ObservableObject {
         if coordinator == nil {
             try? await ensureCoordinator()
         }
-        guard let coordinator else { return }
+        guard let coordinator else {
+            lastSpliceDiag += " no-coordinator"
+            return
+        }
         do {
             let outcome = try await coordinator.tickOutbound(maxBytes: 1_000_000)
             noteOutboundOutcome(outcome)
+            lastSpliceDiag += " sent=\(outcome.opsSent) failed=\(outcome.batchesFailed)"
         } catch {
             lastError = error.localizedDescription
+            lastSpliceDiag += " tickErr"
         }
     }
 

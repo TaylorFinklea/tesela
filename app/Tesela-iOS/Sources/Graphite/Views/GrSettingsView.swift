@@ -518,6 +518,7 @@ struct GrSettingsView: View {
                         metricRow("Last sent", "\(relayTicker.lastSent) op\(relayTicker.lastSent == 1 ? "" : "s")")
                         metricRow("Inbound seq", "\(relayTicker.inboundCursorSeq)")
                         metricRow("APNs push", relayTicker.apnsNote)
+                        metricRow("Last splice", relayTicker.lastSpliceDiag)
                     }
                 }
             }
