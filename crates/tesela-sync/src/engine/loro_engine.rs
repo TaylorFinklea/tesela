@@ -569,6 +569,20 @@ impl LoroEngine {
         let already_resident = self.inner.docs.read().await.contains_key(&note_id);
         let doc = self.doc_for_note_mut(note_id).await;
 
+        // POISON GUARD (2026-06-26): see `apply_doc_update_status`. A frame that
+        // panics Loro's richtext apply is skipped, never applied, so it can't
+        // abort the process.
+        if let Err(reason) = probe_import_poison(&doc, bytes) {
+            tracing::error!(
+                "tesela-sync/loro: SKIPPING inbound frame for {} — {reason}",
+                hex_id(&note_id)
+            );
+            return Err(SyncError::Storage(format!(
+                "inbound frame skipped for {}: {reason}",
+                hex_id(&note_id)
+            )));
+        }
+
         // Compute the protection plan BEFORE mutating the auth doc: the
         // RESOLVED target text for every disjoint-twin block (the value its
         // surviving node must hold after the raw merge + dedup). Skipped on
@@ -749,6 +763,26 @@ impl LoroEngine {
     ) -> SyncResult<bool> {
         let already_resident = self.inner.docs.read().await.contains_key(&note_id);
         let doc = self.doc_for_note_mut(note_id).await;
+
+        // POISON GUARD (2026-06-26): loro 1.12 can PANIC *inside* its richtext
+        // apply (`insert_elem_at_entity_index` index-out-of-bounds) on certain
+        // concurrent / disjoint-lineage frames. An unguarded `import` aborts the
+        // whole process — one such frame crash-looped the desktop on every relay
+        // tick. Probe the import on a throwaway fork under `catch_unwind`: a
+        // frame that panics (or errors) is SKIPPED (returned as an error so the
+        // tick counts it failed + bounded-retries), never applied, so a single
+        // poison frame can't take down the device or the fleet. A clean fork
+        // import here guarantees the real `import` below won't panic either.
+        if let Err(reason) = probe_import_poison(&doc, bytes) {
+            tracing::error!(
+                "tesela-sync/loro: SKIPPING inbound frame for {} — {reason}",
+                hex_id(&note_id)
+            );
+            return Err(SyncError::Storage(format!(
+                "inbound frame skipped for {}: {reason}",
+                hex_id(&note_id)
+            )));
+        }
 
         // Views registry doc: no "blocks" tree → no twin plan/heal (see
         // `import_doc_update`); the raw import below IS the merge.
@@ -3519,6 +3553,50 @@ fn reconcile_orphaned_prop_containers(doc: &LoroDoc, owner: &str) -> Vec<(String
 ///
 /// Conservative + idempotent: the heal forces the target only when the post-
 /// import survivor differs from it, so a re-applied frame is a no-op.
+/// Probe whether `bytes` can be imported into a fork of `doc` WITHOUT a Loro
+/// panic. loro 1.12's richtext `apply_diff` can panic (e.g.
+/// `insert_elem_at_entity_index` index-out-of-bounds) on certain concurrent /
+/// disjoint-lineage frames; an unguarded `import` aborts the whole process
+/// (it crash-looped the desktop on every relay tick, 2026-06-26). Forks the
+/// doc (so the probe never mutates the live doc) and imports under
+/// `catch_unwind`. `Ok(())` ⇒ the same `import` on the live doc is safe;
+/// `Err(reason)` ⇒ the caller MUST skip the frame (a clean import error is
+/// also surfaced so the caller skips rather than half-applies). The fork is
+/// dropped normally after the catch, so a caught panic never escalates to a
+/// panic-in-cleanup.
+fn probe_import_poison(doc: &LoroDoc, bytes: &[u8]) -> Result<(), String> {
+    // Probe on a FULLY INDEPENDENT copy — NOT `doc.fork()`. A fork shares the
+    // original's internal `LoroMutex`, so a panic during the probe import
+    // poisons the LIVE doc's mutex and the next access aborts with a
+    // non-unwinding "poisoned LoroMutex" panic (the fork-based first attempt
+    // still crash-looped, 2026-06-26). A snapshot round-trip into a fresh
+    // `LoroDoc` gives the probe its own mutex, fully isolating any panic.
+    let snapshot = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        doc.export(ExportMode::Snapshot)
+    })) {
+        Ok(Ok(s)) => s,
+        // Can't snapshot the live doc → don't block sync on the probe; let the
+        // real import proceed (this is not the poison case we're guarding).
+        _ => return Ok(()),
+    };
+    let probe = LoroDoc::new();
+    if probe.import(&snapshot).is_err() {
+        return Ok(());
+    }
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe.import(bytes))) {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(format!("loro import error: {e}")),
+        Err(_) => {
+            // The probe's OWN mutex is now poisoned; dropping it would re-lock
+            // it and abort. Leak the throwaway probe — a few KB on a RARE
+            // poison frame is far better than crashing the process. The live
+            // `doc` was never touched, so it stays healthy.
+            std::mem::forget(probe);
+            Err("loro PANICKED on import (poison frame)".to_string())
+        }
+    }
+}
+
 fn peer_genuine_block_changes(auth: &LoroDoc, frame: &[u8]) -> SyncResult<Vec<PeerBlockChange>> {
     let server_vv = auth.oplog_vv();
     // Fork (full-history clone) so the import never touches the auth doc.
