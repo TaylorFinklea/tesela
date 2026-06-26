@@ -1952,6 +1952,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_note_diff_delete_propagates_across_disjoint_twins() {
+        // Taylor's 2026-06-26 symptom: "deleted a block on iOS, nothing on
+        // desktop changed." His notes were in a DISJOINT-twin state — each
+        // device authored the daily independently (same bids, different
+        // TreeIDs) then cross-synced. On loro 1.12 the twin merge panicked /
+        // was skipped, so a subsequent BlockDelete never landed on the peer.
+        // On 1.13.6 the merge applies: deleting a same-bid block on one device
+        // must remove it from the peer's render too.
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a = open_handle(dir_a.path(), "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1").await;
+        let b = open_handle(dir_b.path(), "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2").await;
+
+        let slug = "2026-06-26".to_string();
+        let note_id = stable_uuid_from_slug(&slug);
+        let bid_x = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+        let bid_y = "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b";
+        let body = format!(
+            "---\ntitle: {slug}\n---\n\n- X <!-- bid:{bid_x} -->\n- Y <!-- bid:{bid_y} -->\n"
+        );
+
+        // DISJOINT: both author the SAME note independently (no shared base) →
+        // same bids, different TreeIDs → twins on merge.
+        a.record_note_upsert_by_slug(slug.clone(), slug.clone(), body.clone(), 1)
+            .await
+            .unwrap();
+        b.record_note_upsert_by_slug(slug.clone(), slug.clone(), body.clone(), 1)
+            .await
+            .unwrap();
+
+        // They cross-sync full snapshots → each holds disjoint twins (merge ran).
+        let snap_a = a.inner.export_doc_update(note_id, None).await.unwrap();
+        let snap_b = b.inner.export_doc_update(note_id, None).await.unwrap();
+        b.inner.apply_relay_updates(&[(note_id, snap_a)]).await;
+        a.inner.apply_relay_updates(&[(note_id, snap_b)]).await;
+
+        // B (iOS) deletes Y: recordNoteDiff with the content WITHOUT Y.
+        let b_file = dir_b.path().join("notes").join(format!("{slug}.md"));
+        let prev = std::fs::read_to_string(&b_file).expect("B materialized");
+        let without_y: String = prev
+            .lines()
+            .filter(|l| !l.contains(bid_y))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        let ops = b
+            .record_note_diff(slug.clone(), without_y, slug.clone(), 1)
+            .await
+            .unwrap();
+        assert!(ops >= 1, "delete produced an op (got {ops})");
+
+        // B → A: the peer (desktop) must lose Y across the disjoint twins.
+        let a_vv = a.note_version(slug.clone()).await;
+        let b_to_a = b
+            .produce_note_delta(slug.clone(), a_vv)
+            .await
+            .unwrap()
+            .expect("B has a delta for A");
+        a.apply_delta_frame(b_to_a).await.unwrap();
+        let ra = a.inner.render_note(note_id).await.unwrap();
+        assert!(
+            !ra.contains(bid_y) && !ra.contains("- Y"),
+            "peer (desktop) must apply the delete across disjoint twins: {ra:?}"
+        );
+        assert!(ra.contains(bid_x), "surviving block stays: {ra:?}");
+    }
+
+    #[tokio::test]
     async fn record_note_diff_first_author_materializes_and_carries_slug() {
         // First-author path (2026-06-10): a note authored on this device via
         // `record_note_diff` ONLY (the iOS fresh-day daily) used to create a
