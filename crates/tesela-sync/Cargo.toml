@@ -60,7 +60,11 @@ serde_json.workspace = true
 # Loro CRDT — the migration target (decisions.md 2026-05-27). Currently
 # only used by `LoroEngine` behind the `TESELA_LORO_DUAL_WRITE` flag;
 # becomes the sole data layer after cutover.
-loro = "1.10"
+# 1.13: fixes the richtext apply panic on out-of-order/disjoint update import
+# (1.13.3 8d258cb) + makes update imports ATOMIC with rollback on state-apply
+# failure (1.13.2 7dfda87), so a bad frame errors cleanly instead of crashing
+# / poisoning the doc — the 2026-06-26 desktop crash-loop. decisions.md.
+loro = "1.13"
 
 # DEFLATE for the relay payload — Loro snapshots are text-heavy and
 # compress ~3-4×, keeping large notes under the relay body limit. Pure
