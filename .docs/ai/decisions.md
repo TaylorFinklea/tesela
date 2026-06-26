@@ -4,6 +4,15 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-26 — desktop crash-loop = Loro richtext panic on a poison frame; contain, don't trust the apply
+
+The desktop SIGABRT'd ~2s after every launch (crash loop). Root cause via crash report + a `tesela-server` reproduction (RUST_BACKTRACE): **loro 1.12 PANICS inside its own richtext apply** — `RichtextState::insert_elem_at_entity_index` index-out-of-bounds (`entity_index=4 len=2` on a "de" text chunk) — during `LoroDoc::import` of a specific inbound relay frame (note `e9624f2c…`), in the inbound apply path (`apply_relay_updates → apply_doc_update_status → peer_genuine_block_changes → fork.import`). Unguarded, the panic aborts the whole process; the desktop re-pulls the same frame every 5s relay tick → permanent loop. **Fleet risk:** any device pulling that frame crashes (shared `tesela-sync`).
+
+- **The apply path must be POISON-SAFE — never trust a peer frame not to panic Loro.** Fix `cdb4a0ec`: `probe_import_poison` imports the frame into a FULLY INDEPENDENT copy under `catch_unwind`; a frame that panics (or errors) is skipped (returned as an apply error → bounded-retry), never applied. Gates both `apply_doc_update_status` + `import_doc_update`.
+- **`doc.fork()` does NOT isolate — it shares the internal `LoroMutex`.** The first fix attempt forked + caught the panic, but the shared mutex was POISONED by the panic-while-locked; dropping the fork (or the next live-doc access) hit `expect_not_poisoned` → a NON-UNWINDING panic → abort anyway (exit 134). The probe must be a snapshot round-trip into a fresh `LoroDoc` (its own mutex). And the poisoned throwaway must be `std::mem::forget`-leaked — its Drop would re-lock the poisoned mutex and abort. Verified: `tesela-server` vs the live relay went exit 134 (crash) → exit 124 (survives, logs "SKIPPING … poison").
+- **Mitigation while rebuilding:** set `desktop.toml relay_url = ""` (disables the embed relay → no inbound apply → no crash) + relaunch — a usable local-only desktop in seconds. Re-enable after the fixed build installs.
+- **Caveats / follow-ups:** the poison note `e9624f2c…` stays FROZEN (its frame is skipped, never applies) — the underlying loro richtext-merge bug (concurrent same-block splices producing an OOB diff) needs a loro upgrade or an avoid-the-pattern fix. The per-frame snapshot probe has overhead — optimize later (gate by a risk heuristic). Possibly triggered/surfaced by the build-51 snapshot-fallback (a snapshot frame applied over a fork), but the containment is correct regardless of how the poison was produced.
+
 ### 2026-06-25 — iOS→desktop push broken (zero relay PUT); diagnose before fixing
 
 After builds 48/49 fixed liveness + APNs, a NEW symptom: iOS edits don't reach the desktop and desktop edits overwrite the iOS-authored block. Boundary-confirmed via `wrangler tail`: typing `PUSHTEST_IOS` on iOS produced **zero relay PUT** (desktop cursor frozen). So iOS edits are recorded locally but never pushed; the "clobber" is the consequence (the local-only edit is overwritten when the desktop's state comes down).
