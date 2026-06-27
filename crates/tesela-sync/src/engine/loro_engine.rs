@@ -3958,6 +3958,35 @@ impl SyncEngine for LoroEngine {
         LoroEngine::read_block_text(self, note_id, block_id).await
     }
 
+    async fn mint_block_cursor(
+        &self,
+        note_id: [u8; 16],
+        block_id: [u8; 16],
+        utf16_offset: u32,
+    ) -> Option<Vec<u8>> {
+        LoroEngine::mint_block_cursor(self, note_id, block_id, utf16_offset).await
+    }
+
+    async fn resolve_block_cursor(&self, note_id: [u8; 16], cursor_bytes: &[u8]) -> Option<u32> {
+        LoroEngine::resolve_block_cursor(self, note_id, cursor_bytes).await
+    }
+
+    fn set_local_presence(&self, key: String, value: Vec<u8>) -> Vec<u8> {
+        LoroEngine::set_local_presence(self, key, value)
+    }
+
+    fn apply_presence(&self, bytes: &[u8]) -> bool {
+        LoroEngine::apply_presence(self, bytes)
+    }
+
+    fn presence_peers(&self) -> Vec<(String, Vec<u8>)> {
+        LoroEngine::presence_peers(self)
+    }
+
+    fn presence_remove_outdated(&self) {
+        LoroEngine::presence_remove_outdated(self)
+    }
+
     async fn tracked_note_ids(&self) -> Vec<[u8; 16]> {
         self.note_ids().await
     }

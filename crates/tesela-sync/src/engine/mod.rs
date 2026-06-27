@@ -239,6 +239,43 @@ pub trait SyncEngine: Send + Sync {
         None
     }
 
+    /// Mint a stable, op-anchored cursor at `utf16_offset` in a block's text,
+    /// as transport bytes (Phase 1 presence). Default `None`; LoroEngine
+    /// overrides. See [`LoroEngine::mint_block_cursor`].
+    async fn mint_block_cursor(
+        &self,
+        _note_id: [u8; 16],
+        _block_id: [u8; 16],
+        _utf16_offset: u32,
+    ) -> Option<Vec<u8>> {
+        None
+    }
+
+    /// Resolve an encoded cursor to its CURRENT utf16 offset in this engine's
+    /// doc. Default `None`; LoroEngine overrides.
+    async fn resolve_block_cursor(&self, _note_id: [u8; 16], _cursor_bytes: &[u8]) -> Option<u32> {
+        None
+    }
+
+    /// Set THIS peer's ephemeral presence under `key`, returning the broadcast
+    /// delta. Default no-op (empty); LoroEngine overrides.
+    fn set_local_presence(&self, _key: String, _value: Vec<u8>) -> Vec<u8> {
+        Vec::new()
+    }
+
+    /// Merge a peer's presence delta (last-write-wins). Default `false`.
+    fn apply_presence(&self, _bytes: &[u8]) -> bool {
+        false
+    }
+
+    /// All live peers' presence as `(key, value)`. Default empty.
+    fn presence_peers(&self) -> Vec<(String, Vec<u8>)> {
+        Vec::new()
+    }
+
+    /// Purge presence entries past the timeout (call on a timer). Default no-op.
+    fn presence_remove_outdated(&self) {}
+
     /// Enumerate every note id the engine tracks. Default empty.
     /// `DualEngine` overrides to return the shadow's tracked notes;
     /// `SqliteEngine` returns empty because oplog enumeration would be
