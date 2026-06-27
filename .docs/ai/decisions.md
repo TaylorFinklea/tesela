@@ -4,6 +4,14 @@ Concise log of non-obvious decisions. Newest first.
 
 ---
 
+### 2026-06-27 — iOS-delete-needs-manual-desktop-refresh = a WEB reconcile bug; gate the own-echo skip on the CURRENT render
+
+Taylor: an iOS block delete reached the desktop's DATA but the journal UI kept the block until a manual refresh (edits auto-showed; deletes didn't). Proved the engine + materialize correct first (committed test `relay_inbound_delete_updates_peer_materialized_file`), isolating it to the web.
+
+- **Root cause** (`BlockOutliner.applyExternalReparse`): the own-echo fast-path skipped the reparse when `targetBody === lastSentBody`. `lastSentBody` only advances on a LOCAL save; an inbound ADD moves the rendered blocks off it, so a later inbound DELETE that restores `lastSentBody` byte-for-byte was mistaken for our own echo and dropped. **Fix (`38b6ac3b`): compare the CURRENT render — `buildFullContent(blocks).bodyOnly === targetBody`** (true no-op, preserves undo) + keep the mid-typing guard (`targetBody === lastSentBody && hasUnsavedLocalEdits()`). `lastExternalBody` is left untouched — it is the server-canonical PUT base (`baseForPut`); the clobber-safe author-diff depends on it NOT advancing on local saves.
+- **Reproduced/verified RED→GREEN** via a live Chrome-DevTools-MCP repro against a `pnpm dev` + relay-off `tesela-server` on a COPY of the mosaic; instrumented `applyExternalReparse` to confirm the exact `eqSent=true` skip. A standalone Chrome client (or a fresh fixture mosaic) does NOT render the JournalView headlessly (v5 workspace-view state the populated mosaic has) — so the Playwright guard runs against a single PAGE note, which renders headlessly and exercises the SAME shared `BlockOutliner` reconcile.
+- **Regression guard:** `pnpm test:e2e` (`web/tests/e2e/run.mjs` + `playwright.e2e.config.ts`) — self-contained (tiny fixture + relay-off server + dev + a seeded page); verified RED (old skip) → GREEN (fix). `51407e0b`.
+
 ### 2026-06-26 — desktop crash-loop = Loro richtext panic on a poison frame; contain, don't trust the apply
 
 The desktop SIGABRT'd ~2s after every launch (crash loop). Root cause via crash report + a `tesela-server` reproduction (RUST_BACKTRACE): **loro 1.12 PANICS inside its own richtext apply** — `RichtextState::insert_elem_at_entity_index` index-out-of-bounds (`entity_index=4 len=2` on a "de" text chunk) — during `LoroDoc::import` of a specific inbound relay frame (note `e9624f2c…`), in the inbound apply path (`apply_relay_updates → apply_doc_update_status → peer_genuine_block_changes → fork.import`). Unguarded, the panic aborts the whole process; the desktop re-pulls the same frame every 5s relay tick → permanent loop. **Fleet risk:** any device pulling that frame crashes (shared `tesela-sync`).
