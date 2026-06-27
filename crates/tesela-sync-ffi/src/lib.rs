@@ -2020,6 +2020,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn relay_inbound_delete_updates_peer_materialized_file() {
+        // Taylor 2026-06-26: "iOS delete needs a manual refresh on desktop."
+        // Isolates engine/materialize vs web: does a RELAY-INBOUND delete drop
+        // the block from the PEER's MATERIALIZED FILE (the body the web API
+        // serves)? If this passes, materialization is correct and the
+        // manual-refresh bug is purely web-side (UI reconcile).
+        let dir_a = tempfile::tempdir().unwrap();
+        let dir_b = tempfile::tempdir().unwrap();
+        let a = open_handle(dir_a.path(), "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1").await; // desktop peer
+        let b = open_handle(dir_b.path(), "d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2").await; // iOS deleter
+
+        let slug = "2026-06-26".to_string();
+        let note_id = stable_uuid_from_slug(&slug);
+        let bid_x = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+        let bid_y = "0b0b0b0b-0b0b-0b0b-0b0b-0b0b0b0b0b0b";
+
+        // A (desktop) authors X,Y; B (iOS) shares A's base.
+        a.record_note_upsert_by_slug(
+            slug.clone(),
+            slug.clone(),
+            format!("---\ntitle: {slug}\n---\n\n- X <!-- bid:{bid_x} -->\n- Y <!-- bid:{bid_y} -->\n"),
+            1,
+        )
+        .await
+        .unwrap();
+        let base = a.inner.export_doc_update(note_id, None).await.unwrap();
+        b.import_note_snapshot(slug.clone(), base).await.unwrap();
+
+        // B deletes Y (the iOS delete flow).
+        let b_file = dir_b.path().join("notes").join(format!("{slug}.md"));
+        let prev = std::fs::read_to_string(&b_file).expect("B materialized");
+        let without_y: String = prev
+            .lines()
+            .filter(|l| !l.contains(bid_y))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        b.record_note_diff(slug.clone(), without_y, slug.clone(), 1)
+            .await
+            .unwrap();
+
+        // B → A over the RELAY-INBOUND path (a full snapshot carrying the
+        // BlockDelete tombstone), the same path sync_relay::tick drives.
+        let snap = b.inner.export_doc_update(note_id, None).await.unwrap();
+        a.inner.apply_relay_updates(&[(note_id, snap)]).await;
+
+        // The PEER's MATERIALIZED FILE must drop Y (so the web API serves the
+        // deletion — proving the manual-refresh gap is web-side, not engine).
+        let a_file = dir_a.path().join("notes").join(format!("{slug}.md"));
+        let after = std::fs::read_to_string(&a_file).expect("A has a materialized file");
+        assert!(
+            !after.contains(bid_y) && !after.contains("- Y"),
+            "relay-inbound delete must drop the block from the peer's materialized file: {after:?}"
+        );
+        assert!(after.contains("- X"), "surviving block stays: {after:?}");
+    }
+
+    #[tokio::test]
     async fn record_note_diff_first_author_materializes_and_carries_slug() {
         // First-author path (2026-06-10): a note authored on this device via
         // `record_note_diff` ONLY (the iOS fresh-day daily) used to create a
