@@ -145,6 +145,34 @@ final class MockMosaicServiceTests: XCTestCase {
             "a remote delete must drop the block on the next refresh, not linger until cold start")
     }
 
+    /// 2026-06-27 device test: an inbound change to YESTERDAY (a desktop edit /
+    /// delete) must re-render on iOS, exactly like TODAY does above. Taylor
+    /// reported past days behaving read-only — desktop edits to yesterday never
+    /// appeared on iOS. This guards the inbound-refresh link for past days.
+    func testRelayRemoteDeleteOnYesterdayIsReflectedAfterApplyRemoteChange() async throws {
+        let today = "2099-06-22"
+        let yesterday = "2099-06-21"
+        try resetLocalDailyFixtures([today, yesterday])
+        defer { try? resetLocalDailyFixtures([today, yesterday]) }
+        try writeLocalDaily(id: today, body: "- today block")
+        try writeLocalDaily(id: yesterday, body: "- keep me\n- delete me")
+
+        let now = date(2099, 6, 22)
+        let service = MockMosaicService(now: { now })
+        service.attach(backend: .relay)
+        await service.refresh(from: .relay)
+        XCTAssertEqual(service.yesterdayBlocks.map(\.text), ["keep me", "delete me"])
+
+        // Remote delete on yesterday: engine re-materialized yesterday.md w/o it.
+        try writeLocalDaily(id: yesterday, body: "- keep me")
+        await service.applyRemoteChange()
+        try await Task.sleep(nanoseconds: 600_000_000)  // outlast the 300ms debounce
+
+        XCTAssertEqual(
+            service.yesterdayBlocks.map(\.text), ["keep me"],
+            "an inbound change to yesterday must re-render on iOS, like today")
+    }
+
     /// HONEST CONNECTION STATUS (2026-06-21 silent-desync fix): an
     /// unreachable HTTP backend must flip `connection` to `.failed` even
     /// when local data is on screen — it must NOT sit silently green
