@@ -89,7 +89,7 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
         while let Some(Ok(msg)) = stream.next().await {
             match msg {
                 Message::Binary(bytes) => {
-                    apply_inbound_delta(
+                    route_inbound_binary(
                         &*recv_state.sync_engine,
                         &recv_state.store,
                         &recv_state.index,
@@ -117,6 +117,44 @@ async fn handle_socket(socket: WebSocket, s: Arc<AppState>, conn_id: ConnId) {
         _ = &mut send_task => recv_task.abort(),
         _ = &mut recv_task => send_task.abort(),
     }
+}
+
+/// Magic prefix marking an EPHEMERAL presence frame (cursor/selection) on the
+/// binary WS channel, distinct from the `TLR2` Loro-delta magic. Presence rides
+/// the same `ws_delta_tx` fan-out (echo-suppressed, to the OTHER sockets) but is
+/// NEVER applied to the engine or persisted — the web routes it to the
+/// remote-cursor store by this prefix. Keep in sync with the web client's `PRES`.
+pub const WS_PRESENCE_MAGIC: &[u8] = b"PRES";
+
+/// `true` if `bytes` is a presence frame (carries [`WS_PRESENCE_MAGIC`]).
+pub fn is_presence_frame(bytes: &[u8]) -> bool {
+    bytes.starts_with(WS_PRESENCE_MAGIC)
+}
+
+/// Route one inbound binary WS frame. A presence frame (`PRES`) fans out to the
+/// OTHER sockets via `ws_delta_tx` WITHOUT touching the engine or persisting;
+/// anything else goes to [`apply_inbound_delta`] (which itself skips non-`TLR2`
+/// frames). Splitting presence here keeps it off the engine/relay sync path.
+#[allow(clippy::too_many_arguments)]
+pub async fn route_inbound_binary(
+    engine: &dyn tesela_sync::SyncEngine,
+    store: &FsNoteStore,
+    index: &SqliteIndex,
+    ws_tx: &broadcast::Sender<WsEvent>,
+    ws_delta_tx: &broadcast::Sender<WsDelta>,
+    bytes: &[u8],
+    origin: Option<ConnId>,
+    relay: Option<&crate::sync_relay::RelayHandle>,
+) {
+    if is_presence_frame(bytes) {
+        // Ephemeral: fan out to the other sockets, never apply/persist.
+        let _ = ws_delta_tx.send(WsDelta {
+            origin,
+            frame: bytes.to_vec(),
+        });
+        return;
+    }
+    apply_inbound_delta(engine, store, index, ws_tx, ws_delta_tx, bytes, origin, relay).await;
 }
 
 /// Decode a `TLR2`-framed delta, apply it to the engine, and fan out the
@@ -533,6 +571,37 @@ mod tests {
             rendered.contains("C edit"),
             "C's edit present: {rendered:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn presence_frame_fans_out_without_touching_engine() {
+        // A `PRES`-magic frame is EPHEMERAL presence: it must fan out to the
+        // other sockets (origin-tagged, exact bytes) but NEVER apply to the
+        // engine, emit a WsEvent, or persist. The web distinguishes it from a
+        // TLR2 delta by the magic and routes it to the remote-cursor store.
+        let h = harness().await;
+        let (ws_tx, mut ws_rx) = tokio::sync::broadcast::channel::<WsEvent>(16);
+        let (delta_tx, mut delta_rx) = tokio::sync::broadcast::channel::<WsDelta>(16);
+
+        let mut frame = WS_PRESENCE_MAGIC.to_vec();
+        frame.extend_from_slice(br#"{"peer":"a","bid":"x","offset":3}"#);
+
+        route_inbound_binary(
+            &h.server, &h.store, &h.index, &ws_tx, &delta_tx, &frame, Some(5), None,
+        )
+        .await;
+
+        // No engine effect: no note created, no WsEvent emitted.
+        assert!(
+            h.server.render_note(note_id_for("x")).await.is_none(),
+            "presence must not create/touch any note in the engine"
+        );
+        assert!(ws_rx.try_recv().is_err(), "presence emits no WsEvent");
+
+        // Fanned out on the binary channel, origin-tagged, exact bytes.
+        let fanned = delta_rx.try_recv().expect("presence fans out");
+        assert_eq!(fanned.origin, Some(5), "origin tagged for echo-suppression");
+        assert_eq!(fanned.frame, frame, "exact presence bytes forwarded");
     }
 
     #[tokio::test]
