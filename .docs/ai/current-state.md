@@ -1,20 +1,17 @@
 # Current State
 
 ## Branch
-- `main` — pushed through `02ec3233` (origin/main up to date as of the 1.13.6 + delete-test + corrected-spec work). Newer doc/state commits may be unpushed. `.docs/ai/review/` + `AuthKey_*.p8` untracked (latter gitignored — NEVER commit).
+- `main` — pushed through `f7f31f32`+; newer doc/spec commits may be unpushed (delete-refresh fix, e2e test, multi-device spec, this). **Remind Taylor to push.** `.docs/ai/review/` + `AuthKey_*.p8` untracked (latter gitignored — NEVER commit).
 
-## Active work — iOS sync stabilization (multi-day) — CONVERGENCE SOLVED
-- [x] #1 liveness `e6d1d83b` (b48) · #2 date chip `5c65e9d2` (b48) · #6 web→iOS delete APNs `594b0403` (b49) · #7 iOS→desktop push `56d67001` (b51, confirmed sent=1).
-- [x] #8 desktop crash-loop (loro 1.12 richtext OOB) — contained `cdb4a0ec`.
-- [x] **#9 CONVERGENCE — RESOLVED via loro 1.12→1.13.6 (`e884edc2`).** **Taylor verified on 1.13.6 desktop + iOS build 53 (2026-06-26): drift HEALED; simultaneous same-block edits BOTH survive (shared lineage interleaves).** The disjoint-fork problem is resolved for daily use. Mergeable-containers was the WRONG plan (verified by a 5-agent workflow — it's a tree-node fork). Layer-2 rebase-on-relay-inbound (no-loss for rare forks) = DEFERRED robustness, not needed now. Spec `phases/2026-06-26-mergeable-containers-spec.md`.
+## DONE this run (sync stabilization — all resolved)
+- Liveness, date chip, web→iOS delete, iOS→desktop push, desktop crash-loop (loro 1.12→1.13.6), disjoint-lineage convergence, desktop delete-refresh (`38b6ac3b` + e2e `pnpm test:e2e`).
+- **Convergence (Phase 0 / layer-2) CONFIRMED working**: the `.relay` rebase-catch-up already exists (iOS `catchUpFromRelaySnapshots` on pending → `import_authoritative_snapshot`). June 25/26 stuck-forks HEALED when Taylor edited them on desktop (re-broadcast → pending → catch-up). Clean days + today work. (Residual theoretical nuance: snapshot-via-normal-tick uses lossy min-TreeID dedup not rebase — deferred, #12; do NOT blind-rebase relay-inbound = ping-pong risk.)
 
-## NOW — remaining
-- [x] **iOS delete needs a MANUAL refresh on desktop — FIXED `38b6ac3b`.** Pure WEB reconcile bug (engine proven correct). `BlockOutliner.applyExternalReparse` own-echo fast-path compared `targetBody` to the STALE `lastSentBody` (only advances on local save); an inbound ADD diverged the render, then an inbound DELETE restoring `lastSentBody` was skipped. Fix: compare the CURRENT render `buildFullContent(blocks).bodyOnly === targetBody` + keep the mid-typing guard; `lastExternalBody` untouched (PUT base). Verified RED→GREEN via a live Chrome repro + self-contained Playwright `pnpm test:e2e` (`51407e0b`). decisions.md 2026-06-27. **SHIPPING: web rebuilt → desktop `cargo tauri build` running → Taylor reinstalls /Applications (harness blocks the write).**
-- [ ] #3 slash `/p1` deep-filter. [ ] #4 inline NLP (sim repro). [ ] #5 per-type color+logo.
+## NOW — NORTH STAR ARC: multi-device live presence + cursors (collab)
+- Spec: `phases/2026-06-27-multidevice-presence-spec.md`. loro 1.13.6 gives `EphemeralStore` (presence) + stable `Cursor` FREE (verified), not in FFI yet. Transport: WS broadcast (desktop real-time) ✅; CF relay is store-poll → iOS-over-relay needs a CF-DO WebSocket later.
+- [~] **Phase 1: FFI-wrap Cursor + EphemeralStore** (#13) — design+verify workflow running; then implement TDD (cursor survives concurrent edit; presence round-trip + timeout; FFI round-trip). Autonomous (no device).
+- [ ] Phase 2: desktop presence over WS + Playwright e2e (autonomous). [ ] Phase 3: iOS (sim → CF-DO WS; physical iPhone for final verify). [ ] Phase 4: collab polish.
+- Mode: Taylor said BURN THROUGH testing autonomously (ultracode) until the physical iPhone is genuinely needed.
 
-## North star (Taylor 2026-06-26)
-- **True multi-device + live presence/cursors (collab).** The shared-lineage convergence just fixed is the PREREQUISITE (can't show meaningful cursors on forked docs). Future build: a presence channel (cursor/selection broadcast over relay/WS) + UI. Aligns with `project_emacs2_northstar` (RTC).
-
-## Blockers / next pick
-- None. Next: #3 (`/p1` slash deep-filter) + #4 (inline NLP, sim repro first). Then the north-star multi-device-cursors arc.
-- **PUSH** — commits since last push: the delete-refresh fix + e2e test + docs.
+## Deferred polish
+- iOS #3 `/p1` slash deep-filter; #4 inline NLP (sim repro). Per-type color+logo. CF-DO-WebSocket presence transport (Phase 3 decision).
