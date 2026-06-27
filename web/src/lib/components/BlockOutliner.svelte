@@ -724,7 +724,21 @@
       return;
     }
     lastExternalBody = targetBody;
-    if (targetBody === lastSentBody) return;
+    // Already up to date: the CURRENT blocks render to exactly `targetBody`
+    // (e.g. the byte-identical echo of our own save) → nothing to reparse, and
+    // skipping preserves undo history. Compare the current render, NOT
+    // `lastSentBody`: a remote edit may have diverged the render since our last
+    // save, so a later remote change back to `lastSentBody` is a GENUINE update
+    // we must apply — comparing to the stale `lastSentBody` silently dropped it
+    // (the "iOS delete needs a manual desktop refresh" bug: an inbound add moved
+    // the render off `lastSentBody`, then the inbound delete restored exactly
+    // `lastSentBody` and was skipped, 2026-06-27).
+    if (buildFullContent(blocks).bodyOnly === targetBody) return;
+    // Own-echo of our own save WHILE the user is still typing (unsaved edits):
+    // the render has diverged by those edits so the no-op check above won't
+    // fire; skip to protect them (the dirty guard above only covers the
+    // `targetBody !== lastSentBody` case).
+    if (targetBody === lastSentBody && hasUnsavedLocalEdits()) return;
     const reparsed = parseBlocksSeeded(noteId, targetBody);
     if (focusedIndex === null) {
       blocks = reparsed;
