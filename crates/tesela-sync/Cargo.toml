@@ -65,6 +65,10 @@ serde_json.workspace = true
 # failure (1.13.2 7dfda87), so a bad frame errors cleanly instead of crashing
 # / poisoning the doc — the 2026-06-26 desktop crash-loop. decisions.md.
 loro = "1.13"
+# EphemeralStore (presence/cursors, Phase 1) lives in loro_internal::awareness
+# and is NOT re-exported by the public `loro` crate. Pinned to the same 1.13.x
+# loro itself depends on, so the EphemeralStore/LoroValue types are identical.
+loro-internal = "1.13"
 
 # DEFLATE for the relay payload — Loro snapshots are text-heavy and
 # compress ~3-4×, keeping large notes under the relay body limit. Pure

@@ -7254,6 +7254,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "loro",
+ "loro-internal",
  "mdns-sd",
  "miniz_oxide",
  "postcard",

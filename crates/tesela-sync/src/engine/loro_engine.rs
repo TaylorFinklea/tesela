@@ -42,6 +42,14 @@ use async_trait::async_trait;
 use loro::{
     ExportMode, LoroDoc, LoroText, LoroTree, TreeID, TreeParentId, UpdateOptions, VersionVector,
 };
+use loro::cursor::{Cursor, Side};
+use loro_internal::awareness::EphemeralStore;
+
+/// How long a peer's presence (cursor/selection) lingers without a refresh
+/// before [`EphemeralStore::remove_outdated`] purges it. Presence is ephemeral:
+/// a peer that goes quiet for this long is treated as gone. Loro does NOT
+/// expire entries on its own in Rust — a tick must call `remove_outdated`.
+const PRESENCE_TIMEOUT_MS: i64 = 30_000;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -311,6 +319,12 @@ struct Inner {
     /// `key:: value` lines regardless (from `FlatBlock.properties`), so an old
     /// reader still SEES the property as text.
     migrate_in_text: bool,
+    /// Ephemeral PRESENCE store (Phase 1 multi-device): last-write-wins,
+    /// timeout'd per-peer state (cursor/selection/online) that lives OUTSIDE
+    /// the Loro docs — never persisted to any oplog or snapshot. One store per
+    /// engine carries every connected peer's presence. Cloneable + Send+Sync
+    /// (Arc<Mutex> internally), so it sits in `Inner` without an extra lock.
+    presence: EphemeralStore,
 }
 
 /// Resolve the migrate-on-apply (P1.6) flag from the environment ONCE — mirrors
@@ -338,6 +352,7 @@ impl LoroEngine {
                 broadcast_cursor: RwLock::new(HashMap::new()),
                 materialize_dir: None,
                 migrate_in_text: migrate_in_text_from_env(),
+                presence: EphemeralStore::new(PRESENCE_TIMEOUT_MS),
             }),
         }
     }
@@ -359,6 +374,7 @@ impl LoroEngine {
                 broadcast_cursor: RwLock::new(HashMap::new()),
                 materialize_dir: None,
                 migrate_in_text: true,
+                presence: EphemeralStore::new(PRESENCE_TIMEOUT_MS),
             }),
         }
     }
@@ -449,6 +465,7 @@ impl LoroEngine {
                 broadcast_cursor: RwLock::new(broadcast_cursor),
                 materialize_dir,
                 migrate_in_text: migrate_in_text_from_env(),
+                presence: EphemeralStore::new(PRESENCE_TIMEOUT_MS),
             }),
         };
         if needs_rebuild {
@@ -1026,6 +1043,82 @@ impl LoroEngine {
         let block_hex = hex_id(&block_id);
         let node = find_node_by_block_id(&tree, &block_hex)?;
         read_block_text(&tree, node)
+    }
+
+    /// Mint a stable, op-anchored [`loro::cursor::Cursor`] at `utf16_offset`
+    /// within a block's `text_seq` LoroText, returned as postcard bytes for
+    /// transport. Unlike a raw index, the cursor follows concurrent edits, so a
+    /// remote caret stays correct through the other peer's typing. `None` for an
+    /// unknown note/block. (Phase 1 presence foundation.)
+    pub async fn mint_block_cursor(
+        &self,
+        note_id: [u8; 16],
+        block_id: [u8; 16],
+        utf16_offset: u32,
+    ) -> Option<Vec<u8>> {
+        let doc = self.doc_for_note_mut(note_id).await;
+        let tree = doc.get_tree("blocks");
+        let block_hex = hex_id(&block_id);
+        let node = find_node_by_block_id(&tree, &block_hex)?;
+        let meta = tree.get_meta(node).ok()?;
+        // The SAME `text_seq` container splice/upsert/read use. Existing-text
+        // blocks already have it, so get-or-create returns it (no new child).
+        let text: LoroText = meta
+            .get_or_create_container("text_seq", LoroText::new())
+            .ok()?;
+        // Anchor to the LEFT of the offset (the char before it), so the caret
+        // rides along when text is inserted before it.
+        let cursor = text.get_cursor(utf16_offset as usize, Side::Left)?;
+        Some(cursor.encode())
+    }
+
+    /// Resolve an encoded cursor (from [`mint_block_cursor`](Self::mint_block_cursor))
+    /// to its CURRENT utf16 offset in this engine's doc, accounting for edits
+    /// applied since it was minted. `None` if the cursor can't be placed (e.g.
+    /// its block was deleted).
+    pub async fn resolve_block_cursor(&self, note_id: [u8; 16], cursor_bytes: &[u8]) -> Option<u32> {
+        let doc = self.doc_for_note_mut(note_id).await;
+        let cursor = Cursor::decode(cursor_bytes).ok()?;
+        let pos = doc.get_cursor_pos(&cursor).ok()?;
+        Some(pos.current.pos as u32)
+    }
+
+    /// Set THIS peer's presence under `key` (e.g. the device id) to opaque
+    /// `value` bytes (the caller's encoded cursor+metadata), and return the
+    /// encoded delta to broadcast to peers. Presence is ephemeral — never
+    /// persisted to a doc. (Phase 1 presence foundation.)
+    pub fn set_local_presence(&self, key: String, value: Vec<u8>) -> Vec<u8> {
+        self.inner
+            .presence
+            .set(&key, loro::LoroValue::Binary(value.into()));
+        // The encoded delta for just this key — what a peer applies.
+        self.inner.presence.encode(&key)
+    }
+
+    /// Merge a peer's presence delta (from their [`set_local_presence`]).
+    /// Last-write-wins. Returns whether it applied cleanly.
+    pub fn apply_presence(&self, bytes: &[u8]) -> bool {
+        self.inner.presence.apply(bytes).is_ok()
+    }
+
+    /// All currently-live peers' presence as `(key, value bytes)`, skipping
+    /// expired entries (and any non-binary value we didn't write).
+    pub fn presence_peers(&self) -> Vec<(String, Vec<u8>)> {
+        self.inner
+            .presence
+            .get_all_states()
+            .into_iter()
+            .filter_map(|(k, v)| match v {
+                loro::LoroValue::Binary(b) => Some((k, b.to_vec())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Purge presence entries older than [`PRESENCE_TIMEOUT_MS`]. Must be
+    /// called on a timer (loro doesn't auto-expire in Rust).
+    pub fn presence_remove_outdated(&self) {
+        self.inner.presence.remove_outdated();
     }
 
     /// Compute the per-note Loro updates to broadcast on a relay tick:
