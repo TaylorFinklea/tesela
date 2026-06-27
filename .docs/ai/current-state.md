@@ -1,24 +1,19 @@
 # Current State
 
 ## Branch
-- `main` — **MANY fix commits, NONE pushed** (builds 48–53 + the loro upgrade). Latest: `e884edc2` (loro 1.13.6). `.docs/ai/review/` + `AuthKey_*.p8` untracked (latter gitignored — NEVER commit). **Remind Taylor to push.**
+- `main` — pushed through `02ec3233` (origin/main up to date as of the 1.13.6 + delete-test + corrected-spec work). Newer doc/state commits may be unpushed. `.docs/ai/review/` + `AuthKey_*.p8` untracked (latter gitignored — NEVER commit).
 
-## Active work — iOS sync stabilization (multi-day)
-- [x] #1 sync liveness (backoff ~2.3h) — `e6d1d83b`, build 48.
-- [x] #2 date chip hidden while editing — `5c65e9d2`, build 48.
-- [x] #6 web→iOS delete (background APNs wake, relay-scoped) — `594b0403`, build 49.
-- [x] #7 iOS→desktop push (bad broadcast cursor → not exported) — `56d67001`, build 51. **Confirmed working**: iOS "Last splice … applied=1 sent=1".
-- [x] #8 DESKTOP CRASH-LOOP (loro 1.12 richtext OOB panic on poison frame) — contained `cdb4a0ec` (isolated-copy probe + catch_unwind + mem::forget; never fork). Desktop rebuilt+reinstalled, ran clean.
-- [~] **#9 CONVERGENCE (disjoint-lineage drift)** — block `019f047a`: desktop "Brook" vs iOS "Bro" (forked, won't merge).
-  - [x] **Layer 1: loro 1.12→1.13.6** `e884edc2` (fixes crash class + atomic import rollback; existing dedup/heal now CONVERGES forked twins). Full suite green. **Shipping: iOS build 53 (cutting) + desktop rebuild (pending).**
-  - [ ] **Layer 2: mergeable containers** (no-data-loss root fix) — specced `phases/2026-06-26-mergeable-containers-spec.md`. HARD migration; FRESH work.
-- [ ] #3 slash `/p1` deep-filter parity. [ ] #4 inline NLP (needs sim repro). [ ] #5 per-type color+logo (later).
+## Active work — iOS sync stabilization (multi-day) — CONVERGENCE SOLVED
+- [x] #1 liveness `e6d1d83b` (b48) · #2 date chip `5c65e9d2` (b48) · #6 web→iOS delete APNs `594b0403` (b49) · #7 iOS→desktop push `56d67001` (b51, confirmed sent=1).
+- [x] #8 desktop crash-loop (loro 1.12 richtext OOB) — contained `cdb4a0ec`.
+- [x] **#9 CONVERGENCE — RESOLVED via loro 1.12→1.13.6 (`e884edc2`).** **Taylor verified on 1.13.6 desktop + iOS build 53 (2026-06-26): drift HEALED; simultaneous same-block edits BOTH survive (shared lineage interleaves).** The disjoint-fork problem is resolved for daily use. Mergeable-containers was the WRONG plan (verified by a 5-agent workflow — it's a tree-node fork). Layer-2 rebase-on-relay-inbound (no-loss for rare forks) = DEFERRED robustness, not needed now. Spec `phases/2026-06-26-mergeable-containers-spec.md`.
 
-## Blockers
-- Desktop needs rebuild+reinstall on 1.13.6 (Taylor runs the /Applications install — harness blocks it).
+## NOW — remaining
+- [ ] **iOS delete needs a MANUAL refresh on desktop** (Taylor 2026-06-26). DIAGNOSED + SCOPED (task #10 has the full recipe). NOT a sync/engine bug — committed test `relay_inbound_delete_updates_peer_materialized_file` (tesela-sync-ffi) PROVES a relay-inbound delete drops the block from the peer's materialized .md (the body the API serves). Pure WEB UI reconcile bug: edits auto-show, deletes don't. **Repro wall:** a standalone Chrome client (chrome-devtools MCP) against the live desktop server renders the journal EMPTY at /g AND /p/dailies (day headers, all day textboxes `value="\n"`, no block text) though the API returns bodies + sync says Connected — the app only hydrates blocks in the Tauri webview / `pnpm dev`. So a faithful repro needs the perf-harness shape: rebuild `tesela-server` (binary was cleaned), seed/copy a mosaic, `pnpm dev` (TESELA_API_TARGET), then Playwright/Chrome at the dev `/p/dailies`; trigger via raw `DELETE /notes/{id}/blocks/{bid}` (not own-echo → `WsEvent::NoteUpdated` → faithful reconcile). **Prime suspect (unconfirmed):** `BlockOutliner.applyExternalReparse` :745 client-minted-focus skip, likely triggered by `JournalView.ensureTrailingEmpty` re-appending a client-minted bullet after a delete → whole reparse skipped. ⚠ clobber-guard surface — confirm via the faithful repro, do NOT ship speculatively. Minor (manual-refresh workaround). **Fresh focused session recommended.**
+- [ ] #3 slash `/p1` deep-filter. [ ] #4 inline NLP (sim repro). [ ] #5 per-type color+logo.
 
-## Open questions / next pick
-- **VERIFY layer 1 heals drift:** once iOS build 53 + the 1.13.6 desktop are both installed, block `019f047a` should converge to the SAME value on both (dedup runs instead of crashing). Taylor confirms.
-- Layer 2 (mergeable containers) = next major; design the fleet migration first (prototype on a real-mosaic copy).
-- **#3 + #4** after convergence settles; **PUSH** (builds 48–53 + upgrade, all local).
-- Repro toolkit: decisions.md 2026-06-25/26 (sim-seed via `simctl defaults`, desktop API add/del, `wrangler tail`, `tesela-server --mosaic … TESELA_RELAY_URL=…` exit 124=survived/134=abort; relay compacts poison deltas → can't recapture fixtures).
+## North star (Taylor 2026-06-26)
+- **True multi-device + live presence/cursors (collab).** The shared-lineage convergence just fixed is the PREREQUISITE (can't show meaningful cursors on forked docs). Future build: a presence channel (cursor/selection broadcast over relay/WS) + UI. Aligns with `project_emacs2_northstar` (RTC).
+
+## Blockers / next pick
+- None. Next: reproduce + fix the iOS-delete desktop auto-refresh. Then #3/#4.
