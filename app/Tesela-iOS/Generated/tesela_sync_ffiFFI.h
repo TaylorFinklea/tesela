@@ -485,6 +485,21 @@ RustBuffer uniffi_tesela_sync_ffi_fn_func_generate_group_identity(RustCallStatus
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_PRESENCE_OPEN
+#define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_PRESENCE_OPEN
+RustBuffer uniffi_tesela_sync_ffi_fn_func_presence_open(RustBuffer group_key, RustBuffer group_id, RustBuffer outer, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_PRESENCE_SEAL
+#define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_PRESENCE_SEAL
+RustBuffer uniffi_tesela_sync_ffi_fn_func_presence_seal(RustBuffer group_key, RustBuffer group_id, RustBuffer inner, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_PRESENCE_WS_HEADERS
+#define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_PRESENCE_WS_HEADERS
+RustBuffer uniffi_tesela_sync_ffi_fn_func_presence_ws_headers(RustBuffer group_key, RustBuffer group_id, RustBuffer device_id, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_SYNC_SCHEMA_VERSION
 #define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_FN_FUNC_SYNC_SCHEMA_VERSION
 uint32_t uniffi_tesela_sync_ffi_fn_func_sync_schema_version(RustCallStatus *_Nonnull out_status
@@ -778,6 +793,24 @@ uint16_t uniffi_tesela_sync_ffi_checksum_func_generate_device_id_hex(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_GENERATE_GROUP_IDENTITY
 #define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_GENERATE_GROUP_IDENTITY
 uint16_t uniffi_tesela_sync_ffi_checksum_func_generate_group_identity(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_PRESENCE_OPEN
+#define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_PRESENCE_OPEN
+uint16_t uniffi_tesela_sync_ffi_checksum_func_presence_open(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_PRESENCE_SEAL
+#define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_PRESENCE_SEAL
+uint16_t uniffi_tesela_sync_ffi_checksum_func_presence_seal(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_PRESENCE_WS_HEADERS
+#define UNIFFI_FFIDEF_UNIFFI_TESELA_SYNC_FFI_CHECKSUM_FUNC_PRESENCE_WS_HEADERS
+uint16_t uniffi_tesela_sync_ffi_checksum_func_presence_ws_headers(void
     
 );
 #endif

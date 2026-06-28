@@ -70,3 +70,45 @@ final class RemoteCursorStoreTests: XCTestCase {
         XCTAssertEqual(RemoteCursorStore.color(for: "abc"), RemoteCursorStore.color(for: "abc"))
     }
 }
+
+/// Relay-mode presence (Option B): the pure FFI seal/open/headers the
+/// `PresenceRelaySocket` calls must byte-interoperate with the desktop bridge.
+/// These exercise the Swift side of the FFI: an inner PRES frame seals → opens
+/// → decodes back to the same caret, a wrong group key fails the AEAD tag, and
+/// the upgrade-GET headers sign non-empty under a 32/16/16-byte identity.
+final class PresenceRelayFfiTests: XCTestCase {
+    private let groupKey = Data(repeating: 0xAB, count: 32)
+    private let groupId = Data(repeating: 0x11, count: 16)
+    private let deviceId = Data(repeating: 0x22, count: 16)
+
+    func testSealOpenRoundTripsThroughLoroPresence() {
+        let frame = LoroPresence.Frame(
+            peer: "p1", color: "#22c55e", name: nil,
+            slug: "2026-06-28", bid: "abababab-abab-abab-abab-abababababab", offset: 12)
+        let inner = LoroPresence.encode(frame)
+        let outer = presenceSeal(groupKey: groupKey, groupId: groupId, inner: inner)
+        XCTAssertFalse(outer.isEmpty)
+        XCTAssertNotEqual(outer, inner) // sealed, not the raw PRES bytes
+
+        let opened = presenceOpen(groupKey: groupKey, groupId: groupId, outer: outer)
+        XCTAssertNotNil(opened)
+        XCTAssertEqual(LoroPresence.decode(opened!), frame)
+    }
+
+    func testOpenFailsUnderWrongGroupKey() {
+        let inner = LoroPresence.encode(
+            LoroPresence.Frame(peer: "p", color: "#ef4444", name: nil, slug: "d", bid: "b", offset: 1))
+        let outer = presenceSeal(groupKey: groupKey, groupId: groupId, inner: inner)
+        let wrongKey = Data(repeating: 0xCD, count: 32)
+        XCTAssertNil(presenceOpen(groupKey: wrongKey, groupId: groupId, outer: outer))
+    }
+
+    func testWsHeadersSignNonEmpty() {
+        let h = presenceWsHeaders(groupKey: groupKey, groupId: groupId, deviceId: deviceId)
+        XCTAssertFalse(h.macB64.isEmpty)
+        XCTAssertFalse(h.nonceB64.isEmpty)
+        XCTAssertGreaterThan(h.ts, 0)
+        XCTAssertEqual(h.groupHex, String(repeating: "11", count: 16))
+        XCTAssertEqual(h.deviceHex, String(repeating: "22", count: 16))
+    }
+}

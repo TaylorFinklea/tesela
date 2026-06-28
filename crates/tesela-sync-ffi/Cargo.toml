@@ -32,6 +32,14 @@ postcard = { workspace = true }
 # stable_uuid_from_slug — matches Mac's note-id derivation so iOS-
 # authored ops collide on the right note rather than minting orphans.
 blake3 = { workspace = true }
+# Presence FFI (Option B): base64-encode the MAC nonce + MAC, generate a
+# fresh 16-byte MAC nonce, and derive Serialize/Deserialize on the local
+# OuterPayload that byte-matches presence_relay.rs's wire form. `postcard`
+# (above) serializes that struct; the crypto goes through tesela-sync's
+# high-level fns, so no low-level crypto crates are needed here.
+base64 = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 # The Phase B WS-delta round-trip test opens two real LoroEngine handles

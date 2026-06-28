@@ -1502,4 +1502,12 @@ final class RelayTicker: ObservableObject {
     static func cachePairingCode(_ rawCode: String) {
         UserDefaults.standard.set(rawCode, forKey: pairingCodeKey)
     }
+
+    /// The cached pairing code (set by `cachePairingCode` / a successful
+    /// HTTP-fetched build), or `nil` if the device hasn't paired. The
+    /// presence transport decodes it to source the relay URL + group identity
+    /// for `PresenceRelaySocket` (same code `buildCoordinator` consumes).
+    static func cachedPairingCode() -> String? {
+        UserDefaults.standard.string(forKey: pairingCodeKey)
+    }
 }

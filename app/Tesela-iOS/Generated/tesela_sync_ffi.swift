@@ -2960,6 +2960,112 @@ public func FfiConverterTypePresencePeer_lower(_ value: PresencePeer) -> RustBuf
 
 
 /**
+ * The five signed upgrade-GET header values for the relay presence
+ * WebSocket (Option-B iOS presence). Returned by [`presence_ws_headers`];
+ * the Swift transport sets them on its `URLSessionWebSocketTask` request as
+ * `x-tesela-group` = `group_hex`, `x-tesela-device` = `device_hex`,
+ * `x-tesela-nonce` = `nonce_b64`, `x-tesela-ts` = `String(ts)`, and
+ * `x-tesela-mac` = `mac_b64`. Mirrors `tesela-server::presence_relay::connect`.
+ */
+public struct PresenceWsHeaders: Equatable, Hashable {
+    /**
+     * 32-char lowercase hex of the 16-byte group id (`x-tesela-group`).
+     */
+    public var groupHex: String
+    /**
+     * 32-char lowercase hex of the 16-byte device id (`x-tesela-device`).
+     */
+    public var deviceHex: String
+    /**
+     * STANDARD-base64 of the fresh 16-byte MAC nonce (`x-tesela-nonce`).
+     */
+    public var nonceB64: String
+    /**
+     * Unix SECONDS as i64 (`x-tesela-ts` = `String(ts)`); also the `ts`
+     * fed into the canonical request that the MAC signs.
+     */
+    public var ts: Int64
+    /**
+     * STANDARD-base64 of the HMAC-SHA256 request MAC (`x-tesela-mac`).
+     */
+    public var macB64: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * 32-char lowercase hex of the 16-byte group id (`x-tesela-group`).
+         */groupHex: String, 
+        /**
+         * 32-char lowercase hex of the 16-byte device id (`x-tesela-device`).
+         */deviceHex: String, 
+        /**
+         * STANDARD-base64 of the fresh 16-byte MAC nonce (`x-tesela-nonce`).
+         */nonceB64: String, 
+        /**
+         * Unix SECONDS as i64 (`x-tesela-ts` = `String(ts)`); also the `ts`
+         * fed into the canonical request that the MAC signs.
+         */ts: Int64, 
+        /**
+         * STANDARD-base64 of the HMAC-SHA256 request MAC (`x-tesela-mac`).
+         */macB64: String) {
+        self.groupHex = groupHex
+        self.deviceHex = deviceHex
+        self.nonceB64 = nonceB64
+        self.ts = ts
+        self.macB64 = macB64
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PresenceWsHeaders: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePresenceWsHeaders: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PresenceWsHeaders {
+        return
+            try PresenceWsHeaders(
+                groupHex: FfiConverterString.read(from: &buf), 
+                deviceHex: FfiConverterString.read(from: &buf), 
+                nonceB64: FfiConverterString.read(from: &buf), 
+                ts: FfiConverterInt64.read(from: &buf), 
+                macB64: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PresenceWsHeaders, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.groupHex, into: &buf)
+        FfiConverterString.write(value.deviceHex, into: &buf)
+        FfiConverterString.write(value.nonceB64, into: &buf)
+        FfiConverterInt64.write(value.ts, into: &buf)
+        FfiConverterString.write(value.macB64, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePresenceWsHeaders_lift(_ buf: RustBuffer) throws -> PresenceWsHeaders {
+    return try FfiConverterTypePresenceWsHeaders.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePresenceWsHeaders_lower(_ value: PresenceWsHeaders) -> RustBuffer {
+    return FfiConverterTypePresenceWsHeaders.lower(value)
+}
+
+
+/**
  * One decrypted snapshot from the relay — see [`RelayClientHandle::fetch_snapshots`].
  */
 public struct RelaySnapshotRecord: Equatable, Hashable {
@@ -3874,6 +3980,79 @@ public func generateGroupIdentity() -> GroupIdentityRecord  {
 })
 }
 /**
+ * Inverse of [`presence_seal`] — AEAD-open the relay's opaque outer bytes
+ * back to the inner `b"PRES" ++ json` frame. The pure-FFI mirror of
+ * `tesela-server::presence_relay::open_frame`. iOS feeds each inbound binary
+ * WS message straight in.
+ *
+ * Returns `None` on a bad-length key/id, a malformed postcard outer, a
+ * foreign/rotated key, or an AAD (group) mismatch. Unlike the desktop's
+ * `open_frame`, this does NOT check the `b"PRES"` prefix — it stays a thin
+ * crypto primitive and lets the Swift caller validate the prefix itself.
+ */
+public func presenceOpen(groupKey: Data, groupId: Data, outer: Data) -> Data?  {
+    return try!  FfiConverterOptionData.lift(try! rustCall() {
+    uniffi_tesela_sync_ffi_fn_func_presence_open(
+        FfiConverterData.lower(groupKey),
+        FfiConverterData.lower(groupId),
+        FfiConverterData.lower(outer),$0
+    )
+})
+}
+/**
+ * AEAD-seal an inner presence frame (`b"PRES" ++ json`) into the relay's
+ * opaque outer wire bytes — the pure-FFI mirror of
+ * `tesela-server::presence_relay::seal_frame`. iOS builds the inner PRES
+ * frame, calls this, and sends the returned bytes over its native
+ * `URLSessionWebSocketTask` as a binary message.
+ *
+ * Pure function: no engine state. `group_key` must be exactly 32 bytes and
+ * `group_id` exactly 16 (both come from a validated `PairingCode`, so the
+ * lengths are normally exact). On a malformed-length arg OR a seal failure
+ * it returns an EMPTY `Vec` rather than panicking across the FFI boundary —
+ * the caller treats an empty result as "couldn't seal, skip this frame".
+ *
+ * Byte-match contract: reuses tesela-sync's `presence_aad` + `aead::seal`
+ * and the local [`OuterPayload`] (same field order as the desktop), so the
+ * postcard bytes are interchangeable with the Mac's presence frames.
+ */
+public func presenceSeal(groupKey: Data, groupId: Data, inner: Data) -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+    uniffi_tesela_sync_ffi_fn_func_presence_seal(
+        FfiConverterData.lower(groupKey),
+        FfiConverterData.lower(groupId),
+        FfiConverterData.lower(inner),$0
+    )
+})
+}
+/**
+ * Compute the five signed upgrade-GET header values for the relay presence
+ * WebSocket — the pure-FFI mirror of `tesela-server::presence_relay::connect`.
+ * The Swift transport sets them on its `URLSessionWebSocketTask` request
+ * (CF rebuilds the canonical from `x-tesela-original-path`, so the signed
+ * path is `/groups/{hex}/presence/ws` with empty query + empty body hash).
+ *
+ * CRITICAL — two distinct nonces + two distinct keys, never crossed:
+ * the MAC nonce here is a FRESH 16 random bytes (NOT the 24-byte AEAD nonce
+ * `presence_seal` makes), and the MAC key is the DERIVED auth key
+ * (`derive_relay_auth_key`), NOT the group key. `ts` is unix SECONDS as i64
+ * and base64 is the STANDARD engine (matching the desktop exactly).
+ *
+ * Pure function: no engine state. On a bad-length arg it returns an
+ * all-empty record (`ts = 0`, empty strings) rather than panicking — the
+ * caller treats an empty `mac_b64` as "couldn't sign". Inputs come from a
+ * validated `PairingCode`, so lengths are normally exact.
+ */
+public func presenceWsHeaders(groupKey: Data, groupId: Data, deviceId: Data) -> PresenceWsHeaders  {
+    return try!  FfiConverterTypePresenceWsHeaders_lift(try! rustCall() {
+    uniffi_tesela_sync_ffi_fn_func_presence_ws_headers(
+        FfiConverterData.lower(groupKey),
+        FfiConverterData.lower(groupId),
+        FfiConverterData.lower(deviceId),$0
+    )
+})
+}
+/**
  * Sync op-format version stamped onto every locally produced op.
  * Mirrors `tesela_sync::SYNC_SCHEMA_VERSION` so the Swift layer can
  * surface "version mismatch with desktop" before the engine does.
@@ -3920,6 +4099,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_func_generate_group_identity() != 55706) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_func_presence_open() != 33887) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_func_presence_seal() != 44996) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_tesela_sync_ffi_checksum_func_presence_ws_headers() != 31238) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_tesela_sync_ffi_checksum_func_sync_schema_version() != 23021) {

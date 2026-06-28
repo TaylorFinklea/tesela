@@ -16,6 +16,10 @@ struct AppShell: View {
     @StateObject private var transcription = TranscriptionStore()
     @StateObject private var mosaicRegistry = MosaicRegistry()
     @StateObject private var liveSync = LiveSyncSocket()
+    /// Option-B relay-mode presence transport. Hub mode (`.http`) carries
+    /// carets over `liveSync`'s `/ws` fan-out; relay mode uses this dedicated
+    /// CF presence socket. Wired in `activateMosaic` and driven by scenePhase.
+    @StateObject private var presenceRelay = PresenceRelaySocket()
     /// B.3.3 — background relay poll/push loop. Runs whenever the app
     /// is foregrounded; pauses in background. Mac-originated edits
     /// arrive via this loop within ~5s instead of the prior "tap the
@@ -181,6 +185,7 @@ struct AppShell: View {
                         switch newPhase {
                         case .active:
                             liveSync.nudge()
+                            presenceRelay.nudge()
                             // wake() (not start()) so a loop parked in a
                             // backoff sleep ticks NOW — start() no-ops on an
                             // existing loop.
@@ -191,6 +196,7 @@ struct AppShell: View {
                             }
                         case .background:
                             liveSync.suspend()
+                            presenceRelay.suspend()
                             // Drain queued outbound ops before suspend
                             // (sync-durability Phase 1) — see GrAppShell.
                             relayTicker.flushOnBackground()
@@ -240,14 +246,10 @@ struct AppShell: View {
             liveSync.onBinaryDelta = { [weak relayTicker] frame in
                 Task { await relayTicker?.applyInboundDelta(frame) }
             }
-            // Phase 3 presence: inbound peer carets → the mosaic's store (PRES
-            // frames never reach the engine); outbound our caret → the socket.
-            liveSync.onPresence = { [mosaic] frame in
-                Task { @MainActor in mosaic.applyPresence(frame) }
-            }
-            mosaic.sendPresence = { [weak liveSync] data in
-                Task { @MainActor in liveSync?.sendPresence(data) }
-            }
+            // Phase 3 presence (inbound peer carets → the store; outbound our
+            // caret → the transport) is wired mode-aware in `wirePresence()`
+            // below, so a relay-mode mosaic uses `PresenceRelaySocket` instead
+            // of the hub `/ws` fan-out.
         }
         if let active = mosaicRegistry.activeProfile {
             if backend.serverURL != active.serverURL {
@@ -267,6 +269,43 @@ struct AppShell: View {
             liveSync.connect(serverURL: backend.serverURL)
         } else {
             liveSync.connect(serverURL: nil)
+        }
+        wirePresence()
+    }
+
+    /// Point presence at the transport matching the current backend: hub mode
+    /// (`.http`) reuses `LiveSyncSocket`'s `/ws` fan-out; relay mode uses
+    /// `PresenceRelaySocket` (seal/open via the pure FFI). `publishPresence`
+    /// stays transport-agnostic. Gated so the two paths never double-publish.
+    private func wirePresence() {
+        if case .http = backend.backend {
+            presenceRelay.disconnect()
+            liveSync.onPresence = { [mosaic] frame in
+                Task { @MainActor in mosaic.applyPresence(frame) }
+            }
+            mosaic.sendPresence = { [weak liveSync] data in
+                Task { @MainActor in liveSync?.sendPresence(data) }
+            }
+            return
+        }
+        if let code = RelayTicker.cachedPairingCode(),
+           let pairing = try? decodePairingCode(code: code),
+           let relayUrl = pairing.relayUrl, !relayUrl.isEmpty {
+            presenceRelay.onPresence = { [mosaic] frame in
+                Task { @MainActor in mosaic.applyPresence(frame) }
+            }
+            mosaic.sendPresence = { [weak presenceRelay] data in
+                Task { @MainActor in presenceRelay?.send(data) }
+            }
+            presenceRelay.connect(
+                relayUrl: relayUrl,
+                groupIdHex: pairing.groupIdHex,
+                groupKeyHex: pairing.groupKeyHex,
+                deviceIdHex: RelayTicker.persistedDeviceIdHex()
+            )
+        } else {
+            presenceRelay.disconnect()
+            mosaic.sendPresence = nil
         }
     }
 

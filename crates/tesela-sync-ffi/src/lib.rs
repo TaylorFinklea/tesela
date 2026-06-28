@@ -10,7 +10,14 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine as _;
+use rand::RngCore;
+use tesela_sync::crypto::aead::{open as aead_open, presence_aad, seal as aead_seal};
+use tesela_sync::crypto::relay_auth::{
+    canonical_request, compute_request_mac, derive_relay_auth_key,
+};
 use tesela_sync::{
     decode_loro_relay_payload, decode_pairing_code as decode_pairing_code_inner,
     encode_loro_relay_payload, encode_pairing_code as encode_pairing_code_inner,
@@ -111,6 +118,41 @@ pub struct DeltaApplyOutcome {
 pub struct PresencePeer {
     pub key: String,
     pub value: Vec<u8>,
+}
+
+/// The opaque relay-presence wire payload (Option-B iOS presence). Mirrors
+/// `tesela-server::presence_relay::OuterPayload` EXACTLY — same field order +
+/// types — so the postcard bytes `presence_seal` emits are byte-identical to
+/// the desktop's `seal_frame` and open under its `open_frame` (and vice
+/// versa). postcard serializes `nonce` as 24 raw bytes (fixed array, no length
+/// prefix) then `ciphertext` as a varint length + bytes; that ordering IS the
+/// cross-device byte-match contract — DO NOT reorder. Internal only; not a
+/// UniFFI type.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct OuterPayload {
+    nonce: [u8; 24],
+    ciphertext: Vec<u8>,
+}
+
+/// The five signed upgrade-GET header values for the relay presence
+/// WebSocket (Option-B iOS presence). Returned by [`presence_ws_headers`];
+/// the Swift transport sets them on its `URLSessionWebSocketTask` request as
+/// `x-tesela-group` = `group_hex`, `x-tesela-device` = `device_hex`,
+/// `x-tesela-nonce` = `nonce_b64`, `x-tesela-ts` = `String(ts)`, and
+/// `x-tesela-mac` = `mac_b64`. Mirrors `tesela-server::presence_relay::connect`.
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct PresenceWsHeaders {
+    /// 32-char lowercase hex of the 16-byte group id (`x-tesela-group`).
+    pub group_hex: String,
+    /// 32-char lowercase hex of the 16-byte device id (`x-tesela-device`).
+    pub device_hex: String,
+    /// STANDARD-base64 of the fresh 16-byte MAC nonce (`x-tesela-nonce`).
+    pub nonce_b64: String,
+    /// Unix SECONDS as i64 (`x-tesela-ts` = `String(ts)`); also the `ts`
+    /// fed into the canonical request that the MAC signs.
+    pub ts: i64,
+    /// STANDARD-base64 of the HMAC-SHA256 request MAC (`x-tesela-mac`).
+    pub mac_b64: String,
 }
 
 /// One saved view from the synced views registry (saved-views spec,
@@ -292,6 +334,122 @@ pub fn encode_pairing_code(
         version: tesela_sync::crypto::pairing::PAIRING_CODE_VERSION,
     };
     encode_pairing_code_inner(&code).map_err(FfiSyncError::from)
+}
+
+// --- relay presence (Option B: native Swift WS transport + pure Rust crypto) -
+
+/// AEAD-seal an inner presence frame (`b"PRES" ++ json`) into the relay's
+/// opaque outer wire bytes — the pure-FFI mirror of
+/// `tesela-server::presence_relay::seal_frame`. iOS builds the inner PRES
+/// frame, calls this, and sends the returned bytes over its native
+/// `URLSessionWebSocketTask` as a binary message.
+///
+/// Pure function: no engine state. `group_key` must be exactly 32 bytes and
+/// `group_id` exactly 16 (both come from a validated `PairingCode`, so the
+/// lengths are normally exact). On a malformed-length arg OR a seal failure
+/// it returns an EMPTY `Vec` rather than panicking across the FFI boundary —
+/// the caller treats an empty result as "couldn't seal, skip this frame".
+///
+/// Byte-match contract: reuses tesela-sync's `presence_aad` + `aead::seal`
+/// and the local [`OuterPayload`] (same field order as the desktop), so the
+/// postcard bytes are interchangeable with the Mac's presence frames.
+#[uniffi::export]
+pub fn presence_seal(group_key: Vec<u8>, group_id: Vec<u8>, inner: Vec<u8>) -> Vec<u8> {
+    let Ok(gk) = <[u8; 32]>::try_from(group_key.as_slice()) else {
+        return Vec::new();
+    };
+    let Ok(gid) = <[u8; 16]>::try_from(group_id.as_slice()) else {
+        return Vec::new();
+    };
+    let key = GroupKey::from_bytes(gk);
+    let aad = presence_aad(&gid);
+    let Ok(sealed) = aead_seal(&key, &inner, &aad) else {
+        return Vec::new();
+    };
+    postcard::to_allocvec(&OuterPayload {
+        nonce: sealed.nonce,
+        ciphertext: sealed.ciphertext,
+    })
+    .unwrap_or_default()
+}
+
+/// Inverse of [`presence_seal`] — AEAD-open the relay's opaque outer bytes
+/// back to the inner `b"PRES" ++ json` frame. The pure-FFI mirror of
+/// `tesela-server::presence_relay::open_frame`. iOS feeds each inbound binary
+/// WS message straight in.
+///
+/// Returns `None` on a bad-length key/id, a malformed postcard outer, a
+/// foreign/rotated key, or an AAD (group) mismatch. Unlike the desktop's
+/// `open_frame`, this does NOT check the `b"PRES"` prefix — it stays a thin
+/// crypto primitive and lets the Swift caller validate the prefix itself.
+#[uniffi::export]
+pub fn presence_open(group_key: Vec<u8>, group_id: Vec<u8>, outer: Vec<u8>) -> Option<Vec<u8>> {
+    let gk = <[u8; 32]>::try_from(group_key.as_slice()).ok()?;
+    let gid = <[u8; 16]>::try_from(group_id.as_slice()).ok()?;
+    let key = GroupKey::from_bytes(gk);
+    let o: OuterPayload = postcard::from_bytes(&outer).ok()?;
+    let aad = presence_aad(&gid);
+    aead_open(&key, &o.nonce, &o.ciphertext, &aad).ok()
+}
+
+/// Compute the five signed upgrade-GET header values for the relay presence
+/// WebSocket — the pure-FFI mirror of `tesela-server::presence_relay::connect`.
+/// The Swift transport sets them on its `URLSessionWebSocketTask` request
+/// (CF rebuilds the canonical from `x-tesela-original-path`, so the signed
+/// path is `/groups/{hex}/presence/ws` with empty query + empty body hash).
+///
+/// CRITICAL — two distinct nonces + two distinct keys, never crossed:
+/// the MAC nonce here is a FRESH 16 random bytes (NOT the 24-byte AEAD nonce
+/// `presence_seal` makes), and the MAC key is the DERIVED auth key
+/// (`derive_relay_auth_key`), NOT the group key. `ts` is unix SECONDS as i64
+/// and base64 is the STANDARD engine (matching the desktop exactly).
+///
+/// Pure function: no engine state. On a bad-length arg it returns an
+/// all-empty record (`ts = 0`, empty strings) rather than panicking — the
+/// caller treats an empty `mac_b64` as "couldn't sign". Inputs come from a
+/// validated `PairingCode`, so lengths are normally exact.
+#[uniffi::export]
+pub fn presence_ws_headers(
+    group_key: Vec<u8>,
+    group_id: Vec<u8>,
+    device_id: Vec<u8>,
+) -> PresenceWsHeaders {
+    let empty = || PresenceWsHeaders {
+        group_hex: String::new(),
+        device_hex: String::new(),
+        nonce_b64: String::new(),
+        ts: 0,
+        mac_b64: String::new(),
+    };
+    let (Ok(gk), Ok(gid), Ok(did)) = (
+        <[u8; 32]>::try_from(group_key.as_slice()),
+        <[u8; 16]>::try_from(group_id.as_slice()),
+        <[u8; 16]>::try_from(device_id.as_slice()),
+    ) else {
+        return empty();
+    };
+    let key = GroupKey::from_bytes(gk);
+    // AEAD key (group_key) and MAC key (auth_key) stay distinct — never crossed.
+    let auth = derive_relay_auth_key(&key, &GroupId::from_bytes(gid));
+    let mut nonce = [0u8; 16];
+    rand::thread_rng().fill_bytes(&mut nonce);
+    let nonce_b64 = base64::engine::general_purpose::STANDARD.encode(nonce);
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let path = format!("/groups/{}/presence/ws", hex_encode(&gid));
+    // Empty query, empty body hash — mirror `GET /ops`.
+    let canonical = canonical_request("GET", &path, "", &nonce_b64, ts, "");
+    let mac_b64 =
+        base64::engine::general_purpose::STANDARD.encode(compute_request_mac(&auth, &canonical));
+    PresenceWsHeaders {
+        group_hex: hex_encode(&gid),
+        device_hex: hex_encode(&did),
+        nonce_b64,
+        ts,
+        mac_b64,
+    }
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -1718,6 +1876,92 @@ mod tests {
     #[test]
     fn version_string_is_non_empty() {
         assert!(!tesela_sync_version().is_empty());
+    }
+
+    // --- relay presence (Option B) -----------------------------------------
+
+    fn presence_fixture() -> (Vec<u8>, Vec<u8>) {
+        (vec![0x77u8; 32], vec![0x42u8; 16])
+    }
+
+    /// (a) `presence_seal` → `presence_open` round-trips the inner frame.
+    #[test]
+    fn presence_seal_then_open_round_trips() {
+        let (gk, gid) = presence_fixture();
+        let inner = b"PRES{\"peer\":\"aa\",\"slug\":\"d\",\"bid\":\"b\",\"offset\":3}".to_vec();
+        let outer = presence_seal(gk.clone(), gid.clone(), inner.clone());
+        assert!(!outer.is_empty(), "seal of a valid frame must produce bytes");
+        let opened = presence_open(gk, gid, outer).expect("opens under the same group");
+        assert_eq!(opened, inner);
+    }
+
+    /// A frame sealed for one group must NOT open under another (AAD binds
+    /// the group id) — the zero-knowledge boundary the relay relies on.
+    #[test]
+    fn presence_open_fails_under_a_different_group() {
+        let (gk, gid) = presence_fixture();
+        let inner = b"PRES{\"peer\":\"aa\"}".to_vec();
+        let outer = presence_seal(gk.clone(), gid, inner);
+        assert!(presence_open(gk, vec![0x43u8; 16], outer).is_none());
+    }
+
+    /// Bad-length args don't panic across the FFI: seal → empty Vec, open →
+    /// None, headers → an all-empty record.
+    #[test]
+    fn presence_bad_lengths_dont_panic() {
+        assert!(presence_seal(vec![0u8; 31], vec![0u8; 16], b"x".to_vec()).is_empty());
+        assert!(presence_seal(vec![0u8; 32], vec![0u8; 15], b"x".to_vec()).is_empty());
+        assert!(presence_open(vec![0u8; 31], vec![0u8; 16], b"x".to_vec()).is_none());
+        let h = presence_ws_headers(vec![0u8; 31], vec![0u8; 16], vec![0u8; 16]);
+        assert!(h.mac_b64.is_empty() && h.ts == 0 && h.group_hex.is_empty());
+    }
+
+    /// (b) The postcard `OuterPayload` bytes `presence_seal` emits open under
+    /// the DESKTOP `open_frame` logic (`presence_relay.rs`): same `OuterPayload`
+    /// field order, same `presence_aad`, same `aead::open`. Reconstructed inline
+    /// so the test fails if EITHER side's wire form drifts.
+    #[test]
+    fn presence_seal_bytes_open_under_desktop_open_frame_logic() {
+        let (gk_v, gid_v) = presence_fixture();
+        let inner = b"PRES{\"peer\":\"x\",\"color\":\"#fff\"}".to_vec();
+        let outer_bytes = presence_seal(gk_v.clone(), gid_v.clone(), inner.clone());
+
+        // Desktop's `open_frame`, reconstructed: deserialize the SAME
+        // `OuterPayload`, rebuild the group-only presence AAD, AEAD-open under
+        // the group key.
+        let gid: [u8; 16] = gid_v.as_slice().try_into().unwrap();
+        let key = GroupKey::from_bytes(gk_v.as_slice().try_into().unwrap());
+        let o: OuterPayload = postcard::from_bytes(&outer_bytes).unwrap();
+        let aad = presence_aad(&gid);
+        let opened = aead_open(&key, &o.nonce, &o.ciphertext, &aad).unwrap();
+        assert_eq!(opened, inner);
+    }
+
+    /// (c) `presence_ws_headers`' mac equals an independent
+    /// `compute_request_mac(derive_relay_auth_key(...), canonical_request(...))`
+    /// — byte-matching `connect()` in `presence_relay.rs`.
+    #[test]
+    fn presence_ws_headers_mac_matches_independent_computation() {
+        let (gk_v, gid_v) = presence_fixture();
+        let did_v = vec![0x11u8; 16];
+        let h = presence_ws_headers(gk_v.clone(), gid_v.clone(), did_v);
+
+        let gid: [u8; 16] = gid_v.as_slice().try_into().unwrap();
+        let key = GroupKey::from_bytes(gk_v.as_slice().try_into().unwrap());
+        let auth = derive_relay_auth_key(&key, &GroupId::from_bytes(gid));
+        let path = format!("/groups/{}/presence/ws", hex_encode(&gid));
+        let canonical = canonical_request("GET", &path, "", &h.nonce_b64, h.ts, "");
+        let expected =
+            base64::engine::general_purpose::STANDARD.encode(compute_request_mac(&auth, &canonical));
+
+        assert_eq!(h.mac_b64, expected);
+        assert_eq!(h.group_hex, hex_encode(&gid));
+        assert_eq!(h.device_hex, hex_encode(&[0x11u8; 16]));
+        // The MAC nonce is a FRESH 16 random bytes (NOT the 24-byte AEAD nonce).
+        let nonce = base64::engine::general_purpose::STANDARD
+            .decode(&h.nonce_b64)
+            .unwrap();
+        assert_eq!(nonce.len(), 16);
     }
 
     #[test]

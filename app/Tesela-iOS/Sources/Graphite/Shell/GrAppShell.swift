@@ -29,6 +29,12 @@ struct GrAppShell: View {
     /// RelayTicker poll, and routes through `applyRemoteChange()` so the
     /// refresh respects the edit-suppression guards.
     @StateObject private var liveSync = LiveSyncSocket()
+    /// Option-B relay-mode presence transport (live remote carets). In hub
+    /// mode (`.http`) presence rides `liveSync`'s `/ws` fan-out; in relay mode
+    /// (a cached pairing code with a relay URL) it goes over this dedicated CF
+    /// presence socket instead. Wired in `activateBackend()` and driven by the
+    /// scenePhase suspend/nudge below.
+    @StateObject private var presenceRelay = PresenceRelaySocket()
     /// Lifted out of the capture bar so the `AVAudioEngine` init isn't
     /// paid every time the accessory is added/removed — mirrors AppShell.
     @StateObject private var streamRecorder = StreamingVoiceRecorder()
@@ -245,6 +251,7 @@ struct GrAppShell: View {
                     // sleep ticks NOW — start() no-ops on an existing loop.
                     relayTicker.wake()
                     liveSync.nudge()
+                    presenceRelay.nudge()
                     Task {
                         await mosaic.refresh(from: backend.backend)
                         await mosaic.refreshLoadedPages()
@@ -255,6 +262,7 @@ struct GrAppShell: View {
                     // stop() that strands a just-made capture until relaunch.
                     relayTicker.flushOnBackground()
                     liveSync.suspend()
+                    presenceRelay.suspend()
                 default:
                     break
                 }
@@ -313,6 +321,10 @@ struct GrAppShell: View {
         } else {
             liveSync.connect(serverURL: nil)
         }
+        // Presence transport: hub mode (.http) carries carets over the live
+        // /ws fan-out; relay mode uses the dedicated CF presence socket. Re-run
+        // on every backend change so a runtime mock↔relay switch repoints it.
+        wirePresence()
         // Bootstrap the currently-visible daily as a shared base (T2), now
         // that the engine + socket point at this backend.
         await relayTicker.bootstrapNoteIfNeeded(slug: mosaic.todayDailySlug)
@@ -323,6 +335,50 @@ struct GrAppShell: View {
         // straight into `.active` never started the loop — fatal for .relay mode
         // (the tick is the only sync path; hub mode just no-ops the loop).
         relayTicker.start()
+    }
+
+    /// Wire the presence egress (`mosaic.sendPresence`) + ingress
+    /// (`onPresence → mosaic.applyPresence`) to the transport that matches the
+    /// current backend. Hub mode reuses `LiveSyncSocket`'s `/ws` fan-out
+    /// (forwards the raw PRES frame opaquely); relay mode uses
+    /// `PresenceRelaySocket` (seals/opens via the pure FFI). `publishPresence`
+    /// stays transport-agnostic — sealing happens inside the relay socket.
+    /// Gated strictly so the two paths never double-publish.
+    private func wirePresence() {
+        if case .http = backend.backend {
+            // Hub mode: the live /ws socket already fans presence out.
+            presenceRelay.disconnect()
+            liveSync.onPresence = { [mosaic] frame in
+                Task { @MainActor in mosaic.applyPresence(frame) }
+            }
+            mosaic.sendPresence = { [weak liveSync] data in
+                Task { @MainActor in liveSync?.sendPresence(data) }
+            }
+            return
+        }
+        // Relay mode: a cached pairing code carrying a relay URL → the CF
+        // presence socket. The device id for the MAC/echo-exclusion is the
+        // stable per-install id (NOT the per-launch presence peer id).
+        if let code = RelayTicker.cachedPairingCode(),
+           let pairing = try? decodePairingCode(code: code),
+           let relayUrl = pairing.relayUrl, !relayUrl.isEmpty {
+            presenceRelay.onPresence = { [mosaic] frame in
+                Task { @MainActor in mosaic.applyPresence(frame) }
+            }
+            mosaic.sendPresence = { [weak presenceRelay] data in
+                Task { @MainActor in presenceRelay?.send(data) }
+            }
+            presenceRelay.connect(
+                relayUrl: relayUrl,
+                groupIdHex: pairing.groupIdHex,
+                groupKeyHex: pairing.groupKeyHex,
+                deviceIdHex: RelayTicker.persistedDeviceIdHex()
+            )
+        } else {
+            // No relay pairing (pure mock / LAN-only) → no presence transport.
+            presenceRelay.disconnect()
+            mosaic.sendPresence = nil
+        }
     }
 
     /// The native iOS-26 `TabView`. Mirrors AppShell exactly: the four
