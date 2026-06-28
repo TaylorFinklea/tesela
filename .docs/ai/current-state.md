@@ -14,7 +14,14 @@
   - SERVER `cce9afa7`: presence rides the EXISTING ws_delta_tx binary fan-out by a `PRES` magic — route_inbound_binary splits PRES (fan out, never engine/persist) from TLR2. 4 ws tests.
   - WEB `e8374836`: loro/presence.ts (PRES codec) + remote-cursors.ts (peer→caret store, LWW/10s decay, per-tab id+color) + cm-remote-cursors.ts (StateField + RemoteCursorWidget; .map auto-remaps through local edits, rebuild on fresh presence) + ws-client onPresence routing + BlockEditor throttled caret publish + extension per bound block + +layout onPresence. svelte-check 0 err; web unit 514 + 11 new; e2e green.
   - ARCH locked: web uses PLAIN {bid,utf16_offset} + CodeMirror decoration auto-remap (NOT loro Cursor).
-- [ ] **Phase 3: iOS presence** (#15) — THE PHYSICAL-IPHONE BOUNDARY. Autonomous prep (sim): wire iOS FFI set_presence publish on caret + render remote caret overlay in Graphite/BlockRow + inbound subscribe; iOS SHOULD use the op-anchored loro Cursor (mint_cursor) since UITextView doesn't auto-remap. Transport: hub-mode WS (iOS→Mac, reuses Phase 2 PRES fan-out) first, then CF-DO WebSocket. REAL verify needs iPhone + Mac (two devices) — Taylor.
+- [~] **Phase 3: iOS presence** (#15) — IMPLEMENTED (hub-mode WS), awaiting on-device verify.
+  - FFI bindings regen `4598efbb` (Phase 1 methods drifted them — required or ios-testflight aborts at check-ffi-drift step 2).
+  - FOUNDATION `fe5c3d64`: LoroPresence.swift (PRES codec, byte-identical to web — plain offset, NOT op-anchored, for web parity), RemoteCursorStore.swift (peer→caret, LWW/10s, per-launch id+color), LiveSyncSocket onPresence + PRES detect + sendPresence. 7 tests green on sim.
+  - VIEW LAYER `7fcbdff2`: CollabTextView onCaretMove (textViewDidChangeSelection) + remoteCarets render (CALayer bars via caretRect); BlockRow threads them; MockMosaicService remoteCursors store + publishPresence/applyPresence; AppShell wires onPresence→apply + sendPresence→socket; GrDailyView TODAY section per-block. BUILD SUCCEEDED.
+  - Transport: HUB-MODE WS only (iOS→Mac /ws, reuses Phase 2 PRES fan-out) — needs the iPhone in .http backend pointing at the Mac (tailnet). NOT relay-mode yet (CF-DO WS = Phase 3b).
+  - SCOPE: today section only (primary case); yesterday/past = same pattern, follow-up.
+  - ⚠ VERIFY ON-DEVICE: (1) cross-platform match assumes iOS block.noteId == web slug + block.id == web bid (both parsed from `<!-- bid -->`); if iPhone↔desktop cursors don't show, check these strings match. (2) iPhone must be hub-mode (.http → Mac), not .relay.
+  - TestFlight build cutting now (b9a4hwpvj, ios-testflight.sh). After upload: commit project.yml + Info.plist build bump.
 - [ ] Phase 4: collab polish (selection ranges, peer names/labels — web widget already supports a name flag, just not populated yet; follow-mode; presence sidebar; Savanne multi-user).
 - Mode: BURN THROUGH autonomously (ultracode) — Phases 0/1/2 done; Phase 3 is the device boundary Taylor set.
 
