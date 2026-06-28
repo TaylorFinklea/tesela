@@ -480,6 +480,11 @@
     isLoroUndoApplying,
   } from "$lib/loro/active-note-doc.svelte";
   import { deltaToChanges } from "$lib/loro/text-delta";
+  // Phase 2 desktop presence: publish this caret + render remote ones.
+  import { sendBinary } from "$lib/ws-client.svelte";
+  import { encodePresence } from "$lib/loro/presence";
+  import { localPeerId, localColor } from "$lib/remote-cursors";
+  import { remoteCursorExtension } from "$lib/cm-remote-cursors";
   import type { LoroText, LoroEventBatch } from "loro-crdt";
 
   // C2.3 own-echo guard — true while a REMOTE Loro text event is being applied
@@ -2072,7 +2077,34 @@
       },
     ]);
 
+    // Phase 2 presence: throttle publishing our caret to peers (≤1 frame /
+    // 100ms, leading + trailing) so a fast move floods at most ~10/sec.
+    let presenceTimer: ReturnType<typeof setTimeout> | null = null;
+    let presencePendingOffset: number | null = null;
+    const publishPresence = (offset: number): void => {
+      presencePendingOffset = offset;
+      if (presenceTimer) return;
+      const flush = () => {
+        presenceTimer = null;
+        if (presencePendingOffset === null) return;
+        const off = presencePendingOffset;
+        presencePendingOffset = null;
+        const slug = getActiveNoteDoc()?.slug;
+        if (!slug || !bid) return;
+        sendBinary(
+          encodePresence({ peer: localPeerId(), color: localColor(), slug, bid, offset: off }),
+        );
+      };
+      flush(); // leading edge
+      presenceTimer = setTimeout(flush, 100); // trailing edge
+    };
+
     const updateListener = EditorView.updateListener.of((update) => {
+      // Publish our caret on any move (text edit or selection change), unless a
+      // remote splice is being applied into this view (transient remapped pos).
+      if ((update.docChanged || update.selectionSet) && !localApplyInProgress) {
+        publishPresence(update.state.selection.main.head);
+      }
       if (update.docChanged) {
         // Skip echoing back outliner-undo restores — they already wrote the
         // canonical block.body, so re-firing onChange would corrupt history.
@@ -2132,6 +2164,9 @@
     const clampedCursor = initialCursorPos !== undefined
       ? Math.max(0, Math.min(initialText.length, initialCursorPos))
       : undefined;
+    // Phase 2 presence: render peers' carets in this block (only when bound to a
+    // synced doc — needs both a note slug and this block's bid).
+    const presenceSlug = getActiveNoteDoc()?.slug ?? null;
     const state = EditorState.create({
       doc: initialText,
       selection: clampedCursor !== undefined ? { anchor: clampedCursor, head: clampedCursor } : undefined,
@@ -2148,6 +2183,7 @@
         theme,
         inputHandler,
         updateListener,
+        ...(bid && presenceSlug ? [remoteCursorExtension(presenceSlug, bid)] : []),
         focusBlurHandler,
         teselaDecorations,
         teselaAtomicCursorFilter,
@@ -2256,6 +2292,7 @@
     if (browser && bid) trySubscribeLoro(15); // ~3s of retries for slow bootstraps
 
     return () => {
+      if (presenceTimer) clearTimeout(presenceTimer);
       clearFocusedEditor(blockId ?? "");
       vimModeOff?.();
       if (subRetryTimer) clearTimeout(subRetryTimer);

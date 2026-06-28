@@ -7,6 +7,7 @@
 import type { Note } from "$lib/types/Note";
 import type { ViewRecord } from "$lib/api-client";
 import { decodeTlr2, type LoroDocUpdate } from "$lib/loro/tlr2";
+import { decodePresence, type PresenceFrame } from "$lib/loro/presence";
 
 export type DeadlineApproachingEvent = {
   event: "deadline_approaching";
@@ -93,6 +94,11 @@ let onReconnected: (() => void) | null = null;
 /// wiring lands in C2.2/C2.3. Foreign/short binary frames (non-TLR2) are
 /// dropped silently and never reach this handler.
 let onBinaryDelta: ((updates: LoroDocUpdate[]) => void) | null = null;
+/// Fires when an inbound BINARY WS frame decodes as an EPHEMERAL presence
+/// frame (`PRES` magic) — a peer's live caret. NOT a document delta: it never
+/// touches a Loro doc; the host feeds it to the remote-cursor store. Checked
+/// BEFORE the TLR2 delta path in `handleBinaryFrame`.
+let onPresence: ((frame: PresenceFrame) => void) | null = null;
 /// Set true once the first connect succeeds. After that, every
 /// subsequent open is a "reconnect" and fires `onReconnected`.
 let hasEverConnected = false;
@@ -107,6 +113,7 @@ export function setHandlers(handlers: {
   onViewsChanged?: (views: ViewRecord[]) => void;
   onReconnected?: () => void;
   onBinaryDelta?: (updates: LoroDocUpdate[]) => void;
+  onPresence?: (frame: PresenceFrame) => void;
 }) {
   onNoteCreated = handlers.onNoteCreated ?? null;
   onNoteUpdated = handlers.onNoteUpdated ?? null;
@@ -117,6 +124,7 @@ export function setHandlers(handlers: {
   onViewsChanged = handlers.onViewsChanged ?? null;
   onReconnected = handlers.onReconnected ?? null;
   onBinaryDelta = handlers.onBinaryDelta ?? null;
+  onPresence = handlers.onPresence ?? null;
 }
 
 export function connect() {
@@ -255,6 +263,14 @@ function handleMessage(raw: unknown) {
 /// frame throws inside `decodeTlr2`; we swallow it so one bad frame can't tear
 /// down the socket. The updates are NOT applied anywhere yet (C2.1 infra only).
 function handleBinaryFrame(bytes: Uint8Array) {
+  // Ephemeral presence (PRES) is checked FIRST — it's a transient caret, not a
+  // document delta, and must never reach the Loro-apply path. A non-PRES frame
+  // decodes to null and falls through to the TLR2 delta path unchanged.
+  const presence = decodePresence(bytes);
+  if (presence) {
+    onPresence?.(presence);
+    return;
+  }
   let updates: LoroDocUpdate[] | null;
   try {
     updates = decodeTlr2(bytes);

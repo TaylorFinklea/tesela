@@ -22,6 +22,7 @@
   import { registerAppQueryClient } from "$lib/app-query-client.svelte";
   import { onMount } from "svelte";
   import { connect, setHandlers } from "$lib/ws-client.svelte";
+  import { applyPresenceFrame } from "$lib/remote-cursors";
   import {
     setRefreshCallback,
     scheduleNoteRefresh,
@@ -163,6 +164,11 @@
               ? `; active[${first.bid.slice(0, 8)}]=${JSON.stringify(first.text)}`
               : ""),
         );
+      },
+      onPresence: (frame) => {
+        // Phase 2 desktop presence: a peer's live caret. Feed the remote-cursor
+        // store; each block's editor subscribes + renders carets in its block.
+        applyPresenceFrame(frame);
       },
     });
 
