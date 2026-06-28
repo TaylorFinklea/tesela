@@ -63,3 +63,41 @@ ciphertext, never decrypts. Real-time (<100ms). Effort ~M (4h) for the Worker.
 Confirm **relay sync itself is solid** (esp. deletes propagating) on Taylor's restored
 setup. The "deletes don't propagate / slow sync" he saw was on the DEAD hub server; if
 it persists on RELAY, that's a sync regression and the priority — fix before presence.
+GATE CLEARED 2026-06-28: past-day convergence fixed (`cf212bee`) + verified on-device.
+
+---
+
+## VERIFIED CONTRACT (workflow `w4ljve190`, 2026-06-28) — locked for Stages 2/3
+
+Built by an 8-agent workflow (4 boundary maps → synthesized contract → adversarial
+design review `contractReady=true` → impl → security review `approve=true`). All claims
+verified against source. **Stage 1 (CF Worker) DONE + committed `70338b18`** (NOT
+deployed — Taylor-gated `wrangler deploy`).
+
+### WS protocol (native clients only — URLSession/tokio-tungstenite can set headers; browser `new WebSocket` CANNOT → web stays hub-mode)
+- URL: `wss|ws://{relay_base}/groups/{group_id_hex}/presence/ws` (scheme-swap the pairing-code relayUrl; nil relayUrl → no relay presence, hub-mode fallback).
+- Upgrade GET carries the SAME MAC headers as `GET /ops`, signed over canonical
+  `GET\n/groups/{hex}/presence/ws\n\n{nonce_b64}\n{ts_secs}\n` (empty query+body_hash).
+  Headers: X-Tesela-Group/Device/Nonce/Ts/Mac. **Signed path MUST be `/presence/ws`** (CF
+  rebuilds canonical from x-tesela-original-path). Device id = the MAC-verified
+  X-Tesela-Device header (NO plaintext first-frame handshake — that'd be spoofable).
+- Frame = `postcard(OuterPayload{nonce:[u8;24], ciphertext})` raw binary over WS (no b64).
+  ciphertext = XChaCha20-Poly1305 seal of the EXISTING inner PRES wire `b"PRES" ++ utf8(JSON{peer,color,name?,slug,bid,offset})` — LoroPresence/RemoteCursorStore/presence.ts codec REUSED unchanged. Relay sees only opaque bytes.
+
+### AEAD — the #1 (AAD-parity) risk, RESOLVED by single-source-in-Rust
+- **NEW `presence_aad(group_id:&[u8;16]) -> [u8;32] = b"tesela-pres-v1\0\0"(16) || group_id(16)`**, placed in `crates/tesela-sync/src/crypto/aead.rs` next to `envelope_aad`/`snapshot_aad` (modeled byte-for-byte on `snapshot_aad` = `b"tesela-snap-v1\0\0"||group_id`). GROUP-ONLY (no from_device). MUST NOT reuse `envelope_aad` (device||group).
+- seal/open = `crypto::aead::seal/open(group_key, …, presence_aad(group_id))` (group_key direct, no HKDF). Defined ONCE in Rust, called by desktop (RelayClient) AND iOS (new FFI) — **never reimplement in Swift/TS**. Add a `seal→open` round-trip test (mirror `aead.rs:99`) before ship.
+- MAC/auth key stays `derive_relay_auth_key(group_key, group_id)` (cached `RelayClient.auth_key`), REUSED for the WS-upgrade MAC. Two keys (AEAD=group_key, MAC=auth_key) + two nonces (24-byte AEAD vs 16-byte request) — never crossed.
+
+### Build plan (Stages 2/3) + ADOPTED decisions (contract recommendations)
+- **DECISION: shared Rust presence WS client** (tokio-tungstenite) used by BOTH desktop + iOS — defines protocol+MAC+seal+reconnect ONCE (kills drift). Crate: `tesela-sync` (add tokio-tungstenite). iOS reaches it via FFI; Swift owns NO AEAD/socket protocol. (If Taylor prefers a Swift URLSessionWebSocketTask + seal-only FFI, that's the alternative — flagged in the report.)
+- **DECISION: CF Worker is the SOLE presence backend** for v1 (Taylor daily-drives CF); the Axum `crates/tesela-relay` stays presence-less.
+- **Stage 2 — desktop bridge** (`crates/tesela-server`): bridge local `/ws` PRES ↔ CF presence WS. Outbound: `is_presence_frame(frame) && origin.is_some()` → seal → send to CF (skip CF-injected origin=None frames → no loop). Inbound from CF → fan out on `ws_delta_tx` with origin=None (mirror sync_relay tick fan-out); drop frames whose embedded sender==engine.device(). 3 echo guards.
+- **Stage 3 — iOS client**: extract relayUrl+groupKey from PairingCode; reuse the shared Rust presence client via FFI; re-point the existing hub-mode sendPresence/onPresence (SyncState) at the relay; render via the existing RemoteCursorStore (unchanged).
+- **Stage 4 — integrate + verify**: needs Taylor's 2 devices over the live relay.
+
+### Accepted Stage-1 residuals (documented, non-blocking)
+- X-Tesela-Device NOT in the MAC canonical → a group member can spoof another's echo-exclusion key (availability-only; inner sealed PRES carries the real `peer`). Tighten later if needed.
+- No per-frame rate limit post-upgrade (within-trusted-group DoS only).
+- Heartbeat (30s) + CF `setWebSocketAutoResponse(ping/pong)` NOT yet added — nail in the shared Rust client (Stage 2) so NAT/edge-dropped idle sockets are detected.
+- Layer-2 cursor anchor (suppress/resolve cursors on blocks with open bid-twins) — SEPARATE follow-up vs the layer-2 model (web+iOS); pre-existing, self-healing (cursors re-publish each move + prune 10s). Not a presence gate.
