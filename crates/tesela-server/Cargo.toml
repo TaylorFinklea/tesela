@@ -23,6 +23,8 @@ tesela-core = { path = "../tesela-core" }
 hex = "0.4"
 tesela-backup = { path = "../tesela-backup" }
 tesela-sync = { path = "../tesela-sync" }
+# Base64 the WS-upgrade MAC headers for the presence relay client (nonce, mac).
+base64 = { workspace = true }
 tempfile = { workspace = true }
 axum = { workspace = true }
 tower-http = { workspace = true }
@@ -47,6 +49,11 @@ blake3.workspace = true
 clap = { workspace = true }
 if-addrs.workspace = true
 rand = { workspace = true }
+# Presence relay WS client (Phase 3b Stage 2): a long-lived WebSocket to the CF
+# relay's /groups/{id}/presence/ws. `rustls-tls-webpki-roots` enables wss:// to
+# Cloudflare (matching the workspace reqwest's rustls-tls stack); default
+# features keep `connect` + `handshake`. Also covers the dev-only round-trip test.
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 
 # Phase 12.1 — Apple Reminders bidirectional sync. EventKit is a macOS/iOS
 # framework, so the FFI is gated behind cfg(target_os = "macos"). Linux/
@@ -94,9 +101,6 @@ tesela-fixtures = { path = "../tesela-fixtures" }
 # Spawn an in-process relay to exercise the live sync_relay::tick snapshot
 # deposit/bootstrap wiring (no cycle: tesela-relay doesn't depend on tesela-server).
 tesela-relay = { path = "../tesela-relay" }
-# Real-socket WS round-trip test (instant-multidevice Phase A). Pinned to
-# the same version axum 0.8 already pulls in, so no new lockfile entry.
-tokio-tungstenite = "0.28"
 # Decode engine version vectors in the restore drill (lineage assertions:
 # peer set + per-peer counters). Same version tesela-sync already pulls in.
 loro = "1.10"

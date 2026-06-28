@@ -7,6 +7,7 @@
 pub mod backup_scheduler;
 pub mod error;
 pub mod notifications;
+pub mod presence_relay;
 pub mod reminders;
 pub mod routes;
 pub mod state;
@@ -971,6 +972,20 @@ async fn bring_up_relay_if_configured(
             }
         }
     });
+
+    // Presence bridge (Phase 3b, Stage 2): a separate long-lived WS to the CF
+    // relay's /presence/ws. It observes locally-originated PRES frames on
+    // ws_delta_tx (origin = Some) → seals → relay; opens relay-broadcast frames
+    // → fans out on ws_delta_tx (origin = None). Same (group, device, key, url)
+    // identity the tick uses. Independent of the poll/produce tick — presence is
+    // ephemeral and never touches the engine.
+    presence_relay::spawn(
+        &url,
+        ident.group_id,
+        device,
+        ident.group_key.clone(),
+        state.ws_delta_tx.clone(),
+    );
 
     state.relay = Some(handle);
     state

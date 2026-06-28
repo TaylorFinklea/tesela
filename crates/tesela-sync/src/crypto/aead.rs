@@ -87,6 +87,21 @@ pub fn envelope_aad(from_device: &[u8; 16], to_group: &[u8; 16]) -> [u8; 32] {
     out
 }
 
+/// AAD for relay presence frames (Phase 3b). Group-only — presence frames
+/// have no authenticated depositing-device field, because the relay's
+/// echo-exclusion device id is carried in an unsigned header, not the AEAD,
+/// so the opener has no trusted device id to reconstruct a per-device AAD
+/// with. A domain-separation prefix keeps presence ciphertext from being
+/// interchangeable with an envelope sealed under `envelope_aad(...)` or a
+/// snapshot sealed under `snapshot_aad(...)`. Mirrors `snapshot_aad`
+/// (`b"tesela-snap-v1\0\0" || group_id`).
+pub fn presence_aad(group_id: &[u8; 16]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[..16].copy_from_slice(b"tesela-pres-v1\0\0");
+    out[16..].copy_from_slice(group_id);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,5 +160,35 @@ mod tests {
         let aad = envelope_aad(&[0x11; 16], &[0x22; 16]);
         assert_eq!(&aad[..16], &[0x11; 16]);
         assert_eq!(&aad[16..], &[0x22; 16]);
+    }
+
+    #[test]
+    fn presence_seal_open_round_trip() {
+        let key = fixture_key();
+        let group_id = [0x42; 16];
+        let plaintext = b"PRES{\"peer\":\"A\",\"slug\":\"daily\",\"bid\":\"b1\",\"offset\":3}";
+        let aad = presence_aad(&group_id);
+        let sealed = seal(&key, plaintext, &aad).unwrap();
+        let opened = open(&key, &sealed.nonce, &sealed.ciphertext, &aad).unwrap();
+        assert_eq!(opened, plaintext);
+
+        // Opening with a DIFFERENT aad (different group) must fail.
+        let other_aad = presence_aad(&[0x43; 16]);
+        let err = open(&key, &sealed.nonce, &sealed.ciphertext, &other_aad).unwrap_err();
+        assert!(matches!(err, SyncError::Crypto(_)));
+
+        // Presence aad must be distinct from envelope aad over the same group,
+        // so a presence frame can never be opened as an envelope and vice versa.
+        let env_aad = envelope_aad(&group_id, &group_id);
+        let err = open(&key, &sealed.nonce, &sealed.ciphertext, &env_aad).unwrap_err();
+        assert!(matches!(err, SyncError::Crypto(_)));
+    }
+
+    #[test]
+    fn presence_aad_layout() {
+        let aad = presence_aad(&[0x55; 16]);
+        assert_eq!(&aad[..16], b"tesela-pres-v1\0\0");
+        assert_eq!(&aad[16..], &[0x55; 16]);
+        assert_eq!(b"tesela-pres-v1\0\0".len(), 16);
     }
 }
