@@ -66,18 +66,28 @@ async function forwardToGroupDO(
   const id = env.GROUP_DO.idFromName(groupIdHex);
   const stub = env.GROUP_DO.get(id);
 
-  // Construct the DO-internal request. The DO sees the trimmed path
-  // (e.g. "/ops" instead of "/groups/<id>/ops") so its switch stays
-  // readable. We ferry the ORIGINAL path + query along so MAC
-  // verification can rebuild the canonical request.
+  // The DO sees the trimmed path (e.g. "/ops" instead of
+  // "/groups/<id>/ops") so its switch stays readable. We ferry the ORIGINAL
+  // path + query along so MAC verification can rebuild the canonical request.
+  // The DO doesn't care about hostname; use a fixed origin so the URL is
+  // well-formed.
+  const inner = `https://do.internal${innerPath}${outerUrl.search}`;
+
+  // WebSocket upgrades MUST forward the ORIGINAL Request: re-issuing a plain
+  // Request drops the upgrade state and the 101 + webSocket would never
+  // survive. A Request we construct (unlike the inbound one) has mutable
+  // headers, so we still pin the original path/query for verifyMac.
+  if ((req.headers.get("upgrade") ?? "").toLowerCase() === "websocket") {
+    const wsReq = new Request(inner, req);
+    wsReq.headers.set(ORIGINAL_PATH_HEADER, outerUrl.pathname);
+    wsReq.headers.set(ORIGINAL_QUERY_HEADER, outerUrl.search.replace(/^\?/, ""));
+    return await stub.fetch(wsReq);
+  }
+
   const headers = new Headers(req.headers);
   headers.set(ORIGINAL_PATH_HEADER, outerUrl.pathname);
   headers.set(ORIGINAL_QUERY_HEADER, outerUrl.search.replace(/^\?/, ""));
-
-  // The DO doesn't care about hostname; use a fixed origin so the URL
-  // is well-formed.
-  const inner = new URL(`https://do.internal${innerPath}${outerUrl.search}`);
-  const innerReq = new Request(inner.toString(), {
+  const innerReq = new Request(inner, {
     method: req.method,
     headers,
     body: ["GET", "HEAD"].includes(req.method) ? undefined : req.body,

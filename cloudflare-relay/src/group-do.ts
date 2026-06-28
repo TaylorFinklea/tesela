@@ -23,6 +23,7 @@ import {
   handlePutSnapshot,
   handleGetSnapshots,
   handleRegisterDevice,
+  handlePresenceWs,
 } from "./handlers";
 
 export interface Env {
@@ -58,6 +59,16 @@ export class GroupDO implements DurableObject {
    *  this DO instance, so the window is accurate per (group, IP). */
   private ipHits = new Map<string, number[]>();
 
+  /** Live presence WebSockets, keyed by device id hex → server-side socket.
+   *  In-memory ONLY (never persisted) — exactly like nonces/ipHits above.
+   *  Under the hibernation API the DO can be evicted while the sockets stay
+   *  open at the edge, so this Map is NOT the source of truth: it is
+   *  rehydrated from `state.getWebSockets()` in the constructor on wake, and
+   *  the broadcast path also tolerates reading directly from getWebSockets().
+   *  Presence frames are opaque ciphertext — the relay NEVER decodes,
+   *  decrypts, inspects, or persists them (zero-knowledge, like ops). */
+  private wsClients = new Map<string, WebSocket>();
+
   constructor(
     public state: DurableObjectState,
     public env: Env,
@@ -65,6 +76,78 @@ export class GroupDO implements DurableObject {
     this.state.blockConcurrencyWhile(async () => {
       await this.ensureSchema();
     });
+    // Rehydrate the in-memory presence map from any sockets that survived
+    // a hibernation eviction. getWebSockets() returns the live edge sockets;
+    // their device identity rides in the serialized attachment.
+    for (const ws of this.state.getWebSockets()) {
+      const deviceHex = readDeviceHex(ws);
+      if (deviceHex) this.wsClients.set(deviceHex, ws);
+    }
+  }
+
+  // ── Presence WebSockets (relay-presence Stage 1) ──────────────────
+
+  /** Accept a MAC-verified presence upgrade: create the socket pair, stash
+   *  the device identity for hibernation survival, opt into the hibernation
+   *  API (acceptWebSocket, NOT server.accept()), register the live map, and
+   *  return the client end for the 101 Response. Mirrors the in-memory-Map
+   *  pattern of nonces/ipHits, reconciled with hibernation. */
+  acceptPresenceSocket(deviceHex: string): WebSocket {
+    const [client, server] = Object.values(new WebSocketPair());
+    // Persist identity so it survives eviction (constructor rehydration) and
+    // is recoverable in the webSocket* handlers after a wake.
+    server.serializeAttachment({ deviceHex });
+    this.state.acceptWebSocket(server, [deviceHex]);
+    this.wsClients.set(deviceHex, server);
+    return client;
+  }
+
+  /** Hibernation message handler — fired by the runtime for every inbound
+   *  presence frame (the addEventListener style does NOT fire post-wake).
+   *  Broadcasts the OPAQUE bytes verbatim to every OTHER device's sockets,
+   *  mirroring listOtherApnsTokens' exclude-self filter. Zero-knowledge: the
+   *  frame is never atob/JSON.parse/decrypted/persisted. */
+  async webSocketMessage(ws: WebSocket, message: ArrayBuffer | string): Promise<void> {
+    const senderHex = readDeviceHex(ws);
+    for (const peer of this.state.getWebSockets()) {
+      if (peer === ws) continue;
+      const peerHex = readDeviceHex(peer);
+      // Skip the sender's own device (it must never receive its own cursor),
+      // exactly like listOtherApnsTokens excludes the depositor by hex.
+      if (peerHex !== undefined && peerHex === senderHex) continue;
+      try {
+        peer.send(message);
+      } catch {
+        // A dead peer is cleaned up by its own close/error handler; one
+        // failed send must never abort the broadcast to the rest.
+      }
+    }
+  }
+
+  /** Hibernation close handler — complete the closing handshake and drop the
+   *  socket from the live map. */
+  async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {
+    this.dropPresenceSocket(ws);
+    try {
+      ws.close(code, reason);
+    } catch {
+      // already closing/closed
+    }
+  }
+
+  /** Hibernation error handler — drop the socket from the live map. */
+  async webSocketError(ws: WebSocket, _error: unknown): Promise<void> {
+    this.dropPresenceSocket(ws);
+  }
+
+  private dropPresenceSocket(ws: WebSocket): void {
+    const deviceHex = readDeviceHex(ws);
+    // Only delete if this exact socket is still the mapped one — a device
+    // that reconnected before the old socket's close fired must not have its
+    // fresh socket evicted by the stale one's teardown.
+    if (deviceHex && this.wsClients.get(deviceHex) === ws) {
+      this.wsClients.delete(deviceHex);
+    }
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -99,6 +182,8 @@ export class GroupDO implements DurableObject {
           return await handlePutSnapshot(this, req);
         case "GET /snapshots":
           return await handleGetSnapshots(this, req);
+        case "GET /presence/ws":
+          return await handlePresenceWs(this, req);
         case "DELETE /admin/registration":
           return await handleAdminDelete(this, req);
         default:
@@ -207,6 +292,17 @@ export class GroupDO implements DurableObject {
   }
 
   deleteRegistration(): void {
+    // Hijack recovery must also sever in-flight presence: a revoked group must
+    // not keep relaying cursors among the old members until they idle out. New
+    // upgrades already 401 (group not registered); this closes the live ones.
+    for (const ws of this.state.getWebSockets()) {
+      try {
+        ws.close(1008, "registration revoked");
+      } catch {
+        // already closing/closed
+      }
+    }
+    this.wsClients.clear();
     this.state.storage.sql.exec("DELETE FROM registration");
     this.state.storage.sql.exec("DELETE FROM ops");
     this.state.storage.sql.exec("DELETE FROM device_seen");
@@ -418,6 +514,15 @@ function bytesEq(a: Uint8Array, b: Uint8Array): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
+}
+
+/** Recover a presence socket's device-id hex from its serialized attachment.
+ *  The attachment is set in acceptPresenceSocket and survives hibernation
+ *  eviction, so it is the authoritative identity on wake. */
+function readDeviceHex(ws: WebSocket): string | undefined {
+  const attachment = ws.deserializeAttachment() as { deviceHex?: string } | null;
+  if (attachment && typeof attachment.deviceHex === "string") return attachment.deviceHex;
+  return undefined;
 }
 
 function bytesToHex(b: Uint8Array): string {

@@ -314,6 +314,42 @@ export async function handleGetSnapshots(self: GroupDO, req: Request): Promise<R
   return json({ compaction_seq, snapshots });
 }
 
+// ─── /presence/ws (GET upgrade) — relay-presence Stage 1 ──────────
+
+/**
+ * Presence WebSocket upgrade. Auth is identical to a GET /ops poll
+ * (empty-body MAC verify), only the canonical path differs — the MAC must
+ * be verified on the UPGRADE GET itself, BEFORE returning 101, because
+ * there is no post-upgrade auth hook. Unlike most gated endpoints this one
+ * HARD-REQUIRES a device id (verifyMac leaves it optional): the device hex
+ * is the wsClients key and the broadcast exclude-self identity, so a socket
+ * without one is rejected rather than keyed by `undefined`.
+ *
+ * The MAC-verified X-Tesela-Device header IS the authoritative identity —
+ * there is NO separate plaintext first-frame handshake (an unauthenticated
+ * first frame could spoof the key). The first data frame a client sends is
+ * simply the first sealed, opaque presence frame, which the DO broadcasts
+ * verbatim (zero-knowledge) in webSocketMessage.
+ */
+export async function handlePresenceWs(self: GroupDO, req: Request): Promise<Response> {
+  const macCheck = await verifyMac(self, req, new Uint8Array());
+  if (macCheck instanceof Response) return macCheck;
+  // A MAC-valid GET WITHOUT the upgrade header would otherwise fall through to
+  // acceptPresenceSocket and register an orphaned server socket with no client
+  // peer (the runtime then 500s the non-upgrade webSocket Response). Reject it
+  // before accepting so acceptPresenceSocket is reachable only on a real upgrade.
+  if ((req.headers.get("upgrade") ?? "").toLowerCase() !== "websocket") {
+    return new Response("expected websocket upgrade", { status: 426 });
+  }
+  if (!macCheck.device_id) {
+    return new Response("device required", { status: 401 });
+  }
+  const deviceHex = toHex(macCheck.device_id);
+
+  const client = self.acceptPresenceSocket(deviceHex);
+  return new Response(null, { status: 101, webSocket: client });
+}
+
 // ─── /admin/registration (DELETE) ─────────────────────────────────
 
 export async function handleAdminDelete(self: GroupDO, req: Request): Promise<Response> {
