@@ -47,6 +47,12 @@ final class LiveSyncSocket: ObservableObject {
     /// here; the server handles fan-out.
     var onBinaryDelta: ((Data) -> Void)?
 
+    /// Invoked on the main actor when the socket receives an EPHEMERAL presence
+    /// frame (PRES magic) — a peer's live caret (Phase 3 multi-device). Routed
+    /// BEFORE the binary-delta path, so it never reaches the engine. The shell
+    /// wires this to the `RemoteCursorStore`.
+    var onPresence: ((LoroPresence.Frame) -> Void)?
+
     /// Invoked on the main actor when the server's saved-views registry
     /// changed (the `views_changed` WS event, saved-views spec
     /// 2026-06-10). The shell wires this to
@@ -145,6 +151,12 @@ final class LiveSyncSocket: ObservableObject {
     private func handle(_ message: URLSessionWebSocketTask.Message) {
         switch message {
         case .data(let d):
+            // Ephemeral presence (PRES) is checked FIRST — a transient peer
+            // caret, not a document delta; it must never reach the engine.
+            if let frame = LoroPresence.decode(d) {
+                onPresence?(frame)
+                return
+            }
             // Binary frame = TLR2 Loro delta (instant-multidevice spec
             // §4). Hand the raw bytes to the engine owner via the
             // callback; do NOT attempt to UTF-8/JSON-decode them.
@@ -199,6 +211,14 @@ final class LiveSyncSocket: ObservableObject {
                 cont.resume(returning: error == nil)
             }
         }
+    }
+
+    /// Push an ephemeral presence frame (PRES). Fire-and-forget: presence is
+    /// transient + lossy-tolerant, so — unlike `sendDelta` — we don't await the
+    /// completion or gate any baseline on it. No-op when not connected.
+    func sendPresence(_ frame: Data) {
+        guard connected, let task else { return }
+        task.send(.data(frame)) { _ in }
     }
 
     private func scheduleReconnect() {
