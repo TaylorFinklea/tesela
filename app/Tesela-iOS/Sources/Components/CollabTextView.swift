@@ -30,6 +30,12 @@ import UIKit
 /// diff to the live `UITextView` and remaps the caret — so the peer's
 /// characters appear under the cursor without clobbering in-flight typing.
 /// The non-editing blocks still refresh via the deferred full-note path.
+/// One remote peer's caret to render in a block (Phase 3 presence).
+struct RemoteCaret: Equatable {
+    let offset: Int
+    let color: Color
+}
+
 struct CollabTextView: UIViewRepresentable {
     /// The block's raw text — the engine-exact stored value. Bound so
     /// SwiftUI and the `UITextView` agree on the current string; the
@@ -80,6 +86,14 @@ struct CollabTextView: UIViewRepresentable {
     /// yesterday's legacy `TextField` did). Hosting the same accessory
     /// content here is the only attachment point UIKit honors.
     var accessory: AnyView? = nil
+
+    /// Phase 3 presence: fires with the caret's utf16 offset whenever it moves
+    /// (tap / arrow / typing). The owner publishes it as a presence frame.
+    var onCaretMove: ((Int) -> Void)? = nil
+    /// Phase 3 presence: OTHER peers' carets to draw in this block. Re-applied
+    /// every render (the store drives re-renders), so an idle peer's caret
+    /// recomputes against the current text.
+    var remoteCarets: [RemoteCaret] = []
 
     /// Height of the hosted accessory bar (pill + its vertical padding).
     /// `BlockRow.collabKeyboardAccessory`'s layout must add up to this.
@@ -154,6 +168,32 @@ struct CollabTextView: UIViewRepresentable {
             DispatchQueue.main.async { uiView.becomeFirstResponder() }
         } else if !isFocused, uiView.isFirstResponder {
             DispatchQueue.main.async { uiView.resignFirstResponder() }
+        }
+
+        renderRemoteCarets(on: uiView)
+    }
+
+    /// Draw OTHER peers' carets as thin colored bars at their offsets. Cheap +
+    /// idempotent: clears prior remote-caret layers and re-adds from the current
+    /// `remoteCarets`. `caretRect` is in the text view's own layer space, so no
+    /// coordinate conversion is needed.
+    private func renderRemoteCarets(on tv: UITextView) {
+        tv.layer.sublayers?
+            .filter { $0.name == "remoteCaret" }
+            .forEach { $0.removeFromSuperlayer() }
+        guard !remoteCarets.isEmpty else { return }
+        let len = (tv.text as NSString?)?.length ?? 0
+        for caret in remoteCarets {
+            let off = max(0, min(caret.offset, len))
+            guard let pos = tv.position(from: tv.beginningOfDocument, offset: off) else { continue }
+            let rect = tv.caretRect(for: pos)
+            guard rect.height > 0, rect.minX.isFinite, rect.minY.isFinite else { continue }
+            let bar = CALayer()
+            bar.name = "remoteCaret"
+            bar.backgroundColor = UIColor(caret.color).cgColor
+            bar.frame = CGRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height)
+            bar.opacity = 0.85
+            tv.layer.addSublayer(bar)
         }
     }
 
@@ -247,6 +287,10 @@ struct CollabTextView: UIViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
+            // Phase 3 presence: any caret move (tap / arrow / post-typing)
+            // publishes our caret to peers.
+            let caret = textView.selectedRange.location + textView.selectedRange.length
+            parent.onCaretMove?(caret)
             // Caret moved without a text change (tap / arrow) — re-check
             // whether the caret still sits inside an open `[[…`.
             updateAutocomplete(textView)

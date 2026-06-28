@@ -63,6 +63,11 @@ struct BlockRow: View {
     /// so no unregister-on-blur is needed — a stale inserter no-ops (its text
     /// view is held weakly).
     var onActiveCollabInserter: ((CollabTextInserter) -> Void)? = nil
+    /// Phase 3 presence: fires with the caret's utf16 offset when it moves; the
+    /// owner publishes it as a presence frame for this block.
+    var onCaretMove: ((Int) -> Void)? = nil
+    /// Phase 3 presence: OTHER peers' carets to render in this block's editor.
+    var remoteCarets: [RemoteCaret] = []
     var onCancelEdit: (() -> Void)? = nil
     var onMenuAction: ((BlockAction) -> Void)? = nil
     /// Commit current text and append a new sibling block immediately
@@ -471,7 +476,9 @@ struct BlockRow: View {
             },
             inserter: inserter,
             autocomplete: editorAutocomplete,
-            accessory: collabKeyboardAccessory
+            accessory: collabKeyboardAccessory,
+            onCaretMove: onCaretMove,
+            remoteCarets: remoteCarets
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {

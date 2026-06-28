@@ -153,6 +153,14 @@ struct GrDailyView: View {
                     // inserter so a remote splice on this block live-applies.
                     mosaic.openBlockInserter = inserter
                 },
+                onCaretMove: { offset in
+                    // Phase 3 presence: publish our caret so peers (desktop /
+                    // other devices) render it live in this block.
+                    mosaic.publishPresence(slug: block.noteId, bid: block.id, offset: offset)
+                },
+                remoteCarets: mosaic.remoteCursors
+                    .cursors(forSlug: block.noteId, bid: block.id)
+                    .map { RemoteCaret(offset: $0.offset, color: RemoteCursorStore.displayColor($0.color)) },
                 onMenuAction: { action in handleTodayAction(action, on: block) },
                 onSplitToNewBlock: { _ in
                     // Logseq Enter: the new sibling inherits the CURRENT

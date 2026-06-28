@@ -24,6 +24,13 @@ final class RemoteCursorStore: ObservableObject {
         "#06b6d4", "#3b82f6", "#a855f7", "#ec4899",
     ]
 
+    /// Parse a `#RRGGBB` presence color string to a SwiftUI `Color` (falls back
+    /// to blue). Bridges the wire format to the existing `Color(hex: UInt32)`.
+    static func displayColor(_ hex: String) -> Color {
+        let s = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        return Color(hex: UInt32(s, radix: 16) ?? 0x3b82f6)
+    }
+
     /// Deterministic palette color for a peer id (FNV-1a, mirrors the web).
     static func color(for peer: String) -> String {
         var h: UInt32 = 2166136261

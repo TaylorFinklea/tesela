@@ -240,6 +240,14 @@ struct AppShell: View {
             liveSync.onBinaryDelta = { [weak relayTicker] frame in
                 Task { await relayTicker?.applyInboundDelta(frame) }
             }
+            // Phase 3 presence: inbound peer carets → the mosaic's store (PRES
+            // frames never reach the engine); outbound our caret → the socket.
+            liveSync.onPresence = { [mosaic] frame in
+                Task { @MainActor in mosaic.applyPresence(frame) }
+            }
+            mosaic.sendPresence = { [weak liveSync] data in
+                Task { @MainActor in liveSync?.sendPresence(data) }
+            }
         }
         if let active = mosaicRegistry.activeProfile {
             if backend.serverURL != active.serverURL {

@@ -182,6 +182,31 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// Args: (slug, title, fullContent, createdAtMillis).
     var onLocalWrite: ((String, String, String, Int64) -> Void)? = nil
 
+    // MARK: - Phase 3 presence (multi-device live cursors)
+    /// OTHER peers' live carets. The daily/page views read it per block to draw
+    /// remote cursors; AppShell feeds inbound frames via `applyPresence`.
+    let remoteCursors = RemoteCursorStore()
+    /// Wired by AppShell to `LiveSyncSocket.sendPresence` — the egress for our
+    /// caret. `nil` in mock mode (no socket) → publish is a no-op.
+    var sendPresence: ((Data) -> Void)?
+
+    /// Publish THIS device's caret in note `slug`, block `bid`, at utf16
+    /// `offset`. Ephemeral — fire-and-forget over the WS.
+    func publishPresence(slug: String, bid: String, offset: Int) {
+        guard let send = sendPresence else { return }
+        let frame = LoroPresence.Frame(
+            peer: remoteCursors.localPeer, color: remoteCursors.localColor,
+            name: nil, slug: slug, bid: bid, offset: offset)
+        send(LoroPresence.encode(frame))
+    }
+
+    /// Merge an inbound peer caret, then nudge observers so the daily/page views
+    /// re-render and recompute their per-block `remoteCarets`.
+    func applyPresence(_ frame: LoroPresence.Frame) {
+        remoteCursors.apply(frame)
+        objectWillChange.send()
+    }
+
     /// Collab editing C1 outbound: fired for a single in-block CHARACTER
     /// SPLICE (one keystroke) instead of a whole-text re-author. Wired in
     /// `GrAppShell` to `relayTicker.spliceAndPush(...)`, which applies the
