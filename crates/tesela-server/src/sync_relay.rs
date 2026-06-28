@@ -242,6 +242,12 @@ pub async fn tick(
     let mut sent_total = 0u32;
     let mut applied_note_ids: Vec<[u8; 16]> = Vec::new();
     let mut applied_updates: Vec<tesela_sync::LoroDocUpdate> = Vec::new();
+    // Notes whose inbound apply FAILED or landed PENDING this tick — we do NOT
+    // genuinely hold their content (the doc is empty/partial/vivified), so they
+    // must be EXCLUDED from the heal-snapshot deposit below: depositing such a
+    // snapshot as authoritative would let a peer's catch-up overwrite real
+    // content (clobber). Guarded by `tick_holds_cursor…`.
+    let mut not_genuine_this_tick: Vec<[u8; 16]> = Vec::new();
 
     // ─── Inbound ─────────────────────────────────────────────────────
     match handle.client.poll(state.inbound_cursor).await {
@@ -286,6 +292,14 @@ pub async fn tick(
                             .collect();
                         let report = engine.apply_relay_updates(&pairs).await;
                         applied_total += report.applied_count() as u32;
+                        // Record notes we do NOT genuinely hold this tick (failed
+                        // or pending apply) so the heal-deposit skips them.
+                        for doc in &report.pending {
+                            not_genuine_this_tick.push(*doc);
+                        }
+                        for (doc, _) in &report.failed {
+                            not_genuine_this_tick.push(*doc);
+                        }
                         // Loro apply is idempotent, so the caller emitting a
                         // WsEvent for a no-op merge is harmless; record each
                         // cleanly-applied doc (deduped) so the live-WS
@@ -468,6 +482,9 @@ pub async fn tick(
     // others, and uncommitted batches re-produce next tick.
     let batches =
         tesela_sync::pack_loro_relay_batches(updates, tesela_sync::MAX_RELAY_PLAINTEXT_BYTES);
+    // Note ids successfully broadcast this tick — their heal-snapshots are
+    // deposited right after the loop (past-day convergence, 2026-06-28).
+    let mut broadcast_note_ids: Vec<[u8; 16]> = Vec::new();
     for (payload, committed) in batches {
         let ciphertext = match tesela_sync::encode_loro_relay_payload(&payload) {
             Ok(c) => c,
@@ -485,6 +502,9 @@ pub async fn tick(
         match handle.client.put_envelope(envelope).await {
             Ok((_seq, _ts)) => {
                 engine.commit_broadcast_cursors(&committed).await;
+                for (nid, _vv) in &committed {
+                    broadcast_note_ids.push(*nid);
+                }
                 sent_total += 1;
                 state.last_put_at = Some(now_secs_i64());
                 state.last_error = None;
@@ -494,6 +514,46 @@ pub async fn tick(
                 tracing::warn!("{msg}");
                 state.last_error = Some(msg);
                 continue;
+            }
+        }
+    }
+
+    // ─── Heal-snapshot deposit (past-day convergence, 2026-06-28) ─────
+    // For every note we just broadcast AND genuinely hold, deposit its current
+    // full snapshot to the relay as an INERT deposit (covers_seq = 0 → available
+    // for a peer's catch-up, never advances the GC watermark). The gated
+    // compaction below only deposits on a 5-min cadence, with inbound_cursor > 0,
+    // and never while a catch-up is queued — so a cold PAST-DAY note's fresh
+    // snapshot would otherwise reach the relay minutes late or not at all,
+    // leaving a DIVERGED peer stuck ("editing on desktop doesn't kick it").
+    //
+    // CLOBBER GUARD: skip notes we don't genuinely hold this tick — a note whose
+    // apply FAILED/PENDED is auto-vivified as an empty/partial doc; depositing
+    // that as authoritative would let a peer heal FROM it and lose real content.
+    // Excluding `not_genuine_this_tick` + `catchup_notes` keeps only real
+    // local-authored / cleanly-applied notes. Being independent of the gated
+    // compaction, healthy notes also heal even when another note is stuck (the
+    // deadlock). Additive — never touches the merge/apply path; best-effort.
+    if !broadcast_note_ids.is_empty() {
+        let mut heal: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for id in &broadcast_note_ids {
+            if not_genuine_this_tick.contains(id) {
+                continue;
+            }
+            if state.catchup_notes.contains(&hex::encode(id)) {
+                continue;
+            }
+            if let Some(bytes) = engine.export_doc_update(*id, None).await {
+                heal.push((id.to_vec(), bytes));
+            }
+        }
+        if !heal.is_empty() {
+            if let Err(e) = handle
+                .client
+                .put_snapshots_chunked(0, heal, deposit_chunk_budget_bytes())
+                .await
+            {
+                tracing::warn!("relay: heal-snapshot deposit (broadcast notes): {e}");
             }
         }
     }
@@ -948,6 +1008,54 @@ mod tests {
             handle_c.state.read().await.inbound_cursor,
             comp_seq,
             "bootstrap jumped C's cursor to the relay watermark"
+        );
+    }
+
+    /// Past-day convergence (Taylor 2026-06-28): editing a note must promptly
+    /// deposit its heal-snapshot to the relay (not wait out the 5-min compaction
+    /// cadence), so a peer whose copy diverged can catch it up. A genuinely-held
+    /// note (locally authored here) IS deposited on broadcast. The clobber guard
+    /// — a FAILED/pending (vivified) note must NOT be deposited — is covered by
+    /// `tick_holds_cursor_at_failed_apply_then_gives_up_after_bound` (the poison
+    /// note stays queued, i.e. was never spuriously healed from a bad snapshot).
+    #[tokio::test]
+    async fn broadcast_deposits_heal_snapshot_for_genuine_note() {
+        let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+        let (group, key) = fresh_group();
+        let ident = GroupIdentity {
+            group_id: group,
+            group_key: key.clone(),
+        };
+        const NID: [u8; 16] = [0x0c; 16];
+        let a_tmp = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa2; 16]);
+        let engine_a = engine_in(&a_tmp, dev_a).await;
+        engine_a
+            .record_local(OpPayload::NoteUpsert {
+                note_id: NID,
+                display_alias: Some("gamma".into()),
+                title: "Gamma".into(),
+                content: "- hello gamma\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let handle_a = handle_for(&base_url, group, dev_a, key.clone(), a_tmp.path().to_path_buf());
+        // GET /snapshots is MAC-gated + needs the group registered (pairing does
+        // this in production).
+        handle_a.client.register(1).await.unwrap();
+
+        // One tick broadcasts the local edit. inbound_cursor stays 0, so the
+        // gated compaction is SKIPPED — the heal-deposit must still land it.
+        tick(&engine_a, &ident, &handle_a).await.unwrap();
+
+        let (_seq, snaps) = handle_a.client.fetch_snapshots().await.unwrap();
+        let ids: Vec<Vec<u8>> = snaps.iter().map(|(id, _, _)| id.clone()).collect();
+        assert!(
+            ids.contains(&NID.to_vec()),
+            "a genuine local edit must deposit its heal-snapshot on broadcast \
+             (got {} snapshot(s))",
+            snaps.len()
         );
     }
 
