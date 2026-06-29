@@ -4,6 +4,36 @@ Status: SPEC (2026-06-29). Root cause CONFIRMED via 4 diagnosis passes + live ev
 Builds on the committed partial fixes (see Done). The convergence-critical remaining
 fix; implement deliberately + TDD (do NOT rush — riskiest area in the codebase).
 
+## ⚠️ POST-REVIEW REVISION (2026-06-29, after the step-1 attempt)
+Step-1 was implemented (deterministic daily seed + `doc_for_note_mut`/NoteUpsert seeding) on
+branch **`wip/concurrent-convergence-shared-base`** and adversarially reviewed →
+**convergenceOk=false**. Key findings (trust these):
+- **The engine seed ALONE does NOT fix the production garble.** The repro test that "passed"
+  hardcoded the SAME `daily_placeholder_bid` into both device bodies. No shipped client does that
+  — iOS + `parse_body_blocks` stamp RANDOM bids. So both devices still author DIFFERENT
+  bids/lineages; the seed's placeholder is never the bid they write into.
+- **Shipping the seed alone REGRESSES**: every new daily gets a STRAY empty placeholder bullet
+  (the seed's empty block, bid ≠ the client's random content bid; empty bullets are kept as the
+  edit surface). So step-1 is NOT shippable solo. (Why it's parked on a branch, not main.)
+- **The real fix is CLIENT-SIDE bootstrap-before-author (spec steps 2-3):** before editing a
+  daily, a device must import the relay's authoritative doc (shared base) so it authors into the
+  EXISTING bid/lineage (the production garble was bid c35861c0 created on iOS, synced, then edited
+  on the desktop's DISJOINT lineage → union). Bootstrap-before-author makes the 2nd editor share
+  the 1st's lineage → char-merge. Distinct NEW blocks (random bids) are already separate (no
+  garble) — so the seed may not even be needed if bootstrap-before-author is solid; OPEN DESIGN
+  CHOICE: (A) bootstrap-before-author only, vs (B) seed + clients author into
+  `daily_placeholder_bid` (+ reconcile remaps the 1st content block onto the placeholder node to
+  avoid the stray). Decide before implementing.
+- **Tests still owed** (spec TDD): distinct-blocks-stay-separate (the actual production symptom),
+  and local-un-broadcast-edit-survives-bootstrap. The step-1 test asserted same-bid char-merge,
+  not the separate-blocks symptom.
+- Latent: `is_daily_slug` only matches canonical YYYY-MM-DD (custom journal date_formats bypass).
+
+NEXT (fresh): decide (A) vs (B); if (A), wire bootstrap-before-author on desktop (relay tick /
+authoring entry) + iOS (`bootstrapNoteIfNeeded` before first splice of an unmaterialized daily,
+MockMosaicService spliceTodayBlock ~655 + gate ~708) — verify with a REALISTIC random-bid
+two-client repro (no hardcoded shared bid) before claiming a fix.
+
 ## Symptom (Taylor's daily-driver, real)
 Desktop daily showed `Bothnice onenice one` = `"Both"` (iPhone) + `"nice one"` + `"nice one"`
 (desktop) — SEPARATE intended blocks' text CONCATENATED into ONE block (bid c35861c0), plus
