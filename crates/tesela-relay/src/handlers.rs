@@ -301,7 +301,20 @@ pub async fn get_ops(
                     payload_b64: b64.encode(&r.payload),
                 })
                 .collect();
-            (StatusCode::OK, Json(records)).into_response()
+            // Additive header so a client can detect it has fallen behind
+            // the compaction watermark. Body stays a bare JSON array.
+            let compaction_seq = state
+                .inner
+                .store
+                .get_compaction_seq(&group_id)
+                .await
+                .unwrap_or(0);
+            (
+                StatusCode::OK,
+                [("X-Tesela-Compaction-Seq", compaction_seq.to_string())],
+                Json(records),
+            )
+                .into_response()
         }
         Err(e) => internal_err(&e.to_string()),
     }

@@ -311,10 +311,16 @@ impl RelayClient {
                 resp.status()
             )));
         }
+        let compaction_seq = resp
+            .headers()
+            .get("X-Tesela-Compaction-Seq")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<i64>().ok());
         let rows: Vec<RelayOpWire> = resp.json().await.map_err(net_err("poll response body"))?;
         let mut out = PollBatch {
             rows: Vec::with_capacity(rows.len()),
             skipped: Vec::new(),
+            compaction_seq,
         };
         for row in rows {
             match self.open_relay_row(&row) {
@@ -837,6 +843,13 @@ pub struct PollBatch {
     /// otherwise a poisoned row at the batch tail would be re-fetched
     /// and re-skipped on every poll.
     pub skipped: Vec<i64>,
+    /// The relay's current per-group compaction watermark, read from the
+    /// additive `X-Tesela-Compaction-Seq` response header on `GET /ops`.
+    /// `None` when the relay omitted the header (older relay) or it failed
+    /// to parse. When `> inbound_cursor` the consumer has fallen behind the
+    /// compaction watermark — the ops it still needs were GC'd off the op
+    /// log — and must bootstrap from snapshots instead of polling.
+    pub compaction_seq: Option<i64>,
 }
 
 impl PollBatch {

@@ -3183,6 +3183,18 @@ public struct TickInboundRecord: Equatable, Hashable {
      * freeze (audit A4).
      */
     public var needsCatchupNoteIdsHex: [String]
+    /**
+     * The relay's current per-group compaction watermark (the additive
+     * `X-Tesela-Compaction-Seq` header on `GET /ops`). `0` when the relay
+     * omitted the header (older relay) or it failed to parse. When this is
+     * `> new_cursor_seq` the consumer has fallen behind the watermark — the
+     * ops it still needs were GC'd off the op log — and must bootstrap from
+     * snapshots instead of polling deltas, even when `applied == 0` (the
+     * stranded-behind-compaction convergence bug). The Swift ticker reads
+     * this and re-runs the snapshot bootstrap on the LIVE coordinator
+     * mid-run, without tearing it down.
+     */
+    public var compactionSeq: Int64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -3213,12 +3225,24 @@ public struct TickInboundRecord: Equatable, Hashable {
          * should fetch the relay snapshots (or the hub's note snapshot)
          * and import them for exactly these notes, or they silently
          * freeze (audit A4).
-         */needsCatchupNoteIdsHex: [String]) {
+         */needsCatchupNoteIdsHex: [String], 
+        /**
+         * The relay's current per-group compaction watermark (the additive
+         * `X-Tesela-Compaction-Seq` header on `GET /ops`). `0` when the relay
+         * omitted the header (older relay) or it failed to parse. When this is
+         * `> new_cursor_seq` the consumer has fallen behind the watermark — the
+         * ops it still needs were GC'd off the op log — and must bootstrap from
+         * snapshots instead of polling deltas, even when `applied == 0` (the
+         * stranded-behind-compaction convergence bug). The Swift ticker reads
+         * this and re-runs the snapshot bootstrap on the LIVE coordinator
+         * mid-run, without tearing it down.
+         */compactionSeq: Int64) {
         self.applied = applied
         self.skippedOwn = skippedOwn
         self.errors = errors
         self.newCursorSeq = newCursorSeq
         self.needsCatchupNoteIdsHex = needsCatchupNoteIdsHex
+        self.compactionSeq = compactionSeq
     }
 
     
@@ -3241,7 +3265,8 @@ public struct FfiConverterTypeTickInboundRecord: FfiConverterRustBuffer {
                 skippedOwn: FfiConverterUInt32.read(from: &buf), 
                 errors: FfiConverterUInt32.read(from: &buf), 
                 newCursorSeq: FfiConverterInt64.read(from: &buf), 
-                needsCatchupNoteIdsHex: FfiConverterSequenceString.read(from: &buf)
+                needsCatchupNoteIdsHex: FfiConverterSequenceString.read(from: &buf), 
+                compactionSeq: FfiConverterInt64.read(from: &buf)
         )
     }
 
@@ -3251,6 +3276,7 @@ public struct FfiConverterTypeTickInboundRecord: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.errors, into: &buf)
         FfiConverterInt64.write(value.newCursorSeq, into: &buf)
         FfiConverterSequenceString.write(value.needsCatchupNoteIdsHex, into: &buf)
+        FfiConverterInt64.write(value.compactionSeq, into: &buf)
     }
 }
 

@@ -1038,6 +1038,25 @@ final class RelayTicker: ObservableObject {
                     engine: engine
                 )
             }
+            // Stranded-behind-compaction convergence fix (mirrors the desktop
+            // `tick()`): an empty/zero-applied poll is NOT proof we're caught
+            // up. When the relay's GC watermark (`compactionSeq`) is past our
+            // inbound cursor the ops we still need were compacted away, so the
+            // tail poll is a black hole. Re-run the snapshot bootstrap on the
+            // LIVE coordinator (NO teardown) to converge. Inbound cursor only;
+            // outbound is untouched (no pending local edit is lost).
+            if Self.shouldBootstrapMidRun(
+                applied: Int(inbound.applied),
+                compactionSeq: inbound.compactionSeq,
+                cursor: inbound.newCursorSeq
+            ), let relay, let engine, let scope = tickScope {
+                await runSnapshotBootstrap(
+                    engine: engine,
+                    relay: relay,
+                    coordinator: coordinator,
+                    scope: scope
+                )
+            }
             // Sync durability P3b: once we have a relay handle + an APNs
             // device token (captured by AppDelegate at launch), register it
             // so the relay can silent-push our other devices on deposit.
@@ -1249,12 +1268,51 @@ final class RelayTicker: ObservableObject {
         // relay's compacted snapshot set so a device that's been offline past
         // the relay's GC window converges even when the Mac (the depositor) is
         // unreachable — the case the Mac-HTTP `bootstrapNoteIfNeeded` can't cover
-        // with the Mac off. Import each note_id-keyed snapshot, then jump the
-        // inbound cursor to the relay's watermark so the next poll fetches only
-        // the un-compacted tail. Guard: skip when our cursor already covers the
-        // watermark (mirrors the server's `bootstrap_from_snapshots`). Best-effort
-        // — a fetch failure just leaves the cursor as-is and the normal poll
-        // handles the (un-GC'd) tail.
+        // with the Mac off. Shared with the LIVE mid-run bootstrap in tickOnce
+        // (the stranded-behind-compaction convergence fix) — see
+        // `runSnapshotBootstrap`.
+        await runSnapshotBootstrap(
+            engine: engine,
+            relay: relay,
+            coordinator: coordinator,
+            scope: scope
+        )
+        self.relay = relay
+        self.coordinator = coordinator
+        self.cursorScope = scope
+        self.coordinatorPairingCode = codeStr
+    }
+
+    /// Pure half of the mid-run bootstrap gate (stranded-behind-compaction
+    /// convergence fix, mirrors the desktop `tick()`): a poll that returns
+    /// `applied == 0` is NOT proof of "caught up" — when the relay's GC
+    /// watermark (`compactionSeq`) is past our inbound cursor, the ops we
+    /// still need were compacted away, so the empty tail is a black hole.
+    /// In that case re-run the snapshot bootstrap on the LIVE coordinator.
+    /// `applied` is accepted for call-site clarity but intentionally NOT
+    /// part of the predicate: the bug is precisely that the device strands
+    /// behind the watermark even when nothing applied.
+    static func shouldBootstrapMidRun(applied: Int, compactionSeq: Int64, cursor: Int64) -> Bool {
+        compactionSeq > cursor
+    }
+
+    /// Pull the relay's compacted snapshot set and (when behind the GC
+    /// watermark) import each note snapshot, then jump the inbound cursor
+    /// to the watermark so the next poll fetches only the un-compacted tail.
+    /// Shared by `buildCoordinator` (cold start) and `tickOnce` (mid-run, on
+    /// the LIVE coordinator — NO teardown). Clobber guards preserved exactly:
+    /// `importNoteSnapshotById` is a NON-DESTRUCTIVE merge; the cursor jump is
+    /// ALL-OR-NOTHING (`shouldJumpBootstrapCursor` holds the cursor on any
+    /// failed import so the covered-but-GC'd note isn't skipped permanently);
+    /// and it touches ONLY the inbound cursor — never the persisted OUTBOUND
+    /// cursor. Best-effort — a fetch failure leaves the cursor as-is and the
+    /// normal poll handles the (un-GC'd) tail.
+    private func runSnapshotBootstrap(
+        engine: SyncEngineHandle,
+        relay: RelayClientHandle,
+        coordinator: SyncCoordinator,
+        scope: String
+    ) async {
         do {
             let snaps = try await relay.fetchSnapshots()
             if Self.shouldRunSnapshotBootstrap(
@@ -1278,7 +1336,7 @@ final class RelayTicker: ObservableObject {
                     // import would skip that note permanently — and the
                     // `compactionSeq > inboundCursorSeq` guard would make
                     // every future bootstrap a no-op. On partial failure the
-                    // cursor holds, so the next rebuild retries the imports.
+                    // cursor holds, so the next rebuild/tick retries the imports.
                     await coordinator.setInboundCursorSeq(seq: snaps.compactionSeq)
                     inboundCursorSeq = snaps.compactionSeq
                     UserDefaults.standard.set(
@@ -1293,10 +1351,6 @@ final class RelayTicker: ObservableObject {
         } catch {
             // Leave the cursor as-is; the regular poll handles the un-GC'd tail.
         }
-        self.relay = relay
-        self.coordinator = coordinator
-        self.cursorScope = scope
-        self.coordinatorPairingCode = codeStr
     }
 
     /// One-time migration (audit A5): cursors persisted under the

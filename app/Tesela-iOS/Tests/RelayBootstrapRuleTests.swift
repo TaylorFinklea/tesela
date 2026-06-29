@@ -23,6 +23,37 @@ final class RelayBootstrapRuleTests: XCTestCase {
         XCTAssertFalse(RelayTicker.shouldRunSnapshotBootstrap(compactionSeq: 0, inboundCursorSeq: 0))
     }
 
+    // MARK: Mid-run bootstrap gate — stranded behind compaction
+
+    func testMidRunBootstrapWhenBehindWatermarkEvenWithEmptyPoll() {
+        // The bug: poll returns applied == 0 (the ops we need were GC'd, so
+        // the tail is empty) yet the relay's watermark is past our cursor.
+        // An empty poll must NOT be read as "caught up" — bootstrap.
+        XCTAssertTrue(
+            RelayTicker.shouldBootstrapMidRun(applied: 0, compactionSeq: 1001, cursor: 1)
+        )
+        // Behind is behind regardless of how many envelopes applied this tick.
+        XCTAssertTrue(
+            RelayTicker.shouldBootstrapMidRun(applied: 5, compactionSeq: 500, cursor: 42)
+        )
+    }
+
+    func testMidRunBootstrapSkippedWhenCaughtUp() {
+        // Cursor at/past the watermark → the tail poll covers everything,
+        // no mid-run bootstrap (applied doesn't change the answer).
+        XCTAssertFalse(
+            RelayTicker.shouldBootstrapMidRun(applied: 0, compactionSeq: 42, cursor: 42)
+        )
+        XCTAssertFalse(
+            RelayTicker.shouldBootstrapMidRun(applied: 3, compactionSeq: 42, cursor: 100)
+        )
+        // No compaction yet (watermark 0, e.g. an older relay surfaces 0) →
+        // never bootstrap.
+        XCTAssertFalse(
+            RelayTicker.shouldBootstrapMidRun(applied: 0, compactionSeq: 0, cursor: 0)
+        )
+    }
+
     // MARK: Cursor jump — all-or-nothing imports
 
     func testCursorJumpsOnlyWhenEveryImportSucceeded() {

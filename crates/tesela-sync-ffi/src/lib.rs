@@ -1618,6 +1618,12 @@ impl SyncCoordinator {
             errors,
             new_cursor_seq: max_seq,
             needs_catchup_note_ids_hex: needs_catchup,
+            // The relay's per-group compaction watermark (additive
+            // `X-Tesela-Compaction-Seq` header). `None` (older relay or an
+            // unparseable header) surfaces as 0 so the Swift mid-run
+            // bootstrap check (`compaction_seq > inbound_cursor`) never
+            // fires on a relay that doesn't advertise a watermark.
+            compaction_seq: batch.compaction_seq.unwrap_or(0),
         })
     }
 
@@ -1676,6 +1682,16 @@ pub struct TickInboundRecord {
     /// and import them for exactly these notes, or they silently
     /// freeze (audit A4).
     pub needs_catchup_note_ids_hex: Vec<String>,
+    /// The relay's current per-group compaction watermark (the additive
+    /// `X-Tesela-Compaction-Seq` header on `GET /ops`). `0` when the relay
+    /// omitted the header (older relay) or it failed to parse. When this is
+    /// `> new_cursor_seq` the consumer has fallen behind the watermark — the
+    /// ops it still needs were GC'd off the op log — and must bootstrap from
+    /// snapshots instead of polling deltas, even when `applied == 0` (the
+    /// stranded-behind-compaction convergence bug). The Swift ticker reads
+    /// this and re-runs the snapshot bootstrap on the LIVE coordinator
+    /// mid-run, without tearing it down.
+    pub compaction_seq: i64,
 }
 
 /// Outcome of [`SyncCoordinator::tick_outbound`]. Designed to be small
@@ -3256,6 +3272,7 @@ mod tests {
             errors: 0,
             new_cursor_seq: 0,
             needs_catchup_note_ids_hex: Vec::new(),
+            compaction_seq: 0,
         };
         for _ in 1..MAX_APPLY_RETRIES {
             last = coord.tick_inbound().await.unwrap();

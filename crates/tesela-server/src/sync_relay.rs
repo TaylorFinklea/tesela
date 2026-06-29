@@ -59,6 +59,16 @@ pub struct RelayState {
     /// durable counter).
     #[serde(skip)]
     pub apply_retries: HashMap<i64, u32>,
+    /// Per-note hash of the LAST heal-snapshot we deposited on broadcast, so
+    /// an identical re-broadcast (same `export_doc_update` bytes) skips a
+    /// redundant deposit. Throttles ONLY identical churn — any new/changed
+    /// content hashes differently and ALWAYS deposits immediately (never
+    /// re-strands a diverged peer). Per-content, NOT per-cadence: gating the
+    /// heal on the compaction cadence / catch-up / inbound_cursor caused the
+    /// past-day-stuck bug. In-memory only — a restart re-deposits once per
+    /// note, which is harmless (idempotent upsert).
+    #[serde(skip)]
+    pub heal_deposit_hashes: HashMap<[u8; 16], u64>,
     /// Relay URL the cursors were earned against. Together with
     /// `group_id_hex` this scopes the persisted state to ONE
     /// (relay, group) identity: relay seqs are a per-relay, per-group
@@ -248,10 +258,18 @@ pub async fn tick(
     // snapshot as authoritative would let a peer's catch-up overwrite real
     // content (clobber). Guarded by `tick_holds_cursor…`.
     let mut not_genuine_this_tick: Vec<[u8; 16]> = Vec::new();
+    // Set when this poll's `X-Tesela-Compaction-Seq` header is ahead of our
+    // inbound cursor: the ops we still need were GC'd off the op log, so we
+    // must bootstrap from the relay's deposited snapshots instead of polling
+    // (a silent permanent stall otherwise). The actual bootstrap runs AFTER
+    // the inbound write-lock is dropped — `bootstrap_from_snapshots`
+    // re-acquires `handle.state` (deadlock guard).
+    let mut needs_bootstrap = false;
 
     // ─── Inbound ─────────────────────────────────────────────────────
     match handle.client.poll(state.inbound_cursor).await {
         Ok(batch) => {
+            let batch_compaction = batch.compaction_seq;
             let mut max_seq = state.inbound_cursor;
             // Earliest seq in this batch whose apply FAILED and is still
             // within its retry budget — the cursor is capped just before it
@@ -432,6 +450,14 @@ pub async fn tick(
                     tracing::debug!("relay ack({}): {}", max_seq, e);
                 }
             }
+            // If the relay's compaction watermark is ahead of our (now-capped)
+            // inbound cursor, the ops we still need have been GC'd — flag a
+            // snapshot bootstrap. Runs below, after this write lock is dropped.
+            if let Some(cs) = batch_compaction {
+                if cs > state.inbound_cursor {
+                    needs_bootstrap = true;
+                }
+            }
             state.last_poll_at = Some(now_secs_i64());
             state.last_error = None;
         }
@@ -441,6 +467,20 @@ pub async fn tick(
             state.last_error = Some(msg);
         }
     }
+
+    // ─── Snapshot bootstrap when behind the compaction watermark ─────
+    // DEADLOCK GUARD: `bootstrap_from_snapshots` re-acquires `handle.state`,
+    // so the inbound write lock MUST be released first. Re-acquire afterward
+    // for the catch-up + outbound phases. The bootstrap keeps the convergence
+    // clobber guards (non-destructive import_doc_update merge; ALL-OR-NOTHING
+    // cursor jump only when every per-note import succeeds, else the failed
+    // notes are queued for catch-up and the cursor holds; touches ONLY the
+    // inbound cursor, never the outbound broadcast cursors).
+    drop(state);
+    if needs_bootstrap {
+        bootstrap_from_snapshots(engine, handle).await;
+    }
+    let mut state = handle.state.write().await;
 
     // ─── Targeted snapshot catch-up ──────────────────────────────────
     // Heal notes whose inbound apply failed or landed PENDING (and notes a
@@ -536,6 +576,9 @@ pub async fn tick(
     // deadlock). Additive — never touches the merge/apply path; best-effort.
     if !broadcast_note_ids.is_empty() {
         let mut heal: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        // (note_id, content hash) pairs to record AFTER a successful deposit,
+        // so a failed deposit re-tries next tick instead of recording the hash.
+        let mut deposited_hashes: Vec<([u8; 16], u64)> = Vec::new();
         for id in &broadcast_note_ids {
             if not_genuine_this_tick.contains(id) {
                 continue;
@@ -544,16 +587,33 @@ pub async fn tick(
                 continue;
             }
             if let Some(bytes) = engine.export_doc_update(*id, None).await {
+                // Per-content throttle (layered ON TOP of the genuine /
+                // catch-up skips above): skip ONLY when this exact snapshot
+                // was already deposited (identical re-broadcast churn). Any
+                // new/changed content hashes differently and deposits now.
+                let h = export_snapshot_hash(&bytes);
+                if state.heal_deposit_hashes.get(id) == Some(&h) {
+                    continue;
+                }
+                deposited_hashes.push((*id, h));
                 heal.push((id.to_vec(), bytes));
             }
         }
         if !heal.is_empty() {
-            if let Err(e) = handle
+            match handle
                 .client
                 .put_snapshots_chunked(0, heal, deposit_chunk_budget_bytes())
                 .await
             {
-                tracing::warn!("relay: heal-snapshot deposit (broadcast notes): {e}");
+                Ok(_) => {
+                    // Record only on success — a failed deposit must re-try.
+                    for (id, h) in deposited_hashes {
+                        state.heal_deposit_hashes.insert(id, h);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("relay: heal-snapshot deposit (broadcast notes): {e}");
+                }
             }
         }
     }
@@ -774,6 +834,18 @@ pub(crate) async fn catchup_from_snapshots(
         }
     }
     healed
+}
+
+/// Hash a note's exported snapshot bytes for the per-note heal-deposit
+/// throttle. Only stability WITHIN a process run matters (the map is
+/// `#[serde(skip)]`), so the std hasher is sufficient — it distinguishes
+/// changed content (always re-deposit) from identical re-broadcast churn
+/// (skip).
+fn export_snapshot_hash(bytes: &[u8]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Parse a 32-char hex note id back to its 16 raw bytes.
@@ -1429,6 +1501,191 @@ mod tests {
             handle_a.state.read().await.inbound_cursor,
             7,
             "bootstrap advances the cursor once ALL imports succeed"
+        );
+    }
+
+    /// CONVERGENCE-CRITICAL (desktop, 2026-06-28): a consumer whose inbound
+    /// cursor has fallen BEHIND the relay's compaction watermark — the ops it
+    /// still needs were GC'd off the op log — must detect that (via the
+    /// `X-Tesela-Compaction-Seq` poll header) and bootstrap from the deposited
+    /// snapshots in a normal tick, NOT silently stall on empty polls. The
+    /// bootstrap must converge it to content it never polled, touch only the
+    /// inbound cursor, and never clobber a local un-broadcast edit.
+    #[tokio::test]
+    async fn tick_bootstraps_when_behind_compaction_watermark() {
+        let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+        let (group, key) = fresh_group();
+        let ident = GroupIdentity {
+            group_id: group,
+            group_key: key.clone(),
+        };
+
+        const NID_ALPHA: [u8; 16] = [0xa0; 16];
+        const NID_BETA: [u8; 16] = [0xbe; 16];
+        const NID_GAMMA: [u8; 16] = [0x6a; 16];
+
+        // ── Engine A authors ALPHA + broadcasts it ──
+        let a_tmp = tempfile::tempdir().unwrap();
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let engine_a = engine_in(&a_tmp, dev_a).await;
+        engine_a
+            .record_local(OpPayload::NoteUpsert {
+                note_id: NID_ALPHA,
+                display_alias: Some("alpha".into()),
+                title: "alpha".into(),
+                content: "- hello alpha\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let handle_a = handle_for(&base_url, group, dev_a, key.clone(), a_tmp.path().to_path_buf());
+        bring_up(&handle_a).await.expect("A bring-up");
+        tick(&engine_a, &ident, &handle_a).await.unwrap(); // PUT ALPHA op
+
+        // ── Engine B ticks to pick up ALPHA → inbound_cursor = N ──
+        let b_tmp = tempfile::tempdir().unwrap();
+        let dev_b = DeviceId::from_bytes([0xb1; 16]);
+        let engine_b = engine_in(&b_tmp, dev_b).await;
+        let handle_b = handle_for(&base_url, group, dev_b, key.clone(), b_tmp.path().to_path_buf());
+        bring_up(&handle_b).await.expect("B bring-up");
+        tick(&engine_b, &ident, &handle_b).await.unwrap();
+        let n = handle_b.state.read().await.inbound_cursor;
+        assert!(n > 0, "B advanced its cursor polling A's broadcast");
+        assert!(
+            engine_b
+                .render_note(NID_ALPHA)
+                .await
+                .unwrap_or_default()
+                .contains("hello alpha"),
+            "B has ALPHA after the first tick"
+        );
+
+        // ── A authors BETA (NEVER broadcast as an op) and a snapshot batch is
+        //    deposited covering a seq far above N: this advances the relay
+        //    compaction watermark and GC-DELETEs every op <= covers_seq, so the
+        //    only path to BETA is the deposited snapshot. ──
+        engine_a
+            .record_local(OpPayload::NoteUpsert {
+                note_id: NID_BETA,
+                display_alias: Some("beta".into()),
+                title: "beta".into(),
+                content: "- hello beta\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+        let snap_alpha = engine_a.export_doc_update(NID_ALPHA, None).await.unwrap();
+        let snap_beta = engine_a.export_doc_update(NID_BETA, None).await.unwrap();
+        let covers = n + 1000;
+        handle_a
+            .client
+            .put_snapshots(
+                covers,
+                vec![
+                    (NID_ALPHA.to_vec(), snap_alpha),
+                    (NID_BETA.to_vec(), snap_beta),
+                ],
+            )
+            .await
+            .expect("deposit snapshot batch + advance watermark");
+
+        // (c) B.poll(N) now returns EMPTY (ops GC'd) and the header reports a
+        //     compaction watermark ahead of B's cursor.
+        let probe_batch = handle_b.client.poll(n).await.unwrap();
+        assert!(
+            probe_batch.rows.is_empty(),
+            "ops <= watermark were GC'd; poll since=N empty"
+        );
+        assert_eq!(
+            probe_batch.compaction_seq,
+            Some(covers),
+            "poll header surfaces the relay compaction watermark"
+        );
+        assert!(covers > n, "watermark is ahead of B's cursor");
+
+        // (f) CLOBBER setup: B makes a LOCAL un-broadcast edit BEFORE the
+        //     bootstrapping tick. It must survive the bootstrap merge and still
+        //     be pending-outbound (the bootstrap touches only the inbound cursor).
+        engine_b
+            .record_local(OpPayload::NoteUpsert {
+                note_id: NID_GAMMA,
+                display_alias: Some("gamma".into()),
+                title: "gamma".into(),
+                content: "- local gamma edit\n".into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // (d) ONE B tick: poll is empty but the header says B is behind, so the
+        //     tick bootstraps from snapshots — jumping the cursor to the
+        //     watermark and converging B to BETA (a note B NEVER polled).
+        let outcome = tick(&engine_b, &ident, &handle_b).await.unwrap();
+        assert_eq!(
+            handle_b.state.read().await.inbound_cursor,
+            covers,
+            "tick bootstrap jumped B's inbound cursor to the watermark"
+        );
+        assert_eq!(
+            engine_b.render_note(NID_BETA).await,
+            engine_a.render_note(NID_BETA).await,
+            "B converged to BETA purely from the deposited snapshot (never polled)"
+        );
+        // (f) the local edit SURVIVED the bootstrap merge …
+        assert!(
+            engine_b
+                .render_note(NID_GAMMA)
+                .await
+                .unwrap_or_default()
+                .contains("local gamma edit"),
+            "B's local un-broadcast edit survived the bootstrap (non-destructive merge)"
+        );
+        // … and was still pending-outbound: the same tick broadcast it to the
+        // relay (the bootstrap never touched the outbound cursors).
+        assert!(
+            outcome.sent >= 1,
+            "B flushed its pending-outbound edit this tick"
+        );
+        let probe = RelayClient::new(
+            base_url.clone(),
+            group,
+            DeviceId::from_bytes([0xcc; 16]),
+            key.clone(),
+        );
+        let tail = probe.poll(covers).await.unwrap();
+        let mut saw_gamma = false;
+        for (_seq, env) in &tail.rows {
+            if let Ok(Some(updates)) = tesela_sync::decode_loro_relay_payload(&env.ciphertext) {
+                if updates.iter().any(|u| u.doc == NID_GAMMA) {
+                    saw_gamma = true;
+                }
+            }
+        }
+        assert!(
+            saw_gamma,
+            "B's pending-outbound local edit was broadcast (not clobbered) by the bootstrap"
+        );
+
+        // (d/e) SECOND tick = stable no-op for convergence + the NEGATIVE
+        //       bootstrap case: poll now only returns B's own echoes, the cursor
+        //       is already at/above the watermark, so compaction_seq <= cursor
+        //       and NO bootstrap fires. Content is unchanged.
+        let beta_before = engine_b.render_note(NID_BETA).await;
+        let gamma_before = engine_b.render_note(NID_GAMMA).await;
+        tick(&engine_b, &ident, &handle_b).await.unwrap();
+        assert!(
+            handle_b.state.read().await.inbound_cursor >= covers,
+            "second tick never regresses the cursor"
+        );
+        assert_eq!(
+            engine_b.render_note(NID_BETA).await,
+            beta_before,
+            "BETA stable on the no-op tick (no spurious re-bootstrap)"
+        );
+        assert_eq!(
+            engine_b.render_note(NID_GAMMA).await,
+            gamma_before,
+            "GAMMA stable on the no-op tick"
         );
     }
 }

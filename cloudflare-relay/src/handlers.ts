@@ -240,7 +240,9 @@ export async function handleGetOps(self: GroupDO, req: Request): Promise<Respons
     ts: r.ts,
     payload_b64: toB64(r.payload),
   }));
-  return json(records);
+  // Additive header so a client can detect it has fallen behind the
+  // compaction watermark. Body stays a bare JSON array.
+  return json(records, 200, { "X-Tesela-Compaction-Seq": String(self.getCompactionSeq()) });
 }
 
 // ─── /ack ─────────────────────────────────────────────────────────
@@ -375,9 +377,9 @@ export async function handleAdminDelete(self: GroupDO, req: Request): Promise<Re
 
 // ─── helpers ──────────────────────────────────────────────────────
 
-function json(body: unknown, status = 200): Response {
+function json(body: unknown, status = 200, extraHeaders?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...extraHeaders },
   });
 }
