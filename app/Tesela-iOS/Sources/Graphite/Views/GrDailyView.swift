@@ -27,6 +27,10 @@ struct GrDailyView: View {
     @State private var pickedDate: Date = Date()
     @State private var loadingOlderDays: Bool = false
     @State private var collapsedBlockIds: Set<String> = []
+    /// Periodic timer (~3s) that expires stale remote presence carets while the
+    /// daily is on screen, mirroring the web's 3s prune — without it a peer that
+    /// leaves lingers as a chip/caret forever (iOS never calls `pruneStale`).
+    @State private var presencePruneTimer: Timer? = nil
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -86,9 +90,11 @@ struct GrDailyView: View {
                     editingBlockId = nil
                 }
             }
+            .onAppear { startPresencePrune() }
             .onDisappear {
                 captureContext.focusedBlock = nil
                 mosaic.isEditingBlock = false
+                stopPresencePrune()
             }
             .environment(\.openURL, OpenURLAction { url in
                 if let slug = TeselaLink.pageSlug(from: url) {
@@ -158,9 +164,7 @@ struct GrDailyView: View {
                     // other devices) render it live in this block.
                     mosaic.publishPresence(slug: block.noteId, bid: block.id, offset: offset)
                 },
-                remoteCarets: mosaic.remoteCursors
-                    .cursors(forSlug: block.noteId, bid: block.id)
-                    .map { RemoteCaret(offset: $0.offset, color: RemoteCursorStore.displayColor($0.color)) },
+                remoteCarets: remoteCarets(for: block),
                 onMenuAction: { action in handleTodayAction(action, on: block) },
                 onSplitToNewBlock: { _ in
                     // Logseq Enter: the new sibling inherits the CURRENT
@@ -236,6 +240,7 @@ struct GrDailyView: View {
                 onTextChanged: { newText in
                     mosaic.editYesterdayBlock(id: block.id, text: newText)
                 },
+                remoteCarets: remoteCarets(for: block),
                 onMenuAction: { action in handleYesterdayAction(action, on: block) },
                 onSplitToNewBlock: { committedText in
                     mosaic.editYesterdayBlock(id: block.id, text: committedText)
@@ -308,6 +313,7 @@ struct GrDailyView: View {
                     onTextChanged: { newText in
                         mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: newText)
                     },
+                    remoteCarets: remoteCarets(for: block),
                     onMenuAction: { action in handlePastDailyAction(action, on: block, dayId: day.id) },
                     onSplitToNewBlock: { committedText in
                         mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: committedText)
@@ -373,6 +379,19 @@ struct GrDailyView: View {
         }
     }
 
+    /// Start the ~3s presence-prune tick. Idempotent — re-arms on re-appear.
+    private func startPresencePrune() {
+        presencePruneTimer?.invalidate()
+        presencePruneTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
+            Task { @MainActor in mosaic.pruneRemoteCursors() }
+        }
+    }
+
+    private func stopPresencePrune() {
+        presencePruneTimer?.invalidate()
+        presencePruneTimer = nil
+    }
+
     private func toggleFold(_ blockId: String) {
         if collapsedBlockIds.contains(blockId) {
             collapsedBlockIds.remove(blockId)
@@ -385,6 +404,23 @@ struct GrDailyView: View {
         mosaic.todayBlocks.map(\.id)
             + mosaic.yesterdayBlocks.map(\.id)
             + mosaic.pastDailies.flatMap { $0.blocks.map(\.id) }
+    }
+
+    /// The live remote carets in a block, mapped to the view's `RemoteCaret`
+    /// (peer color + name + id). Threaded into every `BlockRow` so the
+    /// block-level presence chip renders in read mode too — not just the
+    /// per-character caret inside the open editor.
+    private func remoteCarets(for block: Block) -> [RemoteCaret] {
+        mosaic.remoteCursors
+            .cursors(forSlug: block.noteId, bid: block.id)
+            .map {
+                RemoteCaret(
+                    offset: $0.offset,
+                    color: RemoteCursorStore.displayColor($0.color),
+                    name: $0.name,
+                    peer: $0.peer
+                )
+            }
     }
 
     private func focusedBlock(for id: String) -> (block: Block, pageSlug: String?)? {

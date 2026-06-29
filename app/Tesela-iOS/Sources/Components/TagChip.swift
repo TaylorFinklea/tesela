@@ -193,6 +193,52 @@ struct ScheduledChip: View {
     }
 }
 
+/// Block-level live-presence chip (Phase 3 multi-device): a peer who has a
+/// caret in THIS block. Always visible (read AND edit mode), unlike the
+/// per-character caret which only exists inside the open `UITextView`. A small
+/// colored dot in the peer's color plus its (truncated) device name, in the
+/// peer's color over a low-alpha tint — mirrors `TagChip`'s sizing/theming
+/// (size 11.5 medium monospaced, 0.16 tint, corner radius 3).
+struct RemotePresenceChip: View {
+    let name: String
+    let color: Color
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(color)
+                .frame(width: 6, height: 6)
+            Text(name)
+                .lineLimit(1)
+        }
+        .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+        .foregroundStyle(color)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 1)
+        .background(color.opacity(0.16))
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+}
+
+/// Overflow pill for the presence cluster when more peers share a block than
+/// the cluster shows inline (e.g. `+2`). Muted styling, matching the other
+/// secondary chips so it reads as "more", not as another peer.
+struct RemotePresenceOverflowChip: View {
+    let count: Int
+
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        Text("+\(count)")
+            .font(.system(size: 11.5, weight: .medium, design: .monospaced))
+            .foregroundStyle(theme.fgMuted)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 1)
+            .background(theme.fgMuted.opacity(0.10))
+            .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+}
+
 /// Resolve a Property page's `chip_icon` string into an SF Symbol name (for a
 /// known Tabler icon name) OR a raw emoji/text fallback. The iOS port of web
 /// `icon-registry.ts::resolveChipIcon` — the Tabler-name → SF Symbol map keeps

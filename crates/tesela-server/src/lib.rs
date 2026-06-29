@@ -617,7 +617,7 @@ fn is_tailscale_cgnat(ip: &std::net::Ipv4Addr) -> bool {
 /// and in any UI listing the local instance. Order of preference:
 /// `TESELA_DEVICE_NAME` env override, then the OS hostname, then a
 /// generic fallback so something always appears.
-fn device_display_name() -> String {
+pub(crate) fn device_display_name() -> String {
     if let Ok(name) = std::env::var("TESELA_DEVICE_NAME") {
         let trimmed = name.trim();
         if !trimmed.is_empty() {

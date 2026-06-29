@@ -34,6 +34,12 @@ import UIKit
 struct RemoteCaret: Equatable {
     let offset: Int
     let color: Color
+    /// The peer's friendly device name (when it sent one), drawn as a tiny
+    /// caret flag and used by the block-level presence chip.
+    var name: String? = nil
+    /// The sending peer id — a stable fallback label (short prefix) when the
+    /// peer sent no name, and a unique key for the chip cluster.
+    var peer: String? = nil
 }
 
 struct CollabTextView: UIViewRepresentable {
@@ -173,7 +179,8 @@ struct CollabTextView: UIViewRepresentable {
         renderRemoteCarets(on: uiView)
     }
 
-    /// Draw OTHER peers' carets as thin colored bars at their offsets. Cheap +
+    /// Draw OTHER peers' carets as thin colored bars at their offsets, each
+    /// topped by a tiny name flag (mirrors web `cm-remote-cursor-flag`). Cheap +
     /// idempotent: clears prior remote-caret layers and re-adds from the current
     /// `remoteCarets`. `caretRect` is in the text view's own layer space, so no
     /// coordinate conversion is needed.
@@ -188,12 +195,36 @@ struct CollabTextView: UIViewRepresentable {
             guard let pos = tv.position(from: tv.beginningOfDocument, offset: off) else { continue }
             let rect = tv.caretRect(for: pos)
             guard rect.height > 0, rect.minX.isFinite, rect.minY.isFinite else { continue }
+            let color = UIColor(caret.color)
             let bar = CALayer()
             bar.name = "remoteCaret"
-            bar.backgroundColor = UIColor(caret.color).cgColor
+            bar.backgroundColor = color.cgColor
             bar.frame = CGRect(x: rect.minX, y: rect.minY, width: 2, height: rect.height)
             bar.opacity = 0.85
             tv.layer.addSublayer(bar)
+            // Tiny name flag above the caret (truncated; secondary to the
+            // block-level chip but matches the web's per-caret label).
+            if let raw = caret.name?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
+                let label = raw.count > 12 ? String(raw.prefix(11)) + "\u{2026}" : raw
+                let font = UIFont.systemFont(ofSize: 9, weight: .semibold)
+                let textW = ceil((label as NSString).size(withAttributes: [.font: font]).width)
+                let flagH: CGFloat = 12
+                let flag = CATextLayer()
+                flag.name = "remoteCaret"
+                flag.string = label
+                flag.font = font
+                flag.fontSize = 9
+                flag.alignmentMode = .center
+                flag.foregroundColor = UIColor.white.cgColor
+                flag.backgroundColor = color.cgColor
+                flag.cornerRadius = 2
+                flag.masksToBounds = true
+                flag.contentsScale = tv.window?.screen.scale ?? UIScreen.main.scale
+                flag.frame = CGRect(
+                    x: rect.minX, y: max(0, rect.minY - flagH),
+                    width: textW + 6, height: flagH)
+                tv.layer.addSublayer(flag)
+            }
         }
     }
 

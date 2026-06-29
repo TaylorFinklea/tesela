@@ -262,6 +262,36 @@ struct BlockRow: View {
         )
     }
 
+    /// How many presence chips render inline before collapsing the rest into a
+    /// `+N` overflow pill — keeps a busy block compact.
+    private static let maxPresenceChips = 2
+
+    /// The trailing live-presence cluster: up to `maxPresenceChips` peer chips,
+    /// then a `+N` overflow pill. Each chip carries the peer's color + label
+    /// (its device name, falling back to a short peer-id, then "device").
+    private var presenceCluster: some View {
+        HStack(spacing: 4) {
+            ForEach(Array(remoteCarets.prefix(Self.maxPresenceChips).enumerated()), id: \.offset) { _, caret in
+                RemotePresenceChip(name: presenceLabel(caret), color: caret.color)
+            }
+            if remoteCarets.count > Self.maxPresenceChips {
+                RemotePresenceOverflowChip(count: remoteCarets.count - Self.maxPresenceChips)
+            }
+        }
+    }
+
+    /// Label a remote caret: the peer's device name when set, else a short
+    /// peer-id prefix, else a generic "device" stub.
+    private func presenceLabel(_ caret: RemoteCaret) -> String {
+        if let name = caret.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
+            return name
+        }
+        if let peer = caret.peer, !peer.isEmpty {
+            return String(peer.prefix(4))
+        }
+        return "device"
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             bullet
@@ -311,6 +341,13 @@ struct BlockRow: View {
                 }
             }
             Spacer(minLength: 0)
+            // Live-presence cluster (Phase 3 multi-device): peers with a caret
+            // in this block. Visible in BOTH read and edit mode — the
+            // per-character caret only lives inside the open editor, so this is
+            // what surfaces a remote peer while the block is just being viewed.
+            if !remoteCarets.isEmpty {
+                presenceCluster
+            }
         }
         .padding(.leading, CGFloat(18 + indent * 18))
         .padding(.trailing, 18)

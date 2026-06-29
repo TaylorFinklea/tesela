@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import UIKit
 
 /// The mosaic the SwiftUI views consume. Despite the historical
 /// `Mock` prefix, this service can now load from two sources:
@@ -191,13 +192,39 @@ final class MockMosaicService: ObservableObject, MosaicService {
     var sendPresence: ((Data) -> Void)?
 
     /// Publish THIS device's caret in note `slug`, block `bid`, at utf16
-    /// `offset`. Ephemeral — fire-and-forget over the WS.
+    /// `offset`. Ephemeral — fire-and-forget over the WS. Carries this
+    /// device's friendly name so peers can label the caret/chip.
     func publishPresence(slug: String, bid: String, offset: Int) {
         guard let send = sendPresence else { return }
         let frame = LoroPresence.Frame(
             peer: remoteCursors.localPeer, color: remoteCursors.localColor,
-            name: nil, slug: slug, bid: bid, offset: offset)
+            name: Self.localDeviceName, slug: slug, bid: bid, offset: offset)
         send(LoroPresence.encode(frame))
+    }
+
+    /// This device's friendly label for presence frames: the user-set
+    /// `device.friendlyName` (Settings → Sync) when present, else the
+    /// system device name (`UIDevice.current.name`). Read from
+    /// `UserDefaults` (this isn't a View, so no `@AppStorage`). Trimmed;
+    /// `nil` only if both are somehow empty so peers fall back to a stub.
+    static var localDeviceName: String? {
+        if let stored = UserDefaults.standard.string(forKey: "device.friendlyName")?
+            .trimmingCharacters(in: .whitespacesAndNewlines), !stored.isEmpty {
+            return stored
+        }
+        let system = UIDevice.current.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return system.isEmpty ? nil : system
+    }
+
+    /// Drop presence carets whose peer has gone quiet past the staleness
+    /// window, then nudge observers so the daily/page views drop the now-stale
+    /// chips/carets. Driven by a ~3s timer in `GrDailyView` (mirrors the web's
+    /// 3s prune); without it a peer that leaves lingers forever because iOS
+    /// otherwise never calls `RemoteCursorStore.pruneStale`.
+    func pruneRemoteCursors() {
+        if remoteCursors.pruneStale() {
+            objectWillChange.send()
+        }
     }
 
     /// Merge an inbound peer caret, then nudge observers so the daily/page views

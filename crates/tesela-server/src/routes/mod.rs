@@ -31,6 +31,7 @@ use crate::state::AppState;
 pub fn build(state: AppState) -> Router {
     let app = Router::new()
         .route("/health", get(health))
+        .route("/info", get(info))
         .route("/notes", get(notes::list_notes).post(notes::create_note))
         .route("/notes/daily", get(notes::get_daily_note))
         .route(
@@ -219,4 +220,15 @@ pub fn build(state: AppState) -> Router {
 
 async fn health() -> (StatusCode, Json<serde_json::Value>) {
     (StatusCode::OK, Json(json!({ "status": "ok" })))
+}
+
+/// GET /info — read-only device metadata for the web client. Returns the
+/// canonical display name (`device_display_name()`: TESELA_DEVICE_NAME env →
+/// hostname → "Tesela device") so remote-cursor presence frames can label this
+/// device on every peer. Unauthenticated, like `/health`.
+async fn info() -> (StatusCode, Json<serde_json::Value>) {
+    (
+        StatusCode::OK,
+        Json(json!({ "device_name": crate::device_display_name() })),
+    )
 }

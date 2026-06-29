@@ -10,6 +10,7 @@
  * the consumer is CodeMirror, which bridges via dispatch, not reactivity.
  */
 import type { PresenceFrame } from "./loro/presence";
+import { apiBase } from "./runtime-base";
 
 export type RemoteCursor = PresenceFrame & {
   /** Wall-clock ms of the last update — drives staleness. */
@@ -53,6 +54,37 @@ export function colorForPeer(peer: string): string {
 /** This peer's color. */
 export function localColor(): string {
   return colorForPeer(localPeerId());
+}
+
+let _deviceName: string | undefined = undefined;
+let _deviceNameFetchStarted = false;
+
+/**
+ * This device's human label (server's `device_display_name()`), used to flag
+ * our caret on peers. Fetched once, same-origin, from `GET /info`; failures are
+ * tolerated (stays `undefined`). The fetch is async, so early calls return
+ * `undefined` — presence re-publishes on every caret move, so the name lands on
+ * later frames once it resolves.
+ */
+export function localName(): string | undefined {
+  if (!_deviceNameFetchStarted) {
+    _deviceNameFetchStarted = true;
+    void (async () => {
+      try {
+        const res = await fetch(`${apiBase()}/info`, {
+          headers: { Accept: "application/json" },
+        });
+        if (!res.ok) return;
+        const body = (await res.json()) as { device_name?: unknown };
+        if (typeof body.device_name === "string" && body.device_name.trim()) {
+          _deviceName = body.device_name.trim();
+        }
+      } catch {
+        // Offline / desktop-embed race / no server — stay undefined.
+      }
+    })();
+  }
+  return _deviceName;
 }
 
 const cursors = new Map<string, RemoteCursor>();
@@ -124,4 +156,6 @@ export function _resetForTest(): void {
     pruneTimer = null;
   }
   _peerId = null;
+  _deviceName = undefined;
+  _deviceNameFetchStarted = false;
 }

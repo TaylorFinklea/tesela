@@ -483,7 +483,7 @@
   // Phase 2 desktop presence: publish this caret + render remote ones.
   import { sendBinary } from "$lib/ws-client.svelte";
   import { encodePresence } from "$lib/loro/presence";
-  import { localPeerId, localColor } from "$lib/remote-cursors";
+  import { localPeerId, localColor, localName } from "$lib/remote-cursors";
   import { remoteCursorExtension } from "$lib/cm-remote-cursors";
   import type { LoroText, LoroEventBatch } from "loro-crdt";
 
@@ -2092,7 +2092,7 @@
         const slug = getActiveNoteDoc()?.slug;
         if (!slug || !bid) return;
         sendBinary(
-          encodePresence({ peer: localPeerId(), color: localColor(), slug, bid, offset: off }),
+          encodePresence({ peer: localPeerId(), color: localColor(), name: localName(), slug, bid, offset: off }),
         );
       };
       flush(); // leading edge
