@@ -252,6 +252,15 @@ pub async fn get_daily_note(
     let note = s.store.daily_note(date, &config).await?;
     if existed.is_none() {
         s.index.reindex(&note).await?;
+        // Bootstrap-before-author (daily-garble fix, 2026-06-29): on the FIRST
+        // create of this daily, if the engine does NOT yet hold its doc, pull
+        // the relay's authoritative snapshot as a shared base BEFORE
+        // `record_sync_create` authors the NoteUpsert below — so a daily that
+        // already exists on the relay (authored from another device) is adopted
+        // onto the server's lineage instead of forked into a disjoint twin that
+        // later clobbers. Best-effort + deadlock-safe; no-op once resident.
+        // Mirrors iOS `bootstrapNoteIfNeeded`.
+        bootstrap_note_if_needed(&s, note.id.as_str()).await;
         record_sync_create(&s, &note).await?;
         let _ = s.ws_tx.send(WsEvent::NoteCreated { note: note.clone() });
     }
@@ -318,6 +327,15 @@ pub async fn update_note(
     // either. Both clients preserve blanks consistently.
     let stamped_new = stamp_block_ids(&new_content);
     note.content = stamped_new;
+    // Bootstrap-before-author (daily-garble fix, 2026-06-29): if the engine
+    // does NOT yet hold this note's doc, pull the relay's authoritative
+    // snapshot as a shared base BEFORE `record_sync_update` authors below, so
+    // the diff ops resolve onto the server's existing tree nodes instead of
+    // forking a disjoint lineage that later clobbers. Best-effort + deadlock-
+    // safe; no-op once the doc is resident. Runs before the `pre_vv` capture so
+    // the live-WS delta exports only the author's edit over the bootstrapped
+    // base. Mirrors iOS `bootstrapNoteIfNeeded`.
+    bootstrap_note_if_needed(&s, note.id.as_str()).await;
     // Instant-multidevice (Phase A): capture this note's Loro version
     // vector BEFORE the edit so we can export the cursor-free delta for
     // just-this-change afterward and push it to live WS clients. Cursor-
@@ -465,6 +483,14 @@ pub async fn upsert_blocks(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Note not found: {}", id)))?;
     let prev_content = note.content.clone();
+
+    // Bootstrap-before-author (daily-garble fix, 2026-06-29): if the engine
+    // does NOT yet hold this note's doc, pull the relay's authoritative
+    // snapshot as a shared base BEFORE the first `record_local` below, so the
+    // block ops resolve onto the server's existing tree nodes instead of
+    // forking a disjoint lineage that later clobbers. Best-effort + deadlock-
+    // safe; no-op once the doc is resident. Mirrors iOS `bootstrapNoteIfNeeded`.
+    bootstrap_note_if_needed(&s, note.id.as_str()).await;
 
     // Address the note's Loro doc exactly as the PUT path + the
     // producer paths (`record_sync_create`/`record_sync_update`) do:
@@ -682,6 +708,11 @@ pub async fn delete_block(
             None => return Ok(StatusCode::NO_CONTENT),
         }
     };
+    // Author the delete on the relay's authoritative lineage if this note
+    // isn't resident yet — otherwise the tombstone lands on a fresh disjoint
+    // doc and clobbers/diverges on the next relay merge (same class as the
+    // text garble). Best-effort + resident-gated. Mirrors iOS bootstrapNoteIfNeeded.
+    bootstrap_note_if_needed(&s, &id).await;
     let payload = OpPayload::BlockDelete {
         block_id: *block_uuid.as_bytes(),
     };
@@ -1477,6 +1508,76 @@ fn stable_uuid_from_slug(slug: &str) -> [u8; 16] {
     out
 }
 
+/// Desktop bootstrap-before-author — the piece that CLOSES the daily garble
+/// (2026-06-29). Mirror of iOS `RelayTicker.bootstrapNoteIfNeeded`.
+///
+/// Before the server authors the FIRST local op for a note its engine does
+/// NOT yet hold (non-resident), best-effort pull the relay's AUTHORITATIVE
+/// snapshot for that note and import it as a SHARED BASE. Without this, a
+/// fresh server `record_local` mints a brand-new DISJOINT Loro lineage; when
+/// the relay's authoritative version of the same bids later arrives the two
+/// lineages union into same-bid twins / clobber (the garbled daily). With the
+/// base resident first, the subsequent ops resolve onto the server's existing
+/// tree nodes and concurrent edits MERGE.
+///
+/// HARD CONSTRAINTS (all enforced here):
+/// 1. **Deadlock-safe.** The relay `tick` holds `handle.state.write()` while
+///    it runs (sync_relay.rs). This request-path bootstrap touches ONLY the
+///    engine + the `RelayClient` (`fetch_snapshots`); it NEVER acquires
+///    `handle.state.write()`, so it can never re-enter / deadlock against an
+///    in-flight tick.
+/// 2. **Best-effort.** No relay configured / relay offline / note absent on
+///    the relay / fetch fails → silent return; the caller proceeds to author
+///    fresh. That's correct for a true first-create — two devices minting the
+///    same slug get distinct random bids that stay separate.
+/// 3. **Resident-gate.** Only bootstraps a NON-resident doc
+///    (`doc_version == None`). An already-resident note already holds its
+///    base; re-importing would be wasted work (and is skipped).
+/// 4. **Non-destructive.** `import_authoritative_snapshot` is a server-wins
+///    re-base that MERGES; any local un-broadcast edits survive (a
+///    non-resident note has none yet anyway).
+async fn bootstrap_note_if_needed(s: &Arc<AppState>, slug: &str) {
+    let Some(relay) = s.relay.as_ref() else {
+        return; // LAN-only / no relay configured — nothing to bootstrap from.
+    };
+    let note_id = stable_uuid_from_slug(slug);
+    // Resident-gate: an already-held doc already carries its shared base.
+    if s.sync_engine.doc_version(note_id).await.is_some() {
+        return;
+    }
+    // Best-effort fetch of the relay's deposited snapshots. Reads through the
+    // `RelayClient` only — NOT `handle.state` — so it can never deadlock
+    // against the relay tick's `handle.state.write()` (constraint 1).
+    let snaps = match relay.client.fetch_snapshots().await {
+        Ok((_watermark, snaps)) => snaps,
+        Err(e) => {
+            tracing::debug!(
+                "bootstrap: fetch_snapshots for {slug} failed ({e}); authoring fresh"
+            );
+            return;
+        }
+    };
+    // Import THIS note's authoritative snapshot (stream_id == note_id) as the
+    // shared base before the caller authors. Absent on the relay → fall
+    // through (true first-create).
+    for (stream_id, _seq, plaintext) in snaps {
+        if stream_id.as_slice() != note_id.as_slice() {
+            continue;
+        }
+        if let Err(e) = s
+            .sync_engine
+            .import_authoritative_snapshot(note_id, &plaintext)
+            .await
+        {
+            tracing::warn!(
+                "bootstrap: import authoritative snapshot for {slug} failed ({e}); \
+                 authoring fresh"
+            );
+        }
+        return;
+    }
+}
+
 pub async fn get_backlinks(
     Path(id): Path<String>,
     State(s): State<Arc<AppState>>,
@@ -1780,6 +1881,12 @@ pub async fn set_block_property(
     let block_id = parse_bid(&block_bid)?;
     let doc_note_id = stable_uuid_from_slug(note_id_str);
 
+    // Author the property op on the relay's authoritative lineage if this note
+    // isn't resident yet — otherwise a task toggle / scheduled set on a synced
+    // daily forks a disjoint doc and clobbers/twins on the next relay merge
+    // (same class as the text garble). Best-effort + resident-gated.
+    bootstrap_note_if_needed(&s, note_id_str).await;
+
     // Choose the PropOp from the property's registry value_type, then emit it
     // through the engine. Multi-value clears then re-adds each item so a
     // route-driven set replaces the list deterministically.
@@ -1998,6 +2105,241 @@ mod tests {
         // Non-existent line should return None.
         let bid_out_of_range = block_bid_from_suffix(content, note_id, "99");
         assert_eq!(bid_out_of_range, None);
+    }
+
+    /// Desktop bootstrap-before-author (daily-garble fix, 2026-06-29).
+    ///
+    /// The relay holds a note's AUTHORITATIVE snapshot (content X). The server
+    /// — whose engine does NOT yet hold the doc (disjoint) — authors that note
+    /// via `upsert_blocks` (content Y). With the fix, `upsert_blocks` first
+    /// pulls X off the relay as a shared base, so the merged note carries BOTH
+    /// X and Y. Without it, the fresh `record_local` would fork a disjoint
+    /// lineage and the merge would clobber X (the garbled daily).
+    mod bootstrap_before_author {
+        use super::super::*;
+        use std::net::SocketAddr;
+        use std::sync::Arc;
+
+        use axum::response::IntoResponse;
+        use rand::RngCore;
+        use tokio::sync::{broadcast, RwLock};
+
+        use tesela_core::{config::StorageConfig, storage::filesystem::FsNoteStore};
+        use tesela_relay::{router, AppState as RelayAppState};
+        use tesela_sync::crypto::keys::GroupKey;
+        use tesela_sync::device::DeviceId;
+        use tesela_sync::group::GroupId;
+        use tesela_sync::transport::relay::RelayClient;
+        use tesela_sync::{GroupIdentity, Hlc, LoroEngine, OpPayload, SyncEngine};
+
+        use crate::sync_relay::{RelayHandle, RelayState};
+
+        /// Spawn an in-process relay (mirrors `sync_relay::tests::spawn_relay`).
+        async fn spawn_relay() -> (reqwest::Url, tempfile::TempDir, tokio::task::JoinHandle<()>) {
+            let tmp = tempfile::tempdir().expect("tmp");
+            let db = tmp.path().join("relay.sqlite");
+            let state = RelayAppState::open(&db, 4_194_304, Some("admin".into()))
+                .await
+                .expect("relay state");
+            let app = router(state);
+            let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
+                .await
+                .expect("bind");
+            let addr = listener.local_addr().expect("addr");
+            let server = tokio::spawn(async move {
+                let _ = axum::serve(
+                    listener,
+                    app.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await;
+            });
+            (
+                reqwest::Url::parse(&format!("http://{}", addr)).unwrap(),
+                tmp,
+                server,
+            )
+        }
+
+        fn fresh_group() -> (GroupId, GroupKey) {
+            let mut gid = [0u8; 16];
+            rand::thread_rng().fill_bytes(&mut gid);
+            let mut gk = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut gk);
+            (GroupId::from_bytes(gid), GroupKey::from_bytes(gk))
+        }
+
+        async fn loro_engine_in(tmp: &std::path::Path, device: DeviceId) -> LoroEngine {
+            LoroEngine::with_dirs(
+                device,
+                Arc::new(Hlc::new(device)),
+                tmp.join(".tesela").join("loro"),
+                Some(tmp.join("notes")),
+            )
+            .await
+            .expect("loro engine")
+        }
+
+        #[tokio::test]
+        async fn upsert_blocks_bootstraps_relay_snapshot_before_authoring() {
+            let (base_url, _relay_tmp, _relay_srv) = spawn_relay().await;
+            let (group, key) = fresh_group();
+
+            let slug = "2026_06_29";
+            let note_id = stable_uuid_from_slug(slug);
+            let alpha_bid = "01010101-0101-0101-0101-010101010101";
+            let gamma_bid = "03030303-0303-0303-0303-030303030303";
+
+            // ── Peer authors content X and deposits its snapshot to the relay ──
+            let peer_tmp = tempfile::tempdir().unwrap();
+            let peer_dev = DeviceId::from_bytes([0xaa; 16]);
+            let peer = loro_engine_in(peer_tmp.path(), peer_dev).await;
+            peer.record_local(OpPayload::NoteUpsert {
+                note_id,
+                display_alias: Some(slug.into()),
+                title: slug.into(),
+                content: format!("- alpha from relay <!-- bid:{alpha_bid} -->\n"),
+                created_at_millis: 1,
+            })
+            .await
+            .expect("peer seed NoteUpsert");
+            let snapshot_x = peer
+                .export_doc_update(note_id, None)
+                .await
+                .expect("peer snapshot export");
+            let peer_client = RelayClient::new(base_url.clone(), group, peer_dev, key.clone());
+            peer_client
+                .register_or_recover()
+                .await
+                .expect("peer register");
+            peer_client
+                .put_snapshots(0, vec![(note_id.to_vec(), snapshot_x)])
+                .await
+                .expect("peer deposit snapshot");
+
+            // ── Server: fresh engine that does NOT hold the doc (disjoint) ──
+            let mosaic = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(mosaic.path().join("notes")).unwrap();
+            std::fs::create_dir_all(mosaic.path().join(".tesela")).unwrap();
+            let srv_dev = DeviceId::from_bytes([0xbb; 16]);
+            let engine: Arc<dyn SyncEngine> =
+                Arc::new(loro_engine_in(mosaic.path(), srv_dev).await);
+            assert!(
+                engine.doc_version(note_id).await.is_none(),
+                "server must start without the doc (the disjoint pre-condition)"
+            );
+
+            // The note must exist on disk for `upsert_blocks` (it 404s
+            // otherwise). A minimal placeholder daily WITHOUT alpha — so alpha
+            // in the result can ONLY have come from the relay bootstrap.
+            std::fs::write(
+                mosaic.path().join(format!("notes/{slug}.md")),
+                "---\ntitle: \"2026_06_29\"\n---\n- placeholder <!-- bid:09090909-0909-0909-0909-090909090909 -->\n",
+            )
+            .unwrap();
+
+            let store = Arc::new(FsNoteStore::new(
+                mosaic.path().to_path_buf(),
+                StorageConfig::default(),
+            ));
+            let index = Arc::new(
+                tesela_core::db::SqliteIndex::open(&mosaic.path().join(".tesela").join("test.db"))
+                    .await
+                    .unwrap(),
+            );
+            let (ws_tx, _) = broadcast::channel(16);
+            let (ws_delta_tx, _) = broadcast::channel(16);
+            let group_identity = Arc::new(RwLock::new(GroupIdentity {
+                group_id: group,
+                group_key: key.clone(),
+            }));
+
+            // Server relay handle pointing at the spawned relay (same group).
+            let relay_client = Arc::new(RelayClient::new(base_url.clone(), group, srv_dev, key));
+            relay_client
+                .register_or_recover()
+                .await
+                .expect("server register");
+            let relay_handle = RelayHandle {
+                url: base_url.to_string(),
+                client: relay_client,
+                state: Arc::new(RwLock::new(RelayState::default())),
+                mosaic_root: mosaic.path().to_path_buf(),
+            };
+
+            let state = Arc::new(AppState {
+                mosaic_root: mosaic.path().to_path_buf(),
+                store,
+                index,
+                ws_tx,
+                ws_delta_tx,
+                ws_conn_seq: std::sync::atomic::AtomicU64::new(0),
+                type_registry: tesela_core::types::TypeRegistry::load(mosaic.path()),
+                auto_sync: Arc::new(crate::reminders::auto::AutoSync::new()),
+                sync_engine: Arc::clone(&engine),
+                lan_discovery: None,
+                group_identity,
+                display_name: "test".into(),
+                public_url: "http://127.0.0.1:0".into(),
+                relay_url: Some(base_url.to_string()),
+                relay: Some(relay_handle),
+                backup_status: crate::backup_scheduler::BackupStatusHandle::new(
+                    crate::backup_scheduler::SchedulerConfig::from_env(),
+                ),
+            });
+
+            // ── Author content Y via upsert_blocks (adds a NEW block gamma) ──
+            let res = upsert_blocks(
+                Path(slug.to_string()),
+                State(Arc::clone(&state)),
+                Json(UpsertBlocksReq {
+                    ops: vec![BlockOp::Upsert {
+                        bid: gamma_bid.into(),
+                        text: "gamma from desktop".into(),
+                        parent_bid: None,
+                        indent_level: 0,
+                        after_bid: None,
+                    }],
+                }),
+            )
+            .await;
+            assert!(
+                res.is_ok(),
+                "upsert_blocks should succeed (got {:?})",
+                res.err().map(|e| e.into_response().status())
+            );
+
+            // The relay's authoritative alpha (X) was bootstrapped as the shared
+            // base, and the desktop's gamma (Y) merged onto it — NOT a disjoint
+            // clobber that drops alpha. `render_note` is the CRDT truth.
+            let merged = engine
+                .render_note(note_id)
+                .await
+                .expect("server renders the note after author");
+            assert!(
+                merged.contains("alpha from relay"),
+                "bootstrapped relay base (X) must survive the author; render:\n{merged}"
+            );
+            assert!(
+                merged.contains("gamma from desktop"),
+                "the desktop edit (Y) must be present; render:\n{merged}"
+            );
+            // Exactly one alpha + one gamma — no disjoint same-bid twins.
+            assert_eq!(
+                merged.matches(&format!("bid:{alpha_bid}")).count(),
+                1,
+                "alpha must render exactly once (no twin); render:\n{merged}"
+            );
+            assert_eq!(
+                merged.matches(&format!("bid:{gamma_bid}")).count(),
+                1,
+                "gamma must render exactly once (no twin); render:\n{merged}"
+            );
+            // The doc is now resident on the server (bootstrap imported it).
+            assert!(
+                engine.doc_version(note_id).await.is_some(),
+                "the note must be resident after the bootstrap import"
+            );
+        }
     }
 
     /// Audit A9a (2026-06-09): `PUT /notes/{id}` must NOT report success
@@ -2469,6 +2811,11 @@ pub async fn clear_block_property(
         })?;
     let block_id = parse_bid(&block_bid)?;
     let doc_note_id = stable_uuid_from_slug(note_id_str);
+
+    // Bootstrap-before-author (same class as set_block_property): clearing a prop
+    // on a non-resident synced daily must land on the relay's lineage, not a
+    // disjoint fork. Best-effort + resident-gated.
+    bootstrap_note_if_needed(&s, note_id_str).await;
 
     let payload = OpPayload::BlockPropertySet {
         note_id: doc_note_id,

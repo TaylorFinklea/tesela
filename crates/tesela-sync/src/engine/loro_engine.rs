@@ -8272,6 +8272,198 @@ mod tests {
         }
     }
 
+    // ── BOOTSTRAP-BEFORE-AUTHOR: multi-device daily convergence ──────────
+    //
+    // The production garble (Taylor's daily, bid c35861c0):
+    // `Bothnice onenice one` = SEPARATE intended blocks' text concatenated
+    // into ONE block, plus persistent divergence. Root cause: a device
+    // authored today's daily on a FRESH DISJOINT LoroDoc; when it later
+    // received the relay's authoritative version of the same bid (created on
+    // another device + synced), `apply_relay_updates` merged the disjoint
+    // lineages → per-block `text_seq` UNION / same-bid twins. The fix is
+    // CLIENT-SIDE bootstrap-before-author: import the relay's authoritative
+    // doc (shared base) BEFORE the first local edit, so the edit lands on the
+    // existing lineage → clean char-merge.
+
+    /// A realistic content bid: a UUID-shaped 16-byte id a client actually
+    /// authors + syncs (`parse_body_blocks` / iOS stamp these), NOT the parked
+    /// deterministic-seed placeholder. The production garble used such a bid
+    /// (c35861c0) created on iOS, synced, then re-edited on the desktop's
+    /// disjoint lineage.
+    fn content_bid(seed: &str) -> [u8; 16] {
+        let h = blake3::hash(seed.as_bytes());
+        let mut id = [0u8; 16];
+        id.copy_from_slice(&h.as_bytes()[..16]);
+        id
+    }
+
+    /// Count LIVE tree nodes carrying `block` on a note's doc — disjoint
+    /// same-bid twins show as > 1.
+    async fn block_twin_count(engine: &LoroEngine, note_id: [u8; 16], block: [u8; 16]) -> usize {
+        let docs = engine.inner.docs.read().await;
+        let Some(doc) = docs.get(&note_id) else {
+            return 0;
+        };
+        let tree = doc.get_tree("blocks");
+        let hex = hex_id(&block);
+        let mut n = 0;
+        for node in tree.children(TreeParentId::Root).unwrap_or_default() {
+            if matches!(tree.is_node_deleted(&node), Ok(true)) {
+                continue;
+            }
+            if read_meta_str(&tree, node, "block_id").as_deref() == Some(hex.as_str()) {
+                n += 1;
+            }
+        }
+        n
+    }
+
+    // CASE-GARBLE (reproduces the bug). REALISTIC — no hardcoded shared
+    // placeholder bid. Engine A creates today's daily + a block with a content
+    // bid + text, exports the authoritative snapshot (what the relay holds).
+    // Engine B authored its OWN fresh DISJOINT daily doc and edited the SAME
+    // bid (the bid reached B via materialized markdown). When B then imports
+    // A's authoritative ops through the relay apply path (no shared base), the
+    // two disjoint `text_seq` lineages UNION into one garbled block and/or
+    // leave disjoint same-bid twins (divergence). This asserts the failure
+    // reproduces, so the fix below is proven against a real garble.
+    #[tokio::test]
+    async fn daily_disjoint_author_then_relay_import_garbles() {
+        let note = blake3_note_id("2026-06-29");
+        let bid = content_bid("c35861c0-daily-block");
+
+        // Engine A: fresh daily, authors the block, exports the authoritative
+        // snapshot (the relay's version of this note).
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        upsert_block(&a, note, bid, "Both", None).await;
+        let auth = a.export_doc_update(note, None).await.unwrap();
+
+        // Engine B: its OWN fresh DISJOINT daily, edits the SAME bid (got from
+        // materialized markdown) — a disjoint twin of the same block_id.
+        let dev_b = DeviceId::from_bytes([0xb1; 16]);
+        let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+        upsert_block(&b, note, bid, "nice one", None).await;
+
+        // B imports A's authoritative ops via the relay apply path. No shared
+        // base → disjoint-lineage merge.
+        let _ = b.apply_relay_updates(&[(note, auth)]).await;
+
+        let tb = block_text(&b, note, bid).await.unwrap_or_default();
+        let twins = block_twin_count(&b, note, bid).await;
+
+        // The bug reproduces as one of: the two disjoint runs UNION into one
+        // garbled block (`Both`+`nice one`); disjoint same-bid TWINS persist
+        // (divergence); or B's disjoint-authored contribution is silently
+        // CLOBBERED/lost on import (lossy twin resolution) — the
+        // data-loss-divergence form this scenario actually takes. The CORRECT
+        // behavior (achieved by bootstrap-before-author, next test) is a clean
+        // char-merge where BOTH contributions survive coherently.
+        let unioned = tb.contains("Both") && tb.contains("nice one");
+        let diverged = twins > 1;
+        let lost_local = !tb.contains("nice one"); // B's authored content dropped
+        assert!(
+            unioned || diverged || lost_local,
+            "expected disjoint-authoring union / twin divergence / data loss to \
+             reproduce: text={tb:?} twins={twins}"
+        );
+    }
+
+    // CASE-FIXED. Engine B imports A's authoritative snapshot
+    // (`import_authoritative_snapshot`) BEFORE its first local edit of the
+    // shared block, so it authors into A's EXISTING lineage. A and B then edit
+    // the SAME block concurrently → clean char-merge: ONE coherent block, no
+    // concatenation, no twins. ALSO: a local un-broadcast edit on B (its own
+    // new block, never synced) must SURVIVE the bootstrap import (the import is
+    // a non-destructive merge, never a wholesale replace).
+    #[tokio::test]
+    async fn daily_bootstrap_before_author_converges_clean() {
+        let note = blake3_note_id("2026-06-29");
+        let bid = content_bid("c35861c0-daily-block");
+
+        // Engine A: authoritative — fresh daily + block, exported snapshot.
+        let dev_a = DeviceId::from_bytes([0xa1; 16]);
+        let a = LoroEngine::new(dev_a, Arc::new(Hlc::new(dev_a)));
+        upsert_block(&a, note, bid, "Both", None).await;
+        let auth = a.export_doc_update(note, None).await.unwrap();
+
+        // Engine B: has a LOCAL UN-BROADCAST edit (its own new block) BEFORE
+        // bootstrap — must survive the authoritative import.
+        let dev_b = DeviceId::from_bytes([0xb1; 16]);
+        let b = LoroEngine::new(dev_b, Arc::new(Hlc::new(dev_b)));
+        let local_bid = content_bid("b-local-unbroadcast");
+        upsert_block(&b, note, local_bid, "local draft", None).await;
+
+        // BOOTSTRAP-BEFORE-AUTHOR: import A's authoritative doc (shared base)
+        // BEFORE B's first edit of the shared block.
+        b.import_authoritative_snapshot(note, &auth).await.unwrap();
+
+        // Clobber guard: B's local un-broadcast edit survived the bootstrap.
+        assert_eq!(
+            block_text(&b, note, local_bid).await.as_deref(),
+            Some("local draft"),
+            "local un-broadcast edit must survive bootstrap import"
+        );
+        // B now shares A's lineage for `bid` — exactly one node, A's value.
+        assert_eq!(
+            block_text(&b, note, bid).await.as_deref(),
+            Some("Both"),
+            "bootstrap establishes A's value as the shared base"
+        );
+        assert_eq!(
+            block_twin_count(&b, note, bid).await,
+            1,
+            "bootstrap leaves a single shared node, no twin"
+        );
+
+        // CONCURRENT edits on the SHARED lineage: A appends "!" (offset 4),
+        // B appends " yeah" (offset 4).
+        a.splice_block_text(note, bid, 4, 0, "!").await.unwrap();
+        b.splice_block_text(note, bid, 4, 0, " yeah").await.unwrap();
+
+        // Converge by cross-importing each replica's FULL doc. (A full export
+        // is used rather than a since-vv delta because B's pre-bootstrap local
+        // block is an op A has never seen — a since-vv delta of just B's splice
+        // would import PENDING against that causal gap. The full snapshot
+        // carries the local block too, so it lands and the splices char-merge.)
+        let a_full = a.export_doc_update(note, None).await.unwrap();
+        let b_full = b.export_doc_update(note, None).await.unwrap();
+        b.import_doc_update(note, &a_full).await.unwrap();
+        a.import_doc_update(note, &b_full).await.unwrap();
+
+        let ta = block_text(&a, note, bid).await.unwrap_or_default();
+        let tb = block_text(&b, note, bid).await.unwrap_or_default();
+
+        // Clean convergence: byte-identical, ONE node, no concatenation.
+        assert_eq!(ta, tb, "replicas converge: A={ta:?} B={tb:?}");
+        assert_eq!(
+            block_twin_count(&a, note, bid).await,
+            1,
+            "no twins on A after concurrent edit: {ta:?}"
+        );
+        assert_eq!(
+            block_twin_count(&b, note, bid).await,
+            1,
+            "no twins on B after concurrent edit: {tb:?}"
+        );
+        // The shared base "Both" survives exactly once (char-merge, not the
+        // disjoint union that duplicated runs).
+        assert_eq!(
+            ta.matches("Both").count(),
+            1,
+            "shared base preserved once, not concatenated: {ta:?}"
+        );
+        // Both concurrent contributions survive the merge.
+        assert!(ta.contains('!'), "A's concurrent edit survives: {ta:?}");
+        assert!(ta.contains("yeah"), "B's concurrent edit survives: {ta:?}");
+        // B's local un-broadcast block is still intact and coherent.
+        assert_eq!(
+            block_text(&b, note, local_bid).await.as_deref(),
+            Some("local draft"),
+            "local block still coherent after converge"
+        );
+    }
+
     // ---- P1.4 property ops ----
 
     use tesela_core::property::PropScalar;
