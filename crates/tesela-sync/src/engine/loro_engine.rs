@@ -530,7 +530,23 @@ impl LoroEngine {
             // cursor → back to incremental. (2026-06-25: an un-decodable
             // broadcast cursor returned None here, and produce_relay_updates
             // silently skipped the note — iOS edits never reached the desktop.)
+            //
+            // A cursor that DECODES can still strand the note: if its VV is
+            // AT-OR-AHEAD of the doc's CURRENT version (`vv` covers current —
+            // a stale-ahead cursor, or one left ahead after an authoritative
+            // import rebased current 'backward'), `updates(vv)` is an
+            // EMPTY/no-op delta, `.ok()` is `Some(empty)`, and the snapshot
+            // `.or_else` never runs — so produce ships a content-less frame
+            // forever. Detect that with `includes_vv` and snapshot instead.
+            // (2026-06-29: confirmed live on iOS — splice applied=1 but
+            // tick_outbound shipped 0 effective ops.) A DISJOINT cursor
+            // (concurrent: neither includes the other) is NOT ahead, so it
+            // still takes the incremental path — `updates(vv)` there is a real
+            // non-empty delta of the ops current holds that vv lacks.
             Some(bytes) => match VersionVector::decode(bytes) {
+                Ok(vv) if vv.includes_vv(&doc.oplog_vv()) => {
+                    doc.export(ExportMode::Snapshot).ok()
+                }
                 Ok(vv) => doc
                     .export(ExportMode::updates(&vv))
                     .ok()
@@ -7279,6 +7295,114 @@ mod tests {
             1,
             "a dirty note whose broadcast cursor won't decode must still export \
              (full-snapshot fallback), never be silently skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn produce_re_emits_snapshot_when_broadcast_cursor_is_ahead_of_current() {
+        // Regression (2026-06-29): an authoritative import can rebase a note's
+        // doc 'backward' (the convergence/bootstrap heal imports do this),
+        // leaving the persisted broadcast cursor AT-OR-AHEAD of the doc's
+        // current version. The cursor still DECODES (so the undecodable
+        // snapshot fallback never fires) and is != current bytes (so produce's
+        // dirty-skip never fires) — but `updates(since_vv)` is then an
+        // EMPTY/no-op delta because since_vv already covers current. Before the
+        // fix, export_doc_update shipped that empty delta (`.ok()` was
+        // `Some(empty)`, so the snapshot `.or_else` never ran) and the note's
+        // REAL current content never reached the relay. On iOS this presented
+        // as: a today edit records (splice applied=1) but tick_outbound ships a
+        // content-less frame, no error, forever → iOS edits never reach the
+        // desktop.
+        use loro::VersionVector;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("loro");
+        let notes = tmp.path().join("notes");
+        let dev = test_device();
+        let note = blake3_note_id("ahead");
+        let engine = LoroEngine::with_dirs(dev, Arc::new(Hlc::new(dev)), snap, Some(notes))
+            .await
+            .unwrap();
+        engine
+            .record_local(OpPayload::NoteUpsert {
+                note_id: note,
+                display_alias: Some("ahead".into()),
+                title: "A".into(),
+                content: "- convergence-canary <!-- bid:80808080-8080-8080-8080-808080808080 -->\n"
+                    .into(),
+                created_at_millis: 1,
+            })
+            .await
+            .unwrap();
+
+        // Realistic path: produce + commit so a decodable cursor is persisted at
+        // the doc's current version.
+        let first = engine.produce_relay_updates().await;
+        assert_eq!(first.len(), 1, "first produce emits the note");
+        let committed: Vec<([u8; 16], Vec<u8>)> =
+            first.into_iter().map(|(d, _b, vv)| (d, vv)).collect();
+        engine.commit_broadcast_cursors(&committed).await;
+        assert!(
+            engine.produce_relay_updates().await.is_empty(),
+            "committed cursor at current → nothing dirty"
+        );
+
+        // Now simulate a backward rebase: bump the persisted cursor PAST the
+        // doc's current version (the same net state as an authoritative import
+        // that rebased current backward). The cursor decodes fine and differs
+        // from current bytes, so neither the undecodable fallback nor produce's
+        // dirty-skip applies — yet `updates(cursor)` would be empty.
+        let current_enc = engine.doc_version(note).await.unwrap();
+        let mut ahead = VersionVector::decode(&current_enc).unwrap();
+        let bumps: Vec<(u64, i32)> = ahead.iter().map(|(p, c)| (*p, *c)).collect();
+        assert!(!bumps.is_empty(), "doc must have ops to bump past");
+        for (peer, counter) in bumps {
+            ahead.set_end(loro::ID::new(peer, counter + 8));
+        }
+        let ahead_enc = ahead.encode();
+        assert_ne!(
+            ahead_enc, current_enc,
+            "crafted cursor must differ from current bytes (stay dirty)"
+        );
+        engine
+            .inner
+            .broadcast_cursor
+            .write()
+            .await
+            .insert(note, ahead_enc);
+
+        // The dirty note must export a delta that brings a receiver to CURRENT.
+        let out = engine.produce_relay_updates().await;
+        assert_eq!(
+            out.len(),
+            1,
+            "a dirty note whose cursor is ahead-of-current must still export"
+        );
+        let (got_id, bytes, _vv) = &out[0];
+        assert_eq!(*got_id, note);
+
+        // The exported bytes must import cleanly into a FRESH engine and
+        // reproduce the note's CURRENT content — i.e. a real snapshot, not an
+        // empty no-op delta.
+        let tmp2 = tempfile::tempdir().unwrap();
+        let dev2 = DeviceId::from_bytes([2u8; 16]);
+        let fresh = LoroEngine::with_dirs(
+            dev2,
+            Arc::new(Hlc::new(dev2)),
+            tmp2.path().join("loro"),
+            Some(tmp2.path().join("notes")),
+        )
+        .await
+        .unwrap();
+        fresh.import_doc_update(note, bytes).await.unwrap();
+        let rendered = fresh
+            .render_note(note)
+            .await
+            .expect("fresh engine should hold the note after import");
+        assert!(
+            rendered.contains("convergence-canary"),
+            "ahead-cursor produce must ship a full snapshot reproducing CURRENT \
+             content, not an empty no-op delta; got: {rendered:?}"
         );
     }
 
