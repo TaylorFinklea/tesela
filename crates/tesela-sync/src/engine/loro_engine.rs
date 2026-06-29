@@ -2200,25 +2200,87 @@ fn read_meta_str(tree: &LoroTree, node: TreeID, key: &str) -> Option<String> {
     }
 }
 
+/// The UTF-16 splice that turns `current` into `target` while touching
+/// only the bytes that actually changed: the longest common prefix and
+/// suffix are preserved, and the differing MIDDLE is deleted + re-inserted.
+/// Returns `(utf16_offset, utf16_delete_len, insert)`. Offsets are UTF-16
+/// to match [`LoroEngine::splice_block_text`] and the cursor model.
+///
+/// This is the CONVERGENCE-CRITICAL core of [`write_block_text`]: by never
+/// deleting+re-inserting the shared prefix/suffix, two replicas that
+/// concurrently REWRITE the same block char-merge their divergent middles
+/// (the shared base survives ONCE) instead of unioning two whole runs into
+/// a concatenation. Computed on Unicode-scalar boundaries (never splitting
+/// a surrogate pair), then summed into UTF-16 units.
+fn minimal_utf16_diff(current: &str, target: &str) -> (usize, usize, String) {
+    let cur: Vec<char> = current.chars().collect();
+    let tgt: Vec<char> = target.chars().collect();
+    // Longest common prefix (in chars).
+    let mut p = 0;
+    while p < cur.len() && p < tgt.len() && cur[p] == tgt[p] {
+        p += 1;
+    }
+    // Longest common suffix (in chars), not overlapping the prefix.
+    let mut s = 0;
+    while s < cur.len() - p && s < tgt.len() - p && cur[cur.len() - 1 - s] == tgt[tgt.len() - 1 - s]
+    {
+        s += 1;
+    }
+    let utf16: fn(&[char]) -> usize = |cs| cs.iter().map(|c| c.len_utf16()).sum();
+    let off16 = utf16(&cur[..p]);
+    let del16 = utf16(&cur[p..cur.len() - s]);
+    let ins: String = tgt[p..tgt.len() - s].iter().collect();
+    (off16, del16, ins)
+}
+
 /// Write a block's whole text into its node's nested `text_seq`
 /// [`LoroText`] container — the sequence CRDT that lets concurrent
 /// same-block edits INTERLEAVE instead of clobbering (the LWW map
 /// register `text` did). `get_or_create_container` is idempotent and
 /// returns the existing handler if present, so seed + upsert + heal all
-/// converge on ONE container at the stable `text_seq` key; `update`
-/// Myers-diffs the whole string into minimal splices against the
-/// container's CURRENT value. We never write the legacy `text` register
-/// again — concurrently minting a different container at the same key
-/// can overwrite rather than merge, so a distinct key + get-or-create is
-/// the safe path. The legacy `text` register stays readable for old
-/// snapshots via [`read_block_text`].
+/// converge on ONE container at the stable `text_seq` key. We never write
+/// the legacy `text` register again — concurrently minting a different
+/// container at the same key can overwrite rather than merge, so a distinct
+/// key + get-or-create is the safe path. The legacy `text` register stays
+/// readable for old snapshots via [`read_block_text`].
+///
+/// CONVERGENCE (2026-06-28): this whole-text authoring path used to call
+/// `LoroText::update`, whose internal Myers diff is convergent for the
+/// common case but is a heuristic (timeout-bounded, alignment-dependent) —
+/// fragile for a convergence-critical path. Two guarantees are now explicit:
+///
+/// 1. **Idempotency guard.** If the container already holds `text`, SKIP the
+///    write entirely. The disjoint-twin heal re-issues the same
+///    `BlockUpsert{text}` on every inbound frame; the guard stops a re-issue
+///    from manufacturing a duplicate run or growing the op history (which
+///    would compound under multi-round relay re-broadcast).
+/// 2. **Minimal-diff splice.** A genuine rewrite is applied as a minimal
+///    UTF-16 offset diff ([`minimal_utf16_diff`]) through the SAME
+///    `delete_utf16`/`insert_utf16` primitive `splice_block_text` uses, so
+///    concurrent rewrites char-merge on the shared prefix/suffix instead of
+///    unioning whole runs into a concatenation.
 fn write_block_text(meta: &loro::LoroMap, text: &str) -> SyncResult<()> {
     let text_c: LoroText = meta
         .get_or_create_container("text_seq", LoroText::new())
         .map_err(|e| SyncError::Storage(format!("loro text_seq get_or_create: {e}")))?;
-    text_c
-        .update(text, UpdateOptions::default())
-        .map_err(|e| SyncError::Storage(format!("loro text_seq update: {e}")))?;
+    let current = text_c.to_string();
+    // (1) Idempotency guard — identical target ⇒ no write at all.
+    if current == text {
+        return Ok(());
+    }
+    // (2) Genuine rewrite ⇒ minimal convergent splice (delete middle, insert
+    // the new middle at the same offset).
+    let (off16, del16, ins) = minimal_utf16_diff(&current, text);
+    if del16 > 0 {
+        text_c
+            .delete_utf16(off16, del16)
+            .map_err(|e| SyncError::Storage(format!("loro text_seq delete_utf16: {e}")))?;
+    }
+    if !ins.is_empty() {
+        text_c
+            .insert_utf16(off16, &ins)
+            .map_err(|e| SyncError::Storage(format!("loro text_seq insert_utf16: {e}")))?;
+    }
     Ok(())
 }
 
@@ -8065,6 +8127,149 @@ mod tests {
             Some("present"),
             "the present block is unaffected"
         );
+    }
+
+    // ── Convergent whole-text writes (the same-bid lineage-union fix) ──────
+    //
+    // `write_block_text` is the WHOLE-TEXT authoring path (BlockUpsert / the
+    // disjoint-twin heal / reconcile). Two replicas on a SHARED text_seq
+    // lineage that each REWRITE the block to a DIFFERENT whole string must
+    // converge to ONE coherent value — the shared base preserved ONCE, only
+    // the divergent tails char-merging — NOT the two full strings
+    // concatenated (the "Bothnice onenice one" signature). And re-applying
+    // the SAME whole text (the heal's idempotent re-issue) must never grow or
+    // duplicate runs.
+
+    #[tokio::test]
+    async fn write_block_text_concurrent_rewrites_one_coherent_value() {
+        // Shared base "hello"; A rewrites whole-text → "hello world", B
+        // rewrites whole-text → "hello there", concurrently. After merge both
+        // replicas converge AND the shared base "hello" survives exactly ONCE
+        // (a minimal-diff char-merge), not "hello worldhello there" (the
+        // whole-replace union that duplicates the base).
+        let note = blake3_note_id("write-converge");
+        let (a, b) = splice_shared_base(note, "hello").await;
+
+        let a_vv = a.doc_version(note).await;
+        let b_vv = b.doc_version(note).await;
+
+        // Concurrent WHOLE-TEXT rewrites (the BlockUpsert authoring path).
+        upsert_block(&a, note, A_BID_BYTES, "hello world", None).await;
+        upsert_block(&b, note, A_BID_BYTES, "hello there", None).await;
+
+        let a_delta = a.export_doc_update(note, a_vv.as_deref()).await.unwrap();
+        let b_delta = b.export_doc_update(note, b_vv.as_deref()).await.unwrap();
+        b.import_doc_update(note, &a_delta).await.unwrap();
+        a.import_doc_update(note, &b_delta).await.unwrap();
+
+        let ta = block_text(&a, note, A_BID_BYTES).await.unwrap_or_default();
+        let tb = block_text(&b, note, A_BID_BYTES).await.unwrap_or_default();
+
+        assert_eq!(ta, tb, "replicas converge to the same merged text: {ta:?}");
+        // The shared base appears exactly once — the divergent tails merge,
+        // the common prefix is NOT re-inserted by both writers.
+        assert_eq!(
+            ta.matches("hello").count(),
+            1,
+            "shared base 'hello' preserved once, not concatenated: {ta:?}"
+        );
+        // Both divergent edits survive the char-merge.
+        assert!(ta.contains("world"), "A's edit survives: {ta:?}");
+        assert!(ta.contains("there"), "B's edit survives: {ta:?}");
+    }
+
+    #[tokio::test]
+    async fn write_block_text_empty_base_concurrent_char_merges() {
+        // Shared EMPTY placeholder (the daily empty block); two devices type
+        // DIFFERENT whole text into it concurrently, then merge. With no
+        // common ancestor content to anchor a diff, this is the irreducible
+        // char-merge case (same semantics as the splice interleave): both
+        // replicas converge to ONE shared value and BOTH fragments survive
+        // (neither replica clobbers the other). The fix's job is convergence +
+        // no compounding, NOT to magically pick a single fork's text here.
+        let note = blake3_note_id("write-empty-merge");
+        let (a, b) = splice_shared_base(note, "").await;
+        let a_vv = a.doc_version(note).await;
+        let b_vv = b.doc_version(note).await;
+        upsert_block(&a, note, A_BID_BYTES, "Both", None).await;
+        upsert_block(&b, note, A_BID_BYTES, "nice one", None).await;
+        let a_delta = a.export_doc_update(note, a_vv.as_deref()).await.unwrap();
+        let b_delta = b.export_doc_update(note, b_vv.as_deref()).await.unwrap();
+        b.import_doc_update(note, &a_delta).await.unwrap();
+        a.import_doc_update(note, &b_delta).await.unwrap();
+        let ta = block_text(&a, note, A_BID_BYTES).await.unwrap_or_default();
+        let tb = block_text(&b, note, A_BID_BYTES).await.unwrap_or_default();
+        assert_eq!(ta, tb, "replicas converge: A={ta:?} B={tb:?}");
+        assert!(ta.contains("Both"), "A's authoring survives: {ta:?}");
+        assert!(ta.contains("nice one"), "B's authoring survives: {ta:?}");
+        // No compounding: each fragment appears exactly once (no third run).
+        assert_eq!(ta.matches("Both").count(), 1, "no duplicate run: {ta:?}");
+        assert_eq!(ta.matches("nice one").count(), 1, "no duplicate run: {ta:?}");
+    }
+
+    #[tokio::test]
+    async fn write_block_text_reapply_is_idempotent() {
+        // Re-authoring a block with the SAME whole text (the disjoint-twin
+        // heal re-issues record_local(BlockUpsert{text}) on every import) must
+        // be a true no-op on the text_seq — never appending a second run that
+        // grows/duplicates the value, and never growing the doc's op history
+        // (the lever that compounds under multi-round relay re-broadcast).
+        let note = blake3_note_id("write-idempotent");
+        let dev = test_device();
+        let engine = LoroEngine::new(dev, Arc::new(Hlc::new(dev)));
+        upsert_block(&engine, note, A_BID_BYTES, "nice one", None).await;
+        let v0 = engine.doc_version(note).await;
+        // Re-apply the identical whole text several times.
+        for _ in 0..3 {
+            upsert_block(&engine, note, A_BID_BYTES, "nice one", None).await;
+        }
+        let v1 = engine.doc_version(note).await;
+        assert_eq!(
+            block_text(&engine, note, A_BID_BYTES).await.as_deref(),
+            Some("nice one"),
+            "re-applying identical whole text never grows/duplicates the value"
+        );
+        assert_eq!(
+            v0, v1,
+            "re-applying identical whole text never grows the op history"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_block_text_distinct_new_blocks_stay_separate() {
+        // Two replicas on a shared base each ADD a NEW block with a DISTINCT
+        // bid (the iOS fresh-v4 case). After merge the note holds BOTH new
+        // blocks as separate values — distinct bids never share a text_seq, so
+        // there is no concatenation.
+        let note = blake3_note_id("write-distinct");
+        let (a, b) = splice_shared_base(note, "base").await;
+
+        let a_vv = a.doc_version(note).await;
+        let b_vv = b.doc_version(note).await;
+
+        // Distinct fresh bids, one per replica.
+        let new_a: [u8; 16] = [0xc1; 16];
+        let new_b: [u8; 16] = [0xc2; 16];
+        upsert_block(&a, note, new_a, "alpha block", None).await;
+        upsert_block(&b, note, new_b, "beta block", None).await;
+
+        let a_delta = a.export_doc_update(note, a_vv.as_deref()).await.unwrap();
+        let b_delta = b.export_doc_update(note, b_vv.as_deref()).await.unwrap();
+        b.import_doc_update(note, &a_delta).await.unwrap();
+        a.import_doc_update(note, &b_delta).await.unwrap();
+
+        for (label, eng) in [("a", &a), ("b", &b)] {
+            assert_eq!(
+                block_text(eng, note, new_a).await.as_deref(),
+                Some("alpha block"),
+                "{label}: A's new block is its own coherent value"
+            );
+            assert_eq!(
+                block_text(eng, note, new_b).await.as_deref(),
+                Some("beta block"),
+                "{label}: B's new block is its own coherent value"
+            );
+        }
     }
 
     // ---- P1.4 property ops ----
