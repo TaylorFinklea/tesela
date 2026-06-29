@@ -39,9 +39,18 @@ echo "  installed: $(stat -f '%Sm' "$DST/Contents/MacOS/tesela-desktop")"
 echo "→ relaunching…"
 open "$DST"
 sleep 14
-if curl -sS -m 5 http://127.0.0.1:7474/health >/dev/null 2>&1; then
-  echo "✓ server up on :7474 — new build is live."
+# The embedded tesela-server binds 127.0.0.1:0 (a RANDOM port, set in
+# src-tauri/src/main.rs), NOT 7474 — so probe whatever port the launched
+# process is actually listening on and hit /health there.
+PID="$(pgrep -f 'Tesela.app/Contents/MacOS/tesela-desktop' | head -1)"
+SERVED=""
+if [ -n "$PID" ]; then
+  for p in $(lsof -nP -p "$PID" 2>/dev/null | grep LISTEN | grep -oE '127\.0\.0\.1:[0-9]+' | cut -d: -f2 | sort -u); do
+    if curl -sS -m 4 "http://127.0.0.1:$p/health" 2>/dev/null | grep -q '"ok"'; then SERVED="$p"; break; fi
+  done
+fi
+if [ -n "$SERVED" ]; then
+  echo "✓ server up on :$SERVED — new build is live."
 else
-  echo "⚠ server NOT up on :7474."
-  echo "  → Quit Tesela (Cmd+Q) and reopen it from the Dock to start the server."
+  echo "⚠ server not detected — if the window didn't appear, open Tesela from the Dock."
 fi
