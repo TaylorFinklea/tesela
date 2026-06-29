@@ -280,6 +280,36 @@ struct BlockRow: View {
         }
     }
 
+    /// The primary peer color for this block's presence — the first remote
+    /// caret's color (we deliberately don't blend multiple peers; the chip
+    /// cluster already disambiguates who's here). `nil` when no peer is here,
+    /// which drives the tint to fully transparent.
+    private var presenceColor: Color? {
+        remoteCarets.first?.color
+    }
+
+    /// A subtle whole-row tint marking "a remote device is on this block":
+    /// a low-opacity fill of the peer's color plus a 3pt rounded leading
+    /// accent bar in the same color. Mirrors the Graphite "active" recipe
+    /// (`GrChip` uses `accentPrimary.opacity(0.14)` for its active fill) but
+    /// keyed to the peer color and a touch softer (0.12) so it never hurts
+    /// text contrast in the dark theme. Always present (controlled by
+    /// opacity, not insertion) so the color/opacity change fades gently as
+    /// presence comes and goes.
+    @ViewBuilder
+    private var presenceTint: some View {
+        let color = presenceColor
+        ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill((color ?? .clear).opacity(color == nil ? 0 : 0.12))
+            RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                .fill((color ?? .clear).opacity(color == nil ? 0 : 0.85))
+                .frame(width: 3)
+        }
+        .animation(.easeInOut(duration: 0.18), value: color)
+        .allowsHitTesting(false)
+    }
+
     /// Label a remote caret: the peer's device name when set, else a short
     /// peer-id prefix, else a generic "device" stub.
     private func presenceLabel(_ caret: RemoteCaret) -> String {
@@ -352,6 +382,13 @@ struct BlockRow: View {
         .padding(.leading, CGFloat(18 + indent * 18))
         .padding(.trailing, 18)
         .padding(.vertical, 6)
+        // Remote-presence tint: a subtle peer-colored fill + leading accent
+        // bar across the whole padded row when a peer's caret is in this
+        // block, so it's obvious which block a device is on (esp. on iPad).
+        // Composes with — rather than replaces — anything else: the row has
+        // no local-selection fill (editing only swaps the text for an editor),
+        // so this is the row's only background layer and never fights it.
+        .background(presenceTint)
         .overlay(alignment: .topLeading) {
             foldToggle
         }
