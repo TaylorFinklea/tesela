@@ -5,7 +5,8 @@
 ## Loop state — fresh context: start here, then `bd ready`
 - **Backlog/what-next is in beads.** `bd ready` (priority queue) → `bd show <id>` → `bd update <id> --claim` → do it, run the repo Verify (build/test) → `bd close <id> --reason "…"`. `bd create` for work discovered mid-task. **I own queue accuracy — close completed items myself; don't ask Taylor to.**
 - **Branch `main` — LARGE unpushed stack** (the whole sync/presence/iOS arc below, `cf212bee` → build-66 bump `7c89f944`). **Remind Taylor to push; I never push.** `.docs/ai/review/` + `.beads/` untracked; `AuthKey_*.p8` gitignored — NEVER commit.
-- **Latest iOS = TestFlight build 66.** Desktop installed + serving (random loopback port — see landmines). Taylor is sole tester; cut iOS builds freely.
+- **Latest iOS = TestFlight build 66** (build 67 cut 2026-06-30 with the mp0.1 relay-attach fix — confirm it uploaded). Desktop installed + serving (random loopback port — see landmines). Taylor is sole tester; cut iOS builds freely.
+- **NOW: iOS onboarding epic `tesela-mp0` re-scoped + slice 1 SHIPPED (2026-06-30, Sonnet-5 Lead-trial, Opus-reviewed).** Lead found 2 of 3 epic premises STALE (QR freeze + RelayTicker race already fixed); the "block daily until wired" premise is wrong for local-first. Real bug fixed: `mp0.1` — `PairDeviceView` showed "Not connected to a server" after a relay pairing → 3-way `displayState` (`85dcf0a8`, TeselaTests 315/0). Queue: `mp0.2` onboarding "you're synced" screen (sim-verify, blocked by mp0.1=done) · `mp0.3` short-code pairing dead-on-arrival on fresh install (needs a small design call) · `mp0.4` no camera-perm recheck on return from Settings · `mp0.5` scanner-stall nudge. Rationale + the AppShell evidentiary correction in decisions.md. Sonnet 5 now Lead-capable on the scorecard (pair its Lead re-scopes with a fact-check — it over-states evidence).
 
 ## DONE — north-star arc: multi-device sync + presence + iOS NLP/capture (2026-06-29/30, builds 56→66)
 Verified LIVE by Taylor across iPhone/iPad/desktop ("Holy crap it works"). Full detail in git + closed bd items; summary:
@@ -19,6 +20,7 @@ Verified LIVE by Taylor across iPhone/iPad/desktop ("Holy crap it works"). Full 
 - **Desktop server binds a RANDOM 127.0.0.1 port** (`TESELA_SERVER_BIND=127.0.0.1:0`), NOT 7474. install-desktop.sh probes the real port via lsof. Check live: `lsof -nP -p $(pgrep -f Tesela.app/Contents/MacOS/tesela-desktop|head -1)|grep LISTEN`.
 - **iOS:** `scripts/ios-testflight.sh` rebuilds the Rust FFI for iOS + xcodegen + archive + auto-bumps `CFBundleVersion` in project.yml + uploads. SourceKit shows phantom cross-file / `No such module UIKit|XCTest` / `Cannot find type` errors — **trust `xcodebuild`, not the editor** (memory: project_ios_sourcekit_false_positives).
 - **Dead branch `wip/concurrent-convergence-shared-base`** = the abandoned deterministic-seed approach (bootstrap-before-author / "Option A" won). Deletable.
+- **Pre-existing git stash `task-tag-wip` (`stash@{0}`) — DON'T blind-pop or drop.** Holds 34 files of unrelated WIP (+766/-4397): web v4/v5 chrome DELETIONS, iOS feed-pagination + task-toggle persistence, Rust importer work. Not from the mp0 session; tree was clean at its start. Recover or drop deliberately. (decisions.md 2026-06-30.)
 
 ## Shipped specs (historical — work done)
 - `phases/2026-06-29-concurrent-convergence-spec.md` (convergence — shipped as Option A bootstrap-before-author).
