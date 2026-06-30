@@ -227,24 +227,39 @@ struct GrDailyView: View {
                 onToggleFold: { toggleFold(block.id) },
                 onToggleTask: { mosaic.toggleTask(id: block.id) },
                 onTap: { editingBlockId = block.id },
-                onCommitEdit: { newText in
-                    mosaic.editYesterdayBlock(id: block.id, text: newText)
+                onCommitEdit: { _ in
+                    // Collab (splice) path: text persisted keystroke-by-keystroke,
+                    // so commit just finalizes — no whole-text re-author.
                     editingBlockId = nil
                 },
-                onTextChanged: { newText in
-                    mosaic.editYesterdayBlock(id: block.id, text: newText)
+                onTextSplice: { offset, deleteLen, insert in
+                    mosaic.spliceYesterdayBlock(
+                        id: block.id,
+                        utf16Offset: offset,
+                        utf16DeleteLen: deleteLen,
+                        insert: insert
+                    )
+                },
+                onActiveCollabInserter: { inserter in
+                    mosaic.openBlockInserter = inserter
+                },
+                onCaretMove: { offset in
+                    mosaic.publishPresence(slug: block.noteId, bid: block.id, offset: offset)
                 },
                 remoteCarets: remoteCarets(for: block),
                 onMenuAction: { action in handleYesterdayAction(action, on: block) },
-                onSplitToNewBlock: { committedText in
-                    mosaic.editYesterdayBlock(id: block.id, text: committedText)
-                    let isEmpty = committedText
+                onSplitToNewBlock: { _ in
+                    // Mirror today: the current block already persisted via
+                    // splices, so read it back live (don't re-author).
+                    let cur = mosaic.yesterdayBlocks.first { $0.id == block.id }
+                    let indent = cur?.indent ?? block.indent
+                    let isEmpty = (cur?.text ?? "")
                         .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    if isEmpty && block.indent > 0 {
+                    if isEmpty && indent > 0 {
                         mosaic.indentYesterdayBlock(id: block.id, by: -1)
                         editingBlockId = block.id
                     } else {
-                        let newId = mosaic.appendYesterdayBlock(kind: .note, indent: block.indent, after: block.id)
+                        let newId = mosaic.appendYesterdayBlock(kind: .note, indent: indent, after: block.id)
                         editingBlockId = newId
                     }
                 },
@@ -300,25 +315,40 @@ struct GrDailyView: View {
                         mosaic.togglePastDailyTask(dayId: day.id, blockId: block.id)
                     },
                     onTap: { editingBlockId = block.id },
-                    onCommitEdit: { newText in
-                        mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: newText)
+                    onCommitEdit: { _ in
+                        // Collab (splice) path: text already persisted — just finalize.
                         editingBlockId = nil
                     },
-                    onTextChanged: { newText in
-                        mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: newText)
+                    onTextSplice: { offset, deleteLen, insert in
+                        mosaic.splicePastDailyBlock(
+                            dayId: day.id,
+                            id: block.id,
+                            utf16Offset: offset,
+                            utf16DeleteLen: deleteLen,
+                            insert: insert
+                        )
+                    },
+                    onActiveCollabInserter: { inserter in
+                        mosaic.openBlockInserter = inserter
+                    },
+                    onCaretMove: { offset in
+                        mosaic.publishPresence(slug: block.noteId, bid: block.id, offset: offset)
                     },
                     remoteCarets: remoteCarets(for: block),
                     onMenuAction: { action in handlePastDailyAction(action, on: block, dayId: day.id) },
-                    onSplitToNewBlock: { committedText in
-                        mosaic.editPastDailyBlock(dayId: day.id, blockId: block.id, text: committedText)
-                        let isEmpty = committedText
+                    onSplitToNewBlock: { _ in
+                        // Mirror today: read the splice-persisted block back live.
+                        let cur = mosaic.pastDailies.first { $0.id == day.id }?
+                            .blocks.first { $0.id == block.id }
+                        let indent = cur?.indent ?? block.indent
+                        let isEmpty = (cur?.text ?? "")
                             .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        if isEmpty && block.indent > 0 {
+                        if isEmpty && indent > 0 {
                             mosaic.indentPastDailyBlock(dayId: day.id, blockId: block.id, by: -1)
                             editingBlockId = block.id
                         } else {
                             let newId = mosaic.appendPastDailyBlock(
-                                dayId: day.id, kind: .note, indent: block.indent, after: block.id)
+                                dayId: day.id, kind: .note, indent: indent, after: block.id)
                             editingBlockId = newId
                         }
                     },

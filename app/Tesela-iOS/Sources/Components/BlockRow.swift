@@ -907,8 +907,56 @@ struct BlockRow: View {
     /// `onCommitEdit` on this path must therefore only clear state, not
     /// call `editTodayBlock`.
     private func commitEditCollab(_ final: String) {
+        // NLP auto-lift on blur (matches web `BlockEditor.svelte` blur handler):
+        // before finalizing, lift every detected token (priority/date/status…)
+        // out of the prose into structured properties — no tap required. Run
+        // FIRST so the strip + property writes land before `onCommitEdit` clears
+        // the editing state (which drops the live-apply registration + lets the
+        // next refresh reconcile).
+        liftNlpOnBlur(from: final)
         let trimmed = final.trimmingCharacters(in: .whitespacesAndNewlines)
         onCommitEdit?(trimmed)
+    }
+
+    /// Blur NLP auto-lift (LOCKED decision, 2026-06-29): scan the whole block
+    /// for liftable tokens, strip them via the SAME splice seam the keystrokes
+    /// use (so the engine `text_seq` stays aligned), and write each lifted
+    /// property through the typed per-key seam. Gated like the web (`!showSlash
+    /// && !showAutocomplete`) so an open trigger menu isn't clobbered. No-op for
+    /// untagged / plain-prose blocks (the detector resolves no defs).
+    private func liftNlpOnBlur(from text: String) {
+        guard !editorAutocomplete.isActive else { return }
+        let registry = registrySource?() ?? propertyRegistry
+        let result = InlineNLP.detectLifts(in: text, tags: tags, registry: registry)
+        guard !result.props.isEmpty else { return }
+        // 1) Strip the matched tokens: one minimal splice (common UTF-16
+        //    prefix/suffix diff) routed through `onTextSplice`, so the engine
+        //    receives the removal in place rather than a whole-text re-author.
+        applyStripSplice(from: text, to: result.stripped)
+        // 2) Lift each property via the structured converging seam.
+        for prop in result.props {
+            writeProperty(key: prop.key, value: prop.value)
+        }
+    }
+
+    /// Emit ONE minimal splice transforming `old` into `new` (the NLP-stripped
+    /// text), as a common UTF-16 prefix/suffix diff routed through `onTextSplice`
+    /// — the same per-block splice path keystrokes use, keeping the engine's
+    /// `text_seq` aligned. No-op when the strings already match.
+    private func applyStripSplice(from old: String, to new: String) {
+        guard old != new else { return }
+        let oldU = Array(old.utf16)
+        let newU = Array(new.utf16)
+        var pre = 0
+        let cap = min(oldU.count, newU.count)
+        while pre < cap, oldU[pre] == newU[pre] { pre += 1 }
+        var suf = 0
+        while suf < (oldU.count - pre), suf < (newU.count - pre),
+              oldU[oldU.count - 1 - suf] == newU[newU.count - 1 - suf] { suf += 1 }
+        let deleteLen = oldU.count - pre - suf
+        let insert = (new as NSString).substring(
+            with: NSRange(location: pre, length: newU.count - pre - suf))
+        onTextSplice?(pre, deleteLen, insert)
     }
 
     /// Body text + inline `#tags` so the user can edit tags as raw

@@ -288,13 +288,64 @@ enum SlashVerbs {
     }
 
     /// Merge the built-in format verbs with the registry-derived property
-    /// verbs, then filter by `query` (label/id contains, case-insensitive).
-    /// This is the single source the `.slash` provider returns.
+    /// verbs, then FUZZY-rank by `query`. Mirrors web `flattenedSlashFilter`
+    /// (`web/src/lib/editor/slash-filter.ts`): score each label via `scoreFuzzy`,
+    /// keep `score > 0`, sort by score desc with a stable tie-break on the
+    /// original index — so `/pri` (prefix), `/prio`, and subsequence typos all
+    /// surface the priority verbs, not just literal substrings. Empty query →
+    /// the full list in original order. This is the single source the `.slash`
+    /// provider returns.
     static func matchingWithRegistry(_ query: String, tags: [String], registry: PropertyRegistry) -> [Suggestion] {
         let items = base + [todayDate()] + registryVerbs(tags: tags, registry: registry)
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return items }
-        return items.filter { $0.label.lowercased().contains(q) || $0.id.lowercased().contains(q) }
+        // Explicit element type so the chained map/filter/sorted/map doesn't blow
+        // the Swift type-checker's inference budget (SourceKit flagged "unable to
+        // type-check in reasonable time"; xcodebuild compiled it but borderline).
+        let scored: [(item: Suggestion, index: Int, score: Int)] = items.enumerated()
+            .map { (i, item) in (item: item, index: i, score: scoreFuzzy(item.label, q)) }
+        return scored
+            .filter { $0.score > 0 }
+            .sorted { $0.score != $1.score ? $0.score > $1.score : $0.index < $1.index }
+            .map { $0.item }
+    }
+
+    /// Tiered fuzzy score mirroring web `scoreFuzzy` (`web/src/lib/fuzzy.ts`):
+    /// prefix > word-start substring > substring > subsequence > 0 (no match).
+    /// Case-insensitive. Word-start separators match web's `/[\s_/-]/`.
+    static func scoreFuzzy(_ label: String, _ filter: String) -> Int {
+        let f = filter.lowercased()
+        if f.isEmpty { return 0 }
+        let l = label.lowercased()
+        // Prefix.
+        if l.hasPrefix(f) {
+            return 1000 + (label.count == filter.count ? 50 : 0)
+        }
+        // Substring (first occurrence).
+        if let r = l.range(of: f) {
+            let sIdx = l.distance(from: l.startIndex, to: r.lowerBound)
+            let wordStart: Bool
+            if sIdx == 0 {
+                wordStart = true
+            } else {
+                let prev = Array(l)[sIdx - 1]
+                wordStart = prev == " " || prev == "\t" || prev == "\n"
+                    || prev == "_" || prev == "/" || prev == "-"
+            }
+            return (wordStart ? 500 : 200) - sIdx
+        }
+        // Subsequence — chars in order, possibly with gaps.
+        let lChars = Array(l)
+        var li = 0
+        var positions: [Int] = []
+        for fc in f {
+            while li < lChars.count && lChars[li] != fc { li += 1 }
+            if li >= lChars.count { return 0 }
+            positions.append(li)
+            li += 1
+        }
+        guard let first = positions.first, let last = positions.last else { return 0 }
+        return max(1, 50 - (last - first))
     }
 }
 
@@ -474,5 +525,78 @@ enum InlineNLP {
     /// candidate tail without crossing a newline.
     private static func isLineSpace(_ ch: unichar) -> Bool {
         ch == 0x20 || ch == 0x09
+    }
+
+    /// Blur-time WHOLE-BLOCK lift (P-surface-parity): scan the whole block for
+    /// EVERY liftable token — not just the one at the caret — strip them, and
+    /// return the cleaned text plus the structured props to set. Mirrors web
+    /// `detectTaskTokens` + the editor's blur handler
+    /// (`BlockEditor.svelte` ~1734): auto-lift on blur, no tap required.
+    ///
+    /// Built on the same confident, gated `detect` used for the live preview
+    /// chip: it repeatedly finds the earliest lift candidate anywhere in the
+    /// text (by probing word-end boundaries), records its prop, strips its span,
+    /// and re-scans the shortened text — so multiple tokens (`p1 ... due
+    /// tomorrow`) all lift. Double spaces left by a strip are collapsed and the
+    /// result is trimmed (matching web). Returns `(text, [])` unchanged when no
+    /// confident token is found (plain prose lifts nothing).
+    static func detectLifts(
+        in text: String,
+        tags: [String],
+        registry: PropertyRegistry,
+        today: Date = Date()
+    ) -> (stripped: String, props: [(key: String, value: String)]) {
+        var working = text
+        var props: [(key: String, value: String)] = []
+        var guardCount = 0
+        while guardCount < 64 {
+            guardCount += 1
+            guard let hit = firstLift(in: working, tags: tags, registry: registry, today: today)
+            else { break }
+            switch hit.suggestion.action {
+            case .setProperty(let key, let value): props.append((key, value))
+            case .setStatus(let choice): props.append(("status", choice))
+            case .insertText, .openDateSheet: break
+            }
+            let mut = NSMutableString(string: working)
+            mut.replaceCharacters(
+                in: NSRange(location: hit.start, length: hit.length), with: "")
+            working = mut as String
+        }
+        guard !props.isEmpty else { return (text, []) }
+        working = working.replacingOccurrences(of: "  +", with: " ", options: .regularExpression)
+        working = working.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (working, props)
+    }
+
+    /// The earliest-starting lift candidate ANYWHERE in `text`, found by probing
+    /// `detect` (which is caret-anchored) at every word-end boundary. `nil` when
+    /// no boundary yields a confident match.
+    private static func firstLift(
+        in text: String,
+        tags: [String],
+        registry: PropertyRegistry,
+        today: Date
+    ) -> Hit? {
+        let ns = text as NSString
+        var best: Hit? = nil
+        var i = 1
+        while i <= ns.length {
+            let prev = ns.character(at: i - 1)
+            let prevIsSpace = prev == 0x20 || prev == 0x0A || prev == 0x09
+            let atEnd = i == ns.length
+            let nextIsSpace = !atEnd && {
+                let cur = ns.character(at: i)
+                return cur == 0x20 || cur == 0x0A || cur == 0x09
+            }()
+            // A word-end boundary: a non-space char followed by end-of-text or
+            // whitespace.
+            if !prevIsSpace, atEnd || nextIsSpace,
+               let hit = detect(in: text, caretUTF16: i, tags: tags, registry: registry, today: today) {
+                if best == nil || hit.start < best!.start { best = hit }
+            }
+            i += 1
+        }
+        return best
     }
 }

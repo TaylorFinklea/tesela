@@ -59,7 +59,15 @@ struct GrPageView: View {
             }
         }
         .onChange(of: editingBlockId) { _, newValue in
+            // Hold off live remote refreshes while editing (mirrors GrDailyView)
+            // so an inbound WS event can't replace text under the cursor.
             mosaic.isEditingBlock = (newValue != nil)
+            // C1-inbound: tell the service which block is open so an inbound
+            // remote splice on it can be live-applied to the editor. Drop any
+            // previously-registered inserter on EVERY change (close OR switch)
+            // — the newly-focused block's onAppear re-registers its own.
+            mosaic.editingBlockId = newValue
+            mosaic.openBlockInserter = nil
             if let id = newValue,
                let block = mosaic.loadedPageBlocks[slug]?.first(where: { $0.id == id })
             {
@@ -182,25 +190,39 @@ struct GrPageView: View {
                 onToggleFold: { toggleFold(block.id) },
                 onToggleTask: { togglePageTask(block.id) },
                 onTap: { editingBlockId = block.id },
-                onCommitEdit: { newText in
-                    mosaic.editPageBlock(pageId: slug, blockId: block.id, text: newText)
+                onCommitEdit: { _ in
+                    // Collab (splice) path: text persisted keystroke-by-keystroke,
+                    // so commit just finalizes — no whole-text re-author.
                     editingBlockId = nil
                 },
-                onTextChanged: { newText in
-                    mosaic.editPageBlock(pageId: slug, blockId: block.id, text: newText)
+                onTextSplice: { offset, deleteLen, insert in
+                    mosaic.splicePageBlock(
+                        pageId: slug,
+                        id: block.id,
+                        utf16Offset: offset,
+                        utf16DeleteLen: deleteLen,
+                        insert: insert
+                    )
                 },
+                onActiveCollabInserter: { inserter in
+                    mosaic.openBlockInserter = inserter
+                },
+                onCaretMove: { offset in
+                    mosaic.publishPresence(slug: block.noteId, bid: block.id, offset: offset)
+                },
+                remoteCarets: remoteCarets(for: block),
                 onMenuAction: { action in handlePageAction(action, on: block) },
-                onSplitToNewBlock: { committedText in
-                    mosaic.editPageBlock(pageId: slug, blockId: block.id, text: committedText)
-                    // Logseq Enter: inherit the current block's indent; an
-                    // empty indented block outdents one level instead.
-                    let isEmpty = committedText
+                onSplitToNewBlock: { _ in
+                    // Mirror today: read the splice-persisted block back live.
+                    let cur = mosaic.loadedPageBlocks[slug]?.first { $0.id == block.id }
+                    let indent = cur?.indent ?? block.indent
+                    let isEmpty = (cur?.text ?? "")
                         .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    if isEmpty && block.indent > 0 {
+                    if isEmpty && indent > 0 {
                         mosaic.indentPageBlock(pageId: slug, blockId: block.id, by: -1)
                         editingBlockId = block.id
                     } else {
-                        let newId = mosaic.appendPageBlock(pageId: slug, kind: .note, indent: block.indent, after: block.id)
+                        let newId = mosaic.appendPageBlock(pageId: slug, kind: .note, indent: indent, after: block.id)
                         editingBlockId = newId
                     }
                 },
@@ -256,6 +278,22 @@ struct GrPageView: View {
         } else {
             collapsedBlockIds.insert(blockId)
         }
+    }
+
+    /// The live remote carets in a block, mapped to the view's `RemoteCaret`
+    /// (peer color + name + id). Mirrors `GrDailyView.remoteCarets(for:)` so the
+    /// block-level presence chip + per-character caret render on pages too.
+    private func remoteCarets(for block: Block) -> [RemoteCaret] {
+        mosaic.remoteCursors
+            .cursors(forSlug: block.noteId, bid: block.id)
+            .map {
+                RemoteCaret(
+                    offset: $0.offset,
+                    color: RemoteCursorStore.displayColor($0.color),
+                    name: $0.name,
+                    peer: $0.peer
+                )
+            }
     }
 
     private var addBlockRow: some View {

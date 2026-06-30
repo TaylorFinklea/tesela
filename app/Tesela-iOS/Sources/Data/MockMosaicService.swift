@@ -776,6 +776,102 @@ final class MockMosaicService: ObservableObject, MosaicService {
         onLocalSplice?(dailySlug, id, clampedOffset, clampedDelete, insert)
     }
 
+    /// Apply a faithful UTF-16 splice to a block's engine-exact text, returning
+    /// the updated block plus the clamped `(offset, deleteLen)` the engine
+    /// should receive. Pure in-memory projection — mirrors `spliceTodayBlock`'s
+    /// faithful update (NSString UTF-16 semantics, trailing-tag re-derivation,
+    /// no space-collapsing) so splice offsets stay 1:1 aligned with the engine's
+    /// `text_seq`. Shared by the page / yesterday / past-day splice paths so
+    /// every surface mirrors the today path exactly.
+    static func applyFaithfulSplice(
+        to block: Block, utf16Offset: Int, utf16DeleteLen: Int, insert: String
+    ) -> (block: Block, offset: Int, deleteLen: Int) {
+        var b = block
+        let before = engineExactText(of: block)
+        let ns = NSMutableString(string: before)
+        let len = ns.length
+        let clampedOffset = max(0, min(utf16Offset, len))
+        let clampedDelete = max(0, min(utf16DeleteLen, len - clampedOffset))
+        ns.replaceCharacters(
+            in: NSRange(location: clampedOffset, length: clampedDelete),
+            with: insert
+        )
+        let after = ns as String
+        let (body, tags) = splitTrailingTags(after)
+        b.text = body.components(separatedBy: "\n").first ?? body
+        b.rawText = body
+        b.tags = tags
+        return (b, clampedOffset, clampedDelete)
+    }
+
+    /// Collab editing C1 outbound for YESTERDAY's daily — the per-block-splice
+    /// mirror of `spliceTodayBlock` (slug = yesterday's date-derived id). The
+    /// engine seam (`onLocalSplice` → `spliceAndPush` → `engine.spliceBlockText`)
+    /// is slug-generic, so a concurrent same-block edit merges exactly like
+    /// today. Before the note materializes locally it falls back to the
+    /// whole-text writeback — a splice cannot CREATE a block, so an engine-miss
+    /// would be a silent no-op (lost keystroke).
+    func spliceYesterdayBlock(id: String, utf16Offset: Int, utf16DeleteLen: Int, insert: String) {
+        guard let idx = yesterdayBlocks.firstIndex(where: { $0.id == id }) else { return }
+        localSpliceSeq &+= 1
+        let result = Self.applyFaithfulSplice(
+            to: yesterdayBlocks[idx],
+            utf16Offset: utf16Offset, utf16DeleteLen: utf16DeleteLen, insert: insert)
+        yesterdayBlocks[idx] = result.block
+        let slug = yesterdayId
+        guard currentBackend != .mock, !slug.isEmpty else { return }
+        if !noteMaterializedLocally(slug: slug) {
+            scheduleYesterdayWriteback()
+            return
+        }
+        beginLocalWriteSuppression()
+        onLocalSplice?(slug, id, result.offset, result.deleteLen, insert)
+    }
+
+    /// Collab editing C1 outbound for any opened PAGE — the per-block-splice
+    /// mirror of `spliceTodayBlock` (slug = the page id). Falls back to the
+    /// whole-page writeback (`pushPage`) before the note materializes locally.
+    func splicePageBlock(pageId: String, id: String, utf16Offset: Int, utf16DeleteLen: Int, insert: String) {
+        var blocks = loadedPageBlocks[pageId] ?? []
+        guard let idx = blocks.firstIndex(where: { $0.id == id }) else { return }
+        localSpliceSeq &+= 1
+        let result = Self.applyFaithfulSplice(
+            to: blocks[idx],
+            utf16Offset: utf16Offset, utf16DeleteLen: utf16DeleteLen, insert: insert)
+        blocks[idx] = result.block
+        loadedPageBlocks[pageId] = blocks
+        guard currentBackend != .mock, !pageId.isEmpty else { return }
+        if !noteMaterializedLocally(slug: pageId) {
+            Task { await pushPage(id: pageId, blocks: blocks) }
+            return
+        }
+        beginLocalWriteSuppression()
+        onLocalSplice?(pageId, id, result.offset, result.deleteLen, insert)
+    }
+
+    /// Collab editing C1 outbound for a PAST-DAY entry in the daily feed — the
+    /// per-block-splice mirror of `spliceTodayBlock` (slug = the day's id).
+    /// Falls back to the whole-note writeback (`pushPage`) before the note
+    /// materializes locally.
+    func splicePastDailyBlock(dayId: String, id: String, utf16Offset: Int, utf16DeleteLen: Int, insert: String) {
+        guard let dayIdx = pastDailies.firstIndex(where: { $0.id == dayId }) else { return }
+        var blocks = pastDailies[dayIdx].blocks
+        guard let idx = blocks.firstIndex(where: { $0.id == id }) else { return }
+        localSpliceSeq &+= 1
+        let result = Self.applyFaithfulSplice(
+            to: blocks[idx],
+            utf16Offset: utf16Offset, utf16DeleteLen: utf16DeleteLen, insert: insert)
+        blocks[idx] = result.block
+        pastDailies[dayIdx] = DailyEntry(id: dayId, blocks: blocks)
+        guard currentBackend != .mock, !dayId.isEmpty else { return }
+        if !noteMaterializedLocally(slug: dayId) {
+            Task { await pushPage(id: dayId, blocks: blocks) }
+            return
+        }
+        beginLocalWriteSuppression()
+        onLocalSplice?(dayId, id, result.offset, result.deleteLen, insert)
+    }
+
     /// The engine-exact stored text for a block: the materialized line's
     /// VISIBLE content — `displayText` (body, possibly multi-line) with
     /// the block's `tags` re-inlined as a trailing ` #tag …` cluster. This
@@ -2695,7 +2791,15 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let regNotes = typePages.map {
             RegistryNote(title: $0.title, noteType: $0.noteType, content: $0.content)
         }
-        propertyRegistry = PropertyRegistry.build(from: regNotes)
+        // Builtins fallback: before any Property/Tag type page has synced to the
+        // device the sandbox carries none, which would leave `/p1` + inline NLP
+        // dead (an empty registry resolves no defs). Seed the canonical built-in
+        // shapes (Task/Project + Status/Priority/Deadline/Scheduled/Points) so
+        // they work immediately — matching the web, which is always seeded via
+        // `listNotes`. The synced pages take over the moment they arrive.
+        propertyRegistry = regNotes.isEmpty
+            ? PropertyRegistry.buildBuiltins()
+            : PropertyRegistry.build(from: regNotes)
     }
 
     /// Cheap single-line frontmatter scrape (`<key>: "value"`), mirroring
@@ -3206,6 +3310,29 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// sandbox, so the per-keystroke check below is one string compare
     /// after the file first appears. A new day (new slug) re-probes.
     private var materializedDailySlugCache: String?
+
+    /// Confirmed-materialized slugs for the non-today splice paths (page /
+    /// yesterday / past-day). A Set rather than `materializedDailySlugCache`'s
+    /// single slot so probing several note slugs per session never thrashes the
+    /// today memo.
+    private var materializedNoteSlugs: Set<String> = []
+
+    /// True once `<sandbox>/notes/<slug>.md` exists — the generic, multi-slug
+    /// counterpart of `dailyMaterializedLocally`, used by the page / yesterday /
+    /// past-day splice paths to decide between a per-block splice and the
+    /// whole-note writeback fallback.
+    private func noteMaterializedLocally(slug: String) -> Bool {
+        if materializedNoteSlugs.contains(slug) { return true }
+        let path = localMosaicRoot()
+            .appendingPathComponent("notes")
+            .appendingPathComponent("\(slug).md")
+            .path
+        if FileManager.default.fileExists(atPath: path) {
+            materializedNoteSlugs.insert(slug)
+            return true
+        }
+        return false
+    }
 
     /// True once `<sandbox>/notes/<slug>.md` exists — i.e. the engine has
     /// materialized today's daily at least once (an inbound peer apply or
