@@ -8,9 +8,12 @@ import UIKit
 /// becomes a mobile vector for sharing the server's pairing code with a
 /// third device that happens to be near the phone but not the desktop.
 ///
-/// When iOS is in mock mode (no server attached), the QR card is hidden
-/// — the iPhone has no real group state of its own to share yet. The
-/// "Scan" and "Type code" paths are still available because they're
+/// The connection card adapts to the resolved backend (see
+/// `displayState(for:)`): in `.http` mode it shows the server-issued QR +
+/// short code; in `.relay` mode it shows a "connected via relay" card (no
+/// shareable QR — a relay-only node has no Mac HTTP to issue one); in
+/// `.mock` mode (no server attached) it shows the "not connected" card.
+/// The "Scan" and "Type code" paths are always available because they're
 /// the joiner direction (no local state needed).
 struct PairDeviceView: View {
     @ObservedObject var backend: BackendSettings
@@ -25,9 +28,29 @@ struct PairDeviceView: View {
     @State private var showScanner: Bool = false
     @State private var showTypedCode: Bool = false
 
+    /// Three-way display state derived from the resolved backend. Pure and
+    /// static so it's directly testable from `PairingRoutingTests` without
+    /// standing up a view — mirrors `BackendSettings.resolveBackend`.
+    enum ConnectionDisplayState: Equatable {
+        case httpAttached
+        case relayAttached
+        case unattached
+    }
+
+    static func displayState(for backend: MockMosaicService.Backend) -> ConnectionDisplayState {
+        switch backend {
+        case .http: return .httpAttached
+        case .relay: return .relayAttached
+        case .mock: return .unattached
+        }
+    }
+
+    private var connectionState: ConnectionDisplayState {
+        Self.displayState(for: backend.backend)
+    }
+
     private var isAttachedToServer: Bool {
-        if case .http = backend.backend { return true }
-        return false
+        connectionState == .httpAttached
     }
 
     var body: some View {
@@ -41,9 +64,12 @@ struct PairDeviceView: View {
 
                 typedCodeCard
 
-                if isAttachedToServer {
+                switch connectionState {
+                case .httpAttached:
                     qrCard
-                } else {
+                case .relayAttached:
+                    relayConnectedCard
+                case .unattached:
                     notConnectedCard
                 }
 
@@ -193,6 +219,25 @@ struct PairDeviceView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
+    private var relayConnectedCard: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Connected via relay")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(theme.fgDefault)
+            Text("This iPhone is connected and syncing in the background through the relay. There's no Mac HTTP server to issue a shareable QR from here — use Scan or Type a code above to add this phone to a different mosaic.")
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundStyle(theme.fgMuted)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.bg2)
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(theme.line, lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+
     private var notConnectedCard: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Not connected to a server")
@@ -260,9 +305,14 @@ struct PairDeviceView: View {
     }
 
     private var introCopy: String {
-        isAttachedToServer
-            ? "Show this QR or read the 6 characters to a third device to add it to the same mosaic. Or use Scan / Type code above to point this iPhone at a different server."
-            : "Use Scan or Type code below to point this iPhone at a server."
+        switch connectionState {
+        case .httpAttached:
+            return "Show this QR or read the 6 characters to a third device to add it to the same mosaic. Or use Scan / Type code above to point this iPhone at a different server."
+        case .relayAttached:
+            return "This iPhone is paired and syncing via the relay. Use Scan or Type code below to add this phone to a different mosaic."
+        case .unattached:
+            return "Use Scan or Type code below to point this iPhone at a server."
+        }
     }
 
     // ── Pairing code fetch (real handshake material from the server) ────

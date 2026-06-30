@@ -84,6 +84,29 @@ final class PairingRoutingTests: XCTestCase {
         XCTAssertEqual(BackendSettings.resolveBackend(mode: .mock, serverURL: "http://10.0.0.5:7474"), .mock)
     }
 
+    // MARK: PairDeviceView.displayState — connection-card routing
+
+    func testHttpBackendMapsToHttpAttached() {
+        // The old binary check (isAttachedToServer) agreed here too.
+        XCTAssertEqual(
+            PairDeviceView.displayState(for: .http(URL(string: "http://192.168.1.20:7474")!)),
+            .httpAttached
+        )
+    }
+
+    func testRelayBackendMapsToRelayAttachedNotUnattached() {
+        // This is the bug: the old binary check treated `.relay` the same
+        // as `.mock` (both "not http" → unattached), which rendered the
+        // "Not connected to a server" card right after a successful relay
+        // pairing. `.relay` must route to its own attached state.
+        XCTAssertEqual(PairDeviceView.displayState(for: .relay), .relayAttached)
+        XCTAssertNotEqual(PairDeviceView.displayState(for: .relay), .unattached)
+    }
+
+    func testMockBackendMapsToUnattached() {
+        XCTAssertEqual(PairDeviceView.displayState(for: .mock), .unattached)
+    }
+
     // MARK: isDefinitivePairingFailure — cached-code invalidation
 
     func testInvalidPairingCodeIsDefinitive() {
