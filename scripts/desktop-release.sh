@@ -32,7 +32,10 @@ cd "$REPO_ROOT"
 
 PRODUCT_NAME="${DESKTOP_PRODUCT_NAME:-Tesela}"
 BUNDLE_ID="${DESKTOP_BUNDLE_ID:-app.tesela.desktop}"
-DEFAULT_APP_BUNDLE="$REPO_ROOT/src-tauri/target/release/bundle/macos/$PRODUCT_NAME.app"
+# src-tauri is a workspace member, so `cargo tauri build` emits to the WORKSPACE
+# target ($REPO_ROOT/target), NOT src-tauri/target. Pointing at the latter made
+# the post-build re-check fail → "no distributable" exit 0 despite a good build.
+DEFAULT_APP_BUNDLE="$REPO_ROOT/target/release/bundle/macos/$PRODUCT_NAME.app"
 APP_BUNDLE="${DESKTOP_APP_PATH:-$DEFAULT_APP_BUNDLE}"
 DIST_DIR="${DESKTOP_DIST_DIR:-$REPO_ROOT/dist/desktop}"
 ZIP_PATH="${DESKTOP_ZIP_PATH:-$DIST_DIR/$PRODUCT_NAME.app.zip}"
@@ -90,7 +93,10 @@ if [[ -d "$APP_BUNDLE" ]]; then
 elif [[ "$SKIP_NOTARIZE" == true ]]; then
   warn "app bundle not found; --skip-notarize mode does not require a real build, so build/sign/zip are skipped"
 else
-  echo "    app bundle not found; running cargo tauri build"
+  echo "    app bundle not found; building web frontend then cargo tauri build"
+  # cargo tauri build does NOT rebuild the web (frontendDist=../web/build, no
+  # beforeBuildCommand) — rebuild it first or we bundle stale web. See build-desktop.sh.
+  ( cd "$REPO_ROOT/web" && npm run build )
   cargo tauri build
   if [[ -d "$APP_BUNDLE" ]]; then
     APP_AVAILABLE=true
