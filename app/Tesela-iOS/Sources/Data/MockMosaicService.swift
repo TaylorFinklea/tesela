@@ -1212,11 +1212,10 @@ final class MockMosaicService: ObservableObject, MosaicService {
         // stale registry finds no `nl_trigger` defs, so the block gets tagged
         // `#Task` but nothing is stripped — exactly the build-62 bug where
         // "Ship it p2 tomorrow" + Task kept "p2" in the prose with no priority
-        // set. When the live registry can't lift for the chosen type, resolve
-        // NLP against the built-ins so a picked Task/Project always lifts.
-        let nlpRegistry = registry.hasLiftableDefs(forTag: canonicalName)
-            ? registry
-            : PropertyRegistry.buildBuiltins()
+        // set. `effectiveLiftRegistry` is the ONE shared resolver capture and
+        // the block editor both use, so the two paths fall back identically.
+        let nlpRegistry = PropertyRegistry.effectiveLiftRegistry(
+            live: registry, forTags: [tagToken])
         let result = InlineNLP.detectLifts(in: text, tags: [tagToken], registry: nlpRegistry)
         let props = result.props.map { BlockProperty(key: $0.key, value: $0.value) }
         return (kind, result.stripped, [tagToken], props)

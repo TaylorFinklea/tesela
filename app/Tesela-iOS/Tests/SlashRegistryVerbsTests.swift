@@ -238,6 +238,58 @@ final class SlashRegistryVerbsTests: XCTestCase {
         XCTAssertTrue(r.stripped.lowercased().contains("tomorrow"))
     }
 
+    /// Block-editor parity with capture: on an UNSYNCED/empty live registry a
+    /// `#Task` block lifts NOTHING when `detectLifts` resolves against the live
+    /// registry directly (the build-62 block bug — the block path lacked
+    /// capture's fallback), but lifts priority p2 + a deadline once it resolves
+    /// through the SHARED `effectiveLiftRegistry` (the fix). Mirrors the capture
+    /// regression `testCaptureWithTaskTypeTagsAndLiftsPropsOntoBlock`, but on
+    /// the block lift path (`liftNlpOnBlur` / the highlight closure / slash
+    /// verbs all now route through this helper).
+    func testBlockDetectLiftsFallsBackToBuiltinsOnUnsyncedRegistry() {
+        let unsynced = PropertyRegistry()  // empty: Property pages not yet synced
+        XCTAssertFalse(
+            unsynced.hasLiftableDefs(forTag: "Task"),
+            "precondition: an empty live registry can't lift a #Task block")
+
+        // WITHOUT the fallback (resolving against the live registry directly,
+        // the old block behavior): nothing lifts, the prose is untouched.
+        let without = InlineNLP.detectLifts(
+            in: "Ship it p2 due tomorrow", tags: ["#Task"], registry: unsynced, today: today)
+        XCTAssertTrue(
+            without.props.isEmpty,
+            "the unsynced live registry must lift nothing without the fallback")
+        XCTAssertEqual(without.stripped, "Ship it p2 due tomorrow")
+
+        // WITH the shared resolver: it falls back to the built-ins, so the block
+        // lifts exactly like capture does.
+        let reg = PropertyRegistry.effectiveLiftRegistry(live: unsynced, forTags: ["#Task"])
+        let with = InlineNLP.detectLifts(
+            in: "Ship it p2 due tomorrow", tags: ["#Task"], registry: reg, today: today)
+        XCTAssertTrue(
+            with.props.contains { $0.key == "priority" && $0.value == "p2" },
+            "fallback must lift priority p2: \(with.props)")
+        XCTAssertTrue(
+            with.props.contains { $0.key == "deadline" && $0.value == "2026-06-24" },
+            "fallback must lift the 'due tomorrow' deadline: \(with.props)")
+        XCTAssertEqual(with.stripped, "Ship it")
+    }
+
+    /// `effectiveLiftRegistry` preserves precedence: a fully-synced (here the
+    /// built-in) registry that CAN lift the tag is returned untouched — the
+    /// fallback only fires for a non-liftable live registry, so user-customized
+    /// type pages always win.
+    func testEffectiveLiftRegistryPrefersLiveWhenLiftable() {
+        let live = PropertyRegistry.buildBuiltins()  // can lift #Task
+        XCTAssertTrue(live.hasLiftableDefs(forTag: "Task"))
+        let reg = PropertyRegistry.effectiveLiftRegistry(live: live, forTags: ["#Task"])
+        // Same liftable live registry → its lift result stands on its own.
+        let r = InlineNLP.detectLifts(
+            in: "ship it p2 tomorrow", tags: ["#Task"], registry: reg, today: today)
+        XCTAssertTrue(r.props.contains { $0.key == "priority" && $0.value == "p2" })
+        XCTAssertTrue(r.props.contains { $0.key == "deadline" && $0.value == "2026-06-24" })
+    }
+
     func testNLPDatePrepositionGivesIntent() {
         // "on friday" → preceded by the date preposition "on" → a lift.
         let text = "standup on friday"

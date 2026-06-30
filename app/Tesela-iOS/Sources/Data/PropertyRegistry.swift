@@ -815,6 +815,27 @@ struct PropertyRegistry {
         resolvedDefs(forTag: tagName).contains { !$0.nlTriggers.isEmpty }
     }
 
+    /// THE single inline-NLP registry resolver shared by capture AND the block
+    /// editor (lift-on-blur, live token highlight, slash registry verbs). Given
+    /// the LIVE registry and a block's/capture's `tags`, return the live
+    /// registry when it can lift ANY of those tags (its Property pages with
+    /// `nl_trigger`s have synced) — so a fully-synced / user-customized type
+    /// page keeps precedence — else fall back to the canonical built-ins so a
+    /// picked/tagged Task/Project always lifts even on an empty / partially-
+    /// synced / stale live registry (the build-62 bug: a `#Task` block stayed
+    /// unstripped because the Task tag page synced but its Priority/Deadline
+    /// Property pages hadn't). Tags are normalized exactly like
+    /// `hasLiftableDefs`/`resolvedDefs` (a leading `#` is dropped; matching is
+    /// case-insensitive inside those helpers). The fallback is lazy: built-ins
+    /// are only parsed when no tag is liftable.
+    static func effectiveLiftRegistry(live: PropertyRegistry, forTags tags: [String]) -> PropertyRegistry {
+        for tag in tags {
+            let clean = tag.hasPrefix("#") ? String(tag.dropFirst()) : tag
+            if live.hasLiftableDefs(forTag: clean) { return live }
+        }
+        return PropertyRegistry.buildBuiltins()
+    }
+
     // MARK: built-ins (mock backend)
 
     /// The canonical built-in Property/Tag pages — mirrors the server seed

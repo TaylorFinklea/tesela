@@ -555,7 +555,12 @@ struct BlockRow: View {
             autocomplete: editorAutocomplete,
             accessory: collabKeyboardAccessory,
             nlpHighlightRanges: { [tags, registrySource, propertyRegistry] text in
-                let reg = registrySource?() ?? propertyRegistry
+                // SAME built-ins fallback as capture: when the live registry
+                // can't lift this block's tags (Property pages unsynced), color
+                // against the built-ins so a `#Task` block highlights even
+                // before sync — `effectiveLiftRegistry` is the shared resolver.
+                let live = registrySource?() ?? propertyRegistry
+                let reg = PropertyRegistry.effectiveLiftRegistry(live: live, forTags: tags)
                 return InlineNLP.detectHighlightRanges(in: text, tags: tags, registry: reg)
             },
             nlpHighlightColor: theme.accentPrimary,
@@ -584,8 +589,16 @@ struct BlockRow: View {
     /// registry mid-session takes effect for the next keystroke's suggestions
     /// instead of serving the stale snapshot captured when the editor opened.
     private func wireAutocompleteSources() {
-        let liveRegistry: () -> PropertyRegistry = { [registrySource, propertyRegistry] in
-            registrySource?() ?? propertyRegistry
+        // The slash registry verbs + the live NLP detector resolve through the
+        // SAME built-ins fallback capture uses: when the live registry can't
+        // lift this block's tags (Property pages unsynced), resolve against the
+        // built-ins so a `#Task` block still gets its `/p1`/`/status` verbs and
+        // `p2`/`due tomorrow` lift suggestions before sync. `effectiveLiftRegistry`
+        // returns the live registry untouched once it can lift (synced /
+        // user-customized type pages keep precedence).
+        let liveRegistry: () -> PropertyRegistry = { [registrySource, propertyRegistry, tags] in
+            let live = registrySource?() ?? propertyRegistry
+            return PropertyRegistry.effectiveLiftRegistry(live: live, forTags: tags)
         }
         editorAutocomplete.provider = { [pageSearch, tagSearch, tags] kind, query in
             Self.suggestions(
@@ -931,7 +944,12 @@ struct BlockRow: View {
     /// untagged / plain-prose blocks (the detector resolves no defs).
     private func liftNlpOnBlur(from text: String) {
         guard !editorAutocomplete.isActive else { return }
-        let registry = registrySource?() ?? propertyRegistry
+        // SAME built-ins fallback as capture's add-time lift: when the live
+        // registry can't lift this block's tags (Property pages unsynced), lift
+        // against the built-ins so a `#Task` block strips `p2`/`due tomorrow` on
+        // blur even before sync — `effectiveLiftRegistry` is the shared resolver.
+        let live = registrySource?() ?? propertyRegistry
+        let registry = PropertyRegistry.effectiveLiftRegistry(live: live, forTags: tags)
         let result = InlineNLP.detectLifts(in: text, tags: tags, registry: registry)
         guard !result.props.isEmpty else { return }
         // 1) Strip the matched tokens: one minimal splice (common UTF-16

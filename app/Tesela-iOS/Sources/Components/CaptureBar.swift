@@ -181,9 +181,8 @@ struct CaptureBar: View {
         guard let raw = composer.manualTag?.trimmingCharacters(in: .whitespaces),
               !raw.isEmpty else { return [] }
         let tagToken = raw.hasPrefix("#") ? raw : "#\(raw)"
-        let canonical = String(tagToken.dropFirst())
-        let live = mosaic.propertyRegistry
-        let reg = live.hasLiftableDefs(forTag: canonical) ? live : PropertyRegistry.buildBuiltins()
+        let reg = PropertyRegistry.effectiveLiftRegistry(
+            live: mosaic.propertyRegistry, forTags: [tagToken])
         return InlineNLP.detectHighlightRanges(in: text, tags: [tagToken], registry: reg)
     }
 
