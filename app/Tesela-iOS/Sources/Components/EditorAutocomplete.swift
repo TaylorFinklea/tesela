@@ -569,6 +569,60 @@ enum InlineNLP {
         return (working, props)
     }
 
+    /// Live-highlight spans (P-surface-parity, iOS): the UTF-16 ranges of EVERY
+    /// inline-NLP token that WOULD lift on commit — the same `p2` / `due
+    /// tomorrow` spans `detectLifts` strips — so the editor can color them as
+    /// the user types (mirrors web's inline token highlight via `cm-decorations`).
+    /// Built on the identical gated `detect` + `firstLift` the lift uses, so the
+    /// highlight and the eventual lift never disagree by construction.
+    ///
+    /// Returns ranges in ORIGINAL-string coordinates: it finds the earliest
+    /// candidate, records its span, then MASKS that span with equal-length
+    /// spaces (offsets unchanged — spaces can't re-match a priority token or a
+    /// date parse) and re-scans, so multiple tokens (`p1 … due tomorrow`) all
+    /// surface. Empty when nothing would lift (plain prose / no liftable type).
+    static func detectHighlightRanges(
+        in text: String,
+        tags: [String],
+        registry: PropertyRegistry,
+        today: Date = Date()
+    ) -> [NSRange] {
+        var ranges: [NSRange] = []
+        let mut = NSMutableString(string: text)
+        var guardCount = 0
+        while guardCount < 64 {
+            guardCount += 1
+            guard let hit = firstLift(in: mut as String, tags: tags, registry: registry, today: today)
+            else { break }
+            guard hit.length > 0,
+                  hit.start >= 0,
+                  hit.start + hit.length <= mut.length else { break }
+            // `detect` returns a date span beginning at the candidate boundary
+            // (it trims only for PARSING), so the span can carry leading
+            // whitespace — which, once an earlier token has been space-masked,
+            // would swallow that already-consumed region. Trim the span to the
+            // meaningful token before recording AND masking.
+            let trimmed = Self.trimWhitespaceRange(NSRange(location: hit.start, length: hit.length), in: mut)
+            guard trimmed.length > 0 else { break }
+            ranges.append(trimmed)
+            let blanks = String(repeating: " ", count: trimmed.length)
+            mut.replaceCharacters(in: trimmed, with: blanks)
+        }
+        return ranges
+    }
+
+    /// Shrink `range` past leading/trailing whitespace (space/tab/newline) in
+    /// `ns`. Returns a zero-length range at `range.location` when it is all
+    /// whitespace.
+    private static func trimWhitespaceRange(_ range: NSRange, in ns: NSString) -> NSRange {
+        func isWS(_ ch: unichar) -> Bool { ch == 0x20 || ch == 0x09 || ch == 0x0A }
+        var start = range.location
+        var end = range.location + range.length
+        while start < end, isWS(ns.character(at: start)) { start += 1 }
+        while end > start, isWS(ns.character(at: end - 1)) { end -= 1 }
+        return NSRange(location: start, length: end - start)
+    }
+
     /// The earliest-starting lift candidate ANYWHERE in `text`, found by probing
     /// `detect` (which is caret-anchored) at every word-end boundary. `nil` when
     /// no boundary yields a confident match.

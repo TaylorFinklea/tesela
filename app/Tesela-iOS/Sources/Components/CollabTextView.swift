@@ -93,6 +93,17 @@ struct CollabTextView: UIViewRepresentable {
     /// content here is the only attachment point UIKit honors.
     var accessory: AnyView? = nil
 
+    /// Inline-NLP highlight (iOS surface parity): returns the UTF-16 ranges of
+    /// the to-be-lifted tokens (`p2`, `due tomorrow`, …) in the current text so
+    /// the editor can color them live as the user types — the same spans
+    /// `InlineNLP.detectLifts` strips on commit. `nil` (or empty) → no
+    /// highlight (plain prose / a block whose type declares no NLP). Read live
+    /// each call so a type-page edit mid-session takes effect on the next change.
+    var nlpHighlightRanges: ((String) -> [NSRange])? = nil
+    /// Foreground color drawn over a matched NLP token span (defaults to the
+    /// tint accent). The non-token text uses `textColor`.
+    var nlpHighlightColor: Color? = nil
+
     /// Phase 3 presence: fires with the caret's utf16 offset whenever it moves
     /// (tap / arrow / typing). The owner publishes it as a presence frame.
     var onCaretMove: ((Int) -> Void)? = nil
@@ -177,6 +188,7 @@ struct CollabTextView: UIViewRepresentable {
         }
 
         renderRemoteCarets(on: uiView)
+        context.coordinator.applyNLPHighlight(uiView)
     }
 
     /// Draw OTHER peers' carets as thin colored bars at their offsets, each
@@ -315,6 +327,37 @@ struct CollabTextView: UIViewRepresentable {
         func textViewDidChange(_ textView: UITextView) {
             parent.text = textView.text ?? ""
             updateAutocomplete(textView)
+            applyNLPHighlight(textView)
+        }
+
+        /// Color the to-be-lifted inline-NLP tokens (`p2`, `due tomorrow`, …)
+        /// live, mirroring the web editor's inline highlight so the user sees
+        /// what will be parsed. Recomputes the spans from the same gated
+        /// detector the lift uses, then paints ONLY foreground-color attributes
+        /// on the text storage — no character edit, so it emits no splice and
+        /// keeps the engine `text_seq` aligned. Caret/selection are preserved.
+        /// Skipped during IME composition (marked text) to avoid fighting it.
+        func applyNLPHighlight(_ tv: UITextView) {
+            guard let detect = parent.nlpHighlightRanges else { return }
+            guard tv.markedTextRange == nil else { return }
+            let storage = tv.textStorage
+            let length = storage.length
+            let base = UIColor(parent.textColor)
+            let highlight = UIColor(parent.nlpHighlightColor ?? parent.tintColor)
+            let full = NSRange(location: 0, length: length)
+            let ranges = detect(tv.text ?? "")
+                .filter { $0.location >= 0 && $0.length > 0 && $0.location + $0.length <= length }
+            // Default typing color so newly typed text after a token isn't
+            // painted in the highlight color.
+            tv.typingAttributes[.foregroundColor] = base
+            let sel = tv.selectedRange
+            storage.beginEditing()
+            storage.addAttribute(.foregroundColor, value: base, range: full)
+            for r in ranges {
+                storage.addAttribute(.foregroundColor, value: highlight, range: r)
+            }
+            storage.endEditing()
+            tv.selectedRange = sel
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {

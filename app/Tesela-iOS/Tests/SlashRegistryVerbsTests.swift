@@ -224,4 +224,39 @@ final class SlashRegistryVerbsTests: XCTestCase {
             XCTFail("expected a date setProperty lift, got \(String(describing: hit?.suggestion.action))")
         }
     }
+
+    // MARK: - Live highlight spans (iOS surface parity)
+
+    /// `detectHighlightRanges` returns the spans of every token that WOULD lift,
+    /// in original-string coordinates — so the editor colors exactly what the
+    /// commit-time lift will strip.
+    func testHighlightRangesCoverPriorityAndDate() {
+        let text = "Ship it p2 due tomorrow"
+        let ranges = InlineNLP.detectHighlightRanges(
+            in: text, tags: ["Task"], registry: registry, today: today)
+        let ns = text as NSString
+        let matched = Set(ranges.map { ns.substring(with: $0) })
+        XCTAssertTrue(matched.contains("p2"), "p2 span highlighted: \(matched)")
+        XCTAssertTrue(matched.contains("due tomorrow"), "date phrase highlighted: \(matched)")
+        XCTAssertEqual(ranges.count, 2)
+    }
+
+    /// A bare trailing date (no "due"/"on") does NOT lift, so it is NOT
+    /// highlighted — only the priority token is. Highlight == lift, always.
+    func testHighlightRangesBareTrailingDateOnlyPriority() {
+        let text = "Ship it p2 tomorrow"
+        let ranges = InlineNLP.detectHighlightRanges(
+            in: text, tags: ["Task"], registry: registry, today: today)
+        let ns = text as NSString
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual(ranges.first.map { ns.substring(with: $0) }, "p2")
+    }
+
+    /// Plain prose (no liftable tokens) / an untagged block highlights nothing.
+    func testHighlightRangesEmptyForPlainAndUntagged() {
+        XCTAssertTrue(InlineNLP.detectHighlightRanges(
+            in: "just ordinary words", tags: ["Task"], registry: registry, today: today).isEmpty)
+        XCTAssertTrue(InlineNLP.detectHighlightRanges(
+            in: "Ship it p2 due tomorrow", tags: [], registry: registry, today: today).isEmpty)
+    }
 }

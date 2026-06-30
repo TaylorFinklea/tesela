@@ -554,6 +554,11 @@ struct BlockRow: View {
             inserter: inserter,
             autocomplete: editorAutocomplete,
             accessory: collabKeyboardAccessory,
+            nlpHighlightRanges: { [tags, registrySource, propertyRegistry] text in
+                let reg = registrySource?() ?? propertyRegistry
+                return InlineNLP.detectHighlightRanges(in: text, tags: tags, registry: reg)
+            },
+            nlpHighlightColor: theme.accentPrimary,
             onCaretMove: onCaretMove,
             remoteCarets: remoteCarets
         )
