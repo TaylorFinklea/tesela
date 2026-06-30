@@ -339,25 +339,13 @@ struct CollabTextView: UIViewRepresentable {
         /// Skipped during IME composition (marked text) to avoid fighting it.
         func applyNLPHighlight(_ tv: UITextView) {
             guard let detect = parent.nlpHighlightRanges else { return }
-            guard tv.markedTextRange == nil else { return }
-            let storage = tv.textStorage
-            let length = storage.length
             let base = UIColor(parent.textColor)
             let highlight = UIColor(parent.nlpHighlightColor ?? parent.tintColor)
-            let full = NSRange(location: 0, length: length)
-            let ranges = detect(tv.text ?? "")
-                .filter { $0.location >= 0 && $0.length > 0 && $0.location + $0.length <= length }
-            // Default typing color so newly typed text after a token isn't
-            // painted in the highlight color.
-            tv.typingAttributes[.foregroundColor] = base
-            let sel = tv.selectedRange
-            storage.beginEditing()
-            storage.addAttribute(.foregroundColor, value: base, range: full)
-            for r in ranges {
-                storage.addAttribute(.foregroundColor, value: highlight, range: r)
-            }
-            storage.endEditing()
-            tv.selectedRange = sel
+            // Shared painter (also used by the capture composer) so both
+            // surfaces color identically. Preserves selection/typingAttributes
+            // and skips IME composition — same as the prior inline body.
+            InlineNLPHighlighter.apply(
+                to: tv, base: base, highlight: highlight, ranges: detect(tv.text ?? ""))
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {

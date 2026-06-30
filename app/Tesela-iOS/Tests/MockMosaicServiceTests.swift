@@ -741,12 +741,13 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertTrue(block.text.contains("Ship it"))
     }
 
-    /// The reported repro verbatim: "Ship it p2 tomorrow" + Task. A bare
-    /// trailing date with no "due"/"on" intent must NOT lift (the detector's
-    /// over-offer guard), so only the priority lifts → text "Ship it
-    /// tomorrow", Priority p2, and NO deadline. Driven through the unsynced
-    /// UI path so it exercises the built-ins fallback.
-    func testCaptureTaskBareTrailingDateLiftsPriorityOnly() async {
+    /// The reported repro verbatim: "Ship it p2 tomorrow" + Task. Taylor's
+    /// locked decision (2026-06-30): a date phrase TRAILING the text lifts the
+    /// type's DEFAULT date property (Deadline for Task) EVEN without a "due"/"on"
+    /// intent word — matching how he types "p1 tomorrow". So BOTH lift → text
+    /// "Ship it", Priority p2, and a Deadline. Driven through the unsynced UI
+    /// path so it exercises the built-ins fallback.
+    func testCaptureTaskBareTrailingDateLiftsPriorityAndDeadline() async {
         let service = MockMosaicService()  // NO refresh: registry is empty
         let tag = pickedCaptureType("Task", on: service)
         service.capture("Ship it p2 tomorrow", target: .today, tag: tag)
@@ -757,11 +758,34 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertTrue(block.tags.contains("#Task"))
         XCTAssertEqual(
             block.properties.first(where: { $0.key == "priority" })?.value, "p2")
+        XCTAssertNotNil(
+            block.properties.first(where: { $0.key == "deadline" }),
+            "a bare TRAILING 'tomorrow' lifts the Task's default date (Deadline)")
+        XCTAssertFalse(block.text.lowercased().contains("p2"))
+        XCTAssertFalse(block.text.lowercased().contains("tomorrow"))
+        XCTAssertEqual(block.text, "Ship it")
+    }
+
+    /// A date mid-prose (followed by more words) is NOT trailing, so it still
+    /// requires an intent word — it does NOT lift. The trailing priority still
+    /// lifts. "call her tomorrow about p1" + Task → text keeps "tomorrow",
+    /// Priority p1, NO deadline. Scopes the trailing-date rule to limit false
+    /// positives.
+    func testCaptureTaskMidProseDateStaysProse() async {
+        let service = MockMosaicService()  // NO refresh: registry is empty
+        let tag = pickedCaptureType("Task", on: service)
+        service.capture("call her tomorrow about p1", target: .today, tag: tag)
+        guard let block = service.todayBlocks.last else {
+            return XCTFail("no captured block")
+        }
+        XCTAssertEqual(
+            block.properties.first(where: { $0.key == "priority" })?.value, "p1")
         XCTAssertNil(
             block.properties.first(where: { $0.key == "deadline" }),
-            "a bare trailing 'tomorrow' (no due/on) must not lift a deadline")
-        XCTAssertFalse(block.text.lowercased().contains("p2"))
-        XCTAssertEqual(block.text, "Ship it tomorrow")
+            "a mid-prose 'tomorrow' (more words follow) must not lift a deadline")
+        XCTAssertTrue(
+            block.text.lowercased().contains("tomorrow"),
+            "the mid-prose date stays in the text: \(block.text)")
     }
 
     /// Capture with no type is byte-for-byte today's plain-note behavior.

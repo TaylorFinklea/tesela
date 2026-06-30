@@ -37,7 +37,10 @@ struct CaptureBar: View {
 
     @Environment(\.theme) private var theme
 
-    @FocusState private var fieldFocused: Bool
+    /// Drives the expanded compose field's first-responder state. A plain
+    /// `@State` (not `@FocusState`) because the field is now a `UITextView`-
+    /// backed `CaptureTextView` whose focus is driven by an `isFocused` binding.
+    @State private var fieldFocused = false
 
     /// Keyboard (incl. predictive bar) tracker for the expanded panel — keeps
     /// the send/mic row above the keyboard deterministically. See
@@ -153,22 +156,43 @@ struct CaptureBar: View {
 
     /// The real editable field — used only in the expanded panel. It
     /// focuses on appear so the keyboard rises and `safeAreaInset`
-    /// carries the panel up with it.
+    /// carries the panel up with it. A `UITextView`-backed `CaptureTextView`
+    /// (shared with `GrCaptureSheet`) so the to-be-lifted NLP tokens color live
+    /// as the user types; all the prior TextField behaviors are preserved inside
+    /// it (draft binding, voice-append, placeholder, autofocus, multi-line
+    /// growth) and the keyboard avoidance is untouched (no input accessory).
     private var composerField: some View {
-        TextField("Capture…", text: $composer.draft, axis: .vertical)
-            .focused($fieldFocused)
-            .submitLabel(.send)
-            .onSubmit(submit)
-            .lineLimit(1...12)
-            .font(.body)
-            .foregroundStyle(theme.fgDefault)
-            .tint(theme.accentPrimary)
-            .onAppear {
-                Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(60))
-                    fieldFocused = true
-                }
+        CaptureTextView(
+            text: $composer.draft,
+            isFocused: $fieldFocused,
+            placeholder: "Capture…",
+            textColor: theme.fgDefault,
+            tintColor: theme.accentPrimary,
+            placeholderColor: theme.fgFaint,
+            nlpHighlightRanges: captureHighlightRanges,
+            nlpHighlightColor: theme.accentPrimary
+        )
+        .onAppear {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(60))
+                fieldFocused = true
             }
+        }
+    }
+
+    /// Inline-NLP highlight spans for the compose field, gated EXACTLY like the
+    /// add-time lift (`MockMosaicService.applyCaptureType`): only when a type is
+    /// picked, resolving against the live registry but FALLING BACK to the
+    /// built-ins when the live registry carries no liftable defs for the picked
+    /// type. No type picked → no spans → no coloring.
+    private func captureHighlightRanges(_ text: String) -> [NSRange] {
+        guard let raw = composer.manualTag?.trimmingCharacters(in: .whitespaces),
+              !raw.isEmpty else { return [] }
+        let tagToken = raw.hasPrefix("#") ? raw : "#\(raw)"
+        let canonical = String(tagToken.dropFirst())
+        let live = mosaic.propertyRegistry
+        let reg = live.hasLiftableDefs(forTag: canonical) ? live : PropertyRegistry.buildBuiltins()
+        return InlineNLP.detectHighlightRanges(in: text, tags: [tagToken], registry: reg)
     }
 
     /// Compact-bar middle: a tap target showing the draft (or the

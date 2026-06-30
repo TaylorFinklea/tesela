@@ -490,19 +490,33 @@ enum InlineNLP {
                 let prevWord = ns.substring(with: NSRange(location: wStart, length: wEnd - wStart)).lowercased()
                 return dateIntentWords.contains(prevWord)
             }()
-            guard atLineStart || precededByIntent || parsed.field != nil else { continue }
+            // Trailing-date rule (Taylor's locked decision): a date phrase at the
+            // END of the block/capture text (nothing but whitespace, if any,
+            // follows the caret) lifts the type's DEFAULT date property EVEN
+            // without an intent word — matching how Taylor types "p1 tomorrow".
+            // Scoped to TRAILING only: a date mid-prose ("call her tomorrow about
+            // p1") still requires an intent word, which limits false positives.
+            let isTrailing: Bool = {
+                var k = c
+                while k < ns.length {
+                    let ch = ns.character(at: k)
+                    guard ch == 0x20 || ch == 0x09 || ch == 0x0A else { return false }
+                    k += 1
+                }
+                return true
+            }()
+            guard atLineStart || precededByIntent || parsed.field != nil || isTrailing else { continue }
             // Write only a date field the resolved type DECLARES: DateParser's
-            // inferred field if declared, else a declared deadline/scheduled,
-            // else skip (don't set a date the type doesn't have).
+            // inferred field if declared, else the type's DEFAULT/primary date
+            // property — the FIRST date-typed property in the type's
+            // tag_properties order (Deadline for Task) — else skip.
             let declared = Set(dateDefs.map { $0.name.lowercased() })
             let inferred = parsed.field?.rawValue.lowercased()
             let fieldName: String
             if let inferred, declared.contains(inferred) {
                 fieldName = inferred
-            } else if declared.contains("deadline") {
-                fieldName = "deadline"
-            } else if declared.contains("scheduled") {
-                fieldName = "scheduled"
+            } else if let primary = dateDefs.first?.name.lowercased() {
+                fieldName = primary
             } else {
                 continue
             }

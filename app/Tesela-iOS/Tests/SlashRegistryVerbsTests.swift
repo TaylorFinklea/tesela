@@ -166,23 +166,76 @@ final class SlashRegistryVerbsTests: XCTestCase {
                                       tags: ["Task"], registry: registry, today: today))
     }
 
-    // MARK: - P5.5 date-lift clear-intent gate
+    // MARK: - P5.5 date-lift clear-intent gate + trailing-date rule (2026-06-30)
 
-    func testNLPBareWeekdayMidSentenceOffersNothing() {
-        // A bare weekday after an ordinary word is NOT clear date intent → no
-        // lift, even though DateParser alone parses "friday".
+    func testNLPBareTrailingWeekdayLiftsDefaultDate() {
+        // Taylor's locked decision: a bare weekday TRAILING the text (nothing
+        // after it) lifts the type's default date property (Deadline for Task)
+        // even with no intent word — matching how he types "p1 tomorrow".
         let text = "lets meet friday"
-        XCTAssertNil(InlineNLP.detect(in: text, caretUTF16: (text as NSString).length,
-                                      tags: ["Task"], registry: registry, today: today),
-                     "a bare mid-sentence weekday must not over-offer a date lift")
+        let hit = InlineNLP.detect(in: text, caretUTF16: (text as NSString).length,
+                                   tags: ["Task"], registry: registry, today: today)
+        XCTAssertNotNil(hit, "a bare TRAILING weekday lifts the default date")
+        if case .setProperty(let key, _)? = hit?.suggestion.action {
+            XCTAssertEqual(key, "deadline", "Task's default/primary date prop is Deadline")
+        } else {
+            XCTFail("expected a deadline lift, got \(String(describing: hit?.suggestion.action))")
+        }
     }
 
-    func testNLPBareRelativeMidSentenceOffersNothing() {
-        // Same for a bare relative token ("tomorrow") sitting mid-prose.
+    func testNLPBareTrailingRelativeLiftsDefaultDate() {
+        // Same for a bare relative token ("tomorrow") trailing the text.
         let text = "see you tomorrow"
-        XCTAssertNil(InlineNLP.detect(in: text, caretUTF16: (text as NSString).length,
+        let hit = InlineNLP.detect(in: text, caretUTF16: (text as NSString).length,
+                                   tags: ["Task"], registry: registry, today: today)
+        XCTAssertNotNil(hit, "a bare TRAILING relative token lifts the default date")
+        if case .setProperty(let key, let value)? = hit?.suggestion.action {
+            XCTAssertEqual(key, "deadline")
+            XCTAssertEqual(value, "2026-06-24")   // tomorrow
+        } else {
+            XCTFail("expected a deadline lift, got \(String(describing: hit?.suggestion.action))")
+        }
+    }
+
+    func testNLPMidProseDateOffersNothing() {
+        // SCOPE: the trailing-date rule is trailing-ONLY. A date with more words
+        // after it is mid-prose and still needs an intent word → no date lift.
+        // (Detecting at the caret after "tomorrow", with "about it" following.)
+        let text = "call her tomorrow about it"
+        let afterTomorrow = ("call her tomorrow" as NSString).length
+        XCTAssertNil(InlineNLP.detect(in: text, caretUTF16: afterTomorrow,
                                       tags: ["Task"], registry: registry, today: today),
-                     "a bare mid-sentence relative token must not over-offer a date lift")
+                     "a mid-prose date (more words follow) must not over-offer a lift")
+    }
+
+    // MARK: - Whole-block lifts: trailing date through detectLifts (capture path)
+
+    func testDetectLiftsTrailingDateLiftsPriorityAndDeadline() {
+        // "p1 tomorrow" on a #Task → priority p1 + Deadline tomorrow, text "".
+        let r = InlineNLP.detectLifts(
+            in: "p1 tomorrow", tags: ["#Task"], registry: registry, today: today)
+        XCTAssertEqual(r.stripped, "")
+        XCTAssertTrue(r.props.contains { $0.key == "priority" && $0.value == "p1" })
+        XCTAssertTrue(r.props.contains { $0.key == "deadline" && $0.value == "2026-06-24" })
+    }
+
+    func testDetectLiftsShipItTrailingDate() {
+        // "ship it p2 tomorrow" → "ship it" + p2 + Deadline tomorrow.
+        let r = InlineNLP.detectLifts(
+            in: "ship it p2 tomorrow", tags: ["#Task"], registry: registry, today: today)
+        XCTAssertEqual(r.stripped, "ship it")
+        XCTAssertTrue(r.props.contains { $0.key == "priority" && $0.value == "p2" })
+        XCTAssertTrue(r.props.contains { $0.key == "deadline" && $0.value == "2026-06-24" })
+    }
+
+    func testDetectLiftsMidProseDateStaysProse() {
+        // "call her tomorrow about p1" → priority p1 lifts; the mid-prose date
+        // does NOT (stays in the text).
+        let r = InlineNLP.detectLifts(
+            in: "call her tomorrow about p1", tags: ["#Task"], registry: registry, today: today)
+        XCTAssertTrue(r.props.contains { $0.key == "priority" && $0.value == "p1" })
+        XCTAssertFalse(r.props.contains { $0.key == "deadline" })
+        XCTAssertTrue(r.stripped.lowercased().contains("tomorrow"))
     }
 
     func testNLPDatePrepositionGivesIntent() {
@@ -241,15 +294,17 @@ final class SlashRegistryVerbsTests: XCTestCase {
         XCTAssertEqual(ranges.count, 2)
     }
 
-    /// A bare trailing date (no "due"/"on") does NOT lift, so it is NOT
-    /// highlighted — only the priority token is. Highlight == lift, always.
-    func testHighlightRangesBareTrailingDateOnlyPriority() {
+    /// A bare TRAILING date now DOES lift (Taylor's locked decision), so it IS
+    /// highlighted alongside the priority — highlight == lift, always.
+    func testHighlightRangesBareTrailingDateHighlightsPriorityAndDate() {
         let text = "Ship it p2 tomorrow"
         let ranges = InlineNLP.detectHighlightRanges(
             in: text, tags: ["Task"], registry: registry, today: today)
         let ns = text as NSString
-        XCTAssertEqual(ranges.count, 1)
-        XCTAssertEqual(ranges.first.map { ns.substring(with: $0) }, "p2")
+        let matched = Set(ranges.map { ns.substring(with: $0) })
+        XCTAssertEqual(ranges.count, 2, "p2 + trailing tomorrow: \(matched)")
+        XCTAssertTrue(matched.contains("p2"))
+        XCTAssertTrue(matched.contains("tomorrow"))
     }
 
     /// Plain prose (no liftable tokens) / an untagged block highlights nothing.
