@@ -1204,7 +1204,20 @@ final class MockMosaicService: ObservableObject, MosaicService {
         let tagToken = raw.hasPrefix("#") ? raw : "#\(raw)"
         let canonicalName = tagToken.hasPrefix("#") ? String(tagToken.dropFirst()) : tagToken
         let kind: BlockKind = canonicalName.lowercased() == "task" ? .task : .note
-        let result = InlineNLP.detectLifts(in: text, tags: [tagToken], registry: registry)
+        // The type picker offers the canonical built-in types (Task/Project)
+        // even before the live registry has synced their Property pages —
+        // `CaptureBar.captureTypeNames` / `grCaptureTypes` fall back to
+        // `buildBuiltins()` so the picker is never empty. The NLP lift MUST use
+        // the SAME safety net: resolving against an empty / partially-synced /
+        // stale registry finds no `nl_trigger` defs, so the block gets tagged
+        // `#Task` but nothing is stripped — exactly the build-62 bug where
+        // "Ship it p2 tomorrow" + Task kept "p2" in the prose with no priority
+        // set. When the live registry can't lift for the chosen type, resolve
+        // NLP against the built-ins so a picked Task/Project always lifts.
+        let nlpRegistry = registry.hasLiftableDefs(forTag: canonicalName)
+            ? registry
+            : PropertyRegistry.buildBuiltins()
+        let result = InlineNLP.detectLifts(in: text, tags: [tagToken], registry: nlpRegistry)
         let props = result.props.map { BlockProperty(key: $0.key, value: $0.value) }
         return (kind, result.stripped, [tagToken], props)
     }

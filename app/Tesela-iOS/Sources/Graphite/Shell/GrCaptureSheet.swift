@@ -1,4 +1,86 @@
 import SwiftUI
+import UIKit
+
+// MARK: - Keyboard avoidance (capture composer)
+
+/// Tracks how far the on-screen keyboard — INCLUDING the QuickType / predictive
+/// suggestions bar that sits on top of it — overlaps the content above the
+/// bottom safe area. 0 when the keyboard is hidden.
+///
+/// Why this exists (build-62 layout bug): the capture sheet rides above the
+/// keyboard via the shell's `safeAreaInset(.bottom)`, which uses SwiftUI's
+/// automatic keyboard avoidance. That avoidance settles against the keyboard
+/// frame at the moment the field focuses — but iOS shows the predictive bar a
+/// beat LATER (and toggles it as the user types), growing the keyboard frame
+/// AFTER the inset already settled. SwiftUI doesn't reliably re-inset for that
+/// secondary frame change, so the action row (mic + Add) intermittently ends up
+/// clipped behind the predictive bar. Observing `keyboardWillChangeFrame`
+/// (whose end-frame INCLUDES the predictive bar, and which fires again when the
+/// bar appears late) lets the sheet pad itself deterministically above the full
+/// keyboard, every time.
+@MainActor
+final class CaptureKeyboardObserver: ObservableObject {
+    /// Keyboard overlap above the bottom safe area (the amount the sheet must
+    /// lift). 0 when hidden — so when the keyboard is down the sheet falls back
+    /// to the normal bottom safe area unchanged.
+    @Published var overlap: CGFloat = 0
+
+    private var tokens: [NSObjectProtocol] = []
+
+    init() {
+        let nc = NotificationCenter.default
+        for name in [
+            UIResponder.keyboardWillChangeFrameNotification,
+            UIResponder.keyboardWillShowNotification,
+        ] {
+            tokens.append(nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                MainActor.assumeIsolated { self?.apply(note) }
+            })
+        }
+        tokens.append(nc.addObserver(
+            forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.overlap = 0 }
+        })
+    }
+
+    deinit {
+        for t in tokens { NotificationCenter.default.removeObserver(t) }
+    }
+
+    private func apply(_ note: Notification) {
+        guard
+            let frame = (note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue,
+            let window = Self.keyWindow()
+        else { return }
+        // The end-frame is in screen coordinates and includes the predictive
+        // bar. Covered-from-bottom minus the bottom safe inset (already reserved
+        // for the home indicator by the normal layout) = the extra lift needed.
+        let coveredFromBottom = max(0, window.bounds.maxY - frame.minY)
+        let safeBottom = window.safeAreaInsets.bottom
+        overlap = coveredFromBottom <= 0 ? 0 : max(0, coveredFromBottom - safeBottom)
+    }
+
+    private static func keyWindow() -> UIWindow? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first { $0.isKeyWindow }
+    }
+}
+
+extension View {
+    /// Pin this view above the keyboard (incl. the predictive bar) using
+    /// `CaptureKeyboardObserver`'s measured overlap, opting OUT of SwiftUI's
+    /// automatic — and predictive-bar-blind — keyboard avoidance so the lift is
+    /// deterministic. A no-op when the keyboard is hidden (`overlap == 0`).
+    func aboveCaptureKeyboard(_ observer: CaptureKeyboardObserver) -> some View {
+        self
+            .padding(.bottom, observer.overlap)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+            .animation(.easeOut(duration: 0.22), value: observer.overlap)
+    }
+}
 
 /// Graphite capture chrome — mirrors `Sources/Components/CaptureBar.swift`
 /// (the pill → sheet structure, the `capture(_:target:)` call, the
@@ -225,6 +307,10 @@ struct GrCaptureSheet: View {
 
     @FocusState private var fieldFocused: Bool
 
+    /// Tracks the keyboard (incl. predictive bar) so the action row stays above
+    /// it deterministically — see `CaptureKeyboardObserver`.
+    @StateObject private var keyboard = CaptureKeyboardObserver()
+
     /// Live vertical drag of the swipe-to-dismiss gesture. Positive =
     /// dragging down; the sheet follows the finger and either dismisses
     /// past the threshold or springs back.
@@ -265,6 +351,10 @@ struct GrCaptureSheet: View {
         }
         .padding(.horizontal, 18)
         .padding(.top, 10)
+        // Reserve the keyboard overlap INSIDE the background so the sheet's
+        // solid fill extends down to the keyboard top (no transparent gap
+        // under the action row while the keyboard animates).
+        .padding(.bottom, keyboard.overlap)
         .background(theme.bg2)
         .overlay(alignment: .top) {
             Rectangle().fill(theme.line).frame(height: 1)
@@ -298,6 +388,13 @@ struct GrCaptureSheet: View {
                 }
             }
         }
+        // Take deterministic control of the keyboard lift: opt out of SwiftUI's
+        // automatic (predictive-bar-blind) avoidance and ride on the observed
+        // overlap above. Without this the auto-avoidance and our padding would
+        // double-lift; with it the action row clears the predictive bar
+        // reliably. No-op when the keyboard is hidden (`overlap == 0`).
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .animation(.easeOut(duration: 0.22), value: keyboard.overlap)
     }
 
     /// Drag-to-dismiss: track the finger while dragging down, collapse

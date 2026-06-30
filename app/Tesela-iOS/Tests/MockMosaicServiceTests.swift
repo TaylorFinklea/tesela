@@ -702,14 +702,32 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertTrue(r.props.isEmpty)
     }
 
-    /// End-to-end: `capture(_:target:tag:)` tags the new block, lifts NLP
-    /// props onto it, and appends it to today. The props ride on the
-    /// block's `properties` so the normal whole-note writeback persists
-    /// them (the same path that carries the `#inbox` tag).
+    /// Mirror the capture sheet's type picker: it offers the live registry's
+    /// type names, falling back to the built-ins (Task/Project) when the
+    /// registry hasn't synced yet, so the picker is never empty
+    /// (`CaptureBar.captureTypeNames` / `grCaptureTypes`). The `manualTag`
+    /// the user picks is one of THESE strings.
+    private func pickedCaptureType(_ name: String, on service: MockMosaicService) -> String {
+        let live = service.propertyRegistry.typeNames()
+        let names = live.isEmpty ? PropertyRegistry.buildBuiltins().typeNames() : live
+        return names.first(where: { $0 == name }) ?? name
+    }
+
+    /// End-to-end through the EXACT UI path: an UNSYNCED service (registry is
+    /// the empty default, mirroring a device before its Property pages have
+    /// synced) + a `manualTag` taken from the picker's built-in fallback.
+    /// Regression for the build-62 bug: the block got tagged `#Task` but the
+    /// inline-NLP tokens were NOT lifted, because `capture` resolved NLP
+    /// against the empty live registry while the picker showed the built-in
+    /// types. The fix gives the capture path the same built-ins fallback the
+    /// picker has, so "p2"/"due tomorrow" lift even on an unsynced registry.
     func testCaptureWithTaskTypeTagsAndLiftsPropsOntoBlock() async {
-        let service = MockMosaicService()
-        await service.refresh(from: .mock)  // seed the built-in registry
-        service.capture("Ship it p2 due tomorrow", target: .today, tag: "Task")
+        let service = MockMosaicService()  // NO refresh: registry is empty
+        XCTAssertTrue(
+            service.propertyRegistry.typeNames().isEmpty,
+            "precondition: unsynced registry resolves no types")
+        let tag = pickedCaptureType("Task", on: service)
+        service.capture("Ship it p2 due tomorrow", target: .today, tag: tag)
         guard let block = service.todayBlocks.last else {
             return XCTFail("no captured block")
         }
@@ -719,6 +737,31 @@ final class MockMosaicServiceTests: XCTestCase {
             block.properties.first(where: { $0.key == "priority" })?.value, "p2")
         XCTAssertNotNil(block.properties.first(where: { $0.key == "deadline" }))
         XCTAssertFalse(block.text.lowercased().contains("p2"))
+        XCTAssertFalse(block.text.lowercased().contains("tomorrow"))
+        XCTAssertTrue(block.text.contains("Ship it"))
+    }
+
+    /// The reported repro verbatim: "Ship it p2 tomorrow" + Task. A bare
+    /// trailing date with no "due"/"on" intent must NOT lift (the detector's
+    /// over-offer guard), so only the priority lifts → text "Ship it
+    /// tomorrow", Priority p2, and NO deadline. Driven through the unsynced
+    /// UI path so it exercises the built-ins fallback.
+    func testCaptureTaskBareTrailingDateLiftsPriorityOnly() async {
+        let service = MockMosaicService()  // NO refresh: registry is empty
+        let tag = pickedCaptureType("Task", on: service)
+        service.capture("Ship it p2 tomorrow", target: .today, tag: tag)
+        guard let block = service.todayBlocks.last else {
+            return XCTFail("no captured block")
+        }
+        XCTAssertEqual(block.kind, .task)
+        XCTAssertTrue(block.tags.contains("#Task"))
+        XCTAssertEqual(
+            block.properties.first(where: { $0.key == "priority" })?.value, "p2")
+        XCTAssertNil(
+            block.properties.first(where: { $0.key == "deadline" }),
+            "a bare trailing 'tomorrow' (no due/on) must not lift a deadline")
+        XCTAssertFalse(block.text.lowercased().contains("p2"))
+        XCTAssertEqual(block.text, "Ship it tomorrow")
     }
 
     /// Capture with no type is byte-for-byte today's plain-note behavior.

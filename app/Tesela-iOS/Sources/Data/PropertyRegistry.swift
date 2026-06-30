@@ -803,6 +803,18 @@ struct PropertyRegistry {
         return names.sorted()
     }
 
+    /// Whether this registry can lift ANY inline-NLP token for `tagName` — i.e.
+    /// the type resolves at least one property that declares an `nl_trigger`.
+    /// The capture path uses this to decide whether the live registry actually
+    /// carries the type's NLP config or must fall back to the built-ins: the
+    /// type picker offers Task/Project even before their Property pages have
+    /// synced (it falls back to `buildBuiltins()`), so resolving NLP against an
+    /// empty / partially-synced registry would find no triggers — the block
+    /// gets tagged but nothing is stripped. `false` here means "fall back".
+    func hasLiftableDefs(forTag tagName: String) -> Bool {
+        resolvedDefs(forTag: tagName).contains { !$0.nlTriggers.isEmpty }
+    }
+
     // MARK: built-ins (mock backend)
 
     /// The canonical built-in Property/Tag pages — mirrors the server seed
