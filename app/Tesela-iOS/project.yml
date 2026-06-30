@@ -132,7 +132,7 @@ targets:
         # ascending builds within a version. Marketing-version bumps stay
         # MANUAL + rare.
         CFBundleShortVersionString: "1.1"
-        CFBundleVersion: "60"
+        CFBundleVersion: "61"
         # Export compliance: the app uses only STANDARD, published crypto
         # (ChaCha20-Poly1305 sync E2E + HKDF/HMAC-SHA256 + rustls TLS), which is
         # EXEMPT (EAR 740.17 standard-cryptography). Declaring this here stops
