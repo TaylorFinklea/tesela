@@ -311,10 +311,6 @@ struct GrCaptureSheet: View {
     /// SwiftUI's `.focused()`.
     @State private var fieldFocused = false
 
-    /// Tracks the keyboard (incl. predictive bar) so the action row stays above
-    /// it deterministically — see `CaptureKeyboardObserver`.
-    @StateObject private var keyboard = CaptureKeyboardObserver()
-
     /// Live vertical drag of the swipe-to-dismiss gesture. Positive =
     /// dragging down; the sheet follows the finger and either dismisses
     /// past the threshold or springs back.
@@ -355,10 +351,7 @@ struct GrCaptureSheet: View {
         }
         .padding(.horizontal, 18)
         .padding(.top, 10)
-        // Reserve the keyboard overlap INSIDE the background so the sheet's
-        // solid fill extends down to the keyboard top (no transparent gap
-        // under the action row while the keyboard animates).
-        .padding(.bottom, keyboard.overlap)
+        .padding(.bottom, 8)
         .background(theme.bg2)
         .overlay(alignment: .top) {
             Rectangle().fill(theme.line).frame(height: 1)
@@ -392,13 +385,11 @@ struct GrCaptureSheet: View {
                 }
             }
         }
-        // Take deterministic control of the keyboard lift: opt out of SwiftUI's
-        // automatic (predictive-bar-blind) avoidance and ride on the observed
-        // overlap above. Without this the auto-avoidance and our padding would
-        // double-lift; with it the action row clears the predictive bar
-        // reliably. No-op when the keyboard is hidden (`overlap == 0`).
-        .ignoresSafeArea(.keyboard, edges: .bottom)
-        .animation(.easeOut(duration: 0.22), value: keyboard.overlap)
+        // Keyboard lift: rely on SwiftUI's automatic safeAreaInset(.bottom)
+        // avoidance (the shell wraps this sheet in one) so it stays a COMPACT
+        // sheet sitting just above the keyboard. (A prior ignoresSafeArea +
+        // manual-overlap approach over-corrected — it gave the inset the full
+        // screen height to fill, pinning content to the top with a huge gap.)
     }
 
     /// Drag-to-dismiss: track the finger while dragging down, collapse

@@ -42,11 +42,6 @@ struct CaptureBar: View {
     /// backed `CaptureTextView` whose focus is driven by an `isFocused` binding.
     @State private var fieldFocused = false
 
-    /// Keyboard (incl. predictive bar) tracker for the expanded panel — keeps
-    /// the send/mic row above the keyboard deterministically. See
-    /// `CaptureKeyboardObserver` (defined in `GrCaptureSheet.swift`).
-    @StateObject private var keyboard = CaptureKeyboardObserver()
-
     @AppStorage("captureDefaultTarget") private var captureDefault: CaptureDefault = .contextAware
     @AppStorage("voice.useOnDevice") private var useOnDevice: Bool = true
 
@@ -97,9 +92,7 @@ struct CaptureBar: View {
         .frame(minHeight: 44)
         .padding(.horizontal, 12)
         .padding(.vertical, expanded ? 6 : 0)
-        // Reserve the keyboard overlap inside the panel's background so the
-        // send/mic row clears the predictive bar (build-62 fix; expanded only).
-        .padding(.bottom, expanded ? keyboard.overlap : 0)
+        .padding(.bottom, expanded ? 8 : 0)
         .background {
             // The expanded panel rides above the keyboard via
             // `safeAreaInset` and needs its own solid backing; the
@@ -111,7 +104,6 @@ struct CaptureBar: View {
                 Rectangle().fill(theme.lineSoft).frame(height: 1)
             }
         }
-        .modifier(ExpandedKeyboardLift(active: expanded, overlap: keyboard.overlap))
     }
 
     /// The composer's middle slot. Normally the text field; while
