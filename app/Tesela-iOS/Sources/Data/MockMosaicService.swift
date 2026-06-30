@@ -191,14 +191,40 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// caret. `nil` in mock mode (no socket) → publish is a no-op.
     var sendPresence: ((Data) -> Void)?
 
+    /// Presence-publish throttle (≤1 frame / 100ms, leading + trailing edge),
+    /// mirroring the web's `BlockEditor` `publishPresence`. The editor fires
+    /// `onCaretMove` on EVERY selection change — fast typing, plus programmatic
+    /// selection during an inbound reconcile — so an unthrottled publish floods
+    /// the relay with a frame per change. The latest caret is coalesced into
+    /// `presencePending` and flushed at most every 100ms.
+    private var presenceThrottleTimer: Timer?
+    private var presencePending: (slug: String, bid: String, offset: Int)?
+
     /// Publish THIS device's caret in note `slug`, block `bid`, at utf16
     /// `offset`. Ephemeral — fire-and-forget over the WS. Carries this
-    /// device's friendly name so peers can label the caret/chip.
+    /// device's friendly name so peers can label the caret/chip. Throttled to
+    /// ≤1 frame / 100ms (leading + trailing) — see `presenceThrottleTimer`.
     func publishPresence(slug: String, bid: String, offset: Int) {
-        guard let send = sendPresence else { return }
+        guard sendPresence != nil else { return }
+        presencePending = (slug, bid, offset)
+        if presenceThrottleTimer != nil { return }
+        flushPresence() // leading edge
+        presenceThrottleTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { _ in
+            Task { @MainActor [weak self] in
+                self?.presenceThrottleTimer = nil
+                self?.flushPresence() // trailing edge — coalesced last move
+            }
+        }
+    }
+
+    /// Encode + send the pending caret frame (if any), clearing the pending
+    /// slot. The leading + trailing edges both route through here.
+    private func flushPresence() {
+        guard let send = sendPresence, let pending = presencePending else { return }
+        presencePending = nil
         let frame = LoroPresence.Frame(
             peer: remoteCursors.localPeer, color: remoteCursors.localColor,
-            name: Self.localDeviceName, slug: slug, bid: bid, offset: offset)
+            name: Self.localDeviceName, slug: pending.slug, bid: pending.bid, offset: pending.offset)
         send(LoroPresence.encode(frame))
     }
 

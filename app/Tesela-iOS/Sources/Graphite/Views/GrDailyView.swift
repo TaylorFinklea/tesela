@@ -27,10 +27,6 @@ struct GrDailyView: View {
     @State private var pickedDate: Date = Date()
     @State private var loadingOlderDays: Bool = false
     @State private var collapsedBlockIds: Set<String> = []
-    /// Periodic timer (~3s) that expires stale remote presence carets while the
-    /// daily is on screen, mirroring the web's 3s prune — without it a peer that
-    /// leaves lingers as a chip/caret forever (iOS never calls `pruneStale`).
-    @State private var presencePruneTimer: Timer? = nil
 
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -90,11 +86,9 @@ struct GrDailyView: View {
                     editingBlockId = nil
                 }
             }
-            .onAppear { startPresencePrune() }
             .onDisappear {
                 captureContext.focusedBlock = nil
                 mosaic.isEditingBlock = false
-                stopPresencePrune()
             }
             .environment(\.openURL, OpenURLAction { url in
                 if let slug = TeselaLink.pageSlug(from: url) {
@@ -377,19 +371,6 @@ struct GrDailyView: View {
                 loadingOlderDays = false
             }
         }
-    }
-
-    /// Start the ~3s presence-prune tick. Idempotent — re-arms on re-appear.
-    private func startPresencePrune() {
-        presencePruneTimer?.invalidate()
-        presencePruneTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
-            Task { @MainActor in mosaic.pruneRemoteCursors() }
-        }
-    }
-
-    private func stopPresencePrune() {
-        presencePruneTimer?.invalidate()
-        presencePruneTimer = nil
     }
 
     private func toggleFold(_ blockId: String) {

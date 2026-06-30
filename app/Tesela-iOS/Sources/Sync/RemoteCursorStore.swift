@@ -49,11 +49,18 @@ final class RemoteCursorStore: ObservableObject {
     }
 
     /// The live (non-stale) remote cursors that fall in a given note + block.
+    /// Sorted by `peer` id so the order is STABLE across re-renders —
+    /// `Dictionary.values` has no defined order, and that order flows into the
+    /// block's presence-chip cluster (which peers show + the `+N` overflow) and
+    /// keys the whole-row tint off the first caret's color, so an unsorted
+    /// result reshuffles (flickers) on every inbound frame / prune / keystroke.
     func cursors(forSlug slug: String, bid: String, now: Date = Date()) -> [LoroPresence.Frame] {
-        byPeer.values.filter { c in
-            guard c.slug == slug, c.bid == bid, let seen = lastSeen[c.peer] else { return false }
-            return now.timeIntervalSince(seen) <= staleInterval
-        }
+        byPeer.values
+            .filter { c in
+                guard c.slug == slug, c.bid == bid, let seen = lastSeen[c.peer] else { return false }
+                return now.timeIntervalSince(seen) <= staleInterval
+            }
+            .sorted { $0.peer < $1.peer }
     }
 
     /// Drop cursors past the staleness window. Returns whether anything changed.

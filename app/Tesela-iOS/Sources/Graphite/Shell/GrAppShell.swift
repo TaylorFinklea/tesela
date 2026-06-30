@@ -53,6 +53,13 @@ struct GrAppShell: View {
     @State private var captureContext: CaptureContext = .init()
     @State private var showSettings: Bool = false
     @State private var showCommandPalette: Bool = false
+    /// Periodic (~3s) prune of stale remote presence carets, armed at SHELL
+    /// scope (NOT per-view) so it runs regardless of the active tab. The
+    /// shell-level presence sockets call `applyPresence` whatever view is up
+    /// (and each remote launch mints a fresh peer id), so a view-scoped prune
+    /// let `RemoteCursorStore.byPeer` leak while off the Daily tab. Mirrors the
+    /// web's 3s prune.
+    @State private var presencePruneTimer: Timer? = nil
 
     @AppStorage("onboardingComplete") private var onboardingComplete: Bool = false
     @Environment(\.scenePhase) private var scenePhase
@@ -234,6 +241,8 @@ struct GrAppShell: View {
                 // Backend-dependent bring-up — also re-run on a backend change.
                 await activateBackend()
             }
+            .onAppear { startPresencePrune() }
+            .onDisappear { stopPresencePrune() }
             .onChange(of: backendToken) { _, _ in
                 // The user changed the server URL / mock↔HTTP mode in Settings
                 // — re-establish the live WS + hub mode against the NEW backend
@@ -286,11 +295,21 @@ struct GrAppShell: View {
         }
     }
 
-    /// Identity of the current backend (mode + server URL). Drives the
-    /// `.onChange` that re-establishes live sync when the user reconfigures
+    /// Identity of the current backend (mode + server URL + relay group). Drives
+    /// the `.onChange` that re-establishes live sync when the user reconfigures
     /// the server in Settings — a plain `String` so SwiftUI can diff it.
+    ///
+    /// Includes the cached relay pairing code so a relay→relay RE-PAIR — the
+    /// user scans a NEW group QR while already in `.relay` mode, so mode +
+    /// serverURL are unchanged but `PairScanView.adopt` caches a new code —
+    /// still flips the token and re-runs `activateBackend()` → `wirePresence()`,
+    /// repointing `presenceRelay` at the new group. (The adopt() sets
+    /// `backend.mode = .relay`, which re-renders this body so the token is
+    /// recomputed against the freshly-cached code.) Mirrors the data path's
+    /// `invalidateCoordinatorIfRepaired`, which migrates the coordinator on its
+    /// next tick; without this the presence socket stayed on the old group.
     private var backendToken: String {
-        "\(backend.mode.rawValue)|\(backend.serverURL)"
+        "\(backend.mode.rawValue)|\(backend.serverURL)|\(RelayTicker.cachedPairingCode() ?? "")"
     }
 
     /// Point the mosaic + live-sync transport at the CURRENT backend. Called
@@ -335,6 +354,21 @@ struct GrAppShell: View {
         // straight into `.active` never started the loop — fatal for .relay mode
         // (the tick is the only sync path; hub mode just no-ops the loop).
         relayTicker.start()
+    }
+
+    /// Start the ~3s presence-prune tick at shell scope. Idempotent — re-arms
+    /// on re-appear. Runs regardless of the active tab so off-Daily presence
+    /// (the shell sockets keep feeding `applyPresence`) can't leak.
+    private func startPresencePrune() {
+        presencePruneTimer?.invalidate()
+        presencePruneTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { _ in
+            Task { @MainActor in mosaic.pruneRemoteCursors() }
+        }
+    }
+
+    private func stopPresencePrune() {
+        presencePruneTimer?.invalidate()
+        presencePruneTimer = nil
     }
 
     /// Wire the presence egress (`mosaic.sendPresence`) + ingress

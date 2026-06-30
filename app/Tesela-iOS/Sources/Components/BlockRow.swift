@@ -271,7 +271,10 @@ struct BlockRow: View {
     /// (its device name, falling back to a short peer-id, then "device").
     private var presenceCluster: some View {
         HStack(spacing: 4) {
-            ForEach(Array(remoteCarets.prefix(Self.maxPresenceChips).enumerated()), id: \.offset) { _, caret in
+            // Key by the stable peer id (NOT the enumeration index) so a peer
+            // re-ordering can't reuse a chip's identity in place and flicker its
+            // label/color; the upstream `cursors(...)` already sorts by peer.
+            ForEach(remoteCarets.prefix(Self.maxPresenceChips), id: \.peer) { caret in
                 RemotePresenceChip(name: presenceLabel(caret), color: caret.color)
             }
             if remoteCarets.count > Self.maxPresenceChips {
