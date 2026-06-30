@@ -20,6 +20,14 @@ struct PairDeviceView: View {
     @ObservedObject var mosaic: MockMosaicService
     @ObservedObject var registry: MosaicRegistry
 
+    /// Fired with the inviter's display name (from `PairingCodeRecord
+    /// .displayName`) the moment a pair succeeds via either the QR-scan
+    /// or short-code path. `nil` everywhere except the onboarding flow,
+    /// which is the only caller that wires this up — both Settings call
+    /// sites (`SettingsView`, `GrSettingsView`) leave it at its default,
+    /// so they see no behavior change.
+    var onPaired: ((String?) -> Void)? = nil
+
     @Environment(\.theme) private var theme
 
     @State private var serverCode: MockMosaicService.ServerPairingCode?
@@ -87,12 +95,12 @@ struct PairDeviceView: View {
         .task { await refreshCode() }
         .fullScreenCover(isPresented: $showScanner) {
             NavigationStack {
-                PairScanView(backend: backend, mosaic: mosaic, registry: registry)
+                PairScanView(backend: backend, mosaic: mosaic, registry: registry, onPaired: onPaired)
             }
         }
         .sheet(isPresented: $showTypedCode) {
             NavigationStack {
-                PairWithShortCodeView(backend: backend, mosaic: mosaic, registry: registry)
+                PairWithShortCodeView(backend: backend, mosaic: mosaic, registry: registry, onPaired: onPaired)
             }
             .presentationDetents([.medium])
         }

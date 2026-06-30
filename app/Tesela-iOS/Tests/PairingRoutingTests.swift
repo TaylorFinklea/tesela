@@ -107,6 +107,24 @@ final class PairingRoutingTests: XCTestCase {
         XCTAssertEqual(PairDeviceView.displayState(for: .mock), .unattached)
     }
 
+    // MARK: OnboardingConfirmationView.resolvedInviterName — confirmation copy
+
+    func testInviterNameIsUsedWhenPresent() {
+        XCTAssertEqual(OnboardingConfirmationView.resolvedInviterName(from: "bobs-macbook"), "bobs-macbook")
+    }
+
+    func testInviterNameIsTrimmedOfWhitespace() {
+        XCTAssertEqual(OnboardingConfirmationView.resolvedInviterName(from: "  bobs-macbook  "), "bobs-macbook")
+    }
+
+    func testBlankOrWhitespaceInviterNameFallsBackToNil() {
+        // Empty/whitespace-only names must never render — the confirmation
+        // falls back to generic "You're connected" copy instead.
+        XCTAssertNil(OnboardingConfirmationView.resolvedInviterName(from: ""))
+        XCTAssertNil(OnboardingConfirmationView.resolvedInviterName(from: "   "))
+        XCTAssertNil(OnboardingConfirmationView.resolvedInviterName(from: nil))
+    }
+
     // MARK: isDefinitivePairingFailure — cached-code invalidation
 
     func testInvalidPairingCodeIsDefinitive() {

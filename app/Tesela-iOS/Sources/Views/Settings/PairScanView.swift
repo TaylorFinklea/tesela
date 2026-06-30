@@ -17,6 +17,10 @@ struct PairScanView: View {
     @ObservedObject var mosaic: MockMosaicService
     @ObservedObject var registry: MosaicRegistry
 
+    /// Success signal threaded down from `PairDeviceView`; see its doc
+    /// comment. Fired in `adopt(_:)`, not touched otherwise.
+    var onPaired: ((String?) -> Void)? = nil
+
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
 
@@ -268,6 +272,7 @@ struct PairScanView: View {
             backend.mode = .relay
             pending = nil
             pendingPayload = nil
+            onPaired?(code.displayName)
             dismiss()
             return
         }
@@ -289,6 +294,7 @@ struct PairScanView: View {
         }
         pending = nil
         pendingPayload = nil
+        onPaired?(code.displayName)
         dismiss()
     }
 

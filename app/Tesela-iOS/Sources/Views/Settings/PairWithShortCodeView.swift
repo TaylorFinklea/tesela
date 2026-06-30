@@ -15,6 +15,10 @@ struct PairWithShortCodeView: View {
     @ObservedObject var mosaic: MockMosaicService
     @ObservedObject var registry: MosaicRegistry
 
+    /// Success signal threaded down from `PairDeviceView`; see its doc
+    /// comment. Fired in `adopt(_:)`, not touched otherwise.
+    var onPaired: ((String?) -> Void)? = nil
+
     @Environment(\.theme) private var theme
     @Environment(\.dismiss) private var dismiss
 
@@ -188,6 +192,7 @@ struct PairWithShortCodeView: View {
             }
         }
         resolved = nil
+        onPaired?(record.displayName)
         dismiss()
     }
 }
