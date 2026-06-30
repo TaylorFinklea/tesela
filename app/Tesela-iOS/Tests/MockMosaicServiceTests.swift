@@ -631,6 +631,125 @@ final class MockMosaicServiceTests: XCTestCase {
         XCTAssertEqual(service.todayBlocks.last?.tags, ["#inbox"])
     }
 
+    // MARK: - Capture type picker + add-time inline NLP (2026-06-29)
+
+    /// No type chosen → plain `.note`, text untouched, no tag, no props
+    /// (today's behavior is preserved — the picker is the NLP prerequisite).
+    func testApplyCaptureTypeNilTagIsPlainNote() {
+        let reg = PropertyRegistry.buildBuiltins()
+        let r = MockMosaicService.applyCaptureType(
+            text: "Test p1 due tomorrow", tag: nil, registry: reg)
+        XCTAssertEqual(r.kind, .note)
+        XCTAssertEqual(r.body, "Test p1 due tomorrow")
+        XCTAssertTrue(r.tags.isEmpty)
+        XCTAssertTrue(r.props.isEmpty)
+    }
+
+    /// type=Task → `.task` kind, `#Task` tag, and inline NLP lifts the
+    /// priority + deadline tokens out of the prose into structured props.
+    func testApplyCaptureTypeTaskLiftsPriorityAndDeadline() {
+        let reg = PropertyRegistry.buildBuiltins()
+        let r = MockMosaicService.applyCaptureType(
+            text: "Test p1 due tomorrow", tag: "Task", registry: reg)
+        XCTAssertEqual(r.kind, .task)
+        XCTAssertEqual(r.tags, ["#Task"])
+        XCTAssertEqual(r.props.first(where: { $0.key == "priority" })?.value, "p1")
+        XCTAssertNotNil(
+            r.props.first(where: { $0.key == "deadline" }),
+            "a 'due tomorrow' deadline should lift onto the Task")
+        XCTAssertFalse(r.body.lowercased().contains("p1"))
+        XCTAssertFalse(r.body.lowercased().contains("tomorrow"))
+        XCTAssertTrue(r.body.contains("Test"))
+    }
+
+    /// A `#` prefix on the chosen type is tolerated (and not doubled).
+    func testApplyCaptureTypeToleratesHashPrefix() {
+        let reg = PropertyRegistry.buildBuiltins()
+        let r = MockMosaicService.applyCaptureType(
+            text: "Plain task", tag: "#Task", registry: reg)
+        XCTAssertEqual(r.kind, .task)
+        XCTAssertEqual(r.tags, ["#Task"])
+    }
+
+    /// A non-Task type stays a `.note`, tags-only, and still lifts a date
+    /// the type declares (Project has Deadline). A property the type does
+    /// NOT declare (Priority) is not lifted — it stays in the prose.
+    func testApplyCaptureTypeProjectLiftsOnlyDeclaredProps() {
+        let reg = PropertyRegistry.buildBuiltins()
+        let r = MockMosaicService.applyCaptureType(
+            text: "Roadmap p1 due tomorrow", tag: "Project", registry: reg)
+        XCTAssertEqual(r.kind, .note)
+        XCTAssertEqual(r.tags, ["#Project"])
+        XCTAssertNotNil(r.props.first(where: { $0.key == "deadline" }))
+        XCTAssertNil(
+            r.props.first(where: { $0.key == "priority" }),
+            "Project doesn't declare Priority, so p1 must not lift")
+        XCTAssertTrue(
+            r.body.lowercased().contains("p1"),
+            "an unlifted token stays in the prose: \(r.body)")
+        XCTAssertFalse(r.body.lowercased().contains("tomorrow"))
+    }
+
+    /// Plain prose with no NLP triggers → text passes through unchanged
+    /// (still tagged with the chosen type, no props).
+    func testApplyCaptureTypeNoTriggersLeavesTextUnchanged() {
+        let reg = PropertyRegistry.buildBuiltins()
+        let r = MockMosaicService.applyCaptureType(
+            text: "just a plain task", tag: "Task", registry: reg)
+        XCTAssertEqual(r.kind, .task)
+        XCTAssertEqual(r.body, "just a plain task")
+        XCTAssertEqual(r.tags, ["#Task"])
+        XCTAssertTrue(r.props.isEmpty)
+    }
+
+    /// End-to-end: `capture(_:target:tag:)` tags the new block, lifts NLP
+    /// props onto it, and appends it to today. The props ride on the
+    /// block's `properties` so the normal whole-note writeback persists
+    /// them (the same path that carries the `#inbox` tag).
+    func testCaptureWithTaskTypeTagsAndLiftsPropsOntoBlock() async {
+        let service = MockMosaicService()
+        await service.refresh(from: .mock)  // seed the built-in registry
+        service.capture("Ship it p2 due tomorrow", target: .today, tag: "Task")
+        guard let block = service.todayBlocks.last else {
+            return XCTFail("no captured block")
+        }
+        XCTAssertEqual(block.kind, .task)
+        XCTAssertTrue(block.tags.contains("#Task"))
+        XCTAssertEqual(
+            block.properties.first(where: { $0.key == "priority" })?.value, "p2")
+        XCTAssertNotNil(block.properties.first(where: { $0.key == "deadline" }))
+        XCTAssertFalse(block.text.lowercased().contains("p2"))
+    }
+
+    /// Capture with no type is byte-for-byte today's plain-note behavior.
+    func testCaptureWithoutTypeIsUnchangedPlainNote() async {
+        let service = MockMosaicService()
+        await service.refresh(from: .mock)
+        service.capture("Buy milk p1 due tomorrow", target: .today, tag: nil)
+        guard let block = service.todayBlocks.last else {
+            return XCTFail("no captured block")
+        }
+        XCTAssertEqual(block.kind, .note)
+        XCTAssertTrue(block.tags.isEmpty)
+        XCTAssertTrue(block.properties.isEmpty)
+        XCTAssertEqual(block.text, "Buy milk p1 due tomorrow")
+    }
+
+    /// An inbox capture WITH a type keeps both the `#inbox` routing tag and
+    /// the chosen `#Task` type tag, and still lifts props.
+    func testCaptureInboxWithTypeKeepsBothTags() async {
+        let service = MockMosaicService()
+        await service.refresh(from: .mock)
+        service.capture("Triage this p1", target: .inbox, tag: "Task")
+        guard let block = service.todayBlocks.last else {
+            return XCTFail("no captured block")
+        }
+        XCTAssertTrue(block.tags.contains("#inbox"))
+        XCTAssertTrue(block.tags.contains("#Task"))
+        XCTAssertEqual(
+            block.properties.first(where: { $0.key == "priority" })?.value, "p1")
+    }
+
     // MARK: - Task toggle write path (2026-06-10 revert fix)
 
     func testTaskStatusValue() {

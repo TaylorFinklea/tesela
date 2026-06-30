@@ -350,4 +350,33 @@ final class PropertyRegistryTests: XCTestCase {
         XCTAssertEqual(status?.choices, ["planned", "active", "shipped"])
         XCTAssertEqual(status?.show, .onNew)
     }
+
+    // MARK: - typeNames (capture type picker)
+
+    /// `typeNames()` lists every Tag page except the abstract "Root Tag"
+    /// base, sorted. Drives the Capture composer's type picker.
+    func testTypeNamesListsTagPagesExcludingRootTag() {
+        let reg = PropertyRegistry.build(from: [statusPage, priorityPage, rootTag, taskTag, projectTag])
+        XCTAssertEqual(reg.typeNames(), ["Project", "Task"])
+    }
+
+    /// Property pages are NOT types — only Tag pages are offerable.
+    func testTypeNamesExcludesPropertyPages() {
+        let reg = PropertyRegistry.build(from: [statusPage, priorityPage, deadlinePage, rootTag, taskTag])
+        XCTAssertEqual(reg.typeNames(), ["Task"])
+    }
+
+    /// The built-in registry always offers Task + Project, so a
+    /// not-yet-synced registry still gives the picker something to show.
+    func testBuiltinTypeNamesIncludeTaskAndProject() {
+        let names = PropertyRegistry.buildBuiltins().typeNames()
+        XCTAssertTrue(names.contains("Task"))
+        XCTAssertTrue(names.contains("Project"))
+        XCTAssertFalse(names.contains("Root Tag"))
+    }
+
+    /// An empty registry yields no types (the caller falls back to builtins).
+    func testTypeNamesEmptyOnEmptyRegistry() {
+        XCTAssertTrue(PropertyRegistry().typeNames().isEmpty)
+    }
 }

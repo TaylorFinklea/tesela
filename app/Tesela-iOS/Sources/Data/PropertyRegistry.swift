@@ -784,6 +784,25 @@ struct PropertyRegistry {
         )
     }
 
+    // MARK: type names (capture type picker)
+
+    /// All Tag-page type names (e.g. Task, Project) a captured block can be
+    /// tagged as — every `type: Tag` page except the abstract "Root Tag" base
+    /// — de-duplicated (case-insensitive) and sorted. Drives the Capture
+    /// composer's type picker. Empty when no Tag pages are known yet; the
+    /// caller falls back to `buildBuiltins()` so Task/Project are always
+    /// offerable on a not-yet-synced registry.
+    func typeNames() -> [String] {
+        var seen = Set<String>()
+        var names: [String] = []
+        for n in notes where n.noteType == "Tag" {
+            let title = n.title.trimmingCharacters(in: .whitespaces)
+            guard !title.isEmpty, title.lowercased() != "root tag" else { continue }
+            if seen.insert(title.lowercased()).inserted { names.append(title) }
+        }
+        return names.sorted()
+    }
+
     // MARK: built-ins (mock backend)
 
     /// The canonical built-in Property/Tag pages — mirrors the server seed

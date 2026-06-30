@@ -76,6 +76,37 @@ private func targetMenuItems(composer: CaptureComposer, context: CaptureContext)
     }
 }
 
+/// The capture TYPE-picker items: a "Note" default that clears the manual
+/// type (plain `.note` block, no tag, no NLP — today's behavior) plus one
+/// entry per registry type (Task, Project, …). Each writes
+/// `composer.manualTag`. Shared so the compact bar's chip and the sheet's
+/// chooser never drift.
+@MainActor
+@ViewBuilder
+private func typeMenuItems(composer: CaptureComposer, types: [String]) -> some View {
+    Button {
+        composer.manualTag = nil
+    } label: {
+        Label("Note", systemImage: "text.alignleft")
+    }
+    ForEach(types, id: \.self) { type in
+        Button {
+            composer.manualTag = type
+        } label: {
+            Label(type, systemImage: "number")
+        }
+    }
+}
+
+/// The type list for the capture picker: the synced registry's Tag pages,
+/// falling back to the built-ins (Task/Project) when the registry hasn't
+/// synced yet so the picker is never empty.
+@MainActor
+private func grCaptureTypes(_ registry: PropertyRegistry) -> [String] {
+    let names = registry.typeNames()
+    return names.isEmpty ? PropertyRegistry.buildBuiltins().typeNames() : names
+}
+
 // MARK: - Compact capture bar (tabViewBottomAccessory)
 
 /// The compact Graphite capture pill shown in `tabViewBottomAccessory`.
@@ -304,9 +335,43 @@ struct GrCaptureSheet: View {
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(theme.fgDefault)
             Spacer(minLength: 0)
+            typeMenu
             targetMenu
         }
         .padding(.bottom, 14)
+    }
+
+    /// Type/tag picker — choose the captured block's type ("Note" = plain,
+    /// or Task / Project / … from the registry). Picking a type tags the
+    /// block and runs inline NLP at add-time. The chosen type shows as a
+    /// small chip (active = tinted), mirroring the target chip's styling.
+    private var typeMenu: some View {
+        let active = composer.manualTag != nil
+        return Menu {
+            typeMenuItems(
+                composer: composer,
+                types: grCaptureTypes(mosaic.propertyRegistry)
+            )
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: active ? "number" : "text.alignleft")
+                    .font(.system(size: 10, weight: .semibold))
+                Text(composer.manualTag ?? "Note")
+                    .lineLimit(1)
+            }
+            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .foregroundStyle(active ? theme.typeTask : theme.fgSubtle)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                Capsule().fill(active ? theme.typeTask.opacity(0.14) : theme.bg3)
+            )
+            .overlay(
+                Capsule().stroke(
+                    active ? theme.typeTask.opacity(0.28) : theme.line, lineWidth: 1)
+            )
+        }
+        .accessibilityLabel("Capture type: \(composer.manualTag ?? "Note")")
     }
 
     /// Native input chooser — the target menu. Mirrors `CaptureBar`'s
@@ -442,10 +507,13 @@ struct GrCaptureSheet: View {
     private func submit() {
         let trimmed = composer.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        mosaic.capture(trimmed, target: resolvedTarget)
+        mosaic.capture(trimmed, target: resolvedTarget, tag: composer.manualTag)
         if case .childOf = resolvedTarget {
             composer.manualTarget = nil
         }
+        // Reset the type to "Note" so the next capture defaults to a plain
+        // note rather than silently inheriting the last-picked type.
+        composer.manualTag = nil
         composer.draft = ""
         fieldFocused = false
         withAnimation(.snappy(duration: 0.28)) { composer.isExpanded = false }

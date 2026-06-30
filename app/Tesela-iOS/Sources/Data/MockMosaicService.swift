@@ -1136,35 +1136,77 @@ final class MockMosaicService: ObservableObject, MosaicService {
     /// slotting in just before any trailing empty-placeholder run — the
     /// old `insert(at: 0)` put every capture ABOVE the day's existing
     /// notes (2026-06-10 product test).
-    func capture(_ text: String, target: CaptureTarget) {
+    func capture(_ text: String, target: CaptureTarget, tag: String? = nil) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let id = UUID().uuidString.lowercased()
+        // Resolve the type choice once. When a type is picked the block is
+        // tagged `#<type>` and inline NLP lifts its tokens at add-time (the
+        // detector is tag-gated, so the picker is the prerequisite); the
+        // lifted props are BAKED onto the block so they ride the normal
+        // whole-note writeback into the engine — the same path that already
+        // persists the `#inbox` tag below. No type → plain `.note`, text
+        // untouched, no props (today's behavior).
+        let typed = Self.applyCaptureType(text: trimmed, tag: tag, registry: propertyRegistry)
         switch target {
         case .today:
             todayBlocks.insert(
-                Block(id: id, kind: .note, text: trimmed),
+                Block(id: id, kind: typed.kind, text: typed.body,
+                      tags: typed.tags, properties: typed.props),
                 at: Self.captureInsertIndex(in: todayBlocks)
             )
             scheduleWriteback()
         case .inbox:
             todayBlocks.insert(
-                Block(id: id, kind: .note, text: trimmed, tags: ["#inbox"]),
+                Block(id: id, kind: typed.kind, text: typed.body,
+                      tags: ["#inbox"] + typed.tags, properties: typed.props),
                 at: Self.captureInsertIndex(in: todayBlocks)
             )
             scheduleWriteback()
         case .page(let slug, _):
             var blocks = loadedPageBlocks[slug] ?? []
-            blocks.append(Block(id: id, kind: .note, text: trimmed))
+            blocks.append(Block(id: id, kind: typed.kind, text: typed.body,
+                                tags: typed.tags, properties: typed.props))
             Task { await pushPage(id: slug, blocks: blocks) }
         case .childOf(let parentId, _, let pageSlug):
             insertChildBlock(
                 parentId: parentId,
                 pageSlug: pageSlug,
                 newId: id,
-                text: trimmed
+                text: typed.body,
+                kind: typed.kind,
+                tags: typed.tags,
+                properties: typed.props
             )
         }
+    }
+
+    /// Resolve a capture's type choice into the new block's kind, body text,
+    /// tag list, and lifted properties. `tag == nil`/blank → the text passes
+    /// through untouched with `.note` kind, no tag, no props (today's plain
+    /// capture). Otherwise the block is tagged `#<type>` and
+    /// `InlineNLP.detectLifts` (tag-gated) strips inline-NLP tokens out of the
+    /// prose into structured props — e.g. "Test p1 tomorrow" + type=Task →
+    /// body "Test", tag "#Task", props priority=p1 / deadline=<tomorrow>. A
+    /// "Task" type also resolves to `.task` kind so it round-trips with the
+    /// canonical `status:: todo` / `tags:: Task` rendering (mirrors
+    /// `parseBlocks`, where a `tags:: Task` block parses back as `.task`).
+    /// Static + pure so it's unit-testable and identical across capture
+    /// targets.
+    static func applyCaptureType(
+        text: String,
+        tag: String?,
+        registry: PropertyRegistry
+    ) -> (kind: BlockKind, body: String, tags: [String], props: [BlockProperty]) {
+        guard let raw = tag?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
+            return (.note, text, [], [])
+        }
+        let tagToken = raw.hasPrefix("#") ? raw : "#\(raw)"
+        let canonicalName = tagToken.hasPrefix("#") ? String(tagToken.dropFirst()) : tagToken
+        let kind: BlockKind = canonicalName.lowercased() == "task" ? .task : .note
+        let result = InlineNLP.detectLifts(in: text, tags: [tagToken], registry: registry)
+        let props = result.props.map { BlockProperty(key: $0.key, value: $0.value) }
+        return (kind, result.stripped, [tagToken], props)
     }
 
     /// Where a daily capture lands: after the LAST contentful block,
@@ -1185,14 +1227,18 @@ final class MockMosaicService: ObservableObject, MosaicService {
         parentId: String,
         pageSlug: String?,
         newId: String,
-        text: String
+        text: String,
+        kind: BlockKind = .note,
+        tags: [String] = [],
+        properties: [BlockProperty] = []
     ) {
         if let slug = pageSlug {
             var blocks = loadedPageBlocks[slug] ?? []
             guard let idx = blocks.firstIndex(where: { $0.id == parentId }) else { return }
             let childIndent = blocks[idx].indent + 1
             blocks.insert(
-                Block(id: newId, kind: .note, text: text, indent: childIndent),
+                Block(id: newId, kind: kind, text: text, indent: childIndent,
+                      tags: tags, properties: properties),
                 at: idx + 1
             )
             Task { await pushPage(id: slug, blocks: blocks) }
@@ -1200,7 +1246,8 @@ final class MockMosaicService: ObservableObject, MosaicService {
             guard let idx = todayBlocks.firstIndex(where: { $0.id == parentId }) else { return }
             let childIndent = todayBlocks[idx].indent + 1
             todayBlocks.insert(
-                Block(id: newId, kind: .note, text: text, indent: childIndent),
+                Block(id: newId, kind: kind, text: text, indent: childIndent,
+                      tags: tags, properties: properties),
                 at: idx + 1
             )
             scheduleWriteback()

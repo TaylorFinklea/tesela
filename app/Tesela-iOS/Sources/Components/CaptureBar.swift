@@ -81,6 +81,7 @@ struct CaptureBar: View {
         HStack(alignment: expanded ? .bottom : .center, spacing: 8) {
             leadingButton
             targetChip
+            typeChip
             composerMiddle
                 .frame(maxWidth: .infinity, alignment: .leading)
             trailingButton
@@ -286,6 +287,53 @@ struct CaptureBar: View {
         .accessibilityLabel("Capture target: \(resolvedTarget.label)")
     }
 
+    /// Type/tag picker chip. Tap → menu of "Note" (plain, no NLP) + the
+    /// registry's types (Task, Project, …). Picking a type tags the block
+    /// and runs inline NLP at add-time. Icon-only at rest; shows the chosen
+    /// type's name (tinted) when active — mirrors `targetChip`'s styling.
+    private var typeChip: some View {
+        let active = composer.manualTag != nil
+        return Menu {
+            Button {
+                composer.manualTag = nil
+            } label: {
+                Label("Note", systemImage: "text.alignleft")
+            }
+            ForEach(captureTypeNames(), id: \.self) { type in
+                Button {
+                    composer.manualTag = type
+                } label: {
+                    Label(type, systemImage: "number")
+                }
+            }
+        } label: {
+            Group {
+                if active {
+                    Text(composer.manualTag ?? "")
+                        .font(.system(size: 12, weight: .semibold))
+                        .lineLimit(1)
+                        .padding(.horizontal, 9)
+                } else {
+                    Image(systemName: "number")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 30)
+                }
+            }
+            .frame(height: 30)
+            .foregroundStyle(active ? theme.typeTask : theme.fgMuted)
+            .background(Capsule().fill(active ? theme.typeTask.opacity(0.16) : theme.bg3))
+            .contentShape(Capsule())
+        }
+        .accessibilityLabel("Capture type: \(composer.manualTag ?? "Note")")
+    }
+
+    /// The registry's type names with a built-in fallback (Task/Project)
+    /// for a not-yet-synced registry, so the picker is never empty.
+    private func captureTypeNames() -> [String] {
+        let names = mosaic.propertyRegistry.typeNames()
+        return names.isEmpty ? PropertyRegistry.buildBuiltins().typeNames() : names
+    }
+
     /// Mic when draft is empty, send arrow when there's text. Mic
     /// toggles streaming voice capture; transcript appends into the
     /// draft so the user can review before submitting.
@@ -327,12 +375,14 @@ struct CaptureBar: View {
     private func submit() {
         let trimmed = composer.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        mosaic.capture(trimmed, target: resolvedTarget)
+        mosaic.capture(trimmed, target: resolvedTarget, tag: composer.manualTag)
         // Clear a child-block target after submit so the next capture
         // doesn't insert under the same (possibly stale) parent.
         if case .childOf = resolvedTarget {
             composer.manualTarget = nil
         }
+        // Reset the type so the next capture defaults to a plain note.
+        composer.manualTag = nil
         composer.draft = ""
         fieldFocused = false
         withAnimation(.snappy(duration: 0.28)) {
@@ -369,6 +419,15 @@ final class CaptureComposer: ObservableObject {
     /// resolve from settings + active tab + page context. Held here so
     /// the compact bar and the expanded panel always agree.
     @Published var manualTarget: CaptureTarget? = nil
+    /// Manually-chosen TYPE for the capture (from the type picker), e.g.
+    /// "Task". `nil` means a plain `.note` block with no tag and no NLP —
+    /// today's behavior. When set, the captured block is tagged `#<type>`
+    /// and run through `InlineNLP.detectLifts` at add-time, so "Test p1
+    /// tomorrow" with type=Task lands as text "Test" + Priority p1 +
+    /// Deadline tomorrow. Held here so the compact bar and the expanded
+    /// sheet agree; reset on submit so a type is a per-capture choice, not
+    /// a sticky mode.
+    @Published var manualTag: String? = nil
     /// Set by the compact bar's mic button just before expanding: the
     /// sheet opens straight into voice mode — start recording, and do
     /// NOT autofocus the text field (the keyboard rising mid-present
