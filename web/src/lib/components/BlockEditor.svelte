@@ -557,6 +557,7 @@
     blockId,
     blockProperties = {},
     bid,
+    noteSlug,
     onlorotext: onLoroText,
     onsetproperty: onSetProperty,
     onstartinsertconsumed: onStartInsertConsumed,
@@ -647,6 +648,13 @@
      *  yet in the doc — e.g. a brand-new local block) → the editor falls back to
      *  the existing `onchange` whole-text path. */
     bid?: string;
+    /** Presence — the filename-stem slug of the NOTE this editor's block lives
+     *  in (`note.id` in the parent). Threaded per-block so each day's editor in
+     *  the multi-day journal filters + publishes remote carets against ITS OWN
+     *  day's slug, not the single GLOBAL active doc (which only matches the
+     *  focused day → carets blacked out on every other day). Used for both the
+     *  `remoteCursorExtension` filter/render and the published presence frame. */
+    noteSlug?: string;
     /** C2.3 — called instead of `onchange` for a LOCAL text edit that was
      *  successfully spliced into the block's LoroText (so it went out over the
      *  WS, NOT the whole-text HTTP path). The parent updates its ParsedBlock
@@ -2089,7 +2097,10 @@
         if (presencePendingOffset === null) return;
         const off = presencePendingOffset;
         presencePendingOffset = null;
-        const slug = getActiveNoteDoc()?.slug;
+        // Publish THIS block's own note slug (threaded as a prop), not the
+        // single global active doc — so each day's editor in the multi-day
+        // journal advertises the day it actually belongs to.
+        const slug = noteSlug;
         if (!slug || !bid) return;
         sendBinary(
           encodePresence({ peer: localPeerId(), color: localColor(), name: localName(), slug, bid, offset: off }),
@@ -2165,8 +2176,13 @@
       ? Math.max(0, Math.min(initialText.length, initialCursorPos))
       : undefined;
     // Phase 2 presence: render peers' carets in this block (only when bound to a
-    // synced doc — needs both a note slug and this block's bid).
-    const presenceSlug = getActiveNoteDoc()?.slug ?? null;
+    // synced doc — needs both a note slug and this block's bid). The slug is the
+    // per-block `noteSlug` PROP (the day this editor belongs to), NOT the single
+    // global active doc — a non-focused day's editor must filter incoming frames
+    // against ITS OWN slug or it never matches → carets blacked out. `noteSlug`
+    // is stable for this editor's lifetime (the parent re-keys blocks by
+    // `block.id`, which re-mints on any note change), so baking it into the
+    // extension at create time is safe — no Compartment reconfigure needed.
     const state = EditorState.create({
       doc: initialText,
       selection: clampedCursor !== undefined ? { anchor: clampedCursor, head: clampedCursor } : undefined,
@@ -2183,7 +2199,7 @@
         theme,
         inputHandler,
         updateListener,
-        ...(bid && presenceSlug ? [remoteCursorExtension(presenceSlug, bid)] : []),
+        ...(bid && noteSlug ? [remoteCursorExtension(noteSlug, bid)] : []),
         focusBlurHandler,
         teselaDecorations,
         teselaAtomicCursorFilter,

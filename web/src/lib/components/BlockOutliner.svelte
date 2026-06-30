@@ -2228,6 +2228,7 @@
             blockId={block.id}
             blockProperties={block.properties}
             bid={block.bid ?? undefined}
+            noteSlug={noteId}
             onlorotext={(text) => handleLoroText(block.id, text)}
             onsetproperty={(p) => setBlockPropertyStructured(block.id, p.key, p.value)}
             ontagadded={(tagName) => autoFillTagDefaults(block.id, tagName)}

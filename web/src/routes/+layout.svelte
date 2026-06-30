@@ -22,7 +22,7 @@
   import { registerAppQueryClient } from "$lib/app-query-client.svelte";
   import { onMount } from "svelte";
   import { connect, setHandlers } from "$lib/ws-client.svelte";
-  import { applyPresenceFrame } from "$lib/remote-cursors";
+  import { applyPresenceFrame, localName } from "$lib/remote-cursors";
   import {
     setRefreshCallback,
     scheduleNoteRefresh,
@@ -60,6 +60,15 @@
 
   onMount(() => {
     connect();
+
+    // Presence: warm the device-name fetch at app start so it has resolved long
+    // before the first caret move triggers a presence flush. `localName()` kicks
+    // off an async same-origin `GET /info` on its first call and returns
+    // `undefined` until it lands; without warming, the FIRST published frame
+    // (and permanently, if the caret never moves again) carried `name:
+    // undefined` and the device flag never appeared on peers. Fire-and-forget —
+    // failures are tolerated (name stays undefined, same as before).
+    void localName();
 
     // The coordinator owns the *timing* of WS-driven refetches (coalescing a
     // burst into ONE pass) and own-echo suppression; this callback owns *which*
