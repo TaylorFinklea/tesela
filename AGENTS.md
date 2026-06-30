@@ -6,6 +6,26 @@ Project-specific guidance for any AI coding agent (Claude Code, Codex, Copilot, 
 
 Handoff state lives in `.docs/ai/`. Read `.docs/ai/roadmap.md` (Now/Next/Later) and `.docs/ai/current-state.md` at session start; update them at session end.
 
+## Task tracking — beads pilot (2026-06-30)
+
+**The forward backlog / "what to work on next" for this repo is piloted in [beads](https://github.com/steveyegge/beads) (`bd`), not the roadmap's Now/Next list.** Local-only stealth install — `.beads/` is git-excluded via `.git/info/exclude`; nothing is committed, so the pilot leaves no trace if dropped.
+
+Agent loop (harness-agnostic — `bd` is just a CLI):
+- `bd ready` — priority-sorted, dependency-aware queue of unblocked work (`--json` for scripting; `bd ready --claim --json` atomically claims the top item).
+- `bd show <id>` — full detail before starting.
+- `bd update <id> --claim` — set in_progress + assignee atomically (replaces any `[~]`/claim ceremony).
+- Run the repo's Verify (build/test) first, then `bd close <id> --reason "…"`.
+- `bd create "Title" -t task -p 2 -d "…"` — file work discovered mid-task; `bd dep add <new> <parent> -t discovered-from` records provenance.
+- `bd dep add <issue> <blocker>` — `<issue>` is blocked-by `<blocker>` (hidden from `bd ready` until the blocker closes).
+
+Layer split — beads owns ONLY the backlog/ready-queue. Do NOT migrate these into beads:
+- **Rationale / ADRs → `.docs/ai/decisions.md`** (prose, unchanged).
+- **Multi-session design → `.docs/ai/phases/*`** (prose, unchanged).
+- **Loop state → `.docs/ai/current-state.md`** (unchanged).
+- `roadmap.md` keeps the durable product-arc narrative; new *actionable* work goes into `bd`.
+
+`user-verify`-labeled issues = human device-test/ops gates, not agent dev work. This is a time-boxed evaluation (does `bd ready` beat scanning roadmap Now?) — see chezmoi-config `.docs/ai/phases/beads-pilot-spec.md`.
+
 ## After Any Work Session
 
 **Always produce a QA checklist.** After implementing any user-facing feature (web or TUI), output a step-by-step manual test plan covering:
