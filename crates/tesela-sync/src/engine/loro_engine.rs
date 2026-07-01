@@ -646,61 +646,39 @@ impl LoroEngine {
         // cause on EXISTING blocks is healed below.
         doc.import(bytes)
             .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
-        // A peer's snapshot can union same-bid twins minted on a disjoint
-        // history (see `dedup_twins_by_block_id`). Tombstone the strays now —
-        // before deriving the index/markdown from the tree — so the persisted
-        // doc carries exactly one node per bid and later block-diff saves
-        // can't update a ghost. Idempotent: a re-import finds nothing to drop.
-        // (No-op shape for the views doc — guarded for clarity/cheapness.)
-        if !Self::is_views_doc(&note_id) {
-            tombstone_duplicate_twins(&doc, note_id);
-        }
 
         // ── Disjoint-twin heal (the protection) ──────────────────────────
-        // Block text is now a nested LoroText, so SHARED-lineage blocks need no
-        // heal: the peer's frame carries only its own LoroText splices, which
-        // MERGE with the server's (neither reverts the server nor drops the
-        // peer's edit). Raw-import is final there — never override Loro's merge.
+        // A peer's snapshot can union same-bid twins minted on a disjoint
+        // history (see `dedup_twins_by_block_id`). Resolve them now — before
+        // deriving the index/markdown — so the persisted doc carries exactly one
+        // node per bid and later block-diff saves can't update a ghost.
         //
-        // What survives is the DISJOINT-twin case: the two twins hold two
-        // INDEPENDENT LoroTexts Loro can't merge, and the non-causal min-
-        // `TreeID` dedup picks one by peer (not recency) — so it can revert the
-        // server (keep the peer's stale twin) OR drop the peer's genuine edit
-        // (keep the server's twin). The discriminator already resolved the
-        // correct target per twin; force it onto the survivor via record_local
-        // (which routes through the LoroText write) whenever the post-import
-        // value differs from it. Idempotent: a re-applied frame finds the
-        // survivor already at the target → no heal.
-        if let Some(changes) = plan {
-            let post_texts = current_block_texts(&doc);
-            let mut heals: Vec<(String, String, u16)> = Vec::new();
-            for c in &changes {
-                let bid_hex = hex_id(&c.block_id);
-                if post_texts.get(&bid_hex).map(|s| s.as_str()) != Some(c.text.as_str()) {
-                    heals.push((bid_hex, c.text.clone(), c.indent));
-                }
+        // SHARED-lineage blocks need no heal: the peer's frame carries only its
+        // own LoroText splices, which MERGE with the server's — raw-import is
+        // final there. The DISJOINT-twin case is what survives: two twins hold
+        // two INDEPENDENT LoroTexts Loro can't merge. `plan` (the discriminator)
+        // chose a DETERMINISTIC winner NODE per twin bid — a pure function of the
+        // merged twin set, so every replica keeps the SAME surviving lineage with
+        // the SAME text and converges in ONE round. Keep those winners; the
+        // min-`TreeID` dedup then cleans up any twin the plan didn't cover (or the
+        // whole set when there is no plan — the fresh/bootstrap case, which can't
+        // have a local twin). We do NOT force-write text: the winner node already
+        // holds the resolved value, and two replicas each splicing it onto a
+        // min-`TreeID` survivor would DOUBLE it (concurrent identical splices).
+        // Idempotent: a re-import finds one node per bid and nothing to drop.
+        if !Self::is_views_doc(&note_id) {
+            if let Some(changes) = &plan {
+                tombstone_twins_to_winners(&doc, changes);
             }
-            // Drop the auth-doc handle's borrow expectations: record_local
-            // re-acquires the docs lock + re-fetches the doc. Apply heals.
-            for (bid_hex, text, indent) in heals {
-                let Some(block_id) = parse_note_id_from_hex(&bid_hex) else {
-                    continue;
-                };
-                self.record_local(OpPayload::BlockUpsert {
-                    block_id,
-                    note_id,
-                    parent_block_id: None,
-                    order_key: "00000000".to_string(),
-                    indent_level: indent,
-                    text,
-                    after_block_id: None,
-                })
-                .await?;
-            }
-            // Props half of the heal: re-assert each tombstoned twin's resolved
-            // props (captured from the fork before the tombstone) onto the
-            // survivor — one BlockPropertySet per key, idempotency-guarded.
-            self.reassert_prop_heals(note_id, &changes).await?;
+            tombstone_duplicate_twins(&doc, note_id);
+        }
+        // Props half of the heal: re-assert each tombstoned twin's resolved props
+        // (captured from the fork before the tombstone) onto the surviving winner
+        // — one BlockPropertySet per key, idempotency-guarded (list union / scalar
+        // LWW), so it converges across replicas. record_local re-acquires the
+        // docs lock + re-fetches the doc.
+        if let Some(changes) = &plan {
+            self.reassert_prop_heals(note_id, changes).await?;
         }
 
         self.refresh_note_derived(note_id, &doc).await;
@@ -714,26 +692,23 @@ impl LoroEngine {
         Ok(())
     }
 
-    /// Apply the server's FULL snapshot as an AUTHORITATIVE re-base — the
-    /// disjoint-device catch-up that `import_doc_update` can't do.
+    /// Apply the server's FULL snapshot as a catch-up re-base — the
+    /// disjoint-device recovery a live delta can't do (its ops reference a
+    /// lineage the device never imported, so they land PENDING).
     ///
     /// A device that authored a note WITHOUT first importing the server's
     /// snapshot is on a DISJOINT Loro lineage: it minted its own `TreeID` for
     /// each block_id. Raw-importing the server snapshot UNIONS the lineages into
-    /// same-bid twins, but [`tombstone_duplicate_twins`]'s min-`TreeID` dedup
-    /// resolves the survivor by peer id, NOT by authority — so the device often
-    /// KEEPS its own twin and stays on its disjoint lineage, never re-basing
-    /// (its edits then keep clobbering the server's).
-    ///
-    /// This path re-bases SERVER-WINS instead: it identifies the device's
-    /// pre-existing nodes BEFORE importing, then for each twin KEEPS the node
-    /// that arrived FROM the snapshot (the server's lineage) and TOMBSTONES the
-    /// device's stale node. After this the device's surviving node for each
-    /// shared block_id is the server's — a shared lineage — so later concurrent
-    /// edits MERGE through the block's `LoroText` instead of forking new twins.
+    /// same-bid twins. This path resolves them with the EXACT SAME deterministic
+    /// keep-winner rule as [`import_doc_update`] (max-`TreeID` among non-stale
+    /// tips) — see [`peer_genuine_block_changes`] — so the catch-up path and the
+    /// WS path always pick the IDENTICAL survivor and can never cross-tombstone a
+    /// block out of existence. After the collapse the device shares ONE lineage
+    /// per block_id, so later concurrent edits MERGE through the block's
+    /// `LoroText` instead of forking new twins.
     ///
     /// Block_ids the device has but the snapshot does NOT are KEPT untouched —
-    /// those are the device's genuine unsynced new blocks.
+    /// those are the device's genuine unsynced new blocks (they aren't twins).
     ///
     /// Otherwise mirrors [`import_doc_update`]'s tail: refresh derived
     /// projections, persist the snapshot, materialize the note to disk.
@@ -744,28 +719,46 @@ impl LoroEngine {
     ) -> SyncResult<()> {
         let doc = self.doc_for_note_mut(note_id).await;
 
-        // Snapshot the device's pre-existing live nodes BEFORE importing, so we
-        // can later tell a snapshot-origin node (server lineage) from a device
-        // node (these). A `TreeID` not in this set after the import arrived from
-        // the snapshot.
-        let pre_nodes: std::collections::HashSet<TreeID> = {
-            let tree = doc.get_tree("blocks");
-            tree.children(TreeParentId::Root)
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
-                .collect()
+        // Poison guard (parity with the WS paths): the discriminator below forks
+        // + imports the frame, which loro 1.12 can panic on for certain frames.
+        if let Err(reason) = probe_import_poison(&doc, bytes) {
+            tracing::error!(
+                "tesela-sync/loro: SKIPPING authoritative snapshot for {} — {reason}",
+                hex_id(&note_id)
+            );
+            return Err(SyncError::Storage(format!(
+                "authoritative snapshot skipped for {}: {reason}",
+                hex_id(&note_id)
+            )));
+        }
+
+        // Resolve disjoint twins with the SAME deterministic keep-winner rule as
+        // `import_doc_update` (max-`TreeID` among non-stale tips). This UNIFIES
+        // the catch-up path with the WS path: a device catching up here and a
+        // peer resolving the SAME twin via the WS path now pick the IDENTICAL
+        // survivor. Formerly this kept the snapshot-origin (server-lineage) node
+        // — a DIFFERENT axis than the WS path's — so when the server's peer
+        // outranked the device's, the two paths tombstoned DIFFERENT survivors
+        // and the block was LOST entirely (tesela-y11, adversarial repro #2).
+        let plan = if !Self::is_views_doc(&note_id) {
+            peer_genuine_block_changes(&doc, bytes).ok()
+        } else {
+            None
         };
 
         // Raw-import the server snapshot. This unions the disjoint lineages into
-        // same-bid twins; the re-base below resolves each toward the server's.
+        // same-bid twins; the keep-winner resolve below collapses each.
         doc.import(bytes)
             .map_err(|e| SyncError::Storage(format!("loro import: {e}")))?;
 
-        // The views registry doc has no "blocks" tree (its map registers
-        // merge natively), so there are no twins to re-base.
         if !Self::is_views_doc(&note_id) {
-            rebase_twins_onto_snapshot(&doc, &pre_nodes);
+            if let Some(changes) = &plan {
+                tombstone_twins_to_winners(&doc, changes);
+            }
+            tombstone_duplicate_twins(&doc, note_id);
+        }
+        if let Some(changes) = &plan {
+            self.reassert_prop_heals(note_id, changes).await?;
         }
 
         self.refresh_note_derived(note_id, &doc).await;
@@ -844,37 +837,20 @@ impl LoroEngine {
             .map(|p| !p.is_empty())
             .unwrap_or(false);
 
+        // Disjoint-twin heal — see `import_doc_update` for the full rationale:
+        // keep the discriminator's DETERMINISTIC winner NODE per twin bid (so all
+        // replicas converge on ONE lineage/text in ONE round with no doubling
+        // force-write), then min-`TreeID`-dedup any leftover twins.
         if !Self::is_views_doc(&note_id) {
+            if let Some(changes) = &plan {
+                tombstone_twins_to_winners(&doc, changes);
+            }
             tombstone_duplicate_twins(&doc, note_id);
         }
-
-        if let Some(changes) = plan {
-            let post_texts = current_block_texts(&doc);
-            let mut heals: Vec<(String, String, u16)> = Vec::new();
-            for c in &changes {
-                let bid_hex = hex_id(&c.block_id);
-                if post_texts.get(&bid_hex).map(|s| s.as_str()) != Some(c.text.as_str()) {
-                    heals.push((bid_hex, c.text.clone(), c.indent));
-                }
-            }
-            for (bid_hex, text, indent) in heals {
-                let Some(block_id) = parse_note_id_from_hex(&bid_hex) else {
-                    continue;
-                };
-                self.record_local(OpPayload::BlockUpsert {
-                    block_id,
-                    note_id,
-                    parent_block_id: None,
-                    order_key: "00000000".to_string(),
-                    indent_level: indent,
-                    text,
-                    after_block_id: None,
-                })
-                .await?;
-            }
-            // Props half of the heal: re-assert each tombstoned twin's resolved
-            // props onto the survivor (per-key, idempotency-guarded).
-            self.reassert_prop_heals(note_id, &changes).await?;
+        // Props half of the heal: re-assert each tombstoned twin's resolved props
+        // onto the surviving winner (per-key, idempotency-guarded).
+        if let Some(changes) = &plan {
+            self.reassert_prop_heals(note_id, changes).await?;
         }
 
         self.refresh_note_derived(note_id, &doc).await;
@@ -3467,25 +3443,20 @@ fn tombstone_duplicate_twins(doc: &LoroDoc, _note_id: [u8; 16]) -> bool {
     deleted_any
 }
 
-/// Re-base same-bid twins onto the SERVER's lineage after an authoritative
-/// snapshot import (the disjoint-device catch-up). Unlike
-/// [`tombstone_duplicate_twins`], which resolves a twin by min-`TreeID` (peer
-/// id, NOT authority), this KEEPS the twin that arrived FROM the snapshot — a
-/// `TreeID` NOT in `pre_nodes`, the device's pre-import node set — and
-/// TOMBSTONES the device's stale node, so the device truly re-bases onto the
-/// server's lineage instead of clinging to its own.
-///
-/// Per twin block_id:
-/// - keep the snapshot-origin node (min-`TreeID` among the nodes absent from
-///   `pre_nodes`, if more than one arrived);
-/// - if a twin bid has ONLY pre-existing nodes (the snapshot didn't include it,
-///   so there's nothing to re-base onto), fall back to keeping the min-`TreeID`
-///   among them (matching the dedup's deterministic survivor).
-///
-/// Block_ids with a single live node are untouched (no twin); block_ids only
-/// the device has (no snapshot-origin node and no twin) are likewise untouched —
-/// the device's genuine unsynced new blocks. Commits if anything was deleted.
-fn rebase_twins_onto_snapshot(doc: &LoroDoc, pre_nodes: &std::collections::HashSet<TreeID>) {
+/// Tombstone every disjoint-twin node EXCEPT the deterministic winner the
+/// discriminator chose, per planned block_id. Unlike [`tombstone_duplicate_twins`]
+/// (which keeps the min-`TreeID` survivor) this keeps the SPECIFIC winner node,
+/// so every replica converges on the SAME surviving lineage + text with no text
+/// force-write. Commits if anything was deleted. Block_ids with no winner entry
+/// are left untouched for the min-`TreeID` dedup to clean up.
+fn tombstone_twins_to_winners(doc: &LoroDoc, changes: &[PeerBlockChange]) {
+    if changes.is_empty() {
+        return;
+    }
+    let winners: HashMap<String, TreeID> = changes
+        .iter()
+        .map(|c| (hex_id(&c.block_id), c.winner))
+        .collect();
     let tree = doc.get_tree("blocks");
     let live: Vec<TreeID> = tree
         .children(TreeParentId::Root)
@@ -3493,36 +3464,13 @@ fn rebase_twins_onto_snapshot(doc: &LoroDoc, pre_nodes: &std::collections::HashS
         .into_iter()
         .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
         .collect();
-
-    // Group live nodes by block_id.
-    let mut by_bid: HashMap<String, Vec<TreeID>> = HashMap::new();
-    for node in &live {
-        if let Some(hex) = read_meta_str(&tree, *node, "block_id") {
-            by_bid.entry(hex).or_default().push(*node);
-        }
-    }
-
     let mut deleted_any = false;
-    for (_bid, nodes) in by_bid {
-        if nodes.len() < 2 {
-            continue; // not a twin → nothing to re-base.
-        }
-        // Snapshot-origin nodes = those NOT present pre-import.
-        let snapshot_origin: Vec<TreeID> = nodes
-            .iter()
-            .copied()
-            .filter(|n| !pre_nodes.contains(n))
-            .collect();
-        let keep = if let Some(min) = snapshot_origin.iter().min().copied() {
-            // Re-base onto the server's lineage: keep the snapshot-origin node.
-            min
-        } else {
-            // No snapshot-origin node (snapshot didn't carry this bid): fall
-            // back to the deterministic min-`TreeID` survivor.
-            nodes.iter().min().copied().expect("len >= 2")
+    for node in live {
+        let Some(bid) = read_meta_str(&tree, node, "block_id") else {
+            continue;
         };
-        for node in nodes {
-            if node != keep && tree.delete(node).is_ok() {
+        if let Some(&winner) = winners.get(&bid) {
+            if node != winner && tree.delete(node).is_ok() {
                 deleted_any = true;
             }
         }
@@ -3532,29 +3480,30 @@ fn rebase_twins_onto_snapshot(doc: &LoroDoc, pre_nodes: &std::collections::HashS
     }
 }
 
-/// A DISJOINT-twin block whose surviving node the import heal must force to a
-/// resolved `text`, because the non-causal min-`TreeID` dedup can otherwise
-/// keep the wrong twin. `text` is the RESOLVED correct value:
+/// The resolution for a DISJOINT-twin block_id (>1 live node): which twin NODE
+/// survives, plus the union of every twin's props to re-assert onto it.
 ///
-/// - the peer's GENUINE edit (a value the server never authored), when the
-///   peer's twin holds a real new edit the dedup might discard; or
-/// - the server's CURRENT (pre-import) value, when the peer's twin is a STALE
-///   re-assertion (a value the server already moved past) that the dedup might
-///   pick — restoring the server's edit the import reverted.
+/// `winner` is the DETERMINISTIC surviving `TreeID` — a pure function of the
+/// merged twin set (max-`TreeID` among non-stale tips), so EVERY replica keeps
+/// the SAME node and thus the SAME text with NO force-write. (Two replicas each
+/// force-writing the winner's text onto a min-`TreeID` survivor would DOUBLE it
+/// via concurrent identical splices — the round-2 `betaBbetaB` bug.) The apply
+/// tombstones the losers and keeps `winner`. MAX not MIN so a device's blind
+/// low-peer twin can't revert a peer's edit — the original lossy-dedup failure.
 ///
 /// Only DISJOINT twins (>1 live node for the block_id) are emitted. A
 /// SHARED-register block (single node) defers entirely to Loro's own LoroText
-/// merge and is never force-healed.
+/// merge and is never healed.
 struct PeerBlockChange {
     block_id: [u8; 16],
-    text: String,
-    indent: u16,
+    /// The deterministic surviving twin node (see above).
+    winner: TreeID,
     /// The RESOLVED typed property set the surviving node must carry — the
     /// per-key union across every disjoint twin read in the fork BEFORE the
-    /// tombstone drops the loser (mirror of the `text` capture). Re-asserted
-    /// onto the survivor as one `BlockPropertySet` per key (lists via
-    /// `AddToList` = union; scalars/text idempotency-guarded), so a tombstoned
-    /// twin's props are never lost. See [`reconcile_orphaned_prop_containers`].
+    /// tombstone drops the losers. Re-asserted onto the survivor as one
+    /// `BlockPropertySet` per key (lists via `AddToList` = union; scalars/text
+    /// idempotency-guarded), so a tombstoned twin's props are never lost. See
+    /// [`reconcile_orphaned_prop_containers`].
     props: Vec<(String, ResolvedValue)>,
 }
 
@@ -3582,29 +3531,39 @@ enum ResolvedValue {
 /// and snapshot every block's text after each step, accumulating the distinct
 /// values seen. Bounded by the server's op count for this one note, on the
 /// WS-apply path that already forks + diffs.
-fn server_block_text_history(auth: &LoroDoc) -> HashMap<String, std::collections::HashSet<String>> {
-    let mut history: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
-    let server_vv = auth.oplog_vv();
+/// Per-tree-NODE text history across a doc's whole oplog: every value each live
+/// `blocks` node's `text_seq` held over time, keyed by the node's `TreeID`.
+///
+/// Replays the oplog one (peer, counter) step at a time (so each intermediate
+/// LoroText state is observed) and records EACH live node's current text — the
+/// per-node granularity the disjoint-twin resolver needs to tell a genuine edit
+/// from a re-shipped value another lineage already superseded. Node `TreeID`s
+/// are global (peer + counter), so a step-replayed scratch doc carries the SAME
+/// ids as the source. Only runs on the rare disjoint-twin heal.
+fn fork_node_text_histories(doc: &LoroDoc) -> HashMap<TreeID, std::collections::HashSet<String>> {
+    let mut history: HashMap<TreeID, std::collections::HashSet<String>> = HashMap::new();
+    let vv = doc.oplog_vv();
     let scratch = LoroDoc::new();
-    // Walk every (peer, counter) the server holds, importing one op-step at a
-    // time so each intermediate LoroText state (seed, then edit) is observed.
     // Collect the spans first so the order is per-peer ascending by counter.
-    let mut spans: Vec<(u64, i32)> = server_vv
-        .iter()
-        .map(|(peer, counter)| (*peer, *counter))
-        .collect();
+    let mut spans: Vec<(u64, i32)> = vv.iter().map(|(peer, counter)| (*peer, *counter)).collect();
     spans.sort();
     for (peer, end_counter) in spans {
         for c in 0..end_counter {
             let span = loro::IdSpan::new(peer, c, c + 1);
-            let Ok(bytes) = auth.export(ExportMode::updates_in_range(&[span][..])) else {
+            let Ok(bytes) = doc.export(ExportMode::updates_in_range(&[span][..])) else {
                 continue;
             };
             if scratch.import(&bytes).is_err() {
                 continue;
             }
-            for (bid, text) in current_block_texts(&scratch) {
-                history.entry(bid).or_default().insert(text);
+            let tree = scratch.get_tree("blocks");
+            for node in tree.children(TreeParentId::Root).unwrap_or_default() {
+                if matches!(tree.is_node_deleted(&node), Ok(true)) {
+                    continue;
+                }
+                if let Some(text) = read_block_text(&tree, node) {
+                    history.entry(node).or_default().insert(text);
+                }
             }
         }
     }
@@ -3712,15 +3671,17 @@ fn reconcile_orphaned_prop_containers(doc: &LoroDoc, owner: &str) -> Vec<(String
 ///    causally new → idempotent no-op.
 /// 2. `twin_bids` = block_ids with >1 live node in the fork (disjoint twins).
 ///    None → nothing to heal.
-/// 3. Per twin block_id, read its live twin nodes' texts (LoroText container,
-///    fallback legacy register) and resolve the target against the server's
-///    CURRENT value + its text HISTORY ([`server_block_text_history`]):
-///    - a twin value that differs from the server's current AND is NOT in the
-///      server's history → GENUINE peer edit the dedup might drop → target =
-///      that peer value;
-///    - otherwise (the peer re-asserted a value the server already authored and
-///      moved past, or didn't diverge) → STALE → target = the server's current
-///      value (restoring it if the dedup reverted the server to a stale twin).
+/// 3. Per twin block_id, read its live twin nodes' (`TreeID`, text) from the
+///    fork and resolve ONE DETERMINISTIC target — a pure function of the merged
+///    twin set, identical on every replica, so a symmetric disjoint conflict
+///    converges in ONE round (no transient split-brain, unlike the old
+///    "adopt the incoming genuine value" rule which was relative to self):
+///    - a tip whose text a DIFFERENT twin's lineage authored-then-superseded
+///      (present in that node's per-node history, [`fork_node_text_histories`])
+///      is STALE and excluded — the re-shipped-old-value guard, made symmetric;
+///    - among the non-stale tips the winner is the MAX-`TreeID` node's text
+///      (a deterministic total order; MAX not MIN so a device's blind low-peer
+///      twin can't revert a peer's edit), preferring a non-empty value.
 ///
 /// Conservative + idempotent: the heal forces the target only when the post-
 /// import survivor differs from it, so a re-applied frame is a no-op.
@@ -3788,15 +3749,15 @@ fn peer_genuine_block_changes(auth: &LoroDoc, frame: &[u8]) -> SyncResult<Vec<Pe
         return Ok(Vec::new());
     }
 
-    // Server's CURRENT value per block_id (the live tree, pre-import) — the
-    // keep value — and its full text HISTORY, so a stale re-assertion of an old
-    // server value keeps the server's edit instead of healing to the stale one.
-    let server_current = current_block_texts(auth);
-    let server_history = server_block_text_history(auth);
+    // Per-node text history across the MERGED fork (both lineages), so a twin
+    // whose tip is a value ANOTHER lineage authored-then-superseded (the
+    // re-shipped-stale-value incident) can be excluded — symmetric on every
+    // replica, unlike the old auth-relative history check.
+    let node_histories = fork_node_text_histories(&fork);
 
-    // Collect each disjoint twin's candidate texts from the fork's twin nodes
-    // (read via the LoroText container — no JsonOp scan; text is no longer an
-    // LWW map register), keyed by block_id, with the node's indent.
+    // Collect each disjoint twin's candidate (TreeID, text, indent) from the
+    // fork's twin nodes (read via the LoroText container — no JsonOp scan; text
+    // is no longer an LWW map register), keyed by block_id.
     let fork_tree = fork.get_tree("blocks");
     let live: Vec<TreeID> = fork_tree
         .children(TreeParentId::Root)
@@ -3804,7 +3765,7 @@ fn peer_genuine_block_changes(auth: &LoroDoc, frame: &[u8]) -> SyncResult<Vec<Pe
         .into_iter()
         .filter(|n| !matches!(fork_tree.is_node_deleted(n), Ok(true)))
         .collect();
-    let mut twin_texts: HashMap<String, Vec<(String, u16)>> = HashMap::new();
+    let mut twin_texts: HashMap<String, Vec<(TreeID, String)>> = HashMap::new();
     for node in live {
         let Some(bid_hex) = read_meta_str(&fork_tree, node, "block_id") else {
             continue;
@@ -3813,48 +3774,59 @@ fn peer_genuine_block_changes(auth: &LoroDoc, frame: &[u8]) -> SyncResult<Vec<Pe
             continue; // shared-register block → Loro already merged it.
         }
         let text = read_block_text(&fork_tree, node).unwrap_or_default();
-        let indent = read_indent_level(&fork_tree, node).unwrap_or(0);
-        twin_texts.entry(bid_hex).or_default().push((text, indent));
+        twin_texts.entry(bid_hex).or_default().push((node, text));
     }
 
-    // Resolve a single target per twin block_id.
+    // Resolve ONE DETERMINISTIC target per twin block_id — a pure function of
+    // the merged twin set, IDENTICAL on every replica, so a symmetric disjoint
+    // conflict converges in ONE sync round. (The old rule adopted "the genuine
+    // incoming value", which is relative to self: two peers each adopted the
+    // OTHER's value → a transient split-brain that only settled a round later
+    // via the shared-lineage LoroText merge. tesela-y11.)
     let mut out: Vec<PeerBlockChange> = Vec::new();
     for (bid_hex, candidates) in twin_texts {
         let Some(bid) = parse_note_id_from_hex(&bid_hex) else {
             continue;
         };
-        let server_text = server_current.get(&bid_hex).map(|s| s.as_str());
-        // A GENUINE peer edit = a twin value that differs from the server's
-        // current value AND was never a value the server itself authored.
-        let genuine = candidates.iter().find(|(t, _)| {
-            server_text != Some(t.as_str())
-                && !server_history.get(&bid_hex).is_some_and(|h| h.contains(t))
-        });
-        let (text, indent) = match genuine {
-            // The peer's genuine edit the dedup might drop → force the peer value.
-            Some((t, ind)) => (t.clone(), *ind),
-            // Stale re-assertion or no peer divergence → keep the server's value
-            // (restores it if the dedup reverted the server to a stale twin).
-            None => {
-                let keep = server_current.get(&bid_hex).cloned().unwrap_or_default();
-                let ind = candidates
-                    .iter()
-                    .find(|(t, _)| Some(t.as_str()) == server_text)
-                    .or_else(|| candidates.first())
-                    .map(|(_, i)| *i)
-                    .unwrap_or(0);
-                (keep, ind)
-            }
+        // A tip is STALE iff its text was authored by a DIFFERENT twin's lineage
+        // (present in another twin node's per-node history) — the device
+        // re-shipping a value the peer already moved past. Excluding stale tips
+        // restores the no-data-loss guard the auth-relative history check gave,
+        // but symmetric across replicas.
+        let is_stale = |i: usize| -> bool {
+            let (node, text) = &candidates[i];
+            candidates.iter().any(|(other, _)| {
+                other != node
+                    && node_histories
+                        .get(other)
+                        .is_some_and(|h| h.contains(text))
+            })
+        };
+        // Winner = the twin on the MAX `TreeID` (deterministic total order,
+        // recency-correlated; MAX not MIN so a device's blind low-peer twin
+        // can't revert a peer's edit — the original lossy-dedup failure),
+        // preferring a non-empty text. Among only-stale tips (pathological
+        // history cycle) fall back to the max-`TreeID` of ALL candidates.
+        let rank = |i: usize| -> (bool, TreeID) {
+            let (node, text) = &candidates[i];
+            (!text.is_empty(), *node)
+        };
+        let winner_idx = (0..candidates.len())
+            .filter(|&i| !is_stale(i))
+            .max_by_key(|&i| rank(i))
+            .or_else(|| (0..candidates.len()).max_by_key(|&i| candidates[i].0));
+        let winner = match winner_idx {
+            Some(i) => candidates[i].0,
+            None => continue,
         };
         // Reconcile EVERY twin's props (across BOTH lineages — the fork holds
         // the server's twins AND the peer's) BEFORE the tombstone runs. The
-        // apply re-asserts each resolved key onto the survivor, so a tombstoned
-        // twin's props are never lost.
+        // apply re-asserts each resolved key onto the surviving winner, so a
+        // tombstoned twin's props are never lost.
         let props = reconcile_orphaned_prop_containers(&fork, &bid_hex);
         out.push(PeerBlockChange {
             block_id: bid,
-            text,
-            indent,
+            winner,
             props,
         });
     }
@@ -3880,27 +3852,6 @@ fn duplicate_block_ids(doc: &LoroDoc) -> std::collections::HashSet<String> {
         .filter(|(_, n)| *n > 1)
         .map(|(b, _)| b)
         .collect()
-}
-
-/// Map each live block_id (hex) in a doc's `blocks` tree to its current text,
-/// applying the same twin dedup the renderer uses so a corrupted-on-disk doc
-/// still reports one value per block.
-fn current_block_texts(doc: &LoroDoc) -> HashMap<String, String> {
-    let tree = doc.get_tree("blocks");
-    let live: Vec<TreeID> = tree
-        .children(TreeParentId::Root)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
-        .collect();
-    let mut out = HashMap::new();
-    for node in dedup_twins_by_block_id(&tree, live) {
-        if let Some(bid) = read_meta_str(&tree, node, "block_id") {
-            let text = read_block_text(&tree, node).unwrap_or_default();
-            out.insert(bid, text);
-        }
-    }
-    out
 }
 
 #[async_trait]
@@ -8451,8 +8402,17 @@ mod tests {
     // two disjoint `text_seq` lineages UNION into one garbled block and/or
     // leave disjoint same-bid twins (divergence). This asserts the failure
     // reproduces, so the fix below is proven against a real garble.
+    // FORMERLY `daily_disjoint_author_then_relay_import_garbles`, which asserted
+    // the BUG reproduced (union / twin divergence / data loss). tesela-y11's
+    // deterministic disjoint-twin resolution now converges this case CLEANLY on
+    // the relay apply path WITHOUT needing bootstrap-before-author: the twins are
+    // deduped to ONE node whose text is the deterministic winner (max-`TreeID`
+    // among non-stale tips), never a `Both`+`nice one` concatenation and never a
+    // persistent twin. (One genuine value wins a same-block conflict — inherent
+    // to single-line text; the char-MERGE where both survive is the shared-base
+    // path in the next test.)
     #[tokio::test]
-    async fn daily_disjoint_author_then_relay_import_garbles() {
+    async fn daily_disjoint_author_then_relay_import_converges_no_garble() {
         let note = blake3_note_id("2026-06-29");
         let bid = content_bid("c35861c0-daily-block");
 
@@ -8470,26 +8430,20 @@ mod tests {
         upsert_block(&b, note, bid, "nice one", None).await;
 
         // B imports A's authoritative ops via the relay apply path. No shared
-        // base → disjoint-lineage merge.
+        // base → disjoint-lineage merge, now resolved deterministically.
         let _ = b.apply_relay_updates(&[(note, auth)]).await;
 
         let tb = block_text(&b, note, bid).await.unwrap_or_default();
         let twins = block_twin_count(&b, note, bid).await;
 
-        // The bug reproduces as one of: the two disjoint runs UNION into one
-        // garbled block (`Both`+`nice one`); disjoint same-bid TWINS persist
-        // (divergence); or B's disjoint-authored contribution is silently
-        // CLOBBERED/lost on import (lossy twin resolution) — the
-        // data-loss-divergence form this scenario actually takes. The CORRECT
-        // behavior (achieved by bootstrap-before-author, next test) is a clean
-        // char-merge where BOTH contributions survive coherently.
-        let unioned = tb.contains("Both") && tb.contains("nice one");
-        let diverged = twins > 1;
-        let lost_local = !tb.contains("nice one"); // B's authored content dropped
         assert!(
-            unioned || diverged || lost_local,
-            "expected disjoint-authoring union / twin divergence / data loss to \
-             reproduce: text={tb:?} twins={twins}"
+            !(tb.contains("Both") && tb.contains("nice one")),
+            "disjoint merge must NOT union/garble the two runs: {tb:?}"
+        );
+        assert_eq!(twins, 1, "disjoint merge must dedup to ONE live node: twins={twins}");
+        assert!(
+            tb == "Both" || tb == "nice one",
+            "must keep ONE coherent genuine value (no garble, no empty): {tb:?}"
         );
     }
 
