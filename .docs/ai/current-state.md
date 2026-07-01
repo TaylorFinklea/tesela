@@ -21,7 +21,6 @@ Verified LIVE by Taylor across iPhone/iPad/desktop ("Holy crap it works"). Full 
 - **Desktop server binds a RANDOM 127.0.0.1 port** (`TESELA_SERVER_BIND=127.0.0.1:0`), NOT 7474. install-desktop.sh probes the real port via lsof. Check live: `lsof -nP -p $(pgrep -f Tesela.app/Contents/MacOS/tesela-desktop|head -1)|grep LISTEN`.
 - **iOS:** `scripts/ios-testflight.sh` rebuilds the Rust FFI for iOS + xcodegen + archive + auto-bumps `CFBundleVersion` in project.yml + uploads. SourceKit shows phantom cross-file / `No such module UIKit|XCTest` / `Cannot find type` errors — **trust `xcodebuild`, not the editor** (memory: project_ios_sourcekit_false_positives).
 - **Dead branch `wip/concurrent-convergence-shared-base`** = the abandoned deterministic-seed approach (bootstrap-before-author / "Option A" won). Deletable.
-- **Pre-existing git stash `task-tag-wip` (`stash@{0}`) — DON'T blind-pop or drop.** Holds 34 files of unrelated WIP (+766/-4397): web v4/v5 chrome DELETIONS, iOS feed-pagination + task-toggle persistence, Rust importer work. Not from the mp0 session; tree was clean at its start. Recover or drop deliberately. (decisions.md 2026-06-30.)
 
 ## Shipped specs (historical — work done)
 - `phases/2026-06-29-concurrent-convergence-spec.md` (convergence — shipped as Option A bootstrap-before-author).
