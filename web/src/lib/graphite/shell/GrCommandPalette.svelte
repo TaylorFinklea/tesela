@@ -66,12 +66,24 @@
 
   const allCommands = $derived(commandRegistry.availableOn('palette', ctx));
 
+  // Raised 500→PALETTE_NOTES_LIMIT (tesela-sclr.1): a 500 cap silently made
+  // notes past #500 unfindable in the palette with no signal anywhere. The
+  // server now also returns the true total via X-Total-Count, so if this
+  // cap is ever hit the foot bar below shows "Showing N of M notes" instead
+  // of quietly hiding the rest.
+  const PALETTE_NOTES_LIMIT = 5000;
+  // Distinct query key from the plain `["notes", {limit}]` cache other
+  // surfaces share: those cache a bare `Note[]`, but `listNotesWithTotal`
+  // resolves to `{ data, total }` — sharing a key would let this query
+  // silently serve the other shape's cached value instead of its own.
   const notesQuery = createQuery(() => ({
-    queryKey: ['notes', { limit: 500 }] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryKey: ['notes-with-total', { limit: PALETTE_NOTES_LIMIT }] as const,
+    queryFn: () => api.listNotesWithTotal({ limit: PALETTE_NOTES_LIMIT }),
     enabled: open,
   }));
-  const allNotes = $derived((notesQuery.data ?? []) as Note[]);
+  const allNotes = $derived((notesQuery.data?.data ?? []) as Note[]);
+  const notesTotal = $derived(notesQuery.data?.total ?? allNotes.length);
+  const notesTruncated = $derived(notesTotal > allNotes.length);
 
   // Flat, score-ranked row list — mirrors Station.filteredRows.
   const filteredRows = $derived.by<PaletteRow[]>(() => {
@@ -337,6 +349,9 @@
         <span><kbd>↑↓</kbd> navigate</span>
         <span><kbd>↵</kbd> run</span>
         <span><kbd>esc</kbd> close</span>
+        {#if notesTruncated}
+          <span class="gr-cmdk-trunc">Showing {allNotes.length} of {notesTotal} notes</span>
+        {/if}
       </div>
     </div>
   </div>
@@ -457,5 +472,8 @@
   }
   .gr-cmdk-foot kbd {
     color: var(--fg2);
+  }
+  .gr-cmdk-trunc {
+    margin-left: auto;
   }
 </style>

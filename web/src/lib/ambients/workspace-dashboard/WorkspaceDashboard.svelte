@@ -9,9 +9,12 @@
 
   let { onNavigate }: AmbientRendererProps = $props();
 
+  // Raised 500→5000 (tesela-sclr.1): shares the ["notes", {limit}] cache key
+  // with the other "all notes" surfaces; a 500 cap silently dropped notes
+  // past #500 from those.
   const allQ = createQuery(() => ({
-    queryKey: ["notes", { limit: 500 }] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
   }));
   const all = $derived((allQ.data ?? []) as Note[]);
   const recent = $derived(all.slice(0, 12));

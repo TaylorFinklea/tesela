@@ -23,9 +23,11 @@
   // For conflict detection, fetch all notes to see what other property
   // pages have claimed. Reused query key so we share cache with other
   // surfaces (BottomDrawer, BlockEditor, etc.).
+  // Raised 500→5000 (tesela-sclr.1): 500 silently missed conflicting claims
+  // from notes past #500.
   const allNotesQuery = createQuery(() => ({
-    queryKey: ["notes", { limit: 500 }] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
   }));
   const allNotes = $derived((allNotesQuery.data ?? []) as Note[]);
   const propertyRegistry = $derived(buildRegistry(allNotes));

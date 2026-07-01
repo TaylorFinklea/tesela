@@ -37,9 +37,11 @@
   // Pulls the full notes list and filters to `type: tag` pages. Same
   // contract as the `#` autocomplete in BlockEditor; kept independent so
   // this chip strip can mount without the cm-editor.
+  // Raised 500→5000 (tesela-sclr.1): a 500 cap silently hid `type: tag`
+  // pages created after the 500th note from tag autocomplete.
   const notesQuery = createQuery(() => ({
-    queryKey: ["notes", { limit: 500 }] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
   }));
   const allNotes = $derived((notesQuery.data ?? []) as Note[]);
   const tagPages = $derived(

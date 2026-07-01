@@ -31,9 +31,11 @@
   // Phase 11 — property registry powers card chip rendering. Reuses the
   // same buildRegistry that BlockOutliner uses inline so cards inherit any
   // chip_icon / chip_value_format config from the Property pages.
+  // Raised 500→5000 (tesela-sclr.1): a 500 cap silently dropped notes past
+  // #500 from the property registry, so their chip config never applied.
   const allNotesQuery = createQuery(() => ({
-    queryKey: ["notes", { limit: 500 }] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
   }));
   const propertyRegistry = $derived(buildRegistry((allNotesQuery.data ?? []) as Note[]));
 

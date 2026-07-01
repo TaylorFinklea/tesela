@@ -23,10 +23,12 @@
 
   const tagName = $derived(reference.value);
 
-  /** Page-level instances: notes with this tag in their frontmatter. */
+  /** Page-level instances: notes with this tag in their frontmatter.
+   *  Raised 500→5000 (tesela-sclr.1): a heavily-used tag can exceed 500
+   *  instances, silently truncating this list past that point. */
   const pagesQuery = createQuery(() => ({
-    queryKey: ["notes", { tag: tagName, limit: 500 }] as const,
-    queryFn: () => api.listNotes({ tag: tagName, limit: 500 }),
+    queryKey: ["notes", { tag: tagName, limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ tag: tagName, limit: 5000 }),
     enabled: !!tagName,
   }));
 

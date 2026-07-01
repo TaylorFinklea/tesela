@@ -116,10 +116,13 @@
     paneId?: string;
   } = $props();
 
-  // Fetch notes list for autocomplete + tag-property visibility resolution
+  // Fetch notes list for autocomplete + tag-property visibility resolution.
+  // Raised 200→5000 (tesela-sclr.1): 200 silently hid notes past #200 from
+  // `#`/`[[` autocomplete; also matches the other "all notes" surfaces'
+  // query key (["notes", {limit:5000}]) so they share one cached fetch.
   const notesForAutocomplete = createQuery(() => ({
-    queryKey: ["notes", { limit: 200 }] as const,
-    queryFn: () => api.listNotes({ limit: 200 }),
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
   }));
   const allNotes = $derived((notesForAutocomplete.data ?? []) as Note[]);
   const notesList = $derived(

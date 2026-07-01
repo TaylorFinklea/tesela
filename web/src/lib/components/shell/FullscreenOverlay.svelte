@@ -42,9 +42,11 @@
 
   // Notes + edges for the graph kind. Same query keys as PaneShell so
   // they share cache + WS invalidation.
+  // Raised 500→5000 (tesela-sclr.1): a 500 cap silently hid notes past #500
+  // from the graph.
   const notesQuery = createQuery(() => ({
-    queryKey: ["notes", { limit: 500 }] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
     enabled: open && kind === "graph",
   }));
   const edgesQuery = createQuery(() => ({

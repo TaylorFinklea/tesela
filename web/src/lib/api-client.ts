@@ -43,6 +43,20 @@ async function get<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** Like `get`, but also surfaces the `X-Total-Count` header some list
+ *  endpoints send (the full match count *before* pagination) — lets a
+ *  caller detect a truncated page instead of treating a capped response as
+ *  the complete set (tesela-sclr.1). `total` is `null` when the header is
+ *  absent. */
+async function getWithTotal<T>(path: string): Promise<{ data: T; total: number | null }> {
+  const url = `${BASE_URL}${path}`;
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  if (!res.ok) throw new ApiError(res.status, await res.text(), url);
+  const totalHeader = res.headers.get("x-total-count");
+  const total = totalHeader !== null ? Number(totalHeader) : null;
+  return { data: (await res.json()) as T, total };
+}
+
 async function post<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const url = `${BASE_URL}${path}`;
   const res = await fetch(url, {
@@ -76,6 +90,17 @@ export const api = {
     if (params.offset !== undefined) q.set("offset", String(params.offset));
     const qs = q.toString();
     return get<Note[]>(`/notes${qs ? `?${qs}` : ""}`);
+  },
+  /** Same query as `listNotes`, but also returns the server's total match
+   *  count (`X-Total-Count`) so a caller can tell whether its `limit`
+   *  truncated the result (tesela-sclr.1). */
+  listNotesWithTotal: (params: { tag?: string; limit?: number; offset?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (params.tag) q.set("tag", params.tag);
+    if (params.limit !== undefined) q.set("limit", String(params.limit));
+    if (params.offset !== undefined) q.set("offset", String(params.offset));
+    const qs = q.toString();
+    return getWithTotal<Note[]>(`/notes${qs ? `?${qs}` : ""}`);
   },
   getNote: (id: string) => get<Note>(`/notes/${encodeURIComponent(id)}`),
   /** Whole-note PUT. After the base-diff fix (2026-06-02), the web PUT is

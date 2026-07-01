@@ -45,9 +45,12 @@
     return ((ALL_VIEWS as string[]).includes(v) ? v : "cards") as ViewMode;
   });
 
+  // Raised 500→5000 (tesela-sclr.1): 500 silently truncated the corpus once
+  // a mosaic passed ~500 notes, so collection matches past that point just
+  // vanished with no signal.
   const allNotesQuery = createQuery(() => ({
-    queryKey: ["notes", { limit: 500 }] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
   }));
 
   type Match = { block: ParsedBlock; noteTitle: string; noteId: string };

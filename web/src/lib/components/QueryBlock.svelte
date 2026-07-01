@@ -157,9 +157,12 @@
     }
   }
 
+  // Raised 500→5000 (tesela-sclr.1): this IS the query's evaluation corpus
+  // (filtered client-side below), so a 500 cap silently dropped matches
+  // past note #500 from every query result.
   const allNotesQuery = createQuery(() => ({
-    queryKey: ["notes", { limit: 500 }] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
     enabled: queryText.length > 0,
   }));
 

@@ -142,14 +142,33 @@ pub struct UpsertBlocksReq {
     pub ops: Vec<BlockOp>,
 }
 
+/// Defensive upper bound on `?limit=` — prevents an accidental/malicious
+/// huge request from building an unbounded response `Vec`. Well above any
+/// realistic mosaic size today.
+const MAX_LIST_LIMIT: usize = 10_000;
+
+/// `GET /notes` — paginated note listing. Callers that omit `limit` still
+/// get the historical default of 100, but every response now carries an
+/// `X-Total-Count` header with the full count of notes matching `tag`
+/// (before pagination), so a truncated page is always detectable instead of
+/// silently dropping notes (tesela-sclr.1: the palette's `limit: 500` was
+/// silently unfindable past note #500 with no signal anywhere).
 pub async fn list_notes(
     Query(q): Query<ListQuery>,
     State(s): State<Arc<AppState>>,
-) -> AppResult<Json<Vec<Note>>> {
-    let limit = q.limit.unwrap_or(100);
+) -> AppResult<impl IntoResponse> {
+    let limit = q.limit.unwrap_or(100).min(MAX_LIST_LIMIT);
     let offset = q.offset.unwrap_or(0);
-    let notes = s.store.list(q.tag.as_deref(), limit, offset).await?;
-    Ok(Json(notes))
+    // Fetch the full matching set once (the store already walks the whole
+    // corpus regardless of `limit` — see `FsNoteStore::list`), so paginating
+    // here is free and gives us an exact total for the header.
+    let matching = s.store.list(q.tag.as_deref(), usize::MAX, 0).await?;
+    let total = matching.len();
+    let notes: Vec<Note> = matching.into_iter().skip(offset).take(limit).collect();
+    Ok((
+        [("x-total-count", total.to_string())],
+        Json(notes),
+    ))
 }
 
 pub async fn get_note(

@@ -32,10 +32,12 @@
   const blocks: ParsedBlock[] = $derived((blocksQuery.data ?? []) as ParsedBlock[]);
   const columns = $derived(typeDef?.properties ?? []);
 
-  // Property registry for typed choices + hidden choices from tag page
+  // Property registry for typed choices + hidden choices from tag page.
+  // Raised 500→5000 (tesela-sclr.1): 500 silently dropped notes past #500
+  // from the property registry, hiding their choices/values.
   const allNotesQuery = createQuery(() => ({
-    queryKey: ["notes", { limit: 500 }] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
   }));
   const tagNoteQuery = createQuery(() => ({
     queryKey: ["note", noteId] as const,

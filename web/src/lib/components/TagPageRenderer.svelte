@@ -89,9 +89,11 @@
   /** Instance count for the plural header ("N Tasks"). Sums page-level
    *  (frontmatter-tagged notes) + block-level (inline / `tags::`) instances —
    *  the same two queries InstancesOfTag uses below. */
+  // Raised 500→5000 (tesela-sclr.1): a heavily-used tag (e.g. "daily") can
+  // exceed 500 instances, silently undercounting the header past that point.
   const headerPagesQuery = createQuery(() => ({
-    queryKey: ["notes", { tag: tagValue, limit: 500 }] as const,
-    queryFn: () => api.listNotes({ tag: tagValue, limit: 500 }),
+    queryKey: ["notes", { tag: tagValue, limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ tag: tagValue, limit: 5000 }),
     enabled: !!tagValue,
   }));
   const headerBlocksQuery = createQuery(() => ({

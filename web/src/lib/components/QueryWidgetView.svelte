@@ -159,9 +159,11 @@
     enabled: widget.query.trim().length > 0,
   }));
 
+  // Raised 500→5000 (tesela-sclr.1): 500 silently hid notes past #500 from
+  // the inbox widget's project picker.
   const allNotesQuery = createQuery(() => ({
     queryKey: ["notes", "all-for-picker"] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryFn: () => api.listNotes({ limit: 5000 }),
     enabled: widget.id === "inbox",
   }));
   const allNotes = $derived((allNotesQuery.data ?? []) as Note[]);

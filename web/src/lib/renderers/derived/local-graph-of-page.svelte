@@ -13,9 +13,11 @@
     onNavigate,
   }: DerivedRendererProps<{ kind: "page"; path: string }> = $props();
 
+  // Raised 500→5000 (tesela-sclr.1): renders the whole graph, so 500
+  // silently hid notes/nodes past #500 from the canvas.
   const notesQuery = createQuery(() => ({
-    queryKey: ["notes", { limit: 500 }] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
   }));
   const edgesQuery = createQuery(() => ({
     queryKey: ["all-edges"] as const,

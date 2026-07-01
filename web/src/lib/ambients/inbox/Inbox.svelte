@@ -63,9 +63,11 @@
   // Drives the "Filter ▾" dropdown. Piggybacks on the same notes cache
   // that Station / RailWidgets use, so opening Inbox doesn't fire an
   // extra round-trip when one of those is already mounted.
+  // Raised 500→5000 (tesela-sclr.1): 500 silently hid saved-filter notes
+  // created past note #500 from the switcher.
   const allNotesQuery = createQuery(() => ({
-    queryKey: ["notes", { limit: 500 }] as const,
-    queryFn: () => api.listNotes({ limit: 500 }),
+    queryKey: ["notes", { limit: 5000 }] as const,
+    queryFn: () => api.listNotes({ limit: 5000 }),
   }));
   /** Only inbox-shaped saved filters appear in the switcher. Default
    *  `inbox` slug + anything namespaced `inbox-*` (matches the slug
