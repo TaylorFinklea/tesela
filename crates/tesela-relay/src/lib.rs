@@ -31,6 +31,9 @@ pub use tesela_sync::crypto::relay_auth;
 /// - `GET /`                                — health
 /// - `POST /groups/{id}/register`           — open (registration bootstrap)
 /// - `GET  /groups/{id}/registration`       — open (joiner verifies)
+/// - `GET  /discover/{disc}`                — open (recovery-phrase discovery, ra7 P0 step 2;
+///                                             a phrase-only device has no group_id yet, so it
+///                                             cannot be MAC-gated)
 /// - `PUT  /groups/{id}/ops`                — MAC-gated
 /// - `GET  /groups/{id}/ops`                — MAC-gated
 /// - `POST /groups/{id}/ack`                — MAC-gated
@@ -63,6 +66,7 @@ pub fn router(state: AppState) -> Router {
             "/groups/{group_id}/registration",
             get(handlers::get_registration),
         )
+        .route("/discover/{disc}", get(handlers::discover))
         .route(
             "/admin/groups/{group_id}/register",
             delete(handlers::admin_delete_registration),

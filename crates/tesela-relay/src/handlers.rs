@@ -34,6 +34,14 @@ pub struct RegisterRequest {
     pub auth_key_b64: String,
     pub registered_at: i64,
     pub intent_b64: String,
+    /// Base64 of the 32-byte discovery handle (ra7 P0 step 2), i.e.
+    /// `tesela_sync::crypto::recovery::derive_discovery_handle(group_key)`.
+    /// `Option` for back-compat: older clients omit it and registration
+    /// still succeeds — the group just isn't discoverable by recovery
+    /// phrase until a client that knows `disc` re-registers. NOT part
+    /// of the signed intent (see `relay_auth::intent_msg`) — `disc` is
+    /// independent of `group_id`/`auth_key`/`registered_at` by design.
+    pub disc_b64: Option<String>,
 }
 
 /// Public projection of a stored [`Registration`]. Deliberately does
@@ -91,6 +99,21 @@ pub async fn register(
     let Ok(intent_vec) = b64.decode(&req.intent_b64) else {
         return (StatusCode::BAD_REQUEST, "intent_b64 not base64").into_response();
     };
+    // `disc_b64` is optional (back-compat with older clients); when
+    // present it MUST decode to exactly 32 bytes. Validated up front
+    // so a malformed value 400s before we touch the store.
+    let disc: Option<[u8; 32]> = match &req.disc_b64 {
+        None => None,
+        Some(s) => {
+            let Ok(disc_vec) = b64.decode(s) else {
+                return (StatusCode::BAD_REQUEST, "disc_b64 not base64").into_response();
+            };
+            let Ok(disc_arr): Result<[u8; 32], _> = disc_vec.try_into() else {
+                return (StatusCode::BAD_REQUEST, "disc must be 32 bytes").into_response();
+            };
+            Some(disc_arr)
+        }
+    };
 
     match state
         .inner
@@ -99,12 +122,52 @@ pub async fn register(
         .await
     {
         Ok(RegisterOutcome::Inserted) | Ok(RegisterOutcome::Idempotent) => {
+            if let Some(disc) = disc {
+                if let Err(e) = state
+                    .inner
+                    .store
+                    .upsert_discovery_index(&disc, &group_id)
+                    .await
+                {
+                    return internal_err(&e.to_string());
+                }
+            }
             (StatusCode::OK, Json(serde_json::json!({ "ok": true }))).into_response()
         }
         Ok(RegisterOutcome::Conflict(existing)) => {
             let echoed: RegistrationRecord = existing.into();
             (StatusCode::CONFLICT, Json(echoed)).into_response()
         }
+        Err(e) => internal_err(&e.to_string()),
+    }
+}
+
+/// `GET /discover/{disc}`
+///
+/// Resolves a recovery-phrase discovery handle to its `group_id`
+/// (ra7 P0 step 2). `disc` is a one-way HKDF handle derived from the
+/// `GroupKey` alone (`derive_discovery_handle`) — a phrase-only
+/// device has the key but not the random `group_id` the relay
+/// indexes by, so it can't yet compute an auth_key or hit any other
+/// endpoint. This endpoint is therefore deliberately UNAUTHENTICATED
+/// and NOT behind [`mac_gate`]: the whole point is bootstrapping
+/// `group_id` before the caller can prove membership the normal way.
+/// Zero-knowledge is preserved because `disc` is a one-way PRF —
+/// the relay learns only an unguessable 256-bit handle, never key
+/// material, and this endpoint only ever echoes back the (also
+/// non-secret) `group_id`.
+pub async fn discover(
+    State(state): State<AppState>,
+    Path(disc_hex): Path<String>,
+) -> Response {
+    let Some(disc) = parse_disc(&disc_hex) else {
+        return (StatusCode::BAD_REQUEST, "invalid disc hex").into_response();
+    };
+    match state.inner.store.lookup_discovery(&disc).await {
+        Ok(Some(group_id)) => {
+            Json(serde_json::json!({ "group_id": hex::encode(group_id) })).into_response()
+        }
+        Ok(None) => (StatusCode::NOT_FOUND, "unknown discovery handle").into_response(),
         Err(e) => internal_err(&e.to_string()),
     }
 }
@@ -732,6 +795,11 @@ pub async fn rate_gate(
 // ─── Helpers ───────────────────────────────────────────────────────
 
 fn parse_group_id(hex_str: &str) -> Option<[u8; 16]> {
+    let bytes = hex::decode(hex_str).ok()?;
+    bytes.try_into().ok()
+}
+
+fn parse_disc(hex_str: &str) -> Option<[u8; 32]> {
     let bytes = hex::decode(hex_str).ok()?;
     bytes.try_into().ok()
 }

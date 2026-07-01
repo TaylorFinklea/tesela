@@ -147,6 +147,36 @@ impl Store {
         }))
     }
 
+    /// Upsert the `disc -> group_id` discovery index (ra7 P0 step 2).
+    /// Idempotent by construction: `disc` is a one-way PRF of the
+    /// group key, so it always maps to the same `group_id` for a
+    /// given group — re-registration just overwrites with the same
+    /// value.
+    pub async fn upsert_discovery_index(&self, disc: &[u8; 32], group_id: &[u8; 16]) -> Result<()> {
+        sqlx::query(
+            "INSERT OR REPLACE INTO relay_discovery_index(disc, group_id) VALUES (?, ?)",
+        )
+        .bind(&disc[..])
+        .bind(&group_id[..])
+        .execute(&self.pool)
+        .await
+        .context("upsert discovery index")?;
+        Ok(())
+    }
+
+    /// Resolve a discovery handle to its `group_id`. `None` if no
+    /// group has published this `disc` (handler returns 404).
+    pub async fn lookup_discovery(&self, disc: &[u8; 32]) -> Result<Option<[u8; 16]>> {
+        let row = sqlx::query("SELECT group_id FROM relay_discovery_index WHERE disc = ?")
+            .bind(&disc[..])
+            .fetch_optional(&self.pool)
+            .await
+            .context("read discovery index")?;
+        Ok(row
+            .map(|r| r.get::<Vec<u8>, _>("group_id"))
+            .map(|v| v.try_into().expect("group_id column is always 16 bytes")))
+    }
+
     /// Admin recovery — wipe a registration. Cascades to ops + device-seen
     /// via the FK. Returns `true` if a row was deleted.
     pub async fn delete_registration(&self, group_id: &[u8; 16]) -> Result<bool> {
@@ -551,6 +581,20 @@ async fn migrate(pool: &SqlitePool) -> Result<()> {
             auth_key      BLOB NOT NULL,
             registered_at INTEGER NOT NULL,
             intent        BLOB NOT NULL
+        );
+
+        -- disc -> group_id index (recovery-phrase discovery, ra7 P0
+        -- step 2). `disc` is the one-way HKDF handle a phrase-only
+        -- device derives from its GroupKey (see
+        -- `tesela_sync::crypto::recovery::derive_discovery_handle`);
+        -- it has the key but not the random `group_id` this relay
+        -- indexes everything by. A `disc` maps to exactly one
+        -- `group_id` (it's a PRF of that group's key), so upserts are
+        -- idempotent overwrites, not conflicts.
+        CREATE TABLE IF NOT EXISTS relay_discovery_index (
+            disc     BLOB NOT NULL PRIMARY KEY,
+            group_id BLOB NOT NULL,
+            FOREIGN KEY (group_id) REFERENCES relay_registrations(group_id) ON DELETE CASCADE
         );
 
         CREATE TABLE IF NOT EXISTS relay_ops (

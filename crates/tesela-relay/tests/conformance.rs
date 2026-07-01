@@ -31,6 +31,7 @@ use tempfile::TempDir;
 
 use tesela_relay::{router, AppState};
 use tesela_sync::crypto::keys::GroupKey;
+use tesela_sync::crypto::recovery::derive_discovery_handle;
 use tesela_sync::crypto::relay_auth::{
     body_hash_hex, canonical_request, compute_request_mac, derive_relay_auth_key, intent_msg,
     sign_intent,
@@ -1551,6 +1552,83 @@ async fn test_16_registration_endpoints_do_not_leak_auth_key() {
         echoed.get("auth_key_b64").is_none(),
         "409 register-conflict echo must not serve the stored auth_key, got {echoed}"
     );
+}
+
+#[tokio::test]
+async fn test_17_discover_round_trip_and_unknown_404() {
+    // Recovery-phrase discovery (ra7 P0 step 2): a phrase-only device
+    // has the GroupKey but not the random group_id, so it derives
+    // `disc` from the key alone and asks GET /discover/{disc} — no
+    // MAC, no server-side group_id input. Pure HTTP against `disc`
+    // hex, so this also runs against the CF Worker via
+    // TESELA_RELAY_CONFORMANCE_URL once P0.2b lands there.
+    let relay = spawn_relay().await;
+    let group = fresh_group();
+    let now = now_secs();
+    let disc = derive_discovery_handle(&group.key);
+    let mut body = register_body(&group, now);
+    body["disc_b64"] = json!(b64(&disc));
+
+    let client = reqwest::Client::new();
+    let r = client
+        .post(format!(
+            "{}/groups/{}/register",
+            relay.base_url,
+            hex::encode(group.id.as_bytes())
+        ))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        r.status().is_success(),
+        "register with disc_b64 expected 2xx, got {} body={}",
+        r.status(),
+        r.text().await.unwrap_or_default(),
+    );
+
+    // GET /discover/{disc} resolves to this group's group_id, unauthenticated.
+    let d = client
+        .get(format!(
+            "{}/discover/{}",
+            relay.base_url,
+            hex::encode(disc)
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        d.status().is_success(),
+        "GET /discover/{{disc}} expected 2xx, got {}",
+        d.status()
+    );
+    let resolved: serde_json::Value = d.json().await.unwrap();
+    assert_eq!(resolved["group_id"], hex::encode(group.id.as_bytes()));
+
+    // An unknown/random disc 404s rather than leaking any signal about
+    // which handles are registered.
+    let mut unknown = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut unknown);
+    let miss = client
+        .get(format!(
+            "{}/discover/{}",
+            relay.base_url,
+            hex::encode(unknown)
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(miss.status().as_u16(), 404, "unknown disc must 404");
+
+    // A malformed disc (valid hex, but not 32 bytes) is a 400, not a
+    // 404/500 — a cross-relay contract point the CF Worker (P0.2b) must
+    // match too.
+    let bad = client
+        .get(format!("{}/discover/abcd", relay.base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status().as_u16(), 400, "malformed disc must 400");
 }
 
 // Suppress "field is never read" while stages 3b–3d wire up endpoints

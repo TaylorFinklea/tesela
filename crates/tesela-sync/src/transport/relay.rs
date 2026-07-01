@@ -93,10 +93,18 @@ impl RelayClient {
     pub async fn register(&self, registered_at: i64) -> SyncResult<()> {
         let intent_text = intent_msg(&self.group_id, &self.auth_key, registered_at);
         let intent = sign_intent(&self.group_key, &intent_text);
+        // Recovery-phrase discovery handle (ra7 P0 step 2): a one-way
+        // PRF of the group key alone, independent of `group_id`.
+        // Published on every registration so a future phrase-only
+        // device (has the key, not the group_id) can resolve this
+        // group via `GET /discover/{disc}`. NOT part of the signed
+        // intent — see `intent_msg`.
+        let disc = crate::crypto::recovery::derive_discovery_handle(&self.group_key);
         let body = serde_json::json!({
             "auth_key_b64": base64_std(&self.auth_key),
             "registered_at": registered_at,
             "intent_b64": base64_std(&intent),
+            "disc_b64": base64_std(&disc),
         });
         let url = self.group_url("/register");
         let resp = self
