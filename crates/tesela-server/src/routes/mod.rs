@@ -105,6 +105,8 @@ pub fn build(state: AppState) -> Router {
             "/sync/peer/short-code/{code}",
             get(peer_sync::lookup_pairing_short_code),
         )
+        // tesela-ra7 P0.3c — show-side recovery phrase for the web/desktop UI.
+        .route("/sync/recovery-phrase", get(peer_sync::get_recovery_phrase))
         .route("/search", get(search::search_notes))
         .route("/agenda", post(agenda::post_agenda))
         .route("/search/query", post(search_query::execute))

@@ -284,6 +284,20 @@ pub async fn get_pairing_code(
     }))
 }
 
+#[derive(Debug, Serialize)]
+pub struct RecoveryPhrasePayload {
+    pub phrase: String,
+}
+
+/// `GET /sync/recovery-phrase` — the current mosaic's 24-word BIP39
+/// recovery phrase (`tesela-ra7` P0.3c). The phrase IS the group key in
+/// plaintext, same exposure as `get_pairing_code` above; never log it.
+pub async fn get_recovery_phrase(State(s): State<Arc<AppState>>) -> Json<RecoveryPhrasePayload> {
+    let ident = s.group_identity.read().await.clone();
+    let phrase = tesela_sync::crypto::recovery::key_to_phrase(&ident.group_key);
+    Json(RecoveryPhrasePayload { phrase })
+}
+
 /// `GET /sync/peer/short-code/:code` — resolve a 6-char short code to the
 /// full base64url pairing code it was registered with. 404s on unknown
 /// or expired codes so the caller can prompt for a regenerate.

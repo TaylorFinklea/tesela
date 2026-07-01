@@ -350,6 +350,9 @@ export const api = {
   syncGetPairingCode: () => get<SyncPairingCode>("/sync/peer/pairing-code"),
   syncPairWithCode: (code: string) =>
     post<SyncPairWithCodeResult>("/sync/peer/pair-code", { code }),
+  /** `tesela-ra7` P0.3c — fetch the current mosaic's 24-word recovery
+   *  phrase for the "show recovery phrase" reveal surface. */
+  syncRecoveryPhrase: () => get<SyncRecoveryPhrase>("/sync/recovery-phrase"),
 
   // Phase 13 — backup / export / import
   listBackups: () => get<BackupSummary[]>("/backups"),
@@ -665,4 +668,9 @@ export interface SyncPairWithCodeResult {
   display_name: string;
   url: string;
   adopted_group: boolean;
+}
+/** `tesela-ra7` P0.3c — the current mosaic's 24-word BIP39 recovery
+ *  phrase. Space-separated; the phrase IS the group key in plaintext. */
+export interface SyncRecoveryPhrase {
+  phrase: string;
 }

@@ -8,6 +8,7 @@
     SyncPeerStatus,
     SyncDiscoveredPeer,
     SyncPairingCode,
+    SyncRecoveryPhrase,
   } from "$lib/api-client";
 
   // --- state -----------------------------------------------------------------
@@ -38,6 +39,13 @@
   let pasteCode = $state("");
   let pasteBusy = $state(false);
   let pasteResultMsg = $state<string | null>(null);
+
+  // Recovery phrase state — tesela-ra7 P0.3c. Show-side only: reveals the
+  // current mosaic's 24-word BIP39 phrase (= the group key) behind an
+  // explicit action, mirroring the pairing-code reveal above.
+  let recoveryPhrase = $state<SyncRecoveryPhrase | null>(null);
+  let recoveryPhraseRevealed = $state(false);
+  let recoveryPhraseError = $state<string | null>(null);
 
   // --- helpers ---------------------------------------------------------------
 
@@ -189,6 +197,30 @@
     }
   }
 
+  async function revealRecoveryPhrase() {
+    recoveryPhraseError = null;
+    try {
+      recoveryPhrase = await api.syncRecoveryPhrase();
+      recoveryPhraseRevealed = true;
+    } catch (e) {
+      recoveryPhraseError =
+        e instanceof ApiError ? `${e.status} ${e.body}` : (e as Error).message;
+    }
+  }
+
+  function hideRecoveryPhrase() {
+    recoveryPhraseRevealed = false;
+  }
+
+  async function copyRecoveryPhrase() {
+    if (!recoveryPhrase) return;
+    try {
+      await navigator.clipboard.writeText(recoveryPhrase.phrase);
+    } catch {
+      /* ignore */
+    }
+  }
+
   async function pasteAndPair() {
     if (!pasteCode.trim()) return;
     pasteBusy = true;
@@ -230,6 +262,10 @@
           join: true,
         }).svg()
       : "",
+  );
+
+  const recoveryWords = $derived(
+    recoveryPhrase ? recoveryPhrase.phrase.split(/\s+/) : [],
   );
 
   onMount(() => {
@@ -455,6 +491,60 @@
           Hide
         </button>
         <span class="text-[10.5px] text-muted-foreground/60">{pairingCode.url}</span>
+      </div>
+    </div>
+  {/if}
+</section>
+
+<section>
+  <h2 class="text-[12px] font-medium text-muted-foreground/60 uppercase tracking-widest mb-3">
+    Recovery phrase
+  </h2>
+  <p class="text-[11px] text-muted-foreground/70 mb-2">
+    A 24-word phrase that losslessly encodes this mosaic's group key. Use it to recover sync
+    on a fresh install if you lose every paired device.
+  </p>
+  {#if !recoveryPhraseRevealed}
+    <button
+      type="button"
+      class="text-[11.5px] px-3 py-1.5 rounded-md border border-border/40 text-foreground hover:bg-muted/40"
+      onclick={revealRecoveryPhrase}
+    >
+      Reveal recovery phrase
+    </button>
+    {#if recoveryPhraseError}
+      <div class="mt-2 text-[10.5px] text-red-500/90">{recoveryPhraseError}</div>
+    {/if}
+  {:else if recoveryPhrase}
+    <div class="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2.5">
+      <div class="text-[10.5px] uppercase tracking-widest text-amber-500/80 mb-1">Recovery phrase</div>
+      <p class="text-[11px] text-amber-500/90 mb-3 leading-relaxed">
+        Write these down and keep them safe. Anyone with this phrase can read your mosaic —
+        and we can't recover it for you.
+      </p>
+      <ol class="grid grid-cols-3 gap-x-3 gap-y-1.5 mb-3">
+        {#each recoveryWords as word, i (i)}
+          <li class="text-[11.5px] font-mono text-foreground/90 flex gap-1.5">
+            <span class="text-muted-foreground/50 w-4 text-right shrink-0">{i + 1}.</span>
+            <span>{word}</span>
+          </li>
+        {/each}
+      </ol>
+      <div class="flex items-center gap-2">
+        <button
+          type="button"
+          class="text-[11px] px-2.5 py-1 rounded-md border border-border/40 text-foreground hover:bg-muted/40"
+          onclick={copyRecoveryPhrase}
+        >
+          Copy phrase
+        </button>
+        <button
+          type="button"
+          class="text-[11px] px-2.5 py-1 rounded-md border border-border/40 text-muted-foreground hover:text-foreground"
+          onclick={hideRecoveryPhrase}
+        >
+          Hide
+        </button>
       </div>
     </div>
   {/if}
