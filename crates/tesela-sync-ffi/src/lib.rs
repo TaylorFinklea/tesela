@@ -336,6 +336,37 @@ pub fn encode_pairing_code(
     encode_pairing_code_inner(&code).map_err(FfiSyncError::from)
 }
 
+/// Recover group membership from a 24-word recovery phrase alone
+/// (`tesela-ra7` P0 step 3a): phrase -> `GroupKey` -> relay discovery
+/// -> a relay-only pairing code (empty server `url`, `relay_url` set)
+/// carrying the recovered `group_id` + `group_key`. Callers feed the
+/// returned string straight into the existing relay-pairing-code
+/// adoption path (iOS: `RelayTicker.cachePairingCode` + `.relay`
+/// mode) — recovery does NOT adopt group identity directly here.
+///
+/// Errors: `FfiSyncError::Other` for an invalid phrase (bad word
+/// count / non-wordlist word / bad checksum), a relay/network
+/// failure, or the distinct "recovery phrase not found on this
+/// relay" when the phrase's group never published its discovery
+/// handle. Never includes phrase or key bytes in the error message.
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn recover_pairing_from_phrase(
+    relay_url: String,
+    phrase: String,
+) -> Result<String, FfiSyncError> {
+    tesela_sync::recovery::recover_pairing_from_phrase(&relay_url, &phrase)
+        .await
+        .map_err(FfiSyncError::from)
+}
+
+/// Inverse of [`recover_pairing_from_phrase`]: decode a pairing
+/// code's group key back into its 24-word recovery phrase, for "Show
+/// recovery phrase" screens.
+#[uniffi::export]
+pub fn recovery_phrase_from_pairing_code(code: String) -> Result<String, FfiSyncError> {
+    tesela_sync::recovery::recovery_phrase_from_pairing_code(&code).map_err(FfiSyncError::from)
+}
+
 // --- relay presence (Option B: native Swift WS transport + pure Rust crypto) -
 
 /// AEAD-seal an inner presence frame (`b"PRES" ++ json`) into the relay's

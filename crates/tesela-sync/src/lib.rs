@@ -43,6 +43,7 @@ pub mod hlc;
 pub mod migrate;
 pub mod oplog;
 pub mod rebuild;
+pub mod recovery;
 pub mod schema;
 pub mod transport;
 pub mod wire;

@@ -795,6 +795,59 @@ impl RelayClient {
     }
 }
 
+/// `GET /discover/{disc}` — resolve a recovery-phrase discovery handle
+/// to its `group_id` (`tesela-ra7` P0 step 3a).
+///
+/// Deliberately a MODULE-LEVEL function, not a [`RelayClient`] method:
+/// a phrase-only device has the `GroupKey` but neither the `group_id`
+/// nor an `auth_key` yet (both need `group_id` as HKDF salt), so there
+/// is no `RelayClient` to construct. This is the unauthenticated
+/// bootstrap step that produces the `group_id` a normal `RelayClient`
+/// can then be built from — mirrors the relay's `GET /discover/{disc}`
+/// handler, which is intentionally NOT behind the MAC gate.
+///
+/// Returns `Ok(None)` on a 404 (no group has published this discovery
+/// handle — never registered, or registered before ra7 P0 step 2
+/// added `disc_b64`). Any other non-2xx status is an `Err`.
+pub async fn discover_group(relay_url: &str, disc: &[u8; 32]) -> SyncResult<Option<GroupId>> {
+    let base = Url::parse(relay_url)
+        .map_err(|e| SyncError::Other(format!("discover_group: invalid relay url: {e}")))?;
+    let path = format!("/discover/{}", hex::encode(disc));
+    let url = base
+        .join(&path)
+        .map_err(|e| SyncError::Other(format!("url join: {e}")))?;
+    let http = Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+        .expect("reqwest client construction is infallible with default config");
+    let resp = http.get(url).send().await.map_err(net_err("discover_group"))?;
+    if resp.status() == StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !resp.status().is_success() {
+        return Err(SyncError::Other(format!(
+            "discover_group: relay returned {}",
+            resp.status()
+        )));
+    }
+    let wire: DiscoverWire = resp
+        .json()
+        .await
+        .map_err(net_err("discover_group response body"))?;
+    let bytes = hex::decode(&wire.group_id)
+        .map_err(|e| SyncError::Other(format!("discover_group: group_id hex: {e}")))?;
+    let arr: [u8; 16] = bytes
+        .try_into()
+        .map_err(|_| SyncError::Other("discover_group: group_id wrong length".into()))?;
+    Ok(Some(GroupId::from_bytes(arr)))
+}
+
+/// `GET /discover/{disc}` response body.
+#[derive(Debug, Deserialize)]
+struct DiscoverWire {
+    group_id: String,
+}
+
 /// Floor for the adaptive 413-halving in
 /// [`RelayClient::put_snapshots_chunked`]. Once the budget reaches this,
 /// the next 413 degrades to one-entry-per-request rather than re-packing
