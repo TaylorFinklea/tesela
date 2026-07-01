@@ -20,7 +20,8 @@
  */
 
 import { GroupDO, type Env } from "./group-do";
-export { GroupDO };
+import { DiscoveryIndexDO } from "./discovery-do";
+export { GroupDO, DiscoveryIndexDO };
 
 // Constant-time-ish string compare via header-pinning. Outer Worker
 // uses these to ferry the original path/query into the DO so MAC
@@ -50,6 +51,19 @@ export default {
     if (adminMatch && req.method === "DELETE") {
       const groupIdHex = adminMatch[1]!;
       return await forwardToGroupDO(env, groupIdHex, "/admin/registration", url, req);
+    }
+
+    // GET /discover/:disc — recovery-phrase discovery (ra7 P0.2b). Mirrors
+    // the Rust relay's UNAUTHENTICATED discover() handler: a phrase-only
+    // device has the GroupKey but not the random group_id, so it can't yet
+    // derive an auth_key or hit any MAC-gated endpoint. `disc` is the
+    // 32-byte discovery handle, hex-encoded (64 hex chars).
+    if (url.pathname.startsWith("/discover/")) {
+      const discMatch = url.pathname.match(/^\/discover\/([0-9a-f]{64})$/);
+      if (!discMatch) {
+        return json({ error: "invalid disc hex" }, 400);
+      }
+      return await forwardToDiscoveryDO(env, discMatch[1]!);
     }
 
     return new Response("not found", { status: 404 });
@@ -93,6 +107,12 @@ async function forwardToGroupDO(
     body: ["GET", "HEAD"].includes(req.method) ? undefined : req.body,
   });
   return await stub.fetch(innerReq);
+}
+
+async function forwardToDiscoveryDO(env: Env, discHex: string): Promise<Response> {
+  const id = env.DISCOVERY_DO.idFromName("global");
+  const stub = env.DISCOVERY_DO.get(id);
+  return await stub.fetch(`https://do.internal/lookup/${discHex}`);
 }
 
 function json(body: unknown, status = 200): Response {

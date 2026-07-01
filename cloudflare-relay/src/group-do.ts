@@ -28,6 +28,8 @@ import {
 
 export interface Env {
   GROUP_DO: DurableObjectNamespace;
+  /** Single global discovery-index DO (ra7 P0.2b) — see ./discovery-do. */
+  DISCOVERY_DO: DurableObjectNamespace;
   TESELA_RELAY_ADMIN_TOKEN?: string;
   TESELA_RELAY_MAX_BODY?: string;
   TESELA_RELAY_REPLAY_WINDOW_SECS?: string;

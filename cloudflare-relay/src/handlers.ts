@@ -35,6 +35,12 @@ interface RegisterBody {
   auth_key_b64: string;
   registered_at: number;
   intent_b64: string;
+  /** Base64 of the 32-byte discovery handle (ra7 P0.2b, CF parity for the
+   *  Rust relay's `RegisterRequest.disc_b64`). Optional for back-compat:
+   *  older clients omit it and registration still succeeds — the group
+   *  just isn't discoverable by recovery phrase until a client that
+   *  knows `disc` re-registers. NOT part of the signed intent. */
+  disc_b64?: string;
 }
 
 export async function handleRegister(self: GroupDO, req: Request): Promise<Response> {
@@ -46,6 +52,19 @@ export async function handleRegister(self: GroupDO, req: Request): Promise<Respo
   const intent = fromB64(body.intent_b64);
   if (auth_key.length !== 32) return json({ error: "auth_key must be 32 bytes" }, 400);
   if (intent.length !== 32) return json({ error: "intent must be 32 bytes" }, 400);
+
+  // `disc_b64` is optional (back-compat); when present it MUST decode to
+  // exactly 32 bytes. Validated up front — before touching the store —
+  // mirroring the Rust handler's ordering.
+  let disc: Uint8Array | undefined;
+  if (typeof body.disc_b64 === "string") {
+    try {
+      disc = fromB64(body.disc_b64);
+    } catch {
+      return json({ error: "disc_b64 not base64" }, 400);
+    }
+    if (disc.length !== 32) return json({ error: "disc must be 32 bytes" }, 400);
+  }
 
   const outcome = self.insertOrFetchRegistration(auth_key, body.registered_at, intent);
   if (outcome.outcome === "conflict" && outcome.existing) {
@@ -63,6 +82,26 @@ export async function handleRegister(self: GroupDO, req: Request): Promise<Respo
       409,
     );
   }
+
+  // Index disc -> group_id ONLY on a non-conflict outcome (Inserted /
+  // Idempotent) — a Conflict/hijack attempt never publishes disc.
+  // group_id is recovered from the header the outer Worker pinned
+  // (the DO's own routing already trimmed it off the path).
+  if (disc) {
+    const originalPath = req.headers.get(ORIGINAL_PATH_HEADER) ?? "";
+    const groupIdMatch = originalPath.match(/^\/groups\/([0-9a-f]{32})\/register$/);
+    const groupIdHex = groupIdMatch?.[1];
+    if (!groupIdHex) return json({ error: "internal: missing original path" }, 500);
+    const discoveryId = self.env.DISCOVERY_DO.idFromName("global");
+    const discoveryStub = self.env.DISCOVERY_DO.get(discoveryId);
+    const upsertRes = await discoveryStub.fetch("https://do.internal/upsert", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ disc: toHex(disc), group_id: groupIdHex }),
+    });
+    if (!upsertRes.ok) return json({ error: "internal: discovery upsert failed" }, 500);
+  }
+
   return json({ status: "ok" }, 200);
 }
 

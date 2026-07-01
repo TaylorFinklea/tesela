@@ -11,9 +11,21 @@ compatibility_flags = ["nodejs_compat"]
 name = "GROUP_DO"
 class_name = "GroupDO"
 
+# Single global Durable Object holding the disc -> group_id discovery
+# index (recovery-phrase discovery, ra7 P0 step 2b). Addressed via
+# `idFromName("global")` from both the Worker (/discover route) and
+# GroupDO (register-time upsert) — see src/discovery-do.ts.
+[[durable_objects.bindings]]
+name = "DISCOVERY_DO"
+class_name = "DiscoveryIndexDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["GroupDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["DiscoveryIndexDO"]
 
 # Admin token — set with `wrangler secret put TESELA_RELAY_ADMIN_TOKEN`.
 # Used to gate `DELETE /admin/groups/:id/register` for hijack recovery.
