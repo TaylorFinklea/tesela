@@ -40,11 +40,25 @@ use tesela_sync::group::GroupId;
 
 // ─── Harness helpers ────────────────────────────────────────────────
 
+/// The in-process Rust relay's body-size cap, matched to the value this
+/// harness passes to `AppState::open` below.
+const IN_PROCESS_MAX_BODY: usize = 1_048_576;
+
+/// The external-target leg's default body-size cap, matching the
+/// committed `cloudflare-relay/wrangler.toml` `TESELA_RELAY_MAX_BODY`.
+/// Override via `TESELA_RELAY_CONFORMANCE_MAX_BODY` if that config ever
+/// diverges from this suite's assumption.
+const DEFAULT_EXTERNAL_MAX_BODY: usize = 16 * 1024 * 1024;
+
 /// Owned handle to a spawned in-process relay. Drops the listener +
 /// SQLite tmp dir on `drop`.
 struct TestRelay {
     base_url: String,
     admin_token: String,
+    /// The body-size cap this target enforces, so cap-dependent tests
+    /// (the 413 body-size-cap tests) can size their payloads relative to
+    /// the actual configured limit rather than a hardcoded guess.
+    max_body: usize,
     _tmp: TempDir,
     _server: tokio::task::JoinHandle<()>,
 }
@@ -60,9 +74,14 @@ async fn spawn_relay() -> TestRelay {
         let base_url = url.trim_end_matches('/').to_string();
         let admin_token = std::env::var("TESELA_RELAY_CONFORMANCE_ADMIN_TOKEN")
             .unwrap_or_else(|_| "test-admin-token-please-rotate".to_string());
+        let max_body = std::env::var("TESELA_RELAY_CONFORMANCE_MAX_BODY")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_EXTERNAL_MAX_BODY);
         return TestRelay {
             base_url,
             admin_token,
+            max_body,
             _tmp: tempfile::tempdir().expect("tmp dir"),
             _server: tokio::spawn(async {}),
         };
@@ -71,7 +90,7 @@ async fn spawn_relay() -> TestRelay {
     let tmp = tempfile::tempdir().expect("tmp dir");
     let db = tmp.path().join("relay.sqlite");
     let admin_token = "test-admin-token-please-rotate".to_string();
-    let state = AppState::open(&db, 1_048_576, Some(admin_token.clone()))
+    let state = AppState::open(&db, IN_PROCESS_MAX_BODY, Some(admin_token.clone()))
         .await
         .expect("open relay state");
     let app = router(state);
@@ -91,6 +110,7 @@ async fn spawn_relay() -> TestRelay {
     TestRelay {
         base_url: format!("http://{}", addr),
         admin_token,
+        max_body: IN_PROCESS_MAX_BODY,
         _tmp: tmp,
         _server: server,
     }
@@ -113,6 +133,27 @@ fn random_nonce_b64() -> String {
 
 fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+/// Serialize `body` to JSON, padding it with a base64-encoded `_pad`
+/// field (ignored by every handler) so the final byte length exceeds
+/// `cap` by a safe margin. Used by the body-size-cap tests so the
+/// over-cap body is sized relative to whichever relay target's actual
+/// configured cap this suite is running against (1 MiB in-process, 16
+/// MiB against the CF Worker), rather than a value hardcoded against
+/// only one of the two.
+fn oversized_body_bytes(cap: usize, mut body: serde_json::Value) -> Vec<u8> {
+    const MARGIN: usize = 8 * 1024;
+    let base_len = serde_json::to_vec(&body).unwrap().len();
+    let target = cap + MARGIN;
+    if base_len < target {
+        // Base64 expands raw bytes by ~4/3; solve for the raw pad length
+        // that pushes the serialized body up to `target`.
+        let raw_pad_len = ((target - base_len) * 3) / 4 + 16;
+        let pad = vec![b'x'; raw_pad_len];
+        body["_pad"] = json!(b64(&pad));
+    }
+    serde_json::to_vec(&body).unwrap()
 }
 
 struct Group {
@@ -1075,8 +1116,11 @@ async fn test_seq_allocates_above_compaction_watermark() {
 
 #[tokio::test]
 async fn test_08_body_size_cap() {
-    // PUT > 1 MiB returns 413 (cap is enforced inside the MAC gate
-    // via `axum::body::to_bytes` so the cap fires before the handler).
+    // PUT > the target's configured cap returns 413 (cap is enforced
+    // inside the MAC gate via `axum::body::to_bytes` so the cap fires
+    // before the handler). The over-cap body is sized relative to
+    // `relay.max_body` (cap + margin) rather than a value hardcoded
+    // against only one implementation's cap.
     let relay = spawn_relay().await;
     let group = fresh_group();
     let device = random_device_id_hex();
@@ -1093,10 +1137,9 @@ async fn test_08_body_size_cap() {
         .await
         .unwrap();
 
-    // Construct a body > 1 MiB by stuffing payload_b64.
-    let big_payload = vec![b'x'; 2 * 1024 * 1024];
-    let put_body = json!({ "from_device": device, "payload_b64": b64(&big_payload) });
-    let body_bytes = serde_json::to_vec(&put_body).unwrap();
+    // Construct a body over the derived cap by stuffing payload_b64.
+    let put_body = json!({ "from_device": device, "payload_b64": "" });
+    let body_bytes = oversized_body_bytes(relay.max_body, put_body);
     let path = format!("/groups/{}/ops", hex::encode(group.id.as_bytes()));
     let headers = auth_headers(&group, &device, "PUT", &path, "", &body_bytes);
     let r = client
@@ -1463,11 +1506,10 @@ async fn test_15_ack_body_size_cap() {
         .unwrap();
 
     let ack_path = format!("/groups/{}/ack", hex::encode(group.id.as_bytes()));
-    // Pad the JSON past 1 MiB with an ignored field; the cap fires in
-    // the auth gate before the body is even deserialised.
-    let pad = vec![b'x'; 2 * 1024 * 1024];
-    let ack_body = json!({ "device": device, "applied_seq": 1, "_pad": b64(&pad) });
-    let body_bytes = serde_json::to_vec(&ack_body).unwrap();
+    // Pad the JSON past the derived cap with an ignored field; the cap
+    // fires in the auth gate before the body is even deserialised.
+    let ack_body = json!({ "device": device, "applied_seq": 1 });
+    let body_bytes = oversized_body_bytes(relay.max_body, ack_body);
     let headers = auth_headers(&group, &device, "POST", &ack_path, "", &body_bytes);
     let r = client
         .post(format!("{}{}", relay.base_url, ack_path))

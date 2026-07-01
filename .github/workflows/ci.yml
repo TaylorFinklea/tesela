@@ -211,9 +211,15 @@ jobs:
           cat /tmp/wrangler-dev.log >&2
           exit 1
 
+      # Must match cloudflare-relay/wrangler.toml's TESELA_RELAY_MAX_BODY
+      # (tesela-rlyf.1): the conformance suite's body-size-cap tests size
+      # their over-cap bodies relative to this value, so if the Worker's
+      # committed cap ever changes, bump it here too or the 413 tests
+      # will silently stop exercising the real limit.
       - name: Run conformance suite against the Worker
         env:
           TESELA_RELAY_CONFORMANCE_URL: http://127.0.0.1:8787
+          TESELA_RELAY_CONFORMANCE_MAX_BODY: "16777216"
         run: cargo test -p tesela-relay --test conformance
 
       - name: Dump wrangler dev log on failure
