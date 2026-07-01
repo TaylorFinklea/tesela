@@ -761,3 +761,13 @@ The 2026-06-27 spec only recommended it; no lock existed — yet the CF Worker p
 ### ADR-9 — Parity strategy: fixture-first, hoist-second, wasm-when-JQL
 
 The query-conformance.json pattern (one fixture in crates/, three thin runners, 182 cases — all three engines DO run it; the "iOS silently degrades JQL" claim was adversarially REFUTED) becomes REQUIRED for every parity subsystem. Confirmed drift the pattern would have caught: Rust's recurrence grammar gained biweekly/fortnightly/quarterly/every-other on 2026-06-20 and NEITHER client mirror was updated (renders as raw literal both clients); iOS parses "today noon", web doesn't; web guards lifts inside wikilinks/URLs, iOS doesn't. Phasing: NOW — Rust-generated fixtures for recurrence, NLP lift, inline spans, chip visibility, property-override resolution + hoist recurrence recognize/format to Rust via the EXISTING uniffi (2 pure fns; clients keep HTTP recur-bump for the op); NEXT — stand up wasm-bindgen for web WHEN the JQL evaluator hoists (retires ~2,350 duplicated client LOC; the 182-case suite is the acceptance gate; web has NO tesela-Rust path today — loro-crdt npm wasm is upstream's); NEVER hoist — inline decorations, chip policy, fuzzy ranking (UI-coupled). Property-type vocabulary unifies on ONE canonical list (Rust ValueType + email/phone/object; three vocabularies already disagree and Rust silently degrades unknowns to Text).
+
+## 2026-07-01b — Taylor's five ratifications on the arch review (harness-deck answers)
+
+All five asks from the 2026-07-01 review answered same-day; these are now LOCKED product/architecture calls:
+
+- **Pure max-TreeID convergence: APPROVED** — the keep decision will depend only on the immutable TreeID (drop genuine-edit preference + stale-guard); Taylor accepts that the higher-TreeID twin's text wins a same-block conflict. Implement via tesela-fte AFTER tesela-engc.1 (one place to change the rule); device-validate on the live CF relay before trusting.
+- **Arc order: SPINE FIRST** — commands-as-data (cmdd) + parity fixtures (pfix) before type-system views (ya4).
+- **Views slice order: kanban on web first**, then sets/table on the same data layer, then iOS.
+- **tesela-plugins (Lua): PARKED ratified** — CLI-only experimental; any plugin story routes through the command manifest (ADR-4).
+- **Multi-mosaic end-state: ONE SERVER HOSTING N MOSAICS — committed** (overrides the review's cheaper process-per-mosaic lean). Sequenced AFTER lazy-load/evict; epic tesela-mmos + Lead design spec tesela-mmos.1 (blocked-by tesela-qql). ejn.2's desktop mosaic-switch fix stays interim (hide/disable, don't build a relaunch flow mmos would replace).
