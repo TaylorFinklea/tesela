@@ -664,3 +664,29 @@ Picked up bd epic `tesela-mp0` (a Lead-escalation: "harden QR scan + RelayTicker
 
 ### Landmine — pre-existing git stash `task-tag-wip`
 A `git stash` (`stash@{0}: On main: task-tag-wip`) holds substantial UNRELATED WIP (34 files, +766/-4397): web v4/v5 chrome DELETIONS, iOS feed-pagination (`MockMosaicService` `pastDailiesWindow`/`hasOlderDailies`/load-older + task-toggle persistence, `CaptureBar.pendingVoiceCapture`), and Rust importer work (`import_logseq`/`import_org`/`backfill_task`). NOT created this session (tree was clean at start) and NOT mine — left untouched. Recover or drop deliberately; don't let a stray `git stash pop` collide with it.
+
+## 2026-06-30 — Pairing/identity direction: Anytype-style recovery phrase + QR (Taylor)
+
+Re-scoping `mp0.3` (fresh-install short-code dead-on-arrival) surfaced the real answer: don't band-aid the short code — adopt an **Anytype-style recovery-phrase + QR** identity model. Taylor's call. This UNIFIES three roadmap threads (mp0.3 short-code · `tesela-tp0` minimum key/pairing model + Ed25519 · roadmap step-4 passphrase-derived key).
+
+**Grounded current crypto (recon 2026-06-30, file:line in the recon transcript):**
+- GroupKey = 32-byte **random** (CSPRNG), stored raw at `.tesela/group_key.bin`, never leaves devices. Content sealed XChaCha20-Poly1305 under it (`crypto/keys.rs`, `crypto/aead.rs`).
+- **The QR/pairing blob literally carries the raw GroupKey** (postcard: group_id + group_key bytes + server URL + relay_url; base64url) (`crypto/pairing.rs`). Short-code = a 10-min in-memory map ON THE INVITER'S SERVER (`routes/peer_sync.rs`) → that's exactly why the typed path needs a server URL (mp0.3).
+- group_id = random UUIDv4, NOT derived from the key; used as the HKDF salt for the relay auth_key = `HKDF-SHA256(group_key, salt=group_id, "tesela-relay-auth-v1")` (`crypto/relay_auth.rs`). Relay is zero-knowledge (never sees group_key). Discovery: NONE — a phrase-only device can't find its group.
+- Device identity = UUIDv7, NON-cryptographic. **Ed25519 columns exist in the schema but are DORMANT** (`schema.rs`, `group.rs`). Passphrase/KDF/BIP39 = ZERO implementation (HKDF used only for relay auth).
+
+**Anytype model:** a 12-word BIP39 mnemonic generated on-device IS the account key; QR just transfers it; zero-knowledge, encrypted before leaving the device.
+
+**The clean mapping (why this fits):**
+- Make the recovery phrase a **BIP39 encoding of the GroupKey itself** (the phrase IS the key, Anytype-faithful) rather than a KDF over a user password. Then: enter phrase → decode → GroupKey → derive group_id + relay auth → discover the group's ops on the relay → sync. **No server URL** → fixes mp0.3 properly, and gives a real RECOVERY story (today a lost-all-devices group is unrecoverable — the random key lived only on disk).
+- **Migration is FREE** under the phrase-encodes-the-key approach: any existing random GroupKey can be rendered as a BIP39 phrase on demand — no re-key, no re-pair of existing devices. (A user-chosen-passphrase→KDF approach instead would force re-keying every group.)
+- Requires ONE new derivation: a **relay-discoverable group handle** from the phrase/key (today group_id is independent-random) so a phrase-only device finds its group without the inviter's server.
+
+**Proposed phasing (Opus/Lead-owned — the hardest, reserve-Opus work):**
+- P0: BIP39 encode/decode of the GroupKey + a "Recovery phrase" screen (show on desktop, enter on a new device); derive a relay-discoverable group handle from the key → typed-phrase join needs no server URL (fixes mp0.3). Existing groups migrate free.
+- P1: QR carries the phrase (or keep the current blob as the quick path); relay-mediated discovery so recovery works on any network.
+- P2 (`tesela-tp0`): wire the dormant Ed25519 device identity + signed relay registration (public/multi-user/Savanne gate).
+
+**OPEN FORK (Taylor to decide):** generated recovery phrase (BIP39, high-entropy, must-save, free migration, Anytype-faithful — RECOMMENDED) vs. user-chosen memorable passphrase (Argon2→key, memorable but low-entropy → offline-crackable against a compromised relay, and forces re-keying). An optional user passphrase that only LOCALLY encrypts the stored phrase (a vault lock) is an additive best-of-both for later. Fork answer drives the spec.
+
+**FORK RESOLVED (Taylor 2026-06-30): generated BIP39 recovery phrase = the GroupKey** (not a user-chosen passphrase). Free migration + high entropy + Anytype-faithful. P0 design spec: `phases/2026-06-30-recovery-phrase-spec.md` — the one genuinely-new protocol piece is a one-way relay **discovery handle** `HKDF(group_key, "tesela-group-discovery-v1")` so a phrase-only device finds its group_id without a server URL, keeping group_id (and thus free migration + zero-knowledge) intact. ⚠️ E2E-crypto: TDD + adversarial crypto review gate before shipping.
