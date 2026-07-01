@@ -11,6 +11,7 @@ mod import_org;
 mod mosaic_notes;
 mod recover_logseq_dates;
 mod repair_daily_tags;
+mod repair_garbled_blocks;
 use tesela_core::{
     config::Config,
     daily::DailyNoteConfig,
@@ -217,6 +218,15 @@ enum Commands {
     /// is missing the `daily` tag and add it (dry-run unless --apply).
     RepairDailyTags {
         /// Actually write the tags. Default: dry-run — list the candidates.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// One-off repair (tesela-49d): collapse residual disjoint-lineage TWIN
+    /// blocks (same block_id on >1 live Loro node) to the deterministic winner
+    /// the live sync uses (dry-run unless --apply). A single-node UNION
+    /// concatenation is not a twin and must be fixed manually.
+    RepairGarbledBlocks {
+        /// Actually collapse the twins. Default: dry-run — report what would heal.
         #[arg(long)]
         apply: bool,
     },
@@ -1090,6 +1100,12 @@ async fn main() -> Result<()> {
         return repair_daily_tags::run(&mosaic, apply).await;
     }
 
+    // Repair residual disjoint-lineage twin blocks — opens the Loro engine
+    // directly (locks the mosaic), no Ctx required.
+    if let Commands::RepairGarbledBlocks { apply } = cli.command {
+        return repair_garbled_blocks::run(&mosaic, apply).await;
+    }
+
     let ctx = Ctx::new(mosaic).await?;
 
     match cli.command {
@@ -1109,7 +1125,8 @@ async fn main() -> Result<()> {
         | Commands::ImportOrg { .. }
         | Commands::BackfillTask { .. }
         | Commands::RecoverLogseqDates { .. }
-        | Commands::RepairDailyTags { .. } => unreachable!(),
+        | Commands::RepairDailyTags { .. }
+        | Commands::RepairGarbledBlocks { .. } => unreachable!(),
         Commands::New {
             title,
             tags,

@@ -465,6 +465,36 @@ async fn c13_ws_vs_authoritative_no_cross_tombstone() {
     assert_no_garble(&sf, &["server text", "device text"]);
 }
 
+/// C14 (tesela-49d): the one-shot local repair API. After a disjoint twin is
+/// collapsed by the normal relay apply, `scan_disjoint_twins` finds nothing and
+/// `heal_disjoint_twins` is a safe idempotent no-op — documenting that residue
+/// self-heals on sync and the repair is the offline/force path. (The collapse
+/// logic itself — `twin_winners_for` + `tombstone_twins_to_winners` — is covered
+/// by C1–C13; no public API leaves a persistent twin post-fix.)
+#[tokio::test]
+async fn c14_repair_scan_heal_noop_on_healed_mosaic() {
+    let bid = "0a0a0a0a-0a0a-0a0a-0a0a-0a0a0a0a0a0a";
+    let note = note_id("2026-07-01-repair");
+    let a = engine(0xA1);
+    author_disjoint(&a, note, bid, "A text").await;
+    let b = engine(0xB1);
+    author_disjoint(&b, note, bid, "B text").await;
+    let a_snap = a.export_doc_update(note, None).await.unwrap();
+    let _ = b.apply_relay_updates(&[(note, a_snap)]).await;
+
+    assert!(
+        b.scan_disjoint_twins().await.is_empty(),
+        "a healed mosaic has no disjoint twins to report"
+    );
+    assert!(
+        b.heal_disjoint_twins().await.is_empty(),
+        "heal is a safe no-op on a healed mosaic"
+    );
+    let r = b.render_note(note).await.unwrap();
+    assert!(r.contains("A text") || r.contains("B text"), "block intact: {r:?}");
+    assert_no_garble(&r, &["A text", "B text"]);
+}
+
 /// C5: three disjoint devices, all-to-all exchange. Do all three converge?
 #[tokio::test]
 async fn c5_three_device_disjoint_converges() {

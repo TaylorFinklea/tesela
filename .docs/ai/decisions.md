@@ -715,3 +715,9 @@ Re-scoping `mp0.3` (fresh-install short-code dead-on-arrival) surfaced the real 
 **Not a bug (documented):** concurrent WHOLE-block `BlockUpsert` to unrelated text on a SHARED lineage still interleaves — inherent LoroText collab-merge; real editing emits base→new splices (2026-06-02 base-diff path) so real concurrent edits to different regions merge cleanly.
 
 **Verify.** `cargo test -p tesela-sync -p tesela-sync-ffi -p tesela-server` green (345 tests: 194 sync-lib + all integration incl. `relay_inbound_rebase.rs`'s 13 convergence cases). Convergence-critical apply path — TDD, one change, full re-test, adversarial-reviewed before commit.
+
+### tesela-49d — one-shot garble repair scope: TWINS auto-fix, concatenation stays manual
+
+Shipped `tesela repair-garbled-blocks [--apply]` (dry-run default; mosaic-locked; engine `scan_disjoint_twins` + `heal_disjoint_twins` reuse the shared `twin_winners_for` — SAME winner rule as the live apply path, so the offline repair and online sync agree). It collapses residual disjoint-lineage TWIN blocks (a block_id on >1 live node) — the recoverable form the bead's note couples to y11.
+
+**Decision: do NOT auto-split a single-node UNION concatenation** (two runs merged into one block's `text_seq`, e.g. the bead's "today"). It is fundamentally unsound — the original boundary is unrecoverable ("Bothnice one" could be "Both"+"nice one" or "Bot"+"hnice one"). A history-based heuristic (recover pre-union values from the node's `text_seq` history) is possible but risky + false-positive-prone (incremental typing fills history with prefixes). Per the bead ("manual cleanup is the interim"), concatenation stays a manual edit. y11 prevents NEW concatenation (bootstrap-before-author + convergent `write_block_text`), so this is bounded residue. OPEN: whether Taylor's live garble is twin (tool fixes) or concatenation (manual) — drives whether a targeted history-assisted manual helper is worth building.

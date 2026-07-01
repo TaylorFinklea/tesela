@@ -771,6 +771,87 @@ impl LoroEngine {
         Ok(())
     }
 
+    /// One-shot LOCAL repair scan (tesela-49d): report every note's DISJOINT
+    /// twins (a block_id on >1 live tree node — the residue of pre-fix disjoint
+    /// authoring) WITHOUT mutating anything. Returns `(note_id, block_id_hex,
+    /// candidate_texts)` per twin block_id so a CLI can show what a repair would
+    /// collapse. Read-only. (Pre-collapsed UNION *concatenation* on a single node
+    /// is NOT a twin and is not reported here — that residue stays manual.)
+    pub async fn scan_disjoint_twins(&self) -> Vec<([u8; 16], String, Vec<String>)> {
+        let mut out = Vec::new();
+        for note_id in self.note_ids().await {
+            if Self::is_views_doc(&note_id) {
+                continue;
+            }
+            let doc = self.doc_for_note_mut(note_id).await;
+            let twin_bids = duplicate_block_ids(&doc);
+            if twin_bids.is_empty() {
+                continue;
+            }
+            let tree = doc.get_tree("blocks");
+            let live: Vec<TreeID> = tree
+                .children(TreeParentId::Root)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
+                .collect();
+            let mut by_bid: HashMap<String, Vec<String>> = HashMap::new();
+            for node in live {
+                let Some(bid) = read_meta_str(&tree, node, "block_id") else {
+                    continue;
+                };
+                if twin_bids.contains(&bid) {
+                    by_bid
+                        .entry(bid)
+                        .or_default()
+                        .push(read_block_text(&tree, node).unwrap_or_default());
+                }
+            }
+            for (bid, texts) in by_bid {
+                out.push((note_id, bid, texts));
+            }
+        }
+        out
+    }
+
+    /// One-shot LOCAL repair (tesela-49d): collapse every note's DISJOINT twins
+    /// to the deterministic winner — the SAME rule ([`twin_winners_for`]) the
+    /// relay apply paths use, but FRAMELESS (operates on the doc's OWN existing
+    /// twins, so residue can be healed without waiting for an inbound sync). Each
+    /// changed note is persisted + materialized. Returns the `(note_id,
+    /// block_id_hex)` collapsed. Idempotent: a second run finds no twins.
+    ///
+    /// Gated by the CALLER (dry-run default + mosaic lock in the CLI). Twins now
+    /// also self-heal on the next relay round via the apply-path heal; this is
+    /// the offline/force path for existing residue.
+    pub async fn heal_disjoint_twins(&self) -> Vec<([u8; 16], String)> {
+        let mut healed = Vec::new();
+        for note_id in self.note_ids().await {
+            if Self::is_views_doc(&note_id) {
+                continue;
+            }
+            let doc = self.doc_for_note_mut(note_id).await;
+            let changes = twin_winners_for(&doc);
+            if changes.is_empty() {
+                continue;
+            }
+            tombstone_twins_to_winners(&doc, &changes);
+            tombstone_duplicate_twins(&doc, note_id);
+            self.reassert_prop_heals(note_id, &changes).await.ok();
+            self.refresh_note_derived(note_id, &doc).await;
+            if let Some(dir) = self.inner.snapshot_dir.as_ref() {
+                self.save_snapshot(dir, note_id).await;
+            }
+            if self.inner.materialize_dir.is_some() {
+                self.materialize_note(note_id).await;
+            }
+            for c in &changes {
+                healed.push((note_id, hex_id(&c.block_id)));
+            }
+        }
+        healed
+    }
+
     /// Like [`import_doc_update`](Self::import_doc_update) but RETURNS whether
     /// the imported update was left PENDING by Loro — i.e. it referenced ops the
     /// doc is missing (a causal gap / disjoint-lineage signal). `import_doc_update`
@@ -3741,58 +3822,59 @@ fn peer_genuine_block_changes(auth: &LoroDoc, frame: &[u8]) -> SyncResult<Vec<Pe
         return Ok(Vec::new());
     }
 
-    // block_ids with >1 live node in the imported fork = DISJOINT twins (the
-    // peer authored on a separate lineage). ONLY these need a force-heal;
-    // shared-lineage blocks defer entirely to Loro's LoroText merge.
-    let twin_bids = duplicate_block_ids(&fork);
+    // The merged fork now holds both lineages; resolve its disjoint twins with
+    // the shared deterministic rule (max-`TreeID` node among non-stale tips).
+    Ok(twin_winners_for(&fork))
+}
+
+/// Resolve every DISJOINT twin (block_id with >1 live node) in `doc` to its
+/// deterministic winner NODE + the union of all its twins' props — the SINGLE
+/// twin-resolution rule shared by the relay apply paths (called on a fork of
+/// auth+frame) AND the one-shot local repair (called on the live doc, so an
+/// existing twin can be collapsed WITHOUT an inbound frame). Empty for a doc
+/// with no twins.
+///
+/// Per twin block_id the winner is a PURE FUNCTION of the merged twin set —
+/// identical on every replica, so a symmetric disjoint conflict converges in
+/// ONE sync round (no transient split-brain, no cross-tombstone). Selection:
+/// - EXCLUDE stale tips: a tip whose text a DIFFERENT twin's lineage
+///   authored-then-superseded (present in another twin node's per-node history,
+///   [`fork_node_text_histories`]) — the re-shipped-old-value guard, symmetric;
+/// - among the rest keep the MAX-`TreeID` node (deterministic total order,
+///   recency-correlated; MAX not MIN so a device's blind low-peer twin can't
+///   revert a peer's edit), preferring a non-empty text;
+/// - if EVERY tip is stale (pathological history cycle), fall back to the
+///   max-`TreeID` of all.
+fn twin_winners_for(doc: &LoroDoc) -> Vec<PeerBlockChange> {
+    let twin_bids = duplicate_block_ids(doc);
     if twin_bids.is_empty() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
-
-    // Per-node text history across the MERGED fork (both lineages), so a twin
-    // whose tip is a value ANOTHER lineage authored-then-superseded (the
-    // re-shipped-stale-value incident) can be excluded — symmetric on every
-    // replica, unlike the old auth-relative history check.
-    let node_histories = fork_node_text_histories(&fork);
-
-    // Collect each disjoint twin's candidate (TreeID, text, indent) from the
-    // fork's twin nodes (read via the LoroText container — no JsonOp scan; text
-    // is no longer an LWW map register), keyed by block_id.
-    let fork_tree = fork.get_tree("blocks");
-    let live: Vec<TreeID> = fork_tree
+    let node_histories = fork_node_text_histories(doc);
+    let tree = doc.get_tree("blocks");
+    let live: Vec<TreeID> = tree
         .children(TreeParentId::Root)
         .unwrap_or_default()
         .into_iter()
-        .filter(|n| !matches!(fork_tree.is_node_deleted(n), Ok(true)))
+        .filter(|n| !matches!(tree.is_node_deleted(n), Ok(true)))
         .collect();
     let mut twin_texts: HashMap<String, Vec<(TreeID, String)>> = HashMap::new();
     for node in live {
-        let Some(bid_hex) = read_meta_str(&fork_tree, node, "block_id") else {
+        let Some(bid_hex) = read_meta_str(&tree, node, "block_id") else {
             continue;
         };
         if !twin_bids.contains(&bid_hex) {
             continue; // shared-register block → Loro already merged it.
         }
-        let text = read_block_text(&fork_tree, node).unwrap_or_default();
+        let text = read_block_text(&tree, node).unwrap_or_default();
         twin_texts.entry(bid_hex).or_default().push((node, text));
     }
 
-    // Resolve ONE DETERMINISTIC target per twin block_id — a pure function of
-    // the merged twin set, IDENTICAL on every replica, so a symmetric disjoint
-    // conflict converges in ONE sync round. (The old rule adopted "the genuine
-    // incoming value", which is relative to self: two peers each adopted the
-    // OTHER's value → a transient split-brain that only settled a round later
-    // via the shared-lineage LoroText merge. tesela-y11.)
     let mut out: Vec<PeerBlockChange> = Vec::new();
     for (bid_hex, candidates) in twin_texts {
         let Some(bid) = parse_note_id_from_hex(&bid_hex) else {
             continue;
         };
-        // A tip is STALE iff its text was authored by a DIFFERENT twin's lineage
-        // (present in another twin node's per-node history) — the device
-        // re-shipping a value the peer already moved past. Excluding stale tips
-        // restores the no-data-loss guard the auth-relative history check gave,
-        // but symmetric across replicas.
         let is_stale = |i: usize| -> bool {
             let (node, text) = &candidates[i];
             candidates.iter().any(|(other, _)| {
@@ -3802,11 +3884,6 @@ fn peer_genuine_block_changes(auth: &LoroDoc, frame: &[u8]) -> SyncResult<Vec<Pe
                         .is_some_and(|h| h.contains(text))
             })
         };
-        // Winner = the twin on the MAX `TreeID` (deterministic total order,
-        // recency-correlated; MAX not MIN so a device's blind low-peer twin
-        // can't revert a peer's edit — the original lossy-dedup failure),
-        // preferring a non-empty text. Among only-stale tips (pathological
-        // history cycle) fall back to the max-`TreeID` of ALL candidates.
         let rank = |i: usize| -> (bool, TreeID) {
             let (node, text) = &candidates[i];
             (!text.is_empty(), *node)
@@ -3819,18 +3896,14 @@ fn peer_genuine_block_changes(auth: &LoroDoc, frame: &[u8]) -> SyncResult<Vec<Pe
             Some(i) => candidates[i].0,
             None => continue,
         };
-        // Reconcile EVERY twin's props (across BOTH lineages — the fork holds
-        // the server's twins AND the peer's) BEFORE the tombstone runs. The
-        // apply re-asserts each resolved key onto the surviving winner, so a
-        // tombstoned twin's props are never lost.
-        let props = reconcile_orphaned_prop_containers(&fork, &bid_hex);
+        let props = reconcile_orphaned_prop_containers(doc, &bid_hex);
         out.push(PeerBlockChange {
             block_id: bid,
             winner,
             props,
         });
     }
-    Ok(out)
+    out
 }
 
 /// The set of block_ids (hex) that have MORE THAN ONE live node in a doc's
